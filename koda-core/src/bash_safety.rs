@@ -878,11 +878,11 @@ fn strip_redirections(segment: &str) -> String {
     result
 }
 
-/// Position of the first unquoted space in `s`.
+/// Byte offset of the first unquoted space in `s`.
 fn find_unquoted_space(s: &str) -> Option<usize> {
     let mut in_sq = false;
     let mut in_dq = false;
-    for (i, c) in s.chars().enumerate() {
+    for (i, c) in s.char_indices() {
         match c {
             '\'' if !in_dq => in_sq = !in_sq,
             '"' if !in_sq => in_dq = !in_dq,
@@ -1071,6 +1071,87 @@ mod tests {
         assert_eq!(strip_redirections("ls 2> /dev/null x"), "ls  x");
         assert_eq!(strip_redirections("grep '2>&1' f"), "grep '2>&1' f");
         assert_eq!(strip_redirections("ls > out"), "ls > out");
+    }
+
+    // Multibyte text (CJK, accented, emoji) must not panic and must split
+    // and classify like the ASCII equivalent. The splitter once used char
+    // indices as byte offsets and panicked on `你好 | ...`.
+
+    const MULTIBYTE: &[&str] = &["你好", "café", "🦀", "naïve 世界 🎉"];
+    const SEPARATORS: &[&str] = &["|", ";", "&&", "||"];
+    /// `{t}` is replaced by the text, `{sep}` by the separator.
+    const MULTIBYTE_TEMPLATES: &[&str] = &[
+        "echo {t} {sep} ls {t}",
+        "echo {t}{sep}ls",
+        "echo {t} {sep} rm -rf /tmp/{t}",
+        "cat {t}.txt {sep} git push --force",
+        "echo '{t} {sep} rm -rf /' {sep} ls {t}",
+        "echo \"{t} {sep} rm -rf /\" {sep} grep {t}",
+        "grep \"{t}\" a.txt {sep} echo '{t}'",
+        "FOO='{t}' ls {sep} echo {t}",
+        "FOO=\"{t} x\" ls {sep} rm -rf {t}",
+        "{t} {sep} {t}",
+    ];
+
+    /// `(command, ASCII equivalent, text)`. The ASCII stand-in is `X`, which
+    /// appears nowhere else in the templates.
+    fn multibyte_cases() -> Vec<(String, String, &'static str)> {
+        let mut cases = Vec::new();
+        for tpl in MULTIBYTE_TEMPLATES {
+            for sep in SEPARATORS {
+                let fill = |t: &str| tpl.replace("{t}", t).replace("{sep}", sep);
+                for t in MULTIBYTE {
+                    cases.push((fill(t), fill("X"), *t));
+                }
+            }
+        }
+        cases
+    }
+
+    #[test]
+    fn test_split_multibyte_matches_ascii() {
+        for (cmd, ascii, t) in multibyte_cases() {
+            let segs = split_command_segments(&cmd);
+            let expected: Vec<String> = split_command_segments(&ascii)
+                .iter()
+                .map(|seg| seg.replace('X', t))
+                .collect();
+            assert_eq!(segs, expected, "segments of {cmd:?}");
+        }
+    }
+
+    #[test]
+    fn test_split_multibyte_segments_exact() {
+        assert_eq!(
+            split_command_segments("echo 你好 | grep 好"),
+            vec!["echo 你好 ", " grep 好"]
+        );
+        assert_eq!(
+            split_command_segments("echo café&&ls🦀||echo 'é;é';true"),
+            vec!["echo café", "ls🦀", "echo 'é;é'", "true"]
+        );
+        assert_eq!(
+            split_command_segments("echo \"好 | 好\""),
+            vec!["echo \"好 | 好\""]
+        );
+    }
+
+    #[test]
+    fn test_classify_multibyte_matches_ascii() {
+        for (cmd, ascii, _) in multibyte_cases() {
+            assert_eq!(
+                classify_bash_command(&cmd),
+                classify_bash_command(&ascii),
+                "{cmd:?} should classify like {ascii:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_strip_env_vars_multibyte() {
+        assert_eq!(strip_env_vars("FOO=好 ls"), "ls");
+        assert_eq!(strip_env_vars("FOO=\"你好 世界\" BAR=é cat a"), "cat a");
+        assert_eq!(strip_env_vars("FOO=🦀"), "FOO=🦀");
     }
 
     // strip_quoted_strings

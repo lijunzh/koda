@@ -118,7 +118,7 @@ jobs:
         with:
           toolchain: 1.99.1 # = rust-toolchain.toml (pin guarded in ci.yml)
           components: clippy
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.8.1
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2.8.1
         with:
           shared-key: clippy-Linux
       - run: cargo clippy --workspace --all-targets --features koda-core/test-support -- -D warnings
@@ -131,7 +131,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: 1.99.1 # = rust-toolchain.toml (pin guarded in ci.yml)
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.8.1
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2.8.1
         with:
           shared-key: check-Linux
       # Catches cfg-gated items invisible behind feature flags. This is the
@@ -150,7 +150,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: 1.99.1 # = rust-toolchain.toml (pin guarded in ci.yml)
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.8.1
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2.8.1
         with:
           shared-key: ci-${{ runner.os }}
       - name: Set up Linux sandbox (bubblewrap)
@@ -329,7 +329,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: 1.99.1 # = rust-toolchain.toml (pin guarded in ci.yml)
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.8.1
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2.8.1
         with:
           shared-key: doc  # stable across branches & workflow edits
       - run: cargo doc --workspace --no-deps
@@ -395,7 +395,7 @@ jobs:
         if: steps.scope.outputs.run == 'true'
         with:
           toolchain: 1.99.1 # = rust-toolchain.toml (pin guarded in ci.yml)
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.8.1
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2.8.1
         if: steps.scope.outputs.run == 'true'
       - name: Install cargo-audit
         if: steps.scope.outputs.run == 'true'

@@ -63,7 +63,7 @@ shlex = "2"
 # a non-poisoning sync mutex to survive a panic-while-held without
 # bricking every subsequent drain. parking_lot is also faster on
 # contention and has a cleaner non-`Result` API).
-parking_lot = "0.12"
+parking_lot = "0.13"
 
 # HTTP client (for LLM API)
 reqwest = { version = "0.13", features = ["json", "stream"] }
