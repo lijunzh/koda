@@ -64,13 +64,18 @@ fn test_read_only_pipeline() {
     );
 }
 
+/// Any redirect, even a harmless one, fails the plain-sequence gate, so
+/// ReadOnly fails closed. (These were ReadOnly before.)
 #[test]
-fn test_redirect_to_dev_null_not_write() {
+fn test_redirect_to_dev_null_needs_approval() {
     assert_eq!(
         classify_bash_command("git status 2>&1"),
-        ToolEffect::ReadOnly
+        ToolEffect::LocalMutation
     );
-    assert_eq!(classify_bash_command("ls >/dev/null"), ToolEffect::ReadOnly);
+    assert_eq!(
+        classify_bash_command("ls >/dev/null"),
+        ToolEffect::LocalMutation
+    );
 }
 
 #[test]
@@ -325,6 +330,162 @@ fn test_backtick_substitution_is_destructive() {
 fn test_dollar_paren_substitution_is_destructive() {
     assert_eq!(
         classify_bash_command("ls $(cat /etc/passwd)"),
+        ToolEffect::Destructive
+    );
+}
+
+// ── Hidden second commands ──────────────────────────────────────────────────
+//
+// The shell runs a command after a newline or a single `&` (background) just
+// as it runs one after `;`. Each must classify at least as dangerous as its
+// most dangerous command alone.
+
+fn rank(effect: ToolEffect) -> u8 {
+    match effect {
+        ToolEffect::ReadOnly => 0,
+        ToolEffect::LocalMutation => 1,
+        _ => 2,
+    }
+}
+
+#[test]
+fn test_hidden_second_command_not_downgraded() {
+    for (cmd, second) in [
+        ("ls\nrm -rf /", "rm -rf /"),
+        ("ls & rm -rf /", "rm -rf /"),
+        ("ls&rm -rf /", "rm -rf /"),
+        ("ls\ngit push --force", "git push --force"),
+        ("ls & git push --force", "git push --force"),
+        ("ls\r\nrm -rf /", "rm -rf /"),
+        ("ls\n\n  rm -rf /\n", "rm -rf /"),
+        ("sleep 1 & rm -rf / &", "rm -rf /"),
+        ("ls\ncargo build", "cargo build"),
+        ("ls & cargo build", "cargo build"),
+        ("echo hi > /tmp/x; rm -rf /", "rm -rf /"),
+        ("echo hi > /tmp/x\nrm -rf /", "rm -rf /"),
+        ("ls | tee out.txt\nrm -rf /", "rm -rf /"),
+        // A quote inside a comment must not hide the next line.
+        ("ls # don't\nrm -rf /", "rm -rf /"),
+        // An escaped quote must not open a quoted string.
+        ("echo it\\'s; rm -rf /", "rm -rf /"),
+        ("echo it\\'s\nrm -rf /", "rm -rf /"),
+        ("echo it\\'s; echo $(rm -rf /)", "echo $(rm -rf /)"),
+        ("echo $'a\\'b'; rm -rf /", "rm -rf /"),
+        // A heredoc body is data, but a misread one must not hide a
+        // destructive command.
+        ("cat <<EOF\nhello\nEOF\nrm -rf /", "rm -rf /"),
+        ("(( x << 2 ))\nrm -rf /\n2", "rm -rf /"),
+    ] {
+        let got = classify_bash_command(cmd);
+        let want = classify_bash_command(second);
+        assert!(
+            rank(got) >= rank(want),
+            "{cmd:?} classified {got:?}, but {second:?} alone is {want:?}"
+        );
+    }
+}
+
+#[test]
+fn test_newline_and_background_amp_bypasses_are_destructive() {
+    for cmd in ["ls\nrm -rf /", "ls & rm -rf /", "ls\ngit push --force"] {
+        assert_eq!(
+            classify_bash_command(cmd),
+            ToolEffect::Destructive,
+            "{cmd:?}"
+        );
+    }
+}
+
+// ── ReadOnly fails closed ───────────────────────────────────────────────────
+//
+// ReadOnly needs plain words and quoted strings joined only by `&&`, `||`,
+// `;` and `|`, with every segment on the allowlist.
+
+#[test]
+fn test_plain_sequences_stay_read_only() {
+    for cmd in [
+        "ls -la",
+        "git status",
+        "grep -r foo .",
+        "cat a | wc -l",
+        "git log --oneline && git status",
+        "git status || git log",
+        "ls; pwd",
+        "grep 'a | b' file",
+        "grep \"a; b\" file",
+        "grep 'a && b; c || d' file | wc -l",
+        "grep 'line one\nline two' file",
+        "echo 'a & b' \"c & d\"",
+        "grep \"foo\\.bar\" src",
+        "echo it\\'s",
+        "grep '$(not run)' file",
+        "grep '`not run`' file",
+        "ls *.rs ~/src $HOME",
+        "FOO=bar ls",
+        "ls # list files",
+        "  ls  ",
+    ] {
+        assert_eq!(classify_bash_command(cmd), ToolEffect::ReadOnly, "{cmd:?}");
+    }
+}
+
+#[test]
+fn test_shell_syntax_is_not_read_only() {
+    for cmd in [
+        // newline and background
+        "ls\ngit status",
+        "ls\r\ngit status",
+        "ls &",
+        "ls & git status",
+        "ls |& grep foo",
+        // redirects
+        "ls > out.txt",
+        "ls >> out.txt",
+        "ls >/dev/null",
+        "ls 2>/dev/null",
+        "ls 2>&1",
+        "ls &> out.txt",
+        "ls >& out.txt",
+        "cat < file.txt",
+        "grep foo <<< 'foo bar'",
+        // heredocs
+        "cat <<EOF\nhello\nEOF",
+        "cat <<'EOF'\nhello\nEOF",
+        // subshells and groups
+        "(ls)",
+        "{ ls; }",
+        "ls $((1 + 2))",
+        // substitutions, unquoted and inside double quotes
+        "echo \"$(date)\"",
+        "echo \"`date`\"",
+        "diff <(ls a) <(ls b)",
+        "ls ${HOME}",
+        // unterminated quotes
+        "echo 'unterminated",
+        "echo \"unterminated",
+        // backslash-newline continuation
+        "ls \\\n  -la",
+        "echo \"a\\\nb\"",
+    ] {
+        assert_ne!(classify_bash_command(cmd), ToolEffect::ReadOnly, "{cmd:?}");
+    }
+}
+
+#[test]
+fn test_heredoc_body_is_data() {
+    // A body can't make a command destructive unless it holds a
+    // destructive command itself.
+    assert_eq!(
+        classify_bash_command("cat > notes.txt <<EOF\nhello\nEOF"),
+        ToolEffect::LocalMutation
+    );
+    assert_eq!(
+        classify_bash_command("cat <<EOF\nhello\ngit push --force\nEOF"),
+        ToolEffect::Destructive
+    );
+    // Commands after the terminator are classified.
+    assert_eq!(
+        classify_bash_command("cat <<EOF\nhello\nEOF\nrm -rf /"),
         ToolEffect::Destructive
     );
 }

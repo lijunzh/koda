@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Security
+
+- **A Bash command is read-only only when Koda can prove it, so a second command can no longer hide behind a read-only first one.** The classifier judged each segment by its first word but split segments only on `|`, `;`, `&&` and `||`, so `ls\nrm -rf /`, `ls & rm -rf /` and `ls\ngit push --force` were ReadOnly and ran without approval in every trust mode. Three related holes: a redirect ended the check early, so `echo hi > f; rm -rf /` was a mere mutation that Auto approves; `ls &> out.txt` was read-only; and an escaped quote (`echo it\'s; echo $(rm -rf /)`) hid a command substitution.
+  - **ReadOnly now fails closed**, following the rule Codex uses (no new dependency): the whole command must be plain words and quoted strings joined only by `&&`, `||`, `;` and `|`, and every segment must be on the read-only allowlist. Anything else needs approval as at least LocalMutation.
+  - **Commands that were auto-approved and now ask in Safe mode:** any redirect, including `2>&1`, `2>/dev/null` and `>/dev/null` (`git status 2>&1`, `rg foo 2>&1 | head`, `find . -name '*.rs' 2>/dev/null`); stdin redirects and herestrings (`wc -l < file`, `grep foo <<< 'x'`); heredocs (`cat <<EOF`); subshells and groups (`(ls -la)`, `{ ls; }`); `${VAR}`; backslash-newline continuations; read-only commands on several lines or with a trailing `&`. Auto mode still approves all of these.
+  - **Destructive detection splits on newlines and a single `&` too**, checks heredoc bodies, and reads quotes, backslash escapes (including in `$'...'`) and `#` comments the way the shell does, through one lexer shared by the splitter and the quote stripper. So all the examples above are Destructive and ask even in Auto mode.
+
 ## [0.4.0] - 2026-10-27
 
 **The October 2026 catch-up release.** The first since v0.3.2 (2026-05-06); development paused in May, and this covers everything merged since, including a breaking change to sub-agent dispatch that had been waiting on `main`.
