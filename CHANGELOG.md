@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Fixed
 
 - **A Bash command with non-ASCII text no longer crashes Koda.** The command splitter behind the Bash safety classifier and the path lint (`split_command_segments`) used character positions as byte offsets, so text such as `echo 你好 | grep 好` panicked with "byte index is not a char boundary" as soon as a multibyte character came before a `|`, `;`, `&&` or `||`. `strip_env_vars` had the same mix in finding the end of `FOO=value`. Both now track byte offsets, and new tests check that commands with CJK, accented and emoji text, quoted and unquoted, split, classify and lint exactly like their ASCII equivalents.
+- **A repeated tool call with non-ASCII arguments no longer crashes Koda.** The loop detector's fingerprint cut the arguments at byte 200, so a multibyte character across that point (a box-drawing `─` in a long Bash command, say) panicked with "byte index is not a char boundary". It now cuts back to the nearest char boundary. Found by the local-model eval baseline.
 
 ## [0.4.0] - 2026-10-27
 
