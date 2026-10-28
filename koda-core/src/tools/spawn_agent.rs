@@ -39,8 +39,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
             This is an alias for `InvokeAgent` with the codex v2 / Claude Code `spawn_agent` \
             argument shape: same dispatch path, same execution model. The call BLOCKS until \
             the sub-agent finishes, and the result IS the sub-agent's final answer. \
-            Nothing runs in the background, there is no task id to wait on, and no mail \
-            is sent, so do not follow it with `WaitForMail`.\n\
+            Nothing runs in the background and there is no task id to wait on.\n\
             \n\
             `task_name` identifies the agent configuration to load (same as \
             `InvokeAgent`'s `agent_name`). Use `ListAgents` to see available agents.\n\

@@ -142,12 +142,6 @@ fn test_classify_tool_covers_all_tools_explicitly() {
         // Pre-#1325 Phase 5b also pinned the bg-task management trio
         // (`ListBackgroundTasks`, `CancelTask`, `WaitTask`) here —
         // retired in 5b, see `tools/mod.rs` for the migration story.
-        // Peer-messaging tools (#1325 Phase 3). WaitForMail is
-        // ReadOnly: it observes the mailbox sequence counter
-        // without mutating state. SendMessage is LocalMutation:
-        // it mutates the recipient's mailbox state. See module
-        // docs on each for the full rationale.
-        ("WaitForMail", ToolEffect::ReadOnly),
         // #1325 Phase 5a: SpawnAgent re-maps to InvokeAgent at dispatch
         // time; ReadOnly for the same reason InvokeAgent is ReadOnly
         // (sub-agents inherit the parent's approval mode).
@@ -156,7 +150,6 @@ fn test_classify_tool_covers_all_tools_explicitly() {
         ("Write", ToolEffect::LocalMutation),
         ("Edit", ToolEffect::LocalMutation),
         ("MemoryWrite", ToolEffect::LocalMutation),
-        ("SendMessage", ToolEffect::LocalMutation),
         // Cargo runs build scripts, proc macros and tests, whatever the
         // subcommand: same verdict the Bash classifier gives `cargo build`.
         ("Cargo", ToolEffect::LocalMutation),

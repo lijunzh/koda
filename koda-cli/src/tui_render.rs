@@ -425,48 +425,6 @@ fn render_tool_output(
         return;
     }
 
-    // WaitTask returns aggregated multi-task JSON (#1157) that's
-    // user-hostile when dumped as a raw escape-soup blob. Pretty-print
-    // it as a per-task summary instead, mirroring the markdown export
-    // (transcript.rs). Falls back to the generic render path on any
-    // parse failure so we never lose the raw content.
-    if name == "WaitTask"
-        && let Some(lines) = crate::wait_task_format::try_render_wait_task_lines(output)
-    {
-        for line in lines {
-            tui_output::emit_line(buffer, line);
-        }
-        return;
-    }
-
-    // ListBackgroundTasks (#1209) — same JSON-soup problem as WaitTask;
-    // the model calls this to peek at running bg work and we owe the
-    // user a per-task render with the same icon vocabulary as the
-    // live `child_activity_overlay` instead of a one-line JSON dump.
-    if name == "ListBackgroundTasks"
-        && let Some(lines) = crate::wait_task_format::try_render_list_bg_tasks_lines(output)
-    {
-        for line in lines {
-            tui_output::emit_line(buffer, line);
-        }
-        return;
-    }
-
-    // WaitForMail (#1336, enriched in #1343) — timeout payloads in
-    // particular are JSON soup with a long `hint` string that's
-    // borderline unreadable when dumped raw. Pretty-print to match
-    // the two siblings above (#1344 issue B). Falls back to the
-    // generic render path on any parse failure so we never lose
-    // the raw content.
-    if name == "WaitForMail"
-        && let Some(lines) = crate::wait_task_format::try_render_wait_for_mail_lines(output)
-    {
-        for line in lines {
-            tui_output::emit_line(buffer, line);
-        }
-        return;
-    }
-
     // Collapse consecutive blank lines (3+ → 1) to reduce visual noise,
     // especially from WebFetch HTML-to-text conversion.
     let collapsed = collapse_blank_lines(output);
@@ -995,84 +953,6 @@ mod tests {
             0,
             "ChildAgentActivity must not push to scrollback (#1201 B2); \
              post-completion `✅ ... completed` Info line is the durable record"
-        );
-    }
-
-    // ── WaitTask / ListBackgroundTasks pretty-render wiring ──────────────────
-    //
-    // The `render_tool_output` dispatch has two opt-in branches that route
-    // these tools through `wait_task_format` instead of the generic
-    // line-by-line dump. The formatter has 9 unit tests; these two tests
-    // cover the *wiring*: that the live TUI path actually invokes the
-    // formatter and surfaces its output to the scroll buffer. Without
-    // them, a one-character typo in the dispatch (e.g. `"WaitTasks"`
-    // vs `"WaitTask"`) would silently fall through to raw-JSON dump and
-    // only get caught visually. Closes the qa-expert finding from #1169.
-
-    #[test]
-    fn wait_task_branch_emits_pretty_lines_not_raw_json() {
-        let payload = json!({
-            "tasks": [{
-                "task_id": "agent:7",
-                "status": "completed",
-                "agent_name": "explore",
-                "output": "Found three call sites.",
-            }],
-            "summary": { "completed": 1, "total": 1 },
-        })
-        .to_string();
-
-        let lines = render_tool("WaitTask", json!({}), &payload);
-        let joined: String = lines
-            .iter()
-            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
-            .collect();
-
-        // Pretty branch ran: header + completion icon + agent name + preview.
-        assert!(
-            joined.contains("1 task(s) gathered"),
-            "missing pretty header — formatter wiring broken: {joined:?}"
-        );
-        assert!(joined.contains("\u{2705}"), "missing ✅ completion icon");
-        assert!(joined.contains("explore"), "missing agent name");
-        assert!(
-            joined.contains("Found three call sites."),
-            "missing output preview"
-        );
-
-        // Raw JSON keys must NOT leak through — that would mean the
-        // dispatch fell through to the generic line-by-line path.
-        assert!(
-            !joined.contains("\"task_id\":") && !joined.contains("\"agent_name\":"),
-            "raw JSON leaked — pretty branch did not fire: {joined:?}"
-        );
-    }
-
-    #[test]
-    fn list_bg_tasks_branch_emits_pretty_lines_not_raw_json() {
-        let payload = json!([{
-            "task_id": "agent:3",
-            "status": "running",
-            "age_secs": 12,
-            "description": "verify the fix",
-        }])
-        .to_string();
-
-        let lines = render_tool("ListBackgroundTasks", json!({}), &payload);
-        let joined: String = lines
-            .iter()
-            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
-            .collect();
-
-        assert!(
-            joined.contains("1 background task(s)"),
-            "missing pretty header — formatter wiring broken: {joined:?}"
-        );
-        assert!(joined.contains("verify the fix"), "missing description");
-
-        assert!(
-            !joined.contains("\"task_id\":") && !joined.contains("\"age_secs\":"),
-            "raw JSON leaked — pretty branch did not fire: {joined:?}"
         );
     }
 }

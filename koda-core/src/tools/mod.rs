@@ -122,7 +122,6 @@ pub mod grep;
 pub mod memory;
 /// On-demand conversation history retrieval (`RecallContext`).
 pub mod recall;
-pub mod send_message;
 /// Shell command execution tool (`Bash`).
 pub mod shell;
 /// Skill discovery and activation tools (`ListSkills`, `ActivateSkill`).
@@ -137,7 +136,6 @@ pub mod summary;
 pub mod todo;
 /// Pre-flight validation for tool calls (runs before approval).
 pub mod validate;
-pub mod wait_for_mail;
 /// HTTP fetch tool (`WebFetch`).
 pub mod web_fetch;
 /// Web search tool (`WebSearch`).
@@ -1487,20 +1485,6 @@ pub fn describe_action(tool_name: &str, args: &serde_json::Value) -> String {
                 fact.to_string()
             };
             format!("Save to memory: {preview}")
-        }
-        "SendMessage" => {
-            // #1325 Phase 3: surface the recipient + a short content
-            // preview so the user can decide whether to approve a
-            // peer-mailbox effect without expanding the args. Mirrors
-            // the preview-truncation pattern used by MemoryWrite.
-            let target = args.get("target").and_then(|v| v.as_str()).unwrap_or("?");
-            let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("?");
-            let preview = if content.len() > 60 {
-                format!("{}…", &content[..57])
-            } else {
-                content.to_string()
-            };
-            format!("Send message to {target}: {preview}")
         }
         _ => format!("Execute: {tool_name}"),
     }

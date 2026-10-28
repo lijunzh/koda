@@ -39,10 +39,8 @@ const CANONICAL: &[&str] = &[
     "MemoryWrite",
     "Read",
     "RecallContext",
-    "SendMessage",
     "SpawnAgent",
     "TodoWrite",
-    "WaitForMail",
     "WebFetch",
     "WebSearch",
     "Write",
@@ -146,8 +144,7 @@ static ALIASES: LazyLock<HashMap<String, &'static str>> = LazyLock::new(|| {
     // Pre-#1325 Phase 5b also mapped `list_background_tasks` /
     // `list_bg_tasks` / `cancel_task` / `wait_task` / `wait_for_task`
     // to the bg-task management trio. Phase 5b retired those LLM
-    // tools (replaced by `WaitForMail` + the mailbox bridge from
-    // #1336), so the aliases are gone too — a model emitting any
+    // tools, so the aliases are gone too — a model emitting any
     // of the old snake_case names will now hit the unknown-tool
     // fallback, which is the correct signal that the tool is gone.
 
