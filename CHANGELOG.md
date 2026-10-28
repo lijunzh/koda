@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-27
+
+**The October 2026 catch-up release.** The first since v0.3.2 (2026-05-06); development paused in May, and this covers everything merged since, including one breaking change that had been waiting on `main`.
+
+- **Breaking:** `InvokeAgent` / `SpawnAgent` are now synchronous tool delegations, the background-task tools (`WaitTask`, `ListBackgroundTasks`, `CancelTask`) are gone, and `InvokeAgent` lost its `background` parameter. See "Changed (BREAKING for sub-agent dispatch shape)" below.
+- **Building from source needs Rust 1.99.1.** The MSRV was 1.88 and now equals the pinned toolchain.
+- **Models:** Anthropic defaults to `claude-sonnet-5-5`; `claude-haiku` / `claude-sonnet` / `claude-opus` follow the Models API at runtime, and a model picked by alias stays on that alias across restarts. The default models of OpenAI, xAI and OpenRouter moved too.
+- **Local models:** llama.cpp is supported, with its context window read from `/props`, a `llama-cpp` provider name and endpoints that persist.
+- **New:** a `Cargo` tool with parsed compiler and test output, and headless `--output-format stream-json` with run metrics.
+- **Security:** `rmcp` 1.7 → 3.8 clears four advisories against the MCP SDK (custom headers leaked to cross-origin redirects, among them), and `cargo audit` is clean again after 16 vulnerabilities and 8 denied warnings were resolved.
+- **Fixes:** five composer fixes ported from upstream Codex (Vim motions, tabs, halfwidth kana, exact-width lines), a composer panic with no terminal size, compaction failing with "database is locked", headless runs reporting success after an early stop, and the TUI ignoring `--provider` / `--model` / `--base-url`.
+- **Project process:** development docs moved from GitHub issues to the maintainer's notes (#1403), CI is green again on a pinned toolchain, and the repo no longer contains Python or the weekly vendor-sync reminder.
+
 ### Added
 
 - **llama.cpp: context window from `/props`, a `llama-cpp` provider name, and URLs that stick.** Prompted by issue #1391. Koda already worked with any OpenAI-compatible server through `--base-url`; three rough edges are gone and the route is documented (`docs/src/providers.md`).
@@ -54,6 +67,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **New RustSec advisories no longer block unrelated PRs; `main` is audited weekly instead.** The required `Security Audit` check in `ci.yml` now runs `cargo audit --deny unsound --deny yanked` on a PR only when its diff touches `Cargo.lock`, any `Cargo.toml`, or `.cargo/audit.toml`. Other PRs skip the audit steps, and the job still reports success. Dependency PRs stay gated because `auto-merge-dependabot.yml` merges Dependabot PRs as soon as required checks pass. The skip is inside the job, never a workflow-level `paths:` filter, which would leave a required check pending forever. Push to `main` still always audits. New `audit.yml` audits `main` every Monday (and on demand). On failure it opens a `security-audit` issue or comments on the open one, and it closes the issue once the audit passes again, mirroring `coverage.yml`'s `coverage-regression` handling. This is how the advisories fixed above went unnoticed from June to October: nothing audited `main` between PRs. `CLAUDE.md`'s CI section is corrected to match `ci.yml`'s six separate jobs and the seven checks the branch ruleset actually requires.
 
 ### Fixed
+
+- **Docs and `--help` examples that didn't work are corrected for the release.** The README's `koda -p "…" -m opus` failed with "unexpected argument '-m'" (there is no `-m`; `--model` takes an exact model ID, and aliases are resolved only by `/model` in the TUI), and `--help` showed `KODA_MODEL=gemini-flash`, which is not a Gemini model ID (`gemini-flash-latest` is). The README says the build needs Rust 1.99.1. `docs/src/providers.md` lists the current default models (`claude-sonnet-5-5`, `gpt-6-astra`, `grok-4.7`, `anthropic/claude-sonnet-5.5`) and Claude aliases and explains the live lookup; `docs/src/tools.md` and `docs/src/commands.md` no longer document `WaitTask`, `ListBackgroundTasks` and `CancelTask`, which were removed from the tool surface.
 
 - **Composer fixes ported from upstream Codex that Koda's copy (taken 2026-05-01/04) predated.** Each was confirmed with a test that failed on the old code. Vim: `e` and `de` from a word end now advance to the next word end, `C` changes to the line end, and `D`/`C` at a line end keep the newline (openai/codex#24380); `o` on the last line puts the cursor on the new blank line (openai/codex#25022). Tabs are wrapped and drawn as one column, so the cursor lines up after them (openai/codex#33239). Halfwidth katakana sound marks (`ﾞ` U+FF9E, `ﾟ` U+FF9F), which Unicode measures as width 0 but Ratatui draws in their own cell, now count as one column for wrapping, the cursor and the masked API-key view, and a kana never wraps apart from its mark (openai/codex#35962; new `composer::wrapping::display_width`). A line that exactly fills the composer width gets a continuation row so the cursor stays visible, runs of spaces wider than the area wrap instead of pushing the cursor past the edge, the cursor is clamped inside the area (and is `None` for an empty one), and no render path draws outside the textarea (openai/codex#37166). Found by diffing the six ported files against Codex `fab1a57545`; upstream's feature work since the port was not taken.
 

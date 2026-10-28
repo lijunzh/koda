@@ -20,7 +20,7 @@
 brew tap lijunzh/koda
 brew install koda
 
-# Cargo (requires Rust toolchain — MSRV 1.88)
+# Cargo (requires Rust 1.99.1 or newer)
 cargo install koda-cli
 
 # From source
@@ -39,8 +39,8 @@ koda
 # One-shot prompt (headless mode for scripts/CI)
 koda "fix the failing test in auth.rs"
 
-# Explicit model alias
-koda -p "explain auth.rs" -m opus
+# Specific model (an exact model ID; aliases like `claude-opus` are for /model in the TUI)
+koda -p "explain auth.rs" --model claude-opus-5-5
 
 # Pipe input directly into Koda
 echo "review this diff" | koda

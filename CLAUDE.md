@@ -95,7 +95,7 @@ per-tool toggles to keep in your head.
 
 **On release:**
 - Move CHANGELOG.md `[Unreleased]` to versioned section
-- Bump version in both crate Cargo.toml files (koda-core, koda-cli)
+- Bump version in the three published crates (koda-sandbox, koda-core, koda-cli; release.yml checks all three) and in the path-dependency `version =` fields that point at them, including koda-test-utils
 - Verify README quick-start examples still work
 - Check that CHANGELOG entries match what's documented in README/DESIGN.md
 
@@ -429,7 +429,7 @@ For capabilities that ship in the koda workspace (same release cycle):
 7. Add `--version` flag to `main.rs` (standalone server wrapper)
 8. Write integration tests in `tests/mcp_integration_test.rs`
 9. Update `release.yml`: version verify, build, package, publish, Homebrew
-10. Sync version with workspace (currently 0.3.2)
+10. Sync version with workspace (currently 0.4.0)
 11. Update this file (CLAUDE.md)
 
 ## CI Workflows

@@ -157,10 +157,6 @@ elapsed age — with no slash-command needed.
   + 2 more
 ```
 
-The LLM-facing equivalent is still the `ListBackgroundTasks` tool —
-the model sees the same task ids when it asks about its own
-background work.
-
 ## `/cancel <id>`
 
 Requests cancellation of a background task by id (visible in the
@@ -188,9 +184,6 @@ Idempotent: re-running `/cancel agent:1` on an already-cancelled
 task is a no-op; `/cancel process:N` on an already-dead pid is also
 a no-op (the kernel just rejects the SIGTERM). Unknown ids report a
 helpful error rather than silently no-oping.
-
-The LLM-facing equivalent is the `CancelTask` tool, which uses the
-same parser and accepts the same prefixed forms.
 
 ## `/expand [<n>]`
 

@@ -62,7 +62,7 @@ after the turn ends. The streamed reply and tool status go to stderr.
   "response": "The exported functions are …",
   "session_id": "a3f8bc12-…",
   "provider": "anthropic",
-  "model": "claude-sonnet-4-6",
+  "model": "claude-sonnet-5-5",
   "turn_end": { "kind": "complete" },
   "elapsed_ms": 8421,
   "usage": {
