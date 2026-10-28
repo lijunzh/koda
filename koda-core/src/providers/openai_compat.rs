@@ -490,9 +490,9 @@ impl LlmProvider for OpenAiCompatProvider {
     async fn model_capabilities(&self, model: &str) -> Result<super::ModelCapabilities> {
         let base = self.base_url.trim_end_matches("/v1");
 
-        // LM Studio: GET /api/v0/models → data[].max_context_length
-        // Only one model is loaded at a time, so just take the first entry.
-        if let Ok(caps) = self.query_lmstudio_capabilities(base).await
+        // LM Studio: GET /api/v0/models → the loaded instance's
+        // loaded_context_length (or the model's max_context_length).
+        if let Ok(caps) = self.query_lmstudio_capabilities(base, model).await
             && caps.context_window.is_some()
         {
             return Ok(caps);
@@ -519,12 +519,17 @@ impl LlmProvider for OpenAiCompatProvider {
 }
 
 impl OpenAiCompatProvider {
-    /// Query LM Studio for the loaded model's context window.
+    /// Query LM Studio for the context window it enforces for `model`.
     ///
-    /// LM Studio serves one model at a time. The user configures the context
-    /// window in LM Studio's UI, so the API-reported value is the source of
-    /// truth — not a lookup table.
-    async fn query_lmstudio_capabilities(&self, base: &str) -> Result<super::ModelCapabilities> {
+    /// The user picks the context size when loading the model (the UI, or
+    /// `lms load <model> -c <n>`), so the API is the source of truth, not a
+    /// lookup table. See [`lmstudio_context_length`] for which field and
+    /// which entry. A non-2xx answer (another server) falls through.
+    async fn query_lmstudio_capabilities(
+        &self,
+        base: &str,
+        model: &str,
+    ) -> Result<super::ModelCapabilities> {
         let resp = self
             .client
             .get(format!("{base}/api/v0/models"))
@@ -536,20 +541,14 @@ impl OpenAiCompatProvider {
         }
 
         let body: serde_json::Value = resp.json().await?;
-
-        // Take the first loaded model — no ID matching needed.
-        if let Some(model) = body["data"].as_array().and_then(|a| a.first()) {
-            let ctx = model["max_context_length"].as_u64().map(|v| v as usize);
-            if let Some(c) = ctx {
-                tracing::info!("LM Studio reports context window: {c} tokens");
-            }
-            return Ok(super::ModelCapabilities {
-                context_window: ctx,
-                max_output_tokens: None,
-            });
+        let ctx = lmstudio_context_length(&body, model);
+        if let Some(c) = ctx {
+            tracing::info!("LM Studio reports context window: {c} tokens");
         }
-
-        Ok(super::ModelCapabilities::default())
+        Ok(super::ModelCapabilities {
+            context_window: ctx,
+            max_output_tokens: None,
+        })
     }
 
     /// Query llama.cpp's `llama-server` for its context window via `/props`.
@@ -609,6 +608,39 @@ impl OpenAiCompatProvider {
         })
     }
 }
+
+/// The context window LM Studio enforces for `model`, from a `/api/v0/models`
+/// body.
+///
+/// LM Studio lists every downloaded model, loaded or not (it loads on demand),
+/// each with `state` and the model's `max_context_length`. A loaded entry also
+/// carries `loaded_context_length`, the size it was loaded with, which is the
+/// limit the server enforces; `max_context_length` is only what the model
+/// could take. The two differ by 4x in the 2026-10-28 eval screens (Flint:
+/// 262,144 against a 65,536 load), and reading the wrong one meant Koda never
+/// compacted and the server answered a bare 500.
+///
+/// The entry is the one whose `id` is `model`, else the loaded one (the
+/// requested name may be an alias), else none: with nothing loaded and no
+/// match there is no limit to report, and the caller falls through to its
+/// other probes. `loaded_context_length` wins over `max_context_length`; a
+/// zero or missing value counts as absent.
+fn lmstudio_context_length(body: &serde_json::Value, model: &str) -> Option<usize> {
+    let entries = body["data"].as_array()?;
+    let entry = entries
+        .iter()
+        .find(|m| m["id"].as_str() == Some(model))
+        .or_else(|| {
+            entries
+                .iter()
+                .find(|m| m["state"].as_str() == Some("loaded"))
+        })?;
+    ["loaded_context_length", "max_context_length"]
+        .into_iter()
+        .find_map(|field| entry[field].as_u64().filter(|&n| n > 0))
+        .map(|n| n as usize)
+}
+
 /// `default_generation_settings.n_ctx` from a llama-server `/props` body.
 ///
 /// Zero is treated as absent: a value of 0 would make the window useless.
@@ -822,6 +854,66 @@ mod tests {
         assert_eq!(llama_cpp_n_ctx(&props), Some(32768));
     }
 
+    /// LM Studio on 2026-10-28 with Flint loaded through
+    /// `lms load recursivesi/flint -c 65536` (fields not read here left
+    /// out): every downloaded model is listed, the loaded one is not first,
+    /// and only it carries `loaded_context_length`.
+    const LMSTUDIO_MODELS: &str = r#"{"object":"list","data":[
+        {"id":"qwen/qwen3-coder-next","type":"llm","state":"not-loaded","max_context_length":262144,"capabilities":["tool_use"]},
+        {"id":"recursivesi/flint","type":"llm","state":"loaded","max_context_length":262144,"loaded_context_length":65536,"capabilities":["tool_use"]},
+        {"id":"mlx-community/qwen3.8-27b","type":"vlm","state":"not-loaded","max_context_length":262144,"capabilities":["tool_use","vision"]}
+    ]}"#;
+
+    #[test]
+    fn lm_studio_reads_the_loaded_context_of_the_requested_model() {
+        let body: serde_json::Value = serde_json::from_str(LMSTUDIO_MODELS).unwrap();
+        // The requested model: its load size, not its maximum and not the
+        // first entry's.
+        assert_eq!(
+            lmstudio_context_length(&body, "recursivesi/flint"),
+            Some(65536)
+        );
+        // An unlisted name (an alias, say) still finds the loaded model.
+        assert_eq!(lmstudio_context_length(&body, "auto-detect"), Some(65536));
+        // A listed model that is not loaded has only its maximum to offer.
+        assert_eq!(
+            lmstudio_context_length(&body, "qwen/qwen3-coder-next"),
+            Some(262144)
+        );
+    }
+
+    #[test]
+    fn lm_studio_with_nothing_loaded() {
+        let body = serde_json::json!({ "data": [
+            { "id": "a", "state": "not-loaded", "max_context_length": 131072 },
+            { "id": "b", "state": "not-loaded", "max_context_length": 262144 },
+        ]});
+        // The requested model's maximum is the best available guess.
+        assert_eq!(lmstudio_context_length(&body, "b"), Some(262144));
+        // No match and nothing loaded: nothing to report, so the caller
+        // falls through rather than trusting the first entry.
+        assert_eq!(lmstudio_context_length(&body, "c"), None);
+    }
+
+    #[test]
+    fn lm_studio_ignores_other_shapes() {
+        for body in [
+            serde_json::json!({}),
+            serde_json::json!({ "data": [] }),
+            serde_json::json!({ "data": [{ "id": "m", "state": "loaded" }] }),
+            serde_json::json!({ "data": [{ "id": "m", "state": "loaded", "loaded_context_length": 0, "max_context_length": 0 }] }),
+            serde_json::json!({ "data": [{ "id": "m", "max_context_length": "4096" }] }),
+            serde_json::json!({ "default_generation_settings": { "n_ctx": 32768 } }),
+        ] {
+            assert_eq!(lmstudio_context_length(&body, "m"), None, "{body}");
+        }
+        // A zero load size falls back to the maximum.
+        let body = serde_json::json!({ "data": [
+            { "id": "m", "state": "loaded", "loaded_context_length": 0, "max_context_length": 4096 }
+        ]});
+        assert_eq!(lmstudio_context_length(&body, "m"), Some(4096));
+    }
+
     #[test]
     fn llama_cpp_props_ignores_other_shapes() {
         for body in [
@@ -860,6 +952,12 @@ mod tests {
 
         const PROPS: &str = r#"{"default_generation_settings":{"n_ctx":32768},"total_slots":1}"#;
         const LMSTUDIO: &str = r#"{"data":[{"id":"m","max_context_length":131072}]}"#;
+        // Two models listed, the requested one loaded second at a quarter
+        // of its maximum.
+        const LMSTUDIO_JIT: &str = r#"{"data":[
+            {"id":"other","state":"not-loaded","max_context_length":262144},
+            {"id":"m","state":"loaded","max_context_length":262144,"loaded_context_length":65536}
+        ]}"#;
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn llama_server_context_comes_from_props() {
@@ -880,6 +978,31 @@ mod tests {
             let (provider, ct) = spawn(app).await;
             let caps = provider.model_capabilities("m").await.unwrap();
             assert_eq!(caps.context_window, Some(131072));
+            ct.cancel();
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn lm_studio_reports_the_loaded_size_not_the_first_entry() {
+            let app = Router::new().route("/api/v0/models", get(|| async { LMSTUDIO_JIT }));
+            let (provider, ct) = spawn(app).await;
+            let caps = provider.model_capabilities("m").await.unwrap();
+            assert_eq!(caps.context_window, Some(65536));
+            ct.cancel();
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn lm_studio_with_nothing_to_report_falls_through_to_props() {
+            // Nothing loaded and the requested model not listed: the LM
+            // Studio answer gives no window, so the next probe decides.
+            let app = Router::new()
+                .route(
+                    "/api/v0/models",
+                    get(|| async { r#"{"data":[{"id":"other","state":"not-loaded","max_context_length":262144}]}"# }),
+                )
+                .route("/props", get(|| async { PROPS }));
+            let (provider, ct) = spawn(app).await;
+            let caps = provider.model_capabilities("m").await.unwrap();
+            assert_eq!(caps.context_window, Some(32768));
             ct.cancel();
         }
 

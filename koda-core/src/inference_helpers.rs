@@ -384,6 +384,20 @@ pub fn rate_limit_backoff(attempt: u32) -> std::time::Duration {
 /// - llama.cpp: "exceeds the available context size" (`exceed_context_size_error`)
 /// - Generic: HTTP 400/413 with size-related messages
 ///
+/// Not an overflow: LM Studio's answer to an overflowed request, a bare
+/// `500 Internal Server Error` HTML page (`<pre>Internal Server Error</pre>`)
+/// with nothing in it about size. It is the same page LM Studio returns for
+/// other failures: in the 2026-10-28 eval screens Flint got it three times
+/// past its 65,536-token load, and Qwen3.8 once at 18,647 tokens. Compacting
+/// on it would throw away history for a failure that may not be about size,
+/// then fail the same way, so it stays a server error (`is_server_error`),
+/// which ends the turn. Codex and Claude Code draw the same line: Codex
+/// types `ContextWindowExceeded` from the API's `context_length_exceeded`
+/// code and Claude Code matches "prompt is too long" or a 413; neither reads
+/// overflow into a bare 5xx. Koda avoids the LM Studio overflow instead by
+/// counting against the window it loaded (`loaded_context_length`, see
+/// `providers::openai_compat`) and compacting at the pre-flight threshold.
+///
 /// # Examples
 ///
 /// ```
@@ -654,6 +668,19 @@ mod tests {
         assert!(!is_context_overflow_error(&anyhow::anyhow!(
             "connection refused"
         )));
+    }
+
+    /// LM Studio's answer to an overflowed request, verbatim from the
+    /// 2026-10-28 Flint eval screen. The same page comes back for failures
+    /// that are not about size, so it is a server error, not an overflow.
+    const LM_STUDIO_BARE_500: &str = "LLM API returned 500 Internal Server Error: <!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Internal Server Error</pre>\n</body>\n</html>\n";
+
+    #[test]
+    fn lm_studio_bare_500_is_a_server_error_not_an_overflow() {
+        let err = anyhow::anyhow!("{}", LM_STUDIO_BARE_500);
+        assert!(!is_context_overflow_error(&err));
+        assert_eq!(context_limit_from_error(&err), None);
+        assert!(is_server_error(&err));
     }
 
     #[test]
