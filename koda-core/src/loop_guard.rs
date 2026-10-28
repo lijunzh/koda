@@ -164,9 +164,10 @@ impl LoopDetector {
     }
 }
 
-/// Stable fingerprint: tool name + first 200 chars of args.
+/// Stable fingerprint: tool name + the first 200 bytes of args, cut back to
+/// a char boundary so multi-byte text never splits.
 fn fingerprint(name: &str, args: &str) -> String {
-    let prefix = &args[..args.len().min(200)];
+    let prefix = &args[..args.floor_char_boundary(200)];
     format!("{name}:{prefix}")
 }
 
@@ -334,6 +335,19 @@ mod tests {
                 "different args should not trigger at call {i}"
             );
         }
+    }
+
+    #[test]
+    fn multibyte_char_across_the_200_byte_cut_does_not_panic() {
+        // '─' is 3 bytes; after 199 ASCII bytes it spans bytes 199..202.
+        let args = format!("{}{}", "a".repeat(199), "─".repeat(10));
+        assert_eq!(
+            fingerprint("Bash", &args),
+            format!("Bash:{}", "a".repeat(199))
+        );
+
+        let mut d = LoopDetector::new();
+        assert_eq!(d.record(&[call("Bash", &args)]), LoopAction::Ok);
     }
 
     #[test]
