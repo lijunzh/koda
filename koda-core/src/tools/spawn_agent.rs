@@ -33,14 +33,16 @@ use serde_json::json;
 pub fn definitions() -> Vec<ToolDefinition> {
     vec![ToolDefinition {
         name: "SpawnAgent".to_string(),
-        description: "Spawn a named sub-agent to work on a task in the background.\n\
+        description: "Delegate a task to a named sub-agent and get its final answer back as \
+            the tool result.\n\
             \n\
-            Compatible with the codex v2 / Claude Code `spawn_agent` shape.\n\
-            Returns IMMEDIATELY with a task_id. The sub-agent runs concurrently;\n\
-            you keep working in parallel. Results are delivered to your mailbox\n\
-            at task completion — use `WaitForMail` to block until a result arrives.\n\
+            This is an alias for `InvokeAgent` with the codex v2 / Claude Code `spawn_agent` \
+            argument shape: same dispatch path, same execution model. The call BLOCKS until \
+            the sub-agent finishes, and the result IS the sub-agent's final answer. \
+            Nothing runs in the background, there is no task id to wait on, and no mail \
+            is sent, so do not follow it with `WaitForMail`.\n\
             \n\
-            `task_name` identifies the agent configuration to load (same as\n\
+            `task_name` identifies the agent configuration to load (same as \
             `InvokeAgent`'s `agent_name`). Use `ListAgents` to see available agents.\n\
             \n\
             `message` is the task prompt handed to the sub-agent."
@@ -131,6 +133,31 @@ mod tests {
             required_names.contains(&"message"),
             "message must be required"
         );
+    }
+
+    #[test]
+    fn definition_matches_the_synchronous_dispatch() {
+        // #1366: `SpawnAgent` is dispatched exactly like `InvokeAgent`
+        // (it blocks and returns the final answer). The description once
+        // promised an immediate task id and mailbox delivery, which sent
+        // the model to `WaitForMail` after every call.
+        let desc = &definitions()[0].description;
+        assert!(
+            desc.contains("BLOCKS") && desc.contains("final answer"),
+            "got:\n{desc}"
+        );
+        assert!(desc.contains("alias for `InvokeAgent`"), "got:\n{desc}");
+        for ghost in [
+            "Returns IMMEDIATELY",
+            "work on a task in the background",
+            "runs concurrently",
+            "delivered to your mailbox",
+        ] {
+            assert!(
+                !desc.contains(ghost),
+                "stale async wording {ghost:?}; got:\n{desc}"
+            );
+        }
     }
 
     #[test]

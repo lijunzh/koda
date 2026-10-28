@@ -81,12 +81,12 @@ impl MessageDeliveryMode {
 pub fn definitions() -> Vec<ToolDefinition> {
     vec![ToolDefinition {
         name: "SendMessage".to_string(),
-        description: "Send a message to a peer agent's mailbox. \
-            The recipient sees the message as a user-role turn input on their next turn. \
-            \n\nPhase 3: only `/root` (yourself) is a valid recipient until child agents \
-            are spawnable in Phase 4.\
-            \n\nUse this to test the peer-messaging substrate or to leave a note \
-            for yourself that surfaces on the next turn."
+        description: "Send a message to an agent's mailbox. The recipient sees it as a \
+            user-role turn input on their next turn.\n\
+            \n\
+            Only `/root` (yourself) is a valid recipient: sub-agents run synchronously and \
+            cannot be addressed. In practice this is a way to leave a note for yourself that \
+            surfaces at the top of your next turn (and that `WaitForMail` will wake on)."
             .to_string(),
         parameters: json!({
             "type": "object",

@@ -24,19 +24,23 @@ prompt. See [Trust modes](./approval.md) for the canonical matrix.
 | `RecallContext` | Read-only | Search session history for past context |
 | `ListSkills` | Read-only | List available skills |
 | `ActivateSkill` | Internal | Load a skill's instructions into context |
-| `InvokeAgent` | Varies | Delegate a task to a named sub-agent |
+| `InvokeAgent` | Varies | Delegate a task to a named sub-agent; blocks until it finishes and returns its final answer as the result |
+| `SpawnAgent` | Read-only | Alias for `InvokeAgent` with the codex-style arguments (`task_name`, `message`); same synchronous behavior |
+| `ListAgents` | Read-only | List the available sub-agents (`detail=true` adds their system prompts) |
 | `ListFiles` | Read-only | List directory contents |
 | `AskUser` | Interactive | Ask the user a clarifying question |
+| `SendMessage` | Mutating | Mail a message to `/root`, i.e. to yourself, to surface at the top of the next turn. Sub-agents run synchronously and cannot be addressed |
+| `WaitForMail` | Read-only | Block up to a timeout (default 30 s) for mail in your own mailbox. Only a `SendMessage` to `/root` can arrive: sub-agents send no completion mail |
 
 ## Approval behaviour by trust mode
 
 | Category | Tools | Plan | Safe | Auto |
 |----------|-------|------|------|------|
-| Read-only | Read, Grep, Glob, ListFiles, WebFetch, WebSearch, RecallContext, TodoWrite | ✅ Auto | ✅ Auto | ✅ Auto |
+| Read-only | Read, Grep, Glob, ListFiles, ListAgents, WebFetch, WebSearch, RecallContext, TodoWrite, WaitForMail | ✅ Auto | ✅ Auto | ✅ Auto |
 | Internal | Think, ActivateSkill | ✅ Auto | ✅ Auto | ✅ Auto |
-| Mutations | Write, Edit, MemoryWrite, Cargo | ❌ Deny | ⏸ Prompt | ✅ Auto |
+| Mutations | Write, Edit, MemoryWrite, Cargo, SendMessage | ❌ Deny | ⏸ Prompt | ✅ Auto |
 | Destructive | Delete | ❌ Deny | ⏸ Prompt | ⏸ Prompt |
-| Agent calls | InvokeAgent | ✅ Auto | ✅ Auto | ✅ Auto |
+| Agent calls | InvokeAgent, SpawnAgent | ✅ Auto | ✅ Auto | ✅ Auto |
 | User interaction | AskUser | ⏸ Prompt | ⏸ Prompt | ⏸ Prompt |
 | Safe shell | `git status`, `grep`, `cargo test` | ✅ Auto | ✅ Auto | ✅ Auto |
 | Mutating shell | `echo > file`, `gh issue create` | ❌ Deny | ⏸ Prompt | ✅ Auto |
