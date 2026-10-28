@@ -226,7 +226,7 @@ const DANGER_CHECKS: &[DangerCheck] = &[
     //   -delete           → deletes matched files
     //   -exec, -execdir   → runs arbitrary command on matched files
     //   -ok, -okdir       → like -exec but interactive (still risky to auto-approve)
-    //   -fprint, -fprintf → writes list of matches to a file (bypasses Phase 2)
+    //   -fprint, -fprintf → writes list of matches to a file (no `>` to catch)
     //   -fls              → writes ls-style listing to a file
     DangerCheck::CmdFlag("find", "-delete"),
     DangerCheck::CmdFlag("find", "-exec"),
@@ -285,7 +285,8 @@ const RAW_DANGER_PATTERNS: &[&str] = &[
     "<(",   // process substitution input  (#973 — hides destructive cmds)
     ">(",   // process substitution output (#973)
     "| sh", // pipe to shell interpreter
-    "| bash", "| zsh", "> /dev/", // device writes (>/dev/null is exempted in Phase 2)
+    "| bash", "| zsh",
+    "> /dev/", // device writes (allowed /dev/null redirects are stripped first)
     "(){",     // fork bomb
     "() {",
 ];
@@ -296,11 +297,16 @@ const RAW_DANGER_PATTERNS: &[&str] = &[
 ///
 /// Returns the *most dangerous* effect found across all pipeline/chain segments:
 /// 1. Raw structural patterns on quote-stripped string → Destructive
-/// 2. Write side-effects (`>`, `>>`, `| tee`) → LocalMutation
-/// 3. Per-segment shlex tokenisation vs `DANGER_CHECKS` → Destructive
-/// 4. Per-segment allowlist vs `READ_ONLY_PREFIXES` → ReadOnly / LocalMutation
+/// 2. Per-segment shlex tokenisation vs `DANGER_CHECKS` → Destructive.
+///    Segments are split on `|`, `;`, `&&`, `||`, a single `&` and newlines,
+///    the way the shell would (see [`split_command_segments`]).
+/// 3. ReadOnly only if the command is a plain sequence (see
+///    `is_plain_command_sequence`) and every segment matches
+///    `READ_ONLY_PREFIXES`; otherwise LocalMutation.
 ///
-/// Segments that fail shlex tokenisation fail-open to `LocalMutation`.
+/// ReadOnly fails closed: any shell syntax the allowlist can't vouch for
+/// (redirects, newlines, `&`, subshells, substitutions, heredocs, ...) makes
+/// the command at least LocalMutation, even if every word is harmless.
 ///
 /// # Examples
 ///
@@ -319,24 +325,29 @@ pub fn classify_bash_command(command: &str) -> ToolEffect {
         return ToolEffect::ReadOnly;
     }
 
-    // Phase 1 — raw structural patterns on quote-stripped text.
-    let unquoted = strip_quoted_strings(trimmed);
+    // Phase 1 — raw structural patterns on quote-stripped text. Harmless
+    // redirects go first, so `> /dev/null` isn't read as a device write.
+    let unquoted = strip_quoted_strings(&strip_redirections(trimmed));
     for pat in RAW_DANGER_PATTERNS {
         if unquoted.contains(pat) {
             return ToolEffect::Destructive;
         }
     }
 
-    // Phase 2 — write side-effects.
-    if has_write_side_effect(trimmed) {
-        return ToolEffect::LocalMutation;
-    }
-
-    // Phase 3 — per-segment token-level classification.
+    // Phase 2 — per-segment token-level classification.
     // We must check ALL segments before short-circuiting on LocalMutation
     // because a later segment may be Destructive.
-    let segments = split_command_segments(trimmed);
+    let (segments, heredoc_bodies) = split_segments_and_heredocs(trimmed);
     let mut worst = ToolEffect::ReadOnly;
+
+    // A heredoc body is data, so it can't make a command a mutation, but a
+    // destructive command in one still counts: `<<` can be misread (e.g.
+    // `(( x << 2 ))`), and the cost of a false alarm is one confirmation.
+    for body in &heredoc_bodies {
+        if classify_bash_command(body) == ToolEffect::Destructive {
+            return ToolEffect::Destructive;
+        }
+    }
 
     for seg in &segments {
         let effect = classify_segment(seg);
@@ -347,7 +358,129 @@ pub fn classify_bash_command(command: &str) -> ToolEffect {
         }
     }
 
+    // Phase 3 — ReadOnly must be proven. `ls > out`, `ls\nrm x` or
+    // `ls & cargo build` have read-only heads but are not read-only.
+    if worst == ToolEffect::ReadOnly && !is_plain_command_sequence(trimmed) {
+        worst = ToolEffect::LocalMutation;
+    }
+
     worst
+}
+
+/// Whether `command` is only plain words and quoted strings joined by `&&`,
+/// `||`, `;` and `|`: the only shape [`classify_bash_command`] can call
+/// ReadOnly.
+///
+/// Same rule as Codex's `try_parse_word_only_commands_sequence`
+/// (codex-rs/shell-command), written as a scanner instead of a tree-sitter
+/// walk. Disqualified: newlines, a single `&`, redirects (`<`, `>`), parens,
+/// braces, backticks, `$(`/`$((` (also inside double quotes, where they
+/// still run), unterminated quotes and backslash-newline. Words may still
+/// hold `$VAR`, globs or `~`: they expand to arguments, never to commands
+/// or operators, and the allowlist only vouches for the command head.
+///
+/// One deliberate departure from Codex, which rejects every redirect: the
+/// redirects in [`harmless_redirect_len`] (`2>&1` and output to
+/// `/dev/null`) are allowed, since they write no file.
+fn is_plain_command_sequence(command: &str) -> bool {
+    let mut chars = command.char_indices().peekable();
+    let mut prev = ' ';
+    while let Some((b, c)) = chars.next() {
+        if redirect_starts_here(command, b, Some(prev)) {
+            // A `>` right after a digit is an fd redirect other than 1 or 2
+            // (`3>`), or follows a word ending in a digit (`a2>`): reject both.
+            let Some(len) = harmless_redirect_len(&command[b..])
+                .filter(|_| !(c == '>' && prev.is_ascii_digit()))
+            else {
+                return false;
+            };
+            while chars.next_if(|&(i, _)| i < b + len).is_some() {}
+            prev = '_'; // the redirect ends mid-word, never at a word break
+            continue;
+        }
+        match c {
+            // `$'...'` (ANSI-C quoting) honours backslash escapes; '...' doesn't.
+            '\'' => {
+                let ansi_c = prev == '$';
+                loop {
+                    match chars.next().map(|(_, c)| c) {
+                        Some('\'') => break,
+                        Some('\\') if ansi_c => {
+                            chars.next();
+                        }
+                        Some(_) => {}
+                        None => return false,
+                    }
+                }
+            }
+            '"' => loop {
+                match chars.next().map(|(_, c)| c) {
+                    Some('"') => break,
+                    Some('\\') => {
+                        if matches!(chars.next(), Some((_, '\n')) | None) {
+                            return false;
+                        }
+                    }
+                    Some('`') => return false,
+                    Some('$') if chars.peek().is_some_and(|&(_, n)| n == '(') => return false,
+                    Some(_) => {}
+                    None => return false,
+                }
+            },
+            '\\' => {
+                if matches!(chars.next(), Some((_, '\n' | '\r')) | None) {
+                    return false;
+                }
+            }
+            '|' => {
+                chars.next_if(|&(_, n)| n == '|');
+            }
+            '&' => {
+                if chars.next_if(|&(_, n)| n == '&').is_none() {
+                    return false;
+                }
+            }
+            '$' if chars.peek().is_some_and(|&(_, n)| n == '(') => return false,
+            '\n' | '\r' | '<' | '>' | '(' | ')' | '{' | '}' | '`' => return false,
+            _ => {}
+        }
+        prev = c;
+    }
+    true
+}
+
+/// Whether a redirect operator starts at byte `b` of `s`: `>`, `&>`, or a
+/// `1>` / `2>` that begins a word (`prev` is the character before it).
+fn redirect_starts_here(s: &str, b: usize, prev: Option<char>) -> bool {
+    let rest = &s[b..];
+    rest.starts_with('>')
+        || rest.starts_with("&>")
+        || ((rest.starts_with("1>") || rest.starts_with("2>"))
+            && prev.is_none_or(|p| p.is_whitespace() || "|;&".contains(p)))
+}
+
+/// Byte length of a redirect at the start of `s` that writes no file, or
+/// `None`: `2>&1`, or `>`, `1>`, `2>`, `&>` (or their `>>` forms) to exactly
+/// `/dev/null`, with optional blanks before the target. Anything else, such
+/// as `>&2`, `>|`, `2> err.log`, `>/dev/null.txt` or a quoted target, is
+/// `None`.
+fn harmless_redirect_len(s: &str) -> Option<usize> {
+    let (op_len, target) = if s.starts_with("2>&") {
+        (3, "1")
+    } else {
+        let op = ["&>>", "1>>", "2>>", ">>", "&>", "1>", "2>", ">"]
+            .into_iter()
+            .find(|op| s.starts_with(op))?;
+        (op.len(), "/dev/null")
+    };
+    let after_op = &s[op_len..];
+    let blanks = after_op.len() - after_op.trim_start_matches([' ', '\t']).len();
+    let rest = after_op[blanks..].strip_prefix(target)?;
+    let at_boundary = rest
+        .chars()
+        .next()
+        .is_none_or(|c| c.is_whitespace() || "|;&<>()".contains(c));
+    at_boundary.then_some(op_len + blanks + target.len())
 }
 
 /// Classify a single pipeline/chain segment using shlex tokenisation.
@@ -397,55 +530,6 @@ fn classify_segment(segment: &str) -> ToolEffect {
     }
 }
 
-// ── Write side-effect detection ───────────────────────────────────────────────
-
-/// Detect write side-effects: `>`, `>>` (except `>/dev/null`, `2>&1`), `| tee`.
-fn has_write_side_effect(command: &str) -> bool {
-    let chars: Vec<char> = command.chars().collect();
-    let mut in_sq = false;
-    let mut in_dq = false;
-    let mut i = 0;
-
-    while i < chars.len() {
-        let c = chars[i];
-        if c == '\'' && !in_dq {
-            in_sq = !in_sq;
-        } else if c == '"' && !in_sq {
-            in_dq = !in_dq;
-        } else if !in_sq && !in_dq && c == '>' {
-            let before = if i > 0 { chars[i - 1] } else { ' ' };
-            if before == '&' {
-                i += 1;
-                continue;
-            }
-            let after: String = chars[i + 1..].iter().collect();
-            let after_trimmed = after.trim_start();
-            if after_trimmed.starts_with("/dev/null")
-                || after_trimmed.starts_with("&1")
-                || after_trimmed.starts_with("&2")
-            {
-                i += 1;
-                continue;
-            }
-            return true;
-        }
-        i += 1;
-    }
-
-    // `| tee` check
-    let segments = split_command_segments(command);
-    for (idx, seg) in segments.iter().enumerate() {
-        if idx > 0 {
-            let t = seg.trim();
-            if t.starts_with("tee ") || t == "tee" {
-                return true;
-            }
-        }
-    }
-
-    false
-}
-
 // ── Public helpers (also used by bash_path_lint) ──────────────────────────────
 
 /// Check if a segment matches any entry in a prefix list.
@@ -473,8 +557,187 @@ fn matches_prefix_list(seg: &str, prefixes: &[&str]) -> bool {
     false
 }
 
-/// Split a command into segments on `|`, `&&`, `||`, `;`.
-/// Respects single and double quotes.
+/// How the shell reads each character of a command.
+///
+/// One lexer shared by the splitter, the quote stripper and the redirect
+/// scan, so they agree on what is quoted. Before, each tracked quotes on its
+/// own and none knew about backslashes, comments or heredocs, so `it\'s` or a
+/// `don't` in a comment opened a "quote" that hid the rest of the command.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Lex {
+    /// Unquoted shell syntax, including the quote characters themselves.
+    Code,
+    /// Inside single or double quotes.
+    Quoted,
+    /// A backslash and the character it escapes (outside single quotes).
+    Escaped,
+    /// A `#` comment, up to (not including) the newline.
+    Comment,
+    /// A heredoc body, including its terminator line.
+    Heredoc,
+}
+
+/// Characters after which an unquoted `#` starts a comment.
+const WORD_BREAKS: &str = ";|&()<> \t\r\n";
+
+/// Classify every character of `command` as `(byte offset, char, Lex)`.
+///
+/// A sketch of POSIX shell tokenising, not a parser: enough to find the
+/// operators that separate commands. Unterminated quotes run to the end.
+fn lex(command: &str) -> Vec<(usize, char, Lex)> {
+    let chars: Vec<(usize, char)> = command.char_indices().collect();
+    let mut out: Vec<(usize, char, Lex)> = Vec::with_capacity(chars.len());
+    let mut in_sq = false;
+    // In `$'...'` (ANSI-C quoting) a backslash escapes, `\'` included.
+    let mut in_ansi_c = false;
+    let mut in_dq = false;
+    // Heredocs opened on the current line, as (delimiter, strip leading tabs).
+    let mut pending_heredocs: Vec<(String, bool)> = Vec::new();
+    let mut i = 0;
+
+    while i < chars.len() {
+        let (b, c) = chars[i];
+        if in_sq && in_ansi_c && c == '\\' {
+            out.extend(
+                chars[i..chars.len().min(i + 2)]
+                    .iter()
+                    .map(|&(b, c)| (b, c, Lex::Quoted)),
+            );
+            i += 2;
+            continue;
+        }
+        if in_sq {
+            let kind = if c == '\'' {
+                in_sq = false;
+                Lex::Code
+            } else {
+                Lex::Quoted
+            };
+            out.push((b, c, kind));
+            i += 1;
+            continue;
+        }
+        if c == '\\' {
+            // Escapes the next character, including a newline (continuation).
+            out.extend(
+                chars[i..chars.len().min(i + 2)]
+                    .iter()
+                    .map(|&(b, c)| (b, c, Lex::Escaped)),
+            );
+            i += 2;
+            continue;
+        }
+        if in_dq {
+            let kind = if c == '"' {
+                in_dq = false;
+                Lex::Code
+            } else {
+                Lex::Quoted
+            };
+            out.push((b, c, kind));
+            i += 1;
+            continue;
+        }
+        match c {
+            '\'' => {
+                in_sq = true;
+                in_ansi_c = matches!(out.last(), Some((_, '$', Lex::Code)));
+            }
+            '"' => in_dq = true,
+            '#' if match out.last() {
+                None | Some((_, _, Lex::Heredoc)) => true,
+                Some(&(_, prev, kind)) => kind == Lex::Code && WORD_BREAKS.contains(prev),
+            } =>
+            {
+                while i < chars.len() && chars[i].1 != '\n' {
+                    out.push((chars[i].0, chars[i].1, Lex::Comment));
+                    i += 1;
+                }
+                continue;
+            }
+            // `<<` (heredoc), but not `<<<` (herestring).
+            '<' if chars.get(i + 1).is_some_and(|&(_, n)| n == '<')
+                && chars.get(i + 2).is_none_or(|&(_, n)| n != '<') =>
+            {
+                if let Some(heredoc) = heredoc_delimiter(&chars[i + 2..]) {
+                    pending_heredocs.push(heredoc);
+                }
+                out.push((b, c, Lex::Code));
+                out.push((chars[i + 1].0, '<', Lex::Code));
+                i += 2;
+                continue;
+            }
+            '<' if chars.get(i + 1).is_some_and(|&(_, n)| n == '<') => {
+                // Herestring `<<<`: step past all three so the trailing
+                // `<<` isn't read as a heredoc.
+                out.extend(chars[i..i + 3].iter().map(|&(b, c)| (b, c, Lex::Code)));
+                i += 3;
+                continue;
+            }
+            '\n' if !pending_heredocs.is_empty() => {
+                out.push((b, c, Lex::Code));
+                i += 1;
+                // The bodies follow in order, each ending at a line that is
+                // exactly its delimiter (or at the end of the command).
+                for (delimiter, strip_tabs) in pending_heredocs.drain(..) {
+                    while i < chars.len() {
+                        let line_start = i;
+                        while i < chars.len() && chars[i].1 != '\n' {
+                            i += 1;
+                        }
+                        let line: String = chars[line_start..i].iter().map(|&(_, c)| c).collect();
+                        i = chars.len().min(i + 1);
+                        out.extend(
+                            chars[line_start..i]
+                                .iter()
+                                .map(|&(b, c)| (b, c, Lex::Heredoc)),
+                        );
+                        let line = line.strip_suffix('\r').unwrap_or(&line);
+                        let line = if strip_tabs {
+                            line.trim_start_matches('\t')
+                        } else {
+                            line
+                        };
+                        if line == delimiter {
+                            break;
+                        }
+                    }
+                }
+                continue;
+            }
+            _ => {}
+        }
+        out.push((b, c, Lex::Code));
+        i += 1;
+    }
+    out
+}
+
+/// Parse the delimiter word after `<<`: `EOF`, `-EOF`, `'EOF'`, `"EOF"`,
+/// `\EOF`. Returns `(delimiter, strip leading tabs)`.
+fn heredoc_delimiter(rest: &[(usize, char)]) -> Option<(String, bool)> {
+    let mut chars = rest.iter().map(|&(_, c)| c).peekable();
+    let strip_tabs = chars.next_if_eq(&'-').is_some();
+    while chars.next_if(|c| *c == ' ' || *c == '\t').is_some() {}
+    let mut word = String::new();
+    let mut quote: Option<char> = None;
+    while let Some(c) = chars.next() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => word.push(c),
+            None if c == '\'' || c == '"' => quote = Some(c),
+            None if c == '\\' => word.extend(chars.next()),
+            None if c.is_whitespace() || WORD_BREAKS.contains(c) => break,
+            None => word.push(c),
+        }
+    }
+    (!word.is_empty()).then_some((word, strip_tabs))
+}
+
+/// Split a command into segments on `|`, `&&`, `||`, `;`, a single `&` and
+/// newlines. Quotes, backslash escapes and comments are respected, and
+/// `&` in a redirection (`2>&1`, `>&2`, `<&0`, `&>file`) is not a separator.
+/// Heredoc bodies are not part of any segment.
 ///
 /// # Examples
 ///
@@ -483,84 +746,80 @@ fn matches_prefix_list(seg: &str, prefixes: &[&str]) -> bool {
 ///
 /// assert_eq!(split_command_segments("ls | grep foo"), vec!["ls ", " grep foo"]);
 /// assert_eq!(split_command_segments("a && b || c"), vec!["a ", " b ", " c"]);
+/// assert_eq!(split_command_segments("a & b\nc 2>&1"), vec!["a ", " b", "c 2>&1"]);
 /// ```
 pub fn split_command_segments(command: &str) -> Vec<&str> {
-    // Track byte offsets (not char indices) so slicing `command` stays on
-    // char boundaries when the command contains multibyte text. All the
-    // characters we act on are ASCII, so each is one byte wide.
-    let mut segments = Vec::new();
-    let mut start = 0;
-    let mut in_single_quote = false;
-    let mut in_double_quote = false;
-    let mut iter = command.char_indices().peekable();
+    split_segments_and_heredocs(command).0
+}
 
-    while let Some((i, c)) = iter.next() {
-        if c == '\'' && !in_double_quote {
-            in_single_quote = !in_single_quote;
-        } else if c == '"' && !in_single_quote {
-            in_double_quote = !in_double_quote;
-        } else if !in_single_quote && !in_double_quote {
-            let doubled = (c == '|' || c == '&') && iter.peek().is_some_and(|&(_, n)| n == c);
-            if doubled || c == '|' || c == ';' {
-                segments.push(&command[start..i]);
-                start = i + 1;
-                if doubled {
-                    iter.next(); // || or &&
-                    start += 1;
-                }
-            }
+/// [`split_command_segments`], plus the heredoc bodies it leaves out.
+fn split_segments_and_heredocs(command: &str) -> (Vec<&str>, Vec<&str>) {
+    let lexed = lex(command);
+    let code = |k: usize| lexed.get(k).filter(|l| l.2 == Lex::Code).map(|l| l.1);
+    let mut segments = Vec::new();
+    let mut bodies = Vec::new();
+    let mut start = 0;
+    let mut body_start: Option<usize> = None;
+    // A comment runs to the end of its line, so it ends the segment.
+    let mut comment_start: Option<usize> = None;
+    let mut k = 0;
+
+    while k < lexed.len() {
+        let (b, c, kind) = lexed[k];
+        if kind == Lex::Heredoc {
+            body_start.get_or_insert(b);
+            start = b + c.len_utf8();
+            k += 1;
+            continue;
         }
+        if let Some(body) = body_start.take() {
+            bodies.push(&command[body..b]);
+        }
+        if kind == Lex::Comment {
+            comment_start.get_or_insert(b);
+            k += 1;
+            continue;
+        }
+        let prev = k.checked_sub(1).and_then(code);
+        let next = code(k + 1);
+        let sep_len = match code(k) {
+            Some(c @ ('|' | '&')) if next == Some(c) => 2, // || or &&
+            Some('|' | ';' | '\n') => 1,
+            Some('&') if !matches!(prev, Some('>' | '<')) && next != Some('>') => 1,
+            _ => 0,
+        };
+        if sep_len > 0 {
+            segments.push(&command[start..comment_start.take().unwrap_or(b)]);
+            // Separators are ASCII, so `sep_len` chars are `sep_len` bytes.
+            start = b + sep_len;
+            k += sep_len;
+            continue;
+        }
+        k += 1;
+    }
+    if let Some(body) = body_start {
+        bodies.push(&command[body..]);
     }
     if start < command.len() {
-        segments.push(&command[start..]);
+        segments.push(&command[start..comment_start.unwrap_or(command.len())]);
     }
-    segments
+    (segments, bodies)
 }
 
 /// Replace content inside single and double quotes with spaces.
 ///
 /// Used before `RAW_DANGER_PATTERNS` matching to suppress false positives
-/// from quoted arguments (e.g. `grep "cargo publish" .`).
+/// from quoted arguments (e.g. `grep "cargo publish" .`). Backslash-escaped
+/// characters are blanked too; comments and heredoc bodies are kept, so a
+/// pattern in them still counts.
 pub fn strip_quoted_strings(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\'' {
-            result.push(c);
-            let mut found_close = false;
-            for inner in chars.by_ref() {
-                if inner == '\'' {
-                    result.push(c);
-                    found_close = true;
-                    break;
-                }
-                result.push(' ');
-            }
-            let _ = found_close;
-        } else if c == '"' {
-            result.push(c);
-            let mut found_close = false;
-            while let Some(inner) = chars.next() {
-                if inner == '\\' {
-                    result.push(' ');
-                    if chars.next().is_some() {
-                        result.push(' ');
-                    }
-                    continue;
-                }
-                if inner == '"' {
-                    result.push(c);
-                    found_close = true;
-                    break;
-                }
-                result.push(' ');
-            }
-            let _ = found_close;
-        } else {
-            result.push(c);
-        }
-    }
-    result
+    lex(s)
+        .into_iter()
+        .map(|(_, c, kind)| match kind {
+            Lex::Quoted | Lex::Escaped => ' ',
+            Lex::Code | Lex::Comment | Lex::Heredoc => c,
+        })
+        .collect()
 }
 
 /// Strip leading environment variable assignments (`FOO=bar command`).
@@ -596,10 +855,25 @@ pub fn strip_env_vars(segment: &str) -> String {
 }
 
 /// Strip common shell redirections so they don't confuse the allowlist matcher.
+///
+/// Removes the redirects [`harmless_redirect_len`] accepts, outside quotes.
 fn strip_redirections(segment: &str) -> String {
-    let mut result = segment.to_string();
-    for pat in ["2>&1", "2>/dev/null", ">/dev/null", "</dev/null"] {
-        result = result.replace(pat, "");
+    let lexed = lex(segment);
+    let mut result = String::with_capacity(segment.len());
+    let mut skip_to = 0;
+    for (k, &(b, c, kind)) in lexed.iter().enumerate() {
+        if b < skip_to {
+            continue;
+        }
+        let prev = k.checked_sub(1).map(|p| lexed[p].1);
+        if kind == Lex::Code
+            && redirect_starts_here(segment, b, prev)
+            && let Some(len) = harmless_redirect_len(&segment[b..])
+        {
+            skip_to = b + len;
+            continue;
+        }
+        result.push(c);
     }
     result
 }
@@ -699,6 +973,104 @@ mod tests {
         let segs = split_command_segments("echo 'a | b' | grep x");
         assert_eq!(segs.len(), 2);
         assert!(segs[0].contains("'a | b'"));
+    }
+
+    #[test]
+    fn test_split_newline_and_background_amp() {
+        assert_eq!(split_command_segments("ls\nrm x"), vec!["ls", "rm x"]);
+        assert_eq!(split_command_segments("a & b &"), vec!["a ", " b "]);
+        assert_eq!(
+            split_command_segments("a 2>&1 >&2 <&0 &>f && b"),
+            vec!["a 2>&1 >&2 <&0 &>f ", " b"]
+        );
+    }
+
+    #[test]
+    fn test_split_escapes_and_quotes() {
+        assert_eq!(split_command_segments("echo a\\;b"), vec!["echo a\\;b"]);
+        assert_eq!(split_command_segments("ls \\\n -la"), vec!["ls \\\n -la"]);
+        assert_eq!(
+            split_command_segments("echo \"a\\\"; b\"; c"),
+            vec!["echo \"a\\\"; b\"", " c"]
+        );
+        assert_eq!(
+            split_command_segments("echo it\\'s; c"),
+            vec!["echo it\\'s", " c"]
+        );
+        assert_eq!(
+            split_command_segments("echo $'a\\'b'; c"),
+            vec!["echo $'a\\'b'", " c"]
+        );
+        assert_eq!(split_command_segments("echo 'a\nb'"), vec!["echo 'a\nb'"]);
+    }
+
+    #[test]
+    fn test_split_comments() {
+        assert_eq!(
+            split_command_segments("ls # don't; x\nrm y"),
+            vec!["ls ", "rm y"]
+        );
+        assert_eq!(
+            split_command_segments("echo a#b; c"),
+            vec!["echo a#b", " c"]
+        );
+        assert_eq!(split_command_segments("echo $#"), vec!["echo $#"]);
+    }
+
+    #[test]
+    fn test_split_heredocs() {
+        let (segs, bodies) = split_segments_and_heredocs("cat <<EOF | grep a\na; b\nEOF\nls");
+        assert_eq!(segs, vec!["cat <<EOF ", " grep a", "ls"]);
+        assert_eq!(bodies, vec!["a; b\nEOF\n"]);
+
+        let (segs, bodies) = split_segments_and_heredocs("cat <<-'X' <<\"Y\"\n\tx\n\tX\ny\nY");
+        assert_eq!(segs, vec!["cat <<-'X' <<\"Y\""]);
+        assert_eq!(bodies, vec!["\tx\n\tX\ny\nY"]);
+
+        // Unterminated: the body runs to the end.
+        let (segs, bodies) = split_segments_and_heredocs("cat <<EOF\nrm x");
+        assert_eq!(segs, vec!["cat <<EOF"]);
+        assert_eq!(bodies, vec!["rm x"]);
+
+        // Herestring, not heredoc.
+        let (segs, bodies) = split_segments_and_heredocs("cat <<< x\nls");
+        assert_eq!(segs, vec!["cat <<< x", "ls"]);
+        assert!(bodies.is_empty());
+    }
+
+    #[test]
+    fn test_split_multibyte() {
+        assert_eq!(
+            split_command_segments("echo 你好 & ls 🦀\ncafé"),
+            vec!["echo 你好 ", " ls 🦀", "café"]
+        );
+    }
+
+    #[test]
+    fn test_harmless_redirect_len() {
+        assert_eq!(harmless_redirect_len("2>&1"), Some(4));
+        assert_eq!(harmless_redirect_len("2>&1 | head"), Some(4));
+        assert_eq!(harmless_redirect_len(">/dev/null"), Some(10));
+        assert_eq!(harmless_redirect_len("> /dev/null;"), Some(11));
+        assert_eq!(harmless_redirect_len("&>>/dev/null"), Some(12));
+        for s in [
+            ">&2",
+            ">/dev/null.txt",
+            "> '/dev/null'",
+            "2>&10",
+            ">|/dev/null",
+            "3>/dev/null",
+        ] {
+            assert_eq!(harmless_redirect_len(s), None, "{s:?}");
+        }
+    }
+
+    #[test]
+    fn test_strip_redirections() {
+        assert_eq!(strip_redirections("ls >/dev/null 2>&1"), "ls  ");
+        assert_eq!(strip_redirections("ls 2> /dev/null x"), "ls  x");
+        assert_eq!(strip_redirections("grep '2>&1' f"), "grep '2>&1' f");
+        assert_eq!(strip_redirections("ls > out"), "ls > out");
     }
 
     // Multibyte text (CJK, accented, emoji) must not panic and must split
@@ -905,8 +1277,7 @@ mod tests {
     /// ReadOnly by the broader matcher.
     #[test]
     fn test_classify_mutating_pipeline_tail_not_read_only() {
-        // `tee` writes — caught by has_write_side_effect (Phase 2),
-        // not segment classification, but verify the end-to-end result.
+        // `tee` isn't on the allowlist, and `>` fails the plain-sequence gate.
         for cmd in [
             "echo content | tee output.txt",
             "echo content | tee",
@@ -1273,9 +1644,11 @@ mod tests {
         }
     }
 
-    /// Read-only commands inside subshells/groups stay ReadOnly — no regression.
+    /// Subshells and groups aren't plain sequences, so even read-only inner
+    /// commands need approval (ReadOnly fails closed; these were ReadOnly
+    /// before it did).
     #[test]
-    fn test_classify_subshell_with_read_only_inner_still_read_only() {
+    fn test_classify_subshell_with_read_only_inner_not_read_only() {
         for cmd in [
             "(ls -la)",
             "(git status)",
@@ -1284,8 +1657,8 @@ mod tests {
         ] {
             assert_eq!(
                 classify_bash_command(cmd),
-                ToolEffect::ReadOnly,
-                "`{cmd}` should still be ReadOnly",
+                ToolEffect::LocalMutation,
+                "`{cmd}` is not a plain sequence",
             );
         }
     }

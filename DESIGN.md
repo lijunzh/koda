@@ -1106,6 +1106,22 @@ user-facing mental-model doc).
 - **Kernel-level sandboxing** — always active. macOS uses `sandbox-exec`
   (seatbelt); Linux uses `bwrap` (bubblewrap). Credential directories
   are always protected.
+- **A Bash command is ReadOnly only when proven** (`bash_safety.rs`).
+  ReadOnly auto-approves in every mode, so it fails closed: the command
+  must be plain words and quoted strings joined only by `&&`, `||`, `;` and
+  `|`, with every segment on the read-only allowlist. Newlines, a single
+  `&`, redirects, heredocs, subshells, braces, substitutions and line
+  continuations all make it at least LocalMutation, even when each word is
+  harmless. The exception is `2>&1` and output to exactly `/dev/null`:
+  they write no file, and agents add them to read-only commands all the
+  time, so this is a deliberate departure from Codex, whose word-only
+  parse rejects every redirect. Before, the
+  allowlist judged only each segment's first word, so `ls\nrm -rf /`
+  and `ls & rm -rf /` passed as ReadOnly. The rule is Codex's
+  (`try_parse_word_only_commands_sequence`), done with a quote-aware
+  scanner instead of a tree-sitter parse. Destructive detection is
+  separate and keeps looking everywhere: it splits on newlines and `&` too,
+  and checks heredoc bodies.
 - **Sandboxed shell env scrub** (#1228) — every `bash -c` tool call runs
   with a fixed env allowlist (locale, identity, `PATH`, tmpdir, proxy
   URLs + per-tool extras like `CARGO_HOME` for `cargo`). Secrets like
@@ -1113,7 +1129,9 @@ user-facing mental-model doc).
   the child process even if a prompt-injected sub-agent runs `env`.
 
 **Accepted risks**:
-1. Shell command parsing is heuristic — complex pipelines can bypass classification
+1. Destructive detection in shell commands is heuristic — complex syntax can
+   hide a destructive command (it still needs approval as LocalMutation in
+   Safe mode, but Auto mode approves it)
 2. Network is unrestricted in all modes (required for `cargo fetch`, `npm install`)
 3. If the sandbox backend is unavailable (e.g. no bwrap on Linux), `Auto`
    refuses to start or resume; `Safe`/`Plan` may still run with warnings and
