@@ -1110,9 +1110,12 @@ user-facing mental-model doc).
   ReadOnly auto-approves in every mode, so it fails closed: the command
   must be plain words and quoted strings joined only by `&&`, `||`, `;` and
   `|`, with every segment on the read-only allowlist. Newlines, a single
-  `&`, any redirect (`2>&1` and `>/dev/null` included), heredocs,
-  subshells, braces, substitutions and line continuations all make it at
-  least LocalMutation, even when each word is harmless. Before, the
+  `&`, redirects, heredocs, subshells, braces, substitutions and line
+  continuations all make it at least LocalMutation, even when each word is
+  harmless. The exception is `2>&1` and output to exactly `/dev/null`:
+  they write no file, and agents add them to read-only commands all the
+  time, so this is a deliberate departure from Codex, whose word-only
+  parse rejects every redirect. Before, the
   allowlist judged only each segment's first word, so `ls\nrm -rf /`
   and `ls & rm -rf /` passed as ReadOnly. The rule is Codex's
   (`try_parse_word_only_commands_sequence`), done with a quote-aware

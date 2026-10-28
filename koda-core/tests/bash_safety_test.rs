@@ -64,17 +64,75 @@ fn test_read_only_pipeline() {
     );
 }
 
-/// Any redirect, even a harmless one, fails the plain-sequence gate, so
-/// ReadOnly fails closed. (These were ReadOnly before.)
+/// `2>&1` and output to `/dev/null` write no file, so they keep a read-only
+/// command ReadOnly (a deliberate departure from Codex, which rejects every
+/// redirect).
 #[test]
-fn test_redirect_to_dev_null_needs_approval() {
+fn test_redirect_to_dev_null_not_write() {
+    for cmd in [
+        "git status 2>&1",
+        "ls >/dev/null",
+        "ls 2>/dev/null | head",
+        "rg foo 2>&1 | head",
+        "find . -name '*.rs' 2>/dev/null",
+        "ls >/dev/null 2>&1",
+        "ls > /dev/null 2> /dev/null",
+        "ls 1>/dev/null",
+        "ls &>/dev/null",
+        "ls >>/dev/null",
+        "ls 2>>/dev/null",
+        "ls &>>/dev/null",
+        "ls>/dev/null",
+        "ls 2>& 1",
+        "git log 2>/dev/null && git status 2>&1 | wc -l",
+        "ls 2>/dev/null;ls",
+    ] {
+        assert_eq!(classify_bash_command(cmd), ToolEffect::ReadOnly, "{cmd:?}");
+    }
+}
+
+/// Everything else that looks like it is still a redirect that needs approval.
+#[test]
+fn test_redirect_near_misses_need_approval() {
+    for cmd in [
+        "ls > out.txt",
+        "ls 2> err.log",
+        "ls >/dev/null.txt",
+        "ls >/dev/nullx",
+        "ls >/dev/null/x",
+        "ls > \"/dev/null\"",
+        "ls > '/dev/null'",
+        "ls >/dev/zero",
+        "ls >&2",
+        "ls 1>&2",
+        "ls 2>&10",
+        "ls 3>/dev/null",
+        "ls >|/dev/null",
+        "ls </dev/null",
+        "cat < file.txt",
+        "ls 2>&1 > out.txt",
+        "ls 2>/dev/null >out.txt",
+        // `ls2` is the word; `>&1` is a redirect not on the list.
+        "ls2>&1",
+    ] {
+        assert_ne!(classify_bash_command(cmd), ToolEffect::ReadOnly, "{cmd:?}");
+    }
+    // An allowed redirect never makes a command safer than its words.
     assert_eq!(
-        classify_bash_command("git status 2>&1"),
+        classify_bash_command("cargo build 2>&1"),
         ToolEffect::LocalMutation
     );
     assert_eq!(
-        classify_bash_command("ls >/dev/null"),
-        ToolEffect::LocalMutation
+        classify_bash_command("echo x > /dev/sda"),
+        ToolEffect::Destructive
+    );
+    assert_eq!(
+        classify_bash_command("rm -rf / 2>/dev/null"),
+        ToolEffect::Destructive
+    );
+    assert_eq!(
+        classify_bash_command("git push --force >/dev/null 2>&1"),
+        ToolEffect::Destructive
     );
 }
 
@@ -441,9 +499,6 @@ fn test_shell_syntax_is_not_read_only() {
         // redirects
         "ls > out.txt",
         "ls >> out.txt",
-        "ls >/dev/null",
-        "ls 2>/dev/null",
-        "ls 2>&1",
         "ls &> out.txt",
         "ls >& out.txt",
         "cat < file.txt",

@@ -226,7 +226,7 @@ const DANGER_CHECKS: &[DangerCheck] = &[
     //   -delete           → deletes matched files
     //   -exec, -execdir   → runs arbitrary command on matched files
     //   -ok, -okdir       → like -exec but interactive (still risky to auto-approve)
-    //   -fprint, -fprintf → writes list of matches to a file (bypasses Phase 2)
+    //   -fprint, -fprintf → writes list of matches to a file (no `>` to catch)
     //   -fls              → writes ls-style listing to a file
     DangerCheck::CmdFlag("find", "-delete"),
     DangerCheck::CmdFlag("find", "-exec"),
@@ -285,7 +285,8 @@ const RAW_DANGER_PATTERNS: &[&str] = &[
     "<(",   // process substitution input  (#973 — hides destructive cmds)
     ">(",   // process substitution output (#973)
     "| sh", // pipe to shell interpreter
-    "| bash", "| zsh", "> /dev/", // device writes (>/dev/null is exempted in Phase 2)
+    "| bash", "| zsh",
+    "> /dev/", // device writes (allowed /dev/null redirects are stripped first)
     "(){",     // fork bomb
     "() {",
 ];
@@ -324,8 +325,9 @@ pub fn classify_bash_command(command: &str) -> ToolEffect {
         return ToolEffect::ReadOnly;
     }
 
-    // Phase 1 — raw structural patterns on quote-stripped text.
-    let unquoted = strip_quoted_strings(trimmed);
+    // Phase 1 — raw structural patterns on quote-stripped text. Harmless
+    // redirects go first, so `> /dev/null` isn't read as a device write.
+    let unquoted = strip_quoted_strings(&strip_redirections(trimmed));
     for pat in RAW_DANGER_PATTERNS {
         if unquoted.contains(pat) {
             return ToolEffect::Destructive;
@@ -376,16 +378,32 @@ pub fn classify_bash_command(command: &str) -> ToolEffect {
 /// still run), unterminated quotes and backslash-newline. Words may still
 /// hold `$VAR`, globs or `~`: they expand to arguments, never to commands
 /// or operators, and the allowlist only vouches for the command head.
+///
+/// One deliberate departure from Codex, which rejects every redirect: the
+/// redirects in [`harmless_redirect_len`] (`2>&1` and output to
+/// `/dev/null`) are allowed, since they write no file.
 fn is_plain_command_sequence(command: &str) -> bool {
-    let mut chars = command.chars().peekable();
+    let mut chars = command.char_indices().peekable();
     let mut prev = ' ';
-    while let Some(c) = chars.next() {
+    while let Some((b, c)) = chars.next() {
+        if redirect_starts_here(command, b, Some(prev)) {
+            // A `>` right after a digit is an fd redirect other than 1 or 2
+            // (`3>`), or follows a word ending in a digit (`a2>`): reject both.
+            let Some(len) = harmless_redirect_len(&command[b..])
+                .filter(|_| !(c == '>' && prev.is_ascii_digit()))
+            else {
+                return false;
+            };
+            while chars.next_if(|&(i, _)| i < b + len).is_some() {}
+            prev = '_'; // the redirect ends mid-word, never at a word break
+            continue;
+        }
         match c {
             // `$'...'` (ANSI-C quoting) honours backslash escapes; '...' doesn't.
             '\'' => {
                 let ansi_c = prev == '$';
                 loop {
-                    match chars.next() {
+                    match chars.next().map(|(_, c)| c) {
                         Some('\'') => break,
                         Some('\\') if ansi_c => {
                             chars.next();
@@ -396,39 +414,73 @@ fn is_plain_command_sequence(command: &str) -> bool {
                 }
             }
             '"' => loop {
-                match chars.next() {
+                match chars.next().map(|(_, c)| c) {
                     Some('"') => break,
                     Some('\\') => {
-                        if matches!(chars.next(), Some('\n') | None) {
+                        if matches!(chars.next(), Some((_, '\n')) | None) {
                             return false;
                         }
                     }
                     Some('`') => return false,
-                    Some('$') if chars.peek() == Some(&'(') => return false,
+                    Some('$') if chars.peek().is_some_and(|&(_, n)| n == '(') => return false,
                     Some(_) => {}
                     None => return false,
                 }
             },
             '\\' => {
-                if matches!(chars.next(), Some('\n' | '\r') | None) {
+                if matches!(chars.next(), Some((_, '\n' | '\r')) | None) {
                     return false;
                 }
             }
             '|' => {
-                chars.next_if_eq(&'|');
+                chars.next_if(|&(_, n)| n == '|');
             }
             '&' => {
-                if chars.next_if_eq(&'&').is_none() {
+                if chars.next_if(|&(_, n)| n == '&').is_none() {
                     return false;
                 }
             }
-            '$' if chars.peek() == Some(&'(') => return false,
+            '$' if chars.peek().is_some_and(|&(_, n)| n == '(') => return false,
             '\n' | '\r' | '<' | '>' | '(' | ')' | '{' | '}' | '`' => return false,
             _ => {}
         }
         prev = c;
     }
     true
+}
+
+/// Whether a redirect operator starts at byte `b` of `s`: `>`, `&>`, or a
+/// `1>` / `2>` that begins a word (`prev` is the character before it).
+fn redirect_starts_here(s: &str, b: usize, prev: Option<char>) -> bool {
+    let rest = &s[b..];
+    rest.starts_with('>')
+        || rest.starts_with("&>")
+        || ((rest.starts_with("1>") || rest.starts_with("2>"))
+            && prev.is_none_or(|p| p.is_whitespace() || "|;&".contains(p)))
+}
+
+/// Byte length of a redirect at the start of `s` that writes no file, or
+/// `None`: `2>&1`, or `>`, `1>`, `2>`, `&>` (or their `>>` forms) to exactly
+/// `/dev/null`, with optional blanks before the target. Anything else, such
+/// as `>&2`, `>|`, `2> err.log`, `>/dev/null.txt` or a quoted target, is
+/// `None`.
+fn harmless_redirect_len(s: &str) -> Option<usize> {
+    let (op_len, target) = if s.starts_with("2>&") {
+        (3, "1")
+    } else {
+        let op = ["&>>", "1>>", "2>>", ">>", "&>", "1>", "2>", ">"]
+            .into_iter()
+            .find(|op| s.starts_with(op))?;
+        (op.len(), "/dev/null")
+    };
+    let after_op = &s[op_len..];
+    let blanks = after_op.len() - after_op.trim_start_matches([' ', '\t']).len();
+    let rest = after_op[blanks..].strip_prefix(target)?;
+    let at_boundary = rest
+        .chars()
+        .next()
+        .is_none_or(|c| c.is_whitespace() || "|;&<>()".contains(c));
+    at_boundary.then_some(op_len + blanks + target.len())
 }
 
 /// Classify a single pipeline/chain segment using shlex tokenisation.
@@ -803,10 +855,25 @@ pub fn strip_env_vars(segment: &str) -> String {
 }
 
 /// Strip common shell redirections so they don't confuse the allowlist matcher.
+///
+/// Removes the redirects [`harmless_redirect_len`] accepts, outside quotes.
 fn strip_redirections(segment: &str) -> String {
-    let mut result = segment.to_string();
-    for pat in ["2>&1", "2>/dev/null", ">/dev/null", "</dev/null"] {
-        result = result.replace(pat, "");
+    let lexed = lex(segment);
+    let mut result = String::with_capacity(segment.len());
+    let mut skip_to = 0;
+    for (k, &(b, c, kind)) in lexed.iter().enumerate() {
+        if b < skip_to {
+            continue;
+        }
+        let prev = k.checked_sub(1).map(|p| lexed[p].1);
+        if kind == Lex::Code
+            && redirect_starts_here(segment, b, prev)
+            && let Some(len) = harmless_redirect_len(&segment[b..])
+        {
+            skip_to = b + len;
+            continue;
+        }
+        result.push(c);
     }
     result
 }
@@ -977,6 +1044,33 @@ mod tests {
             split_command_segments("echo 你好 & ls 🦀\ncafé"),
             vec!["echo 你好 ", " ls 🦀", "café"]
         );
+    }
+
+    #[test]
+    fn test_harmless_redirect_len() {
+        assert_eq!(harmless_redirect_len("2>&1"), Some(4));
+        assert_eq!(harmless_redirect_len("2>&1 | head"), Some(4));
+        assert_eq!(harmless_redirect_len(">/dev/null"), Some(10));
+        assert_eq!(harmless_redirect_len("> /dev/null;"), Some(11));
+        assert_eq!(harmless_redirect_len("&>>/dev/null"), Some(12));
+        for s in [
+            ">&2",
+            ">/dev/null.txt",
+            "> '/dev/null'",
+            "2>&10",
+            ">|/dev/null",
+            "3>/dev/null",
+        ] {
+            assert_eq!(harmless_redirect_len(s), None, "{s:?}");
+        }
+    }
+
+    #[test]
+    fn test_strip_redirections() {
+        assert_eq!(strip_redirections("ls >/dev/null 2>&1"), "ls  ");
+        assert_eq!(strip_redirections("ls 2> /dev/null x"), "ls  x");
+        assert_eq!(strip_redirections("grep '2>&1' f"), "grep '2>&1' f");
+        assert_eq!(strip_redirections("ls > out"), "ls > out");
     }
 
     // strip_quoted_strings
