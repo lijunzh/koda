@@ -23,15 +23,13 @@ pub fn get() -> (usize, usize) {
     )
 }
 
-/// Get context usage as a percentage (0-100).
+/// `used` as a percentage of `max` (0-100, or more when over the window).
 ///
-/// Returns 0 when max is zero (no division-by-zero panic).
-pub fn percentage() -> usize {
-    let (used, max) = get();
-    if max == 0 {
-        return 0;
-    }
-    (used * 100) / max
+/// Pure: engine decisions (warn, pre-flight compact) pass the turn's own
+/// numbers rather than read the process-wide atomics, which concurrent
+/// turns overwrite. Returns 0 when max is zero.
+pub fn percent_of(used: usize, max: usize) -> usize {
+    (used * 100).checked_div(max).unwrap_or(0)
 }
 
 /// Format context usage for the footer: "4.1k/128k (3%)".
@@ -69,6 +67,14 @@ mod tests {
     }
 
     #[test]
+    fn test_percent_of() {
+        assert_eq!(percent_of(10_000, 128_000), 7);
+        assert_eq!(percent_of(89, 100_000), 0);
+        assert_eq!(percent_of(85, 16), 531);
+        assert_eq!(percent_of(100, 0), 0);
+    }
+
+    #[test]
     fn test_percentage() {
         // Use direct computation instead of global state to avoid test races
         assert_eq!((10_000 * 100) / 128_000, 7);
@@ -80,7 +86,7 @@ mod tests {
         // tests that drive real inference (which calls
         // `context::update`) — same workaround as `test_percentage`
         // above. Exercises the divide-by-zero guard semantics in
-        // `percentage()` without touching the shared atomics.
+        // `percent_of` without touching the shared atomics.
         // See #1203.
         let max: usize = 0;
         let pct = (100usize * 100).checked_div(max).unwrap_or(0);

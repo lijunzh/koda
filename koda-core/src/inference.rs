@@ -126,7 +126,12 @@ struct StreamResult {
 ///
 /// This is the single source of truth for context assembly — called on initial
 /// build, after pre-flight compaction, and after overflow recovery.
-async fn assemble_context(turn: &TurnState<'_>) -> Result<Vec<ChatMessage>> {
+///
+/// Returns the messages and their estimated token count. The count is also
+/// published to `crate::context` for the TUI status bar, but decisions use the
+/// returned value: the atomics are process-wide, so another turn may have
+/// overwritten them by the time they are read back.
+async fn assemble_context(turn: &TurnState<'_>) -> Result<(Vec<ChatMessage>, usize)> {
     let history = turn.db.load_context(turn.session_id).await?;
 
     // Run per-tool context analysis for smarter compaction decisions.
@@ -165,7 +170,7 @@ async fn assemble_context(turn: &TurnState<'_>) -> Result<Vec<ChatMessage>> {
 
     // Warn users when approaching the context limit (headless mode silently
     // drops ContextUsage events, so this Warn is the only signal they get).
-    let ctx_pct = crate::context::percentage();
+    let ctx_pct = crate::context::percent_of(context_used, turn.max_context_tokens);
     if (CONTEXT_WARN_THRESHOLD..AUTO_COMPACT_THRESHOLD).contains(&ctx_pct) {
         // Include analysis hints so the user knows *why* context is high.
         let mut warning = format!("Context at {ctx_pct}% — approaching limit.");
@@ -185,18 +190,20 @@ async fn assemble_context(turn: &TurnState<'_>) -> Result<Vec<ChatMessage>> {
         turn.sink.emit(EngineEvent::Warn { message: warning });
     }
 
-    Ok(messages)
+    Ok((messages, context_used))
 }
 
 /// Pre-flight budget check: if context usage exceeds the threshold, compact
 /// before sending to the provider. Re-assembles context after successful compaction.
+/// `context_used` is the token estimate `assemble_context` returned for `messages`.
 ///
 /// Returns the (possibly updated) message vec.
 async fn preflight_compact_if_needed(
     turn: &TurnState<'_>,
     messages: Vec<ChatMessage>,
+    context_used: usize,
 ) -> Result<Vec<ChatMessage>> {
-    let ctx_pct = crate::context::percentage();
+    let ctx_pct = crate::context::percent_of(context_used, turn.max_context_tokens);
     if ctx_pct < AUTO_COMPACT_THRESHOLD {
         return Ok(messages);
     }
@@ -228,7 +235,7 @@ async fn preflight_compact_if_needed(
                     result.deleted, result.summary_tokens
                 ),
             });
-            assemble_context(turn).await
+            Ok(assemble_context(turn).await?.0)
         }
         Ok(Err(skip)) => {
             tracing::info!("Pre-flight compact skipped: {skip:?}");
@@ -382,7 +389,7 @@ async fn try_overflow_recovery(
         }
     }
 
-    let messages = assemble_context(turn).await?;
+    let (messages, _) = assemble_context(turn).await?;
 
     turn.sink.emit(EngineEvent::SpinnerStart {
         message: "Retrying...".into(),
@@ -1028,10 +1035,10 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>) -> Result<()> {
         };
 
         // Assemble context (load history, attach images, track usage)
-        let messages = assemble_context(&turn).await?;
+        let (messages, context_used) = assemble_context(&turn).await?;
 
         // Pre-flight budget check: if context is critically high, compact first
-        let messages = preflight_compact_if_needed(&turn, messages).await?;
+        let messages = preflight_compact_if_needed(&turn, messages, context_used).await?;
 
         // Track whether this turn carried image attachments so we can surface
         // a targeted warning if the provider rejects them.
