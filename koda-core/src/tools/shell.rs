@@ -20,7 +20,9 @@
 //! - Commands are classified by `bash_safety::classify_bash_command`
 //! - Destructive commands (`rm -rf`, `git push --force`) always need confirmation
 //! - Path escapes outside the project root are flagged by `bash_path_lint`
-//! - Output is capped to prevent context overflow (verbose output is truncated)
+//! - Output is capped to prevent context overflow: the model sees stderr and
+//!   stdout within a ~10,000-token budget, keeping the head and the tail with
+//!   the omitted lines marked in the middle (the full output is stored)
 //!
 //! ## Best practices (sent to the model)
 //!
@@ -39,10 +41,14 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
 /// Hard ceiling to prevent LLM-controlled DoS via huge timeout values.
 const MAX_TIMEOUT_SECS: u64 = 300;
-/// Max stderr lines to include in the summary (stderr is high-signal).
-const SUMMARY_STDERR_LINES: usize = 50;
-/// Max stdout tail lines to include in the summary.
-const SUMMARY_STDOUT_TAIL: usize = 20;
+/// Token budget for the model-facing summary (stderr + stdout together).
+/// Matches Codex's `DEFAULT_MAX_OUTPUT_TOKENS`: roomy enough that ordinary
+/// command output arrives whole, small enough that one noisy command can't
+/// flood the context window.
+const SUMMARY_MAX_TOKENS: usize = 10_000;
+/// Rough bytes per token, the same approximation Codex uses.
+const BYTES_PER_TOKEN: usize = 4;
+const SUMMARY_MAX_BYTES: usize = SUMMARY_MAX_TOKENS * BYTES_PER_TOKEN;
 /// Hard memory ceiling for line collection. Pathological commands (`yes`,
 /// `cat /dev/urandom | base64`) can produce gigabytes within the 300s timeout.
 /// Once this byte threshold is reached, lines are still streamed to the TUI
@@ -68,6 +74,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
             and commands without a dedicated tool. Never use for file ops \
             (use Read/Write/Edit/Grep/List instead). Suppress verbose output: \
             pipe to tail, use --quiet, avoid -v flags. \
+            Output over ~10,000 tokens is shown as its first and last part with \
+            a marker in the middle naming the omitted lines; narrow the command \
+            (grep, sed -n 'A,Bp') to see them. \
             Set background=true for long-running processes (dev servers, watchers) \
             — returns immediately with the PID."
             .to_string(),
@@ -194,6 +203,7 @@ pub async fn run_shell_command(
 
     let mut stdout_lines: Vec<String> = Vec::new();
     let mut stderr_lines: Vec<String> = Vec::new();
+    let mut uncaptured: usize = 0;
 
     // Read stdout and stderr concurrently, streaming lines as they arrive.
     // Lines are always streamed to the TUI, but collection into Vec stops
@@ -207,6 +217,7 @@ pub async fn run_shell_command(
             &mut stdout_lines,
             &mut stderr_lines,
             max_lines,
+            &mut uncaptured,
             &sink_info,
         ),
     )
@@ -229,7 +240,7 @@ pub async fn run_shell_command(
             // change which lines we already collected).
             annotate_violations(exit_code, command, &mut stderr_lines);
 
-            let summary = format_summary(exit_code, &stdout_lines, &stderr_lines);
+            let summary = format_summary(exit_code, &stdout_lines, &stderr_lines, uncaptured);
             // Phase 5 PR-8 of #934: thread the policy-supplied output cap
             // into format_full_output. `None` keeps the historical 2 MB
             // default so today's behavior is byte-identical until a
@@ -266,8 +277,8 @@ pub async fn run_shell_command(
 ///   - `max_lines` — total stdout + stderr lines collected
 ///   - `MAX_COLLECT_BYTES` — total bytes collected (OOM protection)
 ///
-/// Once either cap is hit, new lines are still streamed to the TUI but silently
-/// dropped from the Vecs. This keeps the TUI responsive while bounding memory
+/// Once either cap is hit, new lines are still streamed to the TUI but dropped
+/// from the Vecs, and counted in `uncaptured` so the summary can say so. This keeps the TUI responsive while bounding memory
 /// for pathological commands.
 async fn read_streams(
     stdout: tokio::process::ChildStdout,
@@ -275,6 +286,7 @@ async fn read_streams(
     stdout_lines: &mut Vec<String>,
     stderr_lines: &mut Vec<String>,
     max_lines: usize,
+    uncaptured: &mut usize,
     sink_info: &Option<(&dyn EngineSink, String)>,
 ) -> std::io::Result<()> {
     let mut stdout_reader = BufReader::new(stdout).lines();
@@ -303,6 +315,8 @@ async fn read_streams(
                             collected_bytes += l.len();
                             collected_lines += 1;
                             stdout_lines.push(l);
+                        } else {
+                            *uncaptured += 1;
                         }
                     }
                     None => stdout_done = true,
@@ -324,6 +338,8 @@ async fn read_streams(
                             collected_bytes += l.len();
                             collected_lines += 1;
                             stderr_lines.push(l);
+                        } else {
+                            *uncaptured += 1;
                         }
                     }
                     None => stderr_done = true,
@@ -383,67 +399,166 @@ fn spawn_background(
 
 /// Build a compact summary for the model's context window.
 ///
-/// Includes all stderr (high-signal — errors/warnings) and only the tail
-/// of stdout (low-signal — build progress noise).  Line counts let the
-/// model decide whether to retrieve the full output via RecallContext.
-fn format_summary(exit_code: i32, stdout_lines: &[String], stderr_lines: &[String]) -> String {
+/// Stderr comes first (high-signal: errors and warnings), then stdout. Both
+/// share a [`SUMMARY_MAX_BYTES`] budget. Output that fits is passed through
+/// whole; otherwise each stream keeps its head and its tail (whole lines) and
+/// a marker in the middle says which lines were left out, so the model never
+/// mistakes a partial view for the full output. This is Codex's shape
+/// (`format_exec_output_for_model`): head + tail within a token budget, an
+/// explicit marker, and a header with the original size.
+fn format_summary(
+    exit_code: i32,
+    stdout_lines: &[String],
+    stderr_lines: &[String],
+    uncaptured: usize,
+) -> String {
     let mut out = format!(
         "Exit code: {exit_code} | stdout: {} lines | stderr: {} lines",
         stdout_lines.len(),
         stderr_lines.len(),
     );
 
-    // Stderr first — always include (capped at SUMMARY_STDERR_LINES).
-    if !stderr_lines.is_empty() {
-        let (label, text) = if stderr_lines.len() > SUMMARY_STDERR_LINES {
-            let skipped = stderr_lines.len() - SUMMARY_STDERR_LINES;
-            (
-                format!(
-                    "\n\n--- stderr (last {} of {}, {skipped} skipped) ---",
-                    SUMMARY_STDERR_LINES,
-                    stderr_lines.len(),
-                ),
-                stderr_lines[stderr_lines.len() - SUMMARY_STDERR_LINES..].join("\n"),
-            )
-        } else {
-            (
-                format!("\n\n--- stderr ({} lines) ---", stderr_lines.len()),
-                stderr_lines.join("\n"),
-            )
-        };
-        out.push_str(&label);
-        out.push('\n');
-        out.push_str(&text);
+    let stdout_bytes = lines_cost(stdout_lines);
+    let stderr_bytes = lines_cost(stderr_lines);
+    let total_bytes = stdout_bytes + stderr_bytes;
+    let truncated = total_bytes > SUMMARY_MAX_BYTES;
+
+    // Each stream may use up to half the budget; whatever one leaves unused
+    // goes to the other.
+    let stderr_budget =
+        stderr_bytes.min(SUMMARY_MAX_BYTES - stdout_bytes.min(SUMMARY_MAX_BYTES / 2));
+    let stdout_budget = SUMMARY_MAX_BYTES - stderr_budget;
+
+    if uncaptured > 0 {
+        // The collection cap (`OutputCaps::shell_output_lines`) stopped capture, so
+        // what follows is the start of the output, not all of it.
+        out.push_str(&format!(
+            "\nWarning: truncated output: capture stopped after {} lines and {uncaptured} \
+             further lines were not kept",
+            stdout_lines.len() + stderr_lines.len(),
+        ));
+    }
+    if truncated {
+        out.push_str(&format!(
+            "\nWarning: truncated output (original token count: {})\nTotal output lines: {}",
+            tokens_for_bytes(total_bytes),
+            stdout_lines.len() + stderr_lines.len(),
+        ));
     }
 
-    // Stdout tail — only last N lines.
-    if !stdout_lines.is_empty() {
-        let (label, text) = if stdout_lines.len() > SUMMARY_STDOUT_TAIL {
-            (
-                format!(
-                    "\n\n--- stdout (last {} of {}) ---",
-                    SUMMARY_STDOUT_TAIL,
-                    stdout_lines.len(),
-                ),
-                stdout_lines[stdout_lines.len() - SUMMARY_STDOUT_TAIL..].join("\n"),
-            )
-        } else {
-            (
-                format!("\n\n--- stdout ({} lines) ---", stdout_lines.len()),
-                stdout_lines.join("\n"),
-            )
-        };
-        out.push_str(&label);
-        out.push('\n');
-        out.push_str(&text);
+    for (name, lines, budget) in [
+        ("stderr", stderr_lines, stderr_budget),
+        ("stdout", stdout_lines, stdout_budget),
+    ] {
+        if !lines.is_empty() {
+            out.push_str(&format!("\n\n--- {name} ({} lines) ---\n", lines.len()));
+            out.push_str(&head_and_tail(lines, budget));
+        }
     }
 
-    // Hint for the model.
-    if stdout_lines.len() > SUMMARY_STDOUT_TAIL || stderr_lines.len() > SUMMARY_STDERR_LINES {
-        out.push_str("\n\nFull output stored. Use RecallContext to search if needed.");
+    if truncated || uncaptured > 0 {
+        out.push_str(
+            "\n\nTo see what is missing, narrow the command (grep, sed -n 'A,Bp', tail). \
+             The captured output is also stored; RecallContext can search it.",
+        );
     }
 
     out
+}
+
+/// Bytes `lines` take in the summary: the text plus one newline per line.
+fn lines_cost(lines: &[String]) -> usize {
+    lines.iter().map(|l| l.len() + 1).sum()
+}
+
+fn tokens_for_bytes(bytes: usize) -> usize {
+    bytes.div_ceil(BYTES_PER_TOKEN)
+}
+
+/// Join `lines`, or, if they cost more than `budget` bytes, keep whole lines
+/// from the start and end (half the budget each) around a marker naming the
+/// omitted line range.
+///
+/// A side that can't fit even one whole line (a minified blob on one line) keeps
+/// as much of that line as fits instead, so the model still sees something.
+fn head_and_tail(lines: &[String], budget: usize) -> String {
+    let total = lines.len();
+    if lines_cost(lines) <= budget {
+        return lines.join("\n");
+    }
+    let (head_budget, tail_budget) = (budget / 2, budget - budget / 2);
+
+    let mut head: Vec<&str> = Vec::new();
+    let mut used = 0;
+    for line in lines {
+        used += line.len() + 1;
+        if used > head_budget {
+            break;
+        }
+        head.push(line);
+    }
+    let mut tail_start = total;
+    let mut used = 0;
+    for (i, line) in lines.iter().enumerate().skip(head.len().max(1)).rev() {
+        used += line.len() + 1;
+        if used > tail_budget {
+            break;
+        }
+        tail_start = i;
+    }
+
+    // Nothing whole fits on a side: clip the line next to the gap. A single
+    // over-budget line has no gap to speak of, so clip its middle.
+    if total == 1 {
+        let line = &lines[0];
+        let (cut_head, cut_tail) = (
+            line.floor_char_boundary(head_budget),
+            line.ceil_char_boundary(line.len() - tail_budget),
+        );
+        return format!(
+            "{}…{} bytes of this line truncated…{}",
+            &line[..cut_head],
+            cut_tail - cut_head,
+            &line[cut_tail..],
+        );
+    }
+    let mut head_text = head.join("\n");
+    let mut head_shown = head.len();
+    if head.is_empty() {
+        let line = &lines[0];
+        head_text = format!(
+            "{}…[line cut]",
+            &line[..line.floor_char_boundary(head_budget)]
+        );
+        head_shown = 1;
+    }
+    let mut tail_text = lines[tail_start..].join("\n");
+    let mut tail_from = tail_start;
+    if tail_start == total {
+        let line = &lines[total - 1];
+        tail_text = format!(
+            "[line cut]…{}",
+            &line[line.ceil_char_boundary(line.len() - tail_budget)..]
+        );
+        tail_from = total - 1;
+    }
+
+    let omitted: usize = lines[head_shown..tail_from]
+        .iter()
+        .map(|l| l.len() + 1)
+        .sum();
+    let marker = if head_shown < tail_from {
+        format!(
+            "…{} lines truncated (lines {}-{} of {total}, ~{} tokens)…",
+            tail_from - head_shown,
+            head_shown + 1,
+            tail_from,
+            tokens_for_bytes(omitted),
+        )
+    } else {
+        "…truncated…".to_string()
+    };
+    format!("{head_text}\n{marker}\n{tail_text}")
 }
 
 /// Default per-command full-output cap when the active sandbox policy
@@ -879,7 +994,7 @@ mod tests {
             .map(String::from)
             .collect();
         let stderr: Vec<String> = vec![];
-        let summary = format_summary(0, &stdout, &stderr);
+        let summary = format_summary(0, &stdout, &stderr, 0);
         assert!(summary.contains("Exit code: 0"));
         assert!(summary.contains("stdout: 2 lines"));
         assert!(summary.contains("hello"));
@@ -888,22 +1003,150 @@ mod tests {
         assert!(!summary.contains("RecallContext"));
     }
 
+    /// `n` numbered lines of about 70 bytes each.
+    fn numbered_lines(n: usize) -> Vec<String> {
+        (1..=n)
+            .map(|i| format!("line {i:05} {}", "x".repeat(60)))
+            .collect()
+    }
+
     #[test]
-    fn test_format_summary_long_stdout_truncated() {
-        let stdout: Vec<String> = (0..100).map(|i| format!("line {i}")).collect();
-        let stderr: Vec<String> = vec!["warning: something".into()];
-        let summary = format_summary(0, &stdout, &stderr);
-        // Should contain last 20 lines
-        assert!(summary.contains("line 99"));
-        assert!(summary.contains("line 80"));
-        // Should NOT contain early lines
-        assert!(!summary.contains("line 0\n"));
-        // Should show truncation metadata
-        assert!(summary.contains("last 20 of 100"));
-        // Stderr should be fully included
-        assert!(summary.contains("warning: something"));
-        // Should have RecallContext hint
+    fn test_format_summary_moderate_output_is_whole() {
+        // Far past the old 20-line tail, well inside the budget: nothing is cut.
+        let stdout = numbered_lines(300);
+        let summary = format_summary(0, &stdout, &[], 0);
+        assert!(summary.contains("--- stdout (300 lines) ---"));
+        assert!(summary.contains("line 00001 "));
+        assert!(summary.contains("line 00150 "));
+        assert!(summary.contains("line 00300 "));
+        assert!(!summary.contains("truncated"));
+        assert!(!summary.contains("RecallContext"));
+    }
+
+    #[test]
+    fn test_format_summary_long_stdout_keeps_head_and_tail() {
+        let stdout = numbered_lines(2000);
+        let summary = format_summary(0, &stdout, &[], 0);
+        // Header names the original size.
+        assert!(summary.contains("Warning: truncated output (original token count:"));
+        assert!(summary.contains("Total output lines: 2000"));
+        // Head and tail survive, the middle does not.
+        assert!(summary.contains("line 00001 "));
+        assert!(summary.contains("line 02000 "));
+        assert!(!summary.contains("line 01000 "));
+        // The marker says which lines are missing, so a follow-up `sed -n`
+        // can be aimed at them.
+        let marker = summary
+            .lines()
+            .find(|l| l.contains("lines truncated"))
+            .expect("marker line");
+        assert!(marker.contains("of 2000"), "{marker}");
         assert!(summary.contains("RecallContext"));
+        // Stays inside the budget (plus a few hundred bytes of framing).
+        assert!(summary.len() < SUMMARY_MAX_BYTES + 500, "{}", summary.len());
+    }
+
+    #[test]
+    fn test_format_summary_marker_range_matches_omitted_lines() {
+        let stdout = numbered_lines(2000);
+        let summary = format_summary(0, &stdout, &[], 0);
+        let marker = summary
+            .lines()
+            .find(|l| l.contains("lines truncated"))
+            .unwrap();
+        // "…N lines truncated (lines A-B of 2000, ~T tokens)…"
+        let range = marker.split("(lines ").nth(1).unwrap();
+        let (a, rest) = range.split_once('-').unwrap();
+        let (b, _) = rest.split_once(' ').unwrap();
+        let (a, b): (usize, usize) = (a.parse().unwrap(), b.parse().unwrap());
+        // The line just before A and just after B are present; A and B are not.
+        assert!(summary.contains(&format!("line {:05} ", a - 1)));
+        assert!(summary.contains(&format!("line {:05} ", b + 1)));
+        assert!(!summary.contains(&format!("line {a:05} ")));
+        assert!(!summary.contains(&format!("line {b:05} ")));
+    }
+
+    #[test]
+    fn test_format_summary_stderr_first_with_long_stdout() {
+        let stdout = numbered_lines(2000);
+        let stderr: Vec<String> = vec!["warning: something".into(), "error: boom".into()];
+        let summary = format_summary(1, &stdout, &stderr, 0);
+        assert!(summary.starts_with("Exit code: 1 | stdout: 2000 lines | stderr: 2 lines"));
+        let (err_at, out_at) = (
+            summary.find("--- stderr (2 lines) ---").unwrap(),
+            summary.find("--- stdout (2000 lines) ---").unwrap(),
+        );
+        assert!(err_at < out_at);
+        // Short stderr is complete, and costs stdout almost nothing.
+        assert!(summary.contains("warning: something\nerror: boom"));
+        assert!(summary.contains("line 00001 "));
+        assert!(summary.contains("line 02000 "));
+        assert!(summary.contains("Total output lines: 2002"));
+    }
+
+    #[test]
+    fn test_format_summary_long_stderr_cannot_starve_stdout() {
+        let stdout = numbered_lines(10);
+        let stderr = numbered_lines(2000);
+        let summary = format_summary(2, &stdout, &stderr, 0);
+        // Stdout fits whole; stderr keeps head and tail.
+        assert!(summary.contains("--- stdout (10 lines) ---"));
+        assert!(summary.contains("line 00010 "));
+        assert!(summary.contains("lines truncated"));
+        assert!(summary.len() < SUMMARY_MAX_BYTES + 500, "{}", summary.len());
+    }
+
+    #[test]
+    fn test_format_summary_both_streams_long_share_budget() {
+        let summary = format_summary(1, &numbered_lines(2000), &numbered_lines(2000), 0);
+        assert_eq!(summary.matches("lines truncated").count(), 2);
+        assert!(summary.len() < SUMMARY_MAX_BYTES + 800, "{}", summary.len());
+    }
+
+    #[test]
+    fn test_format_summary_says_when_capture_stopped_early() {
+        // Few enough lines to fit the budget, but the collection cap dropped
+        // 99,744 more: the model must not read this as the whole output.
+        let summary = format_summary(0, &numbered_lines(256), &[], 99_744);
+        assert!(summary.contains("capture stopped after 256 lines"));
+        assert!(summary.contains("99744 further lines were not kept"));
+        assert!(summary.contains("stdout: 256 lines"));
+        assert!(summary.contains("narrow the command"));
+        // Nothing dropped, nothing cut: no warning at all.
+        assert!(!format_summary(0, &numbered_lines(256), &[], 0).contains("Warning"));
+    }
+
+    #[test]
+    fn test_format_summary_single_huge_line_is_clipped_in_the_middle() {
+        let blob = format!("START{}END", "z".repeat(200_000));
+        let summary = format_summary(0, &[blob], &[], 0);
+        assert!(summary.contains("START"));
+        assert!(summary.contains("END"));
+        assert!(summary.contains("bytes of this line truncated"));
+        assert!(summary.len() < SUMMARY_MAX_BYTES + 500, "{}", summary.len());
+    }
+
+    #[test]
+    fn test_format_summary_huge_lines_on_both_ends_still_show_something() {
+        let big = |c: &str| c.repeat(100_000);
+        let stdout = vec![big("a"), "middle".to_string(), big("b")];
+        let summary = format_summary(0, &stdout, &[], 0);
+        assert!(summary.contains("[line cut]"));
+        assert!(summary.contains("lines truncated (lines 2-2 of 3"));
+        assert!(!summary.contains("middle"));
+        assert!(summary.len() < SUMMARY_MAX_BYTES + 500, "{}", summary.len());
+    }
+
+    #[test]
+    fn test_format_summary_multibyte_text_cuts_on_char_boundaries() {
+        // 3-byte characters, so budget-sized byte cuts land mid-character.
+        let stdout: Vec<String> = (0..4000)
+            .map(|i| format!("行{i} {}", "你".repeat(10)))
+            .collect();
+        let summary = format_summary(0, &stdout, &[], 0);
+        assert!(summary.contains("lines truncated"));
+        let blob = vec!["你".repeat(50_000)];
+        assert!(format_summary(0, &blob, &[], 0).contains("bytes of this line truncated"));
     }
 
     #[test]
