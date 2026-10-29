@@ -164,6 +164,8 @@ struct ChatResponse {
 #[derive(Deserialize)]
 struct Choice {
     message: ResponseMessage,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -526,9 +528,17 @@ impl LlmProvider for OpenAiCompatProvider {
 
         // LM Studio sends empty string content with tool calls; normalize to None
         let content = choice.message.content.filter(|c| !c.is_empty());
-        let usage = chat_resp
+        let mut usage = chat_resp
             .usage
             .map_or(TokenUsage::default(), |u| usage_from_response(&u));
+        // Same normalization as the streaming path: callers test for "max_tokens".
+        if let Some(reason) = choice.finish_reason {
+            usage.stop_reason = if reason == "length" {
+                "max_tokens".to_string()
+            } else {
+                reason
+            };
+        }
 
         Ok(LlmResponse {
             content,
