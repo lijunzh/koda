@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Security
 
+- **The Gemini API key travels in the `x-goog-api-key` header, no longer in the URL.** Every Gemini request put the key in a `?key=` query parameter, on the belief that the API offered no header; Google's own REST examples use `x-goog-api-key`. A key in the URL ends up in request logs, proxies and traces, and CodeQL flagged it five times (`rust/cleartext-transmission`, alerts #26 to #30, first dismissed in April and reopened in August). URLs are now key-free and the header is attached by the provider's own `get`/`post` helpers; HTTPS is still enforced for `googleapis.com`.
+- **WebFetch fetches `http://` URLs over HTTPS.** The initial URL and every redirect hop are upgraded in the one validation seam they all pass through. WebFetch already refused loopback and private hosts, so a plain-HTTP fetch had no case left except a public page sent in the clear; Claude Code's WebFetch upgrades the same way. A site that serves HTTP only now fails with a connection error. (CodeQL `rust/non-https-url`, alert #31.)
 - **`zip` 9.0.0 → 9.1.3** (Dependabot alert 17, GHSA-m665-v7pm-7grj / CVE-2026-115905: a crafted archive with inconsistent headers can make an extractor overwrite arbitrary files; patched in 9.0.5). Koda uses `zip` only to write debug bundles and parses archives in tests alone, so nothing shipped was exploitable; the lockfile moves zip, its `typed-path` 0.12.3 → 0.13.0, and `nix` 0.31.2 → 0.31.3, which zip 9.0.5+ requires and which `cargo update -p zip` alone could not move past rmcp's `process-wrap` pin.
 
 ## [0.5.0] - 2026-10-29

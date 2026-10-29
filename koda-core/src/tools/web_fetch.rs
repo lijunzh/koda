@@ -5,7 +5,8 @@
 //!
 //! ## Parameters
 //!
-//! - **`url`** (required) — The URL to fetch
+//! - **`url`** (required) — The URL to fetch. `http://` is upgraded to
+//!   `https://` before fetching, on the initial URL and on every redirect.
 //!
 //! ## Behavior
 //!
@@ -56,7 +57,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
             "properties": {
                 "url": {
                     "type": "string",
-                    "description": "The URL to fetch (must start with http:// or https://)"
+                    "description": "The URL to fetch (must start with http:// or https://; http is fetched over https)"
                 },
                 "raw": {
                     "type": "boolean",
@@ -113,6 +114,8 @@ async fn validate_url_safety(url_str: &str) -> Result<ValidatedTarget> {
     if !url_str.starts_with("http://") && !url_str.starts_with("https://") {
         anyhow::bail!("URL must start with http:// or https://");
     }
+    let upgraded = https_upgraded(url_str);
+    let url_str = upgraded.as_ref();
 
     if !is_safe_url(url_str) {
         anyhow::bail!(
@@ -158,6 +161,21 @@ async fn validate_url_safety(url_str: &str) -> Result<ValidatedTarget> {
     }
 
     Ok(ValidatedTarget { url: parsed, addrs })
+}
+
+/// `http://` becomes `https://`, on the initial URL and on every redirect
+/// hop, since both pass through [`validate_url_safety`].
+///
+/// WebFetch never fetches loopback or private hosts, so a plain-HTTP fetch
+/// has no legitimate case left, only a page sent in the clear across the
+/// internet. Claude Code's WebFetch upgrades the same way. A site that
+/// serves HTTP only fails with a connection error, which is the honest
+/// outcome. (CodeQL `rust/non-https-url`, alert #31.)
+fn https_upgraded(url_str: &str) -> std::borrow::Cow<'_, str> {
+    match url_str.strip_prefix("http://") {
+        Some(rest) => std::borrow::Cow::Owned(format!("https://{rest}")),
+        None => std::borrow::Cow::Borrowed(url_str),
+    }
 }
 
 /// Build a [`reqwest::Client`] that pins TCP connects for `target.url`'s
@@ -577,6 +595,29 @@ impl Tool for WebFetchTool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn http_urls_are_upgraded_to_https() {
+        assert_eq!(
+            https_upgraded("http://example.com/docs?x=1"),
+            "https://example.com/docs?x=1"
+        );
+        assert_eq!(
+            https_upgraded("https://example.com/"),
+            "https://example.com/"
+        );
+        assert_eq!(https_upgraded("ftp://example.com/"), "ftp://example.com/");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn validated_target_is_https_even_for_an_http_input() {
+        // An IP-literal public address needs no DNS, so the test is offline.
+        let target = validate_url_safety("http://93.184.216.34/page")
+            .await
+            .unwrap();
+        assert_eq!(target.url.scheme(), "https");
+        assert_eq!(target.url.as_str(), "https://93.184.216.34/page");
+    }
+
     use super::*;
 
     #[test]
