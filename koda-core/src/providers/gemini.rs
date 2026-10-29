@@ -2,7 +2,8 @@
 //!
 //! Uses the Gemini REST API directly (not the OpenAI-compat shim).
 //! Key differences from OpenAI:
-//! - Auth via `?key=` query parameter (not Bearer header)
+//! - Auth via the `x-goog-api-key` header (Google's REST examples use it; the
+//!   `?key=` query form also exists but puts the key in URLs, logs and proxies)
 //! - `contents` with `parts` (not `messages` with `content`)
 //! - `system_instruction` as a top-level field
 //! - `functionDeclarations` for tool definitions
@@ -49,8 +50,8 @@ struct CachedContentState {
 impl GeminiProvider {
     /// Create a new Gemini provider with the given API key and optional base URL.
     ///
-    /// **Security:** The official Gemini API sends the API key as a `?key=`
-    /// query parameter, so HTTPS is enforced for `googleapis.com`. Custom
+    /// **Security:** the API key travels in the `x-goog-api-key` header,
+    /// never in the URL, and HTTPS is enforced for `googleapis.com`. Custom
     /// URLs (home-network LLM servers, local proxies, etc.) are left as-is.
     pub fn new(api_key: String, base_url: Option<&str>) -> Self {
         let raw_url = base_url
@@ -67,10 +68,10 @@ impl GeminiProvider {
 
     /// Enforce HTTPS only for the official Gemini API (`googleapis.com`).
     ///
-    /// The Gemini API key is sent as a `?key=` query parameter, which would
-    /// expose it in plaintext over HTTP. Custom URLs (home-network servers,
-    /// local proxies, etc.) are trusted as-is — users running their own
-    /// infrastructure know their network security posture.
+    /// The API key goes out as a header on every request, which plain HTTP
+    /// would expose. Custom URLs (home-network servers, local proxies, etc.)
+    /// are trusted as-is — users running their own infrastructure know their
+    /// network security posture.
     fn enforce_gemini_api_https(url: &str) -> String {
         let is_google_api = url.to_lowercase().contains("googleapis.com");
         if !is_google_api {
@@ -90,21 +91,34 @@ impl GeminiProvider {
         format!("https://{url}")
     }
 
-    /// Build a Gemini API URL with the API key as a query parameter.
-    ///
-    /// The Gemini API requires `?key=` in the URL (no Bearer header alternative).
-    /// This method centralises URL construction to avoid key leakage through
-    /// `format!()` strings that might be logged elsewhere.
+    /// Build a Gemini API URL. The key is not part of it: it goes in the
+    /// `x-goog-api-key` header that [`Self::get`] and [`Self::post`] attach,
+    /// so URLs can be logged and traced without leaking it. (Until 0.5.1 the
+    /// key was a `?key=` query parameter, which CodeQL flagged five times.)
     fn api_url(&self, path: &str) -> String {
-        format!("{}/v1beta/{}?key={}", self.base_url, path, self.api_key)
+        format!("{}/v1beta/{}", self.base_url, path)
     }
 
-    /// Like `api_url` but appends extra query parameters.
+    /// Like `api_url` but with query parameters.
     fn api_url_with_params(&self, path: &str, extra: &str) -> String {
-        format!(
-            "{}/v1beta/{}?{}&key={}",
-            self.base_url, path, extra, self.api_key
-        )
+        format!("{}/v1beta/{}?{}", self.base_url, path, extra)
+    }
+
+    /// The header every Gemini request carries the key in.
+    const API_KEY_HEADER: &'static str = "x-goog-api-key";
+
+    /// A GET with the API key header attached.
+    fn get(&self, url: String) -> reqwest::RequestBuilder {
+        self.client
+            .get(url)
+            .header(Self::API_KEY_HEADER, &self.api_key)
+    }
+
+    /// A POST with the API key header attached.
+    fn post(&self, url: String) -> reqwest::RequestBuilder {
+        self.client
+            .post(url)
+            .header(Self::API_KEY_HEADER, &self.api_key)
     }
 
     /// Create or reuse a cached content resource for the system prompt + tools.
@@ -149,7 +163,6 @@ impl GeminiProvider {
         }
 
         let resp = self
-            .client
             .post(self.api_url("cachedContents"))
             .json(&cache_body)
             .send()
@@ -447,7 +460,6 @@ impl LlmProvider for GeminiProvider {
         );
 
         let req = self
-            .client
             .post(self.api_url(&format!("models/{model}:generateContent")))
             .json(&body);
 
@@ -458,7 +470,6 @@ impl LlmProvider for GeminiProvider {
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>> {
         let resp = self
-            .client
             .get(self.api_url("models"))
             .send()
             .await
@@ -502,7 +513,6 @@ impl LlmProvider for GeminiProvider {
 
     async fn model_capabilities(&self, model: &str) -> Result<ModelCapabilities> {
         let resp = self
-            .client
             .get(self.api_url(&format!("models/{model}")))
             .send()
             .await
@@ -542,13 +552,14 @@ impl LlmProvider for GeminiProvider {
             Some(settings),
         );
 
-        let req =
-            self.client
-                .post(self.api_url_with_params(
+        let req = self
+            .post(
+                self.api_url_with_params(
                     &format!("models/{model}:streamGenerateContent"),
                     "alt=sse",
-                ))
-                .json(&body);
+                ),
+            )
+            .json(&body);
 
         let resp = super::http::send_or_bail(req, "Gemini").await?;
 
@@ -794,6 +805,46 @@ mod tests {
 
     fn make_provider() -> GeminiProvider {
         GeminiProvider::new("fake-key".into(), None)
+    }
+
+    // ── API key placement ───────────────────────────────────
+
+    #[test]
+    fn api_urls_never_carry_the_key() {
+        let p = GeminiProvider::new("sk-secret".into(), None);
+        let plain = p.api_url("models/gemini-2.5-pro:generateContent");
+        let with = p.api_url_with_params("models/gemini-2.5-pro:streamGenerateContent", "alt=sse");
+        assert_eq!(
+            plain,
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent"
+        );
+        assert_eq!(
+            with,
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse"
+        );
+        for url in [&plain, &with] {
+            assert!(!url.contains("sk-secret"), "key leaked into {url}");
+            assert!(!url.contains("key="), "query key in {url}");
+        }
+    }
+
+    #[test]
+    fn requests_carry_the_key_in_the_header() {
+        let p = GeminiProvider::new("sk-secret".into(), None);
+        for req in [
+            p.get(p.api_url("models")),
+            p.post(p.api_url("cachedContents")),
+        ] {
+            let built = req.build().expect("request builds");
+            assert_eq!(
+                built
+                    .headers()
+                    .get(GeminiProvider::API_KEY_HEADER)
+                    .and_then(|v| v.to_str().ok()),
+                Some("sk-secret")
+            );
+            assert!(!built.url().as_str().contains("sk-secret"));
+        }
     }
 
     // ── HTTPS enforcement tests ──────────────────────────────
