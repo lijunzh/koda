@@ -1229,7 +1229,7 @@ mod tests {
         assert_eq!(config.max_context_tokens, 32_768);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn query_and_apply_reports_the_override_and_skips_the_notice() {
         use crate::providers::mock::MockProvider;
         let mut config = KodaConfig::default_for_testing(ProviderType::LlamaCpp)
