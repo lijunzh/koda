@@ -76,6 +76,11 @@ Options:
       --max-tokens <MAX_TOKENS>
           Maximum output tokens
 
+      --max-context-tokens <TOKENS>
+          Context window in tokens, for servers that don't report theirs. Beats the agent config, the server's answer and the model table
+          
+          [env: KODA_MAX_CONTEXT_TOKENS=]
+
       --temperature <TEMPERATURE>
           Sampling temperature (0.0 - 2.0)
 

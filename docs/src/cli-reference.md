@@ -12,6 +12,7 @@
 | `--provider <NAME>` | `KODA_PROVIDER` | LLM provider (`anthropic`, `gemini`, `openai`, `ollama`, …) |
 | `--base-url <URL>` | `KODA_BASE_URL` | Override the provider's API base URL |
 | `--max-tokens <N>` | | Maximum output tokens |
+| `--max-context-tokens <N>` | `KODA_MAX_CONTEXT_TOKENS` | Pin the context window, in tokens, for a server that doesn't report its own (a `rec` or other OpenAI-compatible engine). Beats the agent config's `max_context_tokens`, the server's answer and the model table, and sticks across `/model` switches. Must be a positive whole number; `0` or text is an error. |
 | `--temperature <F>` | | Sampling temperature (0.0–2.0) |
 | `--thinking-budget <N>` | | Anthropic extended thinking budget (tokens) |
 | `--reasoning-effort <L>` | | OpenAI reasoning effort (`low`, `medium`, `high`) |
