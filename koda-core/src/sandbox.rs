@@ -702,7 +702,7 @@ mod tests {
              .status().unwrap().success();\n    assert!(ok, \"cc failed in build script\");\n}\n",
         )
         .unwrap();
-        let out = build(
+        let mut cmd = build(
             "cargo build --offline",
             p,
             &crate::trust::TrustMode::Safe,
@@ -710,10 +710,13 @@ mod tests {
             None,
             None,
         )
-        .unwrap()
-        .output()
-        .await
         .unwrap();
+        // Hermetic, as in tools/cargo.rs `run_cargo_with_env`: under `cargo
+        // llvm-cov` the env allowlist forwards RUSTC_WRAPPER=cargo-llvm-cov to
+        // the nested cargo, which then fails with "expected subcommand".
+        cmd.env("RUSTC_WRAPPER", "")
+            .env("CARGO_TARGET_DIR", p.join("target"));
+        let out = cmd.output().await.unwrap();
         assert!(
             out.status.success(),
             "cargo build with a C build script must succeed, stderr={:?}",
