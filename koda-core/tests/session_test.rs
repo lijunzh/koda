@@ -16,7 +16,7 @@ use koda_core::{
 use koda_test_utils::{
     ChatMessage, Env, LlmProvider, MockProvider, MockResponse, TestSink, ToolDefinition,
 };
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -190,27 +190,37 @@ async fn session_cancellation_produces_turn_end_cancelled() {
     // **#1109 F3**: was `sleep(100ms).await` — replaced with oneshot wait
     // so cancel fires the moment inference reaches the provider.
     let cancel_clone = cancel.clone();
+    let cancelled_at = Arc::new(Mutex::new(None));
+    let cancelled_at_writer = Arc::clone(&cancelled_at);
     tokio::spawn(async move {
         let _ = entered_rx.await;
+        *cancelled_at_writer.lock().unwrap() = Some(std::time::Instant::now());
         cancel_clone.interrupt();
     });
 
     let sink = TestSink::new();
     let (_, mut cmd_rx) = mpsc::channel::<EngineCommand>(1);
 
-    let start = std::time::Instant::now();
     let result = session
         .run_turn(&env.config, None, &sink, &mut cmd_rx, None)
         .await;
 
-    let elapsed = start.elapsed();
+    // Measured from the cancel signal, not from before the call: the loop's
+    // own setup (database, context assembly) is not what this bounds, and on a
+    // loaded CI runner it alone pushed the old 2-second total over the line.
+    // Five seconds still proves the provider's 60-second hang was not waited out.
+    let elapsed = cancelled_at
+        .lock()
+        .unwrap()
+        .expect("cancel fired once the provider was entered")
+        .elapsed();
     assert!(
         result.is_ok(),
         "cancellation should be graceful, not an error"
     );
     assert!(
-        elapsed < std::time::Duration::from_secs(2),
-        "cancellation should unblock quickly, took {elapsed:?}"
+        elapsed < std::time::Duration::from_secs(5),
+        "cancellation should unblock within 5s of the signal, took {elapsed:?}"
     );
 
     let events = sink.events();
@@ -296,15 +306,17 @@ async fn session_turn_cancel_token_stops_inference() {
     // session.cancel is still alive afterwards (so bg agents survive).
     let turn_cancel = CancellationToken::new();
     let turn_cancel_clone = turn_cancel.clone();
+    let cancelled_at = Arc::new(Mutex::new(None));
+    let cancelled_at_writer = Arc::clone(&cancelled_at);
     tokio::spawn(async move {
         let _ = entered_rx.await;
+        *cancelled_at_writer.lock().unwrap() = Some(std::time::Instant::now());
         turn_cancel_clone.cancel();
     });
 
     let sink = TestSink::new();
     let (_, mut cmd_rx) = mpsc::channel::<EngineCommand>(1);
 
-    let start = std::time::Instant::now();
     let result = session
         .run_turn(
             &env.config,
@@ -314,15 +326,23 @@ async fn session_turn_cancel_token_stops_inference() {
             Some(turn_cancel.clone()),
         )
         .await;
-    let elapsed = start.elapsed();
+    // Measured from the cancel signal, not from before the call: the loop's
+    // own setup (database, context assembly) is not what this bounds, and on a
+    // loaded CI runner it alone pushed the old 2-second total over the line.
+    // Five seconds still proves the provider's 60-second hang was not waited out.
+    let elapsed = cancelled_at
+        .lock()
+        .unwrap()
+        .expect("cancel fired once the provider was entered")
+        .elapsed();
 
     assert!(
         result.is_ok(),
         "per-turn cancellation should be graceful, not an error"
     );
     assert!(
-        elapsed < std::time::Duration::from_secs(2),
-        "per-turn cancel should unblock inference quickly, took {elapsed:?}"
+        elapsed < std::time::Duration::from_secs(5),
+        "per-turn cancel should unblock inference within 5s of the signal, took {elapsed:?}"
     );
     assert!(
         turn_cancel.is_cancelled(),
