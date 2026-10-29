@@ -235,6 +235,10 @@ pub async fn read_file(
 
     let output = match (start_line, num_lines) {
         (Some(start), Some(count)) => {
+            // Any Read counts as having looked at the file: remember its current
+            // content so a ranged Read clears a pending staleness rejection
+            // (see `content_is_known`).
+            remember_known_state(cache, &resolved, size, mtime, &raw_bytes);
             // Line-range slice — the file is already in memory from the trait call above.
             let start_idx = (start as usize).saturating_sub(1); // 1-based to 0-based
             raw_content
@@ -276,16 +280,32 @@ pub async fn read_file(
     Ok(output)
 }
 
-/// Cache key for the state Koda itself last wrote to a file.
+/// Cache key for the file content the model is known to have seen or produced
+/// outside a full `Read`: Koda's own last `Write`/`Edit`, or the file as it stood
+/// at a ranged `Read`.
 ///
 /// Kept apart from the `:None:None` full-read entry on purpose: `read_file`
 /// answers a repeat full read with "unchanged, already in your history" whenever
 /// the size and mtime match that entry, which would be false for text the model
-/// only saw as an Edit diff. The staleness checks consult both entries; the
-/// read shortcut consults only the full-read one. The key can't collide with a
-/// read key, whose tail is always `Some(n)`/`None` pairs.
-fn own_write_key(resolved: &Path) -> String {
-    format!("{}:written", resolved.display())
+/// only saw as an Edit diff or a slice. The staleness checks consult both
+/// entries; the read shortcut consults only the full-read one. The key can't
+/// collide with a read key, whose tail is always `Some(n)`/`None` pairs.
+fn known_state_key(resolved: &Path) -> String {
+    format!("{}:known", resolved.display())
+}
+
+fn remember_known_state(
+    cache: &super::FileReadCache,
+    resolved: &Path,
+    size: u64,
+    mtime: SystemTime,
+    raw: &[u8],
+) {
+    let hash = format!("{:x}", Sha256::digest(raw));
+    cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(known_state_key(resolved), (size, mtime, hash));
 }
 
 /// Record the on-disk state of a file Koda just wrote via `Write` or `Edit`.
@@ -315,15 +335,12 @@ pub(crate) async fn record_own_write(
         return;
     };
     let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-    let hash = format!("{:x}", Sha256::digest(&bytes));
-    cache
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(own_write_key(&resolved), (bytes.len() as u64, mtime, hash));
+    remember_known_state(cache, &resolved, bytes.len() as u64, mtime, &bytes);
 }
 
 /// Whether `content` is something the model has already seen or produced: the
-/// body of its last full `Read`, or the result of Koda's last `Write`/`Edit`.
+/// body of its last full `Read`, the result of Koda's last `Write`/`Edit`, or
+/// the file as of its last ranged `Read`.
 ///
 /// A file that matches neither was changed from outside (Bash, an editor,
 /// another process). A full-read entry with an empty hash never matches.
@@ -335,7 +352,7 @@ pub(crate) fn content_is_known(
     let hash = format!("{:x}", Sha256::digest(content.as_bytes()));
     let guard = cache.lock().unwrap_or_else(|e| e.into_inner());
     let full_key = format!("{}:None:None", resolved.display());
-    [full_key, own_write_key(resolved)].iter().any(|key| {
+    [full_key, known_state_key(resolved)].iter().any(|key| {
         guard
             .get(key)
             .is_some_and(|(_, _, cached)| !cached.is_empty() && *cached == hash)
@@ -450,7 +467,7 @@ pub async fn edit_file(
     // The full-read cache key matches what read_file stores for a whole-file
     // read (start_line=None, num_lines=None).  If we have a cached hash for
     // this file and the on-disk content matches neither that read nor Koda's
-    // own last Write/Edit (`record_own_write`), an external change (bash, the
+    // own last Write/Edit or ranged Read (`known_state_key`), an external change (bash, the
     // user, another agent) happened since the model last saw it.  Reject the
     // edit so the model re-reads instead of clobbering changes.
     let full_key = format!("{}:None:None", resolved.display());

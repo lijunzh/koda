@@ -186,40 +186,39 @@ async fn validate_edit(
     };
 
     // Stale-file detection: reject the edit if the file changed on disk since
-    // the model last read it.  Only fires when a full-read cache entry exists
-    // and the current mtime differs from the cached one.
+    // the model last read it.  Only fires when a full-read cache entry exists.
     //
-    // A differing mtime is not enough: Koda's own Write/Edit moves it too, and
-    // an mtime-only touch changes nothing the model saw.  So the content is
-    // checked against both the last full Read and Koda's last write
-    // (`record_own_write`), as Claude Code does after its own edits and for
-    // mtime-only changes.  Only content matching neither is a foreign change.
-    //
-    // A ranged Read deliberately does not satisfy this check (Claude Code
-    // doesn't either): it shows one region, so it can't show the model the
-    // rest of a file that changed from outside.  It never writes the full-read
-    // entry, so it neither raises nor clears the check.
+    // The content hash in that entry decides, not the mtime: Koda's own
+    // Write/Edit moves the mtime, and a touch or identical rewrite changes
+    // nothing the model saw.  Content counts as seen if it matches the last
+    // full Read, Koda's last write, or the file at the last ranged Read (see
+    // `content_is_known`), as Claude Code does after its own edits.  Only
+    // content matching none of them is a foreign change (Bash, an editor,
+    // another process).  A ranged Read clears the check because `old_str`
+    // matching, not this check, is what protects the edit from a stale view.
+    // An entry without a hash falls back to comparing mtimes.
     if let Some(cache) = read_cache
         && let Ok(meta) = tokio::fs::metadata(&resolved).await
     {
         let current_mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
         let cache_key = format!("{}:None:None", resolved.display());
-        let cached_mtime = cache
+        let entry = cache
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&cache_key)
-            .map(|(_, mtime, _)| *mtime);
-        if let Some(cm) = cached_mtime
-            && cm != current_mtime
-            && !super::file_tools::content_is_known(cache, &resolved, &content)
-        {
+            .map(|(_, mtime, hash)| (*mtime, !hash.is_empty()));
+        let stale = match entry {
+            Some((_, true)) => !super::file_tools::content_is_known(cache, &resolved, &content),
+            Some((cached_mtime, false)) => cached_mtime != current_mtime,
+            None => false,
+        };
+        if stale {
             // Build a context hint naming the responsible tool so the model
             // doesn't have to guess why the file changed (#804 item 7).
             let hint = writer_hint(&resolved, last_writer, last_bash);
             return Some(format!(
                 "File '{path_str}' has been modified on disk since you last read it{hint}. \
-                 Read it again (the whole file, not a line range) to get the current \
-                 content before editing.",
+                 Read it again to get the current content before editing.",
             ));
         }
     }
