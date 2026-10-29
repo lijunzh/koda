@@ -77,7 +77,7 @@ async fn compact_summarizes_with_room_for_thinking() {
     assert!(!result.no_summary);
     assert_eq!(
         provider.recorded_max_tokens(),
-        vec![Some(16_384)],
+        vec![Some(32_768)],
         "one call, capped at the window-sized budget instead of a fixed 4096"
     );
     let text = history_text(&env).await;
@@ -101,7 +101,7 @@ async fn compact_retries_an_empty_length_reply_with_a_larger_cap() {
     assert!(!result.no_summary);
     assert_eq!(
         provider.recorded_max_tokens(),
-        vec![Some(16_384), Some(32_768)]
+        vec![Some(32_768), Some(65_536)]
     );
     assert!(history_text(&env).await.contains("Recovered summary."));
     assert!(!is_compact_circuit_broken());
@@ -138,6 +138,110 @@ async fn compact_leaves_a_marker_when_the_retry_is_empty_too() {
         "compacted messages must be gone"
     );
     assert!(text.contains("answer 9"), "the recent tail stays verbatim");
+}
+
+#[tokio::test]
+async fn compact_retries_a_cut_off_reply_that_has_partial_text() {
+    let _serial = lock_compact_state().await;
+    let env = env_with_history(100_000).await;
+    // Flint, 2026-10-29: the reply hit the cap inside its <analysis> block,
+    // 1,644 chars of preamble and no <summary>. That is not a summary.
+    let provider = MockProvider::new(vec![
+        MockResponse::TextMaxTokens("<analysis>\nThe conversation so far contains".into()),
+        MockResponse::Text(
+            "<analysis>done</analysis><summary>Recovered after the cut.</summary>".into(),
+        ),
+    ]);
+
+    let result = compact_with(&env, &provider).await;
+
+    assert!(!result.no_summary);
+    assert_eq!(
+        provider.recorded_max_tokens(),
+        vec![Some(32_768), Some(65_536)]
+    );
+    let text = history_text(&env).await;
+    assert!(text.contains("Recovered after the cut."));
+    assert!(
+        !text.contains("conversation so far contains"),
+        "the preamble is not stored"
+    );
+    assert!(!is_compact_circuit_broken());
+}
+
+#[tokio::test]
+async fn compact_stores_the_marker_when_the_retry_is_still_a_preamble() {
+    let _serial = lock_compact_state().await;
+    let env = env_with_history(100_000).await;
+    let provider = MockProvider::new(vec![
+        MockResponse::TextMaxTokens("<analysis>\nstill thinking".into()),
+        MockResponse::TextMaxTokens("<analysis>\nstill thinking, longer".into()),
+    ]);
+
+    let result = compact_with(&env, &provider).await;
+
+    assert!(result.no_summary);
+    assert_eq!(provider.recorded_max_tokens().len(), 2);
+    let text = history_text(&env).await;
+    assert!(text.contains("(no summary available)"));
+    assert!(
+        !text.contains("still thinking"),
+        "an unclosed analysis is never the summary"
+    );
+}
+
+#[tokio::test]
+async fn compact_keeps_a_cut_off_summary_when_no_room_is_left_to_retry() {
+    let _serial = lock_compact_state().await;
+    let env = env_with_history(100_000).await;
+    // Both replies stop at the cap inside the <summary> block.
+    let provider = MockProvider::new(vec![
+        MockResponse::TextMaxTokens("<analysis>a</analysis><summary>Half a summ".into()),
+        MockResponse::TextMaxTokens(
+            "<analysis>a</analysis><summary>Most of a summary, then".into(),
+        ),
+    ]);
+
+    let result = compact_with(&env, &provider).await;
+
+    assert!(!result.no_summary, "partial text beats the marker");
+    assert_eq!(provider.recorded_max_tokens().len(), 2);
+    let text = history_text(&env).await;
+    assert!(text.contains("Most of a summary, then"));
+    assert!(!text.contains("<summary>"), "the open tag is not stored");
+}
+
+#[tokio::test]
+async fn compact_accepts_plain_text_without_tags() {
+    let _serial = lock_compact_state().await;
+    let env = env_with_history(100_000).await;
+    let provider = MockProvider::new(vec![MockResponse::Text(
+        "The user asked ten questions and got ten answers.".into(),
+    )]);
+
+    let result = compact_with(&env, &provider).await;
+
+    assert!(!result.no_summary);
+    assert_eq!(provider.recorded_max_tokens().len(), 1);
+    assert!(history_text(&env).await.contains("got ten answers"));
+}
+
+#[tokio::test]
+async fn compact_caps_the_first_call_by_the_window_when_it_is_small() {
+    let _serial = lock_compact_state().await;
+    let env = env_with_history(20_000).await;
+    let provider = MockProvider::new(vec![MockResponse::Text(
+        "<summary>Short window.</summary>".into(),
+    )]);
+
+    compact_with(&env, &provider).await;
+
+    let cap = provider.recorded_max_tokens()[0].unwrap();
+    assert!(
+        cap < 32_768,
+        "bounded by the room the window has left, got {cap}"
+    );
+    assert!(cap >= 1_024);
 }
 
 #[tokio::test]
