@@ -60,7 +60,13 @@ pub fn estimate_tokens(messages: &[ChatMessage]) -> usize {
                 .tool_calls
                 .as_ref()
                 .map_or(0, |tc| serde_json::to_string(tc).map_or(0, |s| s.len()));
-            ((content_len + tc_len) as f64 / CHARS_PER_TOKEN) as usize + PER_MESSAGE_OVERHEAD
+            // Reasoning is replayed on assistant turns (OpenAI-compatible
+            // providers), so it fills the window like any other content. The
+            // Anthropic and Gemini paths don't send it; counting it there
+            // errs on the safe, over-estimating side.
+            let reasoning_len = m.reasoning.as_deref().map_or(0, |r| r.len());
+            ((content_len + tc_len + reasoning_len) as f64 / CHARS_PER_TOKEN) as usize
+                + PER_MESSAGE_OVERHEAD
         })
         .sum()
 }
@@ -214,6 +220,7 @@ pub fn assemble_messages(
             tool_calls,
             tool_call_id: msg.tool_call_id.clone(),
             images: None,
+            reasoning: msg.thinking_content.clone(),
         });
     }
 
@@ -510,6 +517,31 @@ mod tests {
 
     fn system() -> ChatMessage {
         ChatMessage::text("system", "You are helpful.")
+    }
+
+    /// The persisted reasoning of an assistant turn rides along on the rebuilt
+    /// history, so the OpenAI-compatible path can send it back.
+    #[test]
+    fn assistant_thinking_content_becomes_reasoning() {
+        let mut assistant = msg("assistant", Some("hi!"), None);
+        assistant.thinking_content = Some("greet the user".into());
+        let history = vec![msg("user", Some("hello"), None), assistant];
+        let out = assemble_messages(&system(), &history);
+        assert_eq!(out[1].reasoning, None);
+        assert_eq!(out[2].reasoning.as_deref(), Some("greet the user"));
+    }
+
+    /// Replayed reasoning takes up context, so the estimate must count it.
+    #[test]
+    fn estimate_tokens_counts_replayed_reasoning() {
+        let plain = ChatMessage::text("assistant", "done");
+        let with_reasoning = ChatMessage {
+            reasoning: Some("x".repeat(3_500)),
+            ..plain.clone()
+        };
+        let base = estimate_tokens(&[plain]);
+        let more = estimate_tokens(&[with_reasoning]);
+        assert!(more >= base + 900, "base {base}, with reasoning {more}");
     }
 
     // ── assemble_messages sentinel injection (#875) ───────────────────────────

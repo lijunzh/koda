@@ -776,6 +776,7 @@ impl GeminiProvider {
                 Some(content_text)
             },
             tool_calls,
+            reasoning: None,
             usage: TokenUsage {
                 prompt_tokens: usage.prompt_token_count,
                 completion_tokens: usage.candidates_token_count,
@@ -896,6 +897,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: Some("Read".into()),
             images: None,
+            reasoning: None,
         }];
         let (contents, _) = p.convert_messages(&messages);
         assert_eq!(contents.len(), 1);
@@ -916,6 +918,7 @@ mod tests {
             }]),
             tool_call_id: None,
             images: None,
+            reasoning: None,
         }];
         let (contents, _) = p.convert_messages(&messages);
         assert_eq!(contents.len(), 1);
@@ -936,6 +939,7 @@ mod tests {
                 media_type: "image/png".into(),
                 base64: "iVBORw0KGgo=".into(),
             }]),
+            reasoning: None,
         }];
         let (contents, _) = p.convert_messages(&messages);
         assert_eq!(contents.len(), 1);

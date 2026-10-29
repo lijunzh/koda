@@ -1274,6 +1274,7 @@ pub(crate) fn execute_sub_agent<'a>(
                     tool_calls,
                     tool_call_id: msg.tool_call_id.clone(),
                     images: None,
+                    reasoning: msg.thinking_content.clone(),
                 });
             }
 
@@ -1345,6 +1346,10 @@ pub(crate) fn execute_sub_agent<'a>(
                 )
                 .await?;
             db.mark_message_complete(assistant_msg_id).await?;
+            if let Some(reasoning) = response.reasoning.as_deref() {
+                db.update_message_thinking_content(assistant_msg_id, reasoning)
+                    .await?;
+            }
 
             // #1135: if this iteration was the grace turn, return
             // immediately regardless of whether the model called tools.
@@ -1815,6 +1820,7 @@ mod recover_last_assistant_text_tests {
             tool_calls: None,
             tool_call_id: None,
             images: None,
+            reasoning: None,
         }
     }
 

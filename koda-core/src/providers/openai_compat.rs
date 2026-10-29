@@ -10,12 +10,50 @@ use super::{
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Client for OpenAI-compatible APIs.
 pub struct OpenAiCompatProvider {
     client: reqwest::Client,
     base_url: String,
     api_key: Option<String>,
+    /// Set once the server has sent its reasoning under the plain `reasoning`
+    /// key (see [`ReasoningField`]).
+    reasoning_plain: Arc<AtomicBool>,
+}
+
+/// The JSON key an OpenAI-compatible server uses for a model's reasoning.
+///
+/// Servers disagree: llama-server, LM Studio and DeepSeek use
+/// `reasoning_content`; vllm-mlx and Recursive's `rec` use `reasoning`. We read
+/// both. When replaying history we send the reasoning back under exactly one
+/// name: the one this server used to send it to us, `reasoning_content` until
+/// we've seen otherwise.
+///
+/// One name, not both: a strict server may reject an unknown message field
+/// (OpenAI itself does), and it's the server's own key that its chat template
+/// reads. Codex has no equivalent choice to copy: its Responses API replays
+/// `ResponseItem::Reasoning` items verbatim, and it no longer speaks chat
+/// completions. The reasoning is only ever attached to an assistant message
+/// that has some, so servers that never return it never see the field.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ReasoningField {
+    #[default]
+    ReasoningContent,
+    Reasoning,
+}
+
+/// The non-empty reasoning in a delta or message, and the key it arrived under.
+/// `reasoning_content` wins if a server sends both.
+fn pick_reasoning<'a>(
+    reasoning_content: &'a Option<String>,
+    reasoning: &'a Option<String>,
+) -> Option<(&'a str, ReasoningField)> {
+    let non_empty = |o: &'a Option<String>| o.as_deref().filter(|t| !t.is_empty());
+    non_empty(reasoning_content)
+        .map(|t| (t, ReasoningField::ReasoningContent))
+        .or_else(|| non_empty(reasoning).map(|t| (t, ReasoningField::Reasoning)))
 }
 
 impl std::fmt::Debug for OpenAiCompatProvider {
@@ -34,6 +72,15 @@ impl OpenAiCompatProvider {
             client: super::build_http_client(Some(base_url)),
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
+            reasoning_plain: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn reasoning_field(&self) -> ReasoningField {
+        if self.reasoning_plain.load(Ordering::Relaxed) {
+            ReasoningField::Reasoning
+        } else {
+            ReasoningField::ReasoningContent
         }
     }
 }
@@ -72,6 +119,12 @@ struct ApiMessage {
     tool_calls: Option<Vec<ApiToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
+    /// The previous turn's reasoning, under the server's own key. At most one
+    /// of these two is set (see [`ReasoningField`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -116,6 +169,10 @@ struct Choice {
 #[derive(Deserialize)]
 struct ResponseMessage {
     content: Option<String>,
+    #[serde(default)]
+    reasoning_content: Option<String>,
+    #[serde(default)]
+    reasoning: Option<String>,
     tool_calls: Option<Vec<ApiToolCall>>,
 }
 
@@ -150,9 +207,12 @@ struct StreamChoice {
 #[derive(Deserialize)]
 struct StreamDelta {
     content: Option<String>,
-    /// Reasoning content from o1/o3/o4-mini models.
+    /// Reasoning under the `reasoning_content` key (llama-server, LM Studio, DeepSeek).
     #[serde(default)]
     reasoning_content: Option<String>,
+    /// Reasoning under the `reasoning` key (vllm-mlx, rec).
+    #[serde(default)]
+    reasoning: Option<String>,
     tool_calls: Option<Vec<StreamToolCall>>,
 }
 
@@ -176,12 +236,14 @@ use super::stream_collector::ChunkParser;
 /// OpenAI-compatible SSE chunk parser.
 ///
 /// Handles the OpenAI streaming format with `choices[].delta` incremental fields,
-/// reasoning content (o1/o3/o4-mini), and `<think>` tag filtering for models
+/// reasoning content (`reasoning_content` or `reasoning`), and `<think>` tag filtering for models
 /// that wrap reasoning in XML tags.
 pub(crate) struct OpenAiChunkParser {
     tool_calls: Vec<(String, String, String)>, // (id, name, args)
     usage: TokenUsage,
     think_filter: super::stream_tag_filter::StreamTagFilter,
+    /// Told when the server reasons under the plain `reasoning` key.
+    reasoning_plain: Option<Arc<AtomicBool>>,
 }
 
 impl OpenAiChunkParser {
@@ -190,7 +252,14 @@ impl OpenAiChunkParser {
             tool_calls: Vec::new(),
             usage: TokenUsage::default(),
             think_filter: super::stream_tag_filter::StreamTagFilter::new(),
+            reasoning_plain: None,
         }
+    }
+
+    /// Record the reasoning key the server uses in `flag`, for replaying history.
+    fn noting_reasoning_field(mut self, flag: Arc<AtomicBool>) -> Self {
+        self.reasoning_plain = Some(flag);
+        self
     }
 }
 
@@ -224,11 +293,14 @@ impl ChunkParser for OpenAiChunkParser {
                 };
             }
 
-            // Reasoning content (o1/o3/o4-mini)
-            if let Some(reasoning) = &choice.delta.reasoning_content
-                && !reasoning.is_empty()
+            // Native reasoning, under either key
+            if let Some((reasoning, field)) =
+                pick_reasoning(&choice.delta.reasoning_content, &choice.delta.reasoning)
             {
-                chunks.push(StreamChunk::ThinkingDelta(reasoning.clone()));
+                if let Some(flag) = &self.reasoning_plain {
+                    flag.store(field == ReasoningField::Reasoning, Ordering::Relaxed);
+                }
+                chunks.push(StreamChunk::ThinkingDelta(reasoning.to_string()));
             }
 
             // Text delta — run through <think> tag filter
@@ -298,6 +370,7 @@ impl OpenAiCompatProvider {
         model: &str,
         stream: Option<bool>,
         settings: &crate::config::ModelSettings,
+        reasoning_field: ReasoningField,
     ) -> ChatRequest {
         let api_messages: Vec<ApiMessage> = messages
             .iter()
@@ -334,6 +407,18 @@ impl OpenAiCompatProvider {
                         .map(|c| serde_json::Value::String(c.clone()))
                 };
 
+                // Replay the assistant's own reasoning so the server's chat
+                // template can keep it in context (Flint, Qwen3.x and others
+                // degrade or stop reasoning when it is dropped).
+                let replayed = m
+                    .reasoning
+                    .clone()
+                    .filter(|r| m.role == "assistant" && !r.is_empty());
+                let (reasoning_content, reasoning) = match reasoning_field {
+                    ReasoningField::ReasoningContent => (replayed, None),
+                    ReasoningField::Reasoning => (None, replayed),
+                };
+
                 ApiMessage {
                     role: m.role.clone(),
                     content,
@@ -350,6 +435,8 @@ impl OpenAiCompatProvider {
                             .collect()
                     }),
                     tool_call_id: m.tool_call_id.clone(),
+                    reasoning_content,
+                    reasoning,
                 }
             })
             .collect();
@@ -389,7 +476,14 @@ impl LlmProvider for OpenAiCompatProvider {
         tools: &[ToolDefinition],
         settings: &crate::config::ModelSettings,
     ) -> Result<LlmResponse> {
-        let request = Self::build_request(messages, tools, &settings.model, None, settings);
+        let request = Self::build_request(
+            messages,
+            tools,
+            &settings.model,
+            None,
+            settings,
+            self.reasoning_field(),
+        );
 
         let mut req = self
             .client
@@ -407,6 +501,15 @@ impl LlmProvider for OpenAiCompatProvider {
             .into_iter()
             .next()
             .context("LLM returned no choices")?;
+
+        let reasoning =
+            pick_reasoning(&choice.message.reasoning_content, &choice.message.reasoning).map(
+                |(text, field)| {
+                    self.reasoning_plain
+                        .store(field == ReasoningField::Reasoning, Ordering::Relaxed);
+                    text.to_string()
+                },
+            );
 
         let tool_calls = choice
             .message
@@ -430,6 +533,7 @@ impl LlmProvider for OpenAiCompatProvider {
         Ok(LlmResponse {
             content,
             tool_calls,
+            reasoning,
             usage,
         })
     }
@@ -440,7 +544,14 @@ impl LlmProvider for OpenAiCompatProvider {
         tools: &[ToolDefinition],
         settings: &crate::config::ModelSettings,
     ) -> Result<super::stream_collector::SseCollector> {
-        let request = Self::build_request(messages, tools, &settings.model, Some(true), settings);
+        let request = Self::build_request(
+            messages,
+            tools,
+            &settings.model,
+            Some(true),
+            settings,
+            self.reasoning_field(),
+        );
 
         let mut req = self
             .client
@@ -452,8 +563,10 @@ impl LlmProvider for OpenAiCompatProvider {
 
         let resp = super::http::send_or_bail(req.json(&request), "LLM").await?;
 
-        let collector =
-            super::stream_collector::spawn_sse_collector(resp, Box::new(OpenAiChunkParser::new()));
+        let collector = super::stream_collector::spawn_sse_collector(
+            resp,
+            Box::new(OpenAiChunkParser::new().noting_reasoning_field(self.reasoning_plain.clone())),
+        );
 
         Ok(collector)
     }
@@ -690,8 +803,14 @@ mod tests {
     fn test_build_request_plain_text() {
         let settings = default_settings();
         let messages = vec![ChatMessage::text("user", "hello")];
-        let request =
-            OpenAiCompatProvider::build_request(&messages, &[], "gpt-4o", None, &settings);
+        let request = OpenAiCompatProvider::build_request(
+            &messages,
+            &[],
+            "gpt-4o",
+            None,
+            &settings,
+            ReasoningField::default(),
+        );
         assert_eq!(request.messages.len(), 1);
         // Plain text should be a JSON string, not an array
         let content = request.messages[0].content.as_ref().unwrap();
@@ -713,10 +832,17 @@ mod tests {
                 media_type: "image/png".into(),
                 base64: "iVBORw0KGgo=".into(),
             }]),
+            reasoning: None,
         }];
         let settings = default_settings();
-        let request =
-            OpenAiCompatProvider::build_request(&messages, &[], "gpt-4o", None, &settings);
+        let request = OpenAiCompatProvider::build_request(
+            &messages,
+            &[],
+            "gpt-4o",
+            None,
+            &settings,
+            ReasoningField::default(),
+        );
         let content = request.messages[0].content.as_ref().unwrap();
 
         // Should be an array with text + image_url parts
@@ -746,10 +872,17 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             images: Some(vec![]), // Empty images vec
+            reasoning: None,
         }];
         let settings = default_settings();
-        let request =
-            OpenAiCompatProvider::build_request(&messages, &[], "gpt-4o", None, &settings);
+        let request = OpenAiCompatProvider::build_request(
+            &messages,
+            &[],
+            "gpt-4o",
+            None,
+            &settings,
+            ReasoningField::default(),
+        );
         let content = request.messages[0].content.as_ref().unwrap();
         // Empty images should NOT produce an array, just a string
         assert!(
@@ -771,14 +904,151 @@ mod tests {
             }]),
             tool_call_id: None,
             images: None,
+            reasoning: None,
         }];
         let settings = default_settings();
-        let request =
-            OpenAiCompatProvider::build_request(&messages, &[], "gpt-4o", None, &settings);
+        let request = OpenAiCompatProvider::build_request(
+            &messages,
+            &[],
+            "gpt-4o",
+            None,
+            &settings,
+            ReasoningField::default(),
+        );
         assert!(request.messages[0].tool_calls.is_some());
         let tcs = request.messages[0].tool_calls.as_ref().unwrap();
         assert_eq!(tcs.len(), 1);
         assert_eq!(tcs[0].function.name, "Read");
+    }
+
+    // ── Reasoning: read under either key, replay under the server's own ──
+
+    fn parse_chunks(parser: &mut OpenAiChunkParser, data: &str) -> Vec<StreamChunk> {
+        parser.process_line(data)
+    }
+
+    #[test]
+    fn delta_reasoning_content_becomes_thinking_delta() {
+        let mut parser = OpenAiChunkParser::new();
+        let chunks = parse_chunks(
+            &mut parser,
+            r#"{"choices":[{"delta":{"reasoning_content":"hmm"},"finish_reason":null}]}"#,
+        );
+        assert!(matches!(&chunks[..], [StreamChunk::ThinkingDelta(t)] if t == "hmm"));
+    }
+
+    #[test]
+    fn delta_reasoning_becomes_thinking_delta() {
+        // rec and vllm-mlx use `reasoning`, not `reasoning_content`.
+        let flag = Arc::new(AtomicBool::new(false));
+        let mut parser = OpenAiChunkParser::new().noting_reasoning_field(flag.clone());
+        let chunks = parse_chunks(
+            &mut parser,
+            r#"{"choices":[{"delta":{"reasoning":"hmm"},"finish_reason":null}]}"#,
+        );
+        assert!(matches!(&chunks[..], [StreamChunk::ThinkingDelta(t)] if t == "hmm"));
+        assert!(flag.load(Ordering::Relaxed), "plain key must be remembered");
+    }
+
+    #[test]
+    fn delta_with_empty_reasoning_emits_nothing() {
+        let mut parser = OpenAiChunkParser::new();
+        let chunks = parse_chunks(
+            &mut parser,
+            r#"{"choices":[{"delta":{"reasoning":"","content":"hi"},"finish_reason":null}]}"#,
+        );
+        assert!(
+            !chunks
+                .iter()
+                .any(|c| matches!(c, StreamChunk::ThinkingDelta(_))),
+            "an empty reasoning string is not a thinking delta"
+        );
+    }
+
+    #[test]
+    fn final_message_reads_reasoning_under_either_key() {
+        let plain: ChatResponse = serde_json::from_str(
+            r#"{"choices":[{"message":{"role":"assistant","content":"ok","reasoning":"why"}}]}"#,
+        )
+        .unwrap();
+        let m = &plain.choices[0].message;
+        let (text, field) = pick_reasoning(&m.reasoning_content, &m.reasoning).unwrap();
+        assert_eq!((text, field), ("why", ReasoningField::Reasoning));
+
+        let content: ChatResponse = serde_json::from_str(
+            r#"{"choices":[{"message":{"role":"assistant","content":"ok","reasoning_content":"why"}}]}"#,
+        )
+        .unwrap();
+        let m = &content.choices[0].message;
+        let (text, field) = pick_reasoning(&m.reasoning_content, &m.reasoning).unwrap();
+        assert_eq!((text, field), ("why", ReasoningField::ReasoningContent));
+    }
+
+    fn assistant_with_reasoning(reasoning: Option<&str>) -> ChatMessage {
+        ChatMessage {
+            reasoning: reasoning.map(Into::into),
+            ..ChatMessage::text("assistant", "done")
+        }
+    }
+
+    #[test]
+    fn request_replays_reasoning_under_reasoning_content_by_default() {
+        let messages = vec![
+            ChatMessage::text("user", "hi"),
+            assistant_with_reasoning(Some("I should greet")),
+        ];
+        let request = OpenAiCompatProvider::build_request(
+            &messages,
+            &[],
+            "m",
+            None,
+            &default_settings(),
+            ReasoningField::default(),
+        );
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["messages"][1]["reasoning_content"], "I should greet");
+        assert!(json["messages"][1].get("reasoning").is_none());
+        // Messages without reasoning carry neither key.
+        assert!(json["messages"][0].get("reasoning_content").is_none());
+        assert!(json["messages"][0].get("reasoning").is_none());
+    }
+
+    #[test]
+    fn request_replays_reasoning_under_plain_key_when_server_uses_it() {
+        let messages = vec![assistant_with_reasoning(Some("I should greet"))];
+        let request = OpenAiCompatProvider::build_request(
+            &messages,
+            &[],
+            "m",
+            None,
+            &default_settings(),
+            ReasoningField::Reasoning,
+        );
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["messages"][0]["reasoning"], "I should greet");
+        assert!(json["messages"][0].get("reasoning_content").is_none());
+    }
+
+    #[test]
+    fn request_skips_empty_and_non_assistant_reasoning() {
+        let mut user = ChatMessage::text("user", "hi");
+        user.reasoning = Some("not an assistant".into());
+        let messages = vec![user, assistant_with_reasoning(Some("")), {
+            assistant_with_reasoning(None)
+        }];
+        let request = OpenAiCompatProvider::build_request(
+            &messages,
+            &[],
+            "m",
+            None,
+            &default_settings(),
+            ReasoningField::default(),
+        );
+        let json = serde_json::to_value(&request).unwrap();
+        for m in json["messages"].as_array().unwrap() {
+            assert!(m.get("reasoning_content").is_none(), "{m}");
+            assert!(m.get("reasoning").is_none(), "{m}");
+        }
     }
 
     // ── SSE StreamChatResponse / StreamChoice / StreamDelta / StreamToolCall deserialization tests ──
