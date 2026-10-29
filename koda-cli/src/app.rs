@@ -100,6 +100,16 @@ struct Cli {
     #[arg(long)]
     max_tokens: Option<u32>,
 
+    /// Context window in tokens, for servers that don't report theirs.
+    /// Beats the agent config, the server's answer and the model table.
+    #[arg(
+        long,
+        env = "KODA_MAX_CONTEXT_TOKENS",
+        value_name = "TOKENS",
+        value_parser = koda_core::config::parse_max_context_tokens
+    )]
+    max_context_tokens: Option<usize>,
+
     /// Sampling temperature (0.0 - 2.0)
     #[arg(long)]
     temperature: Option<f64>,
@@ -208,6 +218,7 @@ pub(crate) async fn run() -> Result<()> {
                             cli.thinking_budget,
                             cli.reasoning_effort.clone(),
                         )
+                        .with_context_override(cli.max_context_tokens)
                         .with_trust(parse_top_level_trust_mode(&cli.mode));
                     server::run_stdio_server(project_root, config).await?;
                 } else {
@@ -282,6 +293,7 @@ pub(crate) async fn run() -> Result<()> {
                 cli.thinking_budget,
                 cli.reasoning_effort,
             )
+            .with_context_override(cli.max_context_tokens)
             .with_trust(parse_top_level_trust_mode(&cli.mode));
         let session_id = match cli.session {
             Some(id) => id,
@@ -321,6 +333,7 @@ pub(crate) async fn run() -> Result<()> {
             cli.thinking_budget,
             cli.reasoning_effort,
         )
+        .with_context_override(cli.max_context_tokens)
         .with_trust(parse_top_level_trust_mode(&cli.mode));
 
     // Initialize database is already done above

@@ -191,6 +191,10 @@ pub struct KodaConfig {
     pub model: String,
     /// Max context window tokens.
     pub max_context_tokens: usize,
+    /// A window the user pinned (`--max-context-tokens`, `KODA_MAX_CONTEXT_TOKENS`
+    /// or the agent JSON's `max_context_tokens`). When set it wins over the
+    /// model table and the provider probe, and survives model switches.
+    pub context_override: Option<usize>,
     /// Directory containing agent JSON configs.
     pub agents_dir: PathBuf,
     /// Model-specific settings (max_tokens, temperature, etc.).
@@ -204,9 +208,28 @@ pub struct KodaConfig {
     pub trust: crate::trust::TrustMode,
 }
 
+/// Parse `--max-context-tokens` / `KODA_MAX_CONTEXT_TOKENS`: a positive whole
+/// number. Anything else is an error, never a silent fallback to the probe or
+/// the model table, since a mistyped pin would otherwise go unnoticed.
+pub fn parse_max_context_tokens(raw: &str) -> std::result::Result<usize, String> {
+    match raw.trim().replace('_', "").parse::<usize>() {
+        Ok(0) => Err(format!(
+            "context window (--max-context-tokens / KODA_MAX_CONTEXT_TOKENS) must be a positive \
+             number of tokens, got '{raw}'"
+        )),
+        Ok(n) => Ok(n),
+        Err(_) => Err(format!(
+            "context window (--max-context-tokens / KODA_MAX_CONTEXT_TOKENS) must be a positive \
+             whole number of tokens, got '{raw}'"
+        )),
+    }
+}
+
 /// Where the context window in force came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContextSource {
+    /// Pinned by the user (flag, env var or agent config); the server isn't asked.
+    Override,
     /// Reported by the provider (`LlmProvider::model_capabilities`).
     Provider,
     /// The `model_context` lookup table: the server didn't say.
@@ -256,8 +279,10 @@ impl KodaConfig {
 
         let mut settings = ModelSettings::defaults_for(&model, &provider_type);
         // Agent config can override the auto-detected context window
-        if let Some(ctx) = agent.max_context_tokens {
+        let context_override = agent.max_context_tokens;
+        if let Some(ctx) = context_override {
             settings.max_context_tokens = ctx;
+            tracing::info!("Context window from agent config: {ctx} tokens for {model}");
         }
         let max_context_tokens = settings.max_context_tokens;
         if let Some(mt) = agent.max_tokens {
@@ -351,6 +376,7 @@ impl KodaConfig {
             base_url,
             model: model.clone(),
             max_context_tokens,
+            context_override,
             agents_dir,
             model_settings: settings,
             max_iterations,
@@ -439,6 +465,24 @@ impl KodaConfig {
         self
     }
 
+    /// Pin the context window (`--max-context-tokens` / `KODA_MAX_CONTEXT_TOKENS`).
+    ///
+    /// `None` leaves whatever the agent config set. Call after
+    /// [`Self::with_overrides`]; the pin also survives later model switches
+    /// and keeps the provider probe from replacing it.
+    pub fn with_context_override(mut self, tokens: Option<usize>) -> Self {
+        if let Some(ctx) = tokens {
+            self.context_override = Some(ctx);
+            self.max_context_tokens = ctx;
+            self.model_settings.max_context_tokens = ctx;
+            tracing::info!(
+                "Context window from override: {ctx} tokens for {}",
+                self.model
+            );
+        }
+        self
+    }
+
     /// Override the trust mode (e.g. from `--mode safe` on the CLI).
     pub fn with_trust(mut self, mode: crate::trust::TrustMode) -> Self {
         self.trust = mode;
@@ -449,10 +493,13 @@ impl KodaConfig {
     ///
     /// Call this whenever `self.model` or `self.provider_type` changes to keep
     /// context window, tier, and iteration defaults in sync with the new model.
-    /// Uses the hardcoded lookup table as a synchronous fallback.
+    /// Uses the hardcoded lookup table as a synchronous fallback, unless the
+    /// user pinned a window ([`Self::context_override`]).
     /// For API-sourced values, call `apply_provider_capabilities` after this.
     pub fn recalculate_model_derived(&mut self) {
-        let new_ctx = crate::model_context::context_window_for_model(&self.model);
+        let new_ctx = self
+            .context_override
+            .unwrap_or_else(|| crate::model_context::context_window_for_model(&self.model));
         self.max_context_tokens = new_ctx;
         self.model_settings.max_context_tokens = new_ctx;
 
@@ -463,9 +510,11 @@ impl KodaConfig {
     ///
     /// Overrides the hardcoded context window and max output tokens with
     /// values reported by the provider. Call this after `recalculate_model_derived`
-    /// when you have access to the provider.
+    /// when you have access to the provider. A pinned context window is kept.
     pub fn apply_provider_capabilities(&mut self, caps: &crate::providers::ModelCapabilities) {
-        if let Some(ctx) = caps.context_window {
+        if let Some(ctx) = caps.context_window
+            && self.context_override.is_none()
+        {
             self.max_context_tokens = ctx;
             self.model_settings.max_context_tokens = ctx;
             tracing::info!("Context window from API: {} tokens for {}", ctx, self.model);
@@ -492,10 +541,14 @@ impl KodaConfig {
         match provider.model_capabilities(&self.model).await {
             Ok(caps) if caps.context_window.is_some() || caps.max_output_tokens.is_some() => {
                 self.apply_provider_capabilities(&caps);
+                if self.context_override.is_some() {
+                    return ContextSource::Override;
+                }
                 if caps.context_window.is_some() {
                     return ContextSource::Provider;
                 }
             }
+            Ok(_) if self.context_override.is_some() => return ContextSource::Override,
             Ok(_) => {
                 tracing::debug!(
                     "Provider did not report capabilities for {}; using lookup table ({}k tokens)",
@@ -507,7 +560,11 @@ impl KodaConfig {
                 tracing::debug!("Could not query model capabilities: {e:#}");
             }
         }
-        ContextSource::Lookup
+        if self.context_override.is_some() {
+            ContextSource::Override
+        } else {
+            ContextSource::Lookup
+        }
     }
 
     /// A one-line notice for the user when the context window is a guess.
@@ -516,7 +573,7 @@ impl KodaConfig {
     /// the server was started with, so a lookup-table value is unconfirmed.
     /// Cloud models' table entries come from their vendors' docs.
     pub fn assumed_context_notice(&self, source: ContextSource) -> Option<String> {
-        if source == ContextSource::Provider || self.provider_type.requires_api_key() {
+        if source != ContextSource::Lookup || self.provider_type.requires_api_key() {
             return None;
         }
         Some(format!(
@@ -592,6 +649,7 @@ impl KodaConfig {
             model,
             provider_type,
             max_context_tokens,
+            context_override: None,
             agents_dir: PathBuf::from("agents"),
             model_settings,
             max_iterations: crate::loop_guard::MAX_ITERATIONS_DEFAULT,
@@ -1066,6 +1124,121 @@ mod tests {
         let config = config.with_overrides(None, Some("gpt-4o".into()), Some("openai".into()));
         assert_eq!(config.model, "gpt-4o");
         assert_eq!(config.max_context_tokens, 128_000);
+    }
+
+    // ── context window override ────────────────────────────────
+
+    fn caps(window: usize) -> crate::providers::ModelCapabilities {
+        crate::providers::ModelCapabilities {
+            context_window: Some(window),
+            max_output_tokens: None,
+        }
+    }
+
+    #[test]
+    fn parse_max_context_tokens_accepts_positive_integers() {
+        assert_eq!(parse_max_context_tokens("65536"), Ok(65_536));
+        assert_eq!(parse_max_context_tokens(" 65_536 "), Ok(65_536));
+    }
+
+    #[test]
+    fn parse_max_context_tokens_rejects_zero_and_non_numbers() {
+        for bad in [
+            "0",
+            "",
+            "abc",
+            "64k",
+            "-5",
+            "1.5",
+            "99999999999999999999999",
+        ] {
+            let err = parse_max_context_tokens(bad).expect_err(bad);
+            assert!(err.contains("context window"), "{bad}: {err}");
+            assert!(err.contains(&format!("'{bad}'")), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn context_override_beats_the_provider_probe() {
+        let mut config = KodaConfig::default_for_testing(ProviderType::LMStudio)
+            .with_context_override(Some(65_536));
+        assert_eq!(config.max_context_tokens, 65_536);
+        config.apply_provider_capabilities(&caps(262_144));
+        assert_eq!(config.max_context_tokens, 65_536);
+        assert_eq!(config.model_settings.max_context_tokens, 65_536);
+    }
+
+    #[test]
+    fn context_override_survives_a_model_switch() {
+        let mut config = KodaConfig::default_for_testing(ProviderType::LMStudio)
+            .with_context_override(Some(65_536));
+        config.model = "gpt-4o".to_string();
+        config.model_settings.model = config.model.clone();
+        config.recalculate_model_derived();
+        assert_eq!(config.max_context_tokens, 65_536);
+        let config = config.with_overrides(None, Some("flint".into()), None);
+        assert_eq!(config.max_context_tokens, 65_536);
+    }
+
+    #[test]
+    fn without_an_override_the_probe_beats_the_table() {
+        let mut config = KodaConfig::default_for_testing(ProviderType::LMStudio);
+        config.apply_provider_capabilities(&caps(262_144));
+        assert_eq!(config.max_context_tokens, 262_144);
+    }
+
+    #[test]
+    fn cli_override_beats_agent_config_beats_probe() {
+        let agent_with_window = |window: Option<usize>| {
+            let mut config = KodaConfig::default_for_testing(ProviderType::LMStudio);
+            config.context_override = window;
+            if let Some(w) = window {
+                config.max_context_tokens = w;
+                config.model_settings.max_context_tokens = w;
+            }
+            config
+        };
+
+        // Agent config pins 32K: the probe doesn't replace it.
+        let mut config = agent_with_window(Some(32_768));
+        config.apply_provider_capabilities(&caps(262_144));
+        assert_eq!(config.max_context_tokens, 32_768);
+
+        // The flag / env value (clap hands over one, flag first) beats it.
+        let mut config = agent_with_window(Some(32_768)).with_context_override(Some(65_536));
+        config.apply_provider_capabilities(&caps(262_144));
+        assert_eq!(config.max_context_tokens, 65_536);
+
+        // No flag, no env: the agent config stays.
+        let config = agent_with_window(Some(32_768)).with_context_override(None);
+        assert_eq!(config.max_context_tokens, 32_768);
+    }
+
+    #[test]
+    fn agent_json_max_context_tokens_is_a_pin() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("agents")).unwrap();
+        std::fs::write(
+            dir.path().join("agents/pinned.json"),
+            r#"{"name":"pinned","system_prompt":"x","max_context_tokens":32768}"#,
+        )
+        .unwrap();
+        let mut config = KodaConfig::load(dir.path(), "pinned").unwrap();
+        assert_eq!(config.context_override, Some(32_768));
+        config.apply_provider_capabilities(&caps(262_144));
+        assert_eq!(config.max_context_tokens, 32_768);
+    }
+
+    #[tokio::test]
+    async fn query_and_apply_reports_the_override_and_skips_the_notice() {
+        use crate::providers::mock::MockProvider;
+        let mut config = KodaConfig::default_for_testing(ProviderType::LlamaCpp)
+            .with_context_override(Some(65_536));
+        let provider = MockProvider::new(vec![]);
+        let source = config.query_and_apply_capabilities(&provider).await;
+        assert_eq!(source, ContextSource::Override);
+        assert!(config.assumed_context_notice(source).is_none());
+        assert_eq!(config.max_context_tokens, 65_536);
     }
 
     // ── URL-based provider detection (remaining providers) ─────────────────

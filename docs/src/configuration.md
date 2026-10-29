@@ -31,6 +31,29 @@ export KODA_MODEL=gemini-2.5-pro
 ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_KEY }} koda -p "check types"
 ```
 
+## Context window
+
+Koda needs the model's context window to show the footer percentage, warn
+before a request overflows, and auto-compact. It takes the first of these:
+
+```text
+1. --max-context-tokens N, then KODA_MAX_CONTEXT_TOKENS=N
+2. "max_context_tokens" in the agent JSON
+3. What the server reports (LM Studio, llama-server, Ollama, Anthropic, Gemini)
+4. Koda's built-in model table
+```
+
+Use 1 when the server loaded a different size than Koda assumed, or can't
+say (an OpenAI-compatible engine such as `rec` falls to the table, which
+assumes 128,000 for most local models). A pinned value also stays when you
+switch models with `/model`. It must be a positive whole number; `0` or
+text stops Koda at startup with an error rather than being ignored. Startup
+logs `Context window from override: N tokens for <model>`.
+
+```bash
+KODA_MAX_CONTEXT_TOKENS=65536 koda -p "say hi" --provider lm-studio --base-url http://127.0.0.1:11500/v1
+```
+
 ## Config files
 
 Everything lives in `~/.config/koda/`:

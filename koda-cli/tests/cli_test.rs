@@ -187,3 +187,33 @@ fn test_cli_output_format_validates() {
         "Should mention invalid value: {stderr}"
     );
 }
+
+/// A bad context-window pin is an error at parse time, from the flag or the
+/// env var, never a silent fall-back to the server's answer or the table.
+#[test]
+fn test_cli_max_context_tokens_rejects_zero_and_non_numbers() {
+    for bad in ["0", "abc", "64k"] {
+        let flag = Command::new(koda_bin())
+            .args(["--max-context-tokens", bad, "-p", "test"])
+            .output()
+            .expect("Failed to run koda");
+        assert!(!flag.status.success(), "--max-context-tokens {bad}");
+        let stderr = String::from_utf8_lossy(&flag.stderr);
+        assert!(
+            stderr.contains("--max-context-tokens") && stderr.contains("context window"),
+            "flag {bad}: {stderr}"
+        );
+
+        let env = Command::new(koda_bin())
+            .env("KODA_MAX_CONTEXT_TOKENS", bad)
+            .args(["-p", "test"])
+            .output()
+            .expect("Failed to run koda");
+        assert!(!env.status.success(), "KODA_MAX_CONTEXT_TOKENS={bad}");
+        let stderr = String::from_utf8_lossy(&env.stderr);
+        assert!(
+            stderr.contains("--max-context-tokens") && stderr.contains("context window"),
+            "env {bad}: {stderr}"
+        );
+    }
+}
