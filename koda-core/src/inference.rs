@@ -208,10 +208,11 @@ async fn preflight_compact_if_needed(
         return Ok(messages);
     }
 
-    // Circuit breaker: stop wasting API calls after repeated failures
+    // Circuit breaker: stop wasting API calls after repeated failures. It only
+    // stops the summary call; a context past the window is still shrunk below.
     if crate::compact::is_compact_circuit_broken() {
         tracing::warn!("Pre-flight: context at {ctx_pct}% but circuit breaker tripped — skipping");
-        return Ok(messages);
+        return shrink_if_over_window(turn, messages, context_used).await;
     }
 
     tracing::warn!("Pre-flight: context at {ctx_pct}%, attempting auto-compact");
@@ -229,13 +230,24 @@ async fn preflight_compact_if_needed(
     .await
     {
         Ok(Ok(result)) => {
-            turn.sink.emit(EngineEvent::Info {
-                message: format!(
+            let message = if result.no_summary {
+                format!(
+                    "\u{26a0}\u{fe0f} The model returned no summary; dropped {} older messages",
+                    result.deleted
+                )
+            } else {
+                format!(
                     "\u{2705} Compacted {} messages (~{} token summary)",
                     result.deleted, result.summary_tokens
-                ),
+                )
+            };
+            turn.sink.emit(if result.no_summary {
+                EngineEvent::Warn { message }
+            } else {
+                EngineEvent::Info { message }
             });
-            Ok(assemble_context(turn).await?.0)
+            let (messages, context_used) = assemble_context(turn).await?;
+            shrink_if_over_window(turn, messages, context_used).await
         }
         Ok(Err(skip)) => {
             tracing::info!("Pre-flight compact skipped: {skip:?}");
@@ -248,7 +260,7 @@ async fn preflight_compact_if_needed(
                         .to_string(),
                 });
             }
-            Ok(messages)
+            shrink_if_over_window(turn, messages, context_used).await
         }
         Err(e) => {
             tracing::warn!("Pre-flight compact failed: {e:#}");
@@ -261,9 +273,50 @@ async fn preflight_compact_if_needed(
             turn.sink.emit(EngineEvent::Warn {
                 message: format!("Compact failed: {e:#}.{suffix}"),
             });
-            Ok(messages)
+            shrink_if_over_window(turn, messages, context_used).await
         }
     }
+}
+
+/// Last line of defence before a send: if the estimate is at or past the
+/// window, drop the oldest history without a summary until it is back under
+/// the auto-compact threshold (at most a few rounds, each halving the history).
+///
+/// Past the window the server trims the prompt itself, so the model loses
+/// history it cannot see. A marker in its place is the lesser loss. Does
+/// nothing below the window, or when nothing can be dropped (pending tool
+/// calls, a short session): overflow recovery then takes over.
+async fn shrink_if_over_window(
+    turn: &TurnState<'_>,
+    mut messages: Vec<ChatMessage>,
+    mut context_used: usize,
+) -> Result<Vec<ChatMessage>> {
+    if crate::context::percent_of(context_used, turn.max_context_tokens) < 100 {
+        return Ok(messages);
+    }
+    for _ in 0..3 {
+        match crate::compact::compact_without_summary(turn.db, turn.session_id).await {
+            Ok(Ok(result)) if result.deleted > 0 => {
+                turn.sink.emit(EngineEvent::Warn {
+                    message: format!(
+                        "\u{26a0}\u{fe0f} Context was past the window; dropped {} older \
+                         messages without a summary.",
+                        result.deleted
+                    ),
+                });
+                (messages, context_used) = assemble_context(turn).await?;
+                let pct = crate::context::percent_of(context_used, turn.max_context_tokens);
+                if pct < AUTO_COMPACT_THRESHOLD {
+                    break;
+                }
+            }
+            other => {
+                tracing::warn!("Pre-flight: could not shrink the history: {other:?}");
+                break;
+            }
+        }
+    }
+    Ok(messages)
 }
 
 /// Attempt to start a chat stream with exponential backoff on retryable errors.

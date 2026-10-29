@@ -88,6 +88,8 @@ pub struct MockProvider {
     responses: Mutex<Vec<MockResponse>>,
     /// Records every messages slice passed to `chat()` / `chat_stream()`.
     recorded_calls: Arc<Mutex<Vec<Vec<ChatMessage>>>>,
+    /// The `max_tokens` setting of every `chat()` call, in order.
+    recorded_max_tokens: Mutex<Vec<Option<u32>>>,
 }
 
 impl MockProvider {
@@ -96,6 +98,7 @@ impl MockProvider {
         Self {
             responses: Mutex::new(responses),
             recorded_calls: Arc::new(Mutex::new(Vec::new())),
+            recorded_max_tokens: Mutex::new(Vec::new()),
         }
     }
 
@@ -146,6 +149,7 @@ impl MockProvider {
         Self {
             responses: Mutex::new(responses),
             recorded_calls: global_env_calls(),
+            recorded_max_tokens: Mutex::new(Vec::new()),
         }
     }
 
@@ -160,6 +164,11 @@ impl MockProvider {
     /// All messages passed to `chat()` / `chat_stream()` on this instance.
     pub fn recorded_calls(&self) -> Vec<Vec<ChatMessage>> {
         self.recorded_calls.lock().unwrap().clone()
+    }
+
+    /// The `max_tokens` each `chat()` call asked for, in order.
+    pub fn recorded_max_tokens(&self) -> Vec<Option<u32>> {
+        self.recorded_max_tokens.lock().unwrap().clone()
     }
 
     /// Returns a cheaply-cloneable handle to the recorded-calls buffer.
@@ -194,9 +203,13 @@ impl LlmProvider for MockProvider {
         &self,
         messages: &[ChatMessage],
         _tools: &[ToolDefinition],
-        _settings: &ModelSettings,
+        settings: &ModelSettings,
     ) -> Result<LlmResponse> {
         self.recorded_calls.lock().unwrap().push(messages.to_vec());
+        self.recorded_max_tokens
+            .lock()
+            .unwrap()
+            .push(settings.max_tokens);
         match self.next_response() {
             MockResponse::Text(text) => Ok(LlmResponse {
                 content: Some(text),

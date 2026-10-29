@@ -34,7 +34,7 @@ use crate::config::ModelSettings;
 use crate::db::Database;
 use crate::persistence::Persistence;
 use crate::providers::{ChatMessage, LlmProvider};
-use anyhow::{Result, bail};
+use anyhow::Result;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::sync::RwLock;
@@ -77,6 +77,20 @@ fn record_compact_success() {
     reset_compact_failures();
 }
 
+/// Most output tokens the summary call may use, thinking included.
+///
+/// `max_tokens` caps the whole reply, and a reasoning model spends part of it
+/// thinking before it writes the summary. A fixed 4096 let Flint think for
+/// 4,087 tokens and return nothing.
+const COMPACT_MAX_OUTPUT_TOKENS: usize = 16_384;
+
+/// Smallest output cap worth sending, however full the window is.
+const COMPACT_MIN_OUTPUT_TOKENS: usize = 1_024;
+
+/// Stored in place of a summary the model could not produce, so the replaced
+/// messages still leave the context. Same fallback as Codex.
+const NO_SUMMARY_MARKER: &str = "(no summary available)";
+
 /// Maximum number of head-truncation retries when history is too large.
 const MAX_TRUNCATION_RETRIES: usize = 3;
 
@@ -90,6 +104,9 @@ pub struct CompactResult {
     pub deleted: usize,
     /// Estimated tokens in the summary.
     pub summary_tokens: usize,
+    /// The model returned no summary, so the messages were replaced by a
+    /// "(no summary available)" marker and their content is gone from context.
+    pub no_summary: bool,
 }
 
 /// Why compaction was skipped (not an error, just a precondition).
@@ -134,26 +151,11 @@ pub async fn compact_session_with_provider(
     model_settings: &crate::config::ModelSettings,
     provider: &dyn LlmProvider,
 ) -> Result<std::result::Result<CompactResult, CompactSkip>> {
-    // Check preconditions
-    if db.has_pending_tool_calls(session_id).await.unwrap_or(false) {
-        return Ok(Err(CompactSkip::PendingToolCalls));
-    }
-
-    let history = db.load_context(session_id).await?;
-
-    if history.len() < 4 {
-        return Ok(Err(CompactSkip::TooShort(history.len())));
-    }
-
-    // Decide how many messages to preserve (partial vs full compaction).
-    // Partial: compact the oldest half, keep the newest half.
-    // Full: compact everything except the last COMPACT_PRESERVE_COUNT.
-    let preserve_count = compute_preserve_count(history.len());
-
-    let compact_count = history.len().saturating_sub(preserve_count);
-    if compact_count == 0 {
-        return Ok(Err(CompactSkip::TooShort(history.len())));
-    }
+    let (history, preserve_count) = match compaction_range(db, session_id).await? {
+        Ok(range) => range,
+        Err(skip) => return Ok(Err(skip)),
+    };
+    let compact_count = history.len() - preserve_count;
 
     // Only summarize the messages being compacted, not the ones we're keeping.
     let to_compact = &history[..compact_count];
@@ -164,12 +166,12 @@ pub async fn compact_session_with_provider(
         history.len(),
     );
 
-    // Check if the conversation text fits in the current model's context.
-    // Reserve 4096 tokens for the summary output + overhead.
+    // Check if the conversation text fits in the current model's context,
+    // leaving room for the summary (and any thinking before it).
     let text_tokens = (conversation_text.len() as f64 / crate::inference_helpers::CHARS_PER_TOKEN)
         as usize
         + crate::inference_helpers::SYSTEM_PROMPT_OVERHEAD;
-    let available = max_context_tokens.saturating_sub(4096);
+    let available = max_context_tokens.saturating_sub((max_context_tokens / 4).clamp(4096, 16_384));
 
     // If history fits, use it as-is. Otherwise, progressively truncate
     // the oldest messages until it fits (up to MAX_TRUNCATION_RETRIES).
@@ -183,38 +185,126 @@ pub async fn compact_session_with_provider(
     };
 
     let summary_prompt = build_summary_prompt(&final_text);
+    let prompt_tokens = (summary_prompt.len() as f64 / crate::inference_helpers::CHARS_PER_TOKEN)
+        as usize
+        + crate::inference_helpers::SYSTEM_PROMPT_OVERHEAD;
+    // What the window has left for the reply: thinking plus the summary.
+    let room = max_context_tokens
+        .saturating_sub(prompt_tokens)
+        .max(COMPACT_MIN_OUTPUT_TOKENS);
+    let first_cap = room.min(COMPACT_MAX_OUTPUT_TOKENS);
+    // A reply cut off with nothing written gets one retry with twice the room,
+    // as long as the window has it.
+    let retry_cap = room.min(first_cap * 2);
 
     let messages = vec![ChatMessage::text("user", &summary_prompt)];
-    // Use reduced settings for compaction on the SAME model/provider.
-    // The capacity check above guarantees the conversation text fits.
-    // Savings come from disabling thinking/reasoning, not switching models.
-    let compact_settings = ModelSettings {
-        model: model_settings.model.clone(),
-        max_tokens: Some(4096),
-        temperature: Some(0.3),
-        thinking_budget: None,
-        reasoning_effort: None,
-        max_context_tokens: model_settings.max_context_tokens,
+    // Same model and the session's own reasoning settings: Claude Code and
+    // Codex both summarize that way. Only the output cap and temperature differ.
+    let mut cap = first_cap;
+    let summary = loop {
+        let compact_settings = ModelSettings {
+            max_tokens: Some(cap as u32),
+            temperature: Some(0.3),
+            ..model_settings.clone()
+        };
+        let response = provider.chat(&messages, &[], &compact_settings).await?;
+        let summary = strip_analysis_block(response.content.as_deref().unwrap_or(""));
+        if !summary.is_empty() {
+            break Some(summary);
+        }
+        if response.usage.stop_reason == "max_tokens" && retry_cap > cap {
+            tracing::warn!(
+                "Compact summary hit the {cap}-token cap with no text \
+                 (reasoning used it up); retrying with {retry_cap}"
+            );
+            cap = retry_cap;
+        } else {
+            break None;
+        }
     };
-    let response = provider.chat(&messages, &[], &compact_settings).await?;
 
-    let summary = match response.content {
-        Some(text) if !text.trim().is_empty() => text,
-        _ => bail!("LLM returned an empty summary"),
-    };
+    let no_summary = summary.is_none();
+    let summary = summary.unwrap_or_else(|| {
+        tracing::warn!(
+            "Compact summary came back empty; replacing {compact_count} messages \
+             with a \"{NO_SUMMARY_MARKER}\" marker"
+        );
+        NO_SUMMARY_MARKER.to_string()
+    });
+    let deleted = replace_with_summary(db, session_id, &summary, preserve_count).await?;
 
-    let summary = strip_analysis_block(&summary);
-    let compact_message = format!("[Compacted conversation summary]\n\n{summary}");
-    let deleted = db
-        .compact_session(session_id, &compact_message, preserve_count)
-        .await?;
-
-    record_compact_success();
+    if no_summary {
+        // The history is smaller, but the model is still not summarizing.
+        record_compact_failure();
+    } else {
+        record_compact_success();
+    }
 
     Ok(Ok(CompactResult {
         deleted,
         summary_tokens: summary.len() / 4,
+        no_summary,
     }))
+}
+
+/// Drop the compactable messages for a marker, with no model call.
+///
+/// The last resort when summarizing keeps failing and the context is already
+/// past the window: sending it as-is would only have the server trim the
+/// prompt where the model can't see what went missing.
+pub async fn compact_without_summary(
+    db: &Database,
+    session_id: &str,
+) -> Result<std::result::Result<CompactResult, CompactSkip>> {
+    let (history, preserve_count) = match compaction_range(db, session_id).await? {
+        Ok(range) => range,
+        Err(skip) => return Ok(Err(skip)),
+    };
+    tracing::warn!(
+        "Dropping {} messages without a summary to fit the window",
+        history.len() - preserve_count
+    );
+    let deleted = replace_with_summary(db, session_id, NO_SUMMARY_MARKER, preserve_count).await?;
+    Ok(Ok(CompactResult {
+        deleted,
+        summary_tokens: NO_SUMMARY_MARKER.len() / 4,
+        no_summary: true,
+    }))
+}
+
+/// Load the history and decide how many trailing messages stay verbatim.
+async fn compaction_range(
+    db: &Database,
+    session_id: &str,
+) -> Result<std::result::Result<(Vec<crate::db::Message>, usize), CompactSkip>> {
+    if db.has_pending_tool_calls(session_id).await.unwrap_or(false) {
+        return Ok(Err(CompactSkip::PendingToolCalls));
+    }
+
+    let history = db.load_context(session_id).await?;
+
+    if history.len() < 4 {
+        return Ok(Err(CompactSkip::TooShort(history.len())));
+    }
+
+    // Partial: compact the oldest half, keep the newest half.
+    // Full: compact everything except the last COMPACT_PRESERVE_COUNT.
+    let preserve_count = compute_preserve_count(history.len());
+    if history.len() <= preserve_count {
+        return Ok(Err(CompactSkip::TooShort(history.len())));
+    }
+    Ok(Ok((history, preserve_count)))
+}
+
+async fn replace_with_summary(
+    db: &Database,
+    session_id: &str,
+    summary: &str,
+    preserve_count: usize,
+) -> Result<usize> {
+    let compact_message = format!("[Compacted conversation summary]\n\n{summary}");
+    db.compact_session(session_id, &compact_message, preserve_count)
+        .await
 }
 
 /// Compute how many messages to preserve during compaction.
