@@ -276,6 +276,72 @@ pub async fn read_file(
     Ok(output)
 }
 
+/// Cache key for the state Koda itself last wrote to a file.
+///
+/// Kept apart from the `:None:None` full-read entry on purpose: `read_file`
+/// answers a repeat full read with "unchanged, already in your history" whenever
+/// the size and mtime match that entry, which would be false for text the model
+/// only saw as an Edit diff. The staleness checks consult both entries; the
+/// read shortcut consults only the full-read one. The key can't collide with a
+/// read key, whose tail is always `Some(n)`/`None` pairs.
+fn own_write_key(resolved: &Path) -> String {
+    format!("{}:written", resolved.display())
+}
+
+/// Record the on-disk state of a file Koda just wrote via `Write` or `Edit`.
+///
+/// Without this, the next `Edit` finds the mtime and hash of the model's last
+/// full `Read` out of date and rejects Koda's own write as a foreign
+/// modification. Claude Code resets its read state after every Edit for the same
+/// reason. Best-effort: if the file can't be read back the entry is left alone
+/// and the staleness check falls back to the last full read.
+pub(crate) async fn record_own_write(
+    project_root: &Path,
+    args: &Value,
+    cache: &super::FileReadCache,
+    fs: &dyn FileSystem,
+) {
+    let Some(path_str) = args["file_path"].as_str().or_else(|| args["path"].as_str()) else {
+        return;
+    };
+    // Same resolution as `edit_file` and `validate_edit`, so the key matches.
+    let Ok(resolved) = safe_resolve_path(project_root, path_str) else {
+        return;
+    };
+    let Ok(meta) = tokio::fs::metadata(&resolved).await else {
+        return;
+    };
+    let Ok(bytes) = fs.read(&resolved, None).await else {
+        return;
+    };
+    let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+    let hash = format!("{:x}", Sha256::digest(&bytes));
+    cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(own_write_key(&resolved), (bytes.len() as u64, mtime, hash));
+}
+
+/// Whether `content` is something the model has already seen or produced: the
+/// body of its last full `Read`, or the result of Koda's last `Write`/`Edit`.
+///
+/// A file that matches neither was changed from outside (Bash, an editor,
+/// another process). A full-read entry with an empty hash never matches.
+pub(crate) fn content_is_known(
+    cache: &super::FileReadCache,
+    resolved: &Path,
+    content: &str,
+) -> bool {
+    let hash = format!("{:x}", Sha256::digest(content.as_bytes()));
+    let guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+    let full_key = format!("{}:None:None", resolved.display());
+    [full_key, own_write_key(resolved)].iter().any(|key| {
+        guard
+            .get(key)
+            .is_some_and(|(_, _, cached)| !cached.is_empty() && *cached == hash)
+    })
+}
+
 /// Write content to a file, creating parent directories as needed.
 /// Refuses to overwrite existing files unless `overwrite=true`.
 pub async fn write_file(project_root: &Path, args: &Value, fs: &dyn FileSystem) -> Result<String> {
@@ -383,25 +449,23 @@ pub async fn edit_file(
     //
     // The full-read cache key matches what read_file stores for a whole-file
     // read (start_line=None, num_lines=None).  If we have a cached hash for
-    // this file and it doesn't match the on-disk content, an external change
-    // (bash, the user, another agent) happened since the model last read it.
-    // Reject the edit so the model re-reads instead of clobbering changes.
+    // this file and the on-disk content matches neither that read nor Koda's
+    // own last Write/Edit (`record_own_write`), an external change (bash, the
+    // user, another agent) happened since the model last saw it.  Reject the
+    // edit so the model re-reads instead of clobbering changes.
     let full_key = format!("{}:None:None", resolved.display());
-    {
-        let guard = cache.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((_, _, cached_hash)) = guard.get(&full_key)
-            && !cached_hash.is_empty()
-        {
-            let current_hash = format!("{:x}", Sha256::digest(content.as_bytes()));
-            if *cached_hash != current_hash {
-                anyhow::bail!(
-                    "File '{}' has changed on disk since you last read it \
-                     (SHA-256 mismatch). Re-read the file to get the current \
-                     content before editing.",
-                    path_str
-                );
-            }
-        }
+    let has_full_read_hash = cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&full_key)
+        .is_some_and(|(_, _, hash)| !hash.is_empty());
+    if has_full_read_hash && !content_is_known(cache, &resolved, &content) {
+        anyhow::bail!(
+            "File '{}' has changed on disk since you last read it \
+             (SHA-256 mismatch). Re-read the file to get the current \
+             content before editing.",
+            path_str
+        );
     }
     // ──────────────────────────────────────────────────────────────────────
 
