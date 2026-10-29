@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Security
+
+- **`zip` 9.0.0 → 9.1.3** (Dependabot alert 17, GHSA-m665-v7pm-7grj / CVE-2026-115905: a crafted archive with inconsistent headers can make an extractor overwrite arbitrary files; patched in 9.0.5). Koda uses `zip` only to write debug bundles and parses archives in tests alone, so nothing shipped was exploitable; the lockfile moves zip, its `typed-path` 0.12.3 → 0.13.0, and `nix` 0.31.2 → 0.31.3, which zip 9.0.5+ requires and which `cargo update -p zip` alone could not move past rmcp's `process-wrap` pin.
+
 ## [0.5.0] - 2026-10-29
 
 ### Security
