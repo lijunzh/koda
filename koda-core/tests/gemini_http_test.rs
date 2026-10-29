@@ -6,7 +6,8 @@
 //!
 //! * Non-streaming endpoint: `POST /v1beta/models/{model}:generateContent`.
 //! * Streaming endpoint:     `POST /v1beta/models/{model}:streamGenerateContent?alt=sse`.
-//! * Auth lives in the URL **query string** (`?key=…`), not in a header.
+//! * Auth is the `x-goog-api-key` header, never the URL (until 0.5.1 it was a
+//!   `?key=` query parameter, which leaked the key into logs and traces).
 //! * SSE chunks have a different shape: `candidates[].content.parts[].text`.
 //!
 //! These tests pin all four behaviors against a real reqwest round-trip.
@@ -86,9 +87,10 @@ async fn chat_sends_post_to_generate_content_endpoint() {
 }
 
 #[tokio::test]
-async fn chat_sends_api_key_as_query_param_not_header() {
-    // Gemini's defining quirk: API key goes in `?key=…`, NOT in any header.
-    // This is the test that matters most for an HTTP-layer suite.
+async fn chat_sends_api_key_in_header_not_query() {
+    // The key travels in `x-goog-api-key`, Google's documented header, and
+    // never in the URL. This is the test that matters most for an HTTP-layer
+    // suite: a key in the query string ends up in logs and proxies.
     let server = FakeLlmServer::spawn().await;
     server
         .mount_ok("POST", r".*:generateContent$", ok_generate_body())
@@ -102,17 +104,25 @@ async fn chat_sends_api_key_as_query_param_not_header() {
 
     let reqs = server.received_requests().await;
 
-    // Auth via query param.
-    let query = reqs[0].url.query().unwrap_or("");
-    assert!(
-        query.contains("key=gem-secret-123"),
-        "API key must appear in query string, got: {query}"
+    // Auth via header.
+    assert_eq!(
+        reqs[0]
+            .headers
+            .get("x-goog-api-key")
+            .and_then(|v| v.to_str().ok()),
+        Some("gem-secret-123"),
+        "API key must travel in x-goog-api-key"
     );
 
-    // No auth headers (Gemini sends none of these).
+    // Never in the URL, and no other auth header.
+    let url = reqs[0].url.as_str();
+    assert!(
+        !url.contains("gem-secret-123"),
+        "key leaked into the URL: {url}"
+    );
+    assert!(!url.contains("key="), "query key in the URL: {url}");
     assert!(reqs[0].headers.get("authorization").is_none());
     assert!(reqs[0].headers.get("x-api-key").is_none());
-    assert!(reqs[0].headers.get("x-goog-api-key").is_none());
 }
 
 #[tokio::test]
@@ -231,7 +241,15 @@ async fn chat_stream_sends_alt_sse_query_param() {
         "streaming request must include alt=sse, got: {query}"
     );
     assert!(
-        query.contains("key=k"),
-        "streaming request must include API key, got: {query}"
+        !query.contains("key="),
+        "streaming request must not put the API key in the query, got: {query}"
+    );
+    assert_eq!(
+        reqs[0]
+            .headers
+            .get("x-goog-api-key")
+            .and_then(|v| v.to_str().ok()),
+        Some("k"),
+        "streaming request must carry the key in x-goog-api-key"
     );
 }
