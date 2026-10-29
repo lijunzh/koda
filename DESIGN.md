@@ -392,8 +392,11 @@ Context windows are queried from the **provider API** at startup. The
 hardcoded lookup table (`model_context.rs`) is the fallback.
 
 Hardcoded values go stale and are wrong for local models where the user
-controls context size. LM Studio's `/api/v0/models` reports
-`max_context_length`; Gemini's `/v1beta/models/{id}` reports
+controls context size. LM Studio's `/api/v0/models` lists every downloaded
+model; the loaded entry's `loaded_context_length` is the size the user
+loaded it with and the limit the server enforces (`max_context_length` is
+only the model's maximum, 4x larger in the Oct 2026 eval screens); Gemini's
+`/v1beta/models/{id}` reports
 `inputTokenLimit` and `outputTokenLimit`; Anthropic's `/v1/models/{id}`
 reports `max_input_tokens` and `max_tokens` (a missing, `null` or `0`
 value counts as unknown).
