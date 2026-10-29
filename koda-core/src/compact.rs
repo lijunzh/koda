@@ -81,8 +81,12 @@ fn record_compact_success() {
 ///
 /// `max_tokens` caps the whole reply, and a reasoning model spends part of it
 /// thinking before it writes the summary. A fixed 4096 let Flint think for
-/// 4,087 tokens and return nothing.
-const COMPACT_MAX_OUTPUT_TOKENS: usize = 16_384;
+/// 4,087 tokens and return nothing; at 16,384 it still ran out on three of
+/// eleven summary calls (16,339 reasoning tokens before a word of summary),
+/// and each miss cost a retry of several minutes. Flint's card asks for a
+/// 32K output budget on hard problems, so that is the first cap when the
+/// window has the room.
+const COMPACT_MAX_OUTPUT_TOKENS: usize = 32_768;
 
 /// Smallest output cap worth sending, however full the window is.
 const COMPACT_MIN_OUTPUT_TOKENS: usize = 1_024;
@@ -171,7 +175,8 @@ pub async fn compact_session_with_provider(
     let text_tokens = (conversation_text.len() as f64 / crate::inference_helpers::CHARS_PER_TOKEN)
         as usize
         + crate::inference_helpers::SYSTEM_PROMPT_OVERHEAD;
-    let available = max_context_tokens.saturating_sub((max_context_tokens / 4).clamp(4096, 16_384));
+    let available = max_context_tokens
+        .saturating_sub((max_context_tokens / 4).clamp(4096, COMPACT_MAX_OUTPUT_TOKENS));
 
     // If history fits, use it as-is. Otherwise, progressively truncate
     // the oldest messages until it fits (up to MAX_TRUNCATION_RETRIES).
@@ -193,8 +198,10 @@ pub async fn compact_session_with_provider(
         .saturating_sub(prompt_tokens)
         .max(COMPACT_MIN_OUTPUT_TOKENS);
     let first_cap = room.min(COMPACT_MAX_OUTPUT_TOKENS);
-    // A reply cut off with nothing written gets one retry with twice the room,
-    // as long as the window has it.
+    // A reply cut off before the summary is complete gets one retry with
+    // twice the room, as long as the window has it. The Claude API's
+    // compaction guidance is the same: a `max_tokens` stop means the summary
+    // was cut off, resend with a larger cap.
     let retry_cap = room.min(first_cap * 2);
 
     let messages = vec![ChatMessage::text("user", &summary_prompt)];
@@ -208,19 +215,32 @@ pub async fn compact_session_with_provider(
             ..model_settings.clone()
         };
         let response = provider.chat(&messages, &[], &compact_settings).await?;
-        let summary = strip_analysis_block(response.content.as_deref().unwrap_or(""));
-        if !summary.is_empty() {
+        let content = response.content.as_deref().unwrap_or("");
+        let (summary, complete) = summary_from_reply(content);
+        let cut_off = response.usage.stop_reason == "max_tokens" || !complete;
+        if !cut_off && !summary.is_empty() {
             break Some(summary);
         }
-        if response.usage.stop_reason == "max_tokens" && retry_cap > cap {
+        if cut_off && retry_cap > cap {
             tracing::warn!(
-                "Compact summary hit the {cap}-token cap with no text \
-                 (reasoning used it up); retrying with {retry_cap}"
+                "Compact summary was cut off at the {cap}-token cap ({} chars of text, \
+                 reasoning used the rest); retrying with {retry_cap}",
+                content.len()
             );
             cap = retry_cap;
-        } else {
+            continue;
+        }
+        if summary.is_empty() {
             break None;
         }
+        // Still cut off with no room left to retry: a partial summary beats
+        // the marker, but say so.
+        tracing::warn!(
+            "Compact summary is still cut off at the {cap}-token cap; keeping the \
+             {} chars that came back",
+            summary.len()
+        );
+        break Some(summary);
     };
 
     let no_summary = summary.is_none();
@@ -391,6 +411,36 @@ fn build_summary_prompt(conversation_text: &str) -> String {
          \n\
          ---\n\n{conversation_text}"
     )
+}
+
+/// The summary text in a reply, and whether the reply was complete.
+///
+/// The prompt asks for an `<analysis>` block followed by a `<summary>` block.
+/// A reply that opens `<analysis>` and never reaches `<summary>` is the
+/// model's preamble, cut off before the summary: it carries no summary at
+/// all, so it comes back empty and incomplete. A `<summary>` that is never
+/// closed is a summary cut off part-way: its text is kept, flagged
+/// incomplete, so the caller can retry with more room and keep the partial
+/// text only when it can't. Plain text with no tags, from a model that
+/// ignores the format, is accepted as it is.
+fn summary_from_reply(content: &str) -> (String, bool) {
+    let has_analysis = content.contains("<analysis>");
+    let has_summary = content.contains("<summary>");
+    if has_analysis && !has_summary {
+        return (String::new(), false);
+    }
+    if has_summary && !content.contains("</summary>") {
+        // `strip_analysis_block` leaves an unclosed `<summary>` tag in place;
+        // take what follows it.
+        let stripped = strip_analysis_block(content);
+        let text = stripped
+            .split_once("<summary>")
+            .map_or(stripped.as_str(), |(_, rest)| rest)
+            .trim()
+            .to_string();
+        return (text, false);
+    }
+    (strip_analysis_block(content), true)
 }
 
 /// Strip the `<analysis>` scratchpad block from the summary.
