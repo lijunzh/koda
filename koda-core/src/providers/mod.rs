@@ -95,6 +95,8 @@ pub struct LlmResponse {
     pub content: Option<String>,
     /// Tool calls requested by the model.
     pub tool_calls: Vec<ToolCall>,
+    /// Reasoning the model produced before answering, when the server returns it.
+    pub reasoning: Option<String>,
     /// Token usage statistics.
     pub usage: TokenUsage,
 }
@@ -124,6 +126,11 @@ pub struct ChatMessage {
     /// Attached images (only used in-flight, not persisted to DB).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub images: Option<Vec<ImageData>>,
+    /// The model's reasoning for this assistant turn, replayed to servers that
+    /// expect it back (OpenAI-compatible `reasoning_content` / `reasoning`).
+    /// Anthropic and Gemini carry their own thinking state and ignore it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub reasoning: Option<String>,
 }
 
 impl ChatMessage {
@@ -146,6 +153,7 @@ impl ChatMessage {
             tool_calls: None,
             tool_call_id: None,
             images: None,
+            reasoning: None,
         }
     }
 }

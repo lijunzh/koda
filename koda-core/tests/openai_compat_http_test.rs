@@ -175,3 +175,86 @@ async fn chat_stream_consumes_sse_chunks_via_real_tcp() {
 
     assert_eq!(text, "hello world", "all SSE deltas must be reassembled");
 }
+
+// ── reasoning round trip ──────────────────────────────────────────────────
+
+#[tokio::test]
+async fn reasoning_streamed_as_reasoning_is_sent_back_as_reasoning() {
+    // The shape `rec` returns for Flint: `reasoning` on every delta.
+    let server = FakeLlmServer::spawn().await;
+    server
+        .mount_chat_sse(&[
+            r#"{"choices":[{"index":0,"delta":{"reasoning":"let me "},"finish_reason":null}]}"#,
+            r#"{"choices":[{"index":0,"delta":{"reasoning":"think"},"finish_reason":null}]}"#,
+            r#"{"choices":[{"index":0,"delta":{"content":"done"},"finish_reason":"stop"}]}"#,
+            "[DONE]",
+        ])
+        .await;
+
+    let provider = OpenAiCompatProvider::new(&server.url(), Some("k".into()));
+    let mut collector = provider
+        .chat_stream(&[user_msg("hi")], &[], &settings())
+        .await
+        .expect("chat_stream must succeed");
+    let mut thinking = String::new();
+    while let Some(chunk) = collector.rx.recv().await {
+        if let StreamChunk::ThinkingDelta(s) = chunk {
+            thinking.push_str(&s);
+        }
+    }
+    assert_eq!(thinking, "let me think");
+
+    // Next turn: the history carries that reasoning on the assistant message.
+    let history = vec![
+        user_msg("hi"),
+        ChatMessage {
+            reasoning: Some(thinking),
+            ..ChatMessage::text("assistant", "done")
+        },
+        user_msg("and now?"),
+    ];
+    let _ = provider.chat_stream(&history, &[], &settings()).await;
+
+    let reqs = server.received_requests().await;
+    let second: Value = serde_json::from_slice(&reqs[1].body).unwrap();
+    let assistant = &second["messages"][1];
+    assert_eq!(assistant["reasoning"], "let me think");
+    assert!(
+        assistant.get("reasoning_content").is_none(),
+        "the server's own key only, got {assistant}"
+    );
+}
+
+#[tokio::test]
+async fn non_streamed_reasoning_is_returned_and_replayed() {
+    let server = FakeLlmServer::spawn().await;
+    server
+        .mount_chat_ok(json!({
+            "choices": [{
+                "index": 0,
+                "message": { "role": "assistant", "content": "ok", "reasoning": "because" },
+                "finish_reason": "stop"
+            }],
+            "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+        }))
+        .await;
+
+    let provider = OpenAiCompatProvider::new(&server.url(), Some("k".into()));
+    let resp = provider
+        .chat(&[user_msg("hi")], &[], &settings())
+        .await
+        .unwrap();
+    assert_eq!(resp.reasoning.as_deref(), Some("because"));
+
+    let history = vec![
+        user_msg("hi"),
+        ChatMessage {
+            reasoning: resp.reasoning,
+            ..ChatMessage::text("assistant", "ok")
+        },
+    ];
+    provider.chat(&history, &[], &settings()).await.unwrap();
+    let reqs = server.received_requests().await;
+    let second: Value = serde_json::from_slice(&reqs[1].body).unwrap();
+    assert_eq!(second["messages"][1]["reasoning"], "because");
+}

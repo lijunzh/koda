@@ -201,16 +201,19 @@ impl LlmProvider for MockProvider {
             MockResponse::Text(text) => Ok(LlmResponse {
                 content: Some(text),
                 tool_calls: vec![],
+                reasoning: None,
                 usage: TokenUsage::default(),
             }),
             MockResponse::ToolCalls(calls) => Ok(LlmResponse {
                 content: None,
                 tool_calls: calls,
+                reasoning: None,
                 usage: TokenUsage::default(),
             }),
             MockResponse::TextMaxTokens(text) => Ok(LlmResponse {
                 content: Some(text),
                 tool_calls: vec![],
+                reasoning: None,
                 usage: TokenUsage {
                     stop_reason: "max_tokens".into(),
                     ..Default::default()
@@ -219,6 +222,7 @@ impl LlmProvider for MockProvider {
             MockResponse::ToolCallsEager(calls) => Ok(LlmResponse {
                 content: None,
                 tool_calls: calls,
+                reasoning: None,
                 usage: TokenUsage::default(),
             }),
             MockResponse::Error(msg) => Err(anyhow::anyhow!(msg)),

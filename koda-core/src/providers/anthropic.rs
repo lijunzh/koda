@@ -622,6 +622,7 @@ impl LlmProvider for AnthropicProvider {
         Ok(LlmResponse {
             content,
             tool_calls,
+            reasoning: None,
             usage: TokenUsage {
                 prompt_tokens: msg_resp.usage.input_tokens,
                 completion_tokens: msg_resp.usage.output_tokens,
@@ -896,6 +897,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: Some("tc_123".into()),
             images: None,
+            reasoning: None,
         }];
         let converted = p.convert_messages(&messages);
         assert_eq!(converted.len(), 1);
@@ -933,6 +935,7 @@ mod tests {
             }]),
             tool_call_id: None,
             images: None,
+            reasoning: None,
         }];
         let converted = p.convert_messages(&messages);
         assert_eq!(converted.len(), 1);
@@ -967,6 +970,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             images: None,
+            reasoning: None,
         }];
         let converted = p.convert_messages(&messages);
         assert_eq!(converted.len(), 1);
@@ -990,6 +994,7 @@ mod tests {
             }]),
             tool_call_id: None,
             images: None,
+            reasoning: None,
         }];
         let converted = p.convert_messages(&messages);
         assert_eq!(converted.len(), 1);
@@ -1038,6 +1043,7 @@ mod tests {
                 }]),
                 tool_call_id: None,
                 images: None,
+                reasoning: None,
             }];
             let converted = p.convert_messages(&messages);
             match &converted[0].content {
@@ -1085,6 +1091,7 @@ mod tests {
                 media_type: "image/png".into(),
                 base64: "iVBORw0KGgo=".into(),
             }]),
+            reasoning: None,
         }];
         let converted = p.convert_messages(&messages);
         assert_eq!(converted.len(), 1);

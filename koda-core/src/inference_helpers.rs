@@ -214,6 +214,7 @@ pub fn assemble_messages(
             tool_calls,
             tool_call_id: msg.tool_call_id.clone(),
             images: None,
+            reasoning: msg.thinking_content.clone(),
         });
     }
 
@@ -510,6 +511,18 @@ mod tests {
 
     fn system() -> ChatMessage {
         ChatMessage::text("system", "You are helpful.")
+    }
+
+    /// The persisted reasoning of an assistant turn rides along on the rebuilt
+    /// history, so the OpenAI-compatible path can send it back.
+    #[test]
+    fn assistant_thinking_content_becomes_reasoning() {
+        let mut assistant = msg("assistant", Some("hi!"), None);
+        assistant.thinking_content = Some("greet the user".into());
+        let history = vec![msg("user", Some("hello"), None), assistant];
+        let out = assemble_messages(&system(), &history);
+        assert_eq!(out[1].reasoning, None);
+        assert_eq!(out[2].reasoning.as_deref(), Some("greet the user"));
     }
 
     // ── assemble_messages sentinel injection (#875) ───────────────────────────
