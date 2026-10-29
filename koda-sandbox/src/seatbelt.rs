@@ -110,9 +110,11 @@ fn build_command_inner(
     // an owned cache key. It's a few hundred bytes for the worst
     // realistic policy and runs once per cache miss — negligible
     // next to the build cost it amortizes.
+    let tmpdir = resolve_tmpdir(&home);
     let key = crate::seatbelt_cache::ProfileKey {
         canonical_root: canonical.clone(),
         home: home.clone(),
+        tmpdir,
         proxy,
         policy: policy.clone(),
     };
@@ -144,6 +146,11 @@ fn build_command_inner(
             }
             None => build_profile_string(&root, home),
         };
+        // Before the denies below, so project-subdir and credential denies
+        // still win over it (last-match-wins).
+        if let Some(tmpdir) = &k.tmpdir {
+            profile.push_str(&tmpdir_allow_rules(tmpdir));
+        }
         profile.push_str(&protected_subdir_deny_rules(&root));
         profile.push_str(&credential_deny_rules(home));
         // Gap 1 of #1072: enforce git hook + config write restrictions
@@ -200,6 +207,54 @@ fn validate_seatbelt_path(s: &str) -> Result<()> {
         anyhow::bail!("Path contains character {c:?} unsafe for seatbelt profile: {s:?}");
     }
     Ok(())
+}
+
+/// The process temp directory the sandboxed command should be able to write.
+///
+/// macOS's `TMPDIR` is per-user, under `/private/var/folders/xx/…/T/`, not
+/// `/tmp`. clang, `cc`-driven build scripts (`aws-lc-sys`), `mktemp` and
+/// many other tools write there, and `env::scrub` already passes `TMPDIR`
+/// through to the child. Codex does the same: its writable roots are the
+/// workspace, `/tmp` and `$TMPDIR`.
+///
+/// Returns the canonical path (seatbelt matches the kernel's view, where
+/// `/var` is `/private/var`) or `None` when unset, relative, missing, not a
+/// directory, unsafe in profile syntax, or equal to `$HOME` or one of its
+/// ancestors (`TMPDIR=/` must not make the whole filesystem writable).
+fn resolve_tmpdir(home: &str) -> Option<String> {
+    resolve_tmpdir_from(std::env::var_os("TMPDIR"), home)
+}
+
+fn resolve_tmpdir_from(raw: Option<std::ffi::OsString>, home: &str) -> Option<String> {
+    let raw = raw?;
+    let path = Path::new(&raw);
+    if !path.is_absolute() {
+        return None;
+    }
+    let canonical = path.canonicalize().ok().filter(|p| p.is_dir())?;
+    if Path::new(home)
+        .canonicalize()
+        .is_ok_and(|h| h.starts_with(&canonical))
+    {
+        return None;
+    }
+    let s = canonical.to_string_lossy().into_owned();
+    validate_seatbelt_path(&s).ok()?;
+    Some(s)
+}
+
+/// Allow writes to the per-user temp directory.
+///
+/// Safe to widen the baseline this far: the directory is private to the
+/// user (mode 0700 under `/var/folders`), the same trust level as the
+/// `/tmp` grant next to it, and it holds no credentials or project files.
+/// Emitted before the credential and protected-subdir denies, so those
+/// still override it.
+pub(crate) fn tmpdir_allow_rules(tmpdir: &str) -> String {
+    format!(
+        "; ── per-user temp dir ($TMPDIR; clang and build scripts write here) ──\n\
+         (allow file-write* (subpath \"{tmpdir}\"))\n"
+    )
 }
 
 /// Canonicalize `{home}/{rel}` if the path exists; otherwise return raw path.
@@ -1240,6 +1295,59 @@ mod tests {
         assert!(
             p1.contains("(version 1)"),
             "profile must look real, not empty"
+        );
+    }
+
+    // ── Per-user TMPDIR ─────────────────────────────────────────────────────
+
+    #[test]
+    fn tmpdir_resolves_to_canonical_path() {
+        // `/tmp` is a symlink to `/private/tmp`; the kernel matches the latter.
+        let got = resolve_tmpdir_from(Some("/tmp".into()), "/Users/x");
+        assert_eq!(got.as_deref(), Some("/private/tmp"));
+    }
+
+    #[test]
+    fn tmpdir_rejects_unset_relative_and_missing() {
+        assert_eq!(resolve_tmpdir_from(None, "/Users/x"), None);
+        assert_eq!(resolve_tmpdir_from(Some("tmp".into()), "/Users/x"), None);
+        assert_eq!(
+            resolve_tmpdir_from(Some("/no/such/dir-koda".into()), "/Users/x"),
+            None
+        );
+    }
+
+    #[test]
+    fn tmpdir_rejects_home_and_its_ancestors() {
+        // A hostile or mistaken TMPDIR must not make $HOME (or `/`) writable.
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(resolve_tmpdir_from(Some(home.clone().into()), &home), None);
+        assert_eq!(resolve_tmpdir_from(Some("/".into()), &home), None);
+        let parent = Path::new(&home).parent().unwrap().to_path_buf();
+        assert_eq!(resolve_tmpdir_from(Some(parent.into()), &home), None);
+    }
+
+    #[test]
+    fn tmpdir_allow_comes_before_denies_in_built_profile() {
+        let tmp = std::env::var("TMPDIR").unwrap_or_default();
+        if tmp.is_empty() {
+            return;
+        }
+        let cmd = build_command("true", Path::new("/tmp"), &SandboxPolicy::default()).unwrap();
+        let profile = cmd
+            .as_std()
+            .get_args()
+            .nth(1)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let allow = profile
+            .find("per-user temp dir")
+            .expect("tmpdir allow rule");
+        let deny = profile.find("(deny file-write*").unwrap();
+        assert!(
+            allow < deny,
+            "tmpdir allow must precede the denies so they still win"
         );
     }
 

@@ -604,12 +604,133 @@ mod tests {
         assert!(dir.path().join("sandbox_canary").exists());
     }
 
+    /// The per-user `TMPDIR` (`/var/folders/…/T/`) must be writable: clang,
+    /// `mktemp` and native build scripts (`aws-lc-sys`) create files there.
+    /// Before this was allowed, `cargo test` failed with "clang: error:
+    /// unable to make temporary file: Operation not permitted".
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn macos_allows_write_to_tmpdir() {
+        if std::env::var_os("TMPDIR").is_none_or(|t| t.is_empty()) {
+            eprintln!("skip: TMPDIR is not set on this host");
+            return;
+        }
+        let project = tempfile::tempdir().unwrap();
+        let out = build(
+            "f=$(mktemp \"$TMPDIR/koda-sandbox-canary.XXXXXX\") && echo \"$f\" && rm \"$f\"",
+            project.path(),
+            &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
+            None,
+            None,
+        )
+        .unwrap()
+        .output()
+        .await
+        .unwrap();
+        assert!(
+            out.status.success(),
+            "mktemp in $TMPDIR must succeed, stderr={:?}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// The real-world repro, minus the network: compiling C needs clang to
+    /// write temp files, which is what broke native build scripts.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn macos_allows_c_compile() {
+        if std::process::Command::new("cc")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("skip: no C compiler on this host");
+            return;
+        }
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("t.c"), "int main(void){return 0;}\n").unwrap();
+        let out = build(
+            "cc t.c -o t && ./t",
+            project.path(),
+            &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
+            None,
+            None,
+        )
+        .unwrap()
+        .output()
+        .await
+        .unwrap();
+        assert!(
+            out.status.success(),
+            "compiling C inside the sandbox must succeed, stderr={:?}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// End to end: a crate whose build script shells out to the C compiler,
+    /// the shape of `aws-lc-sys`. Offline and dependency-free.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn macos_allows_cargo_build_with_c_build_script() {
+        let have = |tool: &str| {
+            std::process::Command::new(tool)
+                .arg("--version")
+                .output()
+                .is_ok()
+        };
+        if !have("cargo") || !have("cc") {
+            eprintln!("skip: cargo or a C compiler is missing");
+            return;
+        }
+        let project = tempfile::tempdir().unwrap();
+        let p = project.path();
+        std::fs::write(
+            p.join("Cargo.toml"),
+            "[package]\nname = \"cbuild\"\nversion = \"0.0.0\"\nedition = \"2021\"\nbuild = \"build.rs\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir(p.join("src")).unwrap();
+        std::fs::write(p.join("src/main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(p.join("probe.c"), "int main(void){return 0;}\n").unwrap();
+        std::fs::write(
+            p.join("build.rs"),
+            "fn main() {\n    let out = std::env::var(\"OUT_DIR\").unwrap();\n    \
+             let ok = std::process::Command::new(\"cc\")\n        \
+             .arg(\"probe.c\").arg(\"-o\").arg(format!(\"{out}/probe\"))\n        \
+             .status().unwrap().success();\n    assert!(ok, \"cc failed in build script\");\n}\n",
+        )
+        .unwrap();
+        let mut cmd = build(
+            "cargo build --offline",
+            p,
+            &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
+            None,
+            None,
+        )
+        .unwrap();
+        // Hermetic, as in tools/cargo.rs `run_cargo_with_env`: under `cargo
+        // llvm-cov` the env allowlist forwards RUSTC_WRAPPER=cargo-llvm-cov to
+        // the nested cargo, which then fails with "expected subcommand".
+        cmd.env("RUSTC_WRAPPER", "")
+            .env("CARGO_TARGET_DIR", p.join("target"));
+        let out = cmd.output().await.unwrap();
+        assert!(
+            out.status.success(),
+            "cargo build with a C build script must succeed, stderr={:?}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
     /// Project mode: writes *outside* the project root must be blocked.
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn macos_blocks_write_outside_project() {
         let project = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
+        // Not `tempdir()`: that lands in $TMPDIR, which the sandbox allows.
+        let outside = tempfile::tempdir_in(std::env::var("HOME").unwrap()).unwrap();
         let target = outside.path().join("evil.txt");
 
         let status = build(
@@ -679,7 +800,8 @@ mod tests {
     #[tokio::test]
     async fn macos_strict_blocks_write_outside_project() {
         let project = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
+        // Not `tempdir()`: that lands in $TMPDIR, which the sandbox allows.
+        let outside = tempfile::tempdir_in(std::env::var("HOME").unwrap()).unwrap();
         let target = outside.path().join("evil.txt");
 
         let status = build(

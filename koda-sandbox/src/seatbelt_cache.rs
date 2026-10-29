@@ -77,6 +77,11 @@ pub struct ProfileKey {
     /// mutate HOME.
     pub home: String,
 
+    /// Canonical, validated `$TMPDIR` the profile makes writable, if any
+    /// (see `seatbelt::resolve_tmpdir`). In the key because a different
+    /// `TMPDIR` emits a different profile.
+    pub tmpdir: Option<String>,
+
     /// Proxy parameters, when the proxied profile is in use. `None`
     /// selects the open-network profile. Tuple order matches
     /// [`crate::seatbelt::build_proxied_profile_string`]: port, then
@@ -183,6 +188,7 @@ mod tests {
         ProfileKey {
             canonical_root: PathBuf::from(root),
             home: "/Users/test".into(),
+            tmpdir: None,
             proxy: None,
             policy: SandboxPolicy::default(),
         }
