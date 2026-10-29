@@ -60,7 +60,13 @@ pub fn estimate_tokens(messages: &[ChatMessage]) -> usize {
                 .tool_calls
                 .as_ref()
                 .map_or(0, |tc| serde_json::to_string(tc).map_or(0, |s| s.len()));
-            ((content_len + tc_len) as f64 / CHARS_PER_TOKEN) as usize + PER_MESSAGE_OVERHEAD
+            // Reasoning is replayed on assistant turns (OpenAI-compatible
+            // providers), so it fills the window like any other content. The
+            // Anthropic and Gemini paths don't send it; counting it there
+            // errs on the safe, over-estimating side.
+            let reasoning_len = m.reasoning.as_deref().map_or(0, |r| r.len());
+            ((content_len + tc_len + reasoning_len) as f64 / CHARS_PER_TOKEN) as usize
+                + PER_MESSAGE_OVERHEAD
         })
         .sum()
 }
@@ -523,6 +529,19 @@ mod tests {
         let out = assemble_messages(&system(), &history);
         assert_eq!(out[1].reasoning, None);
         assert_eq!(out[2].reasoning.as_deref(), Some("greet the user"));
+    }
+
+    /// Replayed reasoning takes up context, so the estimate must count it.
+    #[test]
+    fn estimate_tokens_counts_replayed_reasoning() {
+        let plain = ChatMessage::text("assistant", "done");
+        let with_reasoning = ChatMessage {
+            reasoning: Some("x".repeat(3_500)),
+            ..plain.clone()
+        };
+        let base = estimate_tokens(&[plain]);
+        let more = estimate_tokens(&[with_reasoning]);
+        assert!(more >= base + 900, "base {base}, with reasoning {more}");
     }
 
     // ── assemble_messages sentinel injection (#875) ───────────────────────────
