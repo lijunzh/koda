@@ -1470,17 +1470,10 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn ranged_read_clears_an_outside_change() {
-        // Any Read counts: old_str matching protects the edit, so a ranged Read
-        // after an outside change lets the next Edit through.
+    async fn ranged_read_does_not_clear_an_outside_change() {
         let (registry, dir) = registry_after_full_read("one\ntwo\nthree\n").await;
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         std::fs::write(dir.path().join("f.txt"), "one\nTWO\nthree\n").unwrap();
-        assert!(
-            edit_preflight(&registry, "f.txt", "three", "3")
-                .await
-                .is_some()
-        );
         let ranged = registry
             .execute(
                 "Read",
@@ -1490,11 +1483,11 @@ mod tests {
             )
             .await;
         assert!(ranged.success, "{ranged:?}");
-        assert_eq!(edit_preflight(&registry, "f.txt", "three", "3").await, None);
-        let edit = registry
-            .execute("Edit", &edit_json("f.txt", "three", "3"), None, None)
-            .await;
-        assert!(edit.success, "{edit:?}");
+        let err = edit_preflight(&registry, "f.txt", "three", "3")
+            .await
+            .unwrap();
+        assert!(err.contains("modified on disk"), "{err}");
+        assert!(err.contains("the whole file"), "{err}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

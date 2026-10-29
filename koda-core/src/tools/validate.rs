@@ -191,12 +191,15 @@ async fn validate_edit(
     // The content hash in that entry decides, not the mtime: Koda's own
     // Write/Edit moves the mtime, and a touch or identical rewrite changes
     // nothing the model saw.  Content counts as seen if it matches the last
-    // full Read, Koda's last write, or the file at the last ranged Read (see
-    // `content_is_known`), as Claude Code does after its own edits.  Only
-    // content matching none of them is a foreign change (Bash, an editor,
-    // another process).  A ranged Read clears the check because `old_str`
-    // matching, not this check, is what protects the edit from a stale view.
-    // An entry without a hash falls back to comparing mtimes.
+    // full Read or Koda's last write (`record_own_write`), as Claude Code does
+    // after its own edits.  Only content matching neither is a foreign change
+    // (Bash, an editor, another process).  An entry without a hash falls back
+    // to comparing mtimes.
+    //
+    // A ranged Read deliberately does not satisfy this check (Claude Code
+    // doesn't either): it shows one region, so it can't show the model the
+    // rest of a file that changed from outside.  It never writes the full-read
+    // entry, so it neither raises nor clears the check.
     if let Some(cache) = read_cache
         && let Ok(meta) = tokio::fs::metadata(&resolved).await
     {
@@ -218,7 +221,8 @@ async fn validate_edit(
             let hint = writer_hint(&resolved, last_writer, last_bash);
             return Some(format!(
                 "File '{path_str}' has been modified on disk since you last read it{hint}. \
-                 Read it again to get the current content before editing.",
+                 Read it again (the whole file, not a line range) to get the current \
+                 content before editing.",
             ));
         }
     }
