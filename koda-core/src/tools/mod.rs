@@ -659,6 +659,17 @@ impl ToolRegistry {
                 {
                     guard.insert(path, (name.to_string(), std::time::Instant::now()));
                 }
+                if matches!(name, "Write" | "Edit") {
+                    // Our own write must not look like a foreign change to
+                    // the next Edit's staleness check.
+                    file_tools::record_own_write(
+                        &self.project_root,
+                        &args,
+                        &self.read_cache,
+                        &*self.fs,
+                    )
+                    .await;
+                }
                 if name == "Bash" {
                     // #804 item 7: record the most recent bash
                     // invocation snippet so the validation layer
@@ -917,6 +928,7 @@ pub fn resolve_read_path(project_root: &Path, requested: &str) -> Result<PathBuf
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::path::PathBuf;
 
     fn root() -> PathBuf {
@@ -1288,6 +1300,202 @@ mod tests {
             result.output
         );
         assert_eq!(sink.len(), 0, "failed validation must not emit an event");
+    }
+
+    // ── Stale-file check vs. Koda's own writes ───────────────────────
+    //
+    // Measured 2026-10-28: after a successful Edit, the next Edit on the
+    // same file was rejected as "modified on disk since you last read it
+    // (last written by Edit …)", and only a full Read cleared it.
+
+    fn edit_json(file: &str, old: &str, new: &str) -> String {
+        json!({
+            "file_path": file,
+            "replacements": [{"old_str": old, "new_str": new}]
+        })
+        .to_string()
+    }
+
+    /// Pre-flight validation as the dispatcher runs it before an Edit.
+    async fn edit_preflight(
+        registry: &ToolRegistry,
+        file: &str,
+        old: &str,
+        new: &str,
+    ) -> Option<String> {
+        let args: Value = serde_json::from_str(&edit_json(file, old, new)).unwrap();
+        validate::validate_with_registry(registry, "Edit", &args, &registry.project_root).await
+    }
+
+    /// A registry over a temp dir holding `f.txt`, already fully read.
+    async fn registry_after_full_read(content: &str) -> (ToolRegistry, tempfile::TempDir) {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("f.txt"), content).unwrap();
+        let registry = ToolRegistry::new(dir.path().to_path_buf(), 100_000);
+        let read = registry
+            .execute("Read", r#"{"file_path":"f.txt"}"#, None, None)
+            .await;
+        assert!(read.success, "{read:?}");
+        // Filesystem mtimes can be coarse; make sure later writes get a new one.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        (registry, dir)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn edit_after_own_edit_is_not_stale() {
+        let (registry, dir) = registry_after_full_read("one\ntwo\nthree\n").await;
+        let first = registry
+            .execute("Edit", &edit_json("f.txt", "one", "1"), None, None)
+            .await;
+        assert!(first.success, "{first:?}");
+
+        assert_eq!(edit_preflight(&registry, "f.txt", "two", "2").await, None);
+        let second = registry
+            .execute("Edit", &edit_json("f.txt", "two", "2"), None, None)
+            .await;
+        assert!(second.success, "{second:?}");
+
+        // A third in a row, as the 25-Edit eval run did.
+        assert_eq!(edit_preflight(&registry, "f.txt", "three", "3").await, None);
+        let third = registry
+            .execute("Edit", &edit_json("f.txt", "three", "3"), None, None)
+            .await;
+        assert!(third.success, "{third:?}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("f.txt")).unwrap(),
+            "1\n2\n3\n"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn edit_after_own_write_is_not_stale() {
+        let (registry, dir) = registry_after_full_read("one\ntwo\n").await;
+        let write = registry
+            .execute(
+                "Write",
+                r#"{"file_path":"f.txt","content":"alpha\nbeta\n","overwrite":true}"#,
+                None,
+                None,
+            )
+            .await;
+        assert!(write.success, "{write:?}");
+
+        assert_eq!(
+            edit_preflight(&registry, "f.txt", "beta", "BETA").await,
+            None
+        );
+        let edit = registry
+            .execute("Edit", &edit_json("f.txt", "beta", "BETA"), None, None)
+            .await;
+        assert!(edit.success, "{edit:?}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("f.txt")).unwrap(),
+            "alpha\nBETA\n"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ranged_read_after_own_edit_leaves_next_edit_allowed() {
+        let (registry, _dir) = registry_after_full_read("one\ntwo\nthree\n").await;
+        let first = registry
+            .execute("Edit", &edit_json("f.txt", "one", "1"), None, None)
+            .await;
+        assert!(first.success, "{first:?}");
+        let ranged = registry
+            .execute(
+                "Read",
+                r#"{"file_path":"f.txt","start_line":2,"num_lines":1}"#,
+                None,
+                None,
+            )
+            .await;
+        assert!(ranged.success, "{ranged:?}");
+        assert_eq!(edit_preflight(&registry, "f.txt", "three", "3").await, None);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn full_read_after_own_edit_returns_the_file_not_the_unchanged_notice() {
+        // The post-Edit cache entry must not make Read claim the new content is
+        // "already in your conversation history": the model only saw a diff.
+        let (registry, _dir) = registry_after_full_read("one\ntwo\n").await;
+        let edit = registry
+            .execute("Edit", &edit_json("f.txt", "one", "ONE"), None, None)
+            .await;
+        assert!(edit.success, "{edit:?}");
+        let read = registry
+            .execute("Read", r#"{"file_path":"f.txt"}"#, None, None)
+            .await;
+        assert!(read.success && read.output.contains("ONE"), "{read:?}");
+        assert!(
+            !read.output.contains("unchanged since last read"),
+            "{read:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn outside_change_after_own_edit_is_still_rejected_with_bash_hint() {
+        let (registry, dir) = registry_after_full_read("one\ntwo\nthree\n").await;
+        let first = registry
+            .execute("Edit", &edit_json("f.txt", "one", "1"), None, None)
+            .await;
+        assert!(first.success, "{first:?}");
+
+        // A shell command rewrites the file, as `cargo fmt` or sed would.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        std::fs::write(dir.path().join("f.txt"), "1\nTWO\nthree\n").unwrap();
+        *registry.last_bash_cache().lock().unwrap() = Some((
+            "sed -i s/two/TWO/ f.txt".to_string(),
+            std::time::Instant::now(),
+        ));
+
+        let err = edit_preflight(&registry, "f.txt", "three", "3")
+            .await
+            .unwrap();
+        assert!(err.contains("modified on disk"), "{err}");
+        // The Bash call is newer than Koda's own Edit, so it gets the blame.
+        assert!(err.contains("Bash ran") && err.contains("sed -i"), "{err}");
+
+        // The execution-time hash check backs the pre-flight up.
+        let edit = registry
+            .execute("Edit", &edit_json("f.txt", "three", "3"), None, None)
+            .await;
+        assert!(
+            !edit.success && edit.output.contains("changed on disk"),
+            "{edit:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("f.txt")).unwrap(),
+            "1\nTWO\nthree\n"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ranged_read_does_not_clear_an_outside_change() {
+        let (registry, dir) = registry_after_full_read("one\ntwo\nthree\n").await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        std::fs::write(dir.path().join("f.txt"), "one\nTWO\nthree\n").unwrap();
+        let ranged = registry
+            .execute(
+                "Read",
+                r#"{"file_path":"f.txt","start_line":1,"num_lines":1}"#,
+                None,
+                None,
+            )
+            .await;
+        assert!(ranged.success, "{ranged:?}");
+        let err = edit_preflight(&registry, "f.txt", "three", "3")
+            .await
+            .unwrap();
+        assert!(err.contains("modified on disk"), "{err}");
+        assert!(err.contains("the whole file"), "{err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn mtime_only_change_is_not_stale() {
+        // Same bytes, new mtime (touch, a formatter finding nothing to do).
+        let (registry, dir) = registry_after_full_read("one\ntwo\n").await;
+        std::fs::write(dir.path().join("f.txt"), "one\ntwo\n").unwrap();
+        assert_eq!(edit_preflight(&registry, "f.txt", "two", "2").await, None);
     }
 }
 

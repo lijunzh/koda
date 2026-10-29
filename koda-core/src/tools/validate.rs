@@ -113,25 +113,34 @@ pub async fn validate_with_registry(
 /// 1. A recorded Write/Edit entry for this exact path  → " (last written by Edit 3s ago)"
 /// 2. A recent Bash invocation (possible indirect modifier) → " (Bash ran 2s ago: `cargo fmt ...`)"
 /// 3. Neither known                                        → "" (empty; generic message is fine)
+///
+/// When both exist the more recent one wins.
 fn writer_hint(
     resolved: &PathBuf,
     last_writer: Option<&super::LastWriterCache>,
     last_bash: Option<&super::LastBashCache>,
 ) -> String {
-    // Check for a direct Write/Edit record for this path.
-    if let Some(lw) = last_writer
-        && let Ok(guard) = lw.lock()
-        && let Some((tool, when)) = guard.get(resolved)
-    {
-        return format!(" (last written by {} {})", tool, fmt_age(when.elapsed()));
-    }
-    // Fall back to the most recent Bash call — it may have modified the file
-    // indirectly (formatter, build script, etc.).
-    if let Some(lb) = last_bash
-        && let Ok(guard) = lb.lock()
-        && let Some((snippet, when)) = guard.as_ref()
-    {
-        return format!(" (Bash ran {}: `{}`)", fmt_age(when.elapsed()), snippet);
+    // Whichever of the two ran last is the likelier culprit: an Edit followed by
+    // a Bash `cargo fmt` should blame Bash, not Koda's own earlier Edit.
+    let writer = last_writer
+        .and_then(|lw| lw.lock().ok())
+        .and_then(|guard| guard.get(resolved).cloned());
+    let bash = last_bash
+        .and_then(|lb| lb.lock().ok())
+        .and_then(|guard| guard.clone());
+    match (writer, bash) {
+        (Some((_, w_when)), Some((snippet, b_when))) if b_when > w_when => {
+            return format!(" (Bash ran {}: `{}`)", fmt_age(b_when.elapsed()), snippet);
+        }
+        (Some((tool, when)), _) => {
+            return format!(" (last written by {} {})", tool, fmt_age(when.elapsed()));
+        }
+        // No Write/Edit record: Bash may have modified the file indirectly
+        // (formatter, build script, etc.).
+        (None, Some((snippet, when))) => {
+            return format!(" (Bash ran {}: `{}`)", fmt_age(when.elapsed()), snippet);
+        }
+        (None, None) => {}
     }
     String::new()
 }
@@ -176,28 +185,44 @@ async fn validate_edit(
         }
     };
 
-    // Stale-file detection: warn if the file has been modified on disk since
-    // the model last read it.  Only fires when a full-read cache entry exists
-    // and the current mtime differs from the cached one.
+    // Stale-file detection: reject the edit if the file changed on disk since
+    // the model last read it.  Only fires when a full-read cache entry exists.
+    //
+    // The content hash in that entry decides, not the mtime: Koda's own
+    // Write/Edit moves the mtime, and a touch or identical rewrite changes
+    // nothing the model saw.  Content counts as seen if it matches the last
+    // full Read or Koda's last write (`record_own_write`), as Claude Code does
+    // after its own edits.  Only content matching neither is a foreign change
+    // (Bash, an editor, another process).  An entry without a hash falls back
+    // to comparing mtimes.
+    //
+    // A ranged Read deliberately does not satisfy this check (Claude Code
+    // doesn't either): it shows one region, so it can't show the model the
+    // rest of a file that changed from outside.  It never writes the full-read
+    // entry, so it neither raises nor clears the check.
     if let Some(cache) = read_cache
         && let Ok(meta) = tokio::fs::metadata(&resolved).await
     {
         let current_mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
         let cache_key = format!("{}:None:None", resolved.display());
-        let cached_mtime = cache
+        let entry = cache
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&cache_key)
-            .map(|(_, mtime, _)| *mtime);
-        if let Some(cm) = cached_mtime
-            && cm != current_mtime
-        {
+            .map(|(_, mtime, hash)| (*mtime, !hash.is_empty()));
+        let stale = match entry {
+            Some((_, true)) => !super::file_tools::content_is_known(cache, &resolved, &content),
+            Some((cached_mtime, false)) => cached_mtime != current_mtime,
+            None => false,
+        };
+        if stale {
             // Build a context hint naming the responsible tool so the model
             // doesn't have to guess why the file changed (#804 item 7).
             let hint = writer_hint(&resolved, last_writer, last_bash);
             return Some(format!(
                 "File '{path_str}' has been modified on disk since you last read it{hint}. \
-                 Read it again to get the current content before editing.",
+                 Read it again (the whole file, not a line range) to get the current \
+                 content before editing.",
             ));
         }
     }
@@ -812,6 +837,41 @@ mod tests {
         assert!(err.contains("modified on disk"), "{err}");
         assert!(err.contains("Bash ran"), "{err}");
         assert!(err.contains("cargo fmt"), "{err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stale_file_hint_blames_bash_when_it_ran_after_the_last_edit() {
+        let dir = setup();
+        let file = dir.path().join("hello.txt");
+        let cache = make_cache(&file, SystemTime::UNIX_EPOCH);
+
+        let last_writer = super::super::LastWriterCache::default();
+        let edit_time = std::time::Instant::now();
+        last_writer
+            .lock()
+            .unwrap()
+            .insert(file.clone(), ("Edit".to_string(), edit_time));
+        let last_bash = super::super::LastBashCache::default();
+        *last_bash.lock().unwrap() = Some((
+            "cargo fmt".to_string(),
+            edit_time + std::time::Duration::from_secs(1),
+        ));
+
+        let args = json!({
+            "path": "hello.txt",
+            "replacements": [{"old_str": "line two", "new_str": "LINE TWO"}]
+        });
+        let err = validate_edit(
+            &args,
+            dir.path(),
+            Some(&cache),
+            Some(&last_writer),
+            Some(&last_bash),
+        )
+        .await
+        .unwrap();
+        assert!(err.contains("Bash ran"), "{err}");
+        assert!(!err.contains("last written by"), "{err}");
     }
 
     // ── Omission placeholder detection ────────────────────────
