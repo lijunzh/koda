@@ -180,7 +180,35 @@ pub fn estimate_subagent_preflight(
 /// the sentinel is no longer needed and disappears on the next load.
 pub const INTERRUPTED_TURN_SENTINEL: &str = "[Turn interrupted — pick up from where you left off.]";
 
+/// Follows the compaction summary, which reaches the model as a user message.
+const COMPACTION_CONTINUATION_HINT: &str = "Your context was compacted. The text above summarizes \
+    our earlier conversation. Do not mention the summary or that compaction occurred. Continue \
+    the conversation naturally based on the summarized context.";
+
+/// The user message that carries a session's compaction summaries, if any.
+///
+/// Summaries are the only `system` rows in the history.
+fn compaction_message(history: &[crate::db::Message]) -> Option<String> {
+    let summaries: Vec<&str> = history
+        .iter()
+        .filter(|m| m.role == crate::persistence::Role::System)
+        .filter_map(|m| m.content.as_deref())
+        .collect();
+    (!summaries.is_empty()).then(|| {
+        format!(
+            "{}\n\n{COMPACTION_CONTINUATION_HINT}",
+            summaries.join("\n\n")
+        )
+    })
+}
+
 /// Assemble messages from DB history into ChatMessage vec.
+///
+/// A compaction summary goes first, as a `user` message: it covers everything
+/// older than the preserved tail, and only the leading system prompt reaches
+/// the model as `system`. Anthropic would drop a later one and Gemini would let
+/// it replace the system prompt (#1444). When the tail opens with a user
+/// message the two are joined, because no reply sits between them.
 ///
 /// Injects a synthetic `assistant` sentinel between any consecutive user-side
 /// messages (`user` or `tool` followed by a plain `user`). This repairs broken
@@ -193,10 +221,23 @@ pub fn assemble_messages(
     history: &[crate::db::Message],
 ) -> Vec<ChatMessage> {
     let mut messages = vec![system_message.clone()];
+    let mut summary = compaction_message(history);
 
-    for msg in history {
+    for msg in history
+        .iter()
+        .filter(|m| m.role != crate::persistence::Role::System)
+    {
         let role = msg.role.as_str();
         let is_plain_user = role == "user" && msg.tool_call_id.is_none();
+
+        if let Some(text) = summary.take() {
+            if is_plain_user {
+                let prompt = msg.content.as_deref().unwrap_or_default();
+                messages.push(ChatMessage::text("user", &format!("{text}\n\n{prompt}")));
+                continue;
+            }
+            messages.push(ChatMessage::text("user", &text));
+        }
 
         if is_plain_user {
             repair_alternation(&mut messages, INTERRUPTED_TURN_SENTINEL);
@@ -214,6 +255,11 @@ pub fn assemble_messages(
             images: None,
             reasoning: msg.thinking_content.clone(),
         });
+    }
+
+    // Nothing but the summary in the history.
+    if let Some(text) = summary {
+        messages.push(ChatMessage::text("user", &text));
     }
 
     messages
@@ -500,6 +546,56 @@ pub fn is_image_rejection_error(err: &anyhow::Error) -> bool {
 mod tests {
     use super::*;
     use crate::persistence::{Message, Role};
+
+    /// Every provider sees one `system` message and the summary ahead of the
+    /// tail, whatever the tail opens with (#1444).
+    #[test]
+    fn compaction_summary_goes_first_as_user() {
+        let history = vec![
+            msg("assistant", Some("kept"), None),
+            msg("user", Some("next"), None),
+            msg("system", Some("SUMMARY"), None),
+        ];
+        let out = assemble_messages(&system(), &history);
+        let roles: Vec<_> = out.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, ["system", "user", "assistant", "user"]);
+        let text = out[1].content.as_deref().unwrap();
+        assert!(text.starts_with("SUMMARY"), "{text}");
+        assert!(text.contains("Do not mention the summary"), "{text}");
+    }
+
+    /// No synthetic reply between the summary and a tail that opens with a
+    /// user message: the sentinel would claim a turn was interrupted.
+    #[test]
+    fn compaction_summary_joins_a_leading_user_message() {
+        let history = vec![
+            msg("user", Some("the request"), None),
+            msg("system", Some("SUMMARY"), None),
+        ];
+        let out = assemble_messages(&system(), &history);
+        let roles: Vec<_> = out.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, ["system", "user"]);
+        let text = out[1].content.as_deref().unwrap();
+        assert!(text.starts_with("SUMMARY"), "{text}");
+        assert!(text.ends_with("the request"), "{text}");
+    }
+
+    #[test]
+    fn compaction_summary_alone_and_repeated_summaries() {
+        let out = assemble_messages(&system(), &[msg("system", Some("ONLY"), None)]);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[1].role, "user");
+
+        let history = vec![
+            msg("system", Some("OLDER"), None),
+            msg("assistant", Some("kept"), None),
+            msg("system", Some("NEWER"), None),
+        ];
+        let out = assemble_messages(&system(), &history);
+        assert_eq!(out.len(), 3);
+        let text = out[1].content.as_deref().unwrap();
+        assert!(text.starts_with("OLDER\n\nNEWER"), "{text}");
+    }
 
     /// Build a bare `Message` for unit tests — mirrors the helper in db/tests.rs.
     fn msg(role: &str, content: Option<&str>, tool_call_id: Option<&str>) -> Message {

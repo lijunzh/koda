@@ -211,9 +211,9 @@ async fn test_compact_session() {
         .unwrap();
     assert_eq!(deleted, 8); // 10 total - 2 preserved = 8 deleted
 
-    // Should have: summary(system) + continuation(assistant) + 2 preserved = 4
+    // Should have: summary(system) + 2 preserved = 3
     let msgs = db.load_context(&session).await.unwrap();
-    assert_eq!(msgs.len(), 4);
+    assert_eq!(msgs.len(), 3);
 
     // Check that the summary is a system message
     let system_msgs: Vec<_> = msgs.iter().filter(|m| m.role == Role::System).collect();
@@ -226,13 +226,11 @@ async fn test_compact_session() {
             .contains("Summary of conversation")
     );
 
-    // Check that there's a continuation hint as assistant
-    let assistant_msgs: Vec<_> = msgs.iter().filter(|m| m.role == Role::Assistant).collect();
+    // Compaction puts no words in the model's mouth (#1444).
     assert!(
-        assistant_msgs
-            .iter()
-            .any(|m| m.content.as_deref().unwrap_or("").contains("compacted")),
-        "Expected a continuation hint from assistant"
+        !msgs.iter().any(|m| m.role == Role::Assistant
+            && m.content.as_deref().unwrap_or("").contains("compacted")),
+        "no assistant row may carry a compaction hint"
     );
 
     // The 2 preserved messages should still be there
@@ -267,9 +265,8 @@ async fn test_compact_preserves_zero() {
     assert_eq!(deleted, 6);
 
     let msgs = db.load_context(&session).await.unwrap();
-    assert_eq!(msgs.len(), 2); // summary + continuation
-    assert_eq!(msgs.iter().filter(|m| m.role == Role::System).count(), 1);
-    assert_eq!(msgs.iter().filter(|m| m.role == Role::Assistant).count(), 1);
+    assert_eq!(msgs.len(), 1); // summary only
+    assert_eq!(msgs[0].role, Role::System);
 }
 
 #[tokio::test]
@@ -827,6 +824,79 @@ async fn test_last_assistant_message_skips_tool_calls() {
 
     let msg = db.last_assistant_message(&session).await.unwrap();
     assert_eq!(msg, "Done!");
+}
+
+/// The model's text next to a tool call is not its answer (#1444).
+#[tokio::test]
+async fn test_last_assistant_message_ignores_text_beside_tool_calls() {
+    let (db, _tmp) = setup().await;
+    let session = db.create_session("default", _tmp.path()).await.unwrap();
+    db.insert_message(&session, &Role::User, Some("go"), None, None, None)
+        .await
+        .unwrap();
+    insert_complete_assistant(
+        &db,
+        &session,
+        Some("Let me look."),
+        Some("[{\"id\":\"1\"}]"),
+    )
+    .await;
+
+    assert_eq!(db.last_assistant_message(&session).await.unwrap(), "");
+}
+
+/// A model that ends on nothing leaves `response` empty, and an earlier
+/// answer in the session does not stand in for it (#1444).
+#[tokio::test]
+async fn test_last_assistant_message_empty_final_is_empty_not_stale() {
+    let (db, _tmp) = setup().await;
+    let session = db.create_session("default", _tmp.path()).await.unwrap();
+    db.insert_message(&session, &Role::User, Some("first"), None, None, None)
+        .await
+        .unwrap();
+    insert_complete_assistant(&db, &session, Some("first answer"), None).await;
+    db.insert_message(&session, &Role::User, Some("second"), None, None, None)
+        .await
+        .unwrap();
+    insert_complete_assistant(&db, &session, None, Some("[{\"id\":\"1\"}]")).await;
+    db.insert_message(&session, &Role::Tool, Some("ok"), None, Some("1"), None)
+        .await
+        .unwrap();
+    insert_complete_assistant(&db, &session, None, None).await;
+    assert_eq!(db.last_assistant_message(&session).await.unwrap(), "");
+
+    insert_complete_assistant(&db, &session, Some(" \n\t"), None).await;
+    assert_eq!(db.last_assistant_message(&session).await.unwrap(), "");
+}
+
+/// A session compacted before #1444 still loads, without the old hint row.
+#[tokio::test]
+async fn test_legacy_compaction_hint_row_is_ignored() {
+    let (db, _tmp) = setup().await;
+    let session = db.create_session("default", _tmp.path()).await.unwrap();
+    db.insert_message(&session, &Role::User, Some("go"), None, None, None)
+        .await
+        .unwrap();
+    insert_complete_assistant(&db, &session, Some("answer"), None).await;
+    sqlx::query("INSERT INTO messages (session_id, role, content) VALUES (?, 'system', 'summary')")
+        .bind(&session)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let hint = "Your context was compacted. The previous message contains a summary of our \
+                earlier conversation. Do not mention the summary or that compaction occurred. \
+                Continue the conversation naturally based on the summarized context.";
+    insert_complete_assistant(&db, &session, Some(hint), None).await;
+
+    let msgs = db.load_context(&session).await.unwrap();
+    let roles: Vec<_> = msgs.iter().map(|m| m.role.as_str()).collect();
+    assert_eq!(roles, ["user", "assistant", "system"]);
+
+    // A later turn that ends on nothing cannot report it either.
+    db.insert_message(&session, &Role::User, Some("again"), None, None, None)
+        .await
+        .unwrap();
+    assert_eq!(db.last_assistant_message(&session).await.unwrap(), "");
 }
 
 // ── prune_null_content_messages tests (#594) ──────────────────────────────
@@ -2083,14 +2153,13 @@ async fn ctx_cache_compaction_forces_full_reload() {
     assert_eq!(archived, 7);
 
     let after = db.load_context(&session).await.unwrap();
-    assert_eq!(after.len(), 5);
+    assert_eq!(after.len(), 4);
     // Tail of original messages preserved (oldest of these is "msg 7").
     assert_eq!(after[0].role, Role::User);
     assert_eq!(after[0].content.as_deref(), Some("msg 7"));
-    // Synthetic summary + continuation appended.
+    // Synthetic summary appended.
     assert_eq!(after[3].role, Role::System);
     assert_eq!(after[3].content.as_deref(), Some("summary"));
-    assert_eq!(after[4].role, Role::Assistant);
 }
 
 /// Microcompact rewrites tool-result content in place via
