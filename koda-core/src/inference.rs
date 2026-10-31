@@ -675,6 +675,8 @@ pub struct InferenceContext<'a> {
     pub session_id: &'a str,
     /// System prompt for this session.
     pub system_prompt: &'a str,
+    /// Git context taken once per session, so the prompt prefix stays stable.
+    pub git_snapshot: &'a crate::git::GitSnapshot,
     /// LLM provider to use.
     pub provider: &'a dyn LlmProvider,
     /// Tool registry with all available tools.
@@ -773,6 +775,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>) -> Result<()> {
         db,
         session_id,
         system_prompt,
+        git_snapshot,
         provider,
         tools,
         tool_defs,
@@ -1060,9 +1063,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>) -> Result<()> {
         // Compaction (`compact.rs`) preserves outstanding tasks and
         // file paths verbatim, which is the durable defense against
         // context-window forgetting.
-        let git_line = crate::git::git_context(project_root)
-            .map(|ctx| format!("\n{ctx}"))
-            .unwrap_or_default();
+        let git_line = git_snapshot.line(project_root);
         let system_prompt_full = format!("{base_system_prompt}{git_line}");
         let system_message = ChatMessage::text("system", &system_prompt_full);
 
