@@ -77,11 +77,12 @@ pub(crate) async fn record_tool_result(
     // If we have separate full output (Bash smart summary), use the dedicated
     // two-column insert so the model sees the summary while RecallContext can
     // search the full output.
-    if let Some(full) = full_output {
-        db.insert_tool_message_with_full(session_id, result, &tc.id, full)
+    let stored = truncate_for_history(result, max_result_chars);
+    let spilled = (stored.len() != result.len()).then_some(result);
+    if let Some(full) = full_output.or(spilled) {
+        db.insert_tool_message_with_full(session_id, &stored, &tc.id, full)
             .await?;
     } else {
-        let stored = truncate_for_history(result, max_result_chars);
         db.insert_message(
             session_id,
             &Role::Tool,
@@ -113,20 +114,27 @@ pub(crate) async fn record_tool_result(
 }
 
 /// Truncate a tool result for storage in conversation history.
-/// The `max_chars` limit is set by `OutputCaps::tool_result_chars`.
+///
+/// Keeps the head and the tail, since a build or test ends with the part that
+/// matters, and says how to get the rest: the full text stays searchable through
+/// `RecallContext`. The `max_chars` limit is set by `OutputCaps::tool_result_chars`.
 fn truncate_for_history(output: &str, max_chars: usize) -> String {
     if output.len() <= max_chars {
         return output.to_string();
     }
-    // Find a safe char boundary
-    let mut end = max_chars;
-    while end > 0 && !output.is_char_boundary(end) {
-        end -= 1;
+    let mut head_end = max_chars * 2 / 3;
+    while head_end > 0 && !output.is_char_boundary(head_end) {
+        head_end -= 1;
+    }
+    let mut tail_start = output.len() - (max_chars - head_end);
+    while tail_start < output.len() && !output.is_char_boundary(tail_start) {
+        tail_start += 1;
     }
     format!(
-        "{}\n\n[...truncated {} chars. Re-read the file if you need the full content.]",
-        &output[..end],
-        output.len() - end
+        "{}\n\n[...{} chars omitted. Read files by range with start_line and num_lines; RecallContext searches the full output.]\n\n{}",
+        &output[..head_end],
+        tail_start - head_end,
+        &output[tail_start..]
     )
 }
 
@@ -1011,5 +1019,32 @@ mod tests {
             "with tracker, Delete of Koda-owned file must be \
              parallel-eligible (matches sequential path classification)"
         );
+    }
+}
+
+#[cfg(test)]
+mod truncate_for_history_tests {
+    use super::truncate_for_history;
+
+    #[test]
+    fn short_output_is_untouched() {
+        assert_eq!(truncate_for_history("ok", 10), "ok");
+    }
+
+    #[test]
+    fn long_output_keeps_head_and_tail() {
+        let output = format!("first{}last", "x".repeat(1_000));
+        let stored = truncate_for_history(&output, 100);
+        assert!(stored.starts_with("first"));
+        assert!(stored.ends_with("last"));
+        assert!(stored.contains("RecallContext"));
+        assert!(stored.len() < output.len());
+    }
+
+    #[test]
+    fn cuts_land_on_char_boundaries() {
+        let output = "é".repeat(500);
+        let stored = truncate_for_history(&output, 101);
+        assert!(stored.contains("chars omitted"));
     }
 }

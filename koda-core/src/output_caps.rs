@@ -57,6 +57,23 @@ impl OutputCaps {
     const BASE_LIST_ENTRIES: usize = 200;
     const BASE_GLOB_RESULTS: usize = 200;
 
+    /// Replace the per-result cap when `KODA_TOOL_RESULT_MAX_CHARS` holds a
+    /// positive integer. Lets an eval compare budgets on the same build.
+    pub fn with_env_override(self) -> Self {
+        let value = std::env::var("KODA_TOOL_RESULT_MAX_CHARS").ok();
+        self.with_tool_result_override(value.as_deref())
+    }
+
+    fn with_tool_result_override(mut self, value: Option<&str>) -> Self {
+        if let Some(chars) = value
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .filter(|chars| *chars > 0)
+        {
+            self.tool_result_chars = chars;
+        }
+        self
+    }
+
     /// Compute caps scaled to the given context window size (in tokens).
     ///
     /// ```
@@ -99,6 +116,27 @@ fn scale(base: usize, factor: f64) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn override_replaces_only_a_valid_positive_cap() {
+        let caps = OutputCaps::for_context(128_000);
+        let base = caps.tool_result_chars;
+        assert_eq!(
+            caps.with_tool_result_override(Some("8000"))
+                .tool_result_chars,
+            8_000
+        );
+        assert_eq!(
+            caps.with_tool_result_override(Some("0")).tool_result_chars,
+            base
+        );
+        assert_eq!(
+            caps.with_tool_result_override(Some("many"))
+                .tool_result_chars,
+            base
+        );
+        assert_eq!(caps.with_tool_result_override(None).tool_result_chars, base);
+    }
 
     #[test]
     fn small_context_gets_base_values() {

@@ -334,7 +334,7 @@ impl ToolRegistry {
             skill_registry,
             db: std::sync::RwLock::new(None),
             session_id: std::sync::RwLock::new(None),
-            caps: OutputCaps::for_context(max_context_tokens),
+            caps: OutputCaps::for_context(max_context_tokens).with_env_override(),
             bg_registry: bg_process::BgRegistry::new(),
             trust,
             // Phase 5 PR-2 of #934: seed with strict_default(). Callers
