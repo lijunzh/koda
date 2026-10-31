@@ -40,6 +40,26 @@ fn user_msg(text: &str) -> ChatMessage {
 // ── chat() ────────────────────────────────────────────────────────────────
 
 #[tokio::test]
+async fn chat_skips_thinking_blocks_in_the_reply() {
+    let server = FakeLlmServer::spawn().await;
+    let mut body = ok_messages_body();
+    body["content"] = serde_json::json!([
+        {"type": "thinking", "thinking": "Let me plan.", "signature": "sig"},
+        {"type": "redacted_thinking", "data": "abc"},
+        {"type": "text", "text": "The summary."}
+    ]);
+    server.mount_ok("POST", r".*/v1/messages$", body).await;
+
+    let provider = AnthropicProvider::new("sk-ant-test".into(), Some(&server.url()));
+    let reply = provider
+        .chat(&[user_msg("hi")], &[], &settings())
+        .await
+        .expect("a thinking block must not fail the response");
+
+    assert_eq!(reply.content.as_deref(), Some("The summary."));
+}
+
+#[tokio::test]
 async fn chat_sends_post_to_v1_messages_endpoint() {
     let server = FakeLlmServer::spawn().await;
     server
