@@ -124,7 +124,8 @@ Long-running write agents that legitimately need more can opt up:
 ```
 
 When a sub-agent hits its budget without producing a final answer,
-Koda runs **one grace turn** with this system reminder appended:
+Koda runs **one grace turn** with this reminder appended as a user
+message:
 
 > You have reached the maximum number of turns. You have ONE final
 > chance to complete the task. You MUST respond with your best
