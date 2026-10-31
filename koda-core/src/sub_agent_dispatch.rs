@@ -70,6 +70,11 @@ static NEXT_INVOCATION_ID: AtomicU32 = AtomicU32::new(1);
 /// already has the `EngineEvent::LoopCapReached` extension UX.
 pub(crate) const DEFAULT_SUB_AGENT_MAX_TURNS: u32 = 30;
 
+/// Keeps the roles valid between a tool result and the grace-turn reminder.
+/// Nothing was interrupted here, so `INTERRUPTED_TURN_SENTINEL` would tell the
+/// model to carry on just before the reminder tells it to stop.
+const GRACE_TURN_BRIDGE: &str = "[Turn budget reached.]";
+
 /// Allocate a fresh invocation id. See [`NEXT_INVOCATION_ID`].
 pub(crate) fn next_invocation_id() -> u32 {
     NEXT_INVOCATION_ID.fetch_add(1, Ordering::Relaxed)
@@ -1176,7 +1181,7 @@ pub(crate) fn execute_sub_agent<'a>(
             crate::turn_context::ToolExecutionContext::new(&sub_turn, Some(my_invocation_id));
 
         // #1135: gemini-pattern grace turn. When `iter > max_turns` we
-        // append a system reminder to the message list ("you have one
+        // append a user reminder to the message list ("you have one
         // final chance — give your best answer NOW, no more tools")
         // and run exactly one more turn. Whatever the model returns on
         // that turn is the final answer (tool calls in the grace
@@ -1288,6 +1293,10 @@ pub(crate) fn execute_sub_agent<'a>(
             // to the DB, so a future replay won't see it twice. The
             // strict "text only, no tools" framing matches gemini's
             // wording (`local-executor.ts::getFinalWarningMessage`).
+            //
+            // It goes out as `user`: only the leading system prompt reaches
+            // the model as `system`. Anthropic would drop a later one and
+            // Gemini would let it replace the system prompt.
             if iter > max_turns && !grace_turn_done {
                 grace_turn_done = true;
                 let warning = format!(
@@ -1298,7 +1307,8 @@ pub(crate) fn execute_sub_agent<'a>(
                      Summarize what you found, what you would do next if you had more turns, \
                      and explain that your investigation was interrupted by the budget."
                 );
-                messages.push(ChatMessage::text("system", &warning));
+                crate::inference_helpers::repair_alternation(&mut messages, GRACE_TURN_BRIDGE);
+                messages.push(ChatMessage::text("user", &warning));
                 tracing::warn!(
                     agent = agent_name,
                     iter,
@@ -1903,9 +1913,8 @@ mod recover_last_assistant_text_tests {
     /// User and system turns with text are NOT recovery candidates.
     /// Surfacing the user's prompt back to the parent as the sub-agent's
     /// "answer" would be actively misleading — the parent might think
-    /// the sub-agent agreed with the prompt verbatim. System turns
-    /// (including the grace-turn warning at #1135) are scaffolding,
-    /// not content. Both must be filtered.
+    /// the sub-agent agreed with the prompt verbatim. System turns are
+    /// scaffolding, not content. Both must be filtered.
     #[test]
     fn ignores_user_and_system_messages() {
         let messages = vec![

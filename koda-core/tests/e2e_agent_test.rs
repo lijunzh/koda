@@ -811,6 +811,74 @@ async fn test_sub_agent_grace_turn_drops_tool_calls_when_model_defies() {
     );
 }
 
+/// The grace-turn reminder must not be a `system` message: only the leading
+/// one reaches the model, so Anthropic would drop the reminder and Gemini
+/// would let it replace the system prompt. The previous message is a tool
+/// result, so a neutral bridge keeps the roles valid without saying the turn
+/// was interrupted.
+#[cfg(feature = "test-support")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_sub_agent_grace_reminder_is_a_user_message() {
+    let _lock = ENV_MUTEX.lock().await;
+    let env = Env::new().await;
+
+    let agents_dir = env.root.join("agents");
+    std::fs::create_dir_all(&agents_dir).unwrap();
+    std::fs::write(
+        agents_dir.join("capped.json"),
+        serde_json::json!({
+            "name": "capped",
+            "system_prompt": "You are the capped agent.",
+            "allowed_tools": ["Glob"],
+            "max_iterations": 1,
+            "provider": "mock",
+            "base_url": "http://localhost:0"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    runtime_env::set(
+        "KODA_MOCK_RESPONSES",
+        r#"[
+            {"tool": "Glob", "args": {"pattern": "nope_*"}},
+            {"text": "Final summary."}
+        ]"#,
+    );
+    let calls = invoke_agent_and_take_calls(&env, "capped").await;
+    runtime_env::remove("KODA_MOCK_RESPONSES");
+
+    assert_eq!(
+        calls.len(),
+        2,
+        "one normal turn, one grace turn: {calls:#?}"
+    );
+    let grace = &calls[1];
+
+    let system: Vec<_> = grace.iter().filter(|m| m.role == "system").collect();
+    assert_eq!(system.len(), 1, "only the system prompt: {grace:#?}");
+    assert_eq!(grace[0].role, "system");
+    assert!(
+        grace[0]
+            .content
+            .as_deref()
+            .unwrap()
+            .contains("You are the capped agent."),
+        "{grace:#?}"
+    );
+
+    let roles: Vec<_> = grace.iter().map(|m| m.role.as_str()).collect();
+    assert_eq!(
+        roles[roles.len() - 3..],
+        ["tool", "assistant", "user"],
+        "{grace:#?}"
+    );
+    let bridge = grace[grace.len() - 2].content.as_deref().unwrap();
+    assert_eq!(bridge, "[Turn budget reached.]");
+    let reminder = grace.last().unwrap().content.as_deref().unwrap();
+    assert!(reminder.contains("ONE final chance"), "{reminder}");
+}
+
 // ── #1232 §3a: pre-flight context-budget check ──────────────────────────────
 
 /// When the resolved sub-agent context (system + tools + prompt) exceeds the

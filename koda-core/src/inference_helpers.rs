@@ -198,16 +198,8 @@ pub fn assemble_messages(
         let role = msg.role.as_str();
         let is_plain_user = role == "user" && msg.tool_call_id.is_none();
 
-        // If a plain user message would immediately follow another user-side
-        // message, the provider will reject the request. Insert a sentinel
-        // assistant message to restore valid alternation (#875).
         if is_plain_user {
-            let prev_is_user_side = messages
-                .last()
-                .is_some_and(|p| p.role == "user" || p.role == "tool");
-            if prev_is_user_side {
-                messages.push(ChatMessage::text("assistant", INTERRUPTED_TURN_SENTINEL));
-            }
+            repair_alternation(&mut messages, INTERRUPTED_TURN_SENTINEL);
         }
 
         let tool_calls: Option<Vec<ToolCall>> = msg
@@ -225,6 +217,20 @@ pub fn assemble_messages(
     }
 
     messages
+}
+
+/// Make room for a plain `user` message at the end of `messages`.
+///
+/// If a plain user message would immediately follow another user-side message,
+/// the provider will reject the request. Insert `bridge` as an assistant message
+/// to restore valid alternation (#875).
+pub(crate) fn repair_alternation(messages: &mut Vec<ChatMessage>, bridge: &str) {
+    let prev_is_user_side = messages
+        .last()
+        .is_some_and(|p| p.role == "user" || p.role == "tool");
+    if prev_is_user_side {
+        messages.push(ChatMessage::text("assistant", bridge));
+    }
 }
 
 /// Detect if an error is a server error (5xx) from the provider.
