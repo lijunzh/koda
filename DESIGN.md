@@ -457,6 +457,10 @@ make snake_case unreachable in new sessions. The dual-case list protects
 legacy DB rows from before normalization existed. Acceptable redundancy;
 delete after a full schema migration if/when one happens.
 
+### Git Context in the Prompt
+
+The system prompt carries a snapshot of the git state, taken once per session and labelled as a snapshot. It does not update as the session goes on: the prompt sits at the front of every request, so changing it would invalidate the provider's prompt cache for the whole conversation behind it. On local Ornith runs that cost up to 40% of wall time (#1451). The model runs git when it needs the current state.
+
 ### Progress Tracking: Model-Owned, History-Persisted, Engine-Surfaced (P3-corollary)
 
 **Principle.** The model owns the task list. The conversation history
