@@ -133,10 +133,8 @@ async fn compact_leaves_a_marker_when_the_retry_is_empty_too() {
     );
     let text = history_text(&env).await;
     assert!(text.contains("(no summary available)"));
-    assert!(
-        !text.contains("question 0"),
-        "compacted messages must be gone"
-    );
+    assert!(!text.contains("answer 0"), "compacted answers must be gone");
+    assert!(text.contains("question 0"), "the user's words are carried");
     assert!(text.contains("answer 9"), "the recent tail stays verbatim");
 }
 
@@ -254,6 +252,81 @@ async fn compact_does_not_retry_an_empty_reply_that_was_not_cut_off() {
 
     assert!(result.no_summary);
     assert_eq!(provider.recorded_max_tokens().len(), 1);
+}
+
+/// Text the model would be sent, across every message in the context.
+async fn context_text(env: &Env) -> String {
+    env.db
+        .load_context(&env.session_id)
+        .await
+        .unwrap()
+        .iter()
+        .filter_map(|m| m.content.clone())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+async fn env_with_task(task: &str) -> Env {
+    let env = Env::builder().max_context_tokens(8_000).build().await;
+    let padding = "x".repeat(2200);
+    env.insert_message(&Role::User, task).await;
+    for i in 0..7 {
+        env.insert_message(&Role::Assistant, &format!("reply {i}: {padding}"))
+            .await;
+        env.insert_message(&Role::Tool, &format!("result {i}: {padding}"))
+            .await;
+    }
+    env
+}
+
+#[tokio::test]
+async fn dropping_without_a_summary_keeps_the_task_through_two_drops() {
+    let _serial = lock_compact_state().await;
+    let env = env_with_task("Fix the parser in lexer.rs").await;
+
+    for _ in 0..2 {
+        let result = compact::compact_without_summary(&env.db, &env.session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(result.no_summary);
+    }
+
+    let text = context_text(&env).await;
+    assert!(text.contains("Fix the parser in lexer.rs"), "{text}");
+    for msg in env.db.load_context(&env.session_id).await.unwrap() {
+        let row = msg.content.unwrap_or_default();
+        assert!(row.matches("(no summary available)").count() <= 1, "{row}");
+    }
+}
+
+#[tokio::test]
+async fn an_empty_summary_keeps_the_task() {
+    let _serial = lock_compact_state().await;
+    let env = env_with_task("Fix the parser in lexer.rs").await;
+    let provider = MockProvider::new(vec![
+        MockResponse::TextMaxTokens(String::new()),
+        MockResponse::TextMaxTokens(String::new()),
+    ]);
+
+    let result = compact_with(&env, &provider).await;
+
+    assert!(result.no_summary);
+    let text = context_text(&env).await;
+    assert!(text.contains("Fix the parser in lexer.rs"), "{text}");
+}
+
+#[tokio::test]
+async fn carried_text_stays_within_the_cap() {
+    let _serial = lock_compact_state().await;
+    let env = env_with_task(&"é".repeat(20_000)).await;
+
+    let result = compact::compact_without_summary(&env.db, &env.session_id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert!(result.summary_tokens < 1_100, "{}", result.summary_tokens);
 }
 
 #[tokio::test]
