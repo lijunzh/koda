@@ -13,7 +13,7 @@ use crate::memory;
 use crate::persistence::Persistence;
 use crate::preview;
 use crate::prompt::build_system_prompt;
-use crate::providers::{ChatMessage, ToolCall};
+use crate::providers::ChatMessage;
 use crate::sub_agent_cache::SubAgentCache;
 use crate::tool_dispatch::execute_one_tool;
 use crate::tools::{self, ToolRegistry};
@@ -1267,21 +1267,10 @@ pub(crate) fn execute_sub_agent<'a>(
                 return Ok("[cancelled by parent]".to_string());
             }
             let history = db.load_context(&sub_session).await?;
-            let mut messages = vec![ChatMessage::text("system", &system_prompt)];
-            for msg in &history {
-                let tool_calls: Option<Vec<ToolCall>> = msg
-                    .tool_calls
-                    .as_deref()
-                    .and_then(|tc| serde_json::from_str(tc).ok());
-                messages.push(ChatMessage {
-                    role: msg.role.as_str().to_string(),
-                    content: msg.content.clone(),
-                    tool_calls,
-                    tool_call_id: msg.tool_call_id.clone(),
-                    images: None,
-                    reasoning: msg.thinking_content.clone(),
-                });
-            }
+            let mut messages = crate::inference_helpers::assemble_messages(
+                &ChatMessage::text("system", &system_prompt),
+                &history,
+            );
 
             sink.emit(EngineEvent::SpinnerStart {
                 message: format!("  \u{1f9a5} {agent_name} thinking..."),

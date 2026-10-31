@@ -202,6 +202,58 @@ fn run_mock_read_session(format: &str) -> (String, String, bool) {
     )
 }
 
+/// Run a session with a prompt big enough that the engine compacts mid-turn,
+/// as soon as there is history to compact (after the second tool call), then
+/// finishes with `final_response`.
+fn run_mock_compacted_session(final_response: &str) -> (serde_json::Value, String) {
+    let tmp = tempfile::tempdir().unwrap();
+    for name in ["a.txt", "b.txt"] {
+        std::fs::write(tmp.path().join(name), "contents\n").unwrap();
+    }
+    let responses = serde_json::json!([
+        {"tool": "Read", "args": {"file_path": "a.txt"}},
+        {"tool": "Read", "args": {"file_path": "b.txt"}},
+        {"text": "<summary>the reads so far</summary>"},
+        {"text": final_response},
+    ]);
+    // ~11K of the 16K window: past the 85% trigger once the system prompt is
+    // counted, and still small enough to summarize.
+    let prompt = format!("read both files {}", "padding ".repeat(4_700));
+    let output = Command::new(koda_bin())
+        .args([
+            "-p",
+            prompt.as_str(),
+            "--provider",
+            "mock",
+            "--output-format",
+            "json",
+            "--project-root",
+        ])
+        .arg(tmp.path())
+        .env("XDG_CONFIG_HOME", tmp.path())
+        .env("KODA_MOCK_RESPONSES", responses.to_string())
+        .env("KODA_MAX_CONTEXT_TOKENS", "16000")
+        .output()
+        .expect("Failed to run koda");
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    (extract_json(&stdout), stderr)
+}
+
+/// Regression for #1444: the compaction hint was an assistant row, so it
+/// could come back as the run's `response`.
+#[test]
+fn mock_compaction_hint_is_never_the_response() {
+    let (json, stderr) = run_mock_compacted_session("The final answer.");
+    assert!(stderr.contains("Compacted"), "no compaction ran: {stderr}");
+    assert_eq!(json["response"], "The final answer.", "stderr: {stderr}");
+
+    // The case that was seen: the model ends on nothing after tool use.
+    let (json, stderr) = run_mock_compacted_session("");
+    assert!(stderr.contains("Compacted"), "no compaction ran: {stderr}");
+    assert_eq!(json["response"], "", "stderr: {stderr}");
+}
+
 #[test]
 fn mock_json_stdout_is_exactly_one_summary_object() {
     // Regression: the streamed reply used to land on stdout ahead of
