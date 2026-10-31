@@ -465,6 +465,22 @@ impl ChunkParser for GeminiChunkParser {
 
     fn finish(&mut self) -> Vec<StreamChunk> {
         let mut chunks = Vec::new();
+        let signature_chars: usize = self
+            .tool_calls
+            .iter()
+            .filter_map(|tc| tc.thought_signature.as_ref())
+            .map(String::len)
+            .sum();
+        // Each signature goes back with every later request and counts toward
+        // the prompt, so a long think shows up as a jump in context.
+        if signature_chars > 0 {
+            tracing::info!(
+                "Gemini thought signature: {signature_chars} chars, {} thinking tokens, \
+                 {} prompt tokens",
+                self.usage.thinking_tokens,
+                self.usage.prompt_tokens,
+            );
+        }
         if !self.tool_calls.is_empty() {
             chunks.push(StreamChunk::ToolCalls(std::mem::take(&mut self.tool_calls)));
         }
