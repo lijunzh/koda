@@ -418,6 +418,7 @@ from production builds to keep `koda-core`'s public API clean.
 
 **Stub-server tests** (`FakeLlmServer`, CI-safe):
 - `tests/no_summary_compaction_test.rs` — real headless run with the summary call emptied or failed: the task reaches the next request, the run finishes
+- `tests/gemini_stub_test.rs` — real headless run on the Gemini provider: a 503, a tool call and a failed reply in one turn
 
 ### Adding a new first-party capability checklist
 

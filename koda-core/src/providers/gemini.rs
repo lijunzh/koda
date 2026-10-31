@@ -197,6 +197,9 @@ impl GeminiProvider {
 // Request types are built via serde_json::json! for flexibility.
 // Only response types need Deserialize structs.
 
+/// Stands in for a missing thought signature. The value Gemini CLI uses.
+const SYNTHETIC_THOUGHT_SIGNATURE: &str = "skip_thought_signature_validator";
+
 /// Helper for building Gemini-format parts as JSON values.
 enum Part {
     InlineData {
@@ -262,6 +265,32 @@ struct FunctionDeclaration {
 struct GenerateResponse {
     candidates: Option<Vec<Candidate>>,
     usage_metadata: Option<UsageMetadata>,
+    /// Set instead of `candidates` when the prompt itself was blocked.
+    #[serde(default)]
+    prompt_feedback: Option<PromptFeedback>,
+}
+
+impl GenerateResponse {
+    /// Why generation stopped, lowercased, if this response says so.
+    fn stop_reason(&self) -> Option<String> {
+        let candidate = self.candidates.iter().flatten().rev().find_map(|c| {
+            if let Some(message) = &c.finish_message {
+                tracing::warn!("Gemini finish message: {message}");
+            }
+            c.finish_reason.as_ref()
+        });
+        let blocked = self.prompt_feedback.as_ref();
+        candidate
+            .or(blocked.and_then(|f| f.block_reason.as_ref()))
+            .map(|reason| reason.to_lowercase())
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PromptFeedback {
+    #[serde(default)]
+    block_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -270,6 +299,9 @@ struct Candidate {
     /// "STOP", "MAX_TOKENS", "SAFETY", "RECITATION", etc.
     #[serde(default, rename = "finishReason")]
     finish_reason: Option<String>,
+    /// The API's own explanation of `finish_reason`, when it gives one.
+    #[serde(default, rename = "finishMessage")]
+    finish_message: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -358,6 +390,8 @@ pub(crate) struct GeminiChunkParser {
     tool_calls: Vec<ToolCall>,
     usage: TokenUsage,
     tc_counter: u32,
+    /// A signature on a text or thought part, for the call that follows it.
+    pending_signature: Option<String>,
 }
 
 impl GeminiChunkParser {
@@ -366,6 +400,7 @@ impl GeminiChunkParser {
             tool_calls: Vec::new(),
             usage: TokenUsage::default(),
             tc_counter: 0,
+            pending_signature: None,
         }
     }
 }
@@ -387,11 +422,12 @@ impl ChunkParser for GeminiChunkParser {
             usage.log_cache_stats();
         }
 
+        if let Some(reason) = event.stop_reason() {
+            self.usage.stop_reason = reason;
+        }
+
         if let Some(candidates) = &event.candidates {
             for candidate in candidates {
-                if let Some(reason) = &candidate.finish_reason {
-                    self.usage.stop_reason = reason.to_lowercase();
-                }
                 if let Some(content) = &candidate.content
                     && let Some(parts) = &content.parts
                 {
@@ -411,8 +447,13 @@ impl ChunkParser for GeminiChunkParser {
                                 id: format!("gemini_tc_{}", self.tc_counter),
                                 function_name: fc.name.clone(),
                                 arguments: serde_json::to_string(&fc.args).unwrap_or_default(),
-                                thought_signature: part.thought_signature.clone(),
+                                thought_signature: part
+                                    .thought_signature
+                                    .clone()
+                                    .or(self.pending_signature.take()),
                             });
+                        } else if part.thought_signature.is_some() {
+                            self.pending_signature = part.thought_signature.clone();
                         }
                     }
                 }
@@ -634,7 +675,7 @@ impl GeminiProvider {
                 {
                     parts.push(serde_json::json!({ "text": text }));
                 }
-                for tc in tcs {
+                for (i, tc) in tcs.iter().enumerate() {
                     function_names.insert(tc.id.clone(), tc.function_name.clone());
                     let args: serde_json::Value =
                         serde_json::from_str(&tc.arguments).unwrap_or_default();
@@ -643,9 +684,15 @@ impl GeminiProvider {
                         args,
                     }
                     .to_json();
-                    // Echo back thought_signature if present (required by Gemini API)
+                    // Echo back thought_signature if present (required by Gemini
+                    // API). The first call of a model turn must have one, or the
+                    // request gets a 400, so a turn that came back without one,
+                    // or from another model, gets the bypass value.
                     if let Some(ref sig) = tc.thought_signature {
                         fc_part["thoughtSignature"] = serde_json::json!(sig);
+                    } else if i == 0 {
+                        fc_part["thoughtSignature"] =
+                            serde_json::json!(SYNTHETIC_THOUGHT_SIGNATURE);
                     }
                     parts.push(fc_part);
                 }
@@ -722,8 +769,12 @@ impl GeminiProvider {
         settings: Option<&crate::config::ModelSettings>,
         cached_content_name: Option<&str>,
     ) -> serde_json::Value {
-        let max_output = settings.and_then(|s| s.max_tokens).unwrap_or(8192);
-        let mut gen_config = serde_json::json!({ "maxOutputTokens": max_output });
+        // No cap unless one was set: thinking counts against it, so a default
+        // here can leave a hard turn with nothing to say. Gemini CLI sets none.
+        let mut gen_config = serde_json::json!({});
+        if let Some(max_output) = settings.and_then(|s| s.max_tokens) {
+            gen_config["maxOutputTokens"] = serde_json::json!(max_output);
+        }
         if let Some(temp) = settings.and_then(|s| s.temperature) {
             gen_config["temperature"] = serde_json::json!(temp);
         }
@@ -759,13 +810,11 @@ impl GeminiProvider {
         let mut content_text = String::new();
         let mut tool_calls = Vec::new();
         let mut tc_counter = 0u32;
-        let mut stop_reason = String::new();
+        let mut pending_signature = None;
+        let stop_reason = resp.stop_reason().unwrap_or_default();
 
         if let Some(candidates) = resp.candidates {
             for candidate in candidates {
-                if let Some(reason) = &candidate.finish_reason {
-                    stop_reason = reason.to_lowercase();
-                }
                 if let Some(content) = candidate.content
                     && let Some(parts) = content.parts
                 {
@@ -782,8 +831,12 @@ impl GeminiProvider {
                                 id: format!("gemini_tc_{tc_counter}"),
                                 function_name: fc.name,
                                 arguments: serde_json::to_string(&fc.args)?,
-                                thought_signature: part.thought_signature,
+                                thought_signature: part
+                                    .thought_signature
+                                    .or(pending_signature.take()),
                             });
+                        } else if part.thought_signature.is_some() {
+                            pending_signature = part.thought_signature;
                         }
                     }
                 }
@@ -1136,8 +1189,10 @@ mod tests {
     fn test_parse_text_response() {
         let p = make_provider();
         let resp = GenerateResponse {
+            prompt_feedback: None,
             candidates: Some(vec![Candidate {
                 finish_reason: None,
+                finish_message: None,
                 content: Some(CandidateContent {
                     parts: Some(vec![ResponsePart {
                         text: Some("Hello!".into()),
@@ -1165,8 +1220,10 @@ mod tests {
     fn test_parse_tool_call_response() {
         let p = make_provider();
         let resp = GenerateResponse {
+            prompt_feedback: None,
             candidates: Some(vec![Candidate {
                 finish_reason: None,
+                finish_message: None,
                 content: Some(CandidateContent {
                     parts: Some(vec![ResponsePart {
                         text: None,
@@ -1191,8 +1248,10 @@ mod tests {
     fn test_parse_response_filters_thinking_parts() {
         let p = make_provider();
         let resp = GenerateResponse {
+            prompt_feedback: None,
             candidates: Some(vec![Candidate {
                 finish_reason: None,
+                finish_message: None,
                 content: Some(CandidateContent {
                     parts: Some(vec![
                         ResponsePart {
@@ -1302,6 +1361,73 @@ mod tests {
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0].text.as_deref(), Some("Let me reason..."));
         assert_eq!(parts[0].thought, Some(true));
+    }
+
+    #[test]
+    fn test_first_call_of_a_turn_always_has_a_signature() {
+        let p = make_provider();
+        let call = |id: &str, sig: Option<&str>| ToolCall {
+            id: id.into(),
+            function_name: "Read".into(),
+            arguments: "{}".into(),
+            thought_signature: sig.map(String::from),
+        };
+        let assistant = |calls| ChatMessage {
+            role: "assistant".into(),
+            content: None,
+            tool_calls: Some(calls),
+            tool_call_id: None,
+            images: None,
+            reasoning: None,
+        };
+        let messages = vec![
+            assistant(vec![call("a", None), call("b", None)]),
+            tool_result("a", "x"),
+            tool_result("b", "y"),
+            assistant(vec![call("c", Some("real"))]),
+        ];
+        let (contents, _) = p.convert_messages(&messages);
+        let first = &contents[0]["parts"];
+        assert_eq!(first[0]["thoughtSignature"], SYNTHETIC_THOUGHT_SIGNATURE);
+        assert!(first[1].get("thoughtSignature").is_none());
+        assert_eq!(contents[2]["parts"][0]["thoughtSignature"], "real");
+    }
+
+    #[test]
+    fn test_signature_on_an_earlier_part_reaches_the_call() {
+        let p = make_provider();
+        let resp: GenerateResponse = serde_json::from_value(serde_json::json!({
+            "candidates": [{
+                "content": { "parts": [
+                    { "text": "thinking", "thought": true, "thoughtSignature": "sig" },
+                    { "functionCall": { "name": "Read", "args": {} } }
+                ] }
+            }]
+        }))
+        .unwrap();
+        let parsed = p.parse_response(resp).unwrap();
+        assert_eq!(
+            parsed.tool_calls[0].thought_signature.as_deref(),
+            Some("sig")
+        );
+    }
+
+    #[test]
+    fn test_request_has_no_output_cap_unless_one_was_set() {
+        let p = make_provider();
+        let body = p.build_request_body(&[], None, &[], None);
+        assert!(body["generationConfig"].get("maxOutputTokens").is_none());
+    }
+
+    #[test]
+    fn test_a_blocked_prompt_reports_why() {
+        let p = make_provider();
+        let resp: GenerateResponse = serde_json::from_value(serde_json::json!({
+            "promptFeedback": { "blockReason": "PROHIBITED_CONTENT" }
+        }))
+        .unwrap();
+        let parsed = p.parse_response(resp).unwrap();
+        assert_eq!(parsed.usage.stop_reason, "prohibited_content");
     }
 
     /// Compaction keys its retry on this: a summary cut off by the cap must

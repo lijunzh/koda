@@ -336,6 +336,31 @@ pub fn is_rate_limit_error(err: &anyhow::Error) -> bool {
         || msg.contains("too many requests")
         || msg.contains("quota exceeded")
         || msg.contains("overloaded") // Anthropic overload text
+        // Gemini under load; a local server still loading a model says 503 too.
+        || has_http_status(&msg, "503")
+        || msg.contains("high demand")
+}
+
+/// Whether a provider stop reason means the model failed to answer, rather
+/// than finished or hit its token cap. Gemini reports these as a normal reply
+/// with no content, so they need the reason to be told from a quiet model.
+pub fn is_failed_stop(stop_reason: &str) -> bool {
+    matches!(
+        stop_reason,
+        "malformed_function_call"
+            | "unexpected_tool_call"
+            | "too_many_tool_calls"
+            | "missing_thought_signature"
+            | "malformed_response"
+            | "safety"
+            | "recitation"
+            | "language"
+            | "blocklist"
+            | "prohibited_content"
+            | "spii"
+            | "image_safety"
+            | "other"
+    )
 }
 
 /// True iff `code` appears in `msg` (already lowercased) in a context
