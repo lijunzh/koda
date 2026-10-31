@@ -578,6 +578,8 @@ impl GeminiProvider {
     ) -> (Vec<serde_json::Value>, Option<serde_json::Value>) {
         let mut contents = Vec::new();
         let mut system_instruction = None;
+        let mut function_names = std::collections::HashMap::new();
+        let mut after_tool_result = false;
 
         for msg in messages {
             if msg.role == "system" {
@@ -592,24 +594,35 @@ impl GeminiProvider {
 
             let role = match msg.role.as_str() {
                 "assistant" => "model",
-                "tool" => "function",
                 other => other,
             };
 
-            // Tool result message
+            // Tool result message: a user turn holding one functionResponse
+            // per call of the model's turn, named after the function, not the
+            // call id. Newer models reject the old `function` role.
             if msg.role == "tool"
                 && let Some(content) = &msg.content
             {
-                let name = msg.tool_call_id.clone().unwrap_or_default();
-                contents.push(serde_json::json!({
-                    "role": "function",
-                    "parts": [Part::FunctionResponse {
-                        name,
-                        response: serde_json::json!({ "result": content }),
-                    }.to_json()]
-                }));
+                let id = msg.tool_call_id.clone().unwrap_or_default();
+                let name = function_names.get(&id).cloned().unwrap_or(id);
+                let part = Part::FunctionResponse {
+                    name,
+                    response: serde_json::json!({ "result": content }),
+                }
+                .to_json();
+                if after_tool_result
+                    && let Some(parts) = contents
+                        .last_mut()
+                        .and_then(|c: &mut serde_json::Value| c["parts"].as_array_mut())
+                {
+                    parts.push(part);
+                } else {
+                    contents.push(serde_json::json!({ "role": "user", "parts": [part] }));
+                }
+                after_tool_result = true;
                 continue;
             }
+            after_tool_result = false;
 
             // Assistant with tool calls
             if msg.role == "assistant"
@@ -622,6 +635,7 @@ impl GeminiProvider {
                     parts.push(serde_json::json!({ "text": text }));
                 }
                 for tc in tcs {
+                    function_names.insert(tc.id.clone(), tc.function_name.clone());
                     let args: serde_json::Value =
                         serde_json::from_str(&tc.arguments).unwrap_or_default();
                     let mut fc_part = Part::FunctionCall {
@@ -939,20 +953,56 @@ mod tests {
         assert_eq!(contents[0]["role"], "model");
     }
 
-    #[test]
-    fn test_convert_tool_result_becomes_function() {
-        let p = make_provider();
-        let messages = vec![ChatMessage {
+    fn tool_result(id: &str, output: &str) -> ChatMessage {
+        ChatMessage {
             role: "tool".into(),
-            content: Some("file contents".into()),
+            content: Some(output.into()),
             tool_calls: None,
-            tool_call_id: Some("Read".into()),
+            tool_call_id: Some(id.into()),
             images: None,
             reasoning: None,
-        }];
+        }
+    }
+
+    #[test]
+    fn test_convert_tool_results_join_one_user_turn_by_function_name() {
+        let p = make_provider();
+        let call = |id: &str, name: &str| ToolCall {
+            id: id.into(),
+            function_name: name.into(),
+            arguments: "{}".into(),
+            thought_signature: None,
+        };
+        let messages = vec![
+            ChatMessage {
+                role: "assistant".into(),
+                content: None,
+                tool_calls: Some(vec![
+                    call("gemini_tc_1", "Grep"),
+                    call("gemini_tc_2", "Read"),
+                ]),
+                tool_call_id: None,
+                images: None,
+                reasoning: None,
+            },
+            tool_result("gemini_tc_1", "a match"),
+            tool_result("gemini_tc_2", "file contents"),
+        ];
         let (contents, _) = p.convert_messages(&messages);
-        assert_eq!(contents.len(), 1);
-        assert_eq!(contents[0]["role"], "function");
+        assert_eq!(contents.len(), 2);
+        assert_eq!(contents[1]["role"], "user");
+        let parts = contents[1]["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["functionResponse"]["name"], "Grep");
+        assert_eq!(parts[1]["functionResponse"]["name"], "Read");
+    }
+
+    #[test]
+    fn test_convert_tool_result_without_its_call_keeps_the_id() {
+        let p = make_provider();
+        let (contents, _) = p.convert_messages(&[tool_result("Read", "file contents")]);
+        assert_eq!(contents[0]["role"], "user");
+        assert_eq!(contents[0]["parts"][0]["functionResponse"]["name"], "Read");
     }
 
     #[test]

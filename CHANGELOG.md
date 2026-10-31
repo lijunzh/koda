@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Gemini tool calls work on current models.** `gemini-flash-latest` rejected any request holding a tool result with a 400, because results used the old `function` role. They now go out as a single `user` turn with one `functionResponse` per call, named after the function instead of the call id (#1454).
+
 ## [0.5.1] - 2026-10-31
 
 ### Known gaps
