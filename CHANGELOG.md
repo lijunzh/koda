@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Fixed
 
 - **Gemini tool calls work on current models.** `gemini-flash-latest` rejected any request holding a tool result with a 400, because results used the old `function` role. They now go out as a single `user` turn with one `functionResponse` per call, named after the function instead of the call id (#1454).
+- **A Gemini summary cut off by the token cap is retried.** Non-streaming Gemini replies reported no stop reason, so a reply that thinking cut off after a few characters was stored as the summary and the messages it replaced were gone. Any reply under 8 characters now counts as no summary, so the marker carries the user's task (#1454).
 
 ## [0.5.1] - 2026-10-31
 

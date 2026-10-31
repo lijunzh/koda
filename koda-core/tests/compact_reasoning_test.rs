@@ -316,6 +316,21 @@ async fn an_empty_summary_keeps_the_task() {
     assert!(text.contains("Fix the parser in lexer.rs"), "{text}");
 }
 
+/// Gemini, 2026-10-31: a real run stored a summary of under four characters
+/// and the task went with the messages it replaced.
+#[tokio::test]
+async fn a_summary_too_short_to_mean_anything_keeps_the_task() {
+    let _serial = lock_compact_state().await;
+    let env = env_with_task("Fix the parser in lexer.rs").await;
+    let provider = MockProvider::new(vec![MockResponse::Text("OK".into())]);
+
+    let result = compact_with(&env, &provider).await;
+
+    assert!(result.no_summary);
+    let text = context_text(&env).await;
+    assert!(text.contains("Fix the parser in lexer.rs"), "{text}");
+}
+
 #[tokio::test]
 async fn carried_text_stays_within_the_cap() {
     let _serial = lock_compact_state().await;

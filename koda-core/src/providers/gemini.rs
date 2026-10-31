@@ -759,9 +759,13 @@ impl GeminiProvider {
         let mut content_text = String::new();
         let mut tool_calls = Vec::new();
         let mut tc_counter = 0u32;
+        let mut stop_reason = String::new();
 
         if let Some(candidates) = resp.candidates {
             for candidate in candidates {
+                if let Some(reason) = &candidate.finish_reason {
+                    stop_reason = reason.to_lowercase();
+                }
                 if let Some(content) = candidate.content
                     && let Some(parts) = content.parts
                 {
@@ -807,6 +811,7 @@ impl GeminiProvider {
                 completion_tokens: usage.candidates_token_count,
                 cache_read_tokens: usage.cached_content_token_count,
                 thinking_tokens: usage.thoughts_token_count,
+                stop_reason,
                 ..Default::default()
             },
         })
@@ -1297,6 +1302,22 @@ mod tests {
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0].text.as_deref(), Some("Let me reason..."));
         assert_eq!(parts[0].thought, Some(true));
+    }
+
+    /// Compaction keys its retry on this: a summary cut off by the cap must
+    /// report `max_tokens` from `chat`, like the streaming path does.
+    #[test]
+    fn test_parse_response_reports_max_tokens() {
+        let p = make_provider();
+        let resp: GenerateResponse = serde_json::from_value(serde_json::json!({
+            "candidates": [{
+                "content": { "parts": [{ "text": "<s" }] },
+                "finishReason": "MAX_TOKENS"
+            }]
+        }))
+        .unwrap();
+        let parsed = p.parse_response(resp).unwrap();
+        assert_eq!(parsed.usage.stop_reason, "max_tokens");
     }
 
     #[test]
