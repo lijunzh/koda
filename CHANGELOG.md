@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **Anthropic replies with a thinking block no longer fail non-streaming calls.** The summary request behind compaction parses a whole reply, and an unknown block type failed it, so on models that think (seen on Haiku 5.5) compaction never succeeded and older messages, including the user's task, were dropped without a summary. Blocks Koda doesn't read are now skipped.
 - **A partly finished batch of tool calls no longer leaves an orphaned result in the history.** Pruning dropped the assistant message but kept the results of its finished calls, so the history could carry a tool result with no matching call. Pruning now repeats until the history is consistent.
 - **Reading a FIFO, socket or device fails at once instead of hanging.** Opening a FIFO with no writer blocked the tool forever; these paths now return a "not a regular file" error.
 - **A sub-agent's grace-turn reminder reaches every provider and leaves its system prompt alone.** The reminder was a trailing `system` message: Anthropic never saw it and Gemini used it in place of the sub-agent's system prompt. It is now a `user` message.
