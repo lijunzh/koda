@@ -49,6 +49,7 @@
 
 use koda_core::compact::reset_compact_failures;
 use koda_core::engine::EngineEvent;
+use koda_core::persistence::Persistence;
 use koda_core::persistence::Role;
 use koda_test_utils::{Env, MockProvider, MockResponse};
 use std::sync::LazyLock;
@@ -133,6 +134,56 @@ fn saw_overflow_recovery_warn(events: &[EngineEvent]) -> bool {
 
 /// Pre-flight path: when the heuristic context gauge sits at or above
 /// [`AUTO_COMPACT_THRESHOLD`] (85%) before sending the next prompt,
+/// After a pre-flight compaction the request has one `system` message and
+/// the summary as user text, and no assistant turn carries the hint. The
+/// reply is the model's own, including when it comes back empty (#1444).
+#[tokio::test]
+async fn preflight_compact_sends_summary_as_user_and_keeps_final_reply() {
+    for (reply, expected) in [
+        ("Here is the real answer.", "Here is the real answer."),
+        ("", ""),
+    ] {
+        let _serial = lock_compact_state().await;
+        // Same sizing as the test below.
+        let env = Env::builder().max_context_tokens(8_000).build().await;
+        fill_history_with_pairs(&env, 7, &"x".repeat(1700)).await;
+        env.insert_user_message("now answer the real question")
+            .await;
+
+        let provider = MockProvider::new(vec![
+            MockResponse::Text("SUMMARY: prior conversation".into()),
+            MockResponse::Text(reply.into()),
+        ]);
+        let (result, _events) = env.run_inference_result(&provider).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+
+        let calls = provider.recorded_calls();
+        let request = calls.last().expect("a request after compaction");
+        assert_eq!(request.iter().filter(|m| m.role == "system").count(), 1);
+        assert_eq!(request[1].role, "user");
+        assert!(
+            request[1]
+                .content
+                .as_deref()
+                .unwrap()
+                .contains("SUMMARY: prior conversation")
+        );
+        assert!(!request.iter().any(|m| {
+            m.role == "assistant"
+                && m.content
+                    .as_deref()
+                    .is_some_and(|c| c.contains("context was compacted"))
+        }));
+
+        let response = env
+            .db
+            .last_assistant_message(&env.session_id)
+            .await
+            .unwrap();
+        assert_eq!(response, expected);
+    }
+}
+
 /// `inference_loop` runs `compact_session_with_provider` *before* the
 /// chat call. The user sees a "📦 Context at X% — compacting..." Info
 /// event followed by "✅ Compacted N messages...".

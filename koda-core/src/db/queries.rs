@@ -94,6 +94,21 @@ fn prune_mismatched_tool_calls_once(messages: &mut Vec<Message>) -> bool {
     true
 }
 
+/// The continuation hint compaction stored as an assistant row before #1444.
+const LEGACY_COMPACTION_HINT: &str = "Your context was compacted. The previous message contains \
+    a summary of our earlier conversation. Do not mention the summary or that compaction \
+    occurred. Continue the conversation naturally based on the summarized context.";
+
+/// Drop the old hint row from sessions compacted before #1444. The model never
+/// said it, and the summary now carries its own hint.
+pub(crate) fn prune_legacy_compaction_hint(messages: &mut Vec<Message>) {
+    messages.retain(|msg| {
+        msg.role != Role::Assistant
+            || msg.tool_calls.is_some()
+            || msg.content.as_deref() != Some(LEGACY_COMPACTION_HINT)
+    });
+}
+
 /// Drop assistant messages that have neither text content nor tool calls.
 ///
 /// These are "ghost" messages: the stream was interrupted (network drop or
@@ -515,6 +530,7 @@ impl Persistence for Database {
         let _ = full_reload; // currently unused; kept for future tracing/metrics
 
         // Sanitisation passes: run in order, each sees the output of the previous.
+        prune_legacy_compaction_hint(&mut messages); // (#1444)
         prune_mismatched_tool_calls(&mut messages); // (#428)
         prune_null_content_messages(&mut messages); // (#594)
         prune_whitespace_only_messages(&mut messages); // (#594)
@@ -660,13 +676,22 @@ impl Persistence for Database {
         Ok(rows.into_iter().map(|r| r.into()).collect())
     }
 
-    /// Get the last assistant text response for a session (for headless JSON output).
+    /// Get the model's final answer since the last user message (for headless
+    /// JSON output).
+    ///
+    /// Only a row with text and no tool calls counts: text next to a tool call
+    /// is narration, not the answer (#1444). Empty when the model finished
+    /// without one, so a reader sees that instead of an older row.
     async fn last_assistant_message(&self, session_id: &str) -> Result<String> {
         let row: Option<(String,)> = sqlx::query_as(
             "SELECT content FROM messages
-             WHERE session_id = ? AND role = 'assistant' AND content IS NOT NULL
+             WHERE session_id = ? AND role = 'assistant' AND tool_calls IS NULL
+               AND TRIM(content, ' ' || char(9, 10, 13)) != ''
+               AND id > COALESCE(
+                   (SELECT MAX(id) FROM messages WHERE session_id = ? AND role = 'user'), 0)
              ORDER BY id DESC LIMIT 1",
         )
+        .bind(session_id)
         .bind(session_id)
         .fetch_optional(&self.pool)
         .await?;
@@ -762,9 +787,11 @@ impl Persistence for Database {
 
     /// Compact a session: summarize old messages while preserving the most recent ones.
     ///
-    /// Keeps the last `preserve_count` messages intact, deletes the rest, and
-    /// inserts a summary (as a `system` message) plus a continuation hint
-    /// (as an `assistant` message) before the preserved tail.
+    /// Keeps the last `preserve_count` messages intact, archives the rest, and
+    /// inserts `summary` as a `system` row. That row is engine bookkeeping, so
+    /// it stays out of the user's history and of interruption detection;
+    /// [`assemble_messages`](crate::inference_helpers::assemble_messages) sends
+    /// it to the model as a user message ahead of the preserved tail.
     ///
     /// Returns the number of messages that were deleted/replaced.
     async fn compact_session(
@@ -828,20 +855,6 @@ impl Persistence for Database {
         )
         .bind(session_id)
         .bind(summary)
-        .execute(&mut *tx)
-        .await?;
-
-        // Insert a continuation hint so the LLM knows how to behave.
-        // Set completed_at immediately — synthetic messages are complete from birth.
-        let continuation = "Your context was compacted. The previous message contains a summary of our earlier conversation. \
-            Do not mention the summary or that compaction occurred. \
-            Continue the conversation naturally based on the summarized context.";
-        sqlx::query(
-            "INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, prompt_tokens, completion_tokens, completed_at)
-             VALUES (?, 'assistant', ?, NULL, NULL, NULL, NULL, datetime('now'))",
-        )
-        .bind(session_id)
-        .bind(continuation)
         .execute(&mut *tx)
         .await?;
 
