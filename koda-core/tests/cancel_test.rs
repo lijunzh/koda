@@ -120,6 +120,7 @@ async fn test_cancel_during_chat_stream_returns_immediately() {
         db: &db,
         session_id: &session_id,
         system_prompt: "You are a test assistant.",
+        git_snapshot: &koda_core::git::GitSnapshot::default(),
         provider: &provider,
         tools: &tools,
         tool_defs: &tool_defs,

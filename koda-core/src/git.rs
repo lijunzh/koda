@@ -27,6 +27,7 @@
 
 use std::path::Path;
 use std::process::Command;
+use std::sync::OnceLock;
 
 // ── Context injection (#263) ────────────────────────────────────
 
@@ -34,6 +35,26 @@ use std::process::Command;
 const MAX_DIFF_STAT_CHARS: usize = 2_000;
 /// Maximum recent commits to include.
 const MAX_RECENT_COMMITS: usize = 5;
+
+/// The session's git context, taken once and kept.
+///
+/// The system prompt sits at the front of every request, so anything that
+/// changes in it invalidates the provider's prompt cache for the whole
+/// conversation behind it. Recomputing the diff stat each iteration did that
+/// after every edit. The model runs git when it needs the current state.
+#[derive(Debug, Default)]
+pub struct GitSnapshot(OnceLock<String>);
+
+impl GitSnapshot {
+    /// The text to append to the system prompt; empty outside a git repo.
+    pub fn line(&self, project_root: &Path) -> &str {
+        self.0.get_or_init(|| {
+            git_context(project_root)
+                .map(|ctx| format!("\n{ctx}"))
+                .unwrap_or_default()
+        })
+    }
+}
 
 /// Compact git context for injection into the system prompt.
 ///
@@ -45,7 +66,9 @@ const MAX_RECENT_COMMITS: usize = 5;
 pub fn git_context(project_root: &Path) -> Option<String> {
     let branch = git_cmd(project_root, &["rev-parse", "--abbrev-ref", "HEAD"])?;
 
-    let mut parts = vec![format!("[Git: branch={branch}")];
+    let mut parts = vec![format!(
+        "[Git snapshot from session start; run git for current state: branch={branch}"
+    )];
 
     // Staged changes (stat only — token-efficient)
     if let Some(staged) = git_cmd(project_root, &["diff", "--cached", "--stat"])
@@ -127,8 +150,46 @@ mod tests {
         let ctx = git_context(Path::new("."));
         assert!(ctx.is_some());
         let ctx = ctx.unwrap();
-        assert!(ctx.contains("[Git: branch="));
+        assert!(ctx.contains("branch="));
+        assert!(ctx.contains("snapshot from session start"));
         assert!(ctx.contains("recent commits:"));
+    }
+
+    #[test]
+    fn snapshot_stays_the_same_after_the_tree_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let git = |args: &[&str]| {
+            let ok = Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .current_dir(root)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        std::fs::write(root.join("a.txt"), "one\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "start"]);
+
+        let snapshot = GitSnapshot::default();
+        let before = snapshot.line(root).to_string();
+        std::fs::write(root.join("a.txt"), "two\nthree\n").unwrap();
+
+        assert_ne!(
+            before.trim_start(),
+            git_context(root).unwrap(),
+            "the live context must have moved for this test to mean anything"
+        );
+        assert_eq!(snapshot.line(root), before);
+    }
+
+    #[test]
+    fn snapshot_outside_a_repo_is_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(GitSnapshot::default().line(tmp.path()), "");
     }
 
     #[test]
