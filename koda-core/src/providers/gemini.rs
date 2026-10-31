@@ -197,6 +197,13 @@ impl GeminiProvider {
 // Request types are built via serde_json::json! for flexibility.
 // Only response types need Deserialize structs.
 
+/// An id for a function call. It must be unique across the session: history
+/// keeps one result per call id, so a per-response counter that restarted at 1
+/// left the model with only its newest tool result (#1454).
+fn new_call_id() -> String {
+    format!("gemini_tc_{}", uuid::Uuid::new_v4().simple())
+}
+
 /// Stands in for a missing thought signature. The value Gemini CLI uses.
 const SYNTHETIC_THOUGHT_SIGNATURE: &str = "skip_thought_signature_validator";
 
@@ -389,7 +396,6 @@ use super::stream_collector::ChunkParser;
 pub(crate) struct GeminiChunkParser {
     tool_calls: Vec<ToolCall>,
     usage: TokenUsage,
-    tc_counter: u32,
     /// A signature on a text or thought part, for the call that follows it.
     pending_signature: Option<String>,
 }
@@ -399,7 +405,6 @@ impl GeminiChunkParser {
         Self {
             tool_calls: Vec::new(),
             usage: TokenUsage::default(),
-            tc_counter: 0,
             pending_signature: None,
         }
     }
@@ -442,9 +447,8 @@ impl ChunkParser for GeminiChunkParser {
                             }
                         }
                         if let Some(fc) = &part.function_call {
-                            self.tc_counter += 1;
                             self.tool_calls.push(ToolCall {
-                                id: format!("gemini_tc_{}", self.tc_counter),
+                                id: new_call_id(),
                                 function_name: fc.name.clone(),
                                 arguments: serde_json::to_string(&fc.args).unwrap_or_default(),
                                 thought_signature: part
@@ -825,7 +829,6 @@ impl GeminiProvider {
     fn parse_response(&self, resp: GenerateResponse) -> Result<LlmResponse> {
         let mut content_text = String::new();
         let mut tool_calls = Vec::new();
-        let mut tc_counter = 0u32;
         let mut pending_signature = None;
         let stop_reason = resp.stop_reason().unwrap_or_default();
 
@@ -842,9 +845,8 @@ impl GeminiProvider {
                             }
                         }
                         if let Some(fc) = part.function_call {
-                            tc_counter += 1;
                             tool_calls.push(ToolCall {
-                                id: format!("gemini_tc_{tc_counter}"),
+                                id: new_call_id(),
                                 function_name: fc.name,
                                 arguments: serde_json::to_string(&fc.args)?,
                                 thought_signature: part

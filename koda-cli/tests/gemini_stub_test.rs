@@ -25,19 +25,24 @@ fn sse(chunk: Value) -> ResponseTemplate {
         .set_body_string(format!("data: {chunk}\n\n"))
 }
 
+fn read_call(file_path: &str) -> ResponseTemplate {
+    sse(json!({"candidates": [{
+        "content": {"parts": [{"functionCall": {
+            "name": "Read",
+            "args": {"file_path": file_path},
+        }}]},
+        "finishReason": "STOP",
+    }]}))
+}
+
 fn reply(request: usize) -> ResponseTemplate {
     match request {
         0 => ResponseTemplate::new(503).set_body_string(
             r#"{"error":{"code":503,"message":"This model is currently experiencing high demand."}}"#,
         ),
-        1 => sse(json!({"candidates": [{
-            "content": {"parts": [{"functionCall": {
-                "name": "Read",
-                "args": {"file_path": "notes.txt"},
-            }}]},
-            "finishReason": "STOP",
-        }]})),
-        2 => sse(json!({"candidates": [{"finishReason": "MALFORMED_FUNCTION_CALL"}]})),
+        1 => read_call("notes.txt"),
+        2 => read_call("more.txt"),
+        3 => sse(json!({"candidates": [{"finishReason": "MALFORMED_FUNCTION_CALL"}]})),
         _ => sse(json!({"candidates": [{
             "content": {"parts": [{"text": FINAL_TEXT}]},
             "finishReason": "STOP",
@@ -56,7 +61,8 @@ async fn a_busy_server_and_a_failed_reply_do_not_end_the_turn() {
         .await;
 
     let tmp = tempfile::tempdir().unwrap();
-    std::fs::write(tmp.path().join("notes.txt"), "some notes\n").unwrap();
+    std::fs::write(tmp.path().join("notes.txt"), "first file\n").unwrap();
+    std::fs::write(tmp.path().join("more.txt"), "second file\n").unwrap();
     let child = tokio::process::Command::new(koda_bin())
         .args(["-p", "Read notes.txt", "--output-format", "json"])
         .args(["--provider", "gemini", "--model", "gemini-flash-latest"])
@@ -89,9 +95,9 @@ async fn a_busy_server_and_a_failed_reply_do_not_end_the_turn() {
         .filter(|r| r.url.path().contains("streamGenerateContent"))
         .map(|r| serde_json::from_slice(&r.body).unwrap())
         .collect();
-    assert_eq!(turns.len(), 4, "the 503 and the failed reply are retried");
+    assert_eq!(turns.len(), 5, "the 503 and the failed reply are retried");
 
-    let last = &turns[3];
+    let last = &turns[4];
     assert!(last["generationConfig"].get("maxOutputTokens").is_none());
     let contents = last["contents"].as_array().unwrap();
     let call = &contents[contents.len() - 2];
@@ -101,4 +107,9 @@ async fn a_busy_server_and_a_failed_reply_do_not_end_the_turn() {
     assert_eq!(result_turn["role"], "user");
     let response = &result_turn["parts"][0]["functionResponse"];
     assert_eq!(response["name"], "Read", "{result_turn}");
+
+    // Every result stays in history, not only the newest (#1454).
+    let sent = last["contents"].to_string();
+    assert!(sent.contains("first file"), "{sent}");
+    assert!(sent.contains("second file"), "{sent}");
 }
