@@ -53,7 +53,9 @@ use std::time::Duration;
 
 use serde_json::Value;
 use wiremock::matchers::{method, path_regex};
-use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+use wiremock::{Mock, MockServer};
+
+pub use wiremock::{Request, ResponseTemplate};
 
 /// In-process fake LLM server for HTTP-level provider tests.
 ///
@@ -127,6 +129,23 @@ impl FakeLlmServer {
                     .insert_header("content-type", "text/event-stream")
                     .set_body_string(body),
             )
+            .mount(&self.server)
+            .await;
+    }
+
+    /// Mount a response computed from each request.
+    ///
+    /// For a conversation the fixed `mount_*` responses can't script, where
+    /// the reply depends on what the client just sent.
+    pub async fn mount_fn(
+        &self,
+        http_method: &str,
+        path_re: &str,
+        respond: impl Fn(&Request) -> ResponseTemplate + Send + Sync + 'static,
+    ) {
+        Mock::given(method(http_method))
+            .and(path_regex(path_re))
+            .respond_with(respond)
             .mount(&self.server)
             .await;
     }

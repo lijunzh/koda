@@ -1863,6 +1863,7 @@ dependencies = [
  "crossterm",
  "futures-util",
  "koda-core",
+ "koda-test-utils",
  "libc",
  "pretty_assertions",
  "ratatui",

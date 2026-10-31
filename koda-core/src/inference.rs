@@ -43,8 +43,8 @@ use crate::file_tracker::FileTracker;
 use crate::inference_helpers::{
     AUTO_COMPACT_THRESHOLD, CONTEXT_WARN_THRESHOLD, RATE_LIMIT_MAX_RETRIES, assemble_messages,
     context_limit_from_error, estimate_subagent_preflight, estimate_tokens,
-    is_context_overflow_error, is_image_rejection_error, is_network_transient_error,
-    is_rate_limit_error, is_server_error, rate_limit_backoff,
+    is_context_overflow_error, is_failed_stop, is_image_rejection_error,
+    is_network_transient_error, is_rate_limit_error, is_server_error, rate_limit_backoff,
 };
 use crate::loop_guard::{LoopAction, LoopDetector};
 use crate::persistence::Persistence;
@@ -1260,7 +1260,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>) -> Result<()> {
 
         // Empty response after tool use — retry once before giving up.
         if tool_calls.is_empty()
-            && made_tool_calls
+            && (made_tool_calls || is_failed_stop(&usage.stop_reason))
             && full_text.trim().is_empty()
             && usage.stop_reason != "max_tokens"
             && !retried_empty
@@ -1318,6 +1318,14 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>) -> Result<()> {
                     ),
                 });
                 continue;
+            } else if is_failed_stop(&usage.stop_reason) && full_text.trim().is_empty() {
+                sink.emit(EngineEvent::Warn {
+                    message: format!(
+                        "Model {} stopped without a reply ({}). \
+                         Try rephrasing, run /compact, or switch models with /model.",
+                        config.model, usage.stop_reason,
+                    ),
+                });
             } else if made_tool_calls && full_text.trim().is_empty() {
                 sink.emit(EngineEvent::Warn {
                     message: format!(

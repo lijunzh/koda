@@ -108,6 +108,10 @@ const MAX_CARRIED_CHARS: usize = 4_000;
 /// Maximum number of head-truncation retries when history is too large.
 const MAX_TRUNCATION_RETRIES: usize = 3;
 
+/// A reply shorter than this can't describe a conversation. Storing it would
+/// lose the task the way an empty summary would, so it counts as none.
+const MIN_SUMMARY_CHARS: usize = 8;
+
 /// Fraction of messages to drop on each truncation attempt.
 const TRUNCATION_DROP_FRACTION: f64 = 0.2;
 
@@ -226,7 +230,10 @@ pub async fn compact_session_with_provider(
         };
         let response = provider.chat(&messages, &[], &compact_settings).await?;
         let content = response.content.as_deref().unwrap_or("");
-        let (summary, complete) = summary_from_reply(content);
+        let (mut summary, complete) = summary_from_reply(content);
+        if summary.chars().count() < MIN_SUMMARY_CHARS {
+            summary.clear();
+        }
         let cut_off = response.usage.stop_reason == "max_tokens" || !complete;
         if !cut_off && !summary.is_empty() {
             break Some(summary);
@@ -241,6 +248,11 @@ pub async fn compact_session_with_provider(
             continue;
         }
         if summary.is_empty() {
+            tracing::warn!(
+                "Compact reply has no usable summary: {} chars, stop reason {:?}",
+                content.len(),
+                response.usage.stop_reason
+            );
             break None;
         }
         // Still cut off with no room left to retry: a partial summary beats
@@ -256,7 +268,7 @@ pub async fn compact_session_with_provider(
     let no_summary = summary.is_none();
     let summary = summary.unwrap_or_else(|| {
         tracing::warn!(
-            "Compact summary came back empty; replacing {compact_count} messages \
+            "Compact summary is empty or too short; replacing {compact_count} messages \
              with a \"{NO_SUMMARY_MARKER}\" marker"
         );
         no_summary_text(&history[..compact_count])

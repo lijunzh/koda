@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Gemini keeps every tool result.** Call ids restarted at `gemini_tc_1` with each response, and history keeps one result per call id, so the model saw only its newest tool result and kept re-reading files. Ids are now unique. Sessions saved before this fix keep the repeated ids.
+- **Gemini tool calls work on current models.** `gemini-flash-latest` rejected any request holding a tool result with a 400, because results used the old `function` role. They now go out as a single `user` turn with one `functionResponse` per call, named after the function instead of the call id (#1454).
+- **A Gemini summary cut off by the token cap is retried.** Non-streaming Gemini replies reported no stop reason, so a reply that thinking cut off after a few characters was stored as the summary and the messages it replaced were gone. Any reply under 8 characters now counts as no summary, so the marker carries the user's task (#1454).
+- **Gemini turns no longer fail on a missing thought signature.** The first function call of every model turn now always carries one, including a signature that arrived on an earlier part, the way Gemini CLI does it.
+- **A Gemini reply that stops abnormally says so.** `MALFORMED_FUNCTION_CALL`, `SAFETY`, `RECITATION`, a blocked prompt and similar stops used to look like an empty reply. They now get one retry on any turn, then a warning naming the reason.
+- **Gemini no longer defaults to an 8,192-token output cap.** Thinking counts against the cap, so a hard turn could spend all of it and return nothing. A cap is sent only when one is set.
+- **A 503 or "high demand" reply is retried with backoff** instead of ending the turn, on every provider.
+
 ## [0.5.1] - 2026-10-31
 
 ### Known gaps
