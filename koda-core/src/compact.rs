@@ -31,7 +31,7 @@
 //! that doesn't need frontier-class reasoning.
 
 use crate::config::ModelSettings;
-use crate::db::Database;
+use crate::db::{Database, Role};
 use crate::persistence::Persistence;
 use crate::providers::{ChatMessage, LlmProvider};
 use anyhow::Result;
@@ -94,6 +94,16 @@ const COMPACT_MIN_OUTPUT_TOKENS: usize = 1_024;
 /// Stored in place of a summary the model could not produce, so the replaced
 /// messages still leave the context. Same fallback as Codex.
 const NO_SUMMARY_MARKER: &str = "(no summary available)";
+
+/// Heading on a stored compaction summary.
+const SUMMARY_HEADING: &str = "[Compacted conversation summary]";
+
+/// Heading on what a marker carries from the messages it replaces.
+const CARRIED_HEADING: &str = "Carried over from the earlier conversation:";
+
+/// Most text a marker carries from the messages it replaces. A compaction has
+/// to shrink the context, so this stays well under a small window.
+const MAX_CARRIED_CHARS: usize = 4_000;
 
 /// Maximum number of head-truncation retries when history is too large.
 const MAX_TRUNCATION_RETRIES: usize = 3;
@@ -249,7 +259,7 @@ pub async fn compact_session_with_provider(
             "Compact summary came back empty; replacing {compact_count} messages \
              with a \"{NO_SUMMARY_MARKER}\" marker"
         );
-        NO_SUMMARY_MARKER.to_string()
+        no_summary_text(&history[..compact_count])
     });
     let deleted = replace_with_summary(db, session_id, &summary, preserve_count).await?;
 
@@ -284,12 +294,62 @@ pub async fn compact_without_summary(
         "Dropping {} messages without a summary to fit the window",
         history.len() - preserve_count
     );
-    let deleted = replace_with_summary(db, session_id, NO_SUMMARY_MARKER, preserve_count).await?;
+    let text = no_summary_text(&history[..history.len() - preserve_count]);
+    let deleted = replace_with_summary(db, session_id, &text, preserve_count).await?;
     Ok(Ok(CompactResult {
         deleted,
-        summary_tokens: NO_SUMMARY_MARKER.len() / 4,
+        summary_tokens: text.len() / 4,
         no_summary: true,
     }))
+}
+
+/// The marker, plus what the model can't work without: the user's messages and
+/// any earlier summary from the part being replaced (#1452).
+///
+/// Newest first until [`MAX_CARRIED_CHARS`] runs out, the same order Codex
+/// keeps user messages through compaction, then back in conversation order.
+fn no_summary_text(replaced: &[crate::db::Message]) -> String {
+    let mut budget = MAX_CARRIED_CHARS;
+    let mut carried = Vec::new();
+    for msg in replaced.iter().rev() {
+        let Some(text) = msg.content.as_deref().map(str::trim) else {
+            continue;
+        };
+        let keep = match msg.role {
+            Role::User => msg.tool_call_id.is_none(),
+            Role::System => text.starts_with(SUMMARY_HEADING),
+            _ => false,
+        };
+        if !keep || text.is_empty() {
+            continue;
+        }
+        if budget == 0 {
+            break;
+        }
+        // An earlier marker carries its text forward; don't nest the marker.
+        let text = [SUMMARY_HEADING, NO_SUMMARY_MARKER, CARRIED_HEADING]
+            .iter()
+            .fold(text, |text, prefix| {
+                text.strip_prefix(prefix).unwrap_or(text).trim()
+            });
+        let end = text
+            .char_indices()
+            .map(|(i, c)| i + c.len_utf8())
+            .take_while(|end| *end <= budget)
+            .last()
+            .unwrap_or(0);
+        budget -= end;
+        carried.push(&text[..end]);
+    }
+    carried.reverse();
+    let mut out = NO_SUMMARY_MARKER.to_string();
+    if !carried.is_empty() {
+        out.push_str("\n\n");
+        out.push_str(CARRIED_HEADING);
+        out.push_str("\n\n");
+        out.push_str(&carried.join("\n\n"));
+    }
+    out
 }
 
 /// Load the history and decide how many trailing messages stay verbatim.
@@ -322,7 +382,7 @@ async fn replace_with_summary(
     summary: &str,
     preserve_count: usize,
 ) -> Result<usize> {
-    let compact_message = format!("[Compacted conversation summary]\n\n{summary}");
+    let compact_message = format!("{SUMMARY_HEADING}\n\n{summary}");
     db.compact_session(session_id, &compact_message, preserve_count)
         .await
 }
@@ -576,7 +636,7 @@ mod tests {
         Message {
             id: 0,
             session_id: String::new(),
-            role: role.parse().unwrap_or(crate::db::Role::User),
+            role: role.parse().unwrap_or(Role::User),
             content: content.map(String::from),
             full_content: None,
             tool_calls: tool_calls.map(String::from),
