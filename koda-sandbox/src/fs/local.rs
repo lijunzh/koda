@@ -123,6 +123,16 @@ impl LocalFileSystem {
 #[async_trait]
 impl FileSystem for LocalFileSystem {
     async fn read(&self, path: &Path, max_bytes: Option<usize>) -> FsResult<Vec<u8>> {
+        // Opening a FIFO blocks until a writer appears, and a device can
+        // stream forever. Directories keep their usual OS error.
+        let meta = fs::metadata(path).await?;
+        if !meta.is_file() && !meta.is_dir() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("{} is not a regular file", path.display()),
+            )
+            .into());
+        }
         let mut buf = fs::read(path).await?;
         if let Some(cap) = max_bytes
             && buf.len() > cap
@@ -551,5 +561,21 @@ mod tests {
         let m = fs.stat(&link).await.unwrap();
         assert!(m.is_symlink);
         assert!(!m.is_dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn read_rejects_a_fifo_instead_of_blocking() {
+        // With no writer, opening the pipe would block forever.
+        let (dir, fs) = fixture();
+        let pipe = dir.path().join("pipe");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&pipe)
+            .status()
+            .unwrap();
+        assert!(made.success());
+
+        let err = fs.read(&pipe, None).await.unwrap_err();
+        assert!(err.to_string().contains("not a regular file"), "{err}");
     }
 }

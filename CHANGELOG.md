@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Fixed
 
 - **A partly finished batch of tool calls no longer leaves an orphaned result in the history.** Pruning dropped the assistant message but kept the results of its finished calls, so the history could carry a tool result with no matching call. Pruning now repeats until the history is consistent.
+- **Reading a FIFO, socket or device fails at once instead of hanging.** Opening a FIFO with no writer blocked the tool forever; these paths now return a "not a regular file" error.
 
 ## [0.5.0] - 2026-10-29
 
