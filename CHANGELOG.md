@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-31
+
+### Known gaps
+
+- Compaction on Gemini has not run on a real model (#1454), and the no-summary path has unit tests only (#1455).
+
 ### Security
 
 - **The Gemini API key travels in the `x-goog-api-key` header, no longer in the URL.** Every Gemini request put the key in a `?key=` query parameter, on the belief that the API offered no header; Google's own REST examples use `x-goog-api-key`. A key in the URL ends up in request logs, proxies and traces, and CodeQL flagged it five times (`rust/cleartext-transmission`, alerts #26 to #30, first dismissed in April and reopened in August). URLs are now key-free and the header is attached by the provider's own `get`/`post` helpers; HTTPS is still enforced for `googleapis.com`.
