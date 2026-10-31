@@ -12,6 +12,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **WebFetch fetches `http://` URLs over HTTPS.** The initial URL and every redirect hop are upgraded in the one validation seam they all pass through. WebFetch already refused loopback and private hosts, so a plain-HTTP fetch had no case left except a public page sent in the clear; Claude Code's WebFetch upgrades the same way. A site that serves HTTP only now fails with a connection error. (CodeQL `rust/non-https-url`, alert #31.)
 - **`zip` 9.0.0 → 9.1.3** (Dependabot alert 17, GHSA-m665-v7pm-7grj / CVE-2026-115905: a crafted archive with inconsistent headers can make an extractor overwrite arbitrary files; patched in 9.0.5). Koda uses `zip` only to write debug bundles and parses archives in tests alone, so nothing shipped was exploitable; the lockfile moves zip, its `typed-path` 0.12.3 → 0.13.0, and `nix` 0.31.2 → 0.31.3, which zip 9.0.5+ requires and which `cargo update -p zip` alone could not move past rmcp's `process-wrap` pin.
 
+### Fixed
+
+- **A partly finished batch of tool calls no longer leaves an orphaned result in the history.** Pruning dropped the assistant message but kept the results of its finished calls, so the history could carry a tool result with no matching call. Pruning now repeats until the history is consistent.
+
 ## [0.5.0] - 2026-10-29
 
 ### Security
