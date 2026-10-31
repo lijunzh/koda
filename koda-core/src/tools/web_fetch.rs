@@ -250,8 +250,20 @@ where
     // request rather than the current iteration's tail.
     let response = loop {
         let client = pinned_client_for(&current);
+        let mut request_url = current.url.clone();
+        if request_url.scheme() == "http" {
+            request_url
+                .set_scheme("https")
+                .map_err(|_| anyhow::anyhow!("failed to upgrade URL scheme to https"))?;
+        }
+        if request_url.scheme() != "https" {
+            return Err(anyhow::anyhow!(
+                "unsupported URL scheme for WebFetch: {}",
+                request_url.scheme()
+            ));
+        }
         let response = client
-            .get(current.url.clone())
+            .get(request_url)
             .header("User-Agent", USER_AGENT)
             .send()
             .await
