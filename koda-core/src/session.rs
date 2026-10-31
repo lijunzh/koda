@@ -222,6 +222,9 @@ pub struct KodaSession {
     /// nested `InvokeAgent` calls inside a spawned sub-agent register
     /// in the caller-visible slot, not a fresh per-call one).
     pub bg_agents: Arc<ChildAgentRegistry>,
+    /// Git context for the system prompt, taken on the first turn and kept
+    /// for the session so the provider's prompt cache stays valid.
+    pub git_snapshot: crate::git::GitSnapshot,
 
     /// Cross-turn sub-agent result cache (#1022 B12).
     ///
@@ -363,6 +366,7 @@ impl KodaSession {
             // agents survive across turns and the cache yields
             // cross-turn hits.
             bg_agents,
+            git_snapshot: crate::git::GitSnapshot::default(),
             sub_agent_cache: SubAgentCache::new(),
             // No forwarder yet; clients (TUI / ACP) call
             // `attach_event_sink` to spawn it. Headless paths leave
@@ -553,6 +557,7 @@ impl KodaSession {
             cancel: effective_cancel.clone(),
             cmd_rx,
             file_tracker: &mut self.file_tracker,
+            git_snapshot: &self.git_snapshot,
             bg_agents: &self.bg_agents,
             sub_agent_cache: &self.sub_agent_cache,
         })
