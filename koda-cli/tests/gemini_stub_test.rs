@@ -113,3 +113,77 @@ async fn a_busy_server_and_a_failed_reply_do_not_end_the_turn() {
     assert!(sent.contains("first file"), "{sent}");
     assert!(sent.contains("second file"), "{sent}");
 }
+
+/// #1449: a mid-history `system` message used to replace Gemini's system
+/// prompt. After a compaction the prompt must be the same and the summary must
+/// arrive in `contents`, which only ever holds `user` and `model` turns.
+#[tokio::test(flavor = "multi_thread")]
+async fn compaction_leaves_the_system_prompt_alone() {
+    const FILES: usize = 40;
+    const SUMMARY: &str = "The user asked to read the notes.";
+
+    let server = FakeLlmServer::spawn().await;
+    server
+        .mount_fn("POST", r".*:generateContent$", |_| {
+            ResponseTemplate::new(200).set_body_json(json!({"candidates": [{
+                "content": {"parts": [{"text": format!("<summary>{SUMMARY}</summary>")}]},
+                "finishReason": "STOP",
+            }]}))
+        })
+        .await;
+    let turn = AtomicUsize::new(0);
+    server
+        .mount_fn("POST", r".*:streamGenerateContent$", move |request| {
+            let body = String::from_utf8_lossy(&request.body);
+            let turn = turn.fetch_add(1, Ordering::SeqCst);
+            if turn >= FILES || body.contains(SUMMARY) {
+                reply(usize::MAX)
+            } else {
+                read_call(&format!("notes_{turn}.txt"))
+            }
+        })
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    for i in 0..FILES {
+        let text = format!("note {i}: nothing to see in this file\n").repeat(400);
+        std::fs::write(tmp.path().join(format!("notes_{i}.txt")), text).unwrap();
+    }
+    let child = tokio::process::Command::new(koda_bin())
+        .args(["-p", "Read the notes", "--output-format", "json"])
+        .args(["--provider", "gemini", "--model", "gemini-flash-latest"])
+        .args(["--base-url", &server.url()])
+        .args(["--max-context-tokens", "12000"])
+        .arg("--project-root")
+        .arg(tmp.path())
+        .env("XDG_CONFIG_HOME", tmp.path())
+        .env("GEMINI_API_KEY", "test-key")
+        .kill_on_drop(true)
+        .output();
+    let output = tokio::time::timeout(Duration::from_secs(120), child)
+        .await
+        .expect("koda hung")
+        .expect("failed to run koda");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let received = server.received_requests().await;
+    let turns: Vec<Value> = received
+        .iter()
+        .filter(|r| r.url.path().contains("streamGenerateContent"))
+        .map(|r| serde_json::from_slice(&r.body).unwrap())
+        .collect();
+    let (first, last) = (&turns[0], &turns[turns.len() - 1]);
+    assert!(last.to_string().contains(SUMMARY), "never compacted");
+    assert!(first["systemInstruction"]["parts"][0]["text"].is_string());
+    assert_eq!(first["systemInstruction"], last["systemInstruction"]);
+    for content in last["contents"].as_array().unwrap() {
+        assert!(
+            content["role"] == "user" || content["role"] == "model",
+            "{content}"
+        );
+    }
+}

@@ -316,6 +316,25 @@ async fn an_empty_summary_keeps_the_task() {
     assert!(text.contains("Fix the parser in lexer.rs"), "{text}");
 }
 
+/// Gemini, 2026-10-31: three replies of 6-9K chars stopped normally with no
+/// <summary> tag, and all of that text was thrown away for the marker.
+#[tokio::test]
+async fn a_finished_reply_with_no_summary_tag_keeps_its_analysis() {
+    let _serial = lock_compact_state().await;
+    let env = env_with_task("Fix the parser in lexer.rs").await;
+    let provider = MockProvider::new(vec![MockResponse::Text(
+        "<analysis>The user wants the parser fixed in lexer.rs.</analysis>".into(),
+    )]);
+
+    let result = compact_with(&env, &provider).await;
+
+    assert!(!result.no_summary);
+    assert_eq!(provider.recorded_max_tokens().len(), 1, "no retry needed");
+    let text = context_text(&env).await;
+    assert!(text.contains("The user wants the parser fixed"), "{text}");
+    assert!(!text.contains("<analysis>"), "{text}");
+}
+
 /// Gemini, 2026-10-31: a real run stored a summary of under four characters
 /// and the task went with the messages it replaced.
 #[tokio::test]

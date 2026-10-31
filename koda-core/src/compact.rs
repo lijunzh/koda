@@ -230,7 +230,22 @@ pub async fn compact_session_with_provider(
         };
         let response = provider.chat(&messages, &[], &compact_settings).await?;
         let content = response.content.as_deref().unwrap_or("");
-        let (mut summary, complete) = summary_from_reply(content);
+        let (mut summary, mut complete) = summary_from_reply(content);
+        // A finished reply that never opened <summary> still holds what the
+        // model worked out: Gemini sent 6-9K of analysis like this. It beats
+        // the marker.
+        if summary.is_empty()
+            && !complete
+            && response.usage.stop_reason != "max_tokens"
+            && !content.contains("<summary>")
+        {
+            tracing::warn!(
+                "Compact reply has no <summary> tag; keeping its {} chars of analysis",
+                content.len()
+            );
+            summary = analysis_text(content);
+            complete = true;
+        }
         if summary.chars().count() < MIN_SUMMARY_CHARS {
             summary.clear();
         }
@@ -513,6 +528,15 @@ fn summary_from_reply(content: &str) -> (String, bool) {
         return (text, false);
     }
     (strip_analysis_block(content), true)
+}
+
+/// A reply's text with the `<analysis>` tags removed.
+fn analysis_text(content: &str) -> String {
+    content
+        .replace("<analysis>", "")
+        .replace("</analysis>", "")
+        .trim()
+        .to_string()
 }
 
 /// Strip the `<analysis>` scratchpad block from the summary.
