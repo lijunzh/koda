@@ -24,9 +24,18 @@ use crate::persistence::{
 ///
 /// Handles orphans from any source: interrupted sessions, compaction
 /// boundaries, or session resume.
+///
+/// Dropping an assistant message orphans the results of its other calls, so
+/// this repeats until a pass finds nothing. Each repeat removes at least one
+/// message, which bounds the loop.
 pub(crate) fn prune_mismatched_tool_calls(messages: &mut Vec<Message>) {
+    while prune_mismatched_tool_calls_once(messages) {}
+}
+
+/// One pruning pass. Returns whether it found any mismatched ID.
+fn prune_mismatched_tool_calls_once(messages: &mut Vec<Message>) -> bool {
     if messages.is_empty() {
-        return;
+        return false;
     }
 
     let mut tool_call_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -55,7 +64,7 @@ pub(crate) fn prune_mismatched_tool_calls(messages: &mut Vec<Message>) {
         .collect();
 
     if mismatched.is_empty() {
-        return;
+        return false;
     }
 
     messages.retain(|msg| {
@@ -82,6 +91,7 @@ pub(crate) fn prune_mismatched_tool_calls(messages: &mut Vec<Message>) {
         }
         true
     });
+    true
 }
 
 /// Drop assistant messages that have neither text content nor tool calls.

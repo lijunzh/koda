@@ -439,6 +439,21 @@ fn test_prune_mismatched_tool_calls_unit() {
     prune_mismatched_tool_calls(&mut msgs);
     assert_eq!(msgs.len(), 3, "complete pair should be preserved");
     assert!(msgs[1].tool_calls.is_some());
+
+    // Partial batch: dropping the assistant must take its finished sibling too
+    let mut msgs = vec![
+        msg("user", Some("hi"), None, None),
+        msg(
+            "assistant",
+            None,
+            Some(r#"[{"id":"t1"},{"id":"t2"}]"#),
+            None,
+        ),
+        msg("tool", Some("ok"), None, Some("t1")),
+    ];
+    prune_mismatched_tool_calls(&mut msgs);
+    assert_eq!(msgs.len(), 1, "partial batch should leave no orphan");
+    assert_eq!(msgs[0].role, Role::User);
 }
 
 // ── #1159: dedupe_tool_results_by_call_id ─────────────────────────────────
