@@ -1135,6 +1135,25 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn edit_file_keeps_an_executable_script_executable() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("script.sh");
+        std::fs::write(&f, "before").unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let args = json!({
+            "file_path": "script.sh",
+            "replacements": [{"old_str": "before", "new_str": "after"}]
+        });
+        edit_file(tmp.path(), &args, &cache(), &fs()).await.unwrap();
+
+        let mode = std::fs::metadata(&f).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o755);
+    }
+
     #[tokio::test]
     async fn edit_file_multi_match_errors_with_line_numbers() {
         let tmp = tempfile::tempdir().unwrap();
