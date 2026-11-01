@@ -45,7 +45,7 @@ use crate::inference_helpers::{
     RATE_LIMIT_MAX_RETRIES, assemble_messages, context_limit_from_error, ends_with_question,
     estimate_subagent_preflight, estimate_tokens, is_context_overflow_error, is_failed_stop,
     is_image_rejection_error, is_network_transient_error, is_rate_limit_error, is_server_error,
-    rate_limit_backoff,
+    rate_limit_backoff, short_hash,
 };
 use crate::loop_guard::{LoopAction, LoopDetector};
 use crate::persistence::Persistence;
@@ -914,6 +914,8 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
     let mut learned_context: Option<usize> = None;
     let mut iteration = 0u32;
     let mut made_tool_calls = false;
+    let mut last_system_hash: Option<String> = None;
+    let mut last_tools_hash: Option<String> = None;
     let mut retried_empty = false;
     let mut loop_detector = LoopDetector::new();
     // #1022 B12: `bg_agents` and `sub_agent_cache` now live on
@@ -1155,6 +1157,17 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
         let scoped_tool_defs = skill_scope.filter_tool_defs(tool_defs);
 
         let active_tool_defs: &[ToolDefinition] = &scoped_tool_defs;
+        let system_hash = short_hash(&system_prompt_full);
+        let tools_json = serde_json::to_string(active_tool_defs).unwrap_or_default();
+        let tools_hash = short_hash(&tools_json);
+        if last_system_hash.as_deref() != Some(&system_hash) {
+            tracing::debug!(system_hash, "System prompt:\n{system_prompt_full}");
+            last_system_hash = Some(system_hash.clone());
+        }
+        if last_tools_hash.as_deref() != Some(&tools_hash) {
+            tracing::debug!(tools_hash, "Tool definitions:\n{tools_json}");
+            last_tools_hash = Some(tools_hash.clone());
+        }
 
         // Build per-iteration immutable context for helpers
         let turn = TurnState {
@@ -1302,6 +1315,8 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
         let stream_result = collect_stream(&mut rx, sink, &cancel, tools, mode, project_root).await;
         ModelCall {
             purpose: "turn",
+            system_hash: Some(&system_hash),
+            tools_hash: Some(&tools_hash),
             provider: provider.provider_name(),
             model: &config.model,
             messages: messages.len(),
@@ -1351,6 +1366,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
         // Network drop: warning already emitted by collect_stream.
         // Discard the partial response — storing it would corrupt the session.
         if let Some(err) = stream_result.network_error {
+            tracing::debug!("Discarded partial reply:\n{}", stream_result.text);
             sse_handle.abort();
             return Err(TurnAborted(format!(
                 "Connection lost mid-stream — turn discarded ({err})"

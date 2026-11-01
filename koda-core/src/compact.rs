@@ -219,6 +219,8 @@ pub async fn compact_session_with_provider(
     // was cut off, resend with a larger cap.
     let retry_cap = room.min(first_cap * 2);
 
+    // Debug only, like the stored summary: this is conversation text.
+    tracing::debug!("Compaction prompt:\n{summary_prompt}");
     let messages = vec![ChatMessage::text("user", &summary_prompt)];
     // Same model and the session's own reasoning settings: Claude Code and
     // Codex both summarize that way. Only the output cap and temperature differ.
@@ -235,6 +237,8 @@ pub async fn compact_session_with_provider(
         let response = provider.chat(&messages, &[], &compact_settings).await?;
         crate::inference_helpers::ModelCall {
             purpose: "compaction",
+            system_hash: None,
+            tools_hash: None,
             provider: provider.provider_name(),
             model: &model_settings.model,
             messages: messages.len(),
@@ -247,6 +251,7 @@ pub async fn compact_session_with_provider(
         }
         .log();
         let content = response.content.as_deref().unwrap_or("");
+        tracing::debug!(attempt = attempts, "Compaction reply:\n{content}");
         let (mut summary, mut complete) = summary_from_reply(content);
         let mut branch = if content.contains("<summary>") {
             "summary"

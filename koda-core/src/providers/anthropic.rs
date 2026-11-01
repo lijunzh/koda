@@ -584,6 +584,7 @@ impl LlmProvider for AnthropicProvider {
             messages: api_messages,
             tools: api_tools,
         };
+        super::trace_request("anthropic", &request);
 
         let req = self
             .client
@@ -756,6 +757,7 @@ impl LlmProvider for AnthropicProvider {
         if !api_tools.is_empty() {
             body["tools"] = serde_json::to_value(&api_tools)?;
         }
+        super::trace_request("anthropic", &body);
 
         let req = self
             .client

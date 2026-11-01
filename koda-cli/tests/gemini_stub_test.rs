@@ -175,6 +175,7 @@ async fn compaction_leaves_the_system_prompt_alone() {
         .arg("--project-root")
         .arg(tmp.path())
         .env("XDG_CONFIG_HOME", tmp.path())
+        .env("RUST_LOG", "koda_core=debug,koda_core::providers=trace")
         .env("GEMINI_API_KEY", "test-key")
         .kill_on_drop(true)
         .output();
@@ -198,6 +199,20 @@ async fn compaction_leaves_the_system_prompt_alone() {
     assert!(last.to_string().contains(SUMMARY), "never compacted");
     let log = koda_log(tmp.path());
     assert!(log.contains(r#"purpose="compaction""#));
+    assert!(log.contains("Compaction prompt:"), "{log}");
+    assert!(log.contains("Compaction reply:"), "{log}");
+    assert!(log.contains("System prompt:"), "{log}");
+    assert!(log.contains("request body"), "{log}");
+    assert!(!log.contains("test-key"), "a key reached the log: {log}");
+    let mut hashes: Vec<&str> = log
+        .lines()
+        .filter(|line| line.contains(r#"purpose="turn""#))
+        .filter_map(|line| line.split_once("system_hash=\""))
+        .map(|(_, rest)| rest.split('"').next().unwrap())
+        .collect();
+    assert!(hashes.len() > 1, "{log}");
+    hashes.dedup();
+    assert_eq!(hashes.len(), 1, "the system prompt changed: {log}");
     assert!(log.contains("context assembled"), "{log}");
     assert!(log.contains("tool_calls_chars="), "{log}");
     assert!(log.contains("rows_summarized="), "{log}");
