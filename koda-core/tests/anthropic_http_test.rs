@@ -39,6 +39,24 @@ fn user_msg(text: &str) -> ChatMessage {
 
 // ── chat() ────────────────────────────────────────────────────────────────
 
+/// Compaction reads this to tell a reply cut off at the cap from a finished one.
+#[tokio::test]
+async fn chat_reports_the_stop_reason() {
+    let server = FakeLlmServer::spawn().await;
+    let mut body = ok_messages_body();
+    body["content"] = serde_json::json!([]);
+    body["stop_reason"] = serde_json::json!("max_tokens");
+    server.mount_ok("POST", r".*/v1/messages$", body).await;
+
+    let provider = AnthropicProvider::new("sk-ant-test".into(), Some(&server.url()));
+    let reply = provider
+        .chat(&[user_msg("hi")], &[], &settings())
+        .await
+        .unwrap();
+
+    assert_eq!(reply.usage.stop_reason, "max_tokens");
+}
+
 #[tokio::test]
 async fn chat_skips_thinking_blocks_in_the_reply() {
     let server = FakeLlmServer::spawn().await;

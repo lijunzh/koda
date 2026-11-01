@@ -13,6 +13,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **A second compaction keeps the user's request.** A summary is stored after the rows it kept, so the next compaction took those rows and left the summary out. Its reply had no request to work from, and the session held two summaries that disagreed. Compaction now reads the last summary first and replaces it, and that summary is never clipped or dropped to fit.
+- **A compaction summary can't quietly change the task.** One summary told the model to keep investigating without changing code, on a "find and fix" request. The summary prompt now forbids adding instructions the user did not give.
+- **Anthropic's non-streaming replies report their stop reason.** It was never read, so an empty reply at the token cap skipped compaction's retry and the log's `stop_reason` was blank.
 - **The compaction summary is found wherever the model puts it.** The analysis block was removed first, which also removed a summary nested inside it, or stopped at a tag the analysis only quoted, so a full reply counted as no summary. The real `<summary>` block is now told from one the model only quotes, and a finished reply with none is kept as it is (#1454).
 - **Compaction no longer splits a tool batch.** The cut was a row count, so it could land between a call and its results; those results were then dropped at load and reached neither the summary nor the tail. It also counted rows the model never sees, so it could archive the wrong ones. The tail now starts by row id, never on a tool result.
 - **A finished compaction reply with no `<summary>` tag is kept.** Gemini sent 6,000 to 9,000 characters of analysis without the tag, and Koda threw all of it away for the bare marker. The analysis now becomes the summary. A reply cut off by the token cap still gets the retry (#1454).
