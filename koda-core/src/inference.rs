@@ -48,7 +48,7 @@ use crate::inference_helpers::{
     is_network_transient_error, is_rate_limit_error, is_server_error, rate_limit_backoff,
     short_hash,
 };
-use crate::loop_guard::{LoopAction, LoopDetector};
+use crate::loop_guard::{LoopAction, LoopDetector, MAX_TRUNCATED_REPLIES};
 use crate::persistence::Persistence;
 use crate::providers::{
     ChatMessage, ImageData, LlmProvider, StreamChunk, TokenUsage, ToolCall, ToolDefinition,
@@ -938,6 +938,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
     let mut last_system_hash: Option<String> = None;
     let mut last_tools_hash: Option<String> = None;
     let mut retried_empty = false;
+    let mut truncated_replies = 0u32;
     let mut loop_detector = LoopDetector::new();
     // #1022 B12: `bg_agents` and `sub_agent_cache` now live on
     // `KodaSession` and are borrowed in via `InferenceContext`. Local
@@ -1475,7 +1476,14 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
                         config.model,
                     ),
                 });
-                continue;
+                // This path skips the iteration count, and headless extends
+                // the cap anyway, so nothing else stops a model that always
+                // hits its limit.
+                truncated_replies += 1;
+                if truncated_replies < MAX_TRUNCATED_REPLIES {
+                    continue;
+                }
+                stats.limit = Some("max_tokens");
             } else if is_failed_stop(&usage.stop_reason) && full_text.trim().is_empty() {
                 sink.emit(EngineEvent::Warn {
                     message: format!(
@@ -1731,6 +1739,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
             }
         }
 
+        truncated_replies = 0;
         iteration += 1;
     }
 }

@@ -6,7 +6,7 @@
 //!
 //! Run with: `cargo test -p koda-core --features test-support --test inference_edge_test`
 
-use koda_core::{engine::EngineEvent, persistence::Persistence};
+use koda_core::{engine::EngineEvent, loop_guard::MAX_TRUNCATED_REPLIES, persistence::Persistence};
 use koda_test_utils::{Env, MockProvider, MockResponse};
 
 // ── Rate limit retry ─────────────────────────────────────────
@@ -165,6 +165,22 @@ async fn max_tokens_continues_loop() {
         last.contains("conclusion"),
         "should have continued after truncation: {last}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_model_that_always_hits_max_tokens_ends_the_turn() {
+    let env = Env::new().await;
+    env.insert_user_message("write a long essay").await;
+
+    let cut_off = MockResponse::TextMaxTokens("The essay begins...".into());
+    let provider = MockProvider::new(vec![cut_off; 10]);
+    let events = env.run_inference(&provider).await;
+
+    let warnings = events
+        .iter()
+        .filter(|e| matches!(e, EngineEvent::Warn { message } if message.contains("max_tokens")))
+        .count();
+    assert_eq!(warnings as u32, MAX_TRUNCATED_REPLIES, "{events:?}");
 }
 
 // ── Loop detection ───────────────────────────────────────────

@@ -37,6 +37,9 @@ use std::collections::VecDeque;
 /// Default hard cap for the main inference loop.
 pub const MAX_ITERATIONS_DEFAULT: u32 = 200;
 
+/// Replies in a row cut off at the token cap before the turn ends.
+pub const MAX_TRUNCATED_REPLIES: u32 = 3;
+
 // `MAX_SUB_AGENT_ITERATIONS` deleted in #1110: per `DESIGN.md` P3 ("Build for
 // the world six months from now"), sub-agents trust the model and rely on
 // `LoopDetector`, provider stop reasons, cancellation, and context bounds
