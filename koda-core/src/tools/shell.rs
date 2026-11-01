@@ -198,6 +198,9 @@ pub async fn run_shell_command(
     )?
     .stdout(std::process::Stdio::piped())
     .stderr(std::process::Stdio::piped())
+    // Nothing here listens for a cancel, so a turn that's given up on drops
+    // this call. The command mustn't carry on with nobody watching it.
+    .kill_on_drop(true)
     .spawn()
     .map_err(|e| anyhow::anyhow!("Failed to execute command: {e}"))?;
 
@@ -886,6 +889,31 @@ mod tests {
             "truncation marker should name the policy-supplied cap, got tail: {:?}",
             full.lines().last()
         );
+    }
+
+    #[tokio::test]
+    async fn dropping_a_foreground_call_kills_its_command() {
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = BgRegistry::new();
+        let args = serde_json::json!({"command": "sleep 1; touch finished"});
+        let policy = koda_sandbox::SandboxPolicy::strict_default();
+        let call = run_shell_command(
+            tmp.path(),
+            &args,
+            256,
+            &registry,
+            None,
+            &crate::trust::TrustMode::Safe,
+            &policy,
+            None,
+            None,
+            None,
+        );
+        let cut_off = tokio::time::timeout(std::time::Duration::from_millis(300), call);
+        assert!(cut_off.await.is_err(), "the command was still running");
+
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        assert!(!tmp.path().join("finished").exists());
     }
 
     #[tokio::test]
