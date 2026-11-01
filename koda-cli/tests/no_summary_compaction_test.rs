@@ -7,6 +7,7 @@
 //! files until the context fills, and non-streaming requests are summary
 //! calls, which the stub empties or fails. No API key, no model.
 
+use koda_test_utils::log::{log_line, read_log};
 use koda_test_utils::network::{FakeLlmServer, Request, ResponseTemplate};
 use serde_json::{Value, json};
 use std::path::Path;
@@ -103,16 +104,6 @@ fn seed_project(root: &Path) {
     }
 }
 
-/// Everything koda logged for a run whose config dir was `config`.
-fn koda_log(config: &Path) -> String {
-    std::fs::read_dir(config.join("koda/logs"))
-        .unwrap()
-        .flatten()
-        .filter(|entry| entry.file_name().to_string_lossy().starts_with("koda-"))
-        .map(|entry| std::fs::read_to_string(entry.path()).unwrap())
-        .collect()
-}
-
 /// Run a headless turn against `server`, returning stdout's JSON, the
 /// requests the server saw, in order, and koda's log.
 async fn run_koda(server: &FakeLlmServer) -> (Value, Vec<Value>, String) {
@@ -144,7 +135,7 @@ async fn run_koda(server: &FakeLlmServer) -> (Value, Vec<Value>, String) {
     // Skip koda's model-listing GETs.
     let requests = server.received_requests().await;
     let chats = requests.iter().filter(|r| !r.body.is_empty());
-    (result, chats.map(body).collect(), koda_log(tmp.path()))
+    (result, chats.map(body).collect(), read_log(tmp.path()))
 }
 
 /// The run went through a no-summary compaction and carried on: the agent's
@@ -202,8 +193,17 @@ async fn empty_summary_keeps_the_task_and_the_run_carries_on() {
     let (result, requests, log) = run_koda(&server).await;
 
     assert_task_survived(&result, &requests);
-    assert!(log.contains(r#"branch="empty""#), "{log}");
-    assert!(log.contains(r#"outcome="complete""#), "{log}");
+    log_line(
+        &log,
+        "compaction",
+        &[
+            r#"branch="empty""#,
+            "reply_chars=0",
+            "stop_reason=",
+            "rows_summarized=",
+        ],
+    );
+    log_line(&log, "turn end", &[r#"outcome="complete""#]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -215,5 +215,15 @@ async fn failing_summary_keeps_the_task_and_the_run_carries_on() {
     let (result, requests, log) = run_koda(&server).await;
 
     assert_task_survived(&result, &requests);
-    assert!(log.contains(r#"branch="dropped""#), "{log}");
+    log_line(
+        &log,
+        "compaction",
+        &[
+            r#"branch="dropped""#,
+            "rows_summarized=",
+            "rows_kept=",
+            "consecutive_failures=",
+        ],
+    );
+    log_line(&log, "turn end", &[r#"outcome="complete""#]);
 }

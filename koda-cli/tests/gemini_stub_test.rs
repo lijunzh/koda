@@ -4,6 +4,7 @@
 //! failed reply and the finish, all in one turn through the `koda` binary. The
 //! stub replays what `gemini-flash-latest` did in real runs (#1454).
 
+use koda_test_utils::log::{log_line, read_log};
 use koda_test_utils::network::{FakeLlmServer, ResponseTemplate};
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -17,16 +18,6 @@ fn koda_bin() -> String {
     path.pop(); // deps/
     path.push("koda");
     path.to_string_lossy().to_string()
-}
-
-/// Everything koda logged for a run whose config dir was `config`.
-fn koda_log(config: &std::path::Path) -> String {
-    std::fs::read_dir(config.join("koda/logs"))
-        .unwrap()
-        .flatten()
-        .filter(|entry| entry.file_name().to_string_lossy().starts_with("koda-"))
-        .map(|entry| std::fs::read_to_string(entry.path()).unwrap())
-        .collect()
 }
 
 fn sse(chunk: Value) -> ResponseTemplate {
@@ -105,13 +96,32 @@ async fn a_busy_server_and_a_failed_reply_do_not_end_the_turn() {
         .filter(|r| r.url.path().contains("streamGenerateContent"))
         .map(|r| serde_json::from_slice(&r.body).unwrap())
         .collect();
-    let log = koda_log(tmp.path());
+    let log = read_log(tmp.path());
     assert!(log.contains("Rate limited"), "the 503: {log}");
-    assert!(
-        log.contains("stop_reason=malformed_function_call failed_stop=true"),
-        "{log}"
+    log_line(
+        &log,
+        "model call",
+        &[
+            r#"purpose="turn""#,
+            r#"provider="gemini""#,
+            "system_hash=",
+            "tools_hash=",
+            "elapsed_ms=",
+            "stop_reason=malformed_function_call",
+            "failed_stop=true",
+            "tool_calls=0",
+        ],
     );
-    assert!(log.contains(r#"provider="gemini""#), "{log}");
+    log_line(
+        &log,
+        "turn end",
+        &[
+            r#"outcome="complete""#,
+            "model_calls=4",
+            "tool_calls=2",
+            "ends_with_question=false",
+        ],
+    );
 
     assert_eq!(turns.len(), 5, "the 503 and the failed reply are retried");
 
@@ -197,26 +207,67 @@ async fn compaction_leaves_the_system_prompt_alone() {
         .collect();
     let (first, last) = (&turns[0], &turns[turns.len() - 1]);
     assert!(last.to_string().contains(SUMMARY), "never compacted");
-    let log = koda_log(tmp.path());
-    assert!(log.contains(r#"purpose="compaction""#));
+    let log = read_log(tmp.path());
     assert!(log.contains("Compaction prompt:"), "{log}");
     assert!(log.contains("Compaction reply:"), "{log}");
     assert!(log.contains("System prompt:"), "{log}");
     assert!(log.contains("request body"), "{log}");
     assert!(!log.contains("test-key"), "a key reached the log: {log}");
-    let mut hashes: Vec<&str> = log
-        .lines()
-        .filter(|line| line.contains(r#"purpose="turn""#))
-        .filter_map(|line| line.split_once("system_hash=\""))
-        .map(|(_, rest)| rest.split('"').next().unwrap())
-        .collect();
-    assert!(hashes.len() > 1, "{log}");
-    hashes.dedup();
-    assert_eq!(hashes.len(), 1, "the system prompt changed: {log}");
-    assert!(log.contains("context assembled"), "{log}");
-    assert!(log.contains("tool_calls_chars="), "{log}");
-    assert!(log.contains("rows_summarized="), "{log}");
-    assert!(log.contains("turn end"), "{log}");
+
+    log_line(
+        &log,
+        "model call",
+        &[r#"purpose="compaction""#, "stop_reason="],
+    );
+    let compaction = log_line(
+        &log,
+        "compaction",
+        &[
+            r#"branch="summary""#,
+            "rows_summarized=",
+            "rows_kept=",
+            "rows_archived=",
+            "conversation_chars=",
+            "attempts=1",
+            "reply_chars=",
+            "stop_reason=",
+            "summary_chars=",
+            "consecutive_failures=",
+        ],
+    );
+    log_line(
+        &log,
+        "context assembled",
+        &[
+            "window=12000",
+            "percent=",
+            "tool_chars=",
+            "tool_calls_chars=",
+            "summary_chars=",
+            "largest_chars=",
+            "duplicate_read_tokens=",
+        ],
+    );
+    log_line(&log, "turn end", &[r#"outcome="complete""#]);
+
+    // The same prompt on both sides of the compaction (#1449).
+    let system_hash = |line: &str| {
+        let (_, rest) = line.split_once("system_hash=\"")?;
+        rest.split('"').next().map(str::to_string)
+    };
+    let turn_hashes = |part: &str| -> Vec<String> {
+        part.lines()
+            .filter(|line| line.contains(r#"purpose="turn""#))
+            .filter_map(system_hash)
+            .collect()
+    };
+    let (before, after) = log.split_at(log.find(compaction).unwrap());
+    let (before, after) = (turn_hashes(before), turn_hashes(after));
+    assert!(!before.is_empty() && !after.is_empty(), "{log}");
+    assert!(
+        before.iter().chain(&after).all(|hash| *hash == before[0]),
+        "the system prompt changed: {before:?} then {after:?}"
+    );
     assert!(first["systemInstruction"]["parts"][0]["text"].is_string());
     assert_eq!(first["systemInstruction"], last["systemInstruction"]);
     for content in last["contents"].as_array().unwrap() {
