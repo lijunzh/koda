@@ -139,6 +139,40 @@ impl AnthropicProvider {
             .collect()
     }
 
+    /// Serialize the converted messages with a cache breakpoint on the last
+    /// content block of the last message.
+    ///
+    /// The prefix up to that block is cached, and the next request, whose
+    /// prefix is the same plus the new turn, reads it instead of paying full
+    /// input price for the whole conversation. A string body becomes one text
+    /// block so it can carry the marker. `tool_result` blocks take it directly.
+    /// A message with no content, or only an empty string, is left alone:
+    /// empty text blocks can't be cached.
+    fn build_cached_messages(messages: &[AnthropicMessage]) -> Result<Vec<serde_json::Value>> {
+        let mut values = messages
+            .iter()
+            .map(|m| serde_json::to_value(m).map_err(Into::into))
+            .collect::<Result<Vec<serde_json::Value>>>()?;
+        let Some(content) = values.last_mut().and_then(|m| m.get_mut("content")) else {
+            return Ok(values);
+        };
+        let marker = serde_json::json!({ "type": "ephemeral" });
+        match content {
+            serde_json::Value::String(text) if !text.is_empty() => {
+                *content = serde_json::json!([
+                    { "type": "text", "text": text, "cache_control": marker }
+                ]);
+            }
+            serde_json::Value::Array(blocks) => {
+                if let Some(block) = blocks.last_mut().filter(|b| b.is_object()) {
+                    block["cache_control"] = marker;
+                }
+            }
+            _ => {}
+        }
+        Ok(values)
+    }
+
     /// Log cache hit/miss info at debug level.
     fn log_cache_stats(usage: &AnthropicUsage) {
         if usage.cache_read_input_tokens > 0 || usage.cache_creation_input_tokens > 0 {
@@ -171,7 +205,7 @@ struct MessagesRequest {
     max_tokens: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     system: Option<serde_json::Value>,
-    messages: Vec<AnthropicMessage>,
+    messages: Vec<serde_json::Value>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<serde_json::Value>,
 }
@@ -576,7 +610,7 @@ impl LlmProvider for AnthropicProvider {
             .map(|text| Self::build_cached_system(text));
 
         // Convert messages (skip system, convert tool results)
-        let api_messages = self.convert_messages(messages);
+        let api_messages = Self::build_cached_messages(&self.convert_messages(messages))?;
         let api_tools = Self::build_cached_tools(tools);
 
         let request = MessagesRequest {
@@ -728,7 +762,7 @@ impl LlmProvider for AnthropicProvider {
             .and_then(|m| m.content.as_ref())
             .map(|text| Self::build_cached_system(text));
 
-        let api_messages = self.convert_messages(messages);
+        let api_messages = Self::build_cached_messages(&self.convert_messages(messages))?;
         let api_tools = Self::build_cached_tools(tools);
 
         let mut max_tokens = settings.max_tokens.unwrap_or(16384);
@@ -1184,6 +1218,122 @@ mod tests {
         assert_eq!(cached.len(), 1);
         // Single tool should have cache_control (it's both first and last)
         assert_eq!(cached[0]["cache_control"]["type"], "ephemeral");
+    }
+
+    // ── Message breakpoint ─────────────────────────────────
+
+    fn cached_messages(messages: &[ChatMessage]) -> Vec<serde_json::Value> {
+        let p = make_provider();
+        AnthropicProvider::build_cached_messages(&p.convert_messages(messages)).unwrap()
+    }
+
+    fn tool_result(id: &str, content: &str) -> ChatMessage {
+        ChatMessage {
+            role: "tool".into(),
+            content: Some(content.into()),
+            tool_calls: None,
+            tool_call_id: Some(id.into()),
+            images: None,
+            reasoning: None,
+        }
+    }
+
+    /// Count `cache_control` markers anywhere in the messages.
+    fn breakpoints(msgs: &[serde_json::Value]) -> usize {
+        serde_json::to_string(msgs)
+            .unwrap()
+            .matches("cache_control")
+            .count()
+    }
+
+    #[test]
+    fn test_cached_messages_text_marks_last_block_of_last_message() {
+        let msgs = cached_messages(&[
+            ChatMessage::text("system", "sys"),
+            ChatMessage::text("user", "first"),
+            ChatMessage::text("assistant", "reply"),
+            ChatMessage::text("user", "second"),
+        ]);
+        assert_eq!(msgs.len(), 3);
+        // Earlier messages stay plain strings with no marker.
+        assert_eq!(msgs[0]["content"], "first");
+        assert_eq!(msgs[1]["content"], "reply");
+        // The last one becomes a text block carrying the marker.
+        let blocks = msgs[2]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[0]["text"], "second");
+        assert_eq!(blocks[0]["cache_control"]["type"], "ephemeral");
+        assert_eq!(breakpoints(&msgs), 1);
+    }
+
+    #[test]
+    fn test_cached_messages_tool_result_marks_the_tool_result_block() {
+        let msgs = cached_messages(&[
+            ChatMessage::text("user", "run it"),
+            tool_result("tc_1", "output"),
+        ]);
+        let blocks = msgs[1]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["type"], "tool_result");
+        assert_eq!(blocks[0]["tool_use_id"], "tc_1");
+        assert_eq!(blocks[0]["cache_control"]["type"], "ephemeral");
+        assert_eq!(breakpoints(&msgs), 1);
+    }
+
+    #[test]
+    fn test_cached_messages_marks_only_the_last_block_of_several() {
+        let image = crate::providers::ImageData {
+            media_type: "image/png".into(),
+            base64: "AAAA".into(),
+        };
+        let mut user = ChatMessage::text("user", "look");
+        user.images = Some(vec![image]);
+        let msgs = cached_messages(&[user]);
+        let blocks = msgs[0]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert!(blocks[0].get("cache_control").is_none());
+        assert_eq!(blocks[1]["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn test_cached_messages_assistant_tool_use_is_marked() {
+        let mut asst = ChatMessage::text("assistant", "");
+        asst.content = None;
+        asst.tool_calls = Some(vec![ToolCall {
+            id: "tc_1".into(),
+            function_name: "Read".into(),
+            arguments: "{}".into(),
+            thought_signature: None,
+        }]);
+        let msgs = cached_messages(&[ChatMessage::text("user", "go"), asst]);
+        let blocks = msgs[1]["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["type"], "tool_use");
+        assert_eq!(blocks[0]["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn test_cached_messages_leaves_empty_message_alone() {
+        // Empty string body: an empty text block can't be cached.
+        let msgs = cached_messages(&[ChatMessage::text("user", "")]);
+        assert_eq!(msgs[0]["content"], "");
+        assert_eq!(breakpoints(&msgs), 0);
+
+        // No content blocks at all.
+        let empty = AnthropicMessage {
+            role: "assistant".into(),
+            content: AnthropicContent::Blocks(vec![]),
+        };
+        let msgs = AnthropicProvider::build_cached_messages(&[empty]).unwrap();
+        assert!(msgs[0]["content"].as_array().unwrap().is_empty());
+        assert_eq!(breakpoints(&msgs), 0);
+
+        // No messages at all.
+        assert!(
+            AnthropicProvider::build_cached_messages(&[])
+                .unwrap()
+                .is_empty()
+        );
     }
 
     // ── Extended context (1M) tests ────────────────────────

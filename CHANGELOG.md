@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- **The Anthropic provider caches the conversation, not only the system prompt and tools.** The last content block of the last message now carries a cache breakpoint, so the next request reads the conversation so far from the prompt cache instead of paying full input price for it. The request uses three of Anthropic's four breakpoints. Compaction rewrites the history and costs one cache miss each time.
 - **The system prompt is smaller.** Rules that appeared twice now appear once, and headless runs, ACP and sub-agents no longer carry a TUI quick reference they can't use. `CLAUDE.md` went from 29K to 10K characters, with the rest in the development reference.
 - **Memory is capped at 16,000 characters in the system prompt.** Past that it is cut with a note telling the model to use `MemoryRead`, which still returns everything, and to ask you to trim the file.
 - **Memory files are treated as instructions.** The prompt called them "learned facts"; it now says to follow them, that they override Koda's default guidance, and that you override them.

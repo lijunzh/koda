@@ -213,6 +213,89 @@ async fn chat_returns_error_on_401_invalid_api_key() {
     assert!(msg.contains("401"), "error must mention status: {msg}");
 }
 
+/// The request carries three breakpoints: last tool, system, and the last
+/// block of the last message, so the conversation prefix is cached too.
+fn assert_conversation_breakpoint(body: &Value) {
+    assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
+    let tools = body["tools"].as_array().unwrap();
+    assert_eq!(tools.last().unwrap()["cache_control"]["type"], "ephemeral");
+
+    let messages = body["messages"].as_array().unwrap();
+    let last = messages.last().unwrap()["content"].as_array().unwrap();
+    assert_eq!(last.last().unwrap()["cache_control"]["type"], "ephemeral");
+    assert_eq!(last.last().unwrap()["type"], "tool_result");
+
+    // Nothing else in the messages is marked.
+    let marked = serde_json::to_string(messages)
+        .unwrap()
+        .matches("cache_control")
+        .count();
+    assert_eq!(marked, 1, "only the last block of the last message");
+}
+
+fn cache_test_conversation() -> Vec<ChatMessage> {
+    let mut result = ChatMessage::text("tool", "file contents");
+    result.tool_call_id = Some("toolu_1".into());
+    vec![
+        ChatMessage::text("system", "You are Koda."),
+        user_msg("read it"),
+        result,
+    ]
+}
+
+fn cache_test_tools() -> Vec<koda_core::providers::ToolDefinition> {
+    vec![koda_core::providers::ToolDefinition {
+        name: "Read".into(),
+        description: "Read a file".into(),
+        parameters: json!({"type": "object"}),
+    }]
+}
+
+#[tokio::test]
+async fn chat_marks_the_last_message_block_as_a_cache_breakpoint() {
+    let server = FakeLlmServer::spawn().await;
+    server
+        .mount_ok("POST", r".*/v1/messages$", ok_messages_body())
+        .await;
+
+    let provider = AnthropicProvider::new("sk-ant-test".into(), Some(&server.url()));
+    provider
+        .chat(&cache_test_conversation(), &cache_test_tools(), &settings())
+        .await
+        .unwrap();
+
+    let reqs = server.received_requests().await;
+    let body: Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    assert_conversation_breakpoint(&body);
+}
+
+#[tokio::test]
+async fn chat_stream_marks_the_last_message_block_as_a_cache_breakpoint() {
+    let server = FakeLlmServer::spawn().await;
+    server
+        .mount_sse(
+            "POST",
+            r".*/v1/messages$",
+            &[
+                r#"{"type":"message_start","message":{"usage":{"input_tokens":5,"output_tokens":0}}}"#,
+                r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":0,"output_tokens":1}}"#,
+                r#"{"type":"message_stop"}"#,
+            ],
+        )
+        .await;
+
+    let provider = AnthropicProvider::new("k".into(), Some(&server.url()));
+    let mut collector = provider
+        .chat_stream(&cache_test_conversation(), &cache_test_tools(), &settings())
+        .await
+        .unwrap();
+    while collector.rx.recv().await.is_some() {}
+
+    let reqs = server.received_requests().await;
+    let body: Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    assert_conversation_breakpoint(&body);
+}
+
 // ── chat_stream() ─────────────────────────────────────────────────────────
 
 #[tokio::test]
