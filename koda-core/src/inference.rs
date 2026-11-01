@@ -673,14 +673,14 @@ async fn collect_stream(
                 break;
             }
             StreamChunk::NetworkError(err) => {
-                // Connection dropped mid-stream. Stop rendering and surface a
+                // The stream failed partway. Stop rendering and surface a
                 // warning. The partial response will be discarded by the caller.
                 sink.emit(EngineEvent::SpinnerStop);
                 if !full_text.is_empty() {
                     sink.emit(EngineEvent::TextDone);
                 }
                 sink.emit(EngineEvent::Warn {
-                    message: format!("Connection lost mid-stream — turn discarded ({err})"),
+                    message: format!("Stream failed mid-reply — turn discarded ({err})"),
                 });
                 return StreamResult {
                     text: full_text,
@@ -1394,15 +1394,14 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
             return Ok(());
         }
 
-        // Network drop: warning already emitted by collect_stream.
+        // Failed stream: warning already emitted by collect_stream.
         // Discard the partial response — storing it would corrupt the session.
         if let Some(err) = stream_result.network_error {
             tracing::debug!("Discarded partial reply:\n{}", stream_result.text);
             sse_handle.abort();
-            return Err(TurnAborted(format!(
-                "Connection lost mid-stream — turn discarded ({err})"
-            ))
-            .into());
+            return Err(
+                TurnAborted(format!("Stream failed mid-reply — turn discarded ({err})")).into(),
+            );
         }
 
         let full_text = stream_result.text;

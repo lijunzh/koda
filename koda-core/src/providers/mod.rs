@@ -369,7 +369,8 @@ pub enum StreamChunk {
     ToolCalls(Vec<ToolCall>),
     /// Stream finished with usage info.
     Done(TokenUsage),
-    /// The underlying HTTP connection was dropped before the stream completed.
+    /// The stream failed before completing: the HTTP connection dropped, the
+    /// provider reported an error in-band, or the stream stopped short.
     ///
     /// Distinct from `Done` (clean finish) and user-initiated cancellation
     /// (Ctrl+C). The partial response MUST be discarded — it is incomplete

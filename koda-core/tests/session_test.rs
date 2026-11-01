@@ -516,7 +516,7 @@ async fn session_network_drop_turn_ends_with_error() {
             error: "connection reset".into(),
         },
         None,
-        "Connection lost",
+        "Stream failed",
     )
     .await;
     match reason {

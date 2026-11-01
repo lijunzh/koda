@@ -312,6 +312,7 @@ The stub-server tests run the real `koda` binary against
 | Test in `koda-cli/tests/` | Shows how to |
 |---|---|
 | `gemini_stub_test.rs` | Drive the Gemini provider: a 503, a tool call, a failed reply, a compaction |
+| `anthropic_stream_failure_test.rs` | Fail an Anthropic stream after a tool call, and check nothing ran |
 | `no_summary_compaction_test.rs` | Fill a small window and empty or fail the summary call |
 | `context_count_test.rs` | Report token counts above the estimate, or none |
 | `history_edit_log_test.rs` | Make a pass hide a row, and assert on the warning |
