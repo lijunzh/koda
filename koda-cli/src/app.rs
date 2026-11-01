@@ -254,7 +254,7 @@ pub(crate) async fn run() -> Result<()> {
     prune_old_logs(&log_dir, 50);
     let log_filename = format!("koda-{}.log", std::process::id());
     let file_appender = tracing_appender::rolling::never(&log_dir, &log_filename);
-    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+    let (non_blocking, log_guard) = tracing_appender::non_blocking(file_appender);
     // Best-effort symlink — silently skip on non-unix or permission errors.
     #[cfg(unix)]
     {
@@ -309,6 +309,9 @@ pub(crate) async fn run() -> Result<()> {
             cli.output_format,
         )
         .await?;
+        // `exit` runs no destructors, and the guard's drop is what writes out
+        // the buffered lines, the last of which say how the run ended.
+        drop(log_guard);
         std::process::exit(exit_code);
     }
 

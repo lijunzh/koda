@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **A headless run no longer loses its last log lines.** It exited without flushing the log writer, so the `turn end` line could go missing, most often on a busy machine.
 - **The provider's token count drives compaction when it reports one.** Koda's estimate runs low, so a run could pass its window while the meter read about 70%. The estimate is now raised by what the last count showed it missed, and never lowered. With no count, after a compaction or on a cut-off reply, the estimate decides. The `model call` line gained `context_tokens`, and the context meter now counts Anthropic's cached tokens.
 - **The user's own messages survive compaction word for word.** They are stored beside the summary, up to 4,000 characters, newest first, so a poor summary can't lose or rewrite the task.
 - **Compaction skips a history too small to help.** On a window the system prompt and tools nearly fill, it would free nothing and fire again on the next call.
