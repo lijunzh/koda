@@ -39,7 +39,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
             description: "Read the contents of a file. The output includes line numbers. \
                 For large files (>500 lines), use start_line and num_lines to read specific \
                 portions instead of the whole file. ALWAYS read a file before editing it — \
-                never guess at file contents. Re-read after editing to verify changes."
+                never guess at file contents."
                 .to_string(),
             parameters: json!({
                 "type": "object",

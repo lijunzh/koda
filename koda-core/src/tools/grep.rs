@@ -9,8 +9,10 @@
 //!
 //! ## Parameters
 //!
-//! - **`pattern`** (required) — Text or regex pattern to search for
-//! - **`path`** (optional, default `.`) — Directory or file to search in
+//! - **`pattern`** (required) — Regex to search for; one that doesn't compile
+//!   is searched as literal text
+//! - **`file_path`** (optional, default `.`; `path` also works) — Directory or
+//!   file to search in
 //! - **`case_insensitive`** (optional) — Ignore case (default: false)
 //!
 //! ## Output format
@@ -36,7 +38,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
         name: "Grep".to_string(),
         description: "Recursively search for text patterns across files (respects .gitignore). \
             Returns matching file paths with line numbers and content. \
-            Use plain text for exact matches or regex for complex patterns. \
+            The pattern is a regex, so `foo|bar` finds either word; \
+            escape special characters to match them literally. \
             Set case_insensitive=true for case-agnostic search. \
             Prefer this over Bash + rg/grep. Results are capped at 100 matches."
             .to_string(),
@@ -45,11 +48,11 @@ pub fn definitions() -> Vec<ToolDefinition> {
             "properties": {
                 "pattern": {
                     "type": "string",
-                    "description": "The text pattern to search for (plain text or regex)"
+                    "description": "The regex to search for"
                 },
                 "file_path": {
                     "type": "string",
-                    "description": "Directory to search in (default: project root)"
+                    "description": "Directory or file to search in (default: project root)"
                 },
                 "case_insensitive": {
                     "type": "boolean",
@@ -63,9 +66,10 @@ pub fn definitions() -> Vec<ToolDefinition> {
 
 /// Search for a text pattern across files in a directory.
 ///
-/// The pattern is treated as a **literal string** (not a regex) and escaped
-/// before being handed to the [`FileSystem`] impl. `case_insensitive=true`
-/// prepends a `(?i)` inline flag so the regex engine handles case folding.
+/// The pattern is a **regex**. One that doesn't compile, like `fn (`, is
+/// escaped and searched as literal text, and the output says so.
+/// `case_insensitive=true` prepends a `(?i)` inline flag so the regex engine
+/// handles case folding.
 pub async fn grep(
     project_root: &Path,
     args: &Value,
@@ -83,14 +87,20 @@ pub async fn grep(
 
     let search_root = resolve_read_path(project_root, path_str)?;
 
-    // Treat the user input as a literal string, not a regex — escape specials.
-    // This prevents "fn (" from blowing up the regex engine (#807 family).
-    let escaped = regex::escape(raw_pattern);
-    let regex_pattern = if case_insensitive {
-        format!("(?i){escaped}")
+    // Search as a regex, as the tool definition says. An invalid pattern falls
+    // back to literal text, so "fn (" still works (#807 family).
+    let is_regex = regex::Regex::new(raw_pattern).is_ok();
+    let pattern = if is_regex {
+        raw_pattern.to_string()
     } else {
-        escaped
+        regex::escape(raw_pattern)
     };
+    let regex_pattern = if case_insensitive {
+        format!("(?i){pattern}")
+    } else {
+        pattern
+    };
+    let literal_note = (!is_regex).then_some("[Not a valid regex: searched as literal text.]");
 
     let all_matches = fs
         .grep(&regex_pattern, &search_root, None)
@@ -98,7 +108,10 @@ pub async fn grep(
         .map_err(|e| anyhow::anyhow!("Grep error: {e}"))?;
 
     if all_matches.is_empty() {
-        return Ok(format!("No matches found for '{raw_pattern}'"));
+        return Ok(match literal_note {
+            Some(note) => format!("No matches found for '{raw_pattern}'\n{note}"),
+            None => format!("No matches found for '{raw_pattern}'"),
+        });
     }
 
     // Cap the result set and build output lines.
@@ -132,6 +145,9 @@ pub async fn grep(
             "\n... [CAPPED at {max_matches} matches. \
              Narrow your search pattern.]"
         ));
+    }
+    if let Some(note) = literal_note {
+        lines.push(format!("\n{note}"));
     }
 
     Ok(format!(
@@ -348,12 +364,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_grep_regex_special_chars_treated_literally() {
+    async fn test_grep_invalid_regex_falls_back_to_literal() {
         let tmp = TempDir::new().unwrap();
         // Write a file containing the literal string "fn (" — the parens are regex specials.
         std::fs::write(tmp.path().join("code.rs"), "fn (invalid syntax").unwrap();
-        // If the pattern were treated as regex, "fn (" would be a parse error.
-        // Since we escape it, it should match the literal text.
+        // As a regex, "fn (" is a parse error, so it is searched as literal text.
         let args = json!({ "pattern": "fn (" });
         let result = grep(tmp.path(), &args, 100, &LocalFileSystem::new())
             .await
@@ -362,6 +377,57 @@ mod tests {
             result.contains("code.rs"),
             "literal paren should be matched without regex error"
         );
+        assert!(result.contains("searched as literal text"), "{result}");
+    }
+
+    #[tokio::test]
+    async fn test_grep_invalid_regex_with_no_match_says_it_was_literal() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("code.rs"), "fn main() {}").unwrap();
+        let args = json!({ "pattern": "absent (" });
+        let result = grep(tmp.path(), &args, 100, &LocalFileSystem::new())
+            .await
+            .unwrap();
+        assert!(result.contains("No matches"), "{result}");
+        assert!(result.contains("searched as literal text"), "{result}");
+    }
+
+    #[tokio::test]
+    async fn test_grep_pattern_is_a_regex() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("code.rs"), "fn alpha() {}\nfn beta() {}\n").unwrap();
+        for pattern in ["alpha|beta", r"fn \w+\(\)"] {
+            let args = json!({ "pattern": pattern });
+            let result = grep(tmp.path(), &args, 100, &LocalFileSystem::new())
+                .await
+                .unwrap();
+            assert!(result.starts_with("2 matches"), "{pattern}: {result}");
+            assert!(!result.contains("literal"), "{pattern}: {result}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_grep_regex_honors_case_insensitive() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("code.rs"), "ALPHA\nbeta\ngamma\n").unwrap();
+        let args = json!({ "pattern": "alpha|BETA", "case_insensitive": true });
+        let result = grep(tmp.path(), &args, 100, &LocalFileSystem::new())
+            .await
+            .unwrap();
+        assert!(result.starts_with("2 matches"), "{result}");
+    }
+
+    #[tokio::test]
+    async fn test_grep_searches_a_single_file() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("a.rs"), "needle\n").unwrap();
+        std::fs::write(tmp.path().join("b.rs"), "needle\n").unwrap();
+        let args = json!({ "pattern": "needle|pin", "file_path": "a.rs" });
+        let result = grep(tmp.path(), &args, 100, &LocalFileSystem::new())
+            .await
+            .unwrap();
+        assert!(result.starts_with("1 matches"), "{result}");
+        assert!(result.contains("a.rs"), "{result}");
     }
 
     // ── Tool trait invariants (#1265 PR-5) ─────────────────────
