@@ -79,7 +79,7 @@ pub mod git;
 pub mod inference;
 /// Shared helpers used by the inference loop.
 pub mod inference_helpers;
-/// Credential storage — `keys.toml` with env var fallback.
+/// Credential storage — SQLite KV store with env var fallback.
 pub mod keystore;
 /// Last-used provider recall (stored in SQLite KV store, not a config file).
 pub mod last_provider;

@@ -34,7 +34,7 @@ koda/
 │   │   ├── inference.rs    # Streaming inference loop + tool execution
 │   │   ├── inference_helpers.rs # Token estimation, message assembly, overflow detection
 │   │   ├── instructions.md # Behavioral instructions in the system prompt
-│   │   ├── keystore.rs     # Secure API key storage (~/.config/koda/keys.toml, 0600)
+│   │   ├── keystore.rs     # Secure API key storage (SQLite KV store, apikey: prefix)
 │   │   ├── last_provider.rs # Last-used provider recall (SQLite KV, not a config file)
 │   │   ├── loop_guard.rs   # Loop detection + iteration hard-cap
 │   │   ├── mcp/            # MCP client: config, manager, tool bridge
