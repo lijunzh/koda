@@ -446,6 +446,27 @@ async fn compaction_counts_the_same_rows_it_was_shown() {
     assert_each_was_summarized_or_kept(&env, &provider, &texts).await;
 }
 
+/// Gemini, 2026-11-01: section 6 of the summary quotes the user's messages,
+/// and the summary prompt names the tag. Taking the last `<summary>` kept only
+/// what followed the quote, and the task went with the rest.
+#[tokio::test]
+async fn a_tag_quoted_inside_the_summary_does_not_cut_it() {
+    let _serial = lock_compact_state().await;
+    let env = env_with_task("Fix the parser in lexer.rs").await;
+    let reply = "<analysis>\nthinking\n</analysis>\n\n<summary>\n\
+                 1. Primary Request: fix the parser.\n\
+                 6. User messages: \"an <analysis> block followed by a <summary> block\"\n\
+                 7. Pending Tasks: none.\n</summary>";
+    let provider = MockProvider::new(vec![MockResponse::Text(reply.into())]);
+
+    compact_with(&env, &provider).await;
+
+    let text = context_text(&env).await;
+    assert!(text.contains("Primary Request: fix the parser"), "{text}");
+    assert!(text.contains("Pending Tasks: none"), "{text}");
+    assert!(!text.contains("thinking"), "{text}");
+}
+
 /// Gemini, 2026-11-01: replies of 8-11K chars stopped normally and still came
 /// back as no summary, after the fix for a missing tag.
 #[tokio::test]

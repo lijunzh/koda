@@ -573,13 +573,12 @@ fn analysis_text(content: &str) -> String {
 /// assert_eq!(strip_analysis_block("just text"), "just text");
 /// ```
 pub fn strip_analysis_block(summary: &str) -> String {
-    // The last complete <summary> block wins, wherever it sits. Removing the
-    // analysis first loses one nested inside it, or cuts at a tag the analysis
-    // only quotes: a coding agent's history can be full of them.
+    // Find the block before touching the analysis: removing that first loses
+    // a summary nested inside it, or cuts at a tag it only quotes.
     if let Some(end) = summary.rfind("</summary>")
-        && let Some(start) = summary[..end].rfind("<summary>")
+        && let Some(start) = summary_open_tag(&summary[..end])
     {
-        let text = summary[start + "<summary>".len()..end].trim();
+        let text = summary[start + SUMMARY_OPEN.len()..end].trim();
         if !text.is_empty() {
             return collapse_blank_lines(text);
         }
@@ -610,6 +609,38 @@ pub fn strip_analysis_block(summary: &str) -> String {
     };
 
     collapse_blank_lines(&stripped)
+}
+
+const SUMMARY_OPEN: &str = "<summary>";
+
+/// Where the real summary opens, in a reply cut at its last `</summary>`.
+///
+/// Models quote this tag, in the analysis and inside the summary (the prompt
+/// names it, and section 6 repeats the user's messages), so neither the first
+/// nor the last one can be trusted. The real one follows the analysis, and
+/// usually starts a line.
+fn summary_open_tag(reply: &str) -> Option<usize> {
+    let starts_line = |at: usize| {
+        reply[..at]
+            .rfind('\n')
+            .is_none_or(|nl| reply[nl + 1..at].trim().is_empty())
+    };
+    let opens_from = |from: usize| {
+        reply[from..]
+            .match_indices(SUMMARY_OPEN)
+            .map(move |(at, _)| from + at)
+    };
+    let after_analysis = reply
+        .match_indices("</analysis>")
+        .find(|(at, _)| starts_line(*at))
+        .or(reply.rmatch_indices("</analysis>").next())
+        .map_or(0, |(at, tag)| at + tag.len());
+
+    opens_from(after_analysis)
+        .find(|at| starts_line(*at))
+        .or_else(|| opens_from(after_analysis).next())
+        .or_else(|| opens_from(0).find(|at| starts_line(*at)))
+        .or_else(|| opens_from(0).next())
 }
 
 /// Clean up extra whitespace.
