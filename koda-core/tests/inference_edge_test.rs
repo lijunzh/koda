@@ -86,7 +86,7 @@ async fn network_error_mid_stream_discards_response() {
     // Should emit a warning about the connection drop.
     let has_warn = events
         .iter()
-        .any(|e| matches!(e, EngineEvent::Warn { message } if message.contains("Connection lost")));
+        .any(|e| matches!(e, EngineEvent::Warn { message } if message.contains("Stream failed")));
     assert!(has_warn, "expected connection warning in: {events:?}");
 
     // The partial response must NOT be persisted (would corrupt session).

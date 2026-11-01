@@ -267,7 +267,10 @@ struct MessagesResponse {
 
 #[derive(Deserialize, Debug, Clone)]
 struct AnthropicUsage {
+    /// Absent on a `message_delta`, which may report output tokens alone.
+    #[serde(default)]
     input_tokens: i64,
+    #[serde(default)]
     output_tokens: i64,
     /// Tokens written to cache on this request (first time penalty, then free).
     #[serde(default)]
@@ -454,6 +457,9 @@ pub(crate) struct AnthropicChunkParser {
     emitted_tool_indices: std::collections::HashSet<usize>,
     usage: TokenUsage,
     thinking_indices: std::collections::HashSet<usize>,
+    /// `message_stop` arrived. Without it the stream was cut, however
+    /// cleanly the connection closed.
+    finished: bool,
 }
 
 impl AnthropicChunkParser {
@@ -463,8 +469,20 @@ impl AnthropicChunkParser {
             emitted_tool_indices: std::collections::HashSet::new(),
             usage: TokenUsage::default(),
             thinking_indices: std::collections::HashSet::new(),
+            finished: false,
         }
     }
+}
+
+/// The message of an in-band `error` event. Anthropic sends these on an
+/// HTTP 200 stream, for example when overloaded partway through a reply.
+fn stream_error_message(raw: &serde_json::Value) -> String {
+    let field = |name: &str| raw["error"][name].as_str().unwrap_or("unknown");
+    format!(
+        "Anthropic stream error: {}: {}",
+        field("type"),
+        field("message")
+    )
 }
 
 impl ChunkParser for AnthropicChunkParser {
@@ -472,13 +490,17 @@ impl ChunkParser for AnthropicChunkParser {
         // First, try to detect thinking blocks from raw JSON.
         // `ContentBlock` drops a thinking block's type, so we parse raw JSON
         // separately to register thinking block indices.
-        if let Ok(raw) = serde_json::from_str::<serde_json::Value>(data)
-            && raw.get("type").and_then(|t| t.as_str()) == Some("content_block_start")
-            && let Some(idx) = raw.get("index").and_then(|i| i.as_u64())
-            && let Some(cb) = raw.get("content_block")
-            && cb.get("type").and_then(|t| t.as_str()) == Some("thinking")
-        {
-            self.thinking_indices.insert(idx as usize);
+        if let Ok(raw) = serde_json::from_str::<serde_json::Value>(data) {
+            if raw.get("type").and_then(|t| t.as_str()) == Some("error") {
+                return vec![StreamChunk::NetworkError(stream_error_message(&raw))];
+            }
+            if raw.get("type").and_then(|t| t.as_str()) == Some("content_block_start")
+                && let Some(idx) = raw.get("index").and_then(|i| i.as_u64())
+                && let Some(cb) = raw.get("content_block")
+                && cb.get("type").and_then(|t| t.as_str()) == Some("thinking")
+            {
+                self.thinking_indices.insert(idx as usize);
+            }
         }
 
         let Ok(event) = serde_json::from_str::<StreamEvent>(data) else {
@@ -543,6 +565,7 @@ impl ChunkParser for AnthropicChunkParser {
                     self.usage.cache_creation_tokens = u.cache_creation_input_tokens;
                 }
             }
+            "message_stop" => self.finished = true,
             _ => {
                 // content_block_stop — emit ToolCallReady for completed tool calls
                 if event.event_type == "content_block_stop"
@@ -559,7 +582,7 @@ impl ChunkParser for AnthropicChunkParser {
                     }));
                     self.emitted_tool_indices.insert(idx);
                 }
-                // message_stop, ping, etc. — ignored
+                // ping, etc. — ignored
             }
         }
 
@@ -567,6 +590,11 @@ impl ChunkParser for AnthropicChunkParser {
     }
 
     fn finish(&mut self) -> Vec<StreamChunk> {
+        if !self.finished {
+            return vec![StreamChunk::NetworkError(
+                "Anthropic stream ended before message_stop".to_string(),
+            )];
+        }
         let mut chunks = Vec::new();
         if !self.tool_calls.is_empty() {
             // Only emit tool calls NOT already sent via ToolCallReady

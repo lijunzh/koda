@@ -46,7 +46,7 @@ pub struct SseCollector {
 /// [`ChunkParser`], and sends [`StreamChunk`]s to the returned receiver.
 ///
 /// Handles:
-/// - Byte stream → UTF-8 buffering
+/// - Byte buffering, so a character split across reads survives
 /// - SSE line splitting (`\n` delimited)
 /// - `data: ` prefix stripping (non-data lines are ignored)
 /// - `[DONE]` sentinel (standard SSE terminator used by OpenAI)
@@ -59,14 +59,14 @@ pub fn spawn_sse_collector(
     parser: Box<dyn ChunkParser + Send>,
 ) -> SseCollector {
     let (tx, rx) = mpsc::channel(64);
-    let handle = tokio::spawn(drive_sse_stream(response, parser, tx));
+    let handle = tokio::spawn(drive_sse_stream(response.bytes_stream(), parser, tx));
     SseCollector { rx, handle }
 }
 
 /// Inner driver: read SSE lines from a byte stream and dispatch to the parser.
 ///
 /// Separated from [`spawn_sse_collector`] so the same logic can be tested
-/// with any `Stream<Item = Result<Bytes, _>>` without needing a real HTTP response.
+/// with any byte stream without needing a real HTTP response.
 ///
 /// # Error handling
 ///
@@ -74,17 +74,24 @@ pub fn spawn_sse_collector(
 /// to emit `Done` with accumulated token usage.
 ///
 /// A byte-stream error (network drop, connection reset, timeout) emits
-/// `StreamChunk::NetworkError` instead of calling `finish()`. The caller
-/// is responsible for discarding any partial response — see `collect_stream()`.
-async fn drive_sse_stream(
-    response: reqwest::Response,
+/// `StreamChunk::NetworkError` instead of calling `finish()`. So does a parser
+/// that reports a failure in-band: the stream stops there. The caller is
+/// responsible for discarding any partial response — see `collect_stream()`.
+async fn drive_sse_stream<S, B, E>(
+    byte_stream: S,
     mut parser: Box<dyn ChunkParser + Send>,
     tx: mpsc::Sender<StreamChunk>,
-) {
+) where
+    S: futures_util::Stream<Item = Result<B, E>>,
+    B: AsRef<[u8]>,
+    E: std::fmt::Display,
+{
     use futures_util::StreamExt;
 
-    let mut byte_stream = response.bytes_stream();
-    let mut buffer = String::new();
+    let mut byte_stream = std::pin::pin!(byte_stream);
+    // Bytes, not text: a read can end inside a character, so decoding waits
+    // for a complete line.
+    let mut buffer: Vec<u8> = Vec::new();
     let mut network_err: Option<String> = None;
 
     'read: while let Some(chunk_result) = byte_stream.next().await {
@@ -94,12 +101,14 @@ async fn drive_sse_stream(
                 break 'read;
             }
             Ok(bytes) => {
-                buffer.push_str(&String::from_utf8_lossy(&bytes));
+                buffer.extend_from_slice(bytes.as_ref());
             }
         }
 
-        while let Some(line_end) = buffer.find('\n') {
-            let line = buffer[..line_end].trim().to_string();
+        while let Some(line_end) = buffer.iter().position(|&b| b == b'\n') {
+            let line = String::from_utf8_lossy(&buffer[..line_end])
+                .trim()
+                .to_string();
             buffer.drain(..=line_end);
 
             // SSE spec: space after colon is optional ("data: x" and "data:x" are equivalent)
@@ -120,7 +129,11 @@ async fn drive_sse_stream(
             }
 
             for chunk in parser.process_line(data) {
+                let failed = matches!(chunk, StreamChunk::NetworkError(_));
                 let _ = tx.send(chunk).await;
+                if failed {
+                    return;
+                }
             }
         }
     }
@@ -234,6 +247,51 @@ mod tests {
         assert!(matches!(&chunks[1], StreamChunk::TextDelta(t) if t == "world"));
     }
 
+    /// A read can end anywhere, including inside a character. Every split of
+    /// a line holding 2-, 3- and 4-byte characters must decode to the same text.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_split_inside_a_character_survives() {
+        let text = "é 界 🐻";
+        let sse = format!("data: {text}\n");
+        let bytes = sse.as_bytes();
+        for split in 1..bytes.len() {
+            let reads: Vec<Result<Vec<u8>, String>> =
+                vec![Ok(bytes[..split].to_vec()), Ok(bytes[split..].to_vec())];
+            let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+            drive_sse_stream(
+                futures_util::stream::iter(reads),
+                Box::new(EchoParser::new()),
+                tx,
+            )
+            .await;
+            let first = rx.recv().await.unwrap();
+            assert!(
+                matches!(&first, StreamChunk::TextDelta(t) if t == text),
+                "split at byte {split}: {first:?}"
+            );
+        }
+    }
+
+    /// One byte per read, the worst case for a tool call's arguments.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_single_byte_reads_keep_tool_arguments_exact() {
+        let sse = "data: {\"path\":\"日本語.txt\"}\n";
+        let reads: Vec<Result<Vec<u8>, String>> =
+            sse.as_bytes().iter().map(|b| Ok(vec![*b])).collect();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        drive_sse_stream(
+            futures_util::stream::iter(reads),
+            Box::new(EchoParser::new()),
+            tx,
+        )
+        .await;
+        let first = rx.recv().await.unwrap();
+        assert!(
+            matches!(&first, StreamChunk::TextDelta(t) if t == "{\"path\":\"日本語.txt\"}"),
+            "{first:?}"
+        );
+    }
+
     /// Mixed `data: ` and `data:` lines should both be parsed.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_data_mixed_space_variants() {
@@ -248,6 +306,81 @@ mod tests {
     // ── Anthropic parser fixture tests ────────────────────────────
 
     use crate::providers::anthropic::AnthropicChunkParser;
+
+    /// The final delta as the API docs show it: output tokens only.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_anthropic_delta_with_output_tokens_only() {
+        let sse = r#"data: {"type":"message_start","message":{"usage":{"input_tokens":100,"output_tokens":1}}}
+data: {"type":"message_delta","delta":{"stop_reason":"max_tokens","stop_sequence":null},"usage":{"output_tokens":15}}
+data: {"type":"message_stop"}
+"#;
+        let chunks = drive_parser(Box::new(AnthropicChunkParser::new()), sse).await;
+
+        match chunks.last() {
+            Some(StreamChunk::Done(usage)) => {
+                assert_eq!(usage.prompt_tokens, 100);
+                assert_eq!(usage.completion_tokens, 15);
+                assert_eq!(usage.stop_reason, "max_tokens");
+            }
+            other => panic!("expected Done, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_anthropic_error_event_fails_the_stream() {
+        let mut parser = AnthropicChunkParser::new();
+        let chunks = parser.process_line(
+            r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#,
+        );
+        assert!(
+            matches!(&chunks[..], [StreamChunk::NetworkError(e)]
+                if e.contains("overloaded_error") && e.contains("Overloaded")),
+            "{chunks:?}"
+        );
+    }
+
+    #[test]
+    fn test_anthropic_stream_cut_before_message_stop_fails() {
+        let mut parser = AnthropicChunkParser::new();
+        parser.process_line(r#"{"type":"message_start","message":{"usage":{"input_tokens":5}}}"#);
+        assert!(
+            matches!(&parser.finish()[..], [StreamChunk::NetworkError(_)]),
+            "a stream with no message_stop must not finish cleanly"
+        );
+    }
+
+    /// Nothing after a failure reaches the caller: the last line here would
+    /// otherwise produce another delta and a `Done`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_collector_stops_at_a_failure_from_the_parser() {
+        struct Failing;
+        impl ChunkParser for Failing {
+            fn process_line(&mut self, data: &str) -> Vec<StreamChunk> {
+                if data == "bad" {
+                    vec![StreamChunk::NetworkError(data.to_string())]
+                } else {
+                    vec![StreamChunk::TextDelta(data.to_string())]
+                }
+            }
+            fn finish(&mut self) -> Vec<StreamChunk> {
+                vec![StreamChunk::Done(TokenUsage::default())]
+            }
+        }
+        let reads: Vec<Result<&str, String>> = vec![Ok("data: ok\ndata: bad\ndata: late\n")];
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        drive_sse_stream(futures_util::stream::iter(reads), Box::new(Failing), tx).await;
+        let mut chunks = Vec::new();
+        while let Some(chunk) = rx.recv().await {
+            chunks.push(chunk);
+        }
+        assert!(
+            matches!(
+                &chunks[..],
+                [StreamChunk::TextDelta(_), StreamChunk::NetworkError(_)]
+            ),
+            "{chunks:?}"
+        );
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_anthropic_text_stream() {
@@ -282,6 +415,7 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","
 data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}
 data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Answer"}}
 data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":0,"output_tokens":20,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}
+data: {"type":"message_stop"}
 "#;
         let chunks = drive_parser(Box::new(AnthropicChunkParser::new()), sse).await;
 
@@ -297,6 +431,7 @@ data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use"
 data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":"}}
 data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"main.rs\"}"}}
 data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"input_tokens":0,"output_tokens":15,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}
+data: {"type":"message_stop"}
 "#;
         let chunks = drive_parser(Box::new(AnthropicChunkParser::new()), sse).await;
 
