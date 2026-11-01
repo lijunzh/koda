@@ -41,10 +41,11 @@ use crate::db::{Database, Role};
 use crate::engine::{EngineCommand, EngineEvent, EngineSink};
 use crate::file_tracker::FileTracker;
 use crate::inference_helpers::{
-    AUTO_COMPACT_THRESHOLD, CONTEXT_WARN_THRESHOLD, ModelCall, RATE_LIMIT_MAX_RETRIES,
-    assemble_messages, context_limit_from_error, estimate_subagent_preflight, estimate_tokens,
-    is_context_overflow_error, is_failed_stop, is_image_rejection_error,
-    is_network_transient_error, is_rate_limit_error, is_server_error, rate_limit_backoff,
+    AUTO_COMPACT_THRESHOLD, CONTEXT_WARN_THRESHOLD, ContextShape, ModelCall,
+    RATE_LIMIT_MAX_RETRIES, assemble_messages, context_limit_from_error, ends_with_question,
+    estimate_subagent_preflight, estimate_tokens, is_context_overflow_error, is_failed_stop,
+    is_image_rejection_error, is_network_transient_error, is_rate_limit_error, is_server_error,
+    rate_limit_backoff,
 };
 use crate::loop_guard::{LoopAction, LoopDetector};
 use crate::persistence::Persistence;
@@ -164,6 +165,34 @@ async fn assemble_context(turn: &TurnState<'_>) -> Result<(Vec<ChatMessage>, usi
     }
 
     let context_used = estimate_tokens(&messages);
+    let shape = ContextShape::of(&messages);
+    let (largest_index, largest_role, largest_chars) = shape.largest.unwrap_or_default();
+    tracing::info!(
+        iteration = turn.iteration,
+        estimated_tokens = context_used,
+        window = turn.max_context_tokens,
+        percent = crate::context::percent_of(context_used, turn.max_context_tokens),
+        messages = messages.len(),
+        system_chars = shape.system_chars,
+        user_chars = shape.user_chars,
+        assistant_chars = shape.assistant_chars,
+        tool_chars = shape.tool_chars,
+        tool_calls_chars = shape.tool_calls_chars,
+        reasoning_chars = shape.reasoning_chars,
+        images = shape.images,
+        summary_chars = history
+            .iter()
+            .filter(|m| m.role == Role::System)
+            .filter_map(|m| m.content.as_deref())
+            .map(str::len)
+            .sum::<usize>(),
+        largest_index,
+        largest_role = %largest_role,
+        largest_chars,
+        duplicate_read_files = analysis.duplicate_reads.len(),
+        duplicate_read_tokens = analysis.total_duplicate_waste(),
+        "context assembled"
+    );
     crate::context::update(context_used, turn.max_context_tokens);
     turn.sink.emit(EngineEvent::ContextUsage {
         used: context_used,
@@ -742,6 +771,48 @@ pub enum TurnOutcome {
     Aborted(String),
 }
 
+/// What the `turn end` line reports, gathered as the loop runs.
+#[derive(Debug, Default)]
+struct TurnStats {
+    /// Model calls that returned.
+    model_calls: u32,
+    /// Tool calls the model asked for.
+    tool_calls: usize,
+    /// The turn stopped on a limit instead of a final reply.
+    limit: Option<&'static str>,
+    /// The final reply's length and whether it ended on a question.
+    final_reply: Option<(usize, bool)>,
+}
+
+impl TurnStats {
+    /// Write the `turn end` line every run gets, whatever its log level.
+    fn log(&self, session_id: &str, outcome: &str) {
+        let (text_chars, question) = self.final_reply.unwrap_or_default();
+        tracing::info!(
+            session_id,
+            outcome,
+            model_calls = self.model_calls,
+            tool_calls = self.tool_calls,
+            final_text_chars = text_chars,
+            ends_with_question = question,
+            "turn end"
+        );
+    }
+
+    fn outcome(&self, result: &Result<()>, cancelled: bool) -> &'static str {
+        match result {
+            Err(e) if e.is::<TurnAborted>() => "aborted",
+            Err(_) => "error",
+            Ok(()) if cancelled => "cancelled",
+            Ok(()) => self.limit.unwrap_or(if self.final_reply.is_some() {
+                "complete"
+            } else {
+                "stopped"
+            }),
+        }
+    }
+}
+
 /// Marker error for the early-stop paths: [`inference_loop_outcome`]
 /// turns it back into [`TurnOutcome::Aborted`], so it never reaches callers.
 #[derive(Debug)]
@@ -762,7 +833,11 @@ pub async fn inference_loop_outcome(ctx: InferenceContext<'_>) -> Result<TurnOut
     // We need this handle to call `commit_turn` after the inner
     // function returns and releases its borrow on `ctx.tools`.
     let tools = ctx.tools;
-    let result = inference_loop_inner(ctx).await;
+    let session_id = ctx.session_id;
+    let cancel = ctx.cancel.clone();
+    let mut stats = TurnStats::default();
+    let result = inference_loop_inner(ctx, &mut stats).await;
+    stats.log(session_id, stats.outcome(&result, cancel.is_cancelled()));
     if let Ok(mut undo) = tools.undo.lock() {
         undo.commit_turn();
     }
@@ -775,7 +850,7 @@ pub async fn inference_loop_outcome(ctx: InferenceContext<'_>) -> Result<TurnOut
     }
 }
 
-async fn inference_loop_inner(ctx: InferenceContext<'_>) -> Result<()> {
+async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) -> Result<()> {
     let InferenceContext {
         project_root,
         config,
@@ -1051,6 +1126,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>) -> Result<()> {
             };
 
             if extra == 0 {
+                stats.limit = Some("iteration_cap");
                 break Ok(());
             }
             hard_cap += extra;
@@ -1239,6 +1315,8 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>) -> Result<()> {
             text_chars: stream_result.text.len(),
         }
         .log();
+        stats.model_calls += 1;
+        stats.tool_calls += stream_result.tool_calls.len();
 
         if stream_result.interrupted {
             // Kill the background HTTP reader immediately so the TCP
@@ -1369,6 +1447,8 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>) -> Result<()> {
                     ),
                 });
             }
+            stats.final_reply = Some((full_text.len(), ends_with_question(&full_text)));
+
             // `last_prompt_tokens` (this iteration's prompt size) drives the
             // context-window % meter: it reflects current context occupancy.
             // `total_prompt_tokens` (cumulative across iterations) drives the
@@ -1600,6 +1680,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>) -> Result<()> {
                          Send a follow-up message to continue."
                     ),
                 });
+                stats.limit = Some("loop_guard");
                 break Ok(());
             }
         }

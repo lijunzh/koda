@@ -178,6 +178,7 @@ pub async fn compact_session_with_provider(
     // Only summarize the messages being compacted, not the ones we're keeping.
     let to_compact = &history[..compact_count];
     let conversation_text = build_conversation_text(to_compact);
+    let conversation_chars = conversation_text.len();
 
     tracing::info!(
         "Compacting {compact_count}/{} messages (preserving {preserve_count})",
@@ -222,7 +223,9 @@ pub async fn compact_session_with_provider(
     // Same model and the session's own reasoning settings: Claude Code and
     // Codex both summarize that way. Only the output cap and temperature differ.
     let mut cap = first_cap;
-    let summary = loop {
+    let mut attempts = 0u32;
+    let (summary, reply) = loop {
+        attempts += 1;
         let compact_settings = ModelSettings {
             max_tokens: Some(cap as u32),
             temperature: Some(0.3),
@@ -245,6 +248,11 @@ pub async fn compact_session_with_provider(
         .log();
         let content = response.content.as_deref().unwrap_or("");
         let (mut summary, mut complete) = summary_from_reply(content);
+        let mut branch = if content.contains("<summary>") {
+            "summary"
+        } else {
+            "untagged"
+        };
         // A finished reply that never opened <summary> still holds what the
         // model worked out: Gemini sent 6-9K of analysis like this. It beats
         // the marker.
@@ -255,13 +263,16 @@ pub async fn compact_session_with_provider(
             );
             summary = analysis_text(content);
             complete = true;
+            branch = "analysis";
         }
         if summary.chars().count() < MIN_SUMMARY_CHARS {
             summary.clear();
         }
         let cut_off = response.usage.stop_reason == "max_tokens" || !complete;
+        let stop_reason = response.usage.stop_reason.clone();
+        let reply = |branch| (branch, content.len(), stop_reason);
         if !cut_off && !summary.is_empty() {
-            break Some(summary);
+            break (Some(summary), reply(branch));
         }
         if cut_off && retry_cap > cap {
             tracing::warn!(
@@ -278,7 +289,12 @@ pub async fn compact_session_with_provider(
                 content.len(),
                 response.usage.stop_reason
             );
-            break None;
+            let branch = match (cut_off, content.trim().is_empty()) {
+                (true, _) => "cut_off",
+                (false, true) => "empty",
+                (false, false) => "too_short",
+            };
+            break (None, reply(branch));
         }
         // Still cut off with no room left to retry: a partial summary beats
         // the marker, but say so.
@@ -287,7 +303,7 @@ pub async fn compact_session_with_provider(
              {} chars that came back",
             summary.len()
         );
-        break Some(summary);
+        break (Some(summary), reply("partial"));
     };
 
     let no_summary = summary.is_none();
@@ -306,6 +322,23 @@ pub async fn compact_session_with_provider(
     } else {
         record_compact_success();
     }
+
+    let (branch, reply_chars, stop_reason) = reply;
+    tracing::info!(
+        branch,
+        rows_summarized = compact_count,
+        rows_kept = preserve_count,
+        rows_archived = deleted,
+        conversation_chars,
+        prompt_chars = summary_prompt.len(),
+        truncated = final_text.len() < conversation_chars,
+        attempts,
+        reply_chars,
+        stop_reason = %stop_reason,
+        summary_chars = summary.len(),
+        consecutive_failures = CONSECUTIVE_FAILURES.load(Ordering::Relaxed),
+        "compaction"
+    );
 
     Ok(Ok(CompactResult {
         deleted,
@@ -334,6 +367,15 @@ pub async fn compact_without_summary(
     let compact_count = history.len() - preserve_count;
     let text = no_summary_text(&history[..compact_count]);
     let deleted = replace_with_summary(db, session_id, &text, history[compact_count].id).await?;
+    tracing::info!(
+        branch = "dropped",
+        rows_summarized = compact_count,
+        rows_kept = preserve_count,
+        rows_archived = deleted,
+        summary_chars = text.len(),
+        consecutive_failures = CONSECUTIVE_FAILURES.load(Ordering::Relaxed),
+        "compaction"
+    );
     Ok(Ok(CompactResult {
         deleted,
         summary_tokens: text.len() / 4,

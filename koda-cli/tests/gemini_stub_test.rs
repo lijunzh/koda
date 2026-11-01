@@ -196,7 +196,12 @@ async fn compaction_leaves_the_system_prompt_alone() {
         .collect();
     let (first, last) = (&turns[0], &turns[turns.len() - 1]);
     assert!(last.to_string().contains(SUMMARY), "never compacted");
-    assert!(koda_log(tmp.path()).contains(r#"purpose="compaction""#));
+    let log = koda_log(tmp.path());
+    assert!(log.contains(r#"purpose="compaction""#));
+    assert!(log.contains("context assembled"), "{log}");
+    assert!(log.contains("tool_calls_chars="), "{log}");
+    assert!(log.contains("rows_summarized="), "{log}");
+    assert!(log.contains("turn end"), "{log}");
     assert!(first["systemInstruction"]["parts"][0]["text"].is_string());
     assert_eq!(first["systemInstruction"], last["systemInstruction"]);
     for content in last["contents"].as_array().unwrap() {
