@@ -857,7 +857,14 @@ pub enum TurnOutcome {
     /// produced. The TUI shows the warning and carries on; headless
     /// reports the turn as failed with this message.
     Aborted(String),
+    /// Cancelled, but it hadn't stopped after [`CANCEL_GRACE`], so it was
+    /// dropped wherever it was.
+    Abandoned,
 }
+
+/// How long a cancelled turn gets to stop before it's dropped. Not everything
+/// a turn awaits listens for the cancel: a sub-agent's model call doesn't.
+pub const CANCEL_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// What the `turn end` line reports, gathered as the loop runs.
 #[derive(Debug, Default)]
@@ -890,6 +897,7 @@ impl TurnStats {
     fn outcome(&self, result: &Result<()>, cancelled: bool) -> &'static str {
         match result {
             Err(e) if e.is::<TurnAborted>() => "aborted",
+            Err(e) if e.is::<TurnAbandoned>() => "abandoned",
             Err(_) => "error",
             Ok(()) if cancelled => "cancelled",
             Ok(()) => self.limit.unwrap_or(if self.final_reply.is_some() {
@@ -914,6 +922,39 @@ impl std::fmt::Display for TurnAborted {
 
 impl std::error::Error for TurnAborted {}
 
+/// Marker error for a turn [`until_abandoned`] gave up on: like
+/// [`TurnAborted`], it never reaches callers.
+#[derive(Debug)]
+struct TurnAbandoned;
+
+impl std::fmt::Display for TurnAbandoned {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the turn did not stop after being cancelled")
+    }
+}
+
+impl std::error::Error for TurnAbandoned {}
+
+/// Run `turn` to the end, or until [`CANCEL_GRACE`] after `cancel` fires.
+async fn until_abandoned(
+    turn: impl std::future::Future<Output = Result<()>>,
+    cancel: &CancellationToken,
+) -> Result<()> {
+    tokio::pin!(turn);
+    let expired = async {
+        cancel.cancelled().await;
+        tokio::time::sleep(CANCEL_GRACE).await;
+    };
+    tokio::select! {
+        biased;
+        result = &mut turn => result,
+        () = expired => {
+            tracing::warn!("turn still running {CANCEL_GRACE:?} after its cancel; dropping it");
+            Err(TurnAbandoned.into())
+        }
+    }
+}
+
 /// Like [`inference_loop`], but says whether the turn stopped early on a
 /// warning. `inference_loop` keeps returning `Ok(())` for those turns.
 pub async fn inference_loop_outcome(ctx: InferenceContext<'_>) -> Result<TurnOutcome> {
@@ -924,13 +965,14 @@ pub async fn inference_loop_outcome(ctx: InferenceContext<'_>) -> Result<TurnOut
     let session_id = ctx.session_id;
     let cancel = ctx.cancel.clone();
     let mut stats = TurnStats::default();
-    let result = inference_loop_inner(ctx, &mut stats).await;
+    let result = until_abandoned(inference_loop_inner(ctx, &mut stats), &cancel).await;
     stats.log(session_id, stats.outcome(&result, cancel.is_cancelled()));
     if let Ok(mut undo) = tools.undo.lock() {
         undo.commit_turn();
     }
     match result {
         Ok(()) => Ok(TurnOutcome::Finished),
+        Err(e) if e.is::<TurnAbandoned>() => Ok(TurnOutcome::Abandoned),
         Err(e) => match e.downcast::<TurnAborted>() {
             Ok(TurnAborted(message)) => Ok(TurnOutcome::Aborted(message)),
             Err(e) => Err(e),
@@ -1844,6 +1886,47 @@ mod tests {
     use crate::providers::{StreamChunk, TokenUsage, ToolCall};
     use crate::trust::TrustMode;
     use tokio::sync::mpsc;
+
+    /// A turn that never finishes, the way a stuck model call looks.
+    async fn stuck() -> Result<()> {
+        std::future::pending().await
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_cancelled_turn_is_dropped_after_the_grace() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let started = tokio::time::Instant::now();
+        let result = until_abandoned(stuck(), &cancel).await;
+        assert!(result.unwrap_err().is::<TurnAbandoned>());
+        assert_eq!(started.elapsed(), CANCEL_GRACE);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_cancelled_turn_that_stops_in_time_keeps_its_result() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let turn = async {
+            tokio::time::sleep(CANCEL_GRACE / 2).await;
+            anyhow::bail!("its own error")
+        };
+        let result = until_abandoned(turn, &cancel).await;
+        assert_eq!(result.unwrap_err().to_string(), "its own error");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn only_a_cancel_starts_the_clock() {
+        let cancel = CancellationToken::new();
+        let waited = tokio::time::timeout(CANCEL_GRACE * 100, until_abandoned(stuck(), &cancel));
+        assert!(waited.await.is_err(), "still running");
+    }
+
+    #[test]
+    fn an_abandoned_turn_is_logged_as_one() {
+        let result = Err(TurnAbandoned.into());
+        let outcome = TurnStats::default().outcome(&result, true);
+        assert_eq!(outcome, "abandoned");
+    }
 
     /// Helper: create a ToolRegistry backed by a temp directory.
     fn test_tools(root: &Path) -> ToolRegistry {

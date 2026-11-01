@@ -30,7 +30,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// Headless output format (`--output-format`). See the module docs for
 /// what each format writes to stdout vs stderr.
@@ -130,11 +130,9 @@ pub async fn run_headless(
             _ = tokio::signal::ctrl_c() => {
                 cancel.cancel();
                 eprintln!("\n\x1b[33m\u{26a0} Interrupted\x1b[0m");
-                // Let the turn wind down so it reports how it ended, but
-                // don't hang on a tool that ignores the cancel.
-                tokio::time::timeout(INTERRUPT_GRACE, turn)
-                    .await
-                    .unwrap_or(Ok(()))
+                // Let the turn wind down so it reports how it ended. It
+                // bounds that itself, so it can't hang here.
+                turn.await
             }
         }
     };
@@ -197,9 +195,6 @@ fn print_line(line: &WireLine) {
         Err(e) => tracing::warn!("stream-json: failed to serialize a line: {e}"),
     }
 }
-
-/// How long an interrupted turn gets to stop before the run reports anyway.
-const INTERRUPT_GRACE: Duration = Duration::from_secs(5);
 
 // ---------------------------------------------------------------------------
 // Run summary — the `json` object / final `stream-json` line

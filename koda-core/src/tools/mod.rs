@@ -673,21 +673,21 @@ impl ToolRegistry {
                     )
                     .await;
                 }
-                if name == "Bash" {
-                    // #804 item 7: record the most recent bash
-                    // invocation snippet so the validation layer
-                    // can name it in staleness errors.
-                    let snippet = args["command"]
-                        .as_str()
-                        .unwrap_or("")
-                        .chars()
-                        .take(72)
-                        .collect::<String>();
-                    if !snippet.is_empty()
-                        && let Ok(mut guard) = self.last_bash.lock()
-                    {
-                        *guard = Some((snippet, std::time::Instant::now()));
-                    }
+            }
+            if name == "Bash" {
+                // #804 item 7: record the most recent bash invocation
+                // snippet so the validation layer can name it in staleness
+                // errors. A failed command can still have changed files.
+                let snippet = args["command"]
+                    .as_str()
+                    .unwrap_or("")
+                    .chars()
+                    .take(72)
+                    .collect::<String>();
+                if !snippet.is_empty()
+                    && let Ok(mut guard) = self.last_bash.lock()
+                {
+                    *guard = Some((snippet, std::time::Instant::now()));
                 }
             }
             return result;
@@ -1436,6 +1436,24 @@ mod tests {
             .execute("Read", r#"{"file_path":"f.txt"}"#, None, None)
             .await;
         assert!(read.success && read.output.contains("ONE"), "{read:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_bash_command_is_still_named_in_a_stale_edit() {
+        let (registry, _dir) = registry_after_full_read("one\ntwo\n").await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        // The command changes the file, then exits non-zero.
+        let command = "printf 'ONE\\ntwo\\n' > f.txt; exit 3";
+        let args = serde_json::json!({ "command": command }).to_string();
+        let bash = registry.execute("Bash", &args, None, None).await;
+        assert!(!bash.success, "{bash:?}");
+
+        let err = edit_preflight(&registry, "f.txt", "two", "2")
+            .await
+            .unwrap();
+        assert!(err.contains("modified on disk"), "{err}");
+        assert!(err.contains("Bash ran") && err.contains("exit 3"), "{err}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

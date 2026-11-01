@@ -30,7 +30,7 @@ koda "list exported functions in lib.rs" > functions.txt
 | Code | Meaning |
 |------|---------|
 | `0` | Turn completed successfully |
-| `1` | Error (API failure, bad config, …) |
+| `1` | Error (API failure, bad config, a cancelled turn that wouldn't stop, …) |
 
 ## Trust mode in headless mode
 
@@ -166,6 +166,12 @@ includes sub-agents, compaction and retries. On a resumed session it doesn't
 include earlier turns. A model call cut off before the provider reported usage
 counts for nothing, so a cancelled or failed turn reports the calls that
 finished.
+
+**A cancelled turn** gets five seconds to stop. One that hasn't stopped by then,
+such as a sub-agent waiting on a model call, is dropped where it is. It still
+closes with one `turn_summary` and one `turn_end` of kind `cancelled`, but
+`run_summary` then has `success: false` and an `error`, and the run exits 1, since
+work may have been left unfinished.
 
 ### Reading unknown types
 
