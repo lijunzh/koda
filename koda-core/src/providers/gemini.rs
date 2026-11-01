@@ -519,6 +519,7 @@ impl LlmProvider for GeminiProvider {
             Some(settings),
             cache_name.as_deref(),
         );
+        super::trace_request("gemini", &body);
 
         let req = self
             .post(self.api_url(&format!("models/{model}:generateContent")))
@@ -612,6 +613,7 @@ impl LlmProvider for GeminiProvider {
             &api_tools,
             Some(settings),
         );
+        super::trace_request("gemini", &body);
 
         let req = self
             .post(

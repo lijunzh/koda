@@ -495,6 +495,7 @@ impl LlmProvider for OpenAiCompatProvider {
             req = req.bearer_auth(key);
         }
 
+        super::trace_request("openai-compat", &request);
         let resp_req = req.json(&request);
         let chat_resp: ChatResponse = super::http::send_and_parse_json(resp_req, "LLM").await?;
 
@@ -571,6 +572,7 @@ impl LlmProvider for OpenAiCompatProvider {
             req = req.bearer_auth(key);
         }
 
+        super::trace_request("openai-compat", &request);
         let resp = super::http::send_or_bail(req.json(&request), "LLM").await?;
 
         let collector = super::stream_collector::spawn_sse_collector(

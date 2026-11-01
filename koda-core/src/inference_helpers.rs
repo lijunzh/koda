@@ -389,6 +389,10 @@ pub fn is_rate_limit_error(err: &anyhow::Error) -> bool {
 pub(crate) struct ModelCall<'a> {
     /// What the call was for: `turn` or `compaction`.
     pub purpose: &'static str,
+    /// Hash of the system prompt sent, and of the tool definitions. Compaction
+    /// sends neither.
+    pub system_hash: Option<&'a str>,
+    pub tools_hash: Option<&'a str>,
     /// The provider's name.
     pub provider: &'a str,
     /// The model id as requested.
@@ -409,6 +413,15 @@ pub(crate) struct ModelCall<'a> {
     pub text_chars: usize,
 }
 
+/// A short fingerprint of `text`, to tell in a log whether two calls sent the
+/// same thing without saving it. Comparable within a build, not across them.
+pub(crate) fn short_hash(text: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
 /// Whether a reply ends by asking something. A cheap heuristic for telling a
 /// turn that finished from one that stopped to ask: a question mark at the end
 /// of the text, past any closing markdown.
@@ -422,6 +435,8 @@ impl ModelCall<'_> {
     pub(crate) fn log(&self) {
         tracing::info!(
             purpose = self.purpose,
+            system_hash = self.system_hash,
+            tools_hash = self.tools_hash,
             provider = self.provider,
             model = self.model,
             messages = self.messages,

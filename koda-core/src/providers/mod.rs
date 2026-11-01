@@ -158,6 +158,16 @@ impl ChatMessage {
     }
 }
 
+/// Log a request body exactly as sent, at trace level: it holds the whole
+/// conversation. `RUST_LOG=koda_core::providers=trace` turns it on.
+pub(crate) fn trace_request(provider: &str, body: &impl Serialize) {
+    tracing::trace!(
+        provider,
+        body = %serde_json::to_string(body).unwrap_or_default(),
+        "request body"
+    );
+}
+
 /// Tool definition sent to the LLM.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDefinition {
