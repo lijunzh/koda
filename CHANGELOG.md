@@ -34,6 +34,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **A failed Anthropic stream no longer counts as a finished reply.** An `error` event sent partway through a reply, such as `overloaded_error`, was ignored, so the partial answer was saved as complete and its tool calls ran. A stream that ends without `message_stop` is treated the same way. The turn now ends with a warning and the partial reply is discarded.
 - **Streamed text keeps its Unicode.** A read that ended inside a multi-byte character turned it into replacement characters, on every provider and in tool arguments too.
 - **Anthropic output tokens and stop reason survive a short usage block.** The final `message_delta` was dropped whole when it reported output tokens alone, as the API docs show.
+- **The model gets your prompt as you typed it.** Every prompt was split on whitespace and rejoined with single spaces, which put multi-line code, diffs and Markdown on one line. This applied to the TUI and to headless runs. An `@file` or image reference is still removed, with the spaces before it.
 - **An interrupted headless run reports how it ended.** On SIGINT during a model call, the run now still writes its turn end and summary.
 - **The prompt names the real trust modes.** It still described two approval modes, "auto" and "confirm", instead of plan, safe and auto.
 - **A headless run no longer loses its last log lines.** It exited without flushing the log writer, so the `turn end` line could go missing, most often on a busy machine.
