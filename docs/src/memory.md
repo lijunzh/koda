@@ -9,6 +9,14 @@ system prompt for that project.
 **Global memory** — `~/.config/koda/memory.md`. Injected into every
 system prompt across all projects.
 
+The system prompt carries at most 16,000 characters of memory, global and
+project together, because every model call pays for it. Past that it is cut
+with a note telling the model to use `MemoryRead` for the rest and to ask you
+to trim the file. Keep rarely needed detail in other files.
+
+Koda treats these files as instructions: they override its default guidance,
+and what you say in the session overrides them.
+
 ```text
 /memory        ← show the paths to both memory files
 /memory save   ← ask the model to summarise and append to MEMORY.md

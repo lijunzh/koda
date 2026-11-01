@@ -20,6 +20,12 @@ use std::path::Path;
 
 use crate::skills::SkillRegistry;
 
+/// Most characters of memory the system prompt carries, global and project
+/// together: about 4K tokens, an eighth of a 32K window. Memory is paid on
+/// every model call, and Codex (32 KiB) and Code Puppy (10,000 characters)
+/// both cap theirs. The full text stays on disk and `MemoryRead` returns it.
+const MEMORY_MAX_CHARS: usize = 16_000;
+
 /// Runtime environment context injected into the system prompt.
 pub struct EnvironmentInfo<'a> {
     /// Project root / working directory.
@@ -200,12 +206,29 @@ pub fn build_system_prompt(
     if !semantic_memory.is_empty() {
         prompt.push_str(&format!(
             "\n## Project Memory\n\
-             The following are learned facts about this project:\n\
-             {semantic_memory}"
+             Project instructions and learned facts. Follow them. They override the \
+             guidance above; the user's direct instructions override them.\n\
+             {}",
+            cap_memory(semantic_memory)
         ));
     }
 
     prompt
+}
+
+/// Limit memory to [`MEMORY_MAX_CHARS`], saying so in the prompt so the model
+/// can read the rest and tell the user to trim the file.
+fn cap_memory(memory: &str) -> String {
+    let total = memory.chars().count();
+    if total <= MEMORY_MAX_CHARS {
+        return memory.to_string();
+    }
+    tracing::warn!("Memory truncated in the system prompt: {total} chars, cap {MEMORY_MAX_CHARS}");
+    let kept: String = memory.chars().take(MEMORY_MAX_CHARS).collect();
+    format!(
+        "{kept}\n\n[Memory truncated: {MEMORY_MAX_CHARS} of {total} characters shown. \
+         Use MemoryRead for the rest, and tell the user to trim the memory file.]\n"
+    )
 }
 
 /// Render the `# MCP Server Instructions` section for inclusion in the
@@ -333,6 +356,32 @@ mod tests {
         );
         assert!(result.contains("Project Memory"));
         assert!(result.contains("Rust project"));
+    }
+
+    #[test]
+    fn test_project_memory_is_framed_as_instructions() {
+        let env = test_env();
+        let registry = SkillRegistry::default();
+        let result = build_system_prompt("Base.", "Use tabs.", &env, &[], &registry);
+        assert!(result.contains("Project instructions and learned facts. Follow them."));
+        assert!(!result.contains("learned facts about this project"));
+    }
+
+    #[test]
+    fn test_memory_under_the_cap_is_untouched() {
+        let memory = "x".repeat(MEMORY_MAX_CHARS);
+        assert_eq!(cap_memory(&memory), memory);
+    }
+
+    #[test]
+    fn test_memory_over_the_cap_is_cut_with_a_notice() {
+        // Multi-byte on purpose: the cut must land on a char boundary.
+        let memory = "é".repeat(MEMORY_MAX_CHARS + 10);
+        let capped = cap_memory(&memory);
+        assert!(capped.starts_with(&"é".repeat(MEMORY_MAX_CHARS)));
+        assert!(!capped.starts_with(&"é".repeat(MEMORY_MAX_CHARS + 1)));
+        assert!(capped.contains("[Memory truncated"));
+        assert!(capped.contains("MemoryRead"));
     }
 
     #[test]
