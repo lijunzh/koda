@@ -749,7 +749,7 @@ mod tests {
         for message in [
             "Provider returned a server error: 500",
             "This model rejected the image attachment",
-            "Connection lost mid-stream \u{2014} turn discarded (reset)",
+            "Stream failed mid-reply \u{2014} turn discarded (reset)",
         ] {
             let stats = RunStats {
                 turn_end: Some(TurnEndReason::Error {

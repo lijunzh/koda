@@ -31,10 +31,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **A failed Anthropic stream no longer counts as a finished reply.** An `error` event sent partway through a reply, such as `overloaded_error`, was ignored, so the partial answer was saved as complete and its tool calls ran. A stream that ends without `message_stop` is treated the same way. The turn now ends with a warning and the partial reply is discarded.
+- **Streamed text keeps its Unicode.** A read that ended inside a multi-byte character turned it into replacement characters, on every provider and in tool arguments too.
+- **Anthropic output tokens and stop reason survive a short usage block.** The final `message_delta` was dropped whole when it reported output tokens alone, as the API docs show.
 - **An interrupted headless run reports how it ended.** On SIGINT during a model call, the run now still writes its turn end and summary.
 - **The prompt names the real trust modes.** It still described two approval modes, "auto" and "confirm", instead of plan, safe and auto.
 - **A headless run no longer loses its last log lines.** It exited without flushing the log writer, so the `turn end` line could go missing, most often on a busy machine.
-- **Grep searches by regex, as its description always said.** Every pattern was escaped first, so `foo|bar` looked for those literal characters and reported no matches: in eval runs, 91% of Haiku's regex searches and 99% of Ornith's came back empty. A pattern that isn't valid regex, like `fn (`, is searched as literal text, and the result says so.
+- **Grep searches by regex, as its description always said.** Every pattern was escaped first, so `foo|bar` looked for those literal characters and reported no matches: in eval runs, 93% of Haiku's regex searches and 99% of Ornith's came back empty. A pattern that isn't valid regex, like `fn (`, is searched as literal text, and the result says so.
 - **The Read tool no longer says to re-read after an edit,** which contradicted the system prompt.
 - **The provider's token count drives compaction when it reports one.** Koda's estimate runs low, so a run could pass its window while the meter read about 70%. The estimate is now raised by what the last count showed it missed, and never lowered. With no count, after a compaction or on a cut-off reply, the estimate decides. The `model call` line gained `context_tokens`, and the context meter now counts Anthropic's cached tokens.
 - **The user's own messages survive compaction word for word.** They are stored beside the summary, up to 4,000 characters, newest first, so a poor summary can't lose or rewrite the task.
