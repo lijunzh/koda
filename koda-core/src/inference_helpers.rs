@@ -341,6 +341,54 @@ pub fn is_rate_limit_error(err: &anyhow::Error) -> bool {
         || msg.contains("high demand")
 }
 
+/// One finished model call, for the log. Holds no conversation text.
+pub(crate) struct ModelCall<'a> {
+    /// What the call was for: `turn` or `compaction`.
+    pub purpose: &'static str,
+    /// The provider's name.
+    pub provider: &'a str,
+    /// The model id as requested.
+    pub model: &'a str,
+    /// Messages sent.
+    pub messages: usize,
+    /// Koda's estimate of the prompt, to compare with `usage.prompt_tokens`.
+    pub estimated_tokens: usize,
+    /// Time to the first stream chunk, for streamed calls.
+    pub first_chunk: Option<std::time::Duration>,
+    /// Time for the whole call.
+    pub elapsed: std::time::Duration,
+    /// Usage as the provider reported it.
+    pub usage: &'a crate::providers::TokenUsage,
+    /// Tool calls in the reply.
+    pub tool_calls: usize,
+    /// Characters of text in the reply.
+    pub text_chars: usize,
+}
+
+impl ModelCall<'_> {
+    /// Write the `model call` line every run gets, whatever its log level.
+    pub(crate) fn log(&self) {
+        tracing::info!(
+            purpose = self.purpose,
+            provider = self.provider,
+            model = self.model,
+            messages = self.messages,
+            estimated_tokens = self.estimated_tokens,
+            first_chunk_ms = self.first_chunk.map(|d| d.as_millis() as u64),
+            elapsed_ms = self.elapsed.as_millis() as u64,
+            prompt_tokens = self.usage.prompt_tokens,
+            completion_tokens = self.usage.completion_tokens,
+            cache_read_tokens = self.usage.cache_read_tokens,
+            thinking_tokens = self.usage.thinking_tokens,
+            stop_reason = %self.usage.stop_reason,
+            failed_stop = is_failed_stop(&self.usage.stop_reason),
+            tool_calls = self.tool_calls,
+            text_chars = self.text_chars,
+            "model call"
+        );
+    }
+}
+
 /// Whether a provider stop reason means the model failed to answer, rather
 /// than finished or hit its token cap. Gemini reports these as a normal reply
 /// with no content, so they need the reason to be told from a quiet model.

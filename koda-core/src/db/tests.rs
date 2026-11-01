@@ -4,7 +4,7 @@
 //! helpers (`prune_mismatched_tool_calls`, `prune_null_content_messages`,
 //! `prune_whitespace_only_messages`), and interrupted turn detection.
 
-use super::queries::prune_mismatched_tool_calls;
+use super::queries::{HistoryEdit, prune_mismatched_tool_calls, sanitize_history};
 use super::queries::{
     dedupe_tool_results_by_call_id, detect_interruption, prune_null_content_messages,
     prune_whitespace_only_messages,
@@ -475,6 +475,44 @@ fn msg_with_id(id: i64, role: &str, content: Option<&str>, tool_call_id: Option<
         thinking_content: None,
         created_at: None,
     }
+}
+
+#[test]
+fn sanitize_reports_each_row_a_pass_removes() {
+    let mut messages = vec![
+        msg_with_id(1, "user", Some("task"), None),
+        msg_with_id(2, "tool", Some("old result"), Some("orphan")),
+        msg_with_id(3, "assistant", Some("   "), None),
+        msg_with_id(4, "user", Some("next"), None),
+    ];
+
+    let edits = sanitize_history(&mut messages);
+
+    let ids: Vec<i64> = messages.iter().map(|m| m.id).collect();
+    assert_eq!(ids, vec![1, 4]);
+    assert_eq!(
+        edits,
+        vec![
+            HistoryEdit {
+                pass: "prune_mismatched_tool_calls",
+                ids: vec![2],
+                tool_rows: 1,
+                chars: 10,
+            },
+            HistoryEdit {
+                pass: "prune_null_content_messages",
+                ids: vec![3],
+                tool_rows: 0,
+                chars: 0,
+            },
+        ]
+    );
+}
+
+#[test]
+fn sanitize_reports_nothing_for_a_clean_history() {
+    let mut messages = vec![msg_with_id(1, "user", Some("task"), None)];
+    assert!(sanitize_history(&mut messages).is_empty());
 }
 
 #[test]

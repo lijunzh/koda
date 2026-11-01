@@ -19,6 +19,16 @@ fn koda_bin() -> String {
     path.to_string_lossy().to_string()
 }
 
+/// Everything koda logged for a run whose config dir was `config`.
+fn koda_log(config: &std::path::Path) -> String {
+    std::fs::read_dir(config.join("koda/logs"))
+        .unwrap()
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("koda-"))
+        .map(|entry| std::fs::read_to_string(entry.path()).unwrap())
+        .collect()
+}
+
 fn sse(chunk: Value) -> ResponseTemplate {
     ResponseTemplate::new(200)
         .insert_header("content-type", "text/event-stream")
@@ -95,6 +105,14 @@ async fn a_busy_server_and_a_failed_reply_do_not_end_the_turn() {
         .filter(|r| r.url.path().contains("streamGenerateContent"))
         .map(|r| serde_json::from_slice(&r.body).unwrap())
         .collect();
+    let log = koda_log(tmp.path());
+    assert!(log.contains("Rate limited"), "the 503: {log}");
+    assert!(
+        log.contains("stop_reason=malformed_function_call failed_stop=true"),
+        "{log}"
+    );
+    assert!(log.contains(r#"provider="gemini""#), "{log}");
+
     assert_eq!(turns.len(), 5, "the 503 and the failed reply are retried");
 
     let last = &turns[4];
@@ -178,6 +196,7 @@ async fn compaction_leaves_the_system_prompt_alone() {
         .collect();
     let (first, last) = (&turns[0], &turns[turns.len() - 1]);
     assert!(last.to_string().contains(SUMMARY), "never compacted");
+    assert!(koda_log(tmp.path()).contains(r#"purpose="compaction""#));
     assert!(first["systemInstruction"]["parts"][0]["text"].is_string());
     assert_eq!(first["systemInstruction"], last["systemInstruction"]);
     for content in last["contents"].as_array().unwrap() {
