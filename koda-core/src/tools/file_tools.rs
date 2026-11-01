@@ -204,23 +204,6 @@ pub async fn read_file(
 
     let cache_key = format!("{}:{:?}:{:?}", resolved.display(), start_line, num_lines);
 
-    // Stale-read optimization: if the file hasn't changed since the last time this session read it,
-    // we don't need to re-read and re-stream it to the LLM. It's already in the conversation context.
-    {
-        let cache_guard = cache.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((cached_size, cached_mtime, _)) = cache_guard.get(&cache_key)
-            && *cached_size == size
-            && *cached_mtime == mtime
-        {
-            return Ok(format!(
-                "[File '{}' is unchanged since last read. Full content is already in \
-                 your conversation history. To read a specific section, use the \
-                 start_line and num_lines parameters instead of re-reading the whole file.]",
-                path_str
-            ));
-        }
-    }
-
     // For full-file reads we compute a SHA-256 content hash to enable
     // staleness detection in edit_file (Gemini CLI strategy).
     let mut content_sha256 = String::new();
@@ -278,12 +261,10 @@ pub async fn read_file(
 
 /// Cache key for the state Koda itself last wrote to a file.
 ///
-/// Kept apart from the `:None:None` full-read entry on purpose: `read_file`
-/// answers a repeat full read with "unchanged, already in your history" whenever
-/// the size and mtime match that entry, which would be false for text the model
-/// only saw as an Edit diff. The staleness checks consult both entries; the
-/// read shortcut consults only the full-read one. The key can't collide with a
-/// read key, whose tail is always `Some(n)`/`None` pairs.
+/// Kept apart from the `:None:None` full-read entry: the staleness checks
+/// consult both, and a full read's hash shouldn't be overwritten by a write the
+/// model only saw as a diff. The key can't collide with a read key, whose tail
+/// is always `Some(n)`/`None` pairs.
 fn own_write_key(resolved: &Path) -> String {
     format!("{}:written", resolved.display())
 }
@@ -989,24 +970,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_file_stale_cache_returns_unchanged() {
-        let tmp = tempfile::tempdir().unwrap();
-        let f = tmp.path().join("cached.txt");
-        std::fs::write(&f, "original content").unwrap();
-
-        let c = cache();
-        let args = json!({"file_path": f.to_string_lossy()});
-
-        // First read — populates cache.
-        let r1 = read_file(tmp.path(), &args, &c, &fs()).await.unwrap();
-        assert!(r1.contains("original content"));
-
-        // Second read — same file, same mtime → stale-read.
-        let r2 = read_file(tmp.path(), &args, &c, &fs()).await.unwrap();
-        assert!(r2.contains("unchanged"), "expected stale-read: {r2}");
-    }
-
-    #[tokio::test]
     async fn read_file_missing_path_arg_errors() {
         let tmp = tempfile::tempdir().unwrap();
         let args = json!({});
@@ -1153,6 +1116,22 @@ mod tests {
                 .unwrap_err();
             assert!(err.to_string().contains("matches 2 times"), "{err}");
             assert_eq!(std::fs::read_to_string(&f).unwrap(), contents);
+        }
+    }
+
+    /// A read always returns the file. Whether the text is still in this
+    /// agent's history isn't knowable here: another agent may have made the
+    /// first read, and compaction may have removed it.
+    #[tokio::test]
+    async fn read_file_twice_returns_the_contents_both_times() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("cached.txt"), "the contents").unwrap();
+        let shared = cache();
+        let args = json!({"file_path": "cached.txt"});
+
+        for _ in 0..2 {
+            let output = read_file(tmp.path(), &args, &shared, &fs()).await.unwrap();
+            assert!(output.contains("the contents"), "{output}");
         }
     }
 
