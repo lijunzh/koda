@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **Every model call gets a log line.** The session log now records purpose, provider, model, estimated and reported tokens, time to first chunk, total time, stop reason and reply size for each call, plus a `model call failed` line. No conversation text.
+- **The log says when a row leaves the model's view.** Each sanitization pass that removes rows writes a `history edited` line with the pass, row ids and characters, as a warning when text is lost.
+
 ### Fixed
 
 - **The compaction summary is found wherever the model puts it.** The analysis block was removed first, which also removed a summary nested inside it, or stopped at a tag the analysis only quoted, so a full reply counted as no summary. The real `<summary>` block is now told from one the model only quotes, and a finished reply with none is kept as it is (#1454).

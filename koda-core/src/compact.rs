@@ -228,7 +228,21 @@ pub async fn compact_session_with_provider(
             temperature: Some(0.3),
             ..model_settings.clone()
         };
+        let call_started = std::time::Instant::now();
         let response = provider.chat(&messages, &[], &compact_settings).await?;
+        crate::inference_helpers::ModelCall {
+            purpose: "compaction",
+            provider: provider.provider_name(),
+            model: &model_settings.model,
+            messages: messages.len(),
+            estimated_tokens: crate::inference_helpers::estimate_tokens(&messages),
+            first_chunk: None,
+            elapsed: call_started.elapsed(),
+            usage: &response.usage,
+            tool_calls: response.tool_calls.len(),
+            text_chars: response.content.as_deref().map_or(0, str::len),
+        }
+        .log();
         let content = response.content.as_deref().unwrap_or("");
         let (mut summary, mut complete) = summary_from_reply(content);
         // A finished reply that never opened <summary> still holds what the

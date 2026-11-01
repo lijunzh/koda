@@ -94,6 +94,96 @@ fn prune_mismatched_tool_calls_once(messages: &mut Vec<Message>) -> bool {
     true
 }
 
+/// One sanitization pass that removed rows from the model's view.
+#[derive(Debug, PartialEq)]
+pub(crate) struct HistoryEdit {
+    /// The pass, named after its function.
+    pub pass: &'static str,
+    /// Removed row ids, oldest first.
+    pub ids: Vec<i64>,
+    /// How many removed rows were tool results.
+    pub tool_rows: usize,
+    /// Characters of text the model no longer sees.
+    pub chars: usize,
+}
+
+impl HistoryEdit {
+    /// The rows stay in the database, so without this line a pass that hides
+    /// text from the model leaves no trace: repeated call ids once hid every
+    /// tool result but the newest for whole runs (#1454).
+    fn log(&self, session_id: &str) {
+        let Self {
+            pass,
+            ids,
+            tool_rows,
+            chars,
+        } = self;
+        let rows = ids.len();
+        if *chars > 0 {
+            tracing::warn!(
+                session_id,
+                pass,
+                rows,
+                tool_rows,
+                chars,
+                ?ids,
+                "history edited"
+            );
+        } else {
+            tracing::info!(
+                session_id,
+                pass,
+                rows,
+                tool_rows,
+                chars,
+                ?ids,
+                "history edited"
+            );
+        }
+    }
+}
+
+/// Run every sanitization pass in order, each on the output of the previous,
+/// and report what each one removed.
+pub(crate) fn sanitize_history(messages: &mut Vec<Message>) -> Vec<HistoryEdit> {
+    let passes: [(&'static str, fn(&mut Vec<Message>)); 5] = [
+        ("prune_legacy_compaction_hint", prune_legacy_compaction_hint), // (#1444)
+        ("prune_mismatched_tool_calls", prune_mismatched_tool_calls),   // (#428)
+        ("prune_null_content_messages", prune_null_content_messages),   // (#594)
+        (
+            "prune_whitespace_only_messages",
+            prune_whitespace_only_messages,
+        ), // (#594)
+        (
+            "dedupe_tool_results_by_call_id",
+            dedupe_tool_results_by_call_id,
+        ), // (#1159)
+    ];
+    let mut edits = Vec::new();
+    for (pass, run) in passes {
+        let before: Vec<(i64, bool, usize)> = messages
+            .iter()
+            .map(|m| {
+                let chars = m.content.as_deref().map_or(0, str::len);
+                (m.id, m.role == Role::Tool, chars)
+            })
+            .collect();
+        run(messages);
+        if messages.len() == before.len() {
+            continue;
+        }
+        let kept: std::collections::HashSet<i64> = messages.iter().map(|m| m.id).collect();
+        let removed = before.iter().filter(|(id, ..)| !kept.contains(id));
+        edits.push(HistoryEdit {
+            pass,
+            ids: removed.clone().map(|(id, ..)| *id).collect(),
+            tool_rows: removed.clone().filter(|(_, tool, _)| *tool).count(),
+            chars: removed.map(|(.., chars)| chars).sum(),
+        });
+    }
+    edits
+}
+
 /// Which rows a compaction leaves in place.
 enum KeepRows {
     /// The newest N rows.
@@ -628,11 +718,9 @@ impl Persistence for Database {
         let _ = full_reload; // currently unused; kept for future tracing/metrics
 
         // Sanitisation passes: run in order, each sees the output of the previous.
-        prune_legacy_compaction_hint(&mut messages); // (#1444)
-        prune_mismatched_tool_calls(&mut messages); // (#428)
-        prune_null_content_messages(&mut messages); // (#594)
-        prune_whitespace_only_messages(&mut messages); // (#594)
-        dedupe_tool_results_by_call_id(&mut messages); // (#1159)
+        for edit in sanitize_history(&mut messages) {
+            edit.log(session_id);
+        }
 
         // Cache the freshly-sanitized snapshot.
         let max_id_returned = messages.iter().map(|m| m.id).max();

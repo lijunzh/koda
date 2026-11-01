@@ -41,8 +41,8 @@ use crate::db::{Database, Role};
 use crate::engine::{EngineCommand, EngineEvent, EngineSink};
 use crate::file_tracker::FileTracker;
 use crate::inference_helpers::{
-    AUTO_COMPACT_THRESHOLD, CONTEXT_WARN_THRESHOLD, RATE_LIMIT_MAX_RETRIES, assemble_messages,
-    context_limit_from_error, estimate_subagent_preflight, estimate_tokens,
+    AUTO_COMPACT_THRESHOLD, CONTEXT_WARN_THRESHOLD, ModelCall, RATE_LIMIT_MAX_RETRIES,
+    assemble_messages, context_limit_from_error, estimate_subagent_preflight, estimate_tokens,
     is_context_overflow_error, is_failed_stop, is_image_rejection_error,
     is_network_transient_error, is_rate_limit_error, is_server_error, rate_limit_backoff,
 };
@@ -94,6 +94,8 @@ struct TurnState<'a> {
 struct StreamResult {
     /// Accumulated text content from the response.
     text: String,
+    /// When the first chunk arrived, if any did.
+    first_chunk_at: Option<Instant>,
     /// All thinking/reasoning content produced during the stream, in order.
     ///
     /// Empty string when the model produced no thinking blocks (non-Claude
@@ -489,6 +491,7 @@ async fn collect_stream(
     let mut eager_results: Vec<(String, String, bool, Option<String>)> = Vec::new();
     let mut usage = TokenUsage::default();
     let mut first_token = true;
+    let mut first_chunk_at = None;
     let mut char_count: usize = 0;
     // Permanent accumulator — never cleared, flows into StreamResult.
     let mut thinking_content = String::new();
@@ -517,6 +520,7 @@ async fn collect_stream(
             });
             return StreamResult {
                 text: full_text,
+                first_chunk_at,
                 thinking_content,
                 tool_calls,
                 eager_results,
@@ -528,6 +532,7 @@ async fn collect_stream(
         }
 
         let Some(chunk) = chunk else { break };
+        first_chunk_at.get_or_insert_with(Instant::now);
 
         match chunk {
             StreamChunk::TextDelta(delta) => {
@@ -629,6 +634,7 @@ async fn collect_stream(
                 });
                 return StreamResult {
                     text: full_text,
+                    first_chunk_at,
                     thinking_content,
                     tool_calls,
                     eager_results,
@@ -649,6 +655,7 @@ async fn collect_stream(
 
     StreamResult {
         text: full_text,
+        first_chunk_at,
         thinking_content,
         tool_calls,
         eager_results,
@@ -1106,6 +1113,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>) -> Result<()> {
             message: "Thinking...".into(),
         });
 
+        let call_started = Instant::now();
         let stream_result = try_with_rate_limit(
             provider,
             &messages,
@@ -1115,6 +1123,17 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>) -> Result<()> {
             sink,
         )
         .await;
+        if let Err(e) = &stream_result {
+            tracing::warn!(
+                purpose = "turn",
+                provider = provider.provider_name(),
+                model = %config.model,
+                messages = messages.len(),
+                elapsed_ms = call_started.elapsed().as_millis() as u64,
+                error = %format!("{e:#}"),
+                "model call failed"
+            );
+        }
 
         // Handle cancellation during rate limit retries
         let stream_result: Result<SseCollector> = match stream_result {
@@ -1205,6 +1224,21 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>) -> Result<()> {
 
         // Collect the streamed response
         let stream_result = collect_stream(&mut rx, sink, &cancel, tools, mode, project_root).await;
+        ModelCall {
+            purpose: "turn",
+            provider: provider.provider_name(),
+            model: &config.model,
+            messages: messages.len(),
+            estimated_tokens: estimate_tokens(&messages),
+            first_chunk: stream_result
+                .first_chunk_at
+                .map(|at| at.duration_since(call_started)),
+            elapsed: call_started.elapsed(),
+            usage: &stream_result.usage,
+            tool_calls: stream_result.tool_calls.len(),
+            text_chars: stream_result.text.len(),
+        }
+        .log();
 
         if stream_result.interrupted {
             // Kill the background HTTP reader immediately so the TCP
