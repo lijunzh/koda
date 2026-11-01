@@ -483,6 +483,16 @@ delete after a full schema migration if/when one happens.
 
 The system prompt carries a snapshot of the git state, taken once per session and labelled as a snapshot. It does not update as the session goes on: the prompt sits at the front of every request, so changing it would invalidate the provider's prompt cache for the whole conversation behind it. On local Ornith runs that cost up to 40% of wall time (#1451). The model runs git when it needs the current state.
 
+### System Prompt: Every Line Is Paid on Every Call (P1, P2)
+
+The prompt, with project memory, is the largest fixed cost per model call, on a metered model and on a slow local one alike. A rule earns its place by changing what the model does, shown by an eval or by the practice of Codex and Code Puppy. The November 2026 comparison set these rules:
+
+- **Say each rule once, next to what it governs.** Skill rules sit under the skill listing, sub-agent rules under the agent listing. ActivateSkill was stated twice and called in 0 of 594 eval runs, so repetition isn't what makes a rule work.
+- **Memory is instructions, and it is capped.** Project memory is `CLAUDE.md` or `AGENTS.md` as often as `MEMORY.md`, so the prompt says to follow it, that it overrides the default guidance, and that the user overrides it. Codex ranks these files the same way. Memory stops at 16,000 characters with a notice, because both peers cap theirs. The number is a judgment: an eighth of a 32K window, between Code Puppy's 10,000 and Codex's 32 KiB. It stays on the prompt, not in `memory::load`, so `MemoryRead` still returns everything.
+- **The quick reference is for the REPL.** Runs with no REPL pay nothing for it. Neither peer lists its commands; `/help` and the `koda-docs` skill answer the rare question.
+- **No rule without a gap.** Peer rules the evals showed no need for stayed out: "implement, don't describe" (the control passes 13 of 13), "don't commit unless asked" (no commits in 594 runs), "don't paste files back" (none on Haiku).
+- **`CLAUDE.md` is prompt too.** It holds what an agent needs on every turn. The rest is in `docs/src/development.md`.
+
 ### Progress Tracking: Model-Owned, History-Persisted, Engine-Surfaced (P3-corollary)
 
 **Principle.** The model owns the task list. The conversation history

@@ -8,16 +8,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **The model knows the date.** The prompt's environment section now states it.
 - **Every model call gets a log line.** The session log now records purpose, provider, model, estimated and reported tokens, time to first chunk, total time, stop reason and reply size for each call, plus a `model call failed` line. No conversation text.
 - **The log says when a row leaves the model's view.** Each sanitization pass that removes rows writes a `history edited` line with the pass, row ids and characters, as a warning when text is lost.
 
 ### Changed
 
+- **The system prompt is smaller.** Rules that appeared twice now appear once, and headless runs, ACP and sub-agents no longer carry a TUI quick reference they can't use. `CLAUDE.md` went from 29K to 10K characters, with the rest in the development reference.
+- **Memory is capped at 16,000 characters in the system prompt.** Past that it is cut with a note telling the model to use `MemoryRead`, which still returns everything, and to ask you to trim the file.
+- **Memory files are treated as instructions.** The prompt called them "learned facts"; it now says to follow them, that they override Koda's default guidance, and that you override them.
+- **The prompt tells the model not to re-read a file just to check an edit.** On Haiku such reads were 9% of Read output in eval runs.
 - **Compaction keeps less history verbatim, measured by size.** The newest 30% of the history stays, at least four rows, instead of half the rows. A row count could keep a few huge tool results and free almost nothing.
 - **The summary prompt no longer lists the user's messages,** since they are now kept word for word.
 
 ### Fixed
 
+- **The prompt names the real trust modes.** It still described two approval modes, "auto" and "confirm", instead of plan, safe and auto.
 - **A headless run no longer loses its last log lines.** It exited without flushing the log writer, so the `turn end` line could go missing, most often on a busy machine.
 - **The provider's token count drives compaction when it reports one.** Koda's estimate runs low, so a run could pass its window while the meter read about 70%. The estimate is now raised by what the last count showed it missed, and never lowered. With no count, after a compaction or on a cut-off reply, the estimate decides. The `model call` line gained `context_tokens`, and the context meter now counts Anthropic's cached tokens.
 - **The user's own messages survive compaction word for word.** They are stored beside the summary, up to 4,000 characters, newest first, so a poor summary can't lose or rewrite the task.

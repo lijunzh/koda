@@ -65,13 +65,12 @@ pub struct KodaAgent {
 impl KodaAgent {
     /// Build a new agent from config and project root.
     ///
-    /// `commands` is a list of `(name, description)` pairs for user-facing
-    /// slash commands.  The CLI passes its `SLASH_COMMANDS` registry here;
-    /// sub-agents pass `&[]`.
+    /// `commands` lists the user-facing slash commands. The TUI passes its
+    /// `SLASH_COMMANDS` registry here; everything without a REPL passes `&[]`.
     pub async fn new(
         config: &KodaConfig,
         project_root: PathBuf,
-        commands: &[(&str, &str)],
+        commands: &[&str],
     ) -> Result<Self> {
         let tools = ToolRegistry::with_trust(
             project_root.clone(),
@@ -111,7 +110,7 @@ impl KodaAgent {
     /// Note: MCP server instructions are NOT included here — they are composed
     /// per-turn in `KodaSession::run_turn` via `render_mcp_instructions_section`,
     /// because MCP servers may attach after this static prompt is built (#922).
-    pub fn rebuild_system_prompt(&mut self, config: &KodaConfig, commands: &[(&str, &str)]) {
+    pub fn rebuild_system_prompt(&mut self, config: &KodaConfig, commands: &[&str]) {
         // Reuse cached memory loaded in `new()` — avoids duplicate disk read
         // and duplicate `Loaded project memory from CLAUDE.md` log line (#1136).
         let env = crate::prompt::EnvironmentInfo {

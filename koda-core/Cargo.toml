@@ -50,6 +50,9 @@ glob = { workspace = true }
 # URL parsing (for SSRF protection)
 url = "2"
 
+# Date/time — already in the tree via koda-cli and ratatui
+time = "0.3"
+
 # Unique IDs
 uuid = { version = "1", features = ["v4"] }
 

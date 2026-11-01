@@ -1,22 +1,21 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Koda injects this file into its system prompt on every model call, so keep it to
+what an agent needs on every turn. Everything else goes in
+[docs/src/development.md](docs/src/development.md), which has the full workspace
+tree, per-test descriptions, release and new-capability checklists, the toolchain
+bump, and how CI, the security audit and coverage work.
 
 ## Project Overview
 
 Koda is a personal AI assistant built in Rust (edition 2024) — not a product,
 not a platform. See [DESIGN.md](DESIGN.md) for principles (P1: Personal,
-P2: Simple enough to own alone, P3: Build for the world six months from now).
+P2: Simple enough to own alone, P3: Build for the world six months from now) and
+architectural decisions.
 
 **Development philosophy:** Make it work, make it right, make it fast — in that
 order. Ship working code first, refactor to clean design second, optimize for
 performance only when measured.
-
-Two-crate workspace:
-- `koda-core` (library) — pure engine with zero terminal deps
-- `koda-cli` (binary `koda`) — CLI frontend with ratatui TUI
-
-See [DESIGN.md](DESIGN.md) for architectural decisions. See [#70](https://github.com/lijunzh/koda/issues/70) for the TUI design.
 
 ### Development docs live in the maintainer's notes, not GitHub issues
 
@@ -32,74 +31,14 @@ write there.
 - **Don't open GitHub issues for design discussion, plans or reviews.** Write
   or update the vault note instead.
 - **GitHub issues are for** bug reports and feature requests from users, and
-  for the `coverage-regression` and `security-audit` issues the
-  workflows manage.
+  for the `coverage-regression` and `security-audit` issues the workflows manage.
 - **Existing issue links stay.** Issues #21–#1391 (March–October 2026) were the
   design record. They remain the history behind the links in code comments,
   DESIGN.md and CHANGELOG.md.
 - **The notes are private.** Don't copy them into commits, PRs or public docs;
   state what the change itself needs.
 
-### Current Architecture
-
-Simple inference loop: stream LLM response → execute tool calls → repeat.
-No phases, no tiers — the model drives execution directly.
-
-- **Context from API** (`providers/`): queries actual context window from provider
-  - Fallback: `model_context.rs` lookup table
-- **Rate limit retry**: exponential backoff (2/4/8/16/32s) for 429 errors
-- **Built-in agents**: default (others via user-created agent configs)
-- **Undo** (`undo.rs`): in-memory snapshot stack of file mutations. `/undo` rolls back the most recent turn. Does NOT survive process restarts — there is no on-disk or git-backed checkpoint subsystem. `git.rs` only injects branch/diff/recent-commits *context* into the system prompt; it never mutates state.
-
-Approval is per-tool. A single `TrustMode` enum (Plan/Safe/Auto) is the
-**single mechanism** for tool gating — it derives kernel sandbox bounds,
-per-tool approval, and sub-agent context-sensitive defaults from one
-declaration. There are no separate "strict mode", "yolo mode", or
-per-tool toggles to keep in your head.
-
-- **TrustMode** (`trust.rs`): Plan (deny mutations), Safe (confirm), Auto (auto-approve mutations within sandbox)
-- **ToolEffect** (`tools/mod.rs`): ReadOnly / LocalMutation / Destructive / RemoteAction
-  - Plan: only ReadOnly allowed; all mutations denied
-  - Safe: local mutations and destructive ops need confirmation
-  - Auto: local mutations auto-approved; **destructive ops still confirm** (#1251 — the user said YOLO for normal work, not for `rm -rf`)
-- **Hardcoded floor**: outside-project writes always need confirmation
-  regardless of mode
-- **Sub-agent matrix is context-sensitive** (`check_tool_for_sub_agent`,
-  #1251): sub-agents have no live human approval channel by design,
-  so what the master matrix would treat as `⏸ confirm` resolves to
-  **auto-approve for mutations, block for destructive ops**. The
-  asymmetry pins the bug fix from #1249 (pre-#1251 every Write from
-  a Safe-trust sub-agent was auto-rejected with "requires user
-  confirmation but this sub-agent has no channel to the user").
-- **Per-agent `trust` field** (`config.rs`): agent JSONs declare
-  `"trust": "plan" | "safe" | "auto"`. The legacy `write_access: bool`
-  is deprecated but still loads with a warning (#1252).
-- **Folder scoping** (`trust.rs`, `bash_path_lint.rs`):
-  - `is_outside_project()`: checks file tool paths against project_root
-  - `lint_bash_paths()`: heuristic bash command analysis for cd/path escapes
-  - Startup warning when project_root == $HOME
-- **Process sandbox** (`sandbox.rs`): always-on kernel sandbox
-  - Writes restricted to project + /tmp + cache dirs
-  - Credential dirs blocked (~/.ssh, ~/.aws, etc.)
-  - macOS: `sandbox-exec -p` (seatbelt); Linux: `bwrap` (bubblewrap)
-  - Graceful fallback with `tracing::warn!` if backend unavailable
-  - Sub-agents inherit via `TrustMode::clamp()` — child can never weaken parent
-
-## Documentation Rules
-
-**When to update docs with a PR:**
-- User-facing feature added/changed → update root README + relevant crate README
-- Architecture or design decision → add to the appropriate section in `DESIGN.md` with rationale
-- New crate → must ship with a README.md (required for crates.io)
-- Internal refactors don't require doc updates unless they change crate boundaries or public APIs
-
-**On release:**
-- Move CHANGELOG.md `[Unreleased]` to versioned section
-- Bump version in the three published crates (koda-sandbox, koda-core, koda-cli; release.yml checks all three) and in the path-dependency `version =` fields that point at them, including koda-test-utils
-- Verify README quick-start examples still work
-- Check that CHANGELOG entries match what's documented in README/DESIGN.md
-
-## Build & Development Commands
+## Commands
 
 ```bash
 cargo build                              # Debug build (all crates)
@@ -111,195 +50,79 @@ cargo test -p koda-core --test perf_test                 # Run a specific test f
 cargo fmt --all                          # Format all crates
 cargo fmt --all --check                                                    # Check formatting (CI enforced)
 cargo clippy --workspace --all-targets --features koda-core/test-support -- -D warnings  # Lint (CI enforced)
-cargo check --workspace --all-targets                                       # Compile-check all targets, no features (CI enforced, ubuntu + windows)
+cargo check --workspace --all-targets                                       # Compile-check all targets, no features (CI enforced)
 cargo doc --workspace --no-deps                                             # Build docs
+KODA_TEST_LMSTUDIO=1 cargo test -p koda-cli --test smoke_test -- --ignored  # Live test, opt-in, never in CI
 ```
 
-**Toolchain is pinned** in `rust-toolchain.toml` (rustup honors it automatically).
-CI installs the same version via an explicit `toolchain:` input on every
-`dtolnay/rust-toolchain` step, and ci.yml's "Check toolchain pin" step fails
-if any workflow drifts from the file. To bump: edit both in one PR and fix
-whatever new lints the new toolchain surfaces.
+The toolchain is pinned in `rust-toolchain.toml`; a bump also edits the
+workflows. CI runs the checks above; never add a workflow-level `paths:` filter
+to `ci.yml`, because a required check that never reports blocks merging forever.
 
 ## Architecture
 
-### Workspace
+Simple inference loop: stream LLM response → execute tool calls → repeat. No
+phases, no tiers — the model drives execution directly.
 
-```
-koda/
-├── Cargo.toml              # Workspace root
-├── koda-core/              # Engine library (zero terminal deps)
-│   ├── src/
-│   │   ├── lib.rs          # Crate root
-│   │   ├── agent.rs        # KodaAgent (shared config: tools, prompt)
-│   │   ├── approval.rs     # Approval flow helpers (delegates to trust.rs)
-│   │   ├── bash_path_lint.rs # Heuristic path-escape detection for bash commands
-│   │   ├── bash_safety.rs  # Bash command safety classification
-│   │   ├── bg_agent.rs     # Background sub-agent registry
-│   │   ├── compact.rs      # Session compaction (summarize old messages)
-│   │   ├── config.rs       # Agent/provider config + provider metadata
-│   │   ├── context.rs      # Context window token tracking
-│   │   ├── db/             # SQLite persistence (split into submodules)
-│   │   │   ├── mod.rs      # Database struct, migrations, schema (WAL mode)
-│   │   │   ├── queries.rs  # Persistence trait impl (all SQL queries)
-│   │   │   └── tests.rs    # Database integration tests
-│   │   ├── file_tracker.rs # File lifecycle tracking (create/edit/delete ownership)
-│   │   ├── git.rs          # Read-only git context for the system prompt (branch, diff, recent commits)
-│   │   ├── inference.rs    # Streaming inference loop + tool execution
-│   │   ├── inference_helpers.rs # Token estimation, message assembly, overflow detection
-│   │   ├── keystore.rs     # Secure API key storage (~/.config/koda/keys.toml, 0600)
-│   │   ├── loop_guard.rs   # Loop detection + iteration hard-cap
-│   │   ├── memory.rs       # Semantic memory (global + project tiers → system prompt)
-│   │   ├── microcompact.rs # Lightweight tool result aging between full compactions
-│   │   ├── model_alias.rs  # Curated model aliases (e.g. "sonnet" → exact model ID)
-│   │   ├── model_context.rs# Model → context window size lookup table (fallback)
-│   │   ├── output_caps.rs  # Output cap scaling based on context window size
-│   │   ├── persistence.rs  # Persistence trait — the database contract
-│   │   ├── preview.rs      # Pre-confirmation diff previews for Edit/Write
-│   │   ├── progress.rs     # Progress reporting helpers for long operations
-│   │   ├── prompt.rs       # System prompt construction
-│   │   ├── runtime_env.rs  # Thread-safe runtime env for API keys
-│   │   ├── sandbox.rs      # Process sandbox (macOS seatbelt + Linux bwrap, always-on)
-│   │   ├── session.rs      # KodaSession (per-conversation: DB, provider, settings)
-│   │   ├── last_provider.rs # Last-used provider recall (SQLite KV, not a config file)
-│   │   ├── skills.rs       # Skill discovery and activation
-│   │   ├── skill_scope.rs  # Skill-scoped tool allow/deny enforcement
-│   │   ├── sub_agent_cache.rs # Sub-agent provider/model config cache
-│   │   ├── tool_dispatch.rs# Tool dispatch — routes tool calls to the registry
-│   │   ├── tool_normalize.rs # Tool name normalization (snake_case → PascalCase)
-│   │   ├── approval_flow.rs# Approval logic extracted from tool dispatch
-│   │   ├── trust.rs        # TrustMode (Plan/Safe/Auto), ToolApproval, check_tool()
-│   │   ├── sub_agent_dispatch.rs # Sub-agent invocation dispatch
-│   │   ├── context_analysis.rs # Per-tool token breakdown + duplicate detection
-│   │   ├── truncate.rs     # Token-safe output truncation
-│   │   ├── undo.rs         # Undo stack for file mutations
-│   │   ├── version.rs      # Background version checker (queries crates.io)
-│   │   ├── worktree.rs     # Git worktree isolation for sub-agents
-│   │   ├── engine/         # EngineEvent, EngineCommand, EngineSink trait
-│   │   │   ├── mod.rs      # Module root + re-exports
-│   │   │   ├── event.rs    # EngineEvent + EngineCommand protocol types
-│   │   │   └── sink.rs     # EngineSink trait (how clients receive events)
-│   │   ├── providers/      # LLM providers
-│   │   │   ├── mod.rs      # LlmProvider trait, ChatMessage, HTTP client builder
-│   │   │   ├── anthropic.rs# Anthropic Claude (prompt caching, extended thinking)
-│   │   │   ├── gemini.rs   # Google Gemini (context caching, key-in-URL)
-│   │   │   ├── openai_compat.rs # OpenAI-compatible (GPT, DeepSeek, local models)
-│   │   │   ├── mock.rs     # Mock provider for tests
-│   │   │   ├── stream_collector.rs # ChunkParser trait + shared SSE stream collector
-│   │   │   └── stream_tag_filter.rs # Strip XML tool tags from streaming text
-│   │   └── tools/          # Built-in tools
-│   │       ├── mod.rs      # ToolRegistry, ToolEffect, tool definitions
-│   │       ├── agent.rs    # Sub-agent invocation tool
-│   │       ├── ask_user.rs # AskUser tool (explicit user clarification)
-│   │       ├── bg_process.rs # Background process registry + spawning
-│   │       ├── file_tools.rs # Read, Write, Edit, Delete
-│   │       ├── fuzzy.rs    # Fuzzy old_str matching for Edit
-│   │       ├── glob_tool.rs# Glob file search
-│   │       ├── grep.rs     # Ripgrep-based text search
-│   │       ├── memory.rs   # MemoryRead, MemoryWrite
-│   │       ├── recall.rs   # RecallContext (session history)
-│   │       ├── shell.rs    # Bash command execution
-│   │       ├── skill_tools.rs # ListSkills, ActivateSkill
-│   │       ├── todo.rs     # TodoWrite
-│   │       ├── validate.rs # Pre-flight input validation
-│   │       ├── web_fetch.rs# WebFetch (URL content retrieval)
-│   │       └── web_search.rs # WebSearch (DuckDuckGo)
-│   └── tests/              # Engine integration tests
-├── koda-cli/               # CLI binary
-│   ├── src/
-│   │   ├── main.rs         # CLI entry point (clap)
-│   │   ├── lib.rs          # Crate root (exports acp_adapter)
-│   │   ├── tui_app.rs      # Main TUI event loop (ratatui Viewport::Fullscreen)
-│   │   ├── app.rs          # App struct: aggregated TUI state + lifecycle
-│   │   ├── builtin_skills.rs # Built-in skill definitions (URL index)
-│   │   ├── tui_context/    # TUI shared mutable state (split into submodules)
-│   │   │   ├── mod.rs      # TuiContext struct, event loop, command dispatch
-│   │   │   ├── events.rs   # Key/mouse handling, clipboard, history persistence
-│   │   │   └── menus.rs    # Model/provider/session pickers, provider wizard
-│   │   ├── tui_handlers_inference.rs # Inference event handling (extracted from context)
-│   │   ├── tui_render.rs   # EngineEvent → ratatui Line/Span rendering
-│   │   ├── tui_commands.rs # Slash command dispatch (/help, /model, /sessions, etc.)
-│   │   ├── tui_wizards.rs  # Interactive wizards (/provider, /compact, /agent)
-│   │   ├── tui_output.rs   # Output bridge: scroll_buffer push helpers
-│   │   ├── tui_viewport.rs # Fullscreen viewport layout + rendering
-│   │   ├── tui_types.rs    # MenuContent, PromptMode, TuiState, shared TUI types
-│   │   ├── scroll_buffer.rs# App-managed scrollback buffer with visual-line scroll
-│   │   ├── mouse_select.rs # Mouse text selection + clipboard copy
-│   │   ├── ansi_parse.rs   # ANSI escape code → ratatui Span conversion
-│   │   ├── history_render.rs # Session history → scroll_buffer replay
-│   │   ├── md_render.rs    # Streaming markdown → ratatui renderer
-│   │   ├── completer.rs    # Tab completion (/commands, @files, /model names)
-│   │   ├── diff_render.rs  # Diff preview → ratatui renderer (syntax highlighted)
-│   │   ├── highlight.rs    # Syntax highlighting via syntect
-│   │   ├── startup.rs      # Startup banner rendering
-│   │   ├── repl.rs         # Slash command parsing + provider/model lists
-│   │   ├── input.rs        # @file reference processing + image loading
-│   │   ├── transcript.rs   # Session transcript renderer (Markdown export)
-│   │   ├── headless.rs     # Single-prompt headless mode
-│   │   ├── sink.rs         # CliSink (unbounded channel forwarding for TUI)
-│   │   ├── server.rs       # ACP server over stdio JSON-RPC
-│   │   ├── acp_adapter.rs  # ACP protocol adapter
-│   │   ├── onboarding.rs   # First-run wizard (provider + API key setup)
-│   │   └── tool_history.rs # Tool output history for /expand
-│   │   ├── wrap_input.rs   # Input wrapping and paste detection
-│   │   └── wrap_util.rs    # Visual line-width utilities
-│   │   └── widgets/        # TUI widgets
-│   │       ├── mod.rs      # Widget module root
-│   │       ├── dropdown.rs # Generic dropdown widget
-│   │       ├── file_menu.rs# @file autocomplete menu
-│   │       ├── model_menu.rs # Model picker menu
-│   │       ├── provider_menu.rs # Provider picker menu
-│   │       ├── session_menu.rs # Session picker menu
-│   │       ├── slash_menu.rs# Slash command dropdown (see DESIGN.md, Interaction)
-│   │       └── status_bar.rs# Model, mode, context meter, elapsed time
-│   └── tests/              # CLI integration tests
-├── DESIGN.md               # Architecture decisions
-```
+`main.rs` → `tui_app.rs` (TUI event loop) → `KodaSession::run_turn()` →
+`inference_loop()`. The engine talks to clients through `EngineEvent` (output)
+and `EngineCommand` (input); approval flows through async channels.
 
-### Core Event Loop
+Workspace: `koda-core` (library, pure engine, zero terminal deps), `koda-cli`
+(binary `koda`, ratatui TUI), `koda-sandbox` (kernel sandbox runtime),
+`koda-test-utils`.
 
-`main.rs` → `tui_app.rs` (TUI event loop) → `KodaSession::run_turn()` → `inference_loop()` (streaming LLM + tools)
+### Where things are
 
-The TUI uses `ratatui::Viewport::Fullscreen` (alternate screen buffer) with
-app-managed scrollback. All output flows through a single rendering path:
-`EngineEvent` → `tui_render.rs` → `ScrollBuffer` → `draw_viewport()`.
-Mouse capture is enabled for scroll wheel; text selection is handled by
-`mouse_select.rs` with automatic clipboard copy.
+In `koda-core/src/`:
+- **Loop:** `inference.rs`, `inference_helpers.rs`, `session.rs` (`KodaSession`),
+  `agent/` (`KodaAgent`), `loop_guard.rs`, `turn_context.rs`
+- **Prompt and memory:** `prompt.rs`, `instructions.md`, `memory.rs`, `skills.rs`,
+  `git.rs` (read-only git context; it never mutates state)
+- **Context:** `context.rs`, `compact.rs`, `microcompact.rs`, `model_context.rs`,
+  `output_caps.rs`, `truncate.rs`
+- **Tools:** `tools/` (`mod.rs` has the registry, dispatcher and
+  `safe_resolve_path()`), `tool_dispatch.rs`, `approval_flow.rs`
+- **Safety:** `trust.rs`, `bash_safety.rs`, `bash_path_lint.rs`, `sandbox.rs`
+- **Sub-agents:** `sub_agent_dispatch.rs`, `child_agent.rs`, `sub_agent_cache.rs`
+- **Providers:** `providers/` (all implement the `LlmProvider` trait),
+  `provider_catalog.rs`, `model_alias.rs`, `keystore.rs`
+- **Storage and protocol:** `db/`, `persistence.rs`, `engine/`, `mcp/`, `config.rs`
+- **Undo:** `undo.rs` is an in-memory snapshot stack; `/undo` rolls back the most
+  recent turn. It does NOT survive process restarts. There is no on-disk or
+  git-backed checkpoint subsystem.
 
-**Viewport layout** (see DESIGN.md, Interaction):
-```
-[history panel]                ← ScrollBuffer: scrollable, mouse-selectable
-─── 🐻 ─                        ← separator
-⚡> input                      ← tui-textarea, sized to content
-──────────────────────────────
-model │ auto │ ████ 42% │ 🐻 12s  ← status bar
-[menu_area]                    ← dropdown / approval / wizard (Min(0))
-```
+In `koda-cli/src/`:
+- **TUI:** `tui_app.rs`, `app.rs`, `tui_context/`, `inference/`, `tui_commands.rs`
+  (slash commands), `tui_render.rs`, `tui_viewport.rs`, `scroll_buffer.rs`,
+  `composer/` (input box, `SLASH_COMMANDS`), `widgets/`
+- **Other frontends:** `headless.rs`, `server.rs` + `acp_adapter.rs` (ACP)
+- **Startup:** `main.rs`, `onboarding.rs`, `builtin_skills.rs`
 
-All interactive UI renders in `menu_area`. The history panel fills the
-remaining vertical space. Mouse scroll works during inference. Native
-clipboard (`arboard`) handles copy since alternate screen disables
-terminal-native mouse selection.
+### Approval
 
-See DESIGN.md (Interaction section) for the interaction system design and competitive analysis.
+Approval is per-tool. A single `TrustMode` enum (Plan/Safe/Auto, `trust.rs`) is
+the **single mechanism** for tool gating. It derives kernel sandbox bounds,
+per-tool approval and sub-agent defaults from one declaration. There are no
+separate "strict mode", "yolo mode" or per-tool toggles.
 
-The engine communicates through `EngineEvent` (output) and `EngineCommand` (input) enums.
-Approval flows through async channels: engine emits `ApprovalRequest`, client sends `ApprovalResponse`.
-
-### Key Types
-
-- **`KodaAgent`** — Shared resources (tools, system prompt). `Arc`-shareable.
-- **`KodaSession`** — Per-conversation state (DB, provider, settings). Has `run_turn()`.
-- **`EngineSink`** — Trait with single method: `fn emit(&self, event: EngineEvent)`.
-- **`CliSink`** — Channel-forwarding sink. Sends events to the TUI event loop via `UiEvent`.
-
-### Provider System (`koda-core/src/providers/`)
-
-All providers implement `LlmProvider` trait (`chat_stream` returning `Receiver<StreamChunk>`).
-
-### Tool System (`koda-core/src/tools/`)
-
-Tools use PascalCase names. `mod.rs` has the registry, dispatcher, and `safe_resolve_path()`.
+- **Plan:** only ReadOnly tools; all mutations denied
+- **Safe:** local mutations and destructive ops need confirmation
+- **Auto:** local mutations auto-approved; **destructive ops still confirm**
+- **ToolEffect** (`tools/mod.rs`): ReadOnly / LocalMutation / Destructive / RemoteAction
+- **Hardcoded floor:** outside-project writes always need confirmation
+- **Sub-agents** have no approval channel, so `⏸ confirm` resolves to
+  auto-approve for mutations and block for destructive ops
+  (`check_tool_for_sub_agent`). `TrustMode::clamp()` keeps a child from weakening
+  its parent.
+- **Agent configs** declare `"trust": "plan" | "safe" | "auto"` (`config.rs`).
+  Legacy `write_access: bool` still loads with a warning.
+- **Folder scoping:** `is_outside_project()` (`trust.rs`), `lint_bash_paths()`
+  (`bash_path_lint.rs`), startup warning when project_root == $HOME
+- **Process sandbox** (`sandbox.rs`, always on): writes restricted to project +
+  /tmp + cache dirs; credential dirs (~/.ssh, ~/.aws, etc.) blocked. macOS uses
+  `sandbox-exec -p`, Linux `bwrap`, with a `tracing::warn!` fallback if the
+  backend is unavailable.
 
 ## Conventions
 
@@ -307,27 +130,30 @@ Tools use PascalCase names. `mod.rs` has the registry, dispatcher, and `safe_res
 - All I/O is async (`tokio`)
 - Tool names: PascalCase; module names: snake_case
 - `koda-core` has zero terminal deps (no crossterm, no ratatui)
-- Single rendering path in koda-cli:
-  - All output → `ScrollBuffer` → `draw_viewport()` (fullscreen alternate screen)
-  - No `insert_before()`, no dual-path rendering
+- Single rendering path in koda-cli: `EngineEvent` → `tui_render.rs` →
+  `ScrollBuffer` → `draw_viewport()`. No `insert_before()`, no dual-path rendering.
 - Engine → client: `EngineSink::emit(EngineEvent)`
 - Client → engine: `mpsc::Receiver<EngineCommand>`
 - Cancellation: `tokio_util::sync::CancellationToken`
-- Cohesion over line count: don't split a file just because it's long.
-  Split when pieces have genuinely independent responsibilities. An
-  800-line file with one cohesive flow beats two 400-line files that
-  require cross-file context-switching. Test: if you must read file B
-  every time you read file A, they should be the same file.
+- Cohesion over line count: don't split a file just because it's long. Split
+  when pieces have genuinely independent responsibilities. Test: if you must read
+  file B every time you read file A, they should be the same file.
+
+### Push and merge
+
+Push after every commit when you can. A task on a branch pushes that branch, not
+`main`. Merging a PR and cutting a release need the maintainer's explicit yes.
+The pre-push hook (`.githooks/pre-push`) runs `cargo fmt --check` and
+`cargo clippy`; CI is the source of truth for the rest.
 
 ### Bash tool: pass multi-line / backtick content via files, not inline
 
-The Bash tool runs commands through `sh -c "…"`. Inlining content that
-contains newlines, backticks, `$(…)`, or shell metacharacters in the
-argument string burns a turn on `sh: -c: line N: syntax error near
-unexpected token …` (#1232 §7).
+The Bash tool runs commands through `sh -c "…"`. Inlining content that contains
+newlines, backticks, `$(…)`, or shell metacharacters in the argument string burns
+a turn on `sh: -c: line N: syntax error near unexpected token …` (#1232 §7).
 
-**Always-good pattern for `gh` issue/PR creation, commit messages,
-and any other multi-line payload:**
+**Always-good pattern for `gh` issue/PR creation, commit messages, and any other
+multi-line payload:**
 
 ```bash
 # 1. write the body to a temp file
@@ -340,198 +166,34 @@ EOF
 
 # 2. reference it via --body-file / -F
 gh pr create --title "…" --body-file /tmp/pr_body.md
-gh issue create --title "…" --body-file /tmp/pr_body.md
 git commit -F /tmp/commit_msg.md
 ```
 
-The heredoc is single-quoted (`<<'EOF'`) so nothing inside it is
-expanded — you don't have to escape `$`, backticks, or `"`. This is
-strictly safer than `--body "…"` even for content you think is safe;
-the foot-gun is recurring and has zero upside to ignoring.
+The heredoc is single-quoted (`<<'EOF'`) so nothing inside it is expanded.
 
-## Test Structure
+## Documentation Rules
 
-### Quick reference
+**When to update docs with a PR:**
+- User-facing feature added/changed → update root README + relevant crate README
+- Architecture or design decision → add to the appropriate section in `DESIGN.md` with rationale
+- New crate → must ship with a README.md (required for crates.io)
+- Internal refactors don't require doc updates unless they change crate boundaries or public APIs
 
-```bash
-# CI suite (all tests including E2E with mock provider)
-cargo test --workspace --features koda-core/test-support
+## Tests
 
-# Individual crate tests
-cargo test -p koda-core --features test-support   # Engine (unit + E2E)
-cargo test -p koda-cli                             # CLI (unit + integration)
+The `test-support` feature gates `MockProvider` and `TestSink`, so E2E tests need it.
 
-# Live/opt-in tests (require external services)
-KODA_TEST_LMSTUDIO=1 cargo test -p koda-cli --test smoke_test -- --ignored
-cargo test -p koda-email -- --ignored              # Requires KODA_EMAIL_* env vars
-```
-
-The `test-support` feature gates `MockProvider` and `TestSink` — excluded
-from production builds to keep `koda-core`'s public API clean.
-
-### Test tiers by crate
-
-#### koda-core
-
-**Unit tests** — co-located in `src/` modules, no feature flag:
-- Context tracking, loop detection, config defaults, bash safety, etc.
-
-**E2E tests** (mock provider, CI) — require `test-support` feature:
-- `tests/e2e_harness/mod.rs` — shared `Env` test harness (temp dir, DB, config)
-- `tests/e2e_test.rs` — core pipeline: text streaming, tool calls, errors, history, cancel
-- `tests/e2e_tools_test.rs` — tool coverage: Glob, Grep, Edit, Delete, AST verification
-- `tests/e2e_agent_test.rs` — sub-agent invocation + cache hit
-- `tests/e2e_skills_test.rs` — skills, compaction, file ownership
-- `tests/cancel_test.rs` — Ctrl+C interruption during inference
-
-**Integration tests** — no feature flag:
-- `tests/file_tools_test.rs` — path safety, file CRUD
-- `tests/new_tools_test.rs` — glob, tool naming
-- `tests/guarantee_matrix_test.rs` — trust mode × tool effect matrix
-- `tests/inference_recovery_test.rs` — rate-limit retry, context overflow
-- `tests/inference_edge_test.rs` — loop detection, empty tool calls
-- `tests/e2e_safety_test.rs` — approval gates, bash safety classification
-- `tests/session_test.rs` — session lifecycle, TurnStart/TurnEnd events
-- `tests/purge_test.rs` — /purge feature (compacted stats, age filter)
-- `tests/perf_test.rs` — DB, grep, markdown throughput
-- `tests/capabilities_test.rs` — capabilities.md freshness
-- `tests/tool_wiring_test.rs` — every tool routable + approval-handled
-- `tests/tool_normalize_test.rs` — snake_case → PascalCase normalization
-- `tests/golden_test.rs` — snapshot / golden file tests
-- `tests/snapshot_test.rs` — tool definition schema snapshots
-- `tests/token_audit.rs` — token estimation accuracy checks
-
-#### koda-cli
-
-**Unit tests** — co-located in `src/`:
-- Markdown rendering, REPL parsing, highlighting
-
-**Integration tests** — no feature flag:
-- `tests/cli_test.rs` — binary subprocess invocation
-- `tests/regression_test.rs` — REPL dispatch, input processing
-- `tests/server_test.rs` — ACP server integration (JSON-RPC lifecycle)
-- `tests/skill_agent_e2e_test.rs` — skill activation + agent switching E2E
-
-**Smoke tests** (MockProvider, CI-safe):
-- `tests/smoke_test.rs` — headless mode: text responses, tool use, session resume, `--resume` flag
-- Gated by `KODA_TEST_LMSTUDIO=1` env var; never runs in CI
-
-**Stub-server tests** (`FakeLlmServer`, CI-safe):
-- `tests/no_summary_compaction_test.rs` — real headless run with the summary call emptied or failed: the task reaches the next request, the run finishes
-- `tests/gemini_stub_test.rs` — real headless run on the Gemini provider: a 503, a tool call and a failed reply in one turn
-- `tests/history_edit_log_test.rs` — a tool result dropped by a repeated call id shows as a `history edited` warning
-- `tests/context_count_test.rs` — a reported token count above the estimate triggers compaction; with no count, the estimate decides
-- `tests/headless_interrupt_test.rs` — SIGINT during a model call: the run still reports its turn end and summary
-- `tests/stop_reason_log_test.rs` — the `model call` line keeps the stop reason when usage follows the finish chunk
-
-### Adding a new first-party capability checklist
-
-For capabilities that ship in the koda workspace (same release cycle):
-
-1. Create `koda-<name>/` workspace member with `src/lib.rs` + `src/main.rs`, `Cargo.toml`
-2. Add to workspace `members` in root `Cargo.toml`
-3. Export `pub fn tool_definitions()` from the library crate
-4. Add `koda-<name>` as a dependency of `koda-core` in `Cargo.toml`
-5. Register tools via `tool_definitions()` in `ToolRegistry::new()`
-6. Add match arms in `ToolRegistry::execute()` for each tool
-7. Add `--version` flag to `main.rs` (standalone server wrapper)
-8. Write integration tests in `tests/mcp_integration_test.rs`
-9. Update `release.yml`: version verify, build, package, publish, Homebrew
-10. Sync version with workspace (currently 0.4.0)
-11. Update this file (CLAUDE.md)
-
-## CI Workflows
-
-Seven workflows live in `.github/workflows/`:
-
-| Workflow | Trigger | Purpose |
-|---|---|---|
-| `ci.yml` | PRs to `main`, push to `main` | Gate PRs: format, lint, compile, test, doc, dependency audit |
-| `audit.yml` | Weekly (Mon 13:00 UTC) + manual | `cargo audit` of `main`; manages the `security-audit` issue |
-| `coverage.yml` | Push to `main`; PRs touching `koda-core/` or `koda-sandbox/` | Coverage thresholds, with auto issue creation on `main` |
-| `release.yml` | Tag `v*` | Version verify, cross-platform test + build, publish, Homebrew |
-| `docs.yml` | Push to `main` (docs/ changes) | Build + deploy mdBook to GitHub Pages |
-| `auto-merge-dependabot.yml` | Dependabot PRs | Enables squash auto-merge; merges once required checks pass |
-
-Release job chain:
-```
-verify-version → test → build → github-release ─┬→ update-homebrew
-                                                 └→ publish (crates.io)
-```
-crates.io and Homebrew are independent distribution channels — both fan
-out from `github-release` in parallel. Publishing to crates.io only after
-`github-release` ensures binaries are confirmed good before committing to
-an immutable version number; it does not need to wait for Homebrew.
-
-### CI jobs (`ci.yml`)
-
-Six independent jobs run in parallel, one responsibility each, so a red check
-names what broke. Wall-clock is set by the slowest (Test).
-
-| Job | Check name(s) | Runs |
-|---|---|---|
-| `fmt` | `Format` | `cargo fmt --check`, plus text guards: tokio test flavor (#1109), `shell: bash` on the Test step (#1328), toolchain pin |
-| `clippy` | `Clippy` | `cargo clippy --workspace --all-targets --features koda-core/test-support -- -D warnings` |
-| `check` | `Check (no features)` | `cargo check --workspace --all-targets` (the crates.io shape, no test-support) |
-| `test` | `Test (ubuntu-latest)`, `Test (macos-latest)` | `cargo test --workspace --features koda-core/test-support`, then asserts the security-boundary tests ran |
-| `doc` | `Docs` | `cargo doc --workspace --no-deps` with `RUSTDOCFLAGS=-Dwarnings` |
-| `audit` | `Security Audit` | `cargo audit --deny unsound --deny yanked`, gated on dependency changes (below) |
-
-The pre-push hook (`.githooks/pre-push`) runs only `cargo fmt --check` and
-`cargo clippy`, the two cheap checks. CI is the source of truth for the rest.
-
-**Branch ruleset required checks:** `Format`, `Clippy`, `Check (no features)`,
-`Test (ubuntu-latest)`, `Test (macos-latest)`, `Docs`, `Security Audit`, i.e.
-every `ci.yml` check (verify with `gh api repos/lijunzh/koda/rules/branches/main`).
-A required check that never reports blocks merging forever, so **never add a
-workflow-level `paths:` filter to `ci.yml`**. Skip work inside a job instead,
-as `audit` does.
-
-### Security audit (`ci.yml` `audit` + `audit.yml`)
-
-`cargo audit` goes red for two different reasons: a PR adds a vulnerable or
-yanked crate, or RustSec publishes an advisory against a crate `main` already
-uses. Only the first is the PR's doing, so the gate is split:
-
-- **PRs:** `Security Audit` runs the audit only when the PR's diff (the
-  test-merge commit against its first parent) touches `Cargo.lock`, any
-  `Cargo.toml`, or `.cargo/audit.toml`. Otherwise its audit steps are skipped
-  and the job still reports success. The check stays required because
-  `auto-merge-dependabot.yml` merges every Dependabot PR as soon as required
-  checks pass, and a dependency PR must not merge unaudited. The skip is
-  step-level on purpose: a job-level `if:` fed by another job would turn a
-  failure in that job into a skipped, and therefore passing, required check.
-- **Push to `main`:** always audits.
-- **Weekly (`audit.yml`):** audits `main` every Monday. On failure it opens a
-  `security-audit` issue, or comments on the open one; when the audit passes
-  again it closes the issue. A setup failure (e.g. `cargo install` flaking)
-  touches no issue. Same fix-forward model and dedup as `coverage-regression`.
-  **The `security-audit` label is owned by `audit.yml` alone**; applying it by
-  hand breaks the dedup.
-
-### Coverage workflow (`coverage.yml`)
-
-Coverage is **not** a required check. On `main` it tracks the crate thresholds
-below and manages issues. PRs touching `koda-core/` or `koda-sandbox/` also run it
-for per-file thresholds on security-boundary files (#1265 item 8c), but those PRs
-never open or close issues.
-
-| Crate | Threshold |
-|---|---|
-| `koda-core` | ≥ 80% line coverage |
-| `koda-sandbox` | ≥ 80% line coverage |
-
-**Regression handling** — when any crate drops below threshold:
-1. Workflow run turns red → GitHub notifies via email.
-2. A GitHub issue is automatically created with label `coverage-regression`,
-   commit SHA, run link, and which crates failed.
-3. If an open `coverage-regression` issue already exists, a comment is added
-   instead (no spam). **The label is exclusively owned by `coverage.yml` —
-   do not apply it manually or from another workflow, as this breaks deduplication.**
-4. When coverage recovers, the open issue is auto-closed with a comment.
-
-**Why not required?** Coverage reruns the full test suite with instrumentation
-(2–5× slower). Requiring it would put that cost on every PR's merge path. The
-fix-forward model (merge → notify → fix PR) keeps PRs fast while maintaining
-accountability on `main`.
-
+- **Unit:** co-located in `src/` modules in both crates.
+- **koda-core E2E** (mock provider): `tests/e2e_*.rs` and `tests/cancel_test.rs`,
+  using the `Env` harness in `koda-test-utils/src/env.rs`.
+- **koda-core integration:** the rest of `koda-core/tests/`, such as
+  `guarantee_matrix_test.rs` (trust mode × tool effect), `tool_wiring_test.rs`
+  (every tool routable and approval-handled), `snapshot_test.rs` (tool schemas).
+- **koda-cli integration:** `tests/cli_test.rs`, `regression_test.rs`,
+  `server_test.rs`, `skill_agent_e2e_test.rs`.
+- **koda-cli smoke:** `tests/smoke_test.rs`, headless with `MockProvider`; live
+  variants need `KODA_TEST_LMSTUDIO=1`.
+- **koda-cli stub server:** real headless runs against `FakeLlmServer`, in
+  `no_summary_compaction_test.rs`, `gemini_stub_test.rs`,
+  `history_edit_log_test.rs`, `context_count_test.rs`,
+  `headless_interrupt_test.rs`.

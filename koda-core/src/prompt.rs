@@ -11,7 +11,7 @@
 //! 1. **Base prompt** — from the agent's `system_prompt` field
 //! 2. **Behavioral instructions** — `instructions.md` (how to act)
 //! 3. **Environment** — working dir, platform, shell, model
-//! 4. **Quick Reference** — auto-generated from `SLASH_COMMANDS` + `ToolDefinition`
+//! 4. **Quick Reference** — slash commands, trust modes and undo (REPL only)
 //! 5. **Sub-agents** — available agents with descriptions and delegation guidance
 //! 6. **Skills** — live listing with `when_to_use` hints; model MUST activate before responding
 //! 7. **Memory** — project and global learned facts
@@ -19,6 +19,12 @@
 use std::path::Path;
 
 use crate::skills::SkillRegistry;
+
+/// Most characters of memory the system prompt carries, global and project
+/// together: about 4K tokens, an eighth of a 32K window. Memory is paid on
+/// every model call, and Codex (32 KiB) and Code Puppy (10,000 characters)
+/// both cap theirs. The full text stays on disk and `MemoryRead` returns it.
+const MEMORY_MAX_CHARS: usize = 16_000;
 
 /// Runtime environment context injected into the system prompt.
 pub struct EnvironmentInfo<'a> {
@@ -32,9 +38,9 @@ pub struct EnvironmentInfo<'a> {
 
 /// Build the system prompt with instructions, environment, memory, and tool schemas.
 ///
-/// `commands` is a list of `(name, description)` pairs for user-facing slash
-/// commands (e.g. `("/help", "Show this help")`).  Pass `&[]` for sub-agents
-/// that don't expose a REPL.
+/// `commands` lists the user-facing slash commands (e.g. `"/help"`). Pass `&[]`
+/// when there is no REPL (sub-agents, headless, ACP): the quick reference is
+/// left out.
 ///
 /// `skill_registry` is used to build the live `## Skills` section so the model
 /// sees every available skill — with its `when_to_use` hint — without needing
@@ -48,7 +54,7 @@ pub fn build_system_prompt(
     base_prompt: &str,
     semantic_memory: &str,
     env: &EnvironmentInfo<'_>,
-    commands: &[(&str, &str)],
+    commands: &[&str],
     skill_registry: &SkillRegistry,
 ) -> String {
     let mut prompt = base_prompt.to_string();
@@ -63,44 +69,36 @@ pub fn build_system_prompt(
         "- Working directory: {}\n",
         env.project_root.display()
     ));
+    prompt.push_str(&format!(
+        "- Date: {} (UTC)\n",
+        time::OffsetDateTime::now_utc().date()
+    ));
     prompt.push_str(&format!("- Platform: {}\n", env.platform));
     if let Ok(shell) = std::env::var("SHELL") {
         prompt.push_str(&format!("- Shell: {}\n", shell));
     }
     prompt.push_str(&format!("- Model: {}\n", env.model));
 
-    // Capabilities quick-reference (generated from code, replaces static capabilities.md)
-    prompt.push_str("\n## Koda Quick Reference\n\n");
-    prompt.push_str("Refer to this when the user asks \"what can you do?\" or about features.\n");
-
-    // Commands — generated from the registry passed by the CLI
+    // Quick reference for the REPL. Headless runs, ACP and sub-agents pass no
+    // commands, and none of this applies to them. Command descriptions live
+    // in `/help` and the manual: the prompt is paid on every call, and "what
+    // can you do?" is a rare question.
     if !commands.is_empty() {
-        prompt.push_str("\n### Commands (user types these in the REPL)\n\n");
-        for &(name, desc) in commands {
-            prompt.push_str(&format!("- `{name}` — {desc}\n"));
-        }
-        prompt.push_str("- `Shift+Tab` — cycle approval mode (auto/confirm)\n");
+        prompt.push_str("\n## Koda Quick Reference\n\n");
+        prompt.push_str(&format!(
+            "- Slash commands the user can type (`/help` describes them): {}\n",
+            commands.join(" ")
+        ));
+        prompt.push_str(
+            "- Trust modes, cycled with Shift+Tab: plan (read-only), safe (confirm changes), \
+             auto (default; confirm destructive operations only).\n",
+        );
+        prompt.push_str(
+            "- `/undo` rolls back file changes from the most recent turn. Its stack is \
+             **in-memory only** and dies with the process, so tell the user to commit \
+             to git if they want durable rollback.\n",
+        );
     }
-
-    // Static behavioral guidance (doesn't drift — hardcoded is fine)
-    prompt.push_str(
-        "\n### Input\n\n\
-         - `@file.rs` attaches file context, `@image.png` for multi-modal analysis\n\
-         - `Alt+Enter` inserts a newline for multi-line prompts\n\
-         - Piped input: `echo \"explain\" | koda` or `koda -p \"prompt\"` for headless/CI\n",
-    );
-    prompt.push_str(
-        "\n### Approval\n\n\
-         Two modes (cycle with Shift+Tab): **auto** (default), **confirm**.\n\
-         Hotkeys during tool confirmation: `y` approve, `n` reject, `f` feedback, `a` always.\n",
-    );
-    prompt.push_str(
-        "\n### Undo\n\n\
-         `/undo` rolls back file mutations from the most recent turn (Write,\n\
-         Edit, Delete, Overwrite). The undo stack is **in-memory only** — it\n\
-         does not survive process restarts. Tell the user to commit work to\n\
-         git before quitting if they want durable rollback.\n",
-    );
 
     // Tool definitions intentionally NOT rendered here — each provider
     // (Anthropic, OpenAI-compat, Gemini) sends the full schema (name +
@@ -140,7 +138,7 @@ pub fn build_system_prompt(
              - Research that would fill your context with noise (file contents, grep results)\n\
              \n\
              When NOT to use sub-agents:\n\
-             - Simple file reads or 2\u{2013}3 grep queries (overhead > direct execution)\n\
+             - Simple file reads, 2\u{2013}3 grep queries or single-file edits (overhead > direct execution)\n\
              - Tasks that need user interaction (sub-agents can\u{2019}t ask questions)\n\
              \n\
              Sub-agent results are NOT visible to the user — always summarize key findings.\n",
@@ -191,8 +189,9 @@ pub fn build_system_prompt(
             prompt.push_str(&line);
         }
         prompt.push_str(
-            "\nCustom skills: `.koda/skills/<name>/SKILL.md` (project) \
-             or `~/.config/koda/skills/<name>/SKILL.md` (global).\n",
+            "\nPrefer skills over sub-agents and external URLs. `(Tools: ...)` limits a skill \
+             to those tools while it is active. `[model-only]` skills are not shown to users. \
+             `ListSkills` searches for one not listed here.\n",
         );
     }
 
@@ -207,12 +206,29 @@ pub fn build_system_prompt(
     if !semantic_memory.is_empty() {
         prompt.push_str(&format!(
             "\n## Project Memory\n\
-             The following are learned facts about this project:\n\
-             {semantic_memory}"
+             Project instructions and learned facts. Follow them. They override the \
+             guidance above; the user's direct instructions override them.\n\
+             {}",
+            cap_memory(semantic_memory)
         ));
     }
 
     prompt
+}
+
+/// Limit memory to [`MEMORY_MAX_CHARS`], saying so in the prompt so the model
+/// can read the rest and tell the user to trim the file.
+fn cap_memory(memory: &str) -> String {
+    let total = memory.chars().count();
+    if total <= MEMORY_MAX_CHARS {
+        return memory.to_string();
+    }
+    tracing::warn!("Memory truncated in the system prompt: {total} chars, cap {MEMORY_MAX_CHARS}");
+    let kept: String = memory.chars().take(MEMORY_MAX_CHARS).collect();
+    format!(
+        "{kept}\n\n[Memory truncated: {MEMORY_MAX_CHARS} of {total} characters shown. \
+         Use MemoryRead for the rest, and tell the user to trim the memory file.]\n"
+    )
 }
 
 /// Render the `# MCP Server Instructions` section for inclusion in the
@@ -323,7 +339,7 @@ mod tests {
         let result = build_system_prompt("You are helpful.", "", &env, &[], &registry);
         assert!(result.starts_with("You are helpful."));
         assert!(result.contains("Doing Tasks"));
-        assert!(result.contains("Koda Quick Reference"));
+        assert!(!result.contains("Koda Quick Reference"));
         assert!(!result.contains("Project Memory"));
     }
 
@@ -340,6 +356,32 @@ mod tests {
         );
         assert!(result.contains("Project Memory"));
         assert!(result.contains("Rust project"));
+    }
+
+    #[test]
+    fn test_project_memory_is_framed_as_instructions() {
+        let env = test_env();
+        let registry = SkillRegistry::default();
+        let result = build_system_prompt("Base.", "Use tabs.", &env, &[], &registry);
+        assert!(result.contains("Project instructions and learned facts. Follow them."));
+        assert!(!result.contains("learned facts about this project"));
+    }
+
+    #[test]
+    fn test_memory_under_the_cap_is_untouched() {
+        let memory = "x".repeat(MEMORY_MAX_CHARS);
+        assert_eq!(cap_memory(&memory), memory);
+    }
+
+    #[test]
+    fn test_memory_over_the_cap_is_cut_with_a_notice() {
+        // Multi-byte on purpose: the cut must land on a char boundary.
+        let memory = "é".repeat(MEMORY_MAX_CHARS + 10);
+        let capped = cap_memory(&memory);
+        assert!(capped.starts_with(&"é".repeat(MEMORY_MAX_CHARS)));
+        assert!(!capped.starts_with(&"é".repeat(MEMORY_MAX_CHARS + 1)));
+        assert!(capped.contains("[Memory truncated"));
+        assert!(capped.contains("MemoryRead"));
     }
 
     #[test]
@@ -404,6 +446,14 @@ mod tests {
         assert!(result.contains("/test/project"));
         assert!(result.contains("test-model"));
         assert!(result.contains("test-os"));
+        let date = result
+            .lines()
+            .find_map(|line| line.strip_prefix("- Date: "))
+            .expect("environment states the date");
+        assert!(
+            date.starts_with("20") && date.ends_with(" (UTC)"),
+            "unexpected date line: {date}"
+        );
     }
 
     #[test]
@@ -422,20 +472,35 @@ mod tests {
     fn test_commands_generated_from_registry() {
         let env = test_env();
         let registry = SkillRegistry::default();
-        let commands = &[("/help", "Show help"), ("/exit", "Quit")];
-        let result = build_system_prompt("Base.", "", &env, commands, &registry);
-        assert!(result.contains("`/help`"));
-        assert!(result.contains("Show help"));
-        assert!(result.contains("`/exit`"));
-        assert!(result.contains("Commands (user types these in the REPL)"));
+        let result = build_system_prompt("Base.", "", &env, &["/help", "/exit"], &registry);
+        assert!(result.contains("## Koda Quick Reference"));
+        assert!(result.contains("/help /exit"));
     }
 
     #[test]
-    fn test_no_commands_section_for_sub_agents() {
+    fn test_no_quick_reference_without_a_repl() {
         let env = test_env();
         let registry = SkillRegistry::default();
         let result = build_system_prompt("Base.", "", &env, &[], &registry);
-        assert!(!result.contains("Commands (user types these in the REPL)"));
+        assert!(!result.contains("Koda Quick Reference"));
+        assert!(!result.contains("Shift+Tab"));
+    }
+
+    /// The prompt used to describe two approval modes, "auto" and "confirm",
+    /// after `TrustMode` became plan/safe/auto.
+    #[test]
+    fn test_quick_reference_names_the_real_trust_modes() {
+        let env = test_env();
+        let registry = SkillRegistry::default();
+        let result = build_system_prompt("Base.", "", &env, &["/help"], &registry);
+        use crate::trust::TrustMode;
+        for mode in [TrustMode::Plan, TrustMode::Safe, TrustMode::Auto] {
+            assert!(
+                result.contains(mode.as_str()),
+                "quick reference must name {mode:?}"
+            );
+        }
+        assert!(!result.contains("Two modes"));
     }
 
     #[test]
@@ -702,13 +767,7 @@ mod tests {
             .len();
 
         // Realistic slash commands
-        let commands = &[
-            ("/help", "Show command help"),
-            ("/skills", "List available skills"),
-            ("/agents", "List available sub-agents"),
-            ("/memory", "Show project + global memory"),
-            ("/compact", "Compact conversation history"),
-        ];
+        let commands = &["/help", "/skills", "/agents", "/memory", "/compact"];
 
         let prompt = build_system_prompt(
             "You are koda, a helpful coding agent.",
@@ -728,9 +787,8 @@ mod tests {
             "## Memory",
         ];
 
-        // Find positions; require the marker to appear at the start of a
-        // line (preceded by '\n') so headers like '## Skills' don't false-match
-        // inside a subsection like '## Skills and Sub-Agents' in instructions.md.
+        // Find positions; require the whole marker on its own line so a
+        // header like '## Skills' can't false-match a longer heading.
         // The earlier version used naive prompt.find() and produced wildly
         // inaccurate per-section attribution — see #925 PR description.
         let mut positions: Vec<(&str, usize)> = markers
@@ -811,7 +869,7 @@ mod tests {
     fn prompt_does_not_lie_about_git_checkpointing() {
         let env = test_env();
         let registry = SkillRegistry::default();
-        let prompt = build_system_prompt("You are koda.", "", &env, &[], &registry);
+        let prompt = build_system_prompt("You are koda.", "", &env, &["/undo"], &registry);
 
         // Phrases from the old (deleted) lie. If any of these come back,
         // either ship the feature or delete them again — do not just
@@ -828,9 +886,9 @@ mod tests {
             );
         }
 
-        // Positive: the truthful Undo section is present and explicitly
+        // Positive: the truthful undo line is present and explicitly
         // calls out the durability gap.
-        assert!(prompt.contains("### Undo"));
+        assert!(prompt.contains("`/undo`"));
         assert!(prompt.contains("in-memory only"));
     }
 }
