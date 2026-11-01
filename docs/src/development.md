@@ -279,6 +279,7 @@ live variants are gated by `KODA_TEST_LMSTUDIO=1` and never run in CI.
 
 - `tests/no_summary_compaction_test.rs` — real headless run with the summary call emptied or failed: the task reaches the next request, the run finishes
 - `tests/gemini_stub_test.rs` — real headless run on the Gemini provider: a 503, a tool call and a failed reply in one turn
+- `tests/anthropic_stream_failure_test.rs` — an `error` event or a missing `message_stop` discards the reply, and its tool calls don't run
 - `tests/history_edit_log_test.rs` — a tool result dropped by a repeated call id shows as a `history edited` warning
 - `tests/context_count_test.rs` — a reported token count above the estimate triggers compaction; with no count, the estimate decides
 - `tests/headless_interrupt_test.rs` — SIGINT during a model call: the run still reports its turn end and summary
