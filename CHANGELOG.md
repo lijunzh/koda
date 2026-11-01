@@ -6,8 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Known gaps
+
+- Gemini works, with known limits: it compacts early, and in eval runs it read code without ever editing it. See #1473, which asks for help.
+
 ### Added
 
+- **A debugging guide.** [Debugging a run](https://lijunzh.github.io/koda/debugging.html) shows how to triage a run from its logs and reproduce a bug without an API key.
+- **The log shows what each request holds and how each turn ended.** New `context assembled` and `turn end` lines, and a `compaction` line with the branch taken and the rows summarized and kept.
+- **Debug logging can show the text, and trace logging the requests.** `RUST_LOG=koda_core=debug` adds conversation text, and `koda_core::providers=trace` adds request bodies. The `model call` line gained a hash of the system prompt and tools, so you can see when the prompt changed.
 - **The model knows the date.** The prompt's environment section now states it.
 - **Every model call gets a log line.** The session log now records purpose, provider, model, estimated and reported tokens, time to first chunk, total time, stop reason and reply size for each call, plus a `model call failed` line. No conversation text.
 - **The log says when a row leaves the model's view.** Each sanitization pass that removes rows writes a `history edited` line with the pass, row ids and characters, as a warning when text is lost.
@@ -24,6 +31,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **An interrupted headless run reports how it ended.** On SIGINT during a model call, the run now still writes its turn end and summary.
 - **The prompt names the real trust modes.** It still described two approval modes, "auto" and "confirm", instead of plan, safe and auto.
 - **A headless run no longer loses its last log lines.** It exited without flushing the log writer, so the `turn end` line could go missing, most often on a busy machine.
 - **The provider's token count drives compaction when it reports one.** Koda's estimate runs low, so a run could pass its window while the meter read about 70%. The estimate is now raised by what the last count showed it missed, and never lowered. With no count, after a compaction or on a cut-off reply, the estimate decides. The `model call` line gained `context_tokens`, and the context meter now counts Anthropic's cached tokens.
