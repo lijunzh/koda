@@ -94,6 +94,104 @@ fn prune_mismatched_tool_calls_once(messages: &mut Vec<Message>) -> bool {
     true
 }
 
+/// Which rows a compaction leaves in place.
+enum KeepRows {
+    /// The newest N rows.
+    Last(usize),
+    /// Every row from this id on.
+    From(i64),
+}
+
+impl Database {
+    /// Archive the rows `keep` leaves out and store `summary` in their place.
+    async fn archive_into_summary(
+        &self,
+        session_id: &str,
+        summary: &str,
+        keep: KeepRows,
+    ) -> Result<usize> {
+        // `BEGIN IMMEDIATE`, not the default deferred `BEGIN`: this
+        // transaction reads first and writes later. In WAL mode a
+        // deferred read that is upgraded to a write after another
+        // connection committed fails at once with SQLITE_BUSY
+        // ("database is locked"); `busy_timeout` does not apply to
+        // that upgrade. Taking the write lock up front makes the
+        // wait honour the timeout, so concurrent event inserts
+        // (`PersistingSink`) and sub-agent writes queue behind it.
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+
+        // Get active (non-compacted) message IDs ordered oldest→newest
+        let all_ids: Vec<(i64,)> = sqlx::query_as(
+            "SELECT id FROM messages WHERE session_id = ? AND compacted_at IS NULL ORDER BY id ASC",
+        )
+        .bind(session_id)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        let total = all_ids.len();
+        if total == 0 {
+            tx.commit().await?;
+            return Ok(0);
+        }
+
+        // Determine which messages to archive (everything except the tail)
+        let keep_from = match keep {
+            KeepRows::Last(count) => total.saturating_sub(count),
+            KeepRows::From(id) => all_ids.partition_point(|row| row.0 < id),
+        };
+        let ids_to_archive: Vec<i64> = all_ids[..keep_from].iter().map(|r| r.0).collect();
+        let archived_count = ids_to_archive.len();
+
+        if archived_count == 0 {
+            tx.commit().await?;
+            return Ok(0);
+        }
+
+        // Mark old messages as compacted (non-destructive — history preserved in DB)
+        for chunk in ids_to_archive.chunks(500) {
+            let placeholders: String = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!(
+                "UPDATE messages SET compacted_at = datetime('now') \
+                 WHERE session_id = ? AND id IN ({placeholders})"
+            );
+            let mut query = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(session_id);
+            for id in chunk {
+                query = query.bind(id);
+            }
+            query.execute(&mut *tx).await?;
+        }
+
+        // Insert the summary as a system message
+        sqlx::query(
+            "INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, prompt_tokens, completion_tokens)
+             VALUES (?, 'system', ?, NULL, NULL, NULL, NULL)",
+        )
+        .bind(session_id)
+        .bind(summary)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+
+        // (#1166) Bump the global compaction generation: any cached
+        // context entry whose snapshot predates this bump must do a
+        // full reload on next `load_context`. Compaction is the only
+        // mutation that retroactively changes the row set
+        // (sets `compacted_at` on existing rows), so this is the only
+        // path that needs to invalidate cached merges.
+        //
+        // We bump after `commit` (not before) so that any concurrent
+        // `load_context` call still sees the pre-compaction state
+        // consistently — either it caches with the old gen and gets
+        // invalidated next call, or it caches with the new gen and
+        // re-fetches the post-compaction set. Idempotent either way.
+        self.compaction_gen
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+
+        Ok(archived_count)
+    }
+}
+
 /// The continuation hint compaction stored as an assistant row before #1444.
 const LEGACY_COMPACTION_HINT: &str = "Your context was compacted. The previous message contains \
     a summary of our earlier conversation. Do not mention the summary or that compaction \
@@ -800,82 +898,18 @@ impl Persistence for Database {
         summary: &str,
         preserve_count: usize,
     ) -> Result<usize> {
-        // `BEGIN IMMEDIATE`, not the default deferred `BEGIN`: this
-        // transaction reads first and writes later. In WAL mode a
-        // deferred read that is upgraded to a write after another
-        // connection committed fails at once with SQLITE_BUSY
-        // ("database is locked"); `busy_timeout` does not apply to
-        // that upgrade. Taking the write lock up front makes the
-        // wait honour the timeout, so concurrent event inserts
-        // (`PersistingSink`) and sub-agent writes queue behind it.
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        self.archive_into_summary(session_id, summary, KeepRows::Last(preserve_count))
+            .await
+    }
 
-        // Get active (non-compacted) message IDs ordered oldest→newest
-        let all_ids: Vec<(i64,)> = sqlx::query_as(
-            "SELECT id FROM messages WHERE session_id = ? AND compacted_at IS NULL ORDER BY id ASC",
-        )
-        .bind(session_id)
-        .fetch_all(&mut *tx)
-        .await?;
-
-        let total = all_ids.len();
-        if total == 0 {
-            tx.commit().await?;
-            return Ok(0);
-        }
-
-        // Determine which messages to archive (everything except the tail)
-        let keep_from = total.saturating_sub(preserve_count);
-        let ids_to_archive: Vec<i64> = all_ids[..keep_from].iter().map(|r| r.0).collect();
-        let archived_count = ids_to_archive.len();
-
-        if archived_count == 0 {
-            tx.commit().await?;
-            return Ok(0);
-        }
-
-        // Mark old messages as compacted (non-destructive — history preserved in DB)
-        for chunk in ids_to_archive.chunks(500) {
-            let placeholders: String = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-            let sql = format!(
-                "UPDATE messages SET compacted_at = datetime('now') \
-                 WHERE session_id = ? AND id IN ({placeholders})"
-            );
-            let mut query = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(session_id);
-            for id in chunk {
-                query = query.bind(id);
-            }
-            query.execute(&mut *tx).await?;
-        }
-
-        // Insert the summary as a system message
-        sqlx::query(
-            "INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, prompt_tokens, completion_tokens)
-             VALUES (?, 'system', ?, NULL, NULL, NULL, NULL)",
-        )
-        .bind(session_id)
-        .bind(summary)
-        .execute(&mut *tx)
-        .await?;
-
-        tx.commit().await?;
-
-        // (#1166) Bump the global compaction generation: any cached
-        // context entry whose snapshot predates this bump must do a
-        // full reload on next `load_context`. Compaction is the only
-        // mutation that retroactively changes the row set
-        // (sets `compacted_at` on existing rows), so this is the only
-        // path that needs to invalidate cached merges.
-        //
-        // We bump after `commit` (not before) so that any concurrent
-        // `load_context` call still sees the pre-compaction state
-        // consistently — either it caches with the old gen and gets
-        // invalidated next call, or it caches with the new gen and
-        // re-fetches the post-compaction set. Idempotent either way.
-        self.compaction_gen
-            .fetch_add(1, std::sync::atomic::Ordering::Release);
-
-        Ok(archived_count)
+    async fn compact_session_before(
+        &self,
+        session_id: &str,
+        summary: &str,
+        keep_from_id: i64,
+    ) -> Result<usize> {
+        self.archive_into_summary(session_id, summary, KeepRows::From(keep_from_id))
+            .await
     }
 
     /// Check if the last message in a session is a tool call awaiting a response.
