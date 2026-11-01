@@ -53,6 +53,10 @@ use tokio::fs;
 /// regular file with our new content, which is what the caller asked
 /// for in the first place. The escaping target file is unaffected.
 ///
+/// A fresh inode would otherwise get default permissions, so the temp file
+/// takes the target's first, before it holds any content: a script stays
+/// executable, and a private file is never briefly readable.
+///
 /// On error, the temp file is best-effort cleaned up; if cleanup fails
 /// we log and ignore (the temp leak is harmless and we don't want to
 /// shadow the real error).
@@ -88,6 +92,12 @@ async fn atomic_write(target: &Path, content: &[u8]) -> FsResult<()> {
         .write(true)
         .open(&tmp_path)
         .await?;
+    if let Some(permissions) = kept_permissions(target).await
+        && let Err(e) = file.set_permissions(permissions).await
+    {
+        let _ = fs::remove_file(&tmp_path).await;
+        return Err(FsError::Io(e));
+    }
     if let Err(e) = file.write_all(content).await {
         // Clean up the partial temp file.
         let _ = fs::remove_file(&tmp_path).await;
@@ -104,6 +114,23 @@ async fn atomic_write(target: &Path, content: &[u8]) -> FsResult<()> {
         return Err(FsError::Io(e));
     }
     Ok(())
+}
+
+/// The permissions a rewrite of `target` keeps. `None` for a new file, or for
+/// a symlink, which the rename replaces rather than writes through. Setuid and
+/// setgid are dropped: they belong to the old contents.
+async fn kept_permissions(target: &Path) -> Option<std::fs::Permissions> {
+    let metadata = fs::symlink_metadata(target).await.ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    let mut permissions = metadata.permissions();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        permissions.set_mode(permissions.mode() & 0o777);
+    }
+    Some(permissions)
 }
 
 /// Unsandboxed, in-process [`FileSystem`].
@@ -377,6 +404,59 @@ mod tests {
         let n = fs.write(&path, b"hi").await.unwrap();
         assert_eq!(n, 2);
         assert!(path.exists());
+    }
+
+    #[cfg(unix)]
+    fn mode_of(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o7777
+    }
+
+    #[cfg(unix)]
+    fn set_mode(path: &Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_keeps_existing_permissions() {
+        let (dir, fs) = fixture();
+        for mode in [0o755, 0o600, 0o640, 0o444] {
+            let path = dir.path().join(format!("file-{mode:o}"));
+            std::fs::write(&path, "before").unwrap();
+            set_mode(&path, mode);
+            fs.write(&path, b"after").await.unwrap();
+            assert_eq!(mode_of(&path), mode);
+            assert_eq!(std::fs::read(&path).unwrap(), b"after");
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_drops_setuid_and_setgid() {
+        let (dir, fs) = fixture();
+        let path = dir.path().join("tool");
+        std::fs::write(&path, "before").unwrap();
+        set_mode(&path, 0o6755);
+        fs.write(&path, b"after").await.unwrap();
+        assert_eq!(mode_of(&path), 0o755);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_replacing_a_symlink_does_not_take_its_targets_mode() {
+        let (dir, fs) = fixture();
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::write(&elsewhere, "secret").unwrap();
+        set_mode(&elsewhere, 0o777);
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
+
+        fs.write(&link, b"new").await.unwrap();
+
+        assert_ne!(mode_of(&link), 0o777);
+        assert_eq!(std::fs::read(&elsewhere).unwrap(), b"secret");
     }
 
     #[tokio::test]
