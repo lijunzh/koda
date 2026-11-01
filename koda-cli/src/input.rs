@@ -106,6 +106,13 @@ fn unescape_path(path: &str) -> String {
     result
 }
 
+/// One piece of the user's input.
+#[derive(Debug, PartialEq)]
+enum Piece {
+    Token(String),
+    Space(String),
+}
+
 /// Shell-aware tokenizer that keeps backslash-escaped and quoted paths intact.
 ///
 /// Unlike `split_whitespace()`, this handles:
@@ -113,10 +120,13 @@ fn unescape_path(path: &str) -> String {
 /// - Quoted strings: `"path with spaces"` or `'path with spaces'` → single token
 /// - Regular whitespace splitting for everything else
 ///
+/// Whitespace comes back too, as its own pieces, so the pieces joined are
+/// exactly the input.
+///
 /// Inspired by Gemini CLI's regex-based `@path` parsing and Claude Code's
 /// `stripBackslashEscapes`.
-fn tokenize_shell_aware(input: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
+fn split_shell_aware(input: &str) -> Vec<Piece> {
+    let mut pieces = Vec::new();
     let mut current = String::new();
     let mut chars = input.chars().peekable();
 
@@ -125,7 +135,11 @@ fn tokenize_shell_aware(input: &str) -> Vec<String> {
             // ── Whitespace: flush current token ──
             ' ' | '\t' | '\n' | '\r' => {
                 if !current.is_empty() {
-                    tokens.push(std::mem::take(&mut current));
+                    pieces.push(Piece::Token(std::mem::take(&mut current)));
+                }
+                match pieces.last_mut() {
+                    Some(Piece::Space(space)) => space.push(c),
+                    _ => pieces.push(Piece::Space(c.to_string())),
                 }
                 chars.next();
             }
@@ -161,9 +175,9 @@ fn tokenize_shell_aware(input: &str) -> Vec<String> {
         }
     }
     if !current.is_empty() {
-        tokens.push(current);
+        pieces.push(Piece::Token(current));
     }
-    tokens
+    pieces
 }
 
 /// Check if a token looks like a bare file path (absolute, ~/, or ./ prefixed).
@@ -226,18 +240,38 @@ fn resolve_bare_path(token: &str) -> Option<PathBuf> {
     }
 }
 
+/// Remove the spaces an attachment leaves behind, stopping at a newline.
+fn drop_trailing_spaces(prompt: &mut String) {
+    prompt.truncate(prompt.trim_end_matches([' ', '\t']).len());
+}
+
 /// Scan input for `@path` tokens and bare image paths (drag-and-drop),
 /// read the files, and return cleaned prompt plus file contents and images.
+///
+/// The prompt keeps the input's text exactly, newlines and indentation
+/// included. An attachment leaves with the spaces before it, or the whitespace
+/// after it when it opens the prompt.
 pub fn process_input(input: &str, project_root: &Path) -> ProcessedInput {
-    let mut prompt_parts = Vec::new();
+    let mut prompt = String::new();
     let mut context_files = Vec::new();
     let mut images = Vec::new();
 
-    for token in tokenize_shell_aware(input) {
+    for piece in split_shell_aware(input) {
+        let token = match piece {
+            Piece::Token(token) => token,
+            Piece::Space(space) => {
+                let opens_prompt = prompt.is_empty() && !input.starts_with(&space);
+                if !opens_prompt {
+                    prompt.push_str(&space);
+                }
+                continue;
+            }
+        };
+
         // ── @path references (explicit) ───────────────────────
         if let Some(raw_path) = token.strip_prefix('@') {
             if raw_path.is_empty() {
-                prompt_parts.push(token.to_string());
+                prompt.push_str(&token);
                 continue;
             }
 
@@ -250,7 +284,7 @@ pub fn process_input(input: &str, project_root: &Path) -> ProcessedInput {
                 Ok(p) => p,
                 Err(_) => {
                     tracing::warn!("@file path escapes project root: {clean_path}");
-                    prompt_parts.push(token.to_string());
+                    prompt.push_str(&token);
                     continue;
                 }
             };
@@ -259,8 +293,9 @@ pub fn process_input(input: &str, project_root: &Path) -> ProcessedInput {
             if is_image_file(&clean_path) {
                 if let Some(img) = try_load_image(&full_path, &clean_path) {
                     images.push(img);
+                    drop_trailing_spaces(&mut prompt);
                 } else {
-                    prompt_parts.push(token.to_string());
+                    prompt.push_str(&token);
                 }
                 continue;
             }
@@ -272,10 +307,11 @@ pub fn process_input(input: &str, project_root: &Path) -> ProcessedInput {
                         path: clean_path,
                         content,
                     });
+                    drop_trailing_spaces(&mut prompt);
                 }
                 Err(_) => {
                     eprintln!("  \x1b[33m\u{26a0} Could not read: {clean_path}\x1b[0m");
-                    prompt_parts.push(token.to_string());
+                    prompt.push_str(&token);
                 }
             }
             continue;
@@ -294,14 +330,13 @@ pub fn process_input(input: &str, project_root: &Path) -> ProcessedInput {
             let display = resolved.display().to_string();
             if let Some(img) = try_load_image(&resolved, &display) {
                 images.push(img);
+                drop_trailing_spaces(&mut prompt);
                 continue;
             }
         }
 
-        prompt_parts.push(token);
+        prompt.push_str(&token);
     }
-
-    let prompt = prompt_parts.join(" ");
 
     // If only @refs were provided with no other text, add a default prompt
     let prompt = if prompt.trim().is_empty() && (!context_files.is_empty() || !images.is_empty()) {
@@ -455,6 +490,17 @@ pub fn format_paste_blocks(blocks: &[PasteBlock]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The tokens alone, for the tests that only care where words split.
+    fn tokenize_shell_aware(input: &str) -> Vec<String> {
+        split_shell_aware(input)
+            .into_iter()
+            .filter_map(|piece| match piece {
+                Piece::Token(token) => Some(token),
+                Piece::Space(_) => None,
+            })
+            .collect()
+    }
     use std::fs;
     use tempfile::TempDir;
 
@@ -476,6 +522,56 @@ mod tests {
         let result = process_input("just a normal question", dir.path());
         assert_eq!(result.prompt, "just a normal question");
         assert!(result.context_files.is_empty());
+    }
+
+    #[test]
+    fn test_process_input_keeps_text_exactly() {
+        let dir = TempDir::new().unwrap();
+        for prompt in [
+            "Repair:\n```python\ndef f():\n    return 1\n```\n",
+            "  leading and trailing  ",
+            "tabs\tand\r\ncrlf\n\n\nblank lines",
+            "diff:\n-    old\n+\tnew\n",
+            "quotes 'keep\n  this' and \"that\" and a \\ backslash",
+            "it's an unmatched\n    quote",
+            "@missing.rs stays\n  as text",
+            "",
+        ] {
+            let result = process_input(prompt, dir.path());
+            assert_eq!(result.prompt, prompt);
+        }
+    }
+
+    #[test]
+    fn test_process_input_attachment_keeps_the_rest_exact() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("a.rs"), "fn a() {}").unwrap();
+        for (input, prompt) in [
+            (
+                "@a.rs\n\nfix this:\n    indented",
+                "fix this:\n    indented",
+            ),
+            ("see @a.rs and\n  this", "see and\n  this"),
+            ("first\n@a.rs\n    second", "first\n\n    second"),
+            ("fix  @a.rs", "fix"),
+        ] {
+            let result = process_input(input, dir.path());
+            assert_eq!(result.prompt, prompt);
+            assert_eq!(result.context_files.len(), 1);
+        }
+    }
+
+    #[test]
+    fn test_pieces_join_back_to_the_input() {
+        for input in ["a  b\n\tc ", "\n x", "'q\n r' s", "esc\\ aped\\\n", ""] {
+            let joined: String = split_shell_aware(input)
+                .into_iter()
+                .map(|piece| match piece {
+                    Piece::Token(text) | Piece::Space(text) => text,
+                })
+                .collect();
+            assert_eq!(joined, input);
+        }
     }
 
     #[test]

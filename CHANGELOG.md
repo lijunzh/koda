@@ -31,6 +31,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **The model gets your prompt as you typed it.** Every prompt was split on whitespace and rejoined with single spaces, which put multi-line code, diffs and Markdown on one line. This applied to the TUI and to headless runs. An `@file` or image reference is still removed, with the spaces before it.
 - **An interrupted headless run reports how it ended.** On SIGINT during a model call, the run now still writes its turn end and summary.
 - **The prompt names the real trust modes.** It still described two approval modes, "auto" and "confirm", instead of plan, safe and auto.
 - **A headless run no longer loses its last log lines.** It exited without flushing the log writer, so the `turn end` line could go missing, most often on a busy machine.
