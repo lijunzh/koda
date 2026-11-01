@@ -143,10 +143,13 @@ impl HistoryEdit {
     }
 }
 
+/// A sanitization pass and the name it reports under.
+type SanitizePass = (&'static str, fn(&mut Vec<Message>));
+
 /// Run every sanitization pass in order, each on the output of the previous,
 /// and report what each one removed.
 pub(crate) fn sanitize_history(messages: &mut Vec<Message>) -> Vec<HistoryEdit> {
-    let passes: [(&'static str, fn(&mut Vec<Message>)); 5] = [
+    let passes: [SanitizePass; 5] = [
         ("prune_legacy_compaction_hint", prune_legacy_compaction_hint), // (#1444)
         ("prune_mismatched_tool_calls", prune_mismatched_tool_calls),   // (#428)
         ("prune_null_content_messages", prune_null_content_messages),   // (#594)
@@ -164,7 +167,7 @@ pub(crate) fn sanitize_history(messages: &mut Vec<Message>) -> Vec<HistoryEdit> 
         let before: Vec<(i64, bool, usize)> = messages
             .iter()
             .map(|m| {
-                let chars = m.content.as_deref().map_or(0, str::len);
+                let chars = m.content.as_deref().map_or(0, |c| c.trim().len());
                 (m.id, m.role == Role::Tool, chars)
             })
             .collect();

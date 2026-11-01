@@ -500,10 +500,10 @@ fn sanitize_reports_each_row_a_pass_removes() {
                 chars: 10,
             },
             HistoryEdit {
-                pass: "prune_whitespace_only_messages",
+                pass: "prune_null_content_messages",
                 ids: vec![3],
                 tool_rows: 0,
-                chars: 3,
+                chars: 0,
             },
         ]
     );
