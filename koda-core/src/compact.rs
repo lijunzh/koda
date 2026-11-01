@@ -128,6 +128,8 @@ pub struct CompactResult {
     /// The model returned no summary, so the messages were replaced by a
     /// "(no summary available)" marker and their content is gone from context.
     pub no_summary: bool,
+    /// The model calls this compaction made.
+    pub usage: crate::engine::UsageTotals,
 }
 
 /// Why compaction was skipped (not an error, just a precondition).
@@ -140,6 +142,17 @@ pub enum CompactSkip {
     /// History is too large for the current model to summarize without data loss.
     /// The user should switch to a model with a larger context window or start a new session.
     HistoryTooLarge,
+}
+
+impl CompactSkip {
+    /// Stable name for this reason, as it appears on the wire.
+    pub fn reason(&self) -> &'static str {
+        match self {
+            Self::PendingToolCalls => "pending_tool_calls",
+            Self::TooShort(_) => "too_short",
+            Self::HistoryTooLarge => "history_too_large",
+        }
+    }
 }
 
 /// Attempt to compact a session.
@@ -370,6 +383,10 @@ pub async fn compact_session_with_provider(
         deleted,
         summary_tokens: summary.len() / 4,
         no_summary,
+        usage: crate::engine::UsageTotals {
+            api_calls: i64::from(attempts),
+            ..(&usage).into()
+        },
     }))
 }
 
@@ -407,6 +424,7 @@ pub async fn compact_without_summary(
         deleted,
         summary_tokens: text.len() / 4,
         no_summary: true,
+        usage: crate::engine::UsageTotals::default(),
     }))
 }
 

@@ -1,0 +1,1493 @@
+{
+  "$defs": {
+    "CompactionTrigger": {
+      "description": "What set off a compaction.",
+      "oneOf": [
+        {
+          "const": "threshold",
+          "description": "Context passed the auto-compact threshold before a model call.",
+          "type": "string"
+        },
+        {
+          "const": "overflow",
+          "description": "The provider rejected a request as too long.",
+          "type": "string"
+        },
+        {
+          "const": "window",
+          "description": "The estimate was past the window, so history was dropped unsummarized.",
+          "type": "string"
+        },
+        {
+          "const": "idle",
+          "description": "A session idle long enough had its old tool results cleared.",
+          "type": "string"
+        }
+      ]
+    },
+    "DeleteDirPreview": {
+      "description": "Preview of a directory deletion.",
+      "properties": {
+        "recursive": {
+          "description": "Whether the deletion is recursive.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "recursive"
+      ],
+      "type": "object"
+    },
+    "DeleteFilePreview": {
+      "description": "Preview of a single file deletion.",
+      "properties": {
+        "byte_count": {
+          "description": "Byte count of the file being deleted.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "line_count": {
+          "description": "Line count of the file being deleted.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "line_count",
+        "byte_count"
+      ],
+      "type": "object"
+    },
+    "DiffHunk": {
+      "description": "A single hunk in a unified diff.",
+      "properties": {
+        "lines": {
+          "description": "The lines in this hunk (context + insertions + deletions).",
+          "items": {
+            "$ref": "#/$defs/DiffLine"
+          },
+          "type": "array"
+        },
+        "new_count": {
+          "description": "Number of lines from the new file in this hunk.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "new_start": {
+          "description": "1-based starting line in the new file.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "old_count": {
+          "description": "Number of lines from the old file in this hunk.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "old_start": {
+          "description": "1-based starting line in the old file.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "old_start",
+        "old_count",
+        "new_start",
+        "new_count",
+        "lines"
+      ],
+      "type": "object"
+    },
+    "DiffLine": {
+      "description": "A single line within a diff hunk.",
+      "properties": {
+        "content": {
+          "description": "The line content (without trailing newline).",
+          "type": "string"
+        },
+        "new_line": {
+          "description": "Line number in the new file (for Context/Insert lines).",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "old_line": {
+          "description": "Line number in the old file (for Context/Delete lines).",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "tag": {
+          "$ref": "#/$defs/DiffTag",
+          "description": "Whether this line is context, inserted, or deleted."
+        }
+      },
+      "required": [
+        "tag",
+        "content"
+      ],
+      "type": "object"
+    },
+    "DiffPreview": {
+      "description": "Structured diff preview produced by the engine.\n\nClients render this however they want (ratatui, HTML, plain text, …).",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/UnifiedDiffPreview",
+          "description": "Unified diff with context lines and hunk headers.\nUsed for both Edit and Write-overwrite.",
+          "properties": {
+            "kind": {
+              "const": "UnifiedDiff",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/WriteNewPreview",
+          "description": "New file creation.",
+          "properties": {
+            "kind": {
+              "const": "WriteNew",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/DeleteFilePreview",
+          "description": "Single file deletion.",
+          "properties": {
+            "kind": {
+              "const": "DeleteFile",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/DeleteDirPreview",
+          "description": "Directory deletion.",
+          "properties": {
+            "kind": {
+              "const": "DeleteDir",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Target file doesn't exist yet (for Edit on missing file).",
+          "properties": {
+            "kind": {
+              "const": "FileNotYetExists",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Target path not found.",
+          "properties": {
+            "kind": {
+              "const": "PathNotFound",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "DiffTag": {
+      "description": "The type of a diff line.",
+      "oneOf": [
+        {
+          "const": "Context",
+          "description": "Unchanged context line.",
+          "type": "string"
+        },
+        {
+          "const": "Insert",
+          "description": "Line was added.",
+          "type": "string"
+        },
+        {
+          "const": "Delete",
+          "description": "Line was removed.",
+          "type": "string"
+        }
+      ]
+    },
+    "LoopGuardAction": {
+      "description": "What the loop guard did.",
+      "oneOf": [
+        {
+          "const": "feedback",
+          "description": "It told the model to change course, and the turn goes on.",
+          "type": "string"
+        },
+        {
+          "const": "stop",
+          "description": "The model ignored that, so the turn stops.",
+          "type": "string"
+        }
+      ]
+    },
+    "RetryReason": {
+      "description": "Why a model call is being retried.",
+      "oneOf": [
+        {
+          "const": "rate_limit",
+          "description": "The provider said to slow down.",
+          "type": "string"
+        },
+        {
+          "const": "network",
+          "description": "A connection failed or timed out.",
+          "type": "string"
+        },
+        {
+          "const": "context_overflow",
+          "description": "The provider rejected the context as too long; it was compacted first.",
+          "type": "string"
+        },
+        {
+          "const": "empty_response",
+          "description": "The model returned nothing.",
+          "type": "string"
+        }
+      ]
+    },
+    "RunSummary": {
+      "description": "The run as a whole.",
+      "properties": {
+        "elapsed_ms": {
+          "description": "Wall-clock time of the run.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "error": {
+          "description": "Why it failed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "description": "Model identifier.",
+          "type": "string"
+        },
+        "provider": {
+          "description": "Provider name.",
+          "type": "string"
+        },
+        "response": {
+          "description": "The last reply.",
+          "type": "string"
+        },
+        "sub_agent_tool_calls": {
+          "additionalProperties": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": "Sub-agent tool calls by tool name.",
+          "type": "object"
+        },
+        "success": {
+          "description": "Whether the run succeeded. A cancelled turn is not a failure.",
+          "type": "boolean"
+        },
+        "tool_calls": {
+          "additionalProperties": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": "Top-level tool calls by tool name.",
+          "type": "object"
+        },
+        "turn_end": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TurnEndReason"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How the turn ended. `None` if it never did."
+        },
+        "usage": {
+          "$ref": "#/$defs/UsageTotals",
+          "description": "Everything stored for this session, earlier turns of a resumed session\nincluded. Sub-agents keep their own sessions and aren't counted here."
+        },
+        "usage_by_agent": {
+          "additionalProperties": {
+            "$ref": "#/$defs/UsageTotals"
+          },
+          "description": "`usage`, split by agent.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "success",
+        "provider",
+        "model",
+        "response",
+        "elapsed_ms",
+        "usage",
+        "usage_by_agent",
+        "tool_calls",
+        "sub_agent_tool_calls"
+      ],
+      "type": "object"
+    },
+    "TodoChange": {
+      "description": "Before/after pair for a todo whose `status` and/or `priority` changed\nwhile keeping the same `content` string.\n\nComputed server-side by [`todo_write`] so every client (TUI / ACP /\nheadless / future) gets the same animation primitives without\nhaving to maintain its own previous-list snapshot. Surfaces on\n[`crate::engine::EngineEvent::TodoUpdate`].",
+      "properties": {
+        "after": {
+          "$ref": "#/$defs/TodoItem",
+          "description": "State on the newly written list."
+        },
+        "before": {
+          "$ref": "#/$defs/TodoItem",
+          "description": "State on the previously persisted list."
+        }
+      },
+      "required": [
+        "before",
+        "after"
+      ],
+      "type": "object"
+    },
+    "TodoDiff": {
+      "description": "Server-computed delta between the previously persisted todo list\nand the one the model just wrote.\n\n**Matching key is `content`.** If the model renames a task the\nrename surfaces as one entry in `removed` plus one in `added`,\nwhich is the right semantic — a renamed task is conceptually a\ndifferent task to the user even if the underlying intent is the\nsame.\n\nOn the very first `TodoWrite` of a session, every item lands in\n`added`. On a clear (`todos: []`), every previously persisted\nitem lands in `removed`.",
+      "properties": {
+        "added": {
+          "description": "Items present on the new list whose `content` is not on the old list.",
+          "items": {
+            "$ref": "#/$defs/TodoItem"
+          },
+          "type": "array"
+        },
+        "changed": {
+          "description": "Items present on both lists by `content` whose `status` or\n`priority` changed.",
+          "items": {
+            "$ref": "#/$defs/TodoChange"
+          },
+          "type": "array"
+        },
+        "removed": {
+          "description": "Items present on the old list whose `content` is not on the new list.",
+          "items": {
+            "$ref": "#/$defs/TodoItem"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "added",
+        "removed",
+        "changed"
+      ],
+      "type": "object"
+    },
+    "TodoItem": {
+      "description": "A single task in the session todo list.",
+      "properties": {
+        "content": {
+          "description": "Human-readable task description.",
+          "type": "string"
+        },
+        "priority": {
+          "$ref": "#/$defs/TodoPriority",
+          "description": "Relative importance."
+        },
+        "status": {
+          "$ref": "#/$defs/TodoStatus",
+          "description": "Current completion state."
+        }
+      },
+      "required": [
+        "content",
+        "status",
+        "priority"
+      ],
+      "type": "object"
+    },
+    "TodoPriority": {
+      "description": "Relative importance of a todo item.",
+      "oneOf": [
+        {
+          "const": "high",
+          "description": "Must be done first.",
+          "type": "string"
+        },
+        {
+          "const": "medium",
+          "description": "Normal importance.",
+          "type": "string"
+        },
+        {
+          "const": "low",
+          "description": "Nice-to-have.",
+          "type": "string"
+        }
+      ]
+    },
+    "TodoStatus": {
+      "description": "Completion state of a todo item.",
+      "oneOf": [
+        {
+          "const": "pending",
+          "description": "Not started.",
+          "type": "string"
+        },
+        {
+          "const": "in_progress",
+          "description": "Currently being worked on (at most one task should be in this state).",
+          "type": "string"
+        },
+        {
+          "const": "completed",
+          "description": "Finished.",
+          "type": "string"
+        }
+      ]
+    },
+    "ToolEffect": {
+      "description": "Effect classification for tool calls.\n\nTwo-axis model: what does the tool touch (local vs. remote)\nand how severe are its effects (read vs. mutate vs. destroy)?\n\n# Examples\n\n```\nuse koda_core::tools::ToolEffect;\n\nassert!(!ToolEffect::ReadOnly.is_mutating());\nassert!(ToolEffect::LocalMutation.is_mutating());\nassert!(ToolEffect::Destructive.is_mutating());\nassert!(ToolEffect::RemoteAction.is_mutating());\n```",
+      "oneOf": [
+        {
+          "const": "ReadOnly",
+          "description": "No side-effects: file reads, grep, git status.",
+          "type": "string"
+        },
+        {
+          "const": "RemoteAction",
+          "description": "Side-effects on remote services only: GitHub API, WebFetch POST.",
+          "type": "string"
+        },
+        {
+          "const": "LocalMutation",
+          "description": "Mutates local filesystem or state: Write, Edit, Delete, MemoryWrite.",
+          "type": "string"
+        },
+        {
+          "const": "Destructive",
+          "description": "Irreversible or high-blast-radius: rm -rf, git push --force, DROP TABLE.",
+          "type": "string"
+        }
+      ]
+    },
+    "ToolOutcome": {
+      "description": "Whether a tool call succeeded.",
+      "oneOf": [
+        {
+          "const": "success",
+          "description": "The tool did what was asked.",
+          "type": "string"
+        },
+        {
+          "const": "error",
+          "description": "It failed: bad arguments, an execution error, a timeout, or a command\nthat exited non-zero.",
+          "type": "string"
+        }
+      ]
+    },
+    "TurnEndReason": {
+      "description": "Why an inference turn ended.",
+      "oneOf": [
+        {
+          "description": "The LLM produced a final text response (no more tool calls).",
+          "properties": {
+            "kind": {
+              "const": "complete",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The user or system cancelled the turn.",
+          "properties": {
+            "kind": {
+              "const": "cancelled",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The turn failed with an error.",
+          "properties": {
+            "kind": {
+              "const": "error",
+              "type": "string"
+            },
+            "message": {
+              "description": "The error message.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "message"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "UnifiedDiffPreview": {
+      "description": "A proper unified diff between old and new file content.",
+      "properties": {
+        "hunks": {
+          "description": "Diff hunks with context.",
+          "items": {
+            "$ref": "#/$defs/DiffHunk"
+          },
+          "type": "array"
+        },
+        "new_content": {
+          "description": "Full new file content (for syntax-context highlighting).",
+          "type": "string"
+        },
+        "old_content": {
+          "description": "Full old file content (for syntax-context highlighting).",
+          "type": "string"
+        },
+        "path": {
+          "description": "File path (as given in the tool args).",
+          "type": "string"
+        },
+        "truncated": {
+          "description": "Whether hunks were truncated due to size limits.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "old_content",
+        "new_content",
+        "hunks",
+        "truncated"
+      ],
+      "type": "object"
+    },
+    "UsageTotals": {
+      "description": "Token and call counts, for one model call or added up over a turn.",
+      "properties": {
+        "api_calls": {
+          "description": "Model calls that finished.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "cache_creation_tokens": {
+          "description": "Input tokens written to the provider's cache.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "cache_read_tokens": {
+          "description": "Input tokens read from the provider's cache.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "completion_tokens": {
+          "description": "Output tokens.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "prompt_tokens": {
+          "description": "Input tokens.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "thinking_tokens": {
+          "description": "Tokens used for reasoning.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "prompt_tokens",
+        "completion_tokens",
+        "cache_read_tokens",
+        "cache_creation_tokens",
+        "thinking_tokens",
+        "api_calls"
+      ],
+      "type": "object"
+    },
+    "WriteNewPreview": {
+      "description": "Preview of a Write (new file) operation.",
+      "properties": {
+        "byte_count": {
+          "description": "Total byte count.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "first_lines": {
+          "description": "First lines (for preview display).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "line_count": {
+          "description": "Total line count of the new file.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "path": {
+          "description": "File path.",
+          "type": "string"
+        },
+        "truncated": {
+          "description": "Whether `first_lines` was truncated.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "line_count",
+        "byte_count",
+        "first_lines",
+        "truncated"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "One line of the protocol.",
+  "oneOf": [
+    {
+      "description": "The process is up. Always the first line.",
+      "properties": {
+        "capabilities": {
+          "description": "What this process can do. Ignore names you don't know.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "koda_version": {
+          "description": "Koda's version.",
+          "type": "string"
+        },
+        "protocol_version": {
+          "description": "Protocol version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "type": {
+          "const": "hello",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "protocol_version",
+        "koda_version",
+        "capabilities"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "A session is ready. Comes after `hello` and before any turn.",
+      "properties": {
+        "context_window": {
+          "description": "Context window in tokens.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "model": {
+          "description": "Model identifier.",
+          "type": "string"
+        },
+        "provider": {
+          "description": "Provider name.",
+          "type": "string"
+        },
+        "tools": {
+          "description": "Names of the tools the model is offered.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "trust": {
+          "description": "Trust mode: `plan`, `safe` or `auto`.",
+          "type": "string"
+        },
+        "type": {
+          "const": "session_ready",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "provider",
+        "model",
+        "context_window",
+        "trust",
+        "tools"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "A turn began.",
+      "properties": {
+        "type": {
+          "const": "turn_start",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "A chunk of the reply.",
+      "properties": {
+        "text": {
+          "description": "The chunk.",
+          "type": "string"
+        },
+        "type": {
+          "const": "text_delta",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "text"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "The reply so far is finished.",
+      "properties": {
+        "type": {
+          "const": "text_done",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "A reasoning block began.",
+      "properties": {
+        "type": {
+          "const": "thinking_start",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "A chunk of reasoning.",
+      "properties": {
+        "text": {
+          "description": "The chunk.",
+          "type": "string"
+        },
+        "type": {
+          "const": "thinking_delta",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "text"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "The reasoning block finished.",
+      "properties": {
+        "type": {
+          "const": "thinking_done",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "A tool call is starting.",
+      "properties": {
+        "args": {
+          "description": "Tool arguments."
+        },
+        "id": {
+          "description": "The call's id.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Tool name.",
+          "type": "string"
+        },
+        "type": {
+          "const": "tool_call_start",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "name",
+        "args"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "A line of a running tool's output.",
+      "properties": {
+        "id": {
+          "description": "The call's id.",
+          "type": "string"
+        },
+        "is_stderr": {
+          "description": "Whether it came from stderr.",
+          "type": "boolean"
+        },
+        "line": {
+          "description": "The line, with no trailing newline.",
+          "type": "string"
+        },
+        "type": {
+          "const": "tool_output_line",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "line",
+        "is_stderr"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "A top-level tool call finished. Calls that were rejected, blocked or\ncancelled, and calls made by sub-agents, don't get one in protocol 1.",
+      "properties": {
+        "id": {
+          "description": "The call's id.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Tool name.",
+          "type": "string"
+        },
+        "outcome": {
+          "$ref": "#/$defs/ToolOutcome",
+          "description": "Whether it succeeded."
+        },
+        "output": {
+          "description": "What the model sees.",
+          "type": "string"
+        },
+        "type": {
+          "const": "tool_call_result",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "name",
+        "output",
+        "outcome"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "A sub-agent is starting. Its lines carry `parent_id`.",
+      "properties": {
+        "agent_name": {
+          "description": "The agent's name.",
+          "type": "string"
+        },
+        "type": {
+          "const": "sub_agent_start",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "agent_name"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "The todo list changed.",
+      "properties": {
+        "diff": {
+          "$ref": "#/$defs/TodoDiff",
+          "description": "What changed."
+        },
+        "items": {
+          "description": "The full list.",
+          "items": {
+            "$ref": "#/$defs/TodoItem"
+          },
+          "type": "array"
+        },
+        "type": {
+          "const": "todo_update",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "items",
+        "diff"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "A tool call needs approval. Interactive: see the unknown-types rule.",
+      "properties": {
+        "detail": {
+          "description": "What the call would do.",
+          "type": "string"
+        },
+        "effect": {
+          "$ref": "#/$defs/ToolEffect",
+          "description": "Why it needs approval."
+        },
+        "id": {
+          "description": "The request's id.",
+          "type": "string"
+        },
+        "preview": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DiffPreview"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Diff preview, if there is one."
+        },
+        "tool_name": {
+          "description": "Tool name.",
+          "type": "string"
+        },
+        "type": {
+          "const": "approval_request",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "tool_name",
+        "detail",
+        "effect"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "The model asked a question. Interactive: see the unknown-types rule.",
+      "properties": {
+        "id": {
+          "description": "The request's id.",
+          "type": "string"
+        },
+        "options": {
+          "description": "Answer choices; empty means free-form.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "question": {
+          "description": "The question.",
+          "type": "string"
+        },
+        "type": {
+          "const": "ask_user_request",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "question",
+        "options"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "The turn hit its iteration cap. Interactive: see the unknown-types rule.",
+      "properties": {
+        "cap": {
+          "description": "The cap.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "id": {
+          "description": "The request's id.",
+          "type": "string"
+        },
+        "recent_tools": {
+          "description": "Tools called most recently.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "type": {
+          "const": "loop_cap_request",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "cap",
+        "recent_tools"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "A call was blocked by trust mode and not run.",
+      "properties": {
+        "detail": {
+          "description": "What the call would have done.",
+          "type": "string"
+        },
+        "preview": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DiffPreview"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Diff preview, if there is one."
+        },
+        "tool_name": {
+          "description": "Tool name.",
+          "type": "string"
+        },
+        "type": {
+          "const": "action_blocked",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "tool_name",
+        "detail"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "Context use, from Koda's estimate or the provider's count.",
+      "properties": {
+        "max": {
+          "description": "The window.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "type": {
+          "const": "context_usage",
+          "type": "string"
+        },
+        "used": {
+          "description": "Tokens in use.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "type",
+        "used",
+        "max"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "The server's context window turned out to differ from Koda's.",
+      "properties": {
+        "tokens": {
+          "description": "The server's window in tokens.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "type": {
+          "const": "context_window_changed",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "tokens"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "Context was compacted, or a compaction was tried. `started` is\nfollowed by exactly one other status; `window` and `idle` have no\n`started`.",
+      "oneOf": [
+        {
+          "description": "Summarizing has begun. One of the other statuses follows.",
+          "properties": {
+            "context_percent": {
+              "description": "Context used when it began, where the trigger measured it.",
+              "format": "uint",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "status": {
+              "const": "started",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "History was replaced.",
+          "properties": {
+            "messages_removed": {
+              "description": "Rows taken out of the context (tool results, for `idle`).",
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "status": {
+              "const": "completed",
+              "type": "string"
+            },
+            "summary_tokens": {
+              "description": "Estimated size of the summary. `None` when there is no summary.",
+              "format": "uint",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "status",
+            "messages_removed"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A precondition stopped it, and nothing changed.",
+          "properties": {
+            "reason": {
+              "description": "`pending_tool_calls`, `too_short` or `history_too_large`.",
+              "type": "string"
+            },
+            "status": {
+              "const": "skipped",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The summary call failed, and nothing changed.",
+          "properties": {
+            "error": {
+              "description": "What went wrong.",
+              "type": "string"
+            },
+            "status": {
+              "const": "failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "error"
+          ],
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "trigger": {
+          "$ref": "#/$defs/CompactionTrigger",
+          "description": "What set it off."
+        },
+        "type": {
+          "const": "compaction",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "trigger"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "A model call will be tried again.",
+      "properties": {
+        "attempt": {
+          "description": "The attempt that just failed, counting from 1.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "delay_ms": {
+          "description": "The wait before the next attempt.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_attempts": {
+          "description": "How many attempts the call gets in total.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reason": {
+          "$ref": "#/$defs/RetryReason",
+          "description": "Why."
+        },
+        "type": {
+          "const": "retry",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "reason",
+        "attempt",
+        "max_attempts",
+        "delay_ms"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "The loop guard saw the model repeating itself.",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/LoopGuardAction",
+          "description": "What it did."
+        },
+        "detail": {
+          "description": "What was repeated.",
+          "type": "string"
+        },
+        "type": {
+          "const": "loop_guard",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "action",
+        "detail"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "A note for people. Don't parse it.",
+      "properties": {
+        "message": {
+          "description": "The text.",
+          "type": "string"
+        },
+        "type": {
+          "const": "info",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "message"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "A warning for people. Don't parse it.",
+      "properties": {
+        "message": {
+          "description": "The text.",
+          "type": "string"
+        },
+        "type": {
+          "const": "warn",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "message"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "An error for people. Don't parse it.",
+      "properties": {
+        "message": {
+          "description": "The text.",
+          "type": "string"
+        },
+        "type": {
+          "const": "error",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "message"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "What the turn used, however it ended. Comes just before `turn_end`.\nCounts this turn only, including sub-agents and compaction.",
+      "properties": {
+        "elapsed_ms": {
+          "description": "Wall-clock time of the turn.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "type": {
+          "const": "turn_summary",
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/$defs/UsageTotals",
+          "description": "Tokens and model calls."
+        }
+      },
+      "required": [
+        "type",
+        "usage",
+        "elapsed_ms"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "The turn is over, after any retries. Exactly one per turn.",
+      "properties": {
+        "reason": {
+          "$ref": "#/$defs/TurnEndReason",
+          "description": "How it ended."
+        },
+        "type": {
+          "const": "turn_end",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "reason"
+      ],
+      "type": "object"
+    },
+    {
+      "$ref": "#/$defs/RunSummary",
+      "description": "`koda -p`'s last line, and all of `--output-format json`.",
+      "properties": {
+        "type": {
+          "const": "run_summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    }
+  ],
+  "properties": {
+    "parent_id": {
+      "description": "On a sub-agent's lines, the id of the tool call that started it.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "session_id": {
+      "description": "The session. On every line except `hello`, which comes before one.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "turn_id": {
+      "description": "The turn. On every line from `turn_start` to `turn_end`.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "WireLine",
+  "type": "object"
+}

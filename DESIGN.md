@@ -233,6 +233,27 @@ render, but that is now a presentational choice (snapshot is
 cheaper for a panel that re-renders every frame), not the
 documented carve-out it used to be.
 
+### Wire Protocol: A Projection of the Engine (P2, P3)
+
+`EngineEvent` is the engine's internal enum and the TUI's in-process interface.
+External clients read a smaller public `WireEvent`, defined in
+`koda-core/src/engine/wire.rs`, which `project()` builds from it. The match has
+no wildcard, so adding an engine event forces a decision about the wire.
+
+Keeping the two apart lets the engine change without breaking clients, and keeps
+presentation (spinners, the footer, status bars) off the wire. It doesn't need a
+framework: one module and one function. A fact the wire needs and the engine
+doesn't have gets added to the engine at its source, like a tool's outcome or
+the id on a loop-cap request.
+
+Typed state events (`Compaction`, `Retry`, `LoopGuard`) carry the text a person
+would read as a `notice`, and `EngineEvent::notice()` turns one back into `Info`
+or `Warn`. Text clients stay as they were and the wire sends no prose.
+
+A turn's usage is metered in memory by `TurnMeter`, not read back from the
+database. Sub-agents store their messages in sessions of their own, and a call
+whose reply is discarded isn't stored at all.
+
 ### ACP (Agent Client Protocol) (P3)
 
 Koda's server mode will speak ACP. Both Zed and Goose independently converged

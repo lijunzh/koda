@@ -11,15 +11,16 @@
 //! - `json` — stdout carries exactly one pretty-printed run summary
 //!   object after the turn ends (see [`run_summary`]); the streamed reply
 //!   and progress go to stderr.
-//! - `stream-json` — stdout carries newline-delimited JSON only: one line
-//!   per [`EngineEvent`] as it happens (`{"type":"text_delta",...}`),
-//!   then a final `{"type":"run_summary",...}` line. Machine consumers
-//!   (the eval harness) parse every stdout line; stderr stays quiet.
+//! - `stream-json` — stdout carries newline-delimited JSON only: the wire
+//!   protocol in [`koda_core::engine::wire`], from `hello` to a final
+//!   `run_summary`. Machine consumers (the eval harness) parse every stdout
+//!   line; stderr stays quiet.
 
 use crate::input;
 use koda_core::agent::KodaAgent;
 use koda_core::config::KodaConfig;
 use koda_core::db::{Database, Role};
+use koda_core::engine::wire::{self, RunSummary, WireEvent, WireLine, WireStream};
 use koda_core::engine::{ApprovalDecision, EngineCommand, EngineEvent, EngineSink, TurnEndReason};
 use koda_core::persistence::{Persistence, SessionUsage};
 use koda_core::session::KodaSession;
@@ -39,7 +40,7 @@ pub enum OutputFormat {
     Text,
     /// One run-summary JSON object on stdout after the turn.
     Json,
-    /// NDJSON on stdout: every engine event, then the run summary.
+    /// NDJSON on stdout: the wire protocol, ending with the run summary.
     StreamJson,
 }
 
@@ -52,6 +53,10 @@ pub async fn run_headless(
     prompt: String,
     output_format: OutputFormat,
 ) -> Result<i32> {
+    if output_format == OutputFormat::StreamJson {
+        print_line(&WireLine::hello(wire::ONE_SHOT_CAPABILITIES));
+    }
+
     // Query actual model capabilities from the provider API before building agent.
     let tmp_provider = koda_core::providers::create_provider(&config);
     let source = config
@@ -96,7 +101,25 @@ pub async fn run_headless(
         )
         .await?;
 
-    let cli_sink = HeadlessSink::new(cmd_tx, output_format);
+    if output_format == OutputFormat::StreamJson {
+        print_line(&WireLine::for_session(
+            &session.id,
+            WireEvent::SessionReady {
+                provider: config.provider_type.meta().name.to_string(),
+                model: config.model.clone(),
+                context_window: config.max_context_tokens,
+                trust: config.trust.as_str().to_string(),
+                tools: session
+                    .agent
+                    .tool_defs
+                    .iter()
+                    .map(|tool| tool.name.clone())
+                    .collect(),
+            },
+        ));
+    }
+
+    let cli_sink = HeadlessSink::new(cmd_tx, output_format, &session.id);
     let cancel = session.cancel_token();
     let started = Instant::now();
     let result = {
@@ -148,7 +171,7 @@ pub async fn run_headless(
             usage: &usage,
             usage_by_agent: &usage_by_agent,
             stats: &cli_sink.stats(),
-        });
+        })?;
         match output_format {
             OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&summary)?),
             OutputFormat::StreamJson => println!("{}", serde_json::to_string(&summary)?),
@@ -163,6 +186,15 @@ pub async fn run_headless(
             eprintln!("Error: {e}");
             Ok(1)
         }
+    }
+}
+
+/// Write one protocol line to stdout. `println!` goes through Rust's
+/// line-buffered stdout, so it reaches a piped consumer as soon as it ends.
+fn print_line(line: &WireLine) {
+    match serde_json::to_string(line) {
+        Ok(text) => println!("{text}"),
+        Err(e) => tracing::warn!("stream-json: failed to serialize a line: {e}"),
     }
 }
 
@@ -197,17 +229,6 @@ struct RunOutcome<'a> {
     stats: &'a RunStats,
 }
 
-fn usage_json(usage: &SessionUsage) -> serde_json::Value {
-    serde_json::json!({
-        "prompt_tokens": usage.prompt_tokens,
-        "completion_tokens": usage.completion_tokens,
-        "cache_read_tokens": usage.cache_read_tokens,
-        "cache_creation_tokens": usage.cache_creation_tokens,
-        "thinking_tokens": usage.thinking_tokens,
-        "api_calls": usage.api_calls,
-    })
-}
-
 /// Why the run failed, if it did. A turn the engine cut short on a warning
 /// (provider server error, image rejection, dropped connection) returns
 /// `Ok` but ends with `TurnEnd::Error` and no reply, so it counts too.
@@ -219,32 +240,29 @@ fn run_failure(result: &Result<()>, stats: &RunStats) -> Option<String> {
     }
 }
 
-/// Build the run summary. `success`, `response`, `session_id` and
-/// `model` keep the shape the `json` format always had; the rest is
-/// additive. `"type": "run_summary"` doesn't collide with any
-/// `EngineEvent` tag, so `stream-json` consumers can tell it apart.
-fn run_summary(outcome: RunOutcome<'_>) -> serde_json::Value {
+/// Build the run summary: the whole of `json`, the last line of `stream-json`.
+fn run_summary(outcome: RunOutcome<'_>) -> serde_json::Result<serde_json::Value> {
     let failure = run_failure(outcome.result, outcome.stats);
-    let usage_by_agent: serde_json::Map<String, serde_json::Value> = outcome
-        .usage_by_agent
-        .iter()
-        .map(|(agent, usage)| (agent.clone(), usage_json(usage)))
-        .collect();
-    serde_json::json!({
-        "type": "run_summary",
-        "success": failure.is_none(),
-        "error": failure,
-        "session_id": outcome.session_id,
-        "provider": outcome.provider,
-        "model": outcome.model,
-        "response": outcome.response,
-        "turn_end": outcome.stats.turn_end,
-        "elapsed_ms": outcome.elapsed_ms,
-        "usage": usage_json(outcome.usage),
-        "usage_by_agent": usage_by_agent,
-        "tool_calls": outcome.stats.tool_calls,
-        "sub_agent_tool_calls": outcome.stats.sub_agent_tool_calls,
-    })
+    serde_json::to_value(WireLine::for_session(
+        outcome.session_id,
+        WireEvent::RunSummary(RunSummary {
+            success: failure.is_none(),
+            error: failure,
+            provider: outcome.provider.to_string(),
+            model: outcome.model.to_string(),
+            response: outcome.response.to_string(),
+            turn_end: outcome.stats.turn_end.clone(),
+            elapsed_ms: outcome.elapsed_ms,
+            usage: outcome.usage.into(),
+            usage_by_agent: outcome
+                .usage_by_agent
+                .iter()
+                .map(|(agent, usage)| (agent.clone(), usage.into()))
+                .collect(),
+            tool_calls: outcome.stats.tool_calls.clone(),
+            sub_agent_tool_calls: outcome.stats.sub_agent_tool_calls.clone(),
+        }),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -254,14 +272,20 @@ fn run_summary(outcome: RunOutcome<'_>) -> serde_json::Value {
 struct HeadlessSink {
     cmd_tx: tokio::sync::mpsc::Sender<EngineCommand>,
     format: OutputFormat,
+    wire: WireStream,
     stats: Mutex<RunStats>,
 }
 
 impl HeadlessSink {
-    fn new(cmd_tx: tokio::sync::mpsc::Sender<EngineCommand>, format: OutputFormat) -> Self {
+    fn new(
+        cmd_tx: tokio::sync::mpsc::Sender<EngineCommand>,
+        format: OutputFormat,
+        session_id: &str,
+    ) -> Self {
         Self {
             cmd_tx,
             format,
+            wire: WireStream::new(session_id),
             stats: Mutex::new(RunStats::default()),
         }
     }
@@ -330,7 +354,8 @@ impl HeadlessSink {
                 id: id.clone(),
                 answer: String::new(),
             },
-            EngineEvent::LoopCapReached { .. } => EngineCommand::LoopDecision {
+            EngineEvent::LoopCapReached { id, .. } => EngineCommand::LoopDecision {
+                id: id.clone(),
                 action: koda_core::loop_guard::LoopContinuation::Continue200,
             },
             _ => return,
@@ -343,7 +368,7 @@ impl HeadlessSink {
     /// the summary object.
     fn render(&self, event: EngineEvent) {
         let reply_on_stdout = self.format == OutputFormat::Text;
-        match event {
+        match event.notice().unwrap_or(event) {
             EngineEvent::ApprovalRequest {
                 effect,
                 tool_name,
@@ -558,19 +583,28 @@ impl HeadlessSink {
     }
 }
 
-impl EngineSink for HeadlessSink {
-    fn emit(&self, event: EngineEvent) {
+impl HeadlessSink {
+    fn handle(&self, parent_id: Option<&str>, event: EngineEvent) {
         self.record(&event);
         self.respond(&event);
         match self.format {
-            // `println!` goes through Rust's line-buffered stdout, so each
-            // event reaches a piped consumer as soon as its line ends.
-            OutputFormat::StreamJson => match serde_json::to_string(&event) {
-                Ok(line) => println!("{line}"),
-                Err(e) => tracing::warn!("stream-json: failed to serialize event: {e}"),
-            },
+            OutputFormat::StreamJson => {
+                if let Some(line) = self.wire.line(parent_id, event) {
+                    print_line(&line);
+                }
+            }
             OutputFormat::Text | OutputFormat::Json => self.render(event),
         }
+    }
+}
+
+impl EngineSink for HeadlessSink {
+    fn emit(&self, event: EngineEvent) {
+        self.handle(None, event);
+    }
+
+    fn emit_child(&self, parent_id: &str, event: EngineEvent) {
+        self.handle(Some(parent_id), event);
     }
 }
 
@@ -581,7 +615,7 @@ mod tests {
 
     fn sink(format: OutputFormat) -> (HeadlessSink, tokio::sync::mpsc::Receiver<EngineCommand>) {
         let (tx, rx) = tokio::sync::mpsc::channel(8);
-        (HeadlessSink::new(tx, format), rx)
+        (HeadlessSink::new(tx, format, "s1"), rx)
     }
 
     fn approval(id: &str, effect: ToolEffect) -> EngineEvent {
@@ -619,6 +653,7 @@ mod tests {
                 options: vec![],
             });
             sink.emit(EngineEvent::LoopCapReached {
+                id: "c1".into(),
                 cap: 200,
                 recent_tools: vec![],
             });
@@ -649,8 +684,8 @@ mod tests {
                 "{format:?}: AskUser must get an empty answer"
             );
             assert!(
-                matches!(rx.try_recv(), Ok(EngineCommand::LoopDecision { .. })),
-                "{format:?}: loop cap must get a continue decision"
+                matches!(rx.try_recv(), Ok(EngineCommand::LoopDecision { ref id, .. }) if id == "c1"),
+                "{format:?}: loop cap must get a continue decision for its request"
             );
             assert!(rx.try_recv().is_err(), "{format:?}: no extra commands");
         }
@@ -705,7 +740,8 @@ mod tests {
             usage: &usage,
             usage_by_agent: &by_agent,
             stats: &stats,
-        });
+        })
+        .unwrap();
 
         assert_eq!(summary["type"], "run_summary");
         // Keys the `json` format has always had.
@@ -735,7 +771,8 @@ mod tests {
             usage: &SessionUsage::default(),
             usage_by_agent: &[],
             stats: &RunStats::default(),
-        });
+        })
+        .unwrap();
         assert_eq!(summary["success"], false);
         assert_eq!(summary["error"], "provider exploded");
         assert_eq!(summary["turn_end"], serde_json::Value::Null);
@@ -768,7 +805,8 @@ mod tests {
                 usage: &SessionUsage::default(),
                 usage_by_agent: &[],
                 stats: &stats,
-            });
+            })
+            .unwrap();
             assert_eq!(summary["success"], false, "{message}");
             assert_eq!(summary["error"], message);
             assert_eq!(summary["turn_end"]["kind"], "error");

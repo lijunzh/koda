@@ -961,6 +961,8 @@ pub struct CargoOutput {
     pub summary: String,
     /// Uncapped report plus raw streams, for DB storage / `RecallContext`.
     pub full_output: Option<String>,
+    /// Cargo exited zero.
+    pub success: bool,
 }
 
 /// What the stream reader accumulates while cargo runs.
@@ -1143,6 +1145,7 @@ async fn run_cargo_with_env(
             Ok(CargoOutput {
                 summary: report.summary(),
                 full_output: Some(report.full_output(max_bytes)),
+                success: exit_code == 0,
             })
         }
         Ok(Err(e)) => Err(anyhow!("Stream read error: {e}")),
@@ -1152,6 +1155,7 @@ async fn run_cargo_with_env(
             Ok(CargoOutput {
                 summary: msg.clone(),
                 full_output: Some(msg),
+                success: false,
             })
         }
     }
@@ -1197,7 +1201,7 @@ impl Tool for CargoTool {
         {
             Ok(o) => ToolResult {
                 output: o.summary,
-                success: true,
+                success: o.success,
                 full_output: o.full_output,
             },
             Err(e) => ToolResult {

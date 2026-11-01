@@ -26,6 +26,7 @@
 pub mod event;
 /// Event sink trait — how clients receive engine events.
 pub mod sink;
+pub mod wire;
 
 /// Re-export all event/command types at module level.
 pub use event::*;

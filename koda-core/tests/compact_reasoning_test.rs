@@ -720,7 +720,10 @@ async fn preflight_shrinks_history_past_the_window_when_the_breaker_is_tripped()
         "request still carries {sent_chars} chars, past an 8,000-token window"
     );
     assert!(
-        events.iter().any(|e| matches!(e,
+        events
+            .iter()
+            .filter_map(EngineEvent::notice)
+            .any(|e| matches!(e,
             EngineEvent::Warn { message } if message.contains("without a summary"))),
         "the user should be told history was dropped; events: {events:?}"
     );

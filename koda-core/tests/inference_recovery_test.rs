@@ -23,7 +23,7 @@ async fn test_rate_limit_single_retry_recovers() {
     assert!(result.is_ok(), "should recover: {:?}", result.err());
 
     // Should have a warning about rate limiting
-    let has_rate_warn = events.iter().any(|e| {
+    let has_rate_warn = events.iter().filter_map(EngineEvent::notice).any(|e| {
         matches!(
             e,
             EngineEvent::Warn { message } if message.contains("Rate limited")
@@ -94,7 +94,7 @@ async fn test_context_overflow_compacts_and_retries() {
     assert!(result.is_ok(), "should recover: {:?}", result.err());
 
     // Should have a warning about context overflow
-    let has_overflow_warn = events.iter().any(|e| {
+    let has_overflow_warn = events.iter().filter_map(EngineEvent::notice).any(|e| {
         matches!(
             e,
             EngineEvent::Warn { message } if message.contains("context overflow")
@@ -108,7 +108,7 @@ async fn test_context_overflow_compacts_and_retries() {
     );
 
     // Should have compaction info
-    let has_compact_info = events.iter().any(|e| {
+    let has_compact_info = events.iter().filter_map(EngineEvent::notice).any(|e| {
         matches!(
             e,
             EngineEvent::Info { message } if message.contains("Compacted")
@@ -365,11 +365,14 @@ async fn test_overflow_with_stated_limit_adopts_it_and_retries() {
         "expected ContextWindowChanged: {events:?}"
     );
     assert!(
-        events.iter().any(|e| matches!(
-            e,
-            EngineEvent::Warn { message }
-                if message.contains("32768 tokens, not the 100000")
-        )),
+        events
+            .iter()
+            .filter_map(EngineEvent::notice)
+            .any(|e| matches!(
+                e,
+                EngineEvent::Warn { message }
+                    if message.contains("32768 tokens, not the 100000")
+            )),
         "expected a notice naming both windows: {events:?}"
     );
     // The meter switches to the learned window for the rest of the turn.
@@ -418,6 +421,7 @@ async fn test_overflow_below_prompt_floor_says_restart_without_compacting() {
     assert!(
         !events
             .iter()
+            .filter_map(EngineEvent::notice)
             .any(|e| matches!(e, EngineEvent::Info { message } if message.contains("Compacted"))),
         "must not compact: {events:?}"
     );

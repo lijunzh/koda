@@ -64,6 +64,8 @@ pub struct ShellOutput {
     /// Full untruncated output for DB storage / RecallContext retrieval.
     /// `None` for background commands (no output to capture).
     pub full_output: Option<String>,
+    /// The command exited zero, or was started in the background.
+    pub success: bool,
 }
 
 /// Return tool definitions for the LLM.
@@ -163,6 +165,7 @@ pub async fn run_shell_command(
         return Ok(ShellOutput {
             summary: msg,
             full_output: None,
+            success: true,
         });
     }
 
@@ -255,6 +258,7 @@ pub async fn run_shell_command(
             Ok(ShellOutput {
                 summary,
                 full_output: Some(full),
+                success: exit_code == 0,
             })
         }
         Ok(Err(e)) => Err(anyhow::anyhow!("Stream read error: {e}")),
@@ -265,6 +269,7 @@ pub async fn run_shell_command(
             Ok(ShellOutput {
                 summary: msg.clone(),
                 full_output: Some(msg),
+                success: false,
             })
         }
     }
@@ -738,7 +743,7 @@ impl Tool for BashTool {
         {
             Ok(so) => ToolResult {
                 output: so.summary,
-                success: true,
+                success: so.success,
                 full_output: so.full_output,
             },
             Err(e) => ToolResult {
@@ -1223,6 +1228,7 @@ mod tests {
         let so = ShellOutput {
             summary: "Exit code: 0".into(),
             full_output: Some("full output here".into()),
+            success: true,
         };
         assert_eq!(so.summary, "Exit code: 0");
         assert_eq!(so.full_output.unwrap(), "full output here");

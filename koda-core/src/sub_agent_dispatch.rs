@@ -571,9 +571,12 @@ pub(crate) fn execute_sub_agent<'a>(
         // only place this could double-emit, but that path's `sink`
         // is a `BufferingSink` inside `run_bg_agent`, so the duplicate
         // is silently captured and never reaches a user surface.
-        sink.emit(EngineEvent::SubAgentStart {
-            agent_name: agent_name.to_string(),
-        });
+        sink.emit_from(
+            parent_tool_call_id,
+            EngineEvent::SubAgentStart {
+                agent_name: agent_name.to_string(),
+            },
+        );
 
         // **#1163 (Lean A)**: cache lookup MUST happen before the
         // bg-spawn block, not after. Pre-#1163 it lived in the (then
@@ -587,9 +590,12 @@ pub(crate) fn execute_sub_agent<'a>(
         // directly asserts both behaviours. Cheap to retry idempotent
         // tasks; no provider hit, no worktree, no registry churn.
         if let Some(cached) = sub_agent_cache.get(agent_name, prompt) {
-            sink.emit(EngineEvent::Info {
-                message: format!("  \u{26a1} {agent_name}: cache hit, skipping LLM call"),
-            });
+            sink.emit_from(
+                parent_tool_call_id,
+                EngineEvent::Info {
+                    message: format!("  \u{26a1} {agent_name}: cache hit, skipping LLM call"),
+                },
+            );
             tracing::Span::current().record("cached", true);
             return Ok(cached);
         }
@@ -770,7 +776,11 @@ pub(crate) fn execute_sub_agent<'a>(
         // duration of this scope; the original `sink` reference is
         // shadowed below so every existing emit site downstream
         // routes through the wrapper without code changes.
-        let fg_sink = crate::engine::sink::FgForwardingSink::new(sink, fg_emitter.clone());
+        let fg_sink = crate::engine::sink::FgForwardingSink::new(
+            sink,
+            fg_emitter.clone(),
+            parent_tool_call_id.map(str::to_string),
+        );
         let sink: &dyn crate::engine::EngineSink = &fg_sink;
         // Now that the registry entry exists, transition to
         // `Running { iter: 0 }` so the overlay shows the agent as
@@ -799,10 +809,6 @@ pub(crate) fn execute_sub_agent<'a>(
         // asymmetry in the PR body; can be tightened in a follow-up
         // if downstream consumers grow a hard dependency on the
         // terminal tag.
-
-        sink.emit(EngineEvent::SubAgentStart {
-            agent_name: agent_name.to_string(),
-        });
 
         // Fork inherits parent config; named agents load their own persona
         // but fall back to the parent's provider and model for anything not
@@ -1314,6 +1320,9 @@ pub(crate) fn execute_sub_agent<'a>(
             let response = provider
                 .chat(&messages, &tool_defs, &sub_config.model_settings)
                 .await?;
+            sink.emit(EngineEvent::ModelUsage {
+                usage: (&response.usage).into(),
+            });
             sink.emit(EngineEvent::SpinnerStop);
 
             let tool_calls_json = if response.tool_calls.is_empty() {

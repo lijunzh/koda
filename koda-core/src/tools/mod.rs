@@ -58,7 +58,9 @@
 /// assert!(ToolEffect::Destructive.is_mutating());
 /// assert!(ToolEffect::RemoteAction.is_mutating());
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "PascalCase")]
 pub enum ToolEffect {
     /// No side-effects: file reads, grep, git status.
@@ -200,7 +202,8 @@ pub struct ToolResult {
     ///
     /// Set automatically by `ToolRegistry::execute()` — `Ok(…)` → `true`,
     /// `Err(…)` → `false`. Individual tools never set this directly;
-    /// they just return `Result<String>`.
+    /// they just return `Result<String>`. Bash and Cargo are the exception:
+    /// they return the output of a command that failed, with `false`.
     pub success: bool,
     /// Full untruncated output, stored separately in DB for later retrieval.
     ///

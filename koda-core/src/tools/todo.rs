@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 // ── Schema ─────────────────────────────────────────────────────────────────
 
 /// Completion state of a todo item.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TodoStatus {
     /// Not started.
@@ -53,7 +53,7 @@ impl TodoStatus {
 }
 
 /// Relative importance of a todo item.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TodoPriority {
     /// Must be done first.
@@ -84,7 +84,7 @@ impl TodoPriority {
 }
 
 /// A single task in the session todo list.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TodoItem {
     /// Human-readable task description.
     pub content: String,
@@ -103,7 +103,7 @@ pub struct TodoItem {
 /// headless / future) gets the same animation primitives without
 /// having to maintain its own previous-list snapshot. Surfaces on
 /// [`crate::engine::EngineEvent::TodoUpdate`].
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TodoChange {
     /// State on the previously persisted list.
     pub before: TodoItem,
@@ -123,7 +123,7 @@ pub struct TodoChange {
 /// On the very first `TodoWrite` of a session, every item lands in
 /// `added`. On a clear (`todos: []`), every previously persisted
 /// item lands in `removed`.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TodoDiff {
     /// Items present on the new list whose `content` is not on the old list.
     pub added: Vec<TodoItem>,

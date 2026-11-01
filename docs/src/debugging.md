@@ -59,7 +59,7 @@ Get the session ID from `run_summary`, or list the newest with
 `--output-format json` prints one `run_summary` object when the run ends:
 `success`, `error`, `session_id`, `provider`, `model`, `response`, `turn_end`,
 `elapsed_ms`, `usage`, `usage_by_agent`, `tool_calls` and
-`sub_agent_tool_calls`. `stream-json` prints every engine event as a line, then
+`sub_agent_tool_calls`. `stream-json` prints the [wire protocol](headless.md#wire-protocol) as lines, then
 the same summary as the last line. See
 [Headless mode](./headless.md#output-formats). A run that failed exits with
 code 1.
@@ -90,8 +90,9 @@ iteration, with `compaction` lines between them when one fires, and one
 `turn end` at the end.
 
 Sub-agents run their own loop and don't write these lines. For their cost, use
-`usage_by_agent` and `sub_agent_tool_calls` in `run_summary`, or the
-`agent_name` column.
+`usage` in the `turn_summary` line of `stream-json`, which counts them.
+`run_summary.usage` doesn't: sub-agents store their messages in sessions of
+their own. `sub_agent_tool_calls` in `run_summary` shows what they did.
 
 ### `model call`
 

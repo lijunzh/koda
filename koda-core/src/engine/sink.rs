@@ -17,6 +17,22 @@ use super::event::EngineEvent;
 pub trait EngineSink: Send + Sync {
     /// Emit an engine event to the client.
     fn emit(&self, event: EngineEvent);
+
+    /// Emit an event from inside a sub-agent. `parent_id` is the tool call
+    /// that started it. Clients that don't care which agent an event came
+    /// from can leave this alone; a sink that wraps another must forward it.
+    fn emit_child(&self, parent_id: &str, event: EngineEvent) {
+        let _ = parent_id;
+        self.emit(event);
+    }
+
+    /// [`Self::emit_child`] when a parent is known, otherwise [`Self::emit`].
+    fn emit_from(&self, parent_id: Option<&str>, event: EngineEvent) {
+        match parent_id {
+            Some(parent_id) => self.emit_child(parent_id, event),
+            None => self.emit(event),
+        }
+    }
 }
 
 /// A no-op sink that discards all events.
@@ -276,13 +292,23 @@ impl EngineSink for ForwardingChildSink {
 pub struct FgForwardingSink<'a> {
     inner: &'a dyn EngineSink,
     emitter: crate::child_agent::ChildStatusEmitter,
+    /// The `InvokeAgent` call this sub-agent runs under.
+    parent_id: Option<String>,
 }
 
 impl<'a> FgForwardingSink<'a> {
     /// Construct from the parent's sink + the emitter handed back by
     /// [`crate::child_agent::ChildAgentRegistry::register_fg_with_emitter`].
-    pub fn new(inner: &'a dyn EngineSink, emitter: crate::child_agent::ChildStatusEmitter) -> Self {
-        Self { inner, emitter }
+    pub fn new(
+        inner: &'a dyn EngineSink,
+        emitter: crate::child_agent::ChildStatusEmitter,
+        parent_id: Option<String>,
+    ) -> Self {
+        Self {
+            inner,
+            emitter,
+            parent_id,
+        }
     }
 }
 
@@ -323,7 +349,66 @@ impl EngineSink for FgForwardingSink<'_> {
         // emitted directly to the parent and downstream clients
         // (CLI, ACP, headless) depend on that. The wrapper only
         // *adds* the activity fan-out; it never swallows events.
-        self.inner.emit(event);
+        self.inner.emit_from(self.parent_id.as_deref(), event);
+    }
+
+    fn emit_child(&self, parent_id: &str, event: EngineEvent) {
+        self.inner.emit_child(parent_id, event);
+    }
+}
+
+/// Adds up [`EngineEvent::ModelUsage`] for one turn.
+///
+/// Sub-agents keep their messages in sessions of their own, so a query on the
+/// parent session can't see what they used, and a call whose reply is thrown
+/// away is never stored. The meter sees every call as it finishes. The events
+/// stop here: clients read the total on [`EngineEvent::TurnSummary`].
+pub struct TurnMeter<'a> {
+    inner: &'a dyn EngineSink,
+    usage: std::sync::Mutex<super::event::UsageTotals>,
+}
+
+impl<'a> TurnMeter<'a> {
+    /// Wrap the turn's sink, starting from zero.
+    pub fn new(inner: &'a dyn EngineSink) -> Self {
+        Self {
+            inner,
+            usage: Default::default(),
+        }
+    }
+
+    /// The totals so far.
+    pub fn usage(&self) -> super::event::UsageTotals {
+        self.usage
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Count `event` if it's usage. Returns the event otherwise.
+    fn count(&self, event: EngineEvent) -> Option<EngineEvent> {
+        let EngineEvent::ModelUsage { usage } = &event else {
+            return Some(event);
+        };
+        self.usage
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .add(usage);
+        None
+    }
+}
+
+impl EngineSink for TurnMeter<'_> {
+    fn emit(&self, event: EngineEvent) {
+        if let Some(event) = self.count(event) {
+            self.inner.emit(event);
+        }
+    }
+
+    fn emit_child(&self, parent_id: &str, event: EngineEvent) {
+        if let Some(event) = self.count(event) {
+            self.inner.emit_child(parent_id, event);
+        }
     }
 }
 
@@ -498,6 +583,8 @@ pub(crate) fn classify_for_persist(
     parent_tool_call_id: Option<&str>,
 ) -> Option<(&'static str, String)> {
     use crate::persistence::session_event_kind as sek;
+    let notice = event.notice();
+    let event = notice.as_ref().unwrap_or(event);
     if parent_tool_call_id.is_some() {
         match event {
             EngineEvent::Info { message } => Some((sek::SUB_AGENT_EVENT, message.clone())),
@@ -547,6 +634,15 @@ impl EngineSink for PersistingSink<'_> {
             self.persist(kind, payload);
         }
         self.inner.emit(event);
+    }
+
+    fn emit_child(&self, parent_id: &str, event: EngineEvent) {
+        if let Some((kind, payload)) =
+            classify_for_persist(&event, self.parent_tool_call_id.as_deref())
+        {
+            self.persist(kind, payload);
+        }
+        self.inner.emit_child(parent_id, event);
     }
 }
 
@@ -883,6 +979,7 @@ mod tests {
             id: "t1".into(),
             name: "Read".into(),
             output: "<file contents>".into(),
+            outcome: crate::engine::ToolOutcome::Success,
         });
 
         let drained = registry.drain_status_events();
@@ -917,6 +1014,7 @@ mod tests {
             id: "t1".into(),
             name: "Bash".into(),
             output: "Error: command not found".into(),
+            outcome: crate::engine::ToolOutcome::Success,
         });
         let drained = registry.drain_status_events();
         assert!(matches!(

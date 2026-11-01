@@ -501,6 +501,9 @@ impl KodaSession {
         sink.emit(crate::engine::EngineEvent::TurnStart {
             turn_id: turn_id.clone(),
         });
+        let started = std::time::Instant::now();
+        let meter = crate::engine::sink::TurnMeter::new(sink);
+        let sink: &dyn EngineSink = &meter;
 
         // Compose the per-turn system prompt: static `agent.system_prompt`
         // plus a dynamically-rendered MCP server-instructions section. We
@@ -578,6 +581,11 @@ impl KodaSession {
                 message: e.to_string(),
             },
         };
+        sink.emit(crate::engine::EngineEvent::TurnSummary {
+            turn_id: turn_id.clone(),
+            usage: meter.usage(),
+            elapsed_ms: started.elapsed().as_millis() as u64,
+        });
         sink.emit(crate::engine::EngineEvent::TurnEnd { turn_id, reason });
 
         result.map(|_| ())

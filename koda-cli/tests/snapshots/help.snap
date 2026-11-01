@@ -43,7 +43,7 @@ Options:
           Possible values:
           - text:        Streamed reply on stdout, decorations on stderr
           - json:        One run-summary JSON object on stdout after the turn
-          - stream-json: NDJSON on stdout: every engine event, then the run summary
+          - stream-json: NDJSON on stdout: the wire protocol, ending with the run summary
           
           [default: text]
 
