@@ -128,7 +128,7 @@ pub fn build_system_prompt(
              - Research that would fill your context with noise (file contents, grep results)\n\
              \n\
              When NOT to use sub-agents:\n\
-             - Simple file reads or 2\u{2013}3 grep queries (overhead > direct execution)\n\
+             - Simple file reads, 2\u{2013}3 grep queries or single-file edits (overhead > direct execution)\n\
              - Tasks that need user interaction (sub-agents can\u{2019}t ask questions)\n\
              \n\
              Sub-agent results are NOT visible to the user — always summarize key findings.\n",
@@ -179,8 +179,9 @@ pub fn build_system_prompt(
             prompt.push_str(&line);
         }
         prompt.push_str(
-            "\nCustom skills: `.koda/skills/<name>/SKILL.md` (project) \
-             or `~/.config/koda/skills/<name>/SKILL.md` (global).\n",
+            "\nPrefer skills over sub-agents and external URLs. `(Tools: ...)` limits a skill \
+             to those tools while it is active. `[model-only]` skills are not shown to users. \
+             `ListSkills` searches for one not listed here.\n",
         );
     }
 
@@ -725,9 +726,8 @@ mod tests {
             "## Memory",
         ];
 
-        // Find positions; require the marker to appear at the start of a
-        // line (preceded by '\n') so headers like '## Skills' don't false-match
-        // inside a subsection like '## Skills and Sub-Agents' in instructions.md.
+        // Find positions; require the whole marker on its own line so a
+        // header like '## Skills' can't false-match a longer heading.
         // The earlier version used naive prompt.find() and produced wildly
         // inaccurate per-section attribution — see #925 PR description.
         let mut positions: Vec<(&str, usize)> = markers
