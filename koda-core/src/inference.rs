@@ -863,7 +863,7 @@ pub enum TurnOutcome {
 }
 
 /// How long a cancelled turn gets to stop before it's dropped. Not everything
-/// a turn awaits listens for the cancel: a sub-agent's model call doesn't.
+/// a turn awaits listens for the cancel: a running Bash command doesn't.
 pub const CANCEL_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// What the `turn end` line reports, gathered as the loop runs.

@@ -167,8 +167,9 @@ include earlier turns. A model call cut off before the provider reported usage
 counts for nothing, so a cancelled or failed turn reports the calls that
 finished.
 
-**A cancelled turn** gets five seconds to stop. One that hasn't stopped by then,
-such as a sub-agent waiting on a model call, is dropped where it is. It still
+**A cancelled turn** gets five seconds to stop. A sub-agent stops at once and gives
+back its workspace, but a Bash command the turn itself is running doesn't listen,
+so a turn waiting on one is dropped where it is. It still
 closes with one `turn_summary` and one `turn_end` of kind `cancelled`, but
 `run_summary` then has `success: false` and an `error`, and the run exits 1, since
 work may have been left unfinished. A running Bash or Cargo command doesn't see

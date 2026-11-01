@@ -77,46 +77,7 @@ async fn sigint_during_a_model_call_still_reports_the_turn() {
     assert!(log.contains(r#"outcome="cancelled""#), "{log}");
 }
 
-/// The parent delegates, and the sub-agent's first call returns a Read. Its
-/// second call never answers, and nothing in the child listens for the cancel
-/// while it waits.
-async fn stub_with_a_stuck_sub_agent() -> FakeLlmServer {
-    let server = FakeLlmServer::spawn().await;
-    server
-        .mount_fn("POST", r".*/chat/completions$", |request| {
-            let request: Value = serde_json::from_slice(&request.body).unwrap();
-            if request["stream"] == json!(true) {
-                return delegate();
-            }
-            let has_result = request["messages"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|m| m["role"] == "tool");
-            if has_result {
-                return ResponseTemplate::new(200).set_delay(Duration::from_secs(120));
-            }
-            child_reads_a_file()
-        })
-        .await;
-    server
-}
-
-fn delegate() -> ResponseTemplate {
-    let call = json!({
-        "index": 0,
-        "id": "agent",
-        "type": "function",
-        "function": {
-            "name": "InvokeAgent",
-            "arguments": json!({"agent_name": "explore", "prompt": "look"}).to_string(),
-        },
-    });
-    let chunks = [
-        json!({"choices": [{"delta": {"tool_calls": [call]}}]}),
-        json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
-        json!({"choices": [], "usage": {"prompt_tokens": 100, "completion_tokens": 10}}),
-    ];
+fn sse(chunks: &[Value]) -> ResponseTemplate {
     let mut body: String = chunks.iter().map(|c| format!("data: {c}\n\n")).collect();
     body.push_str("data: [DONE]\n\n");
     ResponseTemplate::new(200)
@@ -124,11 +85,27 @@ fn delegate() -> ResponseTemplate {
         .set_body_string(body)
 }
 
-fn child_reads_a_file() -> ResponseTemplate {
+/// A streamed reply from the top-level agent that calls one tool.
+fn stream_call(name: &str, args: Value) -> ResponseTemplate {
     let call = json!({
-        "id": "read",
+        "index": 0,
+        "id": "call",
         "type": "function",
-        "function": {"name": "Read", "arguments": json!({"file_path": "a.txt"}).to_string()},
+        "function": {"name": name, "arguments": args.to_string()},
+    });
+    sse(&[
+        json!({"choices": [{"delta": {"tool_calls": [call]}}]}),
+        json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+        json!({"choices": [], "usage": {"prompt_tokens": 100, "completion_tokens": 10}}),
+    ])
+}
+
+/// A sub-agent's reply, which doesn't stream, that calls one tool.
+fn child_call(name: &str, args: Value) -> ResponseTemplate {
+    let call = json!({
+        "id": "child",
+        "type": "function",
+        "function": {"name": name, "arguments": args.to_string()},
     });
     ResponseTemplate::new(200).set_body_json(json!({
         "choices": [{
@@ -139,30 +116,142 @@ fn child_reads_a_file() -> ResponseTemplate {
     }))
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn a_sub_agent_that_ignores_sigint_still_closes_the_turn() {
-    let server = stub_with_a_stuck_sub_agent().await;
-    let tmp = tempfile::tempdir().unwrap();
-    std::fs::write(tmp.path().join("a.txt"), "a").unwrap();
-    let child = tokio::process::Command::new(koda_bin())
-        .args(["-p", "Fix the parser", "--output-format", "stream-json"])
-        .args(["--provider", "lmstudio", "--model", "stub"])
-        .args(["--base-url", &server.url()])
-        .arg("--project-root")
-        .arg(tmp.path())
-        .env("XDG_CONFIG_HOME", tmp.path())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .unwrap();
+fn never_answers() -> ResponseTemplate {
+    ResponseTemplate::new(200).set_delay(Duration::from_secs(120))
+}
 
-    // Parent, child's Read, then the child call that hangs.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    while chat_requests(&server).await < 3 {
-        assert!(tokio::time::Instant::now() < deadline, "child never hung");
-        tokio::time::sleep(Duration::from_millis(50)).await;
+/// The top-level agent delegates to the `task` agent, which can write. The
+/// sub-agent gets `first`, then a call that never answers.
+async fn stub_with_a_sub_agent(first: ResponseTemplate) -> FakeLlmServer {
+    let server = FakeLlmServer::spawn().await;
+    server
+        .mount_fn("POST", r".*/chat/completions$", move |request| {
+            let request: Value = serde_json::from_slice(&request.body).unwrap();
+            if request["stream"] == json!(true) {
+                let task = json!({"agent_name": "task", "prompt": "do the work"});
+                return stream_call("InvokeAgent", task);
+            }
+            let replied = request["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|m| m["role"] == "tool");
+            if replied {
+                never_answers()
+            } else {
+                first.clone()
+            }
+        })
+        .await;
+    server
+}
+
+/// A project in a git repo, with `HOME` beside it, so a sub-agent's workspace
+/// lands somewhere the test can see on every platform.
+struct Project {
+    tmp: tempfile::TempDir,
+}
+
+impl Project {
+    fn new() -> Self {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = Self { tmp };
+        std::fs::create_dir_all(project.root()).unwrap();
+        std::fs::create_dir_all(project.home()).unwrap();
+        std::fs::write(project.root().join("a.txt"), "a").unwrap();
+        for args in [
+            &["init", "-q"][..],
+            &["add", "."],
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-qm",
+                "start",
+            ],
+        ] {
+            let done = std::process::Command::new("git")
+                .args(args)
+                .current_dir(project.root())
+                .output()
+                .unwrap();
+            assert!(done.status.success(), "{done:?}");
+        }
+        project
     }
+
+    fn root(&self) -> std::path::PathBuf {
+        self.tmp.path().join("project")
+    }
+
+    fn home(&self) -> std::path::PathBuf {
+        self.tmp.path().join("home")
+    }
+
+    fn koda(&self, server: &FakeLlmServer) -> tokio::process::Child {
+        tokio::process::Command::new(koda_bin())
+            .args(["-p", "Fix the parser", "--output-format", "stream-json"])
+            .args(["--provider", "lmstudio", "--model", "stub"])
+            .args(["--base-url", &server.url()])
+            .arg("--project-root")
+            .arg(self.root())
+            .env("XDG_CONFIG_HOME", self.home())
+            .env("HOME", self.home())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap()
+    }
+
+    /// Whether a file with this name exists anywhere under the temp dir.
+    fn holds(&self, name: &str) -> bool {
+        fn search(dir: &std::path::Path, name: &str) -> bool {
+            std::fs::read_dir(dir).is_ok_and(|entries| {
+                entries.flatten().any(|entry| {
+                    let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
+                    entry.file_name() != ".git"
+                        && (entry.file_name() == name || is_dir && search(&entry.path(), name))
+                })
+            })
+        }
+        search(self.tmp.path(), name)
+    }
+
+    async fn wait_for(&self, name: &str) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        while !self.holds(name) {
+            assert!(tokio::time::Instant::now() < deadline, "no {name}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+}
+
+/// How a run ended after SIGINT, and how long it took to.
+struct Interrupted {
+    output: std::process::Output,
+    took: Duration,
+    stdout: String,
+    events: Vec<Value>,
+}
+
+impl Interrupted {
+    fn one(&self, kind: &str) -> &Value {
+        let found: Vec<_> = self.events.iter().filter(|e| e["type"] == kind).collect();
+        assert_eq!(found.len(), 1, "{kind}: {}", self.stdout);
+        found[0]
+    }
+
+    fn summary(&self) -> &Value {
+        let last = self.events.last().unwrap();
+        assert_eq!(last["type"], "run_summary", "{}", self.stdout);
+        last
+    }
+}
+
+async fn interrupt(child: tokio::process::Child) -> Interrupted {
     let pid = child.id().unwrap().to_string();
     let signalled = Instant::now();
     let sent = std::process::Command::new("kill")
@@ -175,38 +264,109 @@ async fn a_sub_agent_that_ignores_sigint_still_closes_the_turn() {
         .await
         .expect("koda ignored SIGINT")
         .unwrap();
-    assert!(
-        signalled.elapsed() >= CANCEL_GRACE,
-        "the turn had time to stop"
-    );
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let events: Vec<Value> = stdout
+    let took = signalled.elapsed();
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let events = stdout
         .lines()
         .filter_map(|line| serde_json::from_str(line).ok())
         .collect();
-    let of_type =
-        |kind: &str| -> Vec<&Value> { events.iter().filter(|e| e["type"] == kind).collect() };
+    Interrupted {
+        output,
+        took,
+        stdout,
+        events,
+    }
+}
 
-    let ends = of_type("turn_end");
-    assert_eq!(ends.len(), 1, "closed once: {stdout}");
-    assert_eq!(ends[0]["reason"]["kind"], "cancelled", "{stdout}");
+/// The turn stopped on its own, in time, as a clean cancel.
+fn assert_clean_cancel(run: &Interrupted) {
+    assert!(run.took < CANCEL_GRACE, "took {:?}", run.took);
+    assert_eq!(run.one("turn_end")["reason"]["kind"], "cancelled");
+    assert_eq!(run.summary()["success"], true, "{}", run.stdout);
+    assert_eq!(run.output.status.code(), Some(0), "{}", run.stdout);
+}
 
-    // What finished before the signal still counts: the parent and one child call.
-    let summaries = of_type("turn_summary");
-    assert_eq!(summaries.len(), 1, "{stdout}");
-    let usage = &summaries[0]["usage"];
-    assert_eq!(usage["api_calls"], 2, "{usage}");
-    assert_eq!(usage["prompt_tokens"], 130, "{usage}");
+/// The work reached git where the provider keeps it: a worktree commits it to
+/// a branch, and a macOS clone is thrown away, which is that provider's design.
+#[cfg(not(target_os = "macos"))]
+fn assert_work_is_on_a_branch(project: &Project, name: &str) {
+    let log = std::process::Command::new("git")
+        .args(["log", "--all", "--format=%s", "--", name])
+        .current_dir(project.root())
+        .output()
+        .unwrap();
+    let log = String::from_utf8_lossy(&log.stdout);
+    assert!(log.contains("koda: sub-agent 'task' changes"), "{log}");
+}
 
-    let last = events.last().unwrap();
-    assert_eq!(last["type"], "run_summary", "{stdout}");
-    assert_eq!(last["success"], false, "{stdout}");
-    assert_eq!(last["turn_end"]["kind"], "cancelled", "{stdout}");
-    assert!(last["error"].is_string(), "{stdout}");
-    assert_eq!(output.status.code(), Some(1), "{stdout}");
+#[cfg(target_os = "macos")]
+fn assert_work_is_on_a_branch(_project: &Project, _name: &str) {}
 
-    let log = read_log(tmp.path());
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sub_agent_waiting_on_its_model_releases_its_workspace() {
+    let project = Project::new();
+    let write = json!({"file_path": "work.txt", "content": "work"});
+    let server = stub_with_a_sub_agent(child_call("Write", write)).await;
+    let child = project.koda(&server);
+
+    // Parent, the child's Write, then the child call that hangs.
+    project.wait_for("work.txt").await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while chat_requests(&server).await < 3 {
+        assert!(tokio::time::Instant::now() < deadline, "child never hung");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let run = interrupt(child).await;
+    assert!(!project.holds("work.txt"), "the workspace is still there");
+    assert_work_is_on_a_branch(&project, "work.txt");
+    assert_clean_cancel(&run);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sub_agent_running_a_command_releases_its_workspace() {
+    let project = Project::new();
+    let bash = json!({"command": "echo work > work.txt; sleep 60"});
+    let server = stub_with_a_sub_agent(child_call("Bash", bash)).await;
+    let child = project.koda(&server);
+    project.wait_for("work.txt").await;
+
+    let run = interrupt(child).await;
+    assert!(!project.holds("work.txt"), "the workspace is still there");
+    assert_work_is_on_a_branch(&project, "work.txt");
+    assert_clean_cancel(&run);
+}
+
+/// Nothing delivers the cancel to the top-level agent's Bash call, so this is
+/// the limit at work.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_that_ignores_sigint_still_closes() {
+    let project = Project::new();
+    let server = FakeLlmServer::spawn().await;
+    server
+        .mount_fn("POST", r".*/chat/completions$", |_| {
+            stream_call("Bash", json!({"command": "touch started; sleep 60"}))
+        })
+        .await;
+    let child = project.koda(&server);
+    project.wait_for("started").await;
+
+    let run = interrupt(child).await;
+    assert!(run.took >= CANCEL_GRACE, "stopped early: {:?}", run.took);
+    assert_eq!(run.one("turn_end")["reason"]["kind"], "cancelled");
+
+    // What finished before the signal still counts.
+    let usage = &run.one("turn_summary")["usage"];
+    assert_eq!(usage["api_calls"], 1, "{usage}");
+    assert_eq!(usage["prompt_tokens"], 100, "{usage}");
+
+    let summary = run.summary();
+    assert_eq!(summary["success"], false, "{summary}");
+    assert_eq!(summary["turn_end"]["kind"], "cancelled", "{summary}");
+    assert!(summary["error"].is_string(), "{summary}");
+    assert_eq!(run.output.status.code(), Some(1), "{}", run.stdout);
+
+    let log = read_log(&project.home());
     assert!(log.contains(r#"outcome="abandoned""#), "{log}");
 }
 

@@ -1323,9 +1323,13 @@ pub(crate) fn execute_sub_agent<'a>(
                 });
             }
 
-            let response = provider
-                .chat(&messages, &tool_defs, &sub_config.model_settings)
-                .await?;
+            let chat = provider.chat(&messages, &tool_defs, &sub_config.model_settings);
+            let Some(response) = unless_cancelled(&cancel, chat).await else {
+                sink.emit(EngineEvent::SpinnerStop);
+                let _ = workspace.release(&sub_session, &effective_root).await;
+                return Ok("[cancelled by parent]".to_string());
+            };
+            let response = response?;
             sink.emit(EngineEvent::ModelUsage {
                 usage: (&response.usage).into(),
             });
@@ -1567,8 +1571,7 @@ pub(crate) fn execute_sub_agent<'a>(
                             //     loop." with success=false.
                             //   - Bash output streams through the parent
                             //     sink (free visibility win).
-                            let (_id, result, _success, _full) = execute_one_tool(tc, sub_tx).await;
-                            result
+                            tool_output(tc, sub_tx, &cancel).await
                         }
                         ToolApproval::Blocked => {
                             let detail = tools::describe_action(&tc.function_name, &parsed_args);
@@ -1610,9 +1613,7 @@ pub(crate) fn execute_sub_agent<'a>(
                             .await
                             {
                                 Some(ApprovalDecision::Approve) => {
-                                    let (_id, result, _success, _full) =
-                                        execute_one_tool(tc, sub_tx).await;
-                                    result
+                                    tool_output(tc, sub_tx, &cancel).await
                                 }
                                 Some(ApprovalDecision::Reject) => "[rejected by user]".to_string(),
                                 Some(ApprovalDecision::RejectWithFeedback { feedback }) => {
@@ -1674,6 +1675,36 @@ pub(crate) fn execute_sub_agent<'a>(
         // iterations even when the model refuses to stop on its own — the
         // class of bug from #1135.
         unreachable!("sub-agent loop exits via return; the iteration range is unbounded");
+    }
+}
+
+/// `work`'s result, or `None` once `cancel` fires.
+///
+/// A sub-agent holds a workspace that only its own cancel path gives back, so
+/// it can't sit on something that doesn't listen for the cancel. If it did,
+/// the turn's [`crate::inference::CANCEL_GRACE`] would drop it, workspace and
+/// all.
+async fn unless_cancelled<T>(
+    cancel: &CancellationToken,
+    work: impl std::future::Future<Output = T>,
+) -> Option<T> {
+    tokio::select! {
+        biased;
+        () = cancel.cancelled() => None,
+        result = work => Some(result),
+    }
+}
+
+/// Run one tool for a sub-agent. A cancel drops the call, which kills any
+/// command it's running, and the loop's cancel check does the rest.
+async fn tool_output(
+    tc: &crate::providers::ToolCall,
+    tx: crate::turn_context::ToolExecutionContext<'_>,
+    cancel: &CancellationToken,
+) -> String {
+    match unless_cancelled(cancel, execute_one_tool(tc, tx)).await {
+        Some((_id, result, _success, _full)) => result,
+        None => "[cancelled]".to_string(),
     }
 }
 
@@ -1949,6 +1980,33 @@ mod recover_last_assistant_text_tests {
     #[test]
     fn returns_none_for_empty_messages() {
         assert_eq!(recover_last_assistant_text(&[]), None);
+    }
+}
+
+#[cfg(test)]
+mod unless_cancelled_tests {
+    use super::unless_cancelled;
+    use tokio_util::sync::CancellationToken;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_cancel_abandons_the_work() {
+        let cancel = CancellationToken::new();
+        let waiting = unless_cancelled(&cancel, std::future::pending::<()>());
+        cancel.cancel();
+        assert_eq!(waiting.await, None);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_cancelled_token_never_starts_the_work() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        assert_eq!(unless_cancelled(&cancel, async { 1 }).await, None);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn finished_work_keeps_its_result() {
+        let cancel = CancellationToken::new();
+        assert_eq!(unless_cancelled(&cancel, async { 1 }).await, Some(1));
     }
 }
 

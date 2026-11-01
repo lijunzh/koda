@@ -22,6 +22,15 @@ use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
+/// A `git` command in `dir`, killed if its call is dropped. A hook it's running
+/// and the hook's own children aren't, and neither is any half-made worktree
+/// cleaned up.
+fn git(dir: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.current_dir(dir).kill_on_drop(true);
+    cmd
+}
+
 // ── Trait ────────────────────────────────────────────────────────────────────
 
 /// Workspace lifecycle: provision on slot acquire, release on slot drop.
@@ -153,9 +162,8 @@ impl GitWorktreeProvider {
 
     /// `true` when git is reachable and the project is inside a git repo.
     async fn is_git_repo(&self) -> bool {
-        let Ok(out) = Command::new("git")
+        let Ok(out) = git(&self.project_root)
             .args(["rev-parse", "--is-inside-work-tree"])
-            .current_dir(&self.project_root)
             .output()
             .await
         else {
@@ -200,7 +208,7 @@ impl WorkspaceProvider for GitWorktreeProvider {
         std::fs::create_dir_all(wt_path.parent().unwrap_or(&self.project_root))
             .context("Failed to create .koda/worktrees/ directory")?;
 
-        let out = Command::new("git")
+        let out = git(&self.project_root)
             .args([
                 "worktree",
                 "add",
@@ -209,7 +217,6 @@ impl WorkspaceProvider for GitWorktreeProvider {
                 &wt_path.to_string_lossy(),
                 "HEAD",
             ])
-            .current_dir(&self.project_root)
             .output()
             .await
             .context("Failed to spawn git worktree add")?;
@@ -239,9 +246,8 @@ impl WorkspaceProvider for GitWorktreeProvider {
         let branch = self.branch_name(slot_id);
 
         // Check for uncommitted changes.
-        let status = Command::new("git")
+        let status = git(path)
             .args(["status", "--short"])
-            .current_dir(path)
             .output()
             .await
             .context("Failed to run git status in worktree")?;
@@ -249,15 +255,14 @@ impl WorkspaceProvider for GitWorktreeProvider {
 
         if is_dirty {
             // Auto-commit so the work is preserved on the branch.
-            Command::new("git")
+            git(path)
                 .args(["add", "-A"])
-                .current_dir(path)
                 .output()
                 .await
                 .context("git add -A in worktree")?;
 
             let commit_msg = format!("koda: sub-agent '{}' changes", self.agent_name);
-            let committed = Command::new("git")
+            let committed = git(path)
                 .args([
                     "-c",
                     "user.name=koda",
@@ -267,7 +272,6 @@ impl WorkspaceProvider for GitWorktreeProvider {
                     "-m",
                     &commit_msg,
                 ])
-                .current_dir(path)
                 .output()
                 .await
                 .context("git commit in worktree")?;
@@ -293,9 +297,8 @@ impl WorkspaceProvider for GitWorktreeProvider {
 
         // Clean — remove worktree and ephemeral branch.
         self.remove_worktree(path).await;
-        let _ = Command::new("git")
+        let _ = git(&self.project_root)
             .args(["branch", "-D", &branch])
-            .current_dir(&self.project_root)
             .output()
             .await;
 
@@ -307,9 +310,8 @@ impl WorkspaceProvider for GitWorktreeProvider {
 impl GitWorktreeProvider {
     /// Best-effort `git worktree remove --force` with rm-rf fallback.
     async fn remove_worktree(&self, path: &Path) {
-        let out = Command::new("git")
+        let out = git(&self.project_root)
             .args(["worktree", "remove", "--force", &path.to_string_lossy()])
-            .current_dir(&self.project_root)
             .output()
             .await;
 
