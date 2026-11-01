@@ -10,8 +10,9 @@ system prompt for that project.
 system prompt across all projects.
 
 ```text
-/memory        ← show the paths to both memory files
-/memory save   ← ask the model to summarise and append to MEMORY.md
+/memory                 ← show the paths to both memory files
+/memory add <text>      ← append to the project memory file
+/memory global <text>   ← append to the global memory file
 ```
 
 ## MemoryWrite tool
@@ -29,8 +30,7 @@ Koda will call `MemoryWrite` automatically when you ask it to remember.
 
 | File | Scope | Priority |
 |------|-------|----------|
-| `.koda/MEMORY.md` | Project | Highest |
-| `MEMORY.md` | Project root | High |
-| `CLAUDE.md` | Project root | High (compatibility) |
-| `AGENTS.md` | Project root | High (compatibility) |
+| `MEMORY.md` | Project root | Highest |
+| `CLAUDE.md` | Project root | Used if there is no `MEMORY.md` (compatibility) |
+| `AGENTS.md` | Project root | Used if neither is there (compatibility) |
 | `~/.config/koda/memory.md` | Global | Base |

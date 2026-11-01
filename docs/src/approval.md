@@ -24,6 +24,8 @@ confirmation prompt before each mutation. There are no separate
 | **Safe** | 🔒 SAFE (yellow) | "Confirm every side effect." Read tools auto-approve; everything that mutates state asks first. Use this in CI, locked-down workstations, or any context where you want a human in every approval loop. |
 | **Auto** | ⚡ **AUTO** (bold green) | "Trust the sandbox." Read and mutating ops auto-approve within the sandbox; destructive ops (`rm -rf`, `git reset --hard`, `git push --force`, `Delete`) still ask. Outside-project writes still ask. **Default since #1241** — the kernel sandbox + outside-project floor + destructive backstop combined provide a solid baseline without nag-by-default friction. Auto requires the kernel sandbox; on unsandboxed platforms koda refuses to start (#860 / #1259). |
 
+Plan is for sub-agents: `--mode` and `Shift+Tab` choose between Safe and Auto.
+
 All three badges share the same icon + UPPERCASE + bold styling so
 the trust mode is unmissable in the status bar regardless of which
 mode you're in. Auto originally rendered as inverted black-on-green

@@ -67,7 +67,7 @@ Add an **HTTP** MCP server using the MCP 2025-03-26 Streamable HTTP transport.
 Disconnect and re-connect a running server without restarting Koda. Useful
 after updating the server binary or rotating credentials.
 
-#/mcp remove <name>`
+### `/mcp remove <name>`
 
 Permanently delete the server config from the local keystore and disconnect it
 immediately. The server process (if stdio) is cleaned up automatically.
@@ -81,8 +81,8 @@ The model can call these tools directly. No extra configuration is required.
 
 ## Tool filtering
 
-To limit which tools a server exposes, edit `~/.config/koda/mcp.json` manually
-or use `koda config` (future release). Example snippet:
+A server's stored config can limit which tools it exposes. No `/mcp` command
+sets these fields yet. The shape:
 
 ```json
 {
@@ -119,7 +119,7 @@ their own and Koda uses it. Koda doesn't use the stateless
 
 ## Persistence
 
-MCP server configs are stored in the local SQLite keystore (`~/.local/share/koda/koda.db`)
+MCP server configs are stored in the local SQLite keystore (`~/.config/koda/db/koda.db`)
 under the `mcp:` key prefix. They survive session restarts and are loaded
 automatically on each startup.
 
