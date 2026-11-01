@@ -134,6 +134,7 @@ fn truncate_str(s: &str, max: usize) -> String {
         return s.to_string();
     }
     // Find last newline before max
+    let max = s.floor_char_boundary(max);
     let end = s[..max].rfind('\n').unwrap_or(max);
     let truncated = &s[..end];
     let remaining = s[end..].lines().count();
@@ -143,6 +144,14 @@ fn truncate_str(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn truncate_str_cut_inside_a_character_does_not_panic() {
+        let text = "é\n".repeat(50);
+        for max in 1..12 {
+            assert!(truncate_str(&text, max).contains("more lines"));
+        }
+    }
 
     #[test]
     fn test_git_context_in_repo() {

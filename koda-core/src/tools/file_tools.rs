@@ -400,14 +400,10 @@ fn byte_offset_to_line(content: &str, offset: usize) -> usize {
 
 /// Return the 1-based line numbers of every occurrence of `needle` in `haystack`.
 fn match_line_numbers(haystack: &str, needle: &str) -> Vec<usize> {
-    let mut line_nos = Vec::new();
-    let mut start = 0;
-    while let Some(rel) = haystack[start..].find(needle) {
-        let abs = start + rel;
-        line_nos.push(byte_offset_to_line(haystack, abs));
-        start = abs + 1; // advance past this hit to find the next
-    }
-    line_nos
+    haystack
+        .match_indices(needle)
+        .map(|(offset, _)| byte_offset_to_line(haystack, offset))
+        .collect()
 }
 
 /// Apply targeted find-and-replace edits to an existing file.
@@ -1137,6 +1133,29 @@ mod tests {
 
     /// Multi-match without replace_all must now error with line numbers instead
     /// of silently clobbering the first occurrence.
+    #[tokio::test]
+    async fn edit_file_ambiguous_multibyte_target_errors_without_a_panic() {
+        for (target, contents) in [
+            ("é", "é one\né two\n"),
+            ("界", "界 one\n界 two\n"),
+            ("🐻", "🐻 one\n🐻 two\n"),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let f = tmp.path().join("unicode.txt");
+            std::fs::write(&f, contents).unwrap();
+
+            let args = json!({
+                "file_path": "unicode.txt",
+                "replacements": [{"old_str": target, "new_str": "E"}]
+            });
+            let err = edit_file(tmp.path(), &args, &cache(), &fs())
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("matches 2 times"), "{err}");
+            assert_eq!(std::fs::read_to_string(&f).unwrap(), contents);
+        }
+    }
+
     #[tokio::test]
     async fn edit_file_multi_match_errors_with_line_numbers() {
         let tmp = tempfile::tempdir().unwrap();

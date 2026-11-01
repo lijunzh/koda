@@ -18,6 +18,7 @@ use crate::db::Database;
 use crate::persistence::Persistence;
 use crate::providers::ToolDefinition;
 use serde_json::json;
+use std::ops::Range;
 
 /// RecallContext tool definition.
 pub fn definition() -> ToolDefinition {
@@ -84,7 +85,7 @@ pub async fn recall_context(db: &Database, session_id: &str, args: &serde_json::
         let display = if content.len() > 2000 {
             format!(
                 "{}... [truncated, {} chars total]",
-                &content[..2000],
+                &content[..content.floor_char_boundary(2000)],
                 content.len()
             )
         } else {
@@ -127,7 +128,32 @@ pub async fn recall_context(db: &Database, session_id: &str, args: &serde_json::
     "Provide 'query' or 'turn' parameter.".to_string()
 }
 
+/// Map a byte range in `text.to_lowercase()` back to the characters of `text`
+/// it came from. Lowercasing can change a string's byte length, so an offset
+/// into the lowercased copy doesn't fit the original.
+///
+/// Counting character by character gives the same lengths as `to_lowercase`:
+/// its one special case, final sigma, swaps `σ` for `ς`, both two bytes.
+fn original_range(text: &str, lower: Range<usize>) -> Range<usize> {
+    let mut lower_pos = 0;
+    let mut start = None;
+    for (i, c) in text.char_indices() {
+        let lower_next = lower_pos + c.to_lowercase().map(char::len_utf8).sum::<usize>();
+        if start.is_none() && lower_next > lower.start {
+            start = Some(i);
+        }
+        if lower_next >= lower.end {
+            return start.unwrap_or(i)..i + c.len_utf8();
+        }
+        lower_pos = lower_next;
+    }
+    start.unwrap_or(text.len())..text.len()
+}
+
 /// Extract a snippet around the first match, with context.
+///
+/// `query` is already lowercased. This searches the same lowercased text as
+/// the filter in `recall_context`, so a message that passes it shows its match.
 fn extract_snippet(text: &str, query: &str, max_len: usize) -> String {
     let lower = text.to_lowercase();
     let pos = match lower.find(query) {
@@ -135,8 +161,9 @@ fn extract_snippet(text: &str, query: &str, max_len: usize) -> String {
         None => return text.chars().take(max_len).collect(),
     };
 
-    let start = pos.saturating_sub(50);
-    let end = (pos + query.len() + 150).min(text.len());
+    let found = original_range(text, pos..pos + query.len());
+    let start = text.floor_char_boundary(found.start.saturating_sub(50));
+    let end = text.floor_char_boundary(found.end + 150);
     let snippet = &text[start..end];
 
     if start > 0 || end < text.len() {
@@ -308,6 +335,76 @@ mod tests {
         assert!(snippet.contains("Error"));
     }
 
+    // ── Unicode ───────────────────────────────────────────────
+
+    #[test]
+    fn extract_snippet_cut_inside_a_character_does_not_panic() {
+        let text = "é".repeat(30) + "xneedle" + &"界".repeat(100);
+        let snippet = extract_snippet(&text, "needle", 200);
+        assert!(snippet.contains("needle"), "{snippet}");
+    }
+
+    /// `İ` lowercases to more bytes, so a lowercased offset overshoots.
+    #[test]
+    fn extract_snippet_handles_case_mapping_that_changes_length() {
+        let text = "İ".repeat(40) + "Needle" + &"a".repeat(20);
+        let snippet = extract_snippet(&text, "needle", 200);
+        assert!(snippet.contains("Needle"), "{snippet}");
+    }
+
+    #[test]
+    fn extract_snippet_keeps_a_match_that_case_folding_misses() {
+        let text = "a".repeat(250) + "İSTANBUL" + &"x".repeat(20);
+        let query = "İstanbul".to_lowercase();
+        assert!(text.to_lowercase().contains(&query));
+        let snippet = extract_snippet(&text, &query, 200);
+        assert!(snippet.contains("İSTANBUL"), "{snippet}");
+    }
+
+    /// The Kelvin sign lowercases to fewer bytes, `İ` to more, and final sigma
+    /// is `to_lowercase`'s one context-dependent case.
+    #[test]
+    fn original_range_covers_the_matched_characters() {
+        for (text, query, matched) in [
+            ("\u{212A}\u{212A}Needle", "needle", "Needle"),
+            ("İİNeedle", "needle", "Needle"),
+            ("aİSTANBULb", "i\u{307}stanbul", "İSTANBUL"),
+            ("x ΟΔΟΣ y", "οδος", "ΟΔΟΣ"),
+            ("ends here", "here", "here"),
+        ] {
+            let lower = text.to_lowercase();
+            let pos = lower.find(query).unwrap();
+            let range = original_range(text, pos..pos + query.len());
+            assert_eq!(&text[range], matched, "{text}");
+        }
+    }
+
+    /// What `original_range` relies on, checked on this toolchain's Unicode
+    /// tables: both ways of lowercasing give the same length, for every
+    /// character, at the end of a word and inside one.
+    #[test]
+    fn char_by_char_lowercasing_matches_to_lowercase_in_length() {
+        for c in (0..=0x10FFFF).filter_map(char::from_u32) {
+            for text in [format!("x{c}"), format!("x{c}x")] {
+                let by_char: usize = text
+                    .chars()
+                    .map(|c| c.to_lowercase().map(char::len_utf8).sum::<usize>())
+                    .sum();
+                assert_eq!(by_char, text.to_lowercase().len(), "U+{:04X}", c as u32);
+            }
+        }
+    }
+
+    /// A query can end inside what one character lowercases to. The range
+    /// still has to cover that whole character.
+    #[test]
+    fn original_range_rounds_out_to_whole_characters() {
+        let text = "aİb";
+        let lower = text.to_lowercase();
+        let pos = lower.find('i').unwrap();
+        assert_eq!(&text[original_range(text, pos..pos + 1)], "İ");
+    }
+
     // ── recall_context integration tests (requires DB) ─────────────────────
 
     async fn test_db() -> (Database, tempfile::TempDir, String) {
@@ -334,6 +431,17 @@ mod tests {
         let (db, _dir, sid) = test_db().await;
         let result = recall_context(&db, &sid, &json!({"turn": 1})).await;
         assert!(result.contains("No conversation history"), "got: {result}");
+    }
+
+    #[tokio::test]
+    async fn test_recall_long_non_ascii_turn_does_not_panic() {
+        let (db, _dir, sid) = test_db().await;
+        let text = "界".repeat(700);
+        db.insert_message(&sid, &Role::User, Some(&text), None, None, None)
+            .await
+            .unwrap();
+        let result = recall_context(&db, &sid, &json!({"turn": 1})).await;
+        assert!(result.contains("truncated"), "{result}");
     }
 
     #[tokio::test]

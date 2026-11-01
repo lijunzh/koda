@@ -924,10 +924,7 @@ impl Report {
             out.push_str(&self.stderr.join("\n"));
         }
         if out.len() > max_bytes {
-            out.truncate(max_bytes);
-            while !out.is_char_boundary(out.len()) {
-                out.pop();
-            }
+            out.truncate(out.floor_char_boundary(max_bytes));
             out.push_str(&format!(
                 "\n\n[... output truncated at {max_bytes} bytes ...]"
             ));
@@ -1255,6 +1252,21 @@ mod tests {
         include_str!("../../tests/fixtures/cargo/ws_test_ok.stderr.txt");
 
     // ── compiler messages ───────────────────────────────────────────
+
+    #[test]
+    fn full_output_cap_inside_a_character_does_not_panic() {
+        for cap in 1..80 {
+            let report = Report::new(
+                args(Subcommand::Check),
+                0,
+                Duration::from_millis(1),
+                vec![],
+                vec!["界".repeat(40)],
+                vec![],
+            );
+            assert!(report.full_output(cap).contains("output truncated"));
+        }
+    }
 
     #[test]
     fn check_fixture_yields_one_error_two_warnings_and_drops_failure_note() {
