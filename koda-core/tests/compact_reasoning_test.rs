@@ -446,6 +446,29 @@ async fn compaction_counts_the_same_rows_it_was_shown() {
     assert_each_was_summarized_or_kept(&env, &provider, &texts).await;
 }
 
+/// Gemini, 2026-11-01: replies of 8-11K chars stopped normally and still came
+/// back as no summary, after the fix for a missing tag.
+#[tokio::test]
+async fn a_summary_inside_the_analysis_or_after_a_quoted_tag_is_found() {
+    for reply in [
+        "<analysis>thinking<summary>The real summary.</summary></analysis>",
+        "<analysis>the code closes </analysis> early here, then more</analysis>\
+         <summary>The real summary.</summary>",
+        "<analysis>it looks for <summary> and </summary> tags</analysis>\
+         <summary>The real summary.</summary>",
+    ] {
+        let _serial = lock_compact_state().await;
+        let env = env_with_task("Fix the parser in lexer.rs").await;
+        let provider = MockProvider::new(vec![MockResponse::Text(reply.into())]);
+
+        let result = compact_with(&env, &provider).await;
+
+        assert!(!result.no_summary, "{reply}");
+        assert!(context_text(&env).await.contains("The real summary."));
+        assert!(!context_text(&env).await.contains("thinking"), "{reply}");
+    }
+}
+
 /// Gemini, 2026-10-31: three replies of 6-9K chars stopped normally with no
 /// <summary> tag, and all of that text was thrown away for the marker.
 #[tokio::test]

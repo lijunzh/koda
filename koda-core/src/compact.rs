@@ -234,13 +234,9 @@ pub async fn compact_session_with_provider(
         // A finished reply that never opened <summary> still holds what the
         // model worked out: Gemini sent 6-9K of analysis like this. It beats
         // the marker.
-        if summary.is_empty()
-            && !complete
-            && response.usage.stop_reason != "max_tokens"
-            && !content.contains("<summary>")
-        {
+        if summary.is_empty() && response.usage.stop_reason != "max_tokens" {
             tracing::warn!(
-                "Compact reply has no <summary> tag; keeping its {} chars of analysis",
+                "Compact reply has no usable <summary> block; keeping its {} chars of text",
                 content.len()
             );
             summary = analysis_text(content);
@@ -549,11 +545,11 @@ fn summary_from_reply(content: &str) -> (String, bool) {
     (strip_analysis_block(content), true)
 }
 
-/// A reply's text with the `<analysis>` tags removed.
+/// A reply's text with the summary prompt's tags removed.
 fn analysis_text(content: &str) -> String {
-    content
-        .replace("<analysis>", "")
-        .replace("</analysis>", "")
+    ["<analysis>", "</analysis>", "<summary>", "</summary>"]
+        .iter()
+        .fold(content.to_string(), |text, tag| text.replace(tag, ""))
         .trim()
         .to_string()
 }
@@ -577,6 +573,18 @@ fn analysis_text(content: &str) -> String {
 /// assert_eq!(strip_analysis_block("just text"), "just text");
 /// ```
 pub fn strip_analysis_block(summary: &str) -> String {
+    // The last complete <summary> block wins, wherever it sits. Removing the
+    // analysis first loses one nested inside it, or cuts at a tag the analysis
+    // only quotes: a coding agent's history can be full of them.
+    if let Some(end) = summary.rfind("</summary>")
+        && let Some(start) = summary[..end].rfind("<summary>")
+    {
+        let text = summary[start + "<summary>".len()..end].trim();
+        if !text.is_empty() {
+            return collapse_blank_lines(text);
+        }
+    }
+
     // Remove <analysis>...</analysis> including the tags
     let stripped = if let Some(start) = summary.find("<analysis>") {
         if let Some(end) = summary.find("</analysis>") {
@@ -601,7 +609,11 @@ pub fn strip_analysis_block(summary: &str) -> String {
         stripped
     };
 
-    // Clean up extra whitespace
+    collapse_blank_lines(&stripped)
+}
+
+/// Clean up extra whitespace.
+fn collapse_blank_lines(stripped: &str) -> String {
     let mut result = String::new();
     let mut prev_empty = false;
     for line in stripped.lines() {
