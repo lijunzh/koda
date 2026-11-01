@@ -39,6 +39,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **`run_summary.usage` counts sub-agents.** Their tokens were left out, though the docs said otherwise, because they are stored in sessions of their own. `usage_by_agent` now lists each agent by name. Token figures rise for runs that delegate. Sub-agents from before this change stay uncounted on a resumed session.
 - **A failed Bash or Cargo command counts as a failed tool call.** A non-zero exit or a timeout was recorded as a success, with the failure only in the text.
 - **A sub-agent's start is reported once.** Every sub-agent dispatch announced itself twice, in the TUI as well.
 - **Read always returns the file.** A second full read of an unchanged file returned a note saying the content was already in the conversation. That was false for a sub-agent whose parent or sibling read it first, and after compaction removed the first read. The note is gone.

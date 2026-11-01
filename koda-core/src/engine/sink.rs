@@ -359,10 +359,10 @@ impl EngineSink for FgForwardingSink<'_> {
 
 /// Adds up [`EngineEvent::ModelUsage`] for one turn.
 ///
-/// Sub-agents keep their messages in sessions of their own, so a query on the
-/// parent session can't see what they used, and a call whose reply is thrown
-/// away is never stored. The meter sees every call as it finishes. The events
-/// stop here: clients read the total on [`EngineEvent::TurnSummary`].
+/// Stored totals cover the whole session, and a call whose reply is thrown
+/// away is never stored. The meter sees every call of this turn as it
+/// finishes. The events stop here: clients read the total on
+/// [`EngineEvent::TurnSummary`].
 pub struct TurnMeter<'a> {
     inner: &'a dyn EngineSink,
     usage: std::sync::Mutex<super::event::UsageTotals>,
@@ -1024,6 +1024,88 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// Records each event with the parent it arrived under.
+    #[derive(Default)]
+    struct ParentRecorder(std::sync::Mutex<Vec<(Option<String>, EngineEvent)>>);
+
+    impl ParentRecorder {
+        fn parents(&self) -> Vec<Option<String>> {
+            let lines = self.0.lock().unwrap();
+            lines.iter().map(|(parent, _)| parent.clone()).collect()
+        }
+    }
+
+    impl EngineSink for ParentRecorder {
+        fn emit(&self, event: EngineEvent) {
+            self.0.lock().unwrap().push((None, event));
+        }
+
+        fn emit_child(&self, parent_id: &str, event: EngineEvent) {
+            self.0
+                .lock()
+                .unwrap()
+                .push((Some(parent_id.to_string()), event));
+        }
+    }
+
+    fn info(message: &str) -> EngineEvent {
+        EngineEvent::Info {
+            message: message.into(),
+        }
+    }
+
+    fn model_usage(prompt_tokens: i64) -> EngineEvent {
+        EngineEvent::ModelUsage {
+            usage: super::super::event::UsageTotals {
+                prompt_tokens,
+                api_calls: 1,
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    fn a_sink_that_ignores_parents_gets_child_events_as_plain_ones() {
+        let sink = TestSink::new();
+        sink.emit_child("call-1", info("child"));
+        sink.emit_from(None, info("own"));
+        sink.emit_from(Some("call-1"), info("child again"));
+        assert_eq!(sink.len(), 3);
+    }
+
+    #[test]
+    fn turn_meter_adds_up_usage_and_passes_everything_else_on() {
+        let inner = ParentRecorder::default();
+        let meter = TurnMeter::new(&inner);
+
+        meter.emit(model_usage(100));
+        meter.emit_child("call-1", model_usage(30));
+        meter.emit(info("own"));
+        meter.emit_child("call-1", info("child"));
+
+        let usage = meter.usage();
+        assert_eq!(usage.prompt_tokens, 130);
+        assert_eq!(usage.api_calls, 2);
+        assert_eq!(inner.parents(), [None, Some("call-1".to_string())]);
+    }
+
+    #[test]
+    fn fg_forwarding_sink_names_its_parent() {
+        let (_registry, emitter) = make_test_emitter(1);
+        let inner = ParentRecorder::default();
+
+        let sink = FgForwardingSink::new(&inner, emitter.clone(), Some("call-1".into()));
+        sink.emit(info("child"));
+        sink.emit_child("call-2", info("nested"));
+        let sink = FgForwardingSink::new(&inner, emitter, None);
+        sink.emit(info("no parent"));
+
+        assert_eq!(
+            inner.parents(),
+            [Some("call-1".to_string()), Some("call-2".to_string()), None]
+        );
     }
 
     #[test]

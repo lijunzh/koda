@@ -76,10 +76,11 @@ after the turn ends. The streamed reply and tool status go to stderr.
 }
 ```
 
-`usage` is summed from the session's stored messages, so it is still accurate
-when the turn errors or is cancelled. On a resumed session it covers every turn
-stored so far. Sub-agents keep sessions of their own and aren't counted here;
-for what a turn really used, read `turn_summary` below.
+`usage` is summed from stored messages, including those of the session's
+sub-agents, so it is still accurate when the turn errors or is cancelled. On a
+resumed session it covers every turn stored so far. `usage_by_agent` splits it,
+with the session's own calls under `main`. For what one turn used, read
+`turn_summary` below.
 `turn_end` is `null` if the turn never ended (for example, a setup failure).
 
 `--output-format stream-json` — stdout carries newline-delimited JSON only: the

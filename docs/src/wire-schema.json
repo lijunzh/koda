@@ -350,13 +350,13 @@
         },
         "usage": {
           "$ref": "#/$defs/UsageTotals",
-          "description": "Everything stored for this session, earlier turns of a resumed session\nincluded. Sub-agents keep their own sessions and aren't counted here."
+          "description": "Everything stored for this session, including its sub-agents and the\nearlier turns of a resumed session."
         },
         "usage_by_agent": {
           "additionalProperties": {
             "$ref": "#/$defs/UsageTotals"
           },
-          "description": "`usage`, split by agent.",
+          "description": "`usage`, split by agent. The session's own calls are under `main`.",
           "type": "object"
         }
       },

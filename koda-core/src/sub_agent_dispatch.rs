@@ -958,6 +958,12 @@ pub(crate) fn execute_sub_agent<'a>(
             let sid = db
                 .create_session(&sub_config.agent_name, project_root)
                 .await?;
+            db.set_metadata(
+                &sid,
+                crate::persistence::PARENT_SESSION_KEY,
+                parent_session_id,
+            )
+            .await?;
             // Fork: copy parent conversation history into the new session.
             //
             // **#1022 B20**: was a per-row loop — N×(`insert_message`

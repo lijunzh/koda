@@ -309,10 +309,10 @@ pub struct RunSummary {
     pub turn_end: Option<TurnEndReason>,
     /// Wall-clock time of the run.
     pub elapsed_ms: u64,
-    /// Everything stored for this session, earlier turns of a resumed session
-    /// included. Sub-agents keep their own sessions and aren't counted here.
+    /// Everything stored for this session, including its sub-agents and the
+    /// earlier turns of a resumed session.
     pub usage: UsageTotals,
-    /// `usage`, split by agent.
+    /// `usage`, split by agent. The session's own calls are under `main`.
     pub usage_by_agent: BTreeMap<String, UsageTotals>,
     /// Top-level tool calls by tool name.
     pub tool_calls: BTreeMap<String, u64>,

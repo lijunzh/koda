@@ -251,8 +251,10 @@ would read as a `notice`, and `EngineEvent::notice()` turns one back into `Info`
 or `Warn`. Text clients stay as they were and the wire sends no prose.
 
 A turn's usage is metered in memory by `TurnMeter`, not read back from the
-database. Sub-agents store their messages in sessions of their own, and a call
-whose reply is discarded isn't stored at all.
+database, because stored totals cover the whole session and a call whose reply
+is discarded isn't stored at all. Stored totals do include sub-agents: each one
+keeps its messages in its own session, linked to its parent by the
+`parent_session` metadata key.
 
 ### ACP (Agent Client Protocol) (P3)
 

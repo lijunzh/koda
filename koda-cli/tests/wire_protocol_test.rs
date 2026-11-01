@@ -332,12 +332,17 @@ async fn sub_agent_lines_name_the_call_that_started_them() {
     assert_eq!(usage["api_calls"], 6, "{usage}");
     assert_eq!(usage["prompt_tokens"], 100 + 200 + 4 * 30, "{usage}");
 
-    // The run summary reads the parent session, which holds only its own.
+    // The run summary agrees, and splits them out by agent.
+    let summary = run.one("run_summary");
+    assert_eq!(summary["usage"]["api_calls"], 6, "{summary}");
+    assert_eq!(summary["usage"]["prompt_tokens"], 420, "{summary}");
     assert_eq!(
-        run.one("run_summary")["usage"]["api_calls"],
-        2,
-        "{}",
-        run.stdout
+        summary["usage_by_agent"]["main"]["api_calls"], 2,
+        "{summary}"
+    );
+    assert_eq!(
+        summary["usage_by_agent"]["explore"]["api_calls"], 4,
+        "{summary}"
     );
 }
 

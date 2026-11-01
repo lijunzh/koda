@@ -174,6 +174,10 @@ pub enum InterruptionKind {
     Tool,
 }
 
+/// Metadata key on a sub-agent's session, holding the id of the session that
+/// started it.
+pub const PARENT_SESSION_KEY: &str = "parent_session";
+
 /// Token usage totals for a session.
 #[derive(Debug, Clone, Default)]
 pub struct SessionUsage {
@@ -340,6 +344,9 @@ pub trait Persistence: Send + Sync {
     // ── Token usage ──
 
     /// Token usage totals for a session.
+    ///
+    /// Sub-agents keep their messages in sessions of their own, linked by
+    /// [`PARENT_SESSION_KEY`], and count toward the session that started them.
     async fn session_token_usage(&self, session_id: &str) -> Result<SessionUsage>;
     /// Token usage broken down by agent name.
     async fn session_usage_by_agent(&self, session_id: &str)

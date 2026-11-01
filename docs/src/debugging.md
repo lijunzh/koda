@@ -90,9 +90,7 @@ iteration, with `compaction` lines between them when one fires, and one
 `turn end` at the end.
 
 Sub-agents run their own loop and don't write these lines. For their cost, use
-`usage` in the `turn_summary` line of `stream-json`, which counts them.
-`run_summary.usage` doesn't: sub-agents store their messages in sessions of
-their own. `sub_agent_tool_calls` in `run_summary` shows what they did.
+`usage_by_agent` and `sub_agent_tool_calls` in `run_summary`.
 
 ### `model call`
 

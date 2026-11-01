@@ -110,6 +110,49 @@ async fn wait_for_events(
 
 // ── Top-level routing (parent_tool_call_id = None) ───────────────────
 
+/// A sub-agent's event is persisted the same way as a plain one, and its
+/// parent reaches the sink underneath.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn child_event_persists_and_is_forwarded() {
+    let (_tmp, db, session_id) = fresh_db().await;
+    let inner = TestSink::new();
+    let sink = PersistingSink::new(&inner, db.clone(), session_id.clone(), None);
+
+    sink.emit_child(
+        "call-1",
+        EngineEvent::Info {
+            message: "from a sub-agent".into(),
+        },
+    );
+
+    let events = wait_for_events(&db, &session_id, 1).await;
+    assert_eq!(events[0].payload, "from a sub-agent");
+    assert_eq!(inner.len(), 1);
+}
+
+/// A typed event's text is persisted like the `Info` it replaced.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn typed_state_persists_its_notice() {
+    use koda_core::engine::{CompactionStatus, CompactionTrigger, Notice};
+
+    let (_tmp, db, session_id) = fresh_db().await;
+    let inner = TestSink::new();
+    let sink = PersistingSink::new(&inner, db.clone(), session_id.clone(), None);
+
+    sink.emit(EngineEvent::Compaction {
+        trigger: CompactionTrigger::Idle,
+        status: CompactionStatus::Completed {
+            messages_removed: 2,
+            summary_tokens: None,
+        },
+        notice: Some(Notice::Info("cleared old results".into())),
+    });
+
+    let events = wait_for_events(&db, &session_id, 1).await;
+    assert_eq!(events[0].payload, "cleared old results");
+    assert!(matches!(inner.events()[0], EngineEvent::Compaction { .. }));
+}
+
 /// Top-level `Info` events land in `session_events` with `kind = info`,
 /// `parent_tool_call_id = NULL`, and the message text as payload.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
