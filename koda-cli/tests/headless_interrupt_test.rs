@@ -1,4 +1,4 @@
-//! SIGINT during a model call, in a real headless run.
+//! A run that stops early, by SIGINT or a failure, in a real headless run.
 //!
 //! The eval harness stops a run that hits its time limit this way, so what
 //! koda reports here is all that survives of that run: the turn end, the run
@@ -10,6 +10,7 @@ use koda_test_utils::log::read_log;
 use koda_test_utils::network::{FakeLlmServer, ResponseTemplate};
 use serde_json::{Value, json};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 fn koda_bin() -> String {
@@ -120,14 +121,27 @@ fn never_answers() -> ResponseTemplate {
     ResponseTemplate::new(200).set_delay(Duration::from_secs(120))
 }
 
-/// The top-level agent delegates to the `task` agent, which can write. The
-/// sub-agent gets `first`, then a call that never answers.
-async fn stub_with_a_sub_agent(first: ResponseTemplate) -> FakeLlmServer {
+/// A streamed reply of plain text, which ends the turn.
+fn stream_text(reply: &str) -> ResponseTemplate {
+    sse(&[
+        json!({"choices": [{"delta": {"content": reply}}]}),
+        json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+        json!({"choices": [], "usage": {"prompt_tokens": 200, "completion_tokens": 20}}),
+    ])
+}
+
+/// The top-level agent delegates to the `task` agent, which can write, and
+/// finishes once that returns. The sub-agent gets `first`, then `then`.
+async fn stub_with_a_sub_agent(first: ResponseTemplate, then: ResponseTemplate) -> FakeLlmServer {
     let server = FakeLlmServer::spawn().await;
+    let delegated = AtomicBool::new(false);
     server
         .mount_fn("POST", r".*/chat/completions$", move |request| {
             let request: Value = serde_json::from_slice(&request.body).unwrap();
             if request["stream"] == json!(true) {
+                if delegated.swap(true, Ordering::SeqCst) {
+                    return stream_text("Done.");
+                }
                 let task = json!({"agent_name": "task", "prompt": "do the work"});
                 return stream_call("InvokeAgent", task);
             }
@@ -136,11 +150,7 @@ async fn stub_with_a_sub_agent(first: ResponseTemplate) -> FakeLlmServer {
                 .unwrap()
                 .iter()
                 .any(|m| m["role"] == "tool");
-            if replied {
-                never_answers()
-            } else {
-                first.clone()
-            }
+            if replied { then.clone() } else { first.clone() }
         })
         .await;
     server
@@ -306,7 +316,7 @@ fn assert_work_is_on_a_branch(_project: &Project, _name: &str) {}
 async fn a_sub_agent_waiting_on_its_model_releases_its_workspace() {
     let project = Project::new();
     let write = json!({"file_path": "work.txt", "content": "work"});
-    let server = stub_with_a_sub_agent(child_call("Write", write)).await;
+    let server = stub_with_a_sub_agent(child_call("Write", write), never_answers()).await;
     let child = project.koda(&server);
 
     // Parent, the child's Write, then the child call that hangs.
@@ -327,7 +337,7 @@ async fn a_sub_agent_waiting_on_its_model_releases_its_workspace() {
 async fn a_sub_agent_running_a_command_releases_its_workspace() {
     let project = Project::new();
     let bash = json!({"command": "echo work > work.txt; sleep 60"});
-    let server = stub_with_a_sub_agent(child_call("Bash", bash)).await;
+    let server = stub_with_a_sub_agent(child_call("Bash", bash), never_answers()).await;
     let child = project.koda(&server);
     project.wait_for("work.txt").await;
 
@@ -335,6 +345,26 @@ async fn a_sub_agent_running_a_command_releases_its_workspace() {
     assert!(!project.holds("work.txt"), "the workspace is still there");
     assert_work_is_on_a_branch(&project, "work.txt");
     assert_clean_cancel(&run);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sub_agent_whose_model_fails_releases_its_workspace() {
+    let project = Project::new();
+    let write = json!({"file_path": "work.txt", "content": "work"});
+    let failure = ResponseTemplate::new(500).set_body_string("boom");
+    let server = stub_with_a_sub_agent(child_call("Write", write), failure).await;
+
+    let child = project.koda(&server);
+    let output = tokio::time::timeout(Duration::from_secs(60), child.wait_with_output())
+        .await
+        .expect("koda hung")
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // The top-level agent carried on after its sub-agent failed.
+    assert!(stdout.contains(r#""response":"Done.""#), "{stdout}");
+    assert!(!project.holds("work.txt"), "the workspace is still there");
+    assert_work_is_on_a_branch(&project, "work.txt");
 }
 
 /// Nothing delivers the cancel to the top-level agent's Bash call, so this is
