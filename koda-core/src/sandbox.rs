@@ -341,11 +341,19 @@ pub fn policy_for_agent(trust: crate::trust::TrustMode, project_root: &Path) -> 
     // variant has a side effect (pre-creating `.git/hooks` to close the
     // SEC-002 TOCTOU window). Cleanup of the redundant deny emission is a
     // separate refactor — security fix stays minimal.
+    //
+    // In a worktree `.git` is a file pointing at the real one, so those paths
+    // can't exist and bwrap can't start on a read-only bind of them. The real
+    // hooks and config are outside this root, so already read-only. What needs
+    // protecting is the pointer: Koda runs git here outside the sandbox when it
+    // releases the workspace, and a rewritten pointer picks that git's hooks.
     if !policy.fs.allow_git_config {
-        policy.fs.deny_write_within_allow = vec![
-            canonical_root.join(".git/hooks").into(),
-            canonical_root.join(".git/config").into(),
-        ];
+        let git = canonical_root.join(".git");
+        policy.fs.deny_write_within_allow = if git.is_file() {
+            vec![git.into()]
+        } else {
+            vec![git.join("hooks").into(), git.join("config").into()]
+        };
     }
 
     policy
@@ -1483,6 +1491,23 @@ mod tests {
                 "seeded allow_write path must be the canonicalized project root"
             );
         }
+    }
+
+    #[test]
+    fn policy_for_agent_protects_the_pointer_in_a_worktree() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".git"), "gitdir: /repo/.git/worktrees/a\n").unwrap();
+        let root = dir.path().canonicalize().unwrap();
+
+        let policy = policy_for_agent(crate::trust::TrustMode::Safe, dir.path());
+
+        let denied: Vec<_> = policy
+            .fs
+            .deny_write_within_allow
+            .iter()
+            .map(|p| p.as_path().to_path_buf())
+            .collect();
+        assert_eq!(denied, [root.join(".git")]);
     }
 
     #[test]
