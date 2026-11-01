@@ -5,6 +5,7 @@
 //! summary and the log. No API key, no model.
 #![cfg(unix)]
 
+use koda_test_utils::log::read_log;
 use koda_test_utils::network::{FakeLlmServer, ResponseTemplate};
 use serde_json::Value;
 use std::process::Stdio;
@@ -16,16 +17,6 @@ fn koda_bin() -> String {
     path.pop(); // deps/
     path.push("koda");
     path.to_string_lossy().to_string()
-}
-
-/// Everything koda logged for a run whose config dir was `config`.
-fn koda_log(config: &std::path::Path) -> String {
-    std::fs::read_dir(config.join("koda/logs"))
-        .unwrap()
-        .flatten()
-        .filter(|entry| entry.file_name().to_string_lossy().starts_with("koda-"))
-        .map(|entry| std::fs::read_to_string(entry.path()).unwrap())
-        .collect()
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -80,7 +71,7 @@ async fn sigint_during_a_model_call_still_reports_the_turn() {
     let summary = of_type("run_summary").unwrap_or_else(|| panic!("no summary: {stdout}"));
     assert_eq!(summary["turn_end"]["kind"], "cancelled", "{stdout}");
 
-    let log = koda_log(tmp.path());
+    let log = read_log(tmp.path());
     assert!(log.contains(r#"outcome="cancelled""#), "{log}");
 }
 
