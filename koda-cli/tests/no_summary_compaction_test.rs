@@ -103,9 +103,19 @@ fn seed_project(root: &Path) {
     }
 }
 
-/// Run a headless turn against `server`, returning stdout's JSON and the
-/// requests the server saw, in order.
-async fn run_koda(server: &FakeLlmServer) -> (Value, Vec<Value>) {
+/// Everything koda logged for a run whose config dir was `config`.
+fn koda_log(config: &Path) -> String {
+    std::fs::read_dir(config.join("koda/logs"))
+        .unwrap()
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("koda-"))
+        .map(|entry| std::fs::read_to_string(entry.path()).unwrap())
+        .collect()
+}
+
+/// Run a headless turn against `server`, returning stdout's JSON, the
+/// requests the server saw, in order, and koda's log.
+async fn run_koda(server: &FakeLlmServer) -> (Value, Vec<Value>, String) {
     let tmp = tempfile::tempdir().unwrap();
     seed_project(tmp.path());
     let child = tokio::process::Command::new(koda_bin())
@@ -134,7 +144,7 @@ async fn run_koda(server: &FakeLlmServer) -> (Value, Vec<Value>) {
     // Skip koda's model-listing GETs.
     let requests = server.received_requests().await;
     let chats = requests.iter().filter(|r| !r.body.is_empty());
-    (result, chats.map(body).collect())
+    (result, chats.map(body).collect(), koda_log(tmp.path()))
 }
 
 /// The run went through a no-summary compaction and carried on: the agent's
@@ -189,9 +199,11 @@ async fn empty_summary_keeps_the_task_and_the_run_carries_on() {
     })
     .await;
 
-    let (result, requests) = run_koda(&server).await;
+    let (result, requests, log) = run_koda(&server).await;
 
     assert_task_survived(&result, &requests);
+    assert!(log.contains(r#"branch="empty""#), "{log}");
+    assert!(log.contains(r#"outcome="complete""#), "{log}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -200,7 +212,8 @@ async fn failing_summary_keeps_the_task_and_the_run_carries_on() {
     // passes the window and the pre-flight check drops it with no model call.
     let server = spawn_stub(|| ResponseTemplate::new(500).set_body_string("summary failed")).await;
 
-    let (result, requests) = run_koda(&server).await;
+    let (result, requests, log) = run_koda(&server).await;
 
     assert_task_survived(&result, &requests);
+    assert!(log.contains(r#"branch="dropped""#), "{log}");
 }

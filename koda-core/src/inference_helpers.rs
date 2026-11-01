@@ -71,6 +71,50 @@ pub fn estimate_tokens(messages: &[ChatMessage]) -> usize {
         .sum()
 }
 
+/// What a request is made of, in characters. `estimate_tokens` gives the
+/// total; this says which part of it moved.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct ContextShape {
+    pub system_chars: usize,
+    pub user_chars: usize,
+    pub assistant_chars: usize,
+    pub tool_chars: usize,
+    /// `tool_calls` as JSON. Gemini's thought signatures live here.
+    pub tool_calls_chars: usize,
+    pub reasoning_chars: usize,
+    pub images: usize,
+    /// Index, role and size of the message with the most characters.
+    pub largest: Option<(usize, String, usize)>,
+}
+
+impl ContextShape {
+    pub(crate) fn of(messages: &[ChatMessage]) -> Self {
+        let mut shape = Self::default();
+        for (index, message) in messages.iter().enumerate() {
+            let content = message.content.as_deref().map_or(0, str::len);
+            let calls = message
+                .tool_calls
+                .as_ref()
+                .map_or(0, |tc| serde_json::to_string(tc).map_or(0, |s| s.len()));
+            let reasoning = message.reasoning.as_deref().map_or(0, str::len);
+            match message.role.as_str() {
+                "system" => shape.system_chars += content,
+                "user" => shape.user_chars += content,
+                "tool" => shape.tool_chars += content,
+                _ => shape.assistant_chars += content,
+            }
+            shape.tool_calls_chars += calls;
+            shape.reasoning_chars += reasoning;
+            shape.images += message.images.as_ref().map_or(0, Vec::len);
+            let chars = content + calls + reasoning;
+            if shape.largest.as_ref().is_none_or(|l| chars > l.2) {
+                shape.largest = Some((index, message.role.clone(), chars));
+            }
+        }
+        shape
+    }
+}
+
 /// Pre-flight context-budget breakdown for a single sub-agent invocation.
 ///
 /// **#1232 §3a**: prior to this check, sub-agent dispatch could fire an
@@ -363,6 +407,14 @@ pub(crate) struct ModelCall<'a> {
     pub tool_calls: usize,
     /// Characters of text in the reply.
     pub text_chars: usize,
+}
+
+/// Whether a reply ends by asking something. A cheap heuristic for telling a
+/// turn that finished from one that stopped to ask: a question mark at the end
+/// of the text, past any closing markdown.
+pub(crate) fn ends_with_question(text: &str) -> bool {
+    text.trim_end_matches(|c: char| c.is_whitespace() || "*_`".contains(c))
+        .ends_with('?')
 }
 
 impl ModelCall<'_> {
@@ -707,6 +759,46 @@ mod tests {
     }
 
     /// Replayed reasoning takes up context, so the estimate must count it.
+    #[test]
+    fn context_shape_splits_by_role_and_names_the_largest() {
+        let assistant = ChatMessage {
+            reasoning: Some("r".repeat(5)),
+            tool_calls: Some(vec![ToolCall {
+                id: "1".into(),
+                function_name: "Read".into(),
+                arguments: "{}".into(),
+                thought_signature: Some("s".repeat(500)),
+            }]),
+            ..ChatMessage::text("assistant", "ok")
+        };
+        let messages = [
+            ChatMessage::text("system", "sys"),
+            ChatMessage::text("user", "hello"),
+            assistant.clone(),
+            ChatMessage::text("tool", "result"),
+        ];
+
+        let shape = ContextShape::of(&messages);
+
+        assert_eq!(shape.system_chars, 3);
+        assert_eq!(shape.user_chars, 5);
+        assert_eq!(shape.assistant_chars, 2);
+        assert_eq!(shape.tool_chars, 6);
+        assert_eq!(shape.reasoning_chars, 5);
+        assert!(shape.tool_calls_chars > 500, "{shape:?}");
+        let (index, role, chars) = shape.largest.unwrap();
+        assert_eq!((index, role.as_str()), (2, "assistant"));
+        assert_eq!(chars, 2 + 5 + shape.tool_calls_chars);
+    }
+
+    #[test]
+    fn ends_with_question_sees_past_closing_markdown() {
+        assert!(ends_with_question("Should I fix it?"));
+        assert!(ends_with_question("**Should I fix it?**\n"));
+        assert!(!ends_with_question("Fixed. Was it the lexer? Yes."));
+        assert!(!ends_with_question(""));
+    }
+
     #[test]
     fn estimate_tokens_counts_replayed_reasoning() {
         let plain = ChatMessage::text("assistant", "done");
