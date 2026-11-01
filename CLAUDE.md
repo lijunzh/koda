@@ -196,4 +196,4 @@ The `test-support` feature gates `MockProvider` and `TestSink`, so E2E tests nee
 - **koda-cli stub server:** real headless runs against `FakeLlmServer`, in
   `no_summary_compaction_test.rs`, `gemini_stub_test.rs`,
   `history_edit_log_test.rs`, `context_count_test.rs`,
-  `headless_interrupt_test.rs`.
+  `headless_interrupt_test.rs`, `stop_reason_log_test.rs`.

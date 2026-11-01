@@ -282,6 +282,7 @@ live variants are gated by `KODA_TEST_LMSTUDIO=1` and never run in CI.
 - `tests/history_edit_log_test.rs` — a tool result dropped by a repeated call id shows as a `history edited` warning
 - `tests/context_count_test.rs` — a reported token count above the estimate triggers compaction; with no count, the estimate decides
 - `tests/headless_interrupt_test.rs` — SIGINT during a model call: the run still reports its turn end and summary
+- `tests/stop_reason_log_test.rs` — the `model call` line keeps the stop reason when usage follows the finish chunk
 
 ## Release checklist
 

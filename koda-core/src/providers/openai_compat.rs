@@ -280,9 +280,13 @@ impl ChunkParser for OpenAiChunkParser {
 
         let mut chunks = Vec::new();
 
-        // Capture usage if present
+        // Capture usage if present. With `include_usage` it arrives after the
+        // finish chunk, so the stop reason must survive it.
         if let Some(u) = &chunk.usage {
-            self.usage = usage_from_response(u);
+            self.usage = TokenUsage {
+                stop_reason: std::mem::take(&mut self.usage.stop_reason),
+                ..usage_from_response(u)
+            };
         }
 
         for choice in &chunk.choices {
@@ -937,6 +941,46 @@ mod tests {
 
     fn parse_chunks(parser: &mut OpenAiChunkParser, data: &str) -> Vec<StreamChunk> {
         parser.process_line(data)
+    }
+
+    fn final_usage(lines: &[&str]) -> TokenUsage {
+        let mut parser = OpenAiChunkParser::new();
+        for line in lines {
+            parse_chunks(&mut parser, line);
+        }
+        match parser.finish().pop() {
+            Some(StreamChunk::Done(usage)) => usage,
+            other => panic!("expected Done, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stop_reason_survives_usage_sent_after_the_finish_chunk() {
+        let usage = final_usage(&[
+            r#"{"choices":[{"delta":{},"finish_reason":"length"}]}"#,
+            r#"{"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":3}}"#,
+        ]);
+        assert_eq!(usage.stop_reason, "max_tokens");
+        assert_eq!((usage.prompt_tokens, usage.completion_tokens), (7, 3));
+    }
+
+    #[test]
+    fn stop_reason_survives_usage_sent_before_the_finish_chunk() {
+        let usage = final_usage(&[
+            r#"{"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":3}}"#,
+            r#"{"choices":[{"delta":{},"finish_reason":"length"}]}"#,
+        ]);
+        assert_eq!(usage.stop_reason, "max_tokens");
+        assert_eq!((usage.prompt_tokens, usage.completion_tokens), (7, 3));
+    }
+
+    #[test]
+    fn stop_reason_survives_usage_in_the_finish_chunk() {
+        let usage = final_usage(&[
+            r#"{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":3}}"#,
+        ]);
+        assert_eq!(usage.stop_reason, "stop");
+        assert_eq!((usage.prompt_tokens, usage.completion_tokens), (7, 3));
     }
 
     #[test]
