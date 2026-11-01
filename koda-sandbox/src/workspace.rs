@@ -22,6 +22,25 @@ use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
+/// `out` if git ran and reported success, else why not.
+fn succeeded(
+    step: &str,
+    out: std::io::Result<std::process::Output>,
+) -> std::result::Result<std::process::Output, String> {
+    let out = out.map_err(|e| format!("{step}: {e}"))?;
+    if out.status.success() {
+        return Ok(out);
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let said = if stderr.trim().is_empty() {
+        stdout
+    } else {
+        stderr
+    };
+    Err(format!("{step}: {}", said.trim()))
+}
+
 /// A `git` command in `dir`, killed if its call is dropped. A hook it's running
 /// and the hook's own children aren't, and neither is any half-made worktree
 /// cleaned up.
@@ -93,6 +112,11 @@ impl WorkspaceProvider for CwdProvider {
 /// |----------------|------------------------------------------------------|
 /// | Clean          | `git worktree remove --force`; delete ephemeral branch |
 /// | Dirty          | `git add -A && git commit`; `git worktree remove --force`; **keep branch**; return hint |
+/// | Can't tell or can't save | Leave the worktree where it is; return a hint naming it |
+///
+/// Release isn't bounded. A slow save can outlast the turn's five seconds after
+/// a cancel, which drops it partway. The worktree then stays at the path
+/// announced when it was provisioned, and git's own `worktree list` names it.
 ///
 /// The branch is the permanent record of what the sub-agent did. Users
 /// can inspect, merge, or discard it at their discretion:
@@ -245,40 +269,17 @@ impl WorkspaceProvider for GitWorktreeProvider {
 
         let branch = self.branch_name(slot_id);
 
-        // Check for uncommitted changes.
-        let status = git(path)
-            .args(["status", "--short"])
-            .output()
-            .await
-            .context("Failed to run git status in worktree")?;
-        let is_dirty = !String::from_utf8_lossy(&status.stdout).trim().is_empty();
+        // Removing a worktree is `--force`, so anything short of "clean" or
+        // "saved" has to leave it where it is.
+        let is_dirty = match self.has_changes(path).await {
+            Ok(is_dirty) => is_dirty,
+            Err(reason) => return Ok(Some(self.kept_hint(path, &reason))),
+        };
 
         if is_dirty {
             // Auto-commit so the work is preserved on the branch.
-            git(path)
-                .args(["add", "-A"])
-                .output()
-                .await
-                .context("git add -A in worktree")?;
-
-            let commit_msg = format!("koda: sub-agent '{}' changes", self.agent_name);
-            let committed = git(path)
-                .args([
-                    "-c",
-                    "user.name=koda",
-                    "-c",
-                    "user.email=koda@localhost",
-                    "commit",
-                    "-m",
-                    &commit_msg,
-                ])
-                .output()
-                .await
-                .context("git commit in worktree")?;
-
-            if !committed.status.success() {
-                let stderr = String::from_utf8_lossy(&committed.stderr);
-                tracing::warn!("Worktree auto-commit failed: {stderr}");
+            if let Err(reason) = self.save_changes(path).await {
+                return Ok(Some(self.kept_hint(path, &reason)));
             }
 
             // Remove the worktree dir but keep the branch.
@@ -308,6 +309,47 @@ impl WorkspaceProvider for GitWorktreeProvider {
 }
 
 impl GitWorktreeProvider {
+    /// Whether the worktree holds anything to save.
+    async fn has_changes(&self, path: &Path) -> std::result::Result<bool, String> {
+        let status = git(path).args(["status", "--short"]).output().await;
+        let status = succeeded("git status", status)?;
+        Ok(!String::from_utf8_lossy(&status.stdout).trim().is_empty())
+    }
+
+    /// Commit everything in the worktree to its branch. This is Koda's own save
+    /// point, so the project's commit hooks and signing don't get a say.
+    async fn save_changes(&self, path: &Path) -> std::result::Result<(), String> {
+        succeeded("git add", git(path).args(["add", "-A"]).output().await)?;
+        let commit_msg = format!("koda: sub-agent '{}' changes", self.agent_name);
+        let committed = git(path)
+            .args([
+                "-c",
+                "user.name=koda",
+                "-c",
+                "user.email=koda@localhost",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--no-verify",
+                "-m",
+                &commit_msg,
+            ])
+            .output()
+            .await;
+        succeeded("git commit", committed).map(|_| ())
+    }
+
+    /// What to tell the user about a worktree left in place.
+    fn kept_hint(&self, path: &Path, reason: &str) -> String {
+        tracing::warn!("Kept worktree {}: {reason}", path.display());
+        let path = path.display();
+        format!(
+            "⚠️ Sub-agent '{}' left work that was not committed ({reason}). It's still in {path}\n\
+             Save it there, then remove it: git worktree remove --force {path}",
+            self.agent_name
+        )
+    }
+
     /// Best-effort `git worktree remove --force` with rm-rf fallback.
     async fn remove_worktree(&self, path: &Path) {
         let out = git(&self.project_root)
@@ -862,6 +904,103 @@ mod tests {
         assert!(hint.contains(branch), "{hint}");
         assert!(hint.contains("git diff HEAD"), "{hint}");
         assert!(hint.contains("git merge"), "{hint}");
+    }
+
+    /// A provisioned worktree holding uncommitted work.
+    async fn dirty_worktree() -> (tempfile::TempDir, GitWorktreeProvider, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path()).await;
+        let provider = GitWorktreeProvider::new(tmp.path(), "refactor");
+        let worktree = provider.provision("slot-dirty").await.unwrap();
+        std::fs::write(worktree.join("output.rs"), "// generated").unwrap();
+        (tmp, provider, worktree)
+    }
+
+    /// The work is still on disk, and the hint says where, not that it's saved.
+    fn assert_kept(worktree: &Path, hint: Option<String>) {
+        let hint = hint.expect("a kept worktree must say so");
+        assert!(worktree.join("output.rs").exists(), "work lost: {hint}");
+        assert!(hint.contains(&worktree.display().to_string()), "{hint}");
+        assert!(hint.contains("not committed"), "{hint}");
+        assert!(!hint.contains("git merge"), "{hint}");
+    }
+
+    /// The work really is on the branch the hint names.
+    async fn assert_saved(repo: &Path) {
+        let shown = Command::new("git")
+            .args(["show", "koda/wt/refactor-slot-dir:output.rs"])
+            .current_dir(repo)
+            .output()
+            .await
+            .unwrap();
+        assert!(shown.status.success(), "{shown:?}");
+        assert_eq!(shown.stdout, b"// generated");
+    }
+
+    #[tokio::test]
+    async fn a_failed_commit_keeps_the_worktree() {
+        let (tmp, provider, worktree) = dirty_worktree().await;
+        // Git can't move the branch while its ref is locked.
+        let lock = tmp
+            .path()
+            .join(".git/refs/heads/koda/wt/refactor-slot-dir.lock");
+        std::fs::write(&lock, "").unwrap();
+
+        let hint = provider.release("slot-dirty", &worktree).await.unwrap();
+        assert_kept(&worktree, hint);
+
+        // Nothing was lost, so the next release can still save it.
+        std::fs::remove_file(&lock).unwrap();
+        let hint = provider.release("slot-dirty", &worktree).await.unwrap();
+        assert!(hint.unwrap().contains("git merge"));
+        assert!(!worktree.exists());
+        assert_saved(tmp.path()).await;
+    }
+
+    #[tokio::test]
+    async fn a_failed_add_keeps_the_worktree() {
+        let (tmp, provider, worktree) = dirty_worktree().await;
+        let git_dir = tmp.path().join(".git/worktrees/slot-dirty");
+        std::fs::write(git_dir.join("index.lock"), "").unwrap();
+
+        let hint = provider.release("slot-dirty", &worktree).await.unwrap();
+        assert_kept(&worktree, hint);
+    }
+
+    #[tokio::test]
+    async fn a_failed_status_keeps_the_worktree() {
+        let (_tmp, provider, worktree) = dirty_worktree().await;
+        // Reading as "clean" here would force-remove the work.
+        std::fs::write(worktree.join(".git"), "not a pointer").unwrap();
+
+        let hint = provider.release("slot-dirty", &worktree).await.unwrap();
+        assert_kept(&worktree, hint);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn hooks_and_signing_cannot_refuse_the_save() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let (tmp, provider, worktree) = dirty_worktree().await;
+        let hook = tmp.path().join(".git/hooks/pre-commit");
+        std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for setting in [["commit.gpgsign", "true"], ["gpg.program", "/no/such/gpg"]] {
+            Command::new("git")
+                .arg("config")
+                .args(setting)
+                .current_dir(tmp.path())
+                .output()
+                .await
+                .unwrap();
+        }
+
+        let hint = provider.release("slot-dirty", &worktree).await.unwrap();
+        assert!(hint.unwrap().contains("git merge"));
+        assert!(!worktree.exists());
+        assert_saved(tmp.path()).await;
     }
 
     #[tokio::test]

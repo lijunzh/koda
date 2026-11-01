@@ -1025,7 +1025,10 @@ pub(crate) fn execute_sub_agent<'a>(
             Ok(path) => {
                 if path != project_root {
                     sink.emit(EngineEvent::Info {
-                        message: format!("  \u{1f333} {agent_name}: isolated in worktree"),
+                        message: format!(
+                            "  \u{1f333} {agent_name}: isolated in {}",
+                            path.display()
+                        ),
                     });
                 }
                 path
@@ -1246,7 +1249,14 @@ pub(crate) fn execute_sub_agent<'a>(
             // Best-effort cleanup mirrors the cancel path below — release
             // any provisioned workspace before bubbling so we don't leak
             // a tempdir on every over-budget sub-agent invocation.
-            let _ = workspace.release(&sub_session, &effective_root).await;
+            release_workspace(
+                workspace.as_ref(),
+                &sub_session,
+                &effective_root,
+                agent_name,
+                sink,
+            )
+            .await;
             anyhow::bail!(
                 "Sub-agent '{agent_name}' context exceeds model window: {summary}. \
                  Reduce the prompt, drop tools (set `disallowed_tools` on the agent), \
@@ -1278,8 +1288,15 @@ pub(crate) fn execute_sub_agent<'a>(
                 }
                 // Respect parent cancellation (#286)
                 if cancel.is_cancelled() {
-                    // Release workspace on cancellation (best-effort, no user hint).
-                    let _ = workspace.release(&sub_session, &effective_root).await;
+                    // Release workspace on cancellation.
+                    release_workspace(
+                        workspace.as_ref(),
+                        &sub_session,
+                        &effective_root,
+                        agent_name,
+                        sink,
+                    )
+                    .await;
                     return anyhow::Ok("[cancelled by parent]".to_string());
                 }
                 let history = db.load_context(&sub_session).await?;
@@ -1330,7 +1347,14 @@ pub(crate) fn execute_sub_agent<'a>(
                 let chat = provider.chat(&messages, &tool_defs, &sub_config.model_settings);
                 let Some(response) = unless_cancelled(&cancel, chat).await else {
                     sink.emit(EngineEvent::SpinnerStop);
-                    let _ = workspace.release(&sub_session, &effective_root).await;
+                    release_workspace(
+                        workspace.as_ref(),
+                        &sub_session,
+                        &effective_root,
+                        agent_name,
+                        sink,
+                    )
+                    .await;
                     return Ok("[cancelled by parent]".to_string());
                 };
                 let response = response?;
@@ -1392,11 +1416,14 @@ pub(crate) fn execute_sub_agent<'a>(
                         ),
                     };
                     sub_agent_cache.put(agent_name, prompt, &result);
-                    if let Ok(Some(hint)) = workspace.release(&sub_session, &effective_root).await {
-                        sink.emit(EngineEvent::Info {
-                            message: format!("  \u{1f335} {agent_name}: {hint}"),
-                        });
-                    }
+                    release_workspace(
+                        workspace.as_ref(),
+                        &sub_session,
+                        &effective_root,
+                        agent_name,
+                        sink,
+                    )
+                    .await;
                     return Ok(result);
                 }
 
@@ -1441,11 +1468,14 @@ pub(crate) fn execute_sub_agent<'a>(
                     // Cache the result for future identical calls
                     sub_agent_cache.put(agent_name, prompt, &result);
                     // Release workspace; surface branch hint if agent left changes.
-                    if let Ok(Some(hint)) = workspace.release(&sub_session, &effective_root).await {
-                        sink.emit(EngineEvent::Info {
-                            message: format!("  \u{1f335} {agent_name}: {hint}"),
-                        });
-                    }
+                    release_workspace(
+                        workspace.as_ref(),
+                        &sub_session,
+                        &effective_root,
+                        agent_name,
+                        sink,
+                    )
+                    .await;
                     return Ok(result);
                 }
 
@@ -1578,7 +1608,8 @@ pub(crate) fn execute_sub_agent<'a>(
                                 tool_output(tc, sub_tx, &cancel).await
                             }
                             ToolApproval::Blocked => {
-                                let detail = tools::describe_action(&tc.function_name, &parsed_args);
+                                let detail =
+                                    tools::describe_action(&tc.function_name, &parsed_args);
                                 let diff_preview = preview::compute(
                                     &tc.function_name,
                                     &parsed_args,
@@ -1593,7 +1624,8 @@ pub(crate) fn execute_sub_agent<'a>(
                                 "[safe mode] Action blocked.".to_string()
                             }
                             ToolApproval::NeedsConfirmation => {
-                                let detail = tools::describe_action(&tc.function_name, &parsed_args);
+                                let detail =
+                                    tools::describe_action(&tc.function_name, &parsed_args);
                                 let diff_preview = preview::compute(
                                     &tc.function_name,
                                     &parsed_args,
@@ -1619,7 +1651,9 @@ pub(crate) fn execute_sub_agent<'a>(
                                     Some(ApprovalDecision::Approve) => {
                                         tool_output(tc, sub_tx, &cancel).await
                                     }
-                                    Some(ApprovalDecision::Reject) => "[rejected by user]".to_string(),
+                                    Some(ApprovalDecision::Reject) => {
+                                        "[rejected by user]".to_string()
+                                    }
                                     Some(ApprovalDecision::RejectWithFeedback { feedback }) => {
                                         format!("[rejected: {feedback}]")
                                     }
@@ -1682,14 +1716,34 @@ pub(crate) fn execute_sub_agent<'a>(
         }
         .await;
 
-        if result.is_err()
-            && let Ok(Some(hint)) = workspace.release(&sub_session, &effective_root).await
-        {
-            sink.emit(EngineEvent::Info {
-                message: format!("  \u{1f335} {agent_name}: {hint}"),
-            });
+        if result.is_err() {
+            release_workspace(
+                workspace.as_ref(),
+                &sub_session,
+                &effective_root,
+                agent_name,
+                sink,
+            )
+            .await;
         }
         result
+    }
+}
+
+/// Give back a sub-agent's workspace and say what became of any work in it.
+async fn release_workspace(
+    workspace: &(dyn WorkspaceProvider + Send + Sync),
+    slot_id: &str,
+    path: &std::path::Path,
+    agent_name: &str,
+    sink: &dyn crate::engine::EngineSink,
+) {
+    match workspace.release(slot_id, path).await {
+        Ok(Some(hint)) => sink.emit(EngineEvent::Info {
+            message: format!("  \u{1f335} {agent_name}: {hint}"),
+        }),
+        Ok(None) => {}
+        Err(e) => tracing::warn!("Workspace release failed for '{agent_name}': {e}"),
     }
 }
 
@@ -1995,6 +2049,57 @@ mod recover_last_assistant_text_tests {
     #[test]
     fn returns_none_for_empty_messages() {
         assert_eq!(recover_last_assistant_text(&[]), None);
+    }
+}
+
+#[cfg(test)]
+mod release_workspace_tests {
+    use super::release_workspace;
+    use crate::engine::EngineEvent;
+    use crate::engine::sink::TestSink;
+    use koda_sandbox::WorkspaceProvider;
+    use std::path::{Path, PathBuf};
+
+    struct Saying(&'static str);
+
+    #[async_trait::async_trait]
+    impl WorkspaceProvider for Saying {
+        async fn provision(&self, _slot_id: &str) -> anyhow::Result<PathBuf> {
+            unimplemented!("only release runs here")
+        }
+
+        async fn release(&self, _slot_id: &str, _path: &Path) -> anyhow::Result<Option<String>> {
+            match self.0 {
+                "nothing" => Ok(None),
+                "fails" => anyhow::bail!("no"),
+                hint => Ok(Some(hint.to_string())),
+            }
+        }
+    }
+
+    async fn messages(provider: Saying) -> Vec<String> {
+        let sink = TestSink::new();
+        release_workspace(&provider, "slot", Path::new("/w"), "task", &sink).await;
+        sink.events()
+            .into_iter()
+            .filter_map(|event| match event {
+                EngineEvent::Info { message } => Some(message),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_hint_reaches_the_user() {
+        let said = messages(Saying("still in /w")).await;
+        assert_eq!(said.len(), 1);
+        assert!(said[0].contains("task: still in /w"), "{said:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn no_hint_says_nothing() {
+        assert!(messages(Saying("nothing")).await.is_empty());
+        assert!(messages(Saying("fails")).await.is_empty());
     }
 }
 
