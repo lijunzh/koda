@@ -1,7 +1,8 @@
 # Contributing to Koda
 
-All contributor guidance lives in [CLAUDE.md](CLAUDE.md) — the single source of
-truth for project structure, conventions, build commands, and documentation rules.
+[CLAUDE.md](CLAUDE.md) has project structure, conventions, build commands and
+documentation rules. [docs/src/development.md](docs/src/development.md) has the
+full workspace tree, the release checklist, and how CI works.
 
 ## Quick Start
 
