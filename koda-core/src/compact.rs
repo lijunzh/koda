@@ -412,6 +412,8 @@ async fn replace_with_summary(
     keep_from_id: i64,
 ) -> Result<usize> {
     let compact_message = format!("{SUMMARY_HEADING}\n\n{summary}");
+    // Debug only: this is conversation text, which the default logs leave out.
+    tracing::debug!("Stored compaction summary:\n{summary}");
     db.compact_session_before(session_id, &compact_message, keep_from_id)
         .await
 }
