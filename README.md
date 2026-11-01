@@ -7,7 +7,7 @@
 
 **A high-performance, terminal-native AI coding assistant built in Rust.**
 
-*Single compiled binary. 14 LLM providers. Zero runtime dependencies. Your data stays local.*
+*Single compiled binary. 15 LLM providers. Zero runtime dependencies. Your data stays local.*
 
 ---
 
@@ -70,6 +70,7 @@ Inside the TUI, type `/help` to see all commands and keyboard shortcuts.
 | [**Engine API**](https://docs.rs/koda-core) | Developer docs for embedding `koda-core` |
 | [**Design**](DESIGN.md) | Architecture principles and philosophies |
 | [**Contributing**](CONTRIBUTING.md) | Workspace layout, coding conventions, and tests |
+| [**Debugging**](https://lijunzh.github.io/koda/debugging.html) | Triage a run from its logs and reproduce a bug without an API key |
 | [**Changelog**](CHANGELOG.md) | Version history |
 
 ## License

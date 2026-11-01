@@ -54,7 +54,7 @@ model sees it immediately — useful for course-correcting mid-task.
   📥 Next: add the missing error handling too
 ```
 
-**Slash commands (`/cancel`, `/clear`, `/model`, …) are not accepted
+**Slash commands (`/cancel`, `/compact`, `/model`, …) are not accepted
 mid-inference** (#1211/#1222). Type `/cancel agent:1` while the model is
 thinking and you'll see a transient "slash commands disabled during
 inference — press `Esc` first" hint instead of the text being silently
@@ -72,8 +72,8 @@ as one message.
 ```
 
 Slash commands are blocked from this lane too (#1211/#1222) for the same
-reason — a deferred `/clear` would silently wipe history when the next
-turn starts. Press `Esc`, then run the slash.
+reason — a deferred `/compact` would silently rewrite history when the
+next turn starts. Press `Esc`, then run the slash.
 
 ### Queue preview widget
 
@@ -103,7 +103,8 @@ status bar:
 
 ## Approval prompt
 
-When trust mode is `safe` or `plan`, Koda asks before executing tools.
+In `safe` mode, Koda asks before executing tools that change anything. In
+`auto` mode, it still asks before destructive ones.
 The menu area shows the tool name, the action detail, and hotkeys:
 
 ```

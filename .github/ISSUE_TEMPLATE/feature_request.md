@@ -22,13 +22,13 @@ koda --new-flag "value"
 
 ## Scope
 <!-- Which area of the codebase would this touch? -->
-- [ ] Tools (src/tools/)
-- [ ] Providers (src/providers/)
-- [ ] Approval system (src/approval.rs)
-- [ ] REPL / input (src/repl.rs, src/input.rs)
-- [ ] Display / UX (src/display.rs, src/markdown.rs)
-- [ ] Config (src/config.rs)
-- [ ] Agents (agents/)
+- [ ] Tools (koda-core/src/tools/)
+- [ ] Providers (koda-core/src/providers/)
+- [ ] Trust and approval (koda-core/src/trust.rs, koda-core/src/approval_flow.rs)
+- [ ] Sandbox (koda-sandbox/)
+- [ ] TUI / input (koda-cli/src/tui_*.rs, koda-cli/src/input.rs)
+- [ ] Config (koda-core/src/config.rs)
+- [ ] Agents (koda-core/agents/)
 - [ ] New module
 
 ## References
