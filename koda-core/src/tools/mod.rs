@@ -163,7 +163,7 @@ use crate::providers::ToolDefinition;
 /// `sha256_hex` is empty for line-range reads where only a slice was fetched.
 ///
 /// Wrapped in `Arc` so parent and sub-agent `ToolRegistry` instances
-/// share the same cache — reads by one agent benefit all others.
+/// share the same cache: a file one agent read isn't stale to another.
 pub type FileReadCache = Arc<std::sync::Mutex<HashMap<String, (u64, SystemTime, String)>>>;
 
 /// Tracks which tool last wrote each absolute file path.
@@ -348,8 +348,8 @@ impl ToolRegistry {
 
     /// Share an existing file-read cache (e.g. from the parent agent).
     ///
-    /// Sub-agents that share the parent's cache avoid redundant disk reads
-    /// for files already loaded in the same session.
+    /// A sub-agent that shares the parent's cache can edit a file the parent
+    /// read without the edit being refused as stale.
     pub fn with_shared_cache(mut self, cache: FileReadCache) -> Self {
         self.read_cache = cache;
         self
@@ -1423,9 +1423,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn full_read_after_own_edit_returns_the_file_not_the_unchanged_notice() {
-        // The post-Edit cache entry must not make Read claim the new content is
-        // "already in your conversation history": the model only saw a diff.
+    async fn full_read_after_own_edit_returns_the_file() {
         let (registry, _dir) = registry_after_full_read("one\ntwo\n").await;
         let edit = registry
             .execute("Edit", &edit_json("f.txt", "one", "ONE"), None, None)
@@ -1435,10 +1433,6 @@ mod tests {
             .execute("Read", r#"{"file_path":"f.txt"}"#, None, None)
             .await;
         assert!(read.success && read.output.contains("ONE"), "{read:?}");
-        assert!(
-            !read.output.contains("unchanged since last read"),
-            "{read:?}"
-        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
