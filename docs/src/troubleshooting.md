@@ -98,9 +98,12 @@ Tracing verbosity is controlled by the `RUST_LOG` environment variable;
 the default is `koda_core=info,koda_cli=info`. Common debug recipes:
 
 ```sh
-# More chatter from the inference loop
-RUST_LOG=koda_core::session=debug koda
+# Prompts, summaries and more from the inference loop
+RUST_LOG=koda_core=debug,koda_cli=info koda
 
 # Quiet everything but warnings
 RUST_LOG=warn koda
 ```
+
+To work out what a run did from its log, see
+[Debugging a run](./debugging.md).

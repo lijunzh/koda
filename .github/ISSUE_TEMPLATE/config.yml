@@ -3,3 +3,6 @@ contact_links:
   - name: Documentation
     url: https://github.com/lijunzh/koda/blob/main/DESIGN.md
     about: Architecture and technical design
+  - name: Debugging guide
+    url: https://lijunzh.github.io/koda/debugging.html
+    about: Triage a run from its logs before you file a bug

@@ -31,12 +31,11 @@ not as vision input.
 
 ## Large pastes
 
-Pasting more than ~500 characters into the input is automatically wrapped
-in a reference block to keep prompts clean:
+Pasting 200 characters or more into the input attaches it as a reference block
+to keep prompts clean:
 
 ```text
-> [pasted 1,234 chars — attached as reference]
-> what's the bug in this code?
+📋 Pasted text (1234 chars)
 ```
 
 The paste is still sent to the model; it just doesn't clutter the display.

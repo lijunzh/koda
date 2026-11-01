@@ -1,6 +1,6 @@
 # ACP server (editor integration)
 
-Koda implements the [Agent Client Protocol](https://agentclientprotocol.org)
+Koda implements the [Agent Client Protocol](https://agentclientprotocol.com)
 over stdio JSON-RPC 2.0. This lets editors connect to Koda as a local agent
 without network setup.
 

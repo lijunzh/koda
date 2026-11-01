@@ -71,10 +71,8 @@ symlink-aware check). The two layer: the first rejects literal
 (the final path component being a symlink to outside, or any
 parent directory being one). See #1281.
 
-The symlink check is enforced **even with `--no-sandbox`**. The
-debug escape hatch is for shell tracing; it isn't a license to
-let the LLM clobber arbitrary files via a planted symlink.
-In-project symlinks (e.g. `examples/latest -> v3/`) keep working;
+The symlink check runs in-process, so it holds even when the
+kernel sandbox is unavailable. In-project symlinks (e.g. `examples/latest -> v3/`) keep working;
 only links whose canonical target escapes every allowed root are
 rejected.
 

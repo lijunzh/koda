@@ -38,6 +38,8 @@ everything else (`cargo check`, full test matrix on Linux + macOS, `cargo doc`,
 
 The easiest contribution is
 [reporting a bug](https://github.com/lijunzh/koda/issues/new).
+[Debugging a run](docs/src/debugging.md) shows how to triage a run from its logs,
+what to put in the report, and how to reproduce a bug without an API key.
 
 Issues are for bug reports and feature requests. Koda's design discussion
 happens in the maintainer's own notes, not in the issue tracker.

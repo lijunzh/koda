@@ -17,7 +17,6 @@ prompt. See [Trust modes](./approval.md) for the canonical matrix.
 | `Glob` | Read-only | List files matching a glob pattern |
 | `WebFetch` | Read-only | Fetch a URL and return its text content |
 | `WebSearch` | Read-only | Search the web via DuckDuckGo |
-| `Think` | Internal | Extended reasoning step (no side effects) |
 | `MemoryRead` | Read-only | Read from project or global memory |
 | `MemoryWrite` | Mutating | Append a fact to a memory file |
 | `TodoWrite` | Read-only | Update the session task list (Koda-owned state, no FS impact) |
@@ -27,15 +26,15 @@ prompt. See [Trust modes](./approval.md) for the canonical matrix.
 | `InvokeAgent` | Varies | Delegate a task to a named sub-agent; blocks until it finishes and returns its final answer as the result |
 | `SpawnAgent` | Read-only | Alias for `InvokeAgent` with the codex-style arguments (`task_name`, `message`); same synchronous behavior |
 | `ListAgents` | Read-only | List the available sub-agents (`detail=true` adds their system prompts) |
-| `ListFiles` | Read-only | List directory contents |
+| `List` | Read-only | List directory contents |
 | `AskUser` | Interactive | Ask the user a clarifying question |
 
 ## Approval behaviour by trust mode
 
 | Category | Tools | Plan | Safe | Auto |
 |----------|-------|------|------|------|
-| Read-only | Read, Grep, Glob, ListFiles, ListAgents, WebFetch, WebSearch, RecallContext, TodoWrite | ✅ Auto | ✅ Auto | ✅ Auto |
-| Internal | Think, ActivateSkill | ✅ Auto | ✅ Auto | ✅ Auto |
+| Read-only | Read, Grep, Glob, List, ListAgents, WebFetch, WebSearch, RecallContext, TodoWrite | ✅ Auto | ✅ Auto | ✅ Auto |
+| Internal | ActivateSkill | ✅ Auto | ✅ Auto | ✅ Auto |
 | Mutations | Write, Edit, MemoryWrite, Cargo | ❌ Deny | ⏸ Prompt | ✅ Auto |
 | Destructive | Delete | ❌ Deny | ⏸ Prompt | ⏸ Prompt |
 | Agent calls | InvokeAgent, SpawnAgent | ✅ Auto | ✅ Auto | ✅ Auto |

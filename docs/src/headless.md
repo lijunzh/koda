@@ -19,7 +19,7 @@ cat error.log | koda
 echo "review auth.rs" | koda
 
 # With a model override
-koda "explain this" --model gemini-flash
+koda "explain this" --model gemini-flash-latest
 
 # Capture just the assistant reply (tool status stays on stderr)
 koda "list exported functions in lib.rs" > functions.txt
@@ -104,6 +104,6 @@ koda "review @src/auth.rs and @tests/auth_test.rs"
 ## Resuming a session in headless mode
 
 ```bash
-# Note the session ID shown in the TUI status bar, then continue from a script
-koda -s a3f8bc "run the failing tests and fix them"
+# The full session_id from --output-format json
+koda -s a3f8bc12-1587-4c6d-a855-46183ca84fba "run the failing tests and fix them"
 ```
