@@ -186,7 +186,7 @@ impl Widget for StatusBar<'_> {
 
         // Truncate long model names to keep status bar readable
         let model_display = if self.model.len() > 32 {
-            format!("{}…", &self.model[..31])
+            format!("{}…", &self.model[..self.model.floor_char_boundary(31)])
         } else {
             self.model.to_string()
         };
@@ -381,6 +381,15 @@ mod tests {
             .collect::<String>()
             .trim_end()
             .to_string()
+    }
+
+    #[test]
+    fn long_non_ascii_model_name_does_not_panic() {
+        for padding in ["", "x", "xx"] {
+            let model = format!("{padding}{}", "模".repeat(20));
+            let text = render_bar(StatusBar::new(&model, "safe", 50), 120);
+            assert!(text.contains('…'), "{text}");
+        }
     }
 
     #[test]

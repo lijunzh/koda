@@ -85,7 +85,8 @@ pub fn interrupted_turn_banner(
                 ),
             ]));
             let display = if preview.len() >= 77 {
-                format!("  \u{201c}{}\u{2026}\u{201d}", &preview[..77])
+                let cut = preview.floor_char_boundary(77);
+                format!("  \u{201c}{}\u{2026}\u{201d}", &preview[..cut])
             } else {
                 format!("  \u{201c}{}\u{201d}", preview)
             };
@@ -208,6 +209,16 @@ mod tests {
         assert_eq!(format_idle(172800).as_deref(), Some("2 days"));
         assert_eq!(format_idle(604800).as_deref(), Some("1 week"));
         assert_eq!(format_idle(1209600).as_deref(), Some("2 weeks"));
+    }
+
+    #[test]
+    fn interrupted_banner_long_non_ascii_prompt_does_not_panic() {
+        use koda_core::persistence::InterruptionKind;
+        for padding in ["", "x", "xx"] {
+            let prompt = format!("{padding}{}", "界".repeat(40));
+            let lines = interrupted_turn_banner(&InterruptionKind::Prompt(prompt));
+            assert!(!lines.is_empty());
+        }
     }
 
     #[test]

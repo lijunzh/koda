@@ -201,10 +201,10 @@ fn extract_snippet(html: &str) -> String {
     let text_region = &after_marker[close + 1..];
     let end = text_region
         .find("</div>")
-        .unwrap_or_else(|| text_region.len().min(600));
+        .unwrap_or_else(|| text_region.floor_char_boundary(600));
     let raw = strip_inline(&text_region[..end]);
     if raw.len() > 300 {
-        format!("{}…", raw[..297].trim_end())
+        format!("{}…", raw[..raw.floor_char_boundary(297)].trim_end())
     } else {
         raw
     }
@@ -372,6 +372,17 @@ mod tests {
     fn extract_snippet_finds_text() {
         let html = r#"<div class="result__snippet">Fast &amp; reliable</div>"#;
         assert_eq!(extract_snippet(html), "Fast & reliable");
+    }
+
+    #[test]
+    fn extract_snippet_long_non_ascii_text_does_not_panic() {
+        for padding in ["", "x", "xx"] {
+            let text = format!("{padding}{}", "界".repeat(250));
+            let closed = format!(r#"<div class="result__snippet">{text}</div>"#);
+            let unclosed = format!(r#"<div class="result__snippet">{text}"#);
+            assert!(extract_snippet(&closed).ends_with('…'));
+            assert!(!extract_snippet(&unclosed).is_empty());
+        }
     }
 
     #[test]

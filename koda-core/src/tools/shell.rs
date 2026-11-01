@@ -617,11 +617,7 @@ fn format_full_output(
     // the actual byte count so a future per-trust-mode override is
     // legible to the model and the human reading the DB.
     if out.len() > max_bytes {
-        out.truncate(max_bytes);
-        // Find safe char boundary
-        while !out.is_char_boundary(out.len()) {
-            out.pop();
-        }
+        out.truncate(out.floor_char_boundary(max_bytes));
         out.push_str(&format!(
             "\n\n[... output truncated at {} ...]",
             format_byte_cap(max_bytes)
@@ -1175,6 +1171,19 @@ mod tests {
     /// `format_full_output` honors its `max_bytes` parameter and
     /// surfaces the actual cap in the truncation marker (so the model
     /// + human reading the DB can always tell where output stopped).
+    #[test]
+    fn format_full_output_cap_inside_a_character_does_not_panic() {
+        let header = "Exit code: 0\n\n--- stdout ---\n".len();
+        for character in ["é", "界", "🐻"] {
+            for inside in 1..character.len() {
+                let cap = 4 * 1024;
+                let line = "x".repeat(cap - header - inside) + character;
+                let full = format_full_output(0, &[line], &[], cap);
+                assert!(full.contains("truncated at 4KB"), "{character} {inside}");
+            }
+        }
+    }
+
     #[test]
     fn format_full_output_honors_explicit_cap() {
         // Tight 4KB cap; the marker should show "4KB", and total output

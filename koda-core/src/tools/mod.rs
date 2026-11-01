@@ -928,6 +928,15 @@ pub fn resolve_read_path(project_root: &Path, requested: &str) -> Result<PathBuf
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn describe_action_long_non_ascii_memory_fact_does_not_panic() {
+        for padding in ["", "x", "xx"] {
+            let fact = format!("{padding}{}", "界".repeat(30));
+            let action = describe_action("MemoryWrite", &serde_json::json!({ "fact": fact }));
+            assert!(action.ends_with('…'), "{action}");
+        }
+    }
     use serde_json::json;
     use std::path::PathBuf;
 
@@ -1587,7 +1596,7 @@ pub fn describe_action(tool_name: &str, args: &serde_json::Value) -> String {
         "MemoryWrite" => {
             let fact = args.get("fact").and_then(|v| v.as_str()).unwrap_or("?");
             let preview = if fact.len() > 60 {
-                format!("{}…", &fact[..57])
+                format!("{}…", &fact[..fact.floor_char_boundary(57)])
             } else {
                 fact.to_string()
             };

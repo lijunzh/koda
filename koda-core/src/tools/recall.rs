@@ -84,7 +84,7 @@ pub async fn recall_context(db: &Database, session_id: &str, args: &serde_json::
         let display = if content.len() > 2000 {
             format!(
                 "{}... [truncated, {} chars total]",
-                &content[..2000],
+                &content[..content.floor_char_boundary(2000)],
                 content.len()
             )
         } else {
@@ -128,15 +128,21 @@ pub async fn recall_context(db: &Database, session_id: &str, args: &serde_json::
 }
 
 /// Extract a snippet around the first match, with context.
+///
+/// Matches in `text` itself: lowercasing can change a string's byte length,
+/// so an offset into a lowercased copy doesn't fit the original.
 fn extract_snippet(text: &str, query: &str, max_len: usize) -> String {
-    let lower = text.to_lowercase();
-    let pos = match lower.find(query) {
-        Some(p) => p,
-        None => return text.chars().take(max_len).collect(),
+    let found = regex::RegexBuilder::new(&regex::escape(query))
+        .case_insensitive(true)
+        .build()
+        .ok()
+        .and_then(|re| re.find(text));
+    let Some(found) = found else {
+        return text.chars().take(max_len).collect();
     };
 
-    let start = pos.saturating_sub(50);
-    let end = (pos + query.len() + 150).min(text.len());
+    let start = text.floor_char_boundary(found.start().saturating_sub(50));
+    let end = text.floor_char_boundary(found.end() + 150);
     let snippet = &text[start..end];
 
     if start > 0 || end < text.len() {
@@ -308,6 +314,23 @@ mod tests {
         assert!(snippet.contains("Error"));
     }
 
+    // ── Unicode ───────────────────────────────────────────────
+
+    #[test]
+    fn extract_snippet_cut_inside_a_character_does_not_panic() {
+        let text = "é".repeat(30) + "xneedle" + &"界".repeat(100);
+        let snippet = extract_snippet(&text, "needle", 200);
+        assert!(snippet.contains("needle"), "{snippet}");
+    }
+
+    /// `İ` lowercases to more bytes, so a lowercased offset overshoots.
+    #[test]
+    fn extract_snippet_handles_case_mapping_that_changes_length() {
+        let text = "İ".repeat(40) + "Needle" + &"a".repeat(20);
+        let snippet = extract_snippet(&text, "needle", 200);
+        assert!(snippet.contains("Needle"), "{snippet}");
+    }
+
     // ── recall_context integration tests (requires DB) ─────────────────────
 
     async fn test_db() -> (Database, tempfile::TempDir, String) {
@@ -334,6 +357,17 @@ mod tests {
         let (db, _dir, sid) = test_db().await;
         let result = recall_context(&db, &sid, &json!({"turn": 1})).await;
         assert!(result.contains("No conversation history"), "got: {result}");
+    }
+
+    #[tokio::test]
+    async fn test_recall_long_non_ascii_turn_does_not_panic() {
+        let (db, _dir, sid) = test_db().await;
+        let text = "界".repeat(700);
+        db.insert_message(&sid, &Role::User, Some(&text), None, None, None)
+            .await
+            .unwrap();
+        let result = recall_context(&db, &sid, &json!({"turn": 1})).await;
+        assert!(result.contains("truncated"), "{result}");
     }
 
     #[tokio::test]
