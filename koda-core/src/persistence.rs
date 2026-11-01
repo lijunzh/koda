@@ -355,6 +355,17 @@ pub trait Persistence: Send + Sync {
         preserve_count: usize,
     ) -> Result<usize>;
 
+    /// Compact every message older than `keep_from_id` into a summary.
+    ///
+    /// Takes a row id because `preserve_count` counts raw rows, which include
+    /// any that `load_context` prunes.
+    async fn compact_session_before(
+        &self,
+        session_id: &str,
+        summary: &str,
+        keep_from_id: i64,
+    ) -> Result<usize>;
+
     // ── Microcompact ──
 
     /// Replace message content for the given IDs with a stub string.

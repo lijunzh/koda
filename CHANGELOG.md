@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **Compaction no longer splits a tool batch.** The cut was a row count, so it could land between a call and its results; those results were then dropped at load and reached neither the summary nor the tail. It also counted rows the model never sees, so it could archive the wrong ones. The tail now starts by row id, never on a tool result.
 - **A finished compaction reply with no `<summary>` tag is kept.** Gemini sent 6,000 to 9,000 characters of analysis without the tag, and Koda threw all of it away for the bare marker. The analysis now becomes the summary. A reply cut off by the token cap still gets the retry (#1454).
 - **Gemini keeps every tool result.** Call ids restarted at `gemini_tc_1` with each response, and history keeps one result per call id, so the model saw only its newest tool result and kept re-reading files. Ids are now unique. Sessions saved before this fix keep the repeated ids.
 - **Gemini tool calls work on current models.** `gemini-flash-latest` rejected any request holding a tool result with a 400, because results used the old `function` role. They now go out as a single `user` turn with one `functionResponse` per call, named after the function instead of the call id (#1454).

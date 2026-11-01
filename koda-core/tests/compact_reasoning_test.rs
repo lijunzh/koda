@@ -316,6 +316,136 @@ async fn an_empty_summary_keeps_the_task() {
     assert!(text.contains("Fix the parser in lexer.rs"), "{text}");
 }
 
+async fn insert_tool_batch(env: &Env, batch: usize) {
+    let calls: Vec<serde_json::Value> = (0..2)
+        .map(|i| {
+            serde_json::json!({
+                "id": format!("call_{batch}_{i}"),
+                "function_name": "Read",
+                "arguments": "{}",
+            })
+        })
+        .collect();
+    let id = env
+        .db
+        .insert_message(
+            &env.session_id,
+            &Role::Assistant,
+            None,
+            Some(&serde_json::to_string(&calls).unwrap()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    env.db.mark_message_complete(id).await.unwrap();
+    for i in 0..2 {
+        insert_tool_result(
+            env,
+            &format!("call_{batch}_{i}"),
+            &format!("output {batch} {i}"),
+        )
+        .await;
+    }
+}
+
+async fn insert_tool_result(env: &Env, call_id: &str, text: &str) {
+    env.db
+        .insert_message(
+            &env.session_id,
+            &Role::Tool,
+            Some(text),
+            None,
+            Some(call_id),
+            None,
+        )
+        .await
+        .unwrap();
+}
+
+/// Each of `texts` went to the summary or stayed in the context, none lost.
+async fn assert_each_was_summarized_or_kept(env: &Env, provider: &MockProvider, texts: &[String]) {
+    let calls = provider.recorded_calls();
+    let prompt = calls[0][0].content.clone().unwrap_or_default();
+    let kept = context_text(env).await;
+    for text in texts {
+        assert!(
+            prompt.contains(text) || kept.contains(text),
+            "{text} is in neither the summary prompt nor the context"
+        );
+    }
+}
+
+/// Keeping the newest 4 of these 10 rows would start the tail on the second
+/// result of batch 1, separated from its call.
+#[tokio::test]
+async fn compaction_never_splits_a_tool_batch() {
+    let _serial = lock_compact_state().await;
+    let env = Env::builder().max_context_tokens(100_000).build().await;
+    env.insert_message(&Role::User, "Fix the parser").await;
+    for batch in 0..3 {
+        insert_tool_batch(&env, batch).await;
+    }
+    let provider = MockProvider::new(vec![MockResponse::Text(
+        "<summary>Read three batches of files.</summary>".into(),
+    )]);
+
+    compact_with(&env, &provider).await;
+
+    let texts: Vec<String> = (0..3)
+        .flat_map(|batch| (0..2).map(move |i| format!("output {batch} {i}")))
+        .collect();
+    assert_each_was_summarized_or_kept(&env, &provider, &texts).await;
+}
+
+/// A short tail made of one batch stays whole rather than being compacted away.
+#[tokio::test]
+async fn compaction_keeps_a_batch_that_fills_the_tail() {
+    let _serial = lock_compact_state().await;
+    let env = Env::builder().max_context_tokens(100_000).build().await;
+    env.insert_message(&Role::User, "Fix the parser").await;
+    env.insert_message(&Role::Assistant, "Reading.").await;
+    insert_tool_batch(&env, 0).await;
+    let provider = MockProvider::new(vec![MockResponse::Text(
+        "<summary>The user wants the parser fixed.</summary>".into(),
+    )]);
+
+    compact_with(&env, &provider).await;
+
+    let text = context_text(&env).await;
+    assert!(text.contains("output 0 0"), "{text}");
+    assert!(text.contains("output 0 1"), "{text}");
+}
+
+/// Rows pruned at load count toward the raw table but not the history, so the
+/// two must agree on where the tail starts.
+#[tokio::test]
+async fn compaction_counts_the_same_rows_it_was_shown() {
+    let _serial = lock_compact_state().await;
+    let env = Env::builder().max_context_tokens(100_000).build().await;
+    let mut texts = Vec::new();
+    for i in 0..10 {
+        for (role, text) in [
+            (Role::User, format!("question {i}")),
+            (Role::Assistant, format!("answer {i}")),
+        ] {
+            env.insert_message(&role, &text).await;
+            texts.push(text);
+        }
+        if i >= 5 {
+            insert_tool_result(&env, &format!("orphan_{i}"), "pruned at load").await;
+        }
+    }
+    env.insert_message(&Role::User, "last question").await;
+    let provider = MockProvider::new(vec![MockResponse::Text(
+        "<summary>The user asked ten questions.</summary>".into(),
+    )]);
+
+    compact_with(&env, &provider).await;
+
+    assert_each_was_summarized_or_kept(&env, &provider, &texts).await;
+}
+
 /// Gemini, 2026-10-31: three replies of 6-9K chars stopped normally with no
 /// <summary> tag, and all of that text was thrown away for the marker.
 #[tokio::test]

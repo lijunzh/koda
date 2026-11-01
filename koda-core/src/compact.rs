@@ -288,7 +288,7 @@ pub async fn compact_session_with_provider(
         );
         no_summary_text(&history[..compact_count])
     });
-    let deleted = replace_with_summary(db, session_id, &summary, preserve_count).await?;
+    let deleted = replace_with_summary(db, session_id, &summary, history[compact_count].id).await?;
 
     if no_summary {
         // The history is smaller, but the model is still not summarizing.
@@ -321,8 +321,9 @@ pub async fn compact_without_summary(
         "Dropping {} messages without a summary to fit the window",
         history.len() - preserve_count
     );
-    let text = no_summary_text(&history[..history.len() - preserve_count]);
-    let deleted = replace_with_summary(db, session_id, &text, preserve_count).await?;
+    let compact_count = history.len() - preserve_count;
+    let text = no_summary_text(&history[..compact_count]);
+    let deleted = replace_with_summary(db, session_id, &text, history[compact_count].id).await?;
     Ok(Ok(CompactResult {
         deleted,
         summary_tokens: text.len() / 4,
@@ -400,6 +401,11 @@ async fn compaction_range(
     if history.len() <= preserve_count {
         return Ok(Err(CompactSkip::TooShort(history.len())));
     }
+    let split = tail_start(&history, history.len() - preserve_count);
+    if split == 0 {
+        return Ok(Err(CompactSkip::TooShort(history.len())));
+    }
+    let preserve_count = history.len() - split;
     Ok(Ok((history, preserve_count)))
 }
 
@@ -407,11 +413,24 @@ async fn replace_with_summary(
     db: &Database,
     session_id: &str,
     summary: &str,
-    preserve_count: usize,
+    keep_from_id: i64,
 ) -> Result<usize> {
     let compact_message = format!("{SUMMARY_HEADING}\n\n{summary}");
-    db.compact_session(session_id, &compact_message, preserve_count)
+    db.compact_session_before(session_id, &compact_message, keep_from_id)
         .await
+}
+
+/// Move a split off any tool result, so a call and its results stay together.
+///
+/// A result cut off from its call is dropped at load, which would leave it in
+/// neither the summary nor the tail. The batch goes to the summary, unless it
+/// runs to the end of the history: then it stays, whole.
+fn tail_start(history: &[crate::db::Message], split: usize) -> usize {
+    let is_result = |i: &usize| history[*i].role == Role::Tool;
+    match (split..history.len()).find(|i| !is_result(i)) {
+        Some(start) => start,
+        None => (0..split).rev().find(|i| !is_result(i)).unwrap_or(0),
+    }
 }
 
 /// Compute how many messages to preserve during compaction.
