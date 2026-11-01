@@ -126,6 +126,32 @@ async fn the_next_compaction_reads_the_last_summary_and_replaces_it() {
     assert!(summaries[0].contains("Second summary."), "{summaries:?}");
 }
 
+/// A summary can drop or rewrite the task. The user's own words go past it.
+#[tokio::test]
+async fn the_task_survives_summaries_that_lose_it() {
+    let _serial = lock_compact_state().await;
+    let task = "Fix the parser in lexer.rs";
+    let env = env_with_task(task).await;
+    let provider = MockProvider::new(vec![
+        MockResponse::Text("<summary>Some code was read.</summary>".into()),
+        MockResponse::Text("<summary>More code was read.</summary>".into()),
+    ]);
+
+    compact_with(&env, &provider).await;
+    for i in 0..10 {
+        env.insert_message(&Role::Assistant, &format!("later answer {i}"))
+            .await;
+        env.insert_message(&Role::User, &format!("later question {i}"))
+            .await;
+    }
+    compact_with(&env, &provider).await;
+
+    let text = context_text(&env).await;
+    assert_eq!(text.matches(task).count(), 1, "{text}");
+    assert!(text.contains("More code was read."), "{text}");
+    assert!(!text.contains("Some code was read."), "{text}");
+}
+
 /// The summary holds the only copy of what it replaced, so it is neither
 /// clipped like a tool result nor the first row to go when the text is too big.
 #[tokio::test]
@@ -148,7 +174,7 @@ async fn an_oversized_compaction_keeps_the_last_summary_whole() {
     let result = compact::compact_session_with_provider(
         &env.db,
         &env.session_id,
-        16_000,
+        12_000,
         &env.config.model_settings,
         &provider,
     )
@@ -160,7 +186,7 @@ async fn an_oversized_compaction_keeps_the_last_summary_whole() {
     let second = prompts[1][0].content.as_deref().unwrap();
     assert!(second.contains("TAIL OF THE SUMMARY"));
     assert!(
-        second.len() < 40_000,
+        second.len() < 33_000,
         "the conversation was meant to be truncated: {} chars",
         second.len()
     );

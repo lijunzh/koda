@@ -41,11 +41,12 @@ use crate::db::{Database, Role};
 use crate::engine::{EngineCommand, EngineEvent, EngineSink};
 use crate::file_tracker::FileTracker;
 use crate::inference_helpers::{
-    AUTO_COMPACT_THRESHOLD, CONTEXT_WARN_THRESHOLD, ContextShape, ModelCall,
-    RATE_LIMIT_MAX_RETRIES, assemble_messages, context_limit_from_error, ends_with_question,
-    estimate_subagent_preflight, estimate_tokens, estimate_tool_defs, is_context_overflow_error,
-    is_failed_stop, is_image_rejection_error, is_network_transient_error, is_rate_limit_error,
-    is_server_error, rate_limit_backoff, short_hash,
+    AUTO_COMPACT_THRESHOLD, CONTEXT_WARN_THRESHOLD, ContextShape, MIN_COMPACTABLE_DIVISOR,
+    ModelCall, RATE_LIMIT_MAX_RETRIES, assemble_messages, context_limit_from_error,
+    ends_with_question, estimate_subagent_preflight, estimate_tokens, estimate_tool_defs,
+    is_context_overflow_error, is_failed_stop, is_image_rejection_error,
+    is_network_transient_error, is_rate_limit_error, is_server_error, rate_limit_backoff,
+    short_hash,
 };
 use crate::loop_guard::{LoopAction, LoopDetector};
 use crate::persistence::Persistence;
@@ -62,6 +63,7 @@ use crate::trust::TrustMode;
 
 use anyhow::{Context, Result};
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -85,6 +87,10 @@ struct TurnState<'a> {
     /// Context window for this iteration: `config.max_context_tokens`, or
     /// the server's real limit once an overflow error has stated it.
     max_context_tokens: usize,
+    /// How far the provider's last count ran above our estimate of that
+    /// request. Zero until a provider reports, and again after a compaction,
+    /// when the count describes a context that is gone.
+    context_correction: &'a AtomicUsize,
     provider: &'a dyn LlmProvider,
     tool_defs: &'a [ToolDefinition],
     sink: &'a dyn EngineSink,
@@ -130,7 +136,9 @@ struct StreamResult {
 /// This is the single source of truth for context assembly — called on initial
 /// build, after pre-flight compaction, and after overflow recovery.
 ///
-/// Returns the messages and their estimated token count. The count is also
+/// Returns the messages and their token count: our estimate, raised by what the
+/// provider's last count showed the estimate misses. It never comes in below
+/// the estimate, so one bad report can't delay a compaction. The count is also
 /// published to `crate::context` for the TUI status bar, but decisions use the
 /// returned value: the atomics are process-wide, so another turn may have
 /// overwritten them by the time they are read back.
@@ -164,12 +172,14 @@ async fn assemble_context(turn: &TurnState<'_>) -> Result<(Vec<ChatMessage>, usi
         last_user.images = Some(imgs.to_vec());
     }
 
-    let context_used = estimate_tokens(&messages) + estimate_tool_defs(turn.tool_defs);
+    let correction = turn.context_correction.load(Ordering::Relaxed);
+    let context_used = estimate_tokens(&messages) + estimate_tool_defs(turn.tool_defs) + correction;
     let shape = ContextShape::of(&messages);
     let (largest_index, largest_role, largest_chars) = shape.largest.unwrap_or_default();
     tracing::info!(
         iteration = turn.iteration,
         estimated_tokens = context_used,
+        correction,
         window = turn.max_context_tokens,
         percent = crate::context::percent_of(context_used, turn.max_context_tokens),
         messages = messages.len(),
@@ -239,6 +249,14 @@ async fn preflight_compact_if_needed(
         return Ok(messages);
     }
 
+    // The system prompt and tools can't be compacted. On a window they nearly
+    // fill, a compaction would free nothing and fire again on the next call.
+    let history_tokens = estimate_tokens(messages.get(1..).unwrap_or_default());
+    if history_tokens < turn.max_context_tokens / MIN_COMPACTABLE_DIVISOR {
+        tracing::info!("Pre-flight: context at {ctx_pct}% but the history is too small to compact");
+        return shrink_if_over_window(turn, messages, context_used).await;
+    }
+
     // Circuit breaker: stop wasting API calls after repeated failures. It only
     // stops the summary call; a context past the window is still shrunk below.
     if crate::compact::is_compact_circuit_broken() {
@@ -277,6 +295,7 @@ async fn preflight_compact_if_needed(
             } else {
                 EngineEvent::Info { message }
             });
+            turn.context_correction.store(0, Ordering::Relaxed);
             let (messages, context_used) = assemble_context(turn).await?;
             shrink_if_over_window(turn, messages, context_used).await
         }
@@ -335,6 +354,7 @@ async fn shrink_if_over_window(
                         result.deleted
                     ),
                 });
+                turn.context_correction.store(0, Ordering::Relaxed);
                 (messages, context_used) = assemble_context(turn).await?;
                 let pct = crate::context::percent_of(context_used, turn.max_context_tokens);
                 if pct < AUTO_COMPACT_THRESHOLD {
@@ -460,6 +480,7 @@ async fn try_overflow_recovery(
     .await
     {
         Ok(Ok(result)) => {
+            turn.context_correction.store(0, Ordering::Relaxed);
             turn.sink.emit(EngineEvent::Info {
                 message: format!(
                     "\u{2705} Compacted {} messages. Retrying...",
@@ -927,6 +948,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
     // registry survives across turns and the next call drains anything
     // that completed during the idle gap.
     let mut skill_scope = SkillToolScope::new();
+    let context_correction = AtomicUsize::new(0);
     let mut total_prompt_tokens: i64 = 0;
     let mut total_completion_tokens: i64 = 0;
     let mut total_cache_read_tokens: i64 = 0;
@@ -1178,6 +1200,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
             iteration,
             config,
             max_context_tokens: learned_context.unwrap_or(config.max_context_tokens),
+            context_correction: &context_correction,
             provider,
             tool_defs: active_tool_defs,
             sink,
@@ -1313,6 +1336,12 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
 
         // Collect the streamed response
         let stream_result = collect_stream(&mut rx, sink, &cancel, tools, mode, project_root).await;
+        let estimated_tokens = estimate_tokens(&messages) + estimate_tool_defs(turn.tool_defs);
+        let context_tokens = provider.context_tokens(&stream_result.usage);
+        if context_tokens > 0 {
+            let correction = (context_tokens as usize).saturating_sub(estimated_tokens);
+            context_correction.store(correction, Ordering::Relaxed);
+        }
         ModelCall {
             purpose: "turn",
             system_hash: Some(&system_hash),
@@ -1320,7 +1349,8 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
             provider: provider.provider_name(),
             model: &config.model,
             messages: messages.len(),
-            estimated_tokens: estimate_tokens(&messages) + estimate_tool_defs(turn.tool_defs),
+            estimated_tokens,
+            context_tokens,
             first_chunk: stream_result
                 .first_chunk_at
                 .map(|at| at.duration_since(call_started)),
@@ -1469,7 +1499,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
             // context-window % meter: it reflects current context occupancy.
             // `total_prompt_tokens` (cumulative across iterations) drives the
             // Footer billing line. Conflating them caused #946 — see below.
-            let last_prompt_tokens = usage.prompt_tokens;
+            let last_prompt_tokens = provider.context_tokens(&usage);
             total_prompt_tokens += usage.prompt_tokens;
             total_completion_tokens += usage.completion_tokens;
             total_cache_read_tokens += usage.cache_read_tokens;

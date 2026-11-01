@@ -412,6 +412,14 @@ pub trait LlmProvider: Send + Sync {
 
     /// Provider display name (for UI).
     fn provider_name(&self) -> &str;
+
+    /// How many tokens the last request put in the context window, from what
+    /// the provider reported. Zero when it reported nothing.
+    ///
+    /// Gemini's and OpenAI's prompt counts include cached tokens.
+    fn context_tokens(&self, usage: &TokenUsage) -> i64 {
+        usage.prompt_tokens
+    }
 }
 
 // ── Provider factory ──────────────────────────────────────────

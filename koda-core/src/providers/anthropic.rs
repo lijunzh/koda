@@ -640,6 +640,11 @@ impl LlmProvider for AnthropicProvider {
         })
     }
 
+    /// `input_tokens` leaves out what the cache served or stored.
+    fn context_tokens(&self, usage: &TokenUsage) -> i64 {
+        usage.prompt_tokens + usage.cache_read_tokens + usage.cache_creation_tokens
+    }
+
     async fn list_models(&self) -> Result<Vec<ModelInfo>> {
         // Use the /v1/models endpoint to discover available models and verify the API key.
         let page = self.fetch_models().await?;
