@@ -11,7 +11,7 @@
 //! 1. **Base prompt** — from the agent's `system_prompt` field
 //! 2. **Behavioral instructions** — `instructions.md` (how to act)
 //! 3. **Environment** — working dir, platform, shell, model
-//! 4. **Quick Reference** — auto-generated from `SLASH_COMMANDS` + `ToolDefinition`
+//! 4. **Quick Reference** — slash commands, trust modes and undo (REPL only)
 //! 5. **Sub-agents** — available agents with descriptions and delegation guidance
 //! 6. **Skills** — live listing with `when_to_use` hints; model MUST activate before responding
 //! 7. **Memory** — project and global learned facts
@@ -32,9 +32,9 @@ pub struct EnvironmentInfo<'a> {
 
 /// Build the system prompt with instructions, environment, memory, and tool schemas.
 ///
-/// `commands` is a list of `(name, description)` pairs for user-facing slash
-/// commands (e.g. `("/help", "Show this help")`).  Pass `&[]` for sub-agents
-/// that don't expose a REPL.
+/// `commands` lists the user-facing slash commands (e.g. `"/help"`). Pass `&[]`
+/// when there is no REPL (sub-agents, headless, ACP): the quick reference is
+/// left out.
 ///
 /// `skill_registry` is used to build the live `## Skills` section so the model
 /// sees every available skill — with its `when_to_use` hint — without needing
@@ -48,7 +48,7 @@ pub fn build_system_prompt(
     base_prompt: &str,
     semantic_memory: &str,
     env: &EnvironmentInfo<'_>,
-    commands: &[(&str, &str)],
+    commands: &[&str],
     skill_registry: &SkillRegistry,
 ) -> String {
     let mut prompt = base_prompt.to_string();
@@ -69,38 +69,26 @@ pub fn build_system_prompt(
     }
     prompt.push_str(&format!("- Model: {}\n", env.model));
 
-    // Capabilities quick-reference (generated from code, replaces static capabilities.md)
-    prompt.push_str("\n## Koda Quick Reference\n\n");
-    prompt.push_str("Refer to this when the user asks \"what can you do?\" or about features.\n");
-
-    // Commands — generated from the registry passed by the CLI
+    // Quick reference for the REPL. Headless runs, ACP and sub-agents pass no
+    // commands, and none of this applies to them. Command descriptions live
+    // in `/help` and the manual: the prompt is paid on every call, and "what
+    // can you do?" is a rare question.
     if !commands.is_empty() {
-        prompt.push_str("\n### Commands (user types these in the REPL)\n\n");
-        for &(name, desc) in commands {
-            prompt.push_str(&format!("- `{name}` — {desc}\n"));
-        }
-        prompt.push_str("- `Shift+Tab` — cycle approval mode (auto/confirm)\n");
+        prompt.push_str("\n## Koda Quick Reference\n\n");
+        prompt.push_str(&format!(
+            "- Slash commands the user can type (`/help` describes them): {}\n",
+            commands.join(" ")
+        ));
+        prompt.push_str(
+            "- Trust modes, cycled with Shift+Tab: plan (read-only), safe (confirm changes), \
+             auto (default; confirm destructive operations only).\n",
+        );
+        prompt.push_str(
+            "- `/undo` rolls back file changes from the most recent turn. Its stack is \
+             **in-memory only** and dies with the process, so tell the user to commit \
+             to git if they want durable rollback.\n",
+        );
     }
-
-    // Static behavioral guidance (doesn't drift — hardcoded is fine)
-    prompt.push_str(
-        "\n### Input\n\n\
-         - `@file.rs` attaches file context, `@image.png` for multi-modal analysis\n\
-         - `Alt+Enter` inserts a newline for multi-line prompts\n\
-         - Piped input: `echo \"explain\" | koda` or `koda -p \"prompt\"` for headless/CI\n",
-    );
-    prompt.push_str(
-        "\n### Approval\n\n\
-         Two modes (cycle with Shift+Tab): **auto** (default), **confirm**.\n\
-         Hotkeys during tool confirmation: `y` approve, `n` reject, `f` feedback, `a` always.\n",
-    );
-    prompt.push_str(
-        "\n### Undo\n\n\
-         `/undo` rolls back file mutations from the most recent turn (Write,\n\
-         Edit, Delete, Overwrite). The undo stack is **in-memory only** — it\n\
-         does not survive process restarts. Tell the user to commit work to\n\
-         git before quitting if they want durable rollback.\n",
-    );
 
     // Tool definitions intentionally NOT rendered here — each provider
     // (Anthropic, OpenAI-compat, Gemini) sends the full schema (name +
@@ -323,7 +311,7 @@ mod tests {
         let result = build_system_prompt("You are helpful.", "", &env, &[], &registry);
         assert!(result.starts_with("You are helpful."));
         assert!(result.contains("Doing Tasks"));
-        assert!(result.contains("Koda Quick Reference"));
+        assert!(!result.contains("Koda Quick Reference"));
         assert!(!result.contains("Project Memory"));
     }
 
@@ -422,20 +410,35 @@ mod tests {
     fn test_commands_generated_from_registry() {
         let env = test_env();
         let registry = SkillRegistry::default();
-        let commands = &[("/help", "Show help"), ("/exit", "Quit")];
-        let result = build_system_prompt("Base.", "", &env, commands, &registry);
-        assert!(result.contains("`/help`"));
-        assert!(result.contains("Show help"));
-        assert!(result.contains("`/exit`"));
-        assert!(result.contains("Commands (user types these in the REPL)"));
+        let result = build_system_prompt("Base.", "", &env, &["/help", "/exit"], &registry);
+        assert!(result.contains("## Koda Quick Reference"));
+        assert!(result.contains("/help /exit"));
     }
 
     #[test]
-    fn test_no_commands_section_for_sub_agents() {
+    fn test_no_quick_reference_without_a_repl() {
         let env = test_env();
         let registry = SkillRegistry::default();
         let result = build_system_prompt("Base.", "", &env, &[], &registry);
-        assert!(!result.contains("Commands (user types these in the REPL)"));
+        assert!(!result.contains("Koda Quick Reference"));
+        assert!(!result.contains("Shift+Tab"));
+    }
+
+    /// The prompt used to describe two approval modes, "auto" and "confirm",
+    /// after `TrustMode` became plan/safe/auto.
+    #[test]
+    fn test_quick_reference_names_the_real_trust_modes() {
+        let env = test_env();
+        let registry = SkillRegistry::default();
+        let result = build_system_prompt("Base.", "", &env, &["/help"], &registry);
+        use crate::trust::TrustMode;
+        for mode in [TrustMode::Plan, TrustMode::Safe, TrustMode::Auto] {
+            assert!(
+                result.contains(mode.as_str()),
+                "quick reference must name {mode:?}"
+            );
+        }
+        assert!(!result.contains("Two modes"));
     }
 
     #[test]
@@ -702,13 +705,7 @@ mod tests {
             .len();
 
         // Realistic slash commands
-        let commands = &[
-            ("/help", "Show command help"),
-            ("/skills", "List available skills"),
-            ("/agents", "List available sub-agents"),
-            ("/memory", "Show project + global memory"),
-            ("/compact", "Compact conversation history"),
-        ];
+        let commands = &["/help", "/skills", "/agents", "/memory", "/compact"];
 
         let prompt = build_system_prompt(
             "You are koda, a helpful coding agent.",
@@ -811,7 +808,7 @@ mod tests {
     fn prompt_does_not_lie_about_git_checkpointing() {
         let env = test_env();
         let registry = SkillRegistry::default();
-        let prompt = build_system_prompt("You are koda.", "", &env, &[], &registry);
+        let prompt = build_system_prompt("You are koda.", "", &env, &["/undo"], &registry);
 
         // Phrases from the old (deleted) lie. If any of these come back,
         // either ship the feature or delete them again — do not just
@@ -828,9 +825,9 @@ mod tests {
             );
         }
 
-        // Positive: the truthful Undo section is present and explicitly
+        // Positive: the truthful undo line is present and explicitly
         // calls out the durability gap.
-        assert!(prompt.contains("### Undo"));
+        assert!(prompt.contains("`/undo`"));
         assert!(prompt.contains("in-memory only"));
     }
 }

@@ -369,10 +369,10 @@ impl TuiContext {
             startup_lines.extend(crate::startup::update_notice_lines(current, &latest));
         }
 
-        // Extract (name, description) pairs from SLASH_COMMANDS for the system prompt.
-        let commands: Vec<(&str, &str)> = crate::completer::SLASH_COMMANDS
+        // Command names from SLASH_COMMANDS for the system prompt.
+        let commands: Vec<&str> = crate::completer::SLASH_COMMANDS
             .iter()
-            .map(|&(name, desc, _)| (name, desc))
+            .map(|&(name, _, _)| name)
             .collect();
 
         let mut agent =
