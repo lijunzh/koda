@@ -171,7 +171,9 @@ finished.
 such as a sub-agent waiting on a model call, is dropped where it is. It still
 closes with one `turn_summary` and one `turn_end` of kind `cancelled`, but
 `run_summary` then has `success: false` and an `error`, and the run exits 1, since
-work may have been left unfinished.
+work may have been left unfinished. A running Bash or Cargo command doesn't see
+the interrupt, because it has its own process group, so it's killed when the turn
+is dropped.
 
 ### Reading unknown types
 

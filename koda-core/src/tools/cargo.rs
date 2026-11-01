@@ -59,6 +59,7 @@ use crate::providers::ToolDefinition;
 use crate::tools::{Tool, ToolEffect, ToolExecCtx, ToolResult};
 use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
+use koda_sandbox::process_group::{self, ProcessGroup};
 use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::path::Path;
@@ -1044,8 +1045,8 @@ async fn read_streams(
 ///
 /// Goes through [`crate::sandbox::build`] like `Bash`, so the kernel
 /// sandbox, env scrubbing and proxy env all apply. `CARGO_TERM_COLOR=never`
-/// keeps ANSI codes out of the libtest text. The child is `kill_on_drop`,
-/// so cancelling the turn (which drops this future) kills cargo too.
+/// keeps ANSI codes out of the libtest text. Cargo runs in its own process
+/// group, so dropping this future kills it and the tests or builds it started.
 pub async fn run_cargo(
     project_root: &Path,
     args: &Value,
@@ -1102,11 +1103,12 @@ async fn run_cargo_with_env(
         .envs(extra_env.iter().copied())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true);
+        .stderr(std::process::Stdio::piped());
+    process_group::isolate(&mut cmd);
     let mut child = cmd
         .spawn()
         .map_err(|e| anyhow!("Failed to run cargo: {e}"))?;
+    let mut group = ProcessGroup::of(&child);
     let stdout = child
         .stdout
         .take()
@@ -1127,6 +1129,7 @@ async fn run_cargo_with_env(
     match result {
         Ok(Ok(())) => {
             let status = child.wait().await.map_err(|e| anyhow!("wait: {e}"))?;
+            group.release();
             let exit_code = status.code().unwrap_or(-1);
             crate::tools::shell::annotate_violations(exit_code, &command, &mut collected.stderr);
             let report = Report::new(
@@ -1150,6 +1153,7 @@ async fn run_cargo_with_env(
         }
         Ok(Err(e)) => Err(anyhow!("Stream read error: {e}")),
         Err(_) => {
+            group.kill();
             let _ = child.kill().await;
             let msg = format!("{} timed out after {TIMEOUT_SECS}s", parsed.display());
             Ok(CargoOutput {

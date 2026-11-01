@@ -34,6 +34,7 @@ use crate::engine::{EngineEvent, EngineSink};
 use crate::providers::ToolDefinition;
 use crate::tools::bg_process::BgRegistry;
 use anyhow::Result;
+use koda_sandbox::process_group::{self, ProcessGroup};
 use serde_json::{Value, json};
 use std::path::Path;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -188,21 +189,24 @@ pub async fn run_shell_command(
     // sub-agent dispatch; defaults to `strict_default()` for the main
     // agent). PR-3 will start populating the policy with non-default
     // values via [`crate::sandbox::policy_for_agent`].
-    let mut child = crate::sandbox::build(
+    let mut cmd = crate::sandbox::build(
         command,
         project_root,
         trust,
         policy,
         proxy_port,
         socks5_port,
-    )?
-    .stdout(std::process::Stdio::piped())
-    .stderr(std::process::Stdio::piped())
+    )?;
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    process_group::isolate(&mut cmd);
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to execute command: {e}"))?;
     // Nothing here listens for a cancel, so a turn that's given up on drops
     // this call. The command mustn't carry on with nobody watching it.
-    .kill_on_drop(true)
-    .spawn()
-    .map_err(|e| anyhow::anyhow!("Failed to execute command: {e}"))?;
+    let mut group = ProcessGroup::of(&child);
 
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
@@ -236,6 +240,7 @@ pub async fn run_shell_command(
                 .wait()
                 .await
                 .map_err(|e| anyhow::anyhow!("wait: {e}"))?;
+            group.release();
             let exit_code = status.code().unwrap_or(-1);
 
             // Phase 1 of #934: surface kernel-sandbox denials to the model.
@@ -266,7 +271,8 @@ pub async fn run_shell_command(
         }
         Ok(Err(e)) => Err(anyhow::anyhow!("Stream read error: {e}")),
         Err(_) => {
-            // Timeout — kill the child.
+            // Timeout — kill the command and all it started.
+            group.kill();
             let _ = child.kill().await;
             let msg = format!("Command timed out after {timeout_secs}s: {command}");
             Ok(ShellOutput {
@@ -891,29 +897,72 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn dropping_a_foreground_call_kills_its_command() {
-        let tmp = tempfile::tempdir().unwrap();
-        let registry = BgRegistry::new();
-        let args = serde_json::json!({"command": "sleep 1; touch finished"});
-        let policy = koda_sandbox::SandboxPolicy::strict_default();
-        let call = run_shell_command(
-            tmp.path(),
-            &args,
+    /// Run `command` in the foreground with the arguments these tests share.
+    async fn run_in(
+        dir: &std::path::Path,
+        args: &serde_json::Value,
+    ) -> anyhow::Result<ShellOutput> {
+        run_shell_command(
+            dir,
+            args,
             256,
-            &registry,
+            &BgRegistry::new(),
             None,
             &crate::trust::TrustMode::Safe,
-            &policy,
+            &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
             None,
-        );
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn dropping_a_foreground_call_kills_all_it_started() {
+        let tmp = tempfile::tempdir().unwrap();
+        // The shell's next line, and a job it forked.
+        let command = "(sleep 1; touch forked) & sleep 1; touch finished";
+        let args = serde_json::json!({ "command": command });
+        let call = run_in(tmp.path(), &args);
         let cut_off = tokio::time::timeout(std::time::Duration::from_millis(300), call);
         assert!(cut_off.await.is_err(), "the command was still running");
 
         tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
         assert!(!tmp.path().join("finished").exists());
+        assert!(!tmp.path().join("forked").exists());
+    }
+
+    #[tokio::test]
+    async fn a_timeout_kills_all_the_command_started() {
+        let tmp = tempfile::tempdir().unwrap();
+        let command = "(sleep 2; touch forked) & sleep 30";
+        let args = serde_json::json!({ "command": command, "timeout": 1 });
+        let result = run_in(tmp.path(), &args).await.unwrap();
+        assert!(!result.success, "{}", result.summary);
+
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        assert!(!tmp.path().join("forked").exists());
+    }
+
+    #[tokio::test]
+    async fn a_finished_command_leaves_its_background_jobs_running() {
+        let tmp = tempfile::tempdir().unwrap();
+        let command = "(sleep 1; touch survived) > /dev/null 2>&1 &";
+        let args = serde_json::json!({ "command": command });
+        let result = run_in(tmp.path(), &args).await.unwrap();
+        assert!(result.success, "{}", result.summary);
+
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        assert!(tmp.path().join("survived").exists());
+    }
+
+    #[tokio::test]
+    async fn a_command_reading_stdin_sees_end_of_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let args = serde_json::json!({ "command": "cat; echo done" });
+        let result = run_in(tmp.path(), &args).await.unwrap();
+        assert!(result.success, "{}", result.summary);
+        assert!(result.full_output.unwrap().contains("done"));
     }
 
     #[tokio::test]
