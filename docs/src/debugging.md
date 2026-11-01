@@ -112,9 +112,7 @@ One line per completed call to the model. Written in `ModelCall::log`
 | `failed_stop` | `true` when the stop reason means the model failed to answer, such as `malformed_function_call` or `safety`. See `is_failed_stop`. |
 | `tool_calls`, `text_chars` | What the reply held |
 
-An empty `stop_reason` means Koda has none, so don't read it as a clean stop. On
-OpenAI-compatible streams, a usage chunk sent after the finish chunk currently
-clears it.
+An empty `stop_reason` means Koda has none, so don't read it as a clean stop.
 
 A call that returns an error writes `model call failed` at `warn` instead, with
 `purpose`, `provider`, `model`, `messages`, `elapsed_ms` and `error`.
@@ -202,6 +200,7 @@ One line per turn. Written by `TurnStats::log` (`koda-core/src/inference.rs`).
 |---|---|
 | `complete` | The model gave a final reply |
 | `iteration_cap` | Hit the iteration cap and wasn't extended |
+| `max_tokens` | Three replies in a row were cut off at the token cap |
 | `loop_guard` | The loop detector stopped it after its warning was ignored |
 | `aborted` | Stopped on a warning: server error, image rejection or dropped connection |
 | `error` | Any other error |
