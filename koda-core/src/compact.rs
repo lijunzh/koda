@@ -446,11 +446,18 @@ async fn compaction_range(
         return Ok(Err(CompactSkip::PendingToolCalls));
     }
 
-    let history = db.load_context(session_id).await?;
+    let mut history = db.load_context(session_id).await?;
 
     if history.len() < 4 {
         return Ok(Err(CompactSkip::TooShort(history.len())));
     }
+
+    // A summary's row comes after the tail it was stored with, but it covers
+    // what came before that tail, and the model reads it first. Compact in
+    // that order, or the next summary is written without the first one and
+    // the user's request.
+    history.sort_by_key(|msg| msg.role != Role::System);
+    let summaries = history.partition_point(|msg| msg.role == Role::System);
 
     // Partial: compact the oldest half, keep the newest half.
     // Full: compact everything except the last COMPACT_PRESERVE_COUNT.
@@ -458,7 +465,11 @@ async fn compaction_range(
     if history.len() <= preserve_count {
         return Ok(Err(CompactSkip::TooShort(history.len())));
     }
-    let split = tail_start(&history, history.len() - preserve_count);
+    // Replacing a summary with itself would free nothing, so take a real row.
+    let split = (history.len() - preserve_count)
+        .max(summaries + 1)
+        .min(history.len());
+    let split = tail_start(&history, split);
     if split == 0 {
         return Ok(Err(CompactSkip::TooShort(history.len())));
     }
@@ -559,6 +570,11 @@ fn build_summary_prompt(conversation_text: &str) -> String {
             this summary. Include file names and code snippets.\n\
          9. **Optional Next Step**: Only if directly in line with the user's most recent \n\
             explicit request. Include direct quotes from the conversation to prevent drift.\n\
+         \n\
+         This summary hands the work over; it does not change the task. Add no instruction \n\
+         or restriction the user did not give: reading code first does not mean edits are \n\
+         off the table. If the conversation opens with an earlier summary, carry its \n\
+         Primary Request and All User Messages into yours in full.\n\
          \n\
          Format your response as:\n\
          \n\
@@ -726,7 +742,9 @@ fn collapse_blank_lines(stripped: &str) -> String {
 
 /// Progressively drop oldest messages until the conversation text fits
 /// in the available token budget. Keeps at least `COMPACT_PRESERVE_COUNT`
-/// recent messages. Returns `None` if it can't fit after max retries.
+/// recent messages, and any leading summary: it holds what was already
+/// compacted, the user's request included, and has no other copy once this
+/// compaction archives it. Returns `None` if it can't fit after max retries.
 fn truncate_until_fits(history: &[crate::db::Message], available_tokens: usize) -> Option<String> {
     let total = history.len();
     // Minimum messages to keep: the preserved tail + at least 1 to summarize
@@ -735,6 +753,7 @@ fn truncate_until_fits(history: &[crate::db::Message], available_tokens: usize) 
         return None;
     }
 
+    let summaries = history.partition_point(|msg| msg.role == Role::System);
     let mut drop_count = 0usize;
     for attempt in 0..MAX_TRUNCATION_RETRIES {
         // Drop 20% of remaining summarizable messages each attempt
@@ -747,8 +766,10 @@ fn truncate_until_fits(history: &[crate::db::Message], available_tokens: usize) 
             drop_count = total - min_keep;
         }
 
-        let truncated = &history[drop_count..];
-        let text = build_conversation_text(truncated);
+        let mut text = build_conversation_text(&history[..summaries]);
+        text.push_str(&build_conversation_text(
+            &history[drop_count.max(summaries)..],
+        ));
         let text_tokens = (text.len() as f64 / crate::inference_helpers::CHARS_PER_TOKEN) as usize
             + crate::inference_helpers::SYSTEM_PROMPT_OVERHEAD;
 
@@ -769,7 +790,8 @@ fn truncate_until_fits(history: &[crate::db::Message], available_tokens: usize) 
 /// Format conversation history into a single string for the summarizer.
 ///
 /// Per-message content is truncated to 2000 chars (individual tool outputs
-/// can be huge but add little summarization value beyond a preview).
+/// can be huge but add little summarization value beyond a preview). An earlier
+/// summary stays whole: it is already short, and it replaces rows that are gone.
 /// No total cap — the capacity check in `compact_session_with_provider`
 /// guarantees the result fits in the model's context window.
 fn build_conversation_text(history: &[crate::db::Message]) -> String {
@@ -777,7 +799,11 @@ fn build_conversation_text(history: &[crate::db::Message]) -> String {
     for msg in history {
         let role = msg.role.as_str();
         if let Some(ref content) = msg.content {
-            let truncated: String = content.chars().take(2000).collect();
+            let limit = match msg.role {
+                Role::System => usize::MAX,
+                _ => 2000,
+            };
+            let truncated: String = content.chars().take(limit).collect();
             text.push_str(&format!("[{role}]: {truncated}\n\n"));
         }
         if let Some(ref tool_calls) = msg.tool_calls {

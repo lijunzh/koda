@@ -86,6 +86,103 @@ async fn compact_summarizes_with_room_for_thinking() {
     assert!(!is_compact_circuit_broken());
 }
 
+/// A summary's row sorts after the tail it was stored with. The next
+/// compaction must still see it first, or it summarizes the tail with no
+/// request in sight and says the request is unknown.
+#[tokio::test]
+async fn the_next_compaction_reads_the_last_summary_and_replaces_it() {
+    let _serial = lock_compact_state().await;
+    let env = env_with_task("Fix the parser in lexer.rs").await;
+    let provider = MockProvider::new(vec![
+        MockResponse::Text("<summary>The task is fixing lexer.rs. MIDDLE END</summary>".into()),
+        MockResponse::Text("<summary>Second summary.</summary>".into()),
+    ]);
+
+    compact_with(&env, &provider).await;
+    for i in 0..10 {
+        env.insert_message(&Role::Assistant, &format!("later answer {i}"))
+            .await;
+        env.insert_message(&Role::User, &format!("later question {i}"))
+            .await;
+    }
+    compact_with(&env, &provider).await;
+
+    let prompts = provider.recorded_calls();
+    let second = prompts[1][0].content.as_deref().unwrap();
+    let conversation = second.split("---\n\n").last().unwrap();
+    assert!(
+        conversation.starts_with("[system]: [Compacted conversation summary]"),
+        "{conversation}"
+    );
+    assert!(conversation.contains("MIDDLE END"), "{conversation}");
+
+    let history = env.db.load_context(&env.session_id).await.unwrap();
+    let summaries: Vec<_> = history
+        .iter()
+        .filter(|m| m.role == Role::System)
+        .filter_map(|m| m.content.as_deref())
+        .collect();
+    assert_eq!(summaries.len(), 1, "{summaries:?}");
+    assert!(summaries[0].contains("Second summary."), "{summaries:?}");
+}
+
+/// The summary holds the only copy of what it replaced, so it is neither
+/// clipped like a tool result nor the first row to go when the text is too big.
+#[tokio::test]
+async fn an_oversized_compaction_keeps_the_last_summary_whole() {
+    let _serial = lock_compact_state().await;
+    let env = env_with_task("Fix the parser in lexer.rs").await;
+    let long_summary = format!("{}TAIL OF THE SUMMARY", "detail ".repeat(400));
+    let provider = MockProvider::new(vec![
+        MockResponse::Text(format!("<summary>{long_summary}</summary>")),
+        MockResponse::Text("<summary>Second summary.</summary>".into()),
+    ]);
+    compact_with(&env, &provider).await;
+
+    for i in 0..30 {
+        env.insert_message(&Role::Assistant, &"a".repeat(1_900))
+            .await;
+        env.insert_message(&Role::User, &format!("later question {i}"))
+            .await;
+    }
+    let result = compact::compact_session_with_provider(
+        &env.db,
+        &env.session_id,
+        16_000,
+        &env.config.model_settings,
+        &provider,
+    )
+    .await
+    .unwrap();
+    assert!(result.is_ok(), "the compaction must run");
+
+    let prompts = provider.recorded_calls();
+    let second = prompts[1][0].content.as_deref().unwrap();
+    assert!(second.contains("TAIL OF THE SUMMARY"));
+    assert!(
+        second.len() < 40_000,
+        "the conversation was meant to be truncated: {} chars",
+        second.len()
+    );
+}
+
+/// A run stopped reading code and asked for permission the user had already
+/// given after a summary told it not to edit.
+#[tokio::test]
+async fn the_summary_prompt_forbids_invented_restrictions() {
+    let _serial = lock_compact_state().await;
+    let env = env_with_history(100_000).await;
+    let provider = MockProvider::new(vec![MockResponse::Text(
+        "<summary>Handed over.</summary>".into(),
+    )]);
+
+    compact_with(&env, &provider).await;
+
+    let prompts = provider.recorded_calls();
+    let prompt = prompts[0][0].content.as_deref().unwrap();
+    assert!(prompt.contains("Add no instruction"), "{prompt}");
+}
+
 #[tokio::test]
 async fn compact_retries_an_empty_length_reply_with_a_larger_cap() {
     let _serial = lock_compact_state().await;

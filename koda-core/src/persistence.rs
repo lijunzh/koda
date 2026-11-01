@@ -355,7 +355,8 @@ pub trait Persistence: Send + Sync {
         preserve_count: usize,
     ) -> Result<usize>;
 
-    /// Compact every message older than `keep_from_id` into a summary.
+    /// Compact every message older than `keep_from_id`, and any earlier
+    /// summary, into a summary.
     ///
     /// Takes a row id because `preserve_count` counts raw rows, which include
     /// any that `load_context` prunes.

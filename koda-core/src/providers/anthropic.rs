@@ -227,6 +227,8 @@ struct ImageSource {
 struct MessagesResponse {
     content: Vec<ContentBlock>,
     usage: AnthropicUsage,
+    #[serde(default)]
+    stop_reason: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -632,6 +634,7 @@ impl LlmProvider for AnthropicProvider {
                 completion_tokens: msg_resp.usage.output_tokens,
                 cache_read_tokens: msg_resp.usage.cache_read_input_tokens,
                 cache_creation_tokens: msg_resp.usage.cache_creation_input_tokens,
+                stop_reason: msg_resp.stop_reason.unwrap_or_default(),
                 ..Default::default()
             },
         })

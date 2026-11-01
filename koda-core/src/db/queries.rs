@@ -191,7 +191,8 @@ pub(crate) fn sanitize_history(messages: &mut Vec<Message>) -> Vec<HistoryEdit> 
 enum KeepRows {
     /// The newest N rows.
     Last(usize),
-    /// Every row from this id on.
+    /// Every row from this id on, except earlier summaries: the new summary
+    /// was written from them, whatever their ids.
     From(i64),
 }
 
@@ -214,8 +215,8 @@ impl Database {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
 
         // Get active (non-compacted) message IDs ordered oldest→newest
-        let all_ids: Vec<(i64,)> = sqlx::query_as(
-            "SELECT id FROM messages WHERE session_id = ? AND compacted_at IS NULL ORDER BY id ASC",
+        let all_ids: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT id, role FROM messages WHERE session_id = ? AND compacted_at IS NULL ORDER BY id ASC",
         )
         .bind(session_id)
         .fetch_all(&mut *tx)
@@ -228,11 +229,15 @@ impl Database {
         }
 
         // Determine which messages to archive (everything except the tail)
-        let keep_from = match keep {
-            KeepRows::Last(count) => total.saturating_sub(count),
-            KeepRows::From(id) => all_ids.partition_point(|row| row.0 < id),
-        };
-        let ids_to_archive: Vec<i64> = all_ids[..keep_from].iter().map(|r| r.0).collect();
+        let ids_to_archive: Vec<i64> = all_ids
+            .iter()
+            .enumerate()
+            .filter(|(index, (id, role))| match keep {
+                KeepRows::Last(count) => *index < total.saturating_sub(count),
+                KeepRows::From(keep_from) => *id < keep_from || role == "system",
+            })
+            .map(|(_, (id, _))| *id)
+            .collect();
         let archived_count = ids_to_archive.len();
 
         if archived_count == 0 {
