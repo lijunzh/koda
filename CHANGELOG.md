@@ -13,6 +13,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **The context estimate counts tool definitions.** They travel with every request but were left out, so a run could pass its window while the meter said about 70%, and a local server with a hard limit could reject the request. Compaction now fires earlier on small windows.
+- **Usage totals include compaction calls.** They were logged but missing from `run_summary` and session usage. In one run they were a fifth of the tokens and most of the time.
+- **The log says how much the summarizer clips.** The `compaction` line gained `clipped_chars`, because `truncated=false` could sit beside 35,000 clipped characters.
 - **A second compaction keeps the user's request.** A summary is stored after the rows it kept, so the next compaction took those rows and left the summary out. Its reply had no request to work from, and the session held two summaries that disagreed. Compaction now reads the last summary first and replaces it, and that summary is never clipped or dropped to fit.
 - **A compaction summary can't quietly change the task.** One summary told the model to keep investigating without changing code, on a "find and fix" request. The summary prompt now forbids adding instructions the user did not give.
 - **Anthropic's non-streaming replies report their stop reason.** It was never read, so an empty reply at the token cap skipped compaction's retry and the log's `stop_reason` was blank.
