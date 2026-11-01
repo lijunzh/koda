@@ -29,7 +29,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Headless output format (`--output-format`). See the module docs for
 /// what each format writes to stdout vs stderr.
@@ -99,18 +99,20 @@ pub async fn run_headless(
     let cli_sink = HeadlessSink::new(cmd_tx, output_format);
     let cancel = session.cancel_token();
     let started = Instant::now();
-    let result = tokio::select! {
-        r = session.run_turn(
-            &config,
-            pending_images,
-            &cli_sink,
-            &mut cmd_rx,
-            None,
-        ) => r,
-        _ = tokio::signal::ctrl_c() => {
-            cancel.cancel();
-            eprintln!("\n\x1b[33m\u{26a0} Interrupted\x1b[0m");
-            Ok(())
+    let result = {
+        let turn = session.run_turn(&config, pending_images, &cli_sink, &mut cmd_rx, None);
+        tokio::pin!(turn);
+        tokio::select! {
+            r = &mut turn => r,
+            _ = tokio::signal::ctrl_c() => {
+                cancel.cancel();
+                eprintln!("\n\x1b[33m\u{26a0} Interrupted\x1b[0m");
+                // Let the turn wind down so it reports how it ended, but
+                // don't hang on a tool that ignores the cancel.
+                tokio::time::timeout(INTERRUPT_GRACE, turn)
+                    .await
+                    .unwrap_or(Ok(()))
+            }
         }
     };
 
@@ -163,6 +165,9 @@ pub async fn run_headless(
         }
     }
 }
+
+/// How long an interrupted turn gets to stop before the run reports anyway.
+const INTERRUPT_GRACE: Duration = Duration::from_secs(5);
 
 // ---------------------------------------------------------------------------
 // Run summary — the `json` object / final `stream-json` line
