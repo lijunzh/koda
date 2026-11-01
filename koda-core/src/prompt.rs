@@ -63,6 +63,10 @@ pub fn build_system_prompt(
         "- Working directory: {}\n",
         env.project_root.display()
     ));
+    prompt.push_str(&format!(
+        "- Date: {} (UTC)\n",
+        time::OffsetDateTime::now_utc().date()
+    ));
     prompt.push_str(&format!("- Platform: {}\n", env.platform));
     if let Ok(shell) = std::env::var("SHELL") {
         prompt.push_str(&format!("- Shell: {}\n", shell));
@@ -393,6 +397,14 @@ mod tests {
         assert!(result.contains("/test/project"));
         assert!(result.contains("test-model"));
         assert!(result.contains("test-os"));
+        let date = result
+            .lines()
+            .find_map(|line| line.strip_prefix("- Date: "))
+            .expect("environment states the date");
+        assert!(
+            date.starts_with("20") && date.ends_with(" (UTC)"),
+            "unexpected date line: {date}"
+        );
     }
 
     #[test]
