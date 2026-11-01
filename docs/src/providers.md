@@ -20,6 +20,9 @@
 | vLLM | `vllm` | — | auto-detect | ✗ |
 | llama.cpp | `llama-cpp` | — | auto-detect | ✗ |
 
+Gemini gets far less testing than Claude, so expect some bugs. See its
+[known limitations](https://github.com/lijunzh/koda/issues/1473).
+
 Local providers (LM Studio, Ollama, vLLM, llama.cpp) are auto-detected on
 first run and require no API key. The model is discovered from the running
 server. The names are shortcuts for a default URL (`lm-studio` is
