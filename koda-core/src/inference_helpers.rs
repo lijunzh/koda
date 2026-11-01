@@ -17,6 +17,10 @@ use crate::providers::{ChatMessage, ToolCall};
 /// Matches CC's default (~85%). Hard-coded — no config knob needed.
 pub const AUTO_COMPACT_THRESHOLD: usize = 85;
 
+/// A history under a window divided by this isn't worth a compaction: most of
+/// the context is then the system prompt and tools, which can't shrink.
+pub const MIN_COMPACTABLE_DIVISOR: usize = 5;
+
 /// Context usage % at which a user-visible warning is emitted.
 /// Sits below `AUTO_COMPACT_THRESHOLD` so users see the warning
 /// 1–2 turns before compaction fires.
@@ -230,7 +234,8 @@ pub const INTERRUPTED_TURN_SENTINEL: &str = "[Turn interrupted — pick up from 
 /// Follows the compaction summary, which reaches the model as a user message.
 const COMPACTION_CONTINUATION_HINT: &str = "Your context was compacted. The text above summarizes \
     our earlier conversation. Do not mention the summary or that compaction occurred. Continue \
-    the conversation naturally based on the summarized context.";
+    the conversation naturally based on the summarized context, with all your tools still \
+    available.";
 
 /// The user message that carries a session's compaction summaries, if any.
 ///
@@ -408,6 +413,8 @@ pub(crate) struct ModelCall<'a> {
     pub first_chunk: Option<std::time::Duration>,
     /// Time for the whole call.
     pub elapsed: std::time::Duration,
+    /// What the provider says the request put in the context window.
+    pub context_tokens: i64,
     /// Usage as the provider reported it.
     pub usage: &'a crate::providers::TokenUsage,
     /// Tool calls in the reply.
@@ -444,6 +451,7 @@ impl ModelCall<'_> {
             model = self.model,
             messages = self.messages,
             estimated_tokens = self.estimated_tokens,
+            context_tokens = self.context_tokens,
             first_chunk_ms = self.first_chunk.map(|d| d.as_millis() as u64),
             elapsed_ms = self.elapsed.as_millis() as u64,
             prompt_tokens = self.usage.prompt_tokens,

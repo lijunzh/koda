@@ -42,11 +42,8 @@ use tokio::sync::RwLock;
 /// Minimum number of recent messages to keep verbatim during compaction.
 pub const COMPACT_PRESERVE_COUNT: usize = 4;
 
-/// Fraction of history to compact in partial mode (compact oldest half).
-const PARTIAL_COMPACT_FRACTION: f64 = 0.5;
-
-/// Below this message count, always do full compaction (partial is overhead).
-const PARTIAL_COMPACT_THRESHOLD: usize = 12;
+/// Share of the history, by size, kept verbatim. Gemini CLI keeps the same 30%.
+const TAIL_SHARE: f64 = 0.3;
 
 /// Stop auto-compacting after this many consecutive failures.
 /// Prevents wasting an API call every turn when compaction is stuck
@@ -98,10 +95,10 @@ const NO_SUMMARY_MARKER: &str = "(no summary available)";
 /// Heading on a stored compaction summary.
 const SUMMARY_HEADING: &str = "[Compacted conversation summary]";
 
-/// Heading on what a marker carries from the messages it replaces.
+/// Heading on the user's own words, carried past a compaction verbatim.
 const CARRIED_HEADING: &str = "Carried over from the earlier conversation:";
 
-/// Most text a marker carries from the messages it replaces. A compaction has
+/// Most text carried from the messages a compaction replaces. A compaction has
 /// to shrink the context, so this stays well under a small window.
 const MAX_CARRIED_CHARS: usize = 4_000;
 
@@ -162,9 +159,9 @@ pub async fn compact_session(
 
 /// Core compaction logic — accepts `&dyn LlmProvider` directly.
 ///
-/// Uses partial compaction for longer sessions (≥12 messages): only the oldest
-/// half of messages are summarized and archived, preserving more recent context
-/// verbatim. Short sessions fall back to full compaction (keep last 4).
+/// Keeps the newest 30% of the history, by size, verbatim and summarizes the
+/// rest. The user's own messages from that part are carried past
+/// the summary word for word, so a poor summary can't lose or rewrite the task.
 ///
 /// Used by the inference loop for pre-flight compaction (where we already
 /// have a `&dyn LlmProvider` and don't need the Arc<RwLock<>> wrapper).
@@ -255,6 +252,7 @@ pub async fn compact_session_with_provider(
             model: &model_settings.model,
             messages: messages.len(),
             estimated_tokens: crate::inference_helpers::estimate_tokens(&messages),
+            context_tokens: provider.context_tokens(&response.usage),
             first_chunk: None,
             elapsed: call_started.elapsed(),
             usage: &response.usage,
@@ -324,13 +322,16 @@ pub async fn compact_session_with_provider(
     };
 
     let no_summary = summary.is_none();
-    let summary = summary.unwrap_or_else(|| {
-        tracing::warn!(
-            "Compact summary is empty or too short; replacing {compact_count} messages \
-             with a \"{NO_SUMMARY_MARKER}\" marker"
-        );
-        no_summary_text(&history[..compact_count])
-    });
+    let summary = match summary {
+        Some(summary) => with_user_messages(summary, &history[..compact_count]),
+        None => {
+            tracing::warn!(
+                "Compact summary is empty or too short; replacing {compact_count} messages \
+                 with a \"{NO_SUMMARY_MARKER}\" marker"
+            );
+            no_summary_text(&history[..compact_count])
+        }
+    };
     let deleted = replace_with_summary(
         db,
         session_id,
@@ -411,33 +412,55 @@ pub async fn compact_without_summary(
 
 /// The marker, plus what the model can't work without: the user's messages and
 /// any earlier summary from the part being replaced (#1452).
+fn no_summary_text(replaced: &[crate::db::Message]) -> String {
+    let carried = carried_text(replaced, true);
+    if carried.is_empty() {
+        return NO_SUMMARY_MARKER.to_string();
+    }
+    format!("{NO_SUMMARY_MARKER}\n\n{CARRIED_HEADING}\n\n{carried}")
+}
+
+/// A model's summary, plus the user's own words from the part being replaced.
+fn with_user_messages(summary: String, replaced: &[crate::db::Message]) -> String {
+    let carried = carried_text(replaced, false);
+    if carried.is_empty() {
+        return summary;
+    }
+    format!("{summary}\n\n{CARRIED_HEADING}\n\n{carried}")
+}
+
+/// What to keep word for word from `replaced`: its user messages, and from an
+/// earlier summary either all of it or only what that summary already carried.
 ///
 /// Newest first until [`MAX_CARRIED_CHARS`] runs out, the same order Codex
 /// keeps user messages through compaction, then back in conversation order.
-fn no_summary_text(replaced: &[crate::db::Message]) -> String {
+fn carried_text(replaced: &[crate::db::Message], whole_summaries: bool) -> String {
     let mut budget = MAX_CARRIED_CHARS;
     let mut carried = Vec::new();
     for msg in replaced.iter().rev() {
         let Some(text) = msg.content.as_deref().map(str::trim) else {
             continue;
         };
-        let keep = match msg.role {
-            Role::User => msg.tool_call_id.is_none(),
-            Role::System => text.starts_with(SUMMARY_HEADING),
-            _ => false,
+        let text = match msg.role {
+            Role::User if msg.tool_call_id.is_none() => Some(text),
+            Role::System if text.starts_with(SUMMARY_HEADING) && whole_summaries => {
+                // An earlier marker carries its text forward; don't nest the marker.
+                let prefixes = [SUMMARY_HEADING, NO_SUMMARY_MARKER, CARRIED_HEADING];
+                Some(prefixes.iter().fold(text, |text, prefix| {
+                    text.strip_prefix(prefix).unwrap_or(text).trim()
+                }))
+            }
+            Role::System if text.starts_with(SUMMARY_HEADING) => text
+                .rsplit_once(CARRIED_HEADING)
+                .map(|(_, carried)| carried.trim()),
+            _ => None,
         };
-        if !keep || text.is_empty() {
+        let Some(text) = text.filter(|text| !text.is_empty()) else {
             continue;
-        }
+        };
         if budget == 0 {
             break;
         }
-        // An earlier marker carries its text forward; don't nest the marker.
-        let text = [SUMMARY_HEADING, NO_SUMMARY_MARKER, CARRIED_HEADING]
-            .iter()
-            .fold(text, |text, prefix| {
-                text.strip_prefix(prefix).unwrap_or(text).trim()
-            });
         let end = text
             .char_indices()
             .map(|(i, c)| i + c.len_utf8())
@@ -448,14 +471,7 @@ fn no_summary_text(replaced: &[crate::db::Message]) -> String {
         carried.push(&text[..end]);
     }
     carried.reverse();
-    let mut out = NO_SUMMARY_MARKER.to_string();
-    if !carried.is_empty() {
-        out.push_str("\n\n");
-        out.push_str(CARRIED_HEADING);
-        out.push_str("\n\n");
-        out.push_str(&carried.join("\n\n"));
-    }
-    out
+    carried.join("\n\n")
 }
 
 /// Load the history and decide how many trailing messages stay verbatim.
@@ -480,9 +496,7 @@ async fn compaction_range(
     history.sort_by_key(|msg| msg.role != Role::System);
     let summaries = history.partition_point(|msg| msg.role == Role::System);
 
-    // Partial: compact the oldest half, keep the newest half.
-    // Full: compact everything except the last COMPACT_PRESERVE_COUNT.
-    let preserve_count = compute_preserve_count(history.len());
+    let preserve_count = preserve_count(&history);
     if history.len() <= preserve_count {
         return Ok(Err(CompactSkip::TooShort(history.len())));
     }
@@ -525,20 +539,27 @@ fn tail_start(history: &[crate::db::Message], split: usize) -> usize {
     }
 }
 
-/// Compute how many messages to preserve during compaction.
+/// How many of the newest messages stay verbatim: enough for [`TAIL_SHARE`] of
+/// the history by size, and at least [`COMPACT_PRESERVE_COUNT`].
 ///
-/// - Short sessions (<12 messages): full compaction, keep last 4.
-/// - Longer sessions: partial compaction, keep the newest ~50%.
-///
-/// This preserves more recent context verbatim in long sessions,
-/// producing a smaller, more focused summary of just the oldest half.
-fn compute_preserve_count(total: usize) -> usize {
-    if total < PARTIAL_COMPACT_THRESHOLD {
-        COMPACT_PRESERVE_COUNT
-    } else {
-        let keep = (total as f64 * (1.0 - PARTIAL_COMPACT_FRACTION)).ceil() as usize;
-        keep.max(COMPACT_PRESERVE_COUNT)
-    }
+/// By size and not by row, because rows vary by orders of magnitude: a count
+/// keeps a few huge tool results and frees almost nothing, or keeps nothing.
+fn preserve_count(history: &[crate::db::Message]) -> usize {
+    let size = |msg: &crate::db::Message| {
+        msg.content.as_deref().map_or(0, str::len) + msg.tool_calls.as_deref().map_or(0, str::len)
+    };
+    let total: usize = history.iter().map(size).sum();
+    let budget = (total as f64 * TAIL_SHARE) as usize;
+    let mut kept = 0;
+    let rows = history
+        .iter()
+        .rev()
+        .take_while(|msg| {
+            kept += size(msg);
+            kept <= budget
+        })
+        .count();
+    rows.max(COMPACT_PRESERVE_COUNT).min(history.len())
 }
 
 /// Build the 9-section summarization prompt.
@@ -580,8 +601,8 @@ fn build_summary_prompt(conversation_text: &str) -> String {
             losing it for the rest of the session. Group as: created / modified / deleted.\n\
          4. **Errors and Fixes**: List all errors and how they were resolved. Note user feedback.\n\
          5. **Problem Solving**: Document problems solved and ongoing troubleshooting.\n\
-         6. **All User Messages**: List ALL user messages (not tool results). Critical for \n\
-            preserving feedback and changing intent.\n\
+         6. **User Feedback**: Corrections and changes of intent. The user's own messages \n\
+            are kept word for word beside this summary, so don't copy them out.\n\
          7. **Pending Tasks**: Outline anything unfinished or deferred.\n\
             **Preserve every outstanding TodoWrite item verbatim** with its current status\n\
             (pending / in_progress). Compaction is the only mechanism that defends plan\n\
@@ -596,7 +617,7 @@ fn build_summary_prompt(conversation_text: &str) -> String {
          This summary hands the work over; it does not change the task. Add no instruction \n\
          or restriction the user did not give: reading code first does not mean edits are \n\
          off the table. If the conversation opens with an earlier summary, carry its \n\
-         Primary Request and All User Messages into yours in full.\n\
+         Primary Request into yours; what it carries over is kept for you.\n\
          \n\
          Format your response as:\n\
          \n\
@@ -1053,31 +1074,32 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_preserve_count_short_sessions() {
-        // Below threshold: always keep COMPACT_PRESERVE_COUNT (4)
-        assert_eq!(compute_preserve_count(4), 4);
-        assert_eq!(compute_preserve_count(8), 4);
-        assert_eq!(compute_preserve_count(11), 4);
+    fn the_tail_is_sized_by_content_not_by_row() {
+        let big = "x".repeat(3_000);
+        let mut msgs: Vec<_> = (0..20)
+            .map(|_| make_msg("user", Some("short"), None))
+            .collect();
+        msgs.extend((0..7).map(|_| make_msg("user", Some(&big), None)));
+        // 30% of the size is two of the seven big rows; the minimum wins.
+        assert_eq!(preserve_count(&msgs), COMPACT_PRESERVE_COUNT);
+
+        let even: Vec<_> = (0..100)
+            .map(|_| make_msg("user", Some("same size"), None))
+            .collect();
+        assert_eq!(preserve_count(&even), 30);
+
+        // A huge first prompt doesn't pull the whole history into the tail.
+        let mut huge_first = vec![make_msg("user", Some(&big), None)];
+        huge_first.extend((0..6).map(|_| make_msg("assistant", Some("short"), None)));
+        assert_eq!(preserve_count(&huge_first), 6);
     }
 
     #[test]
-    fn test_compute_preserve_count_partial() {
-        // At threshold (12): keep ceil(12 * 0.5) = 6
-        assert_eq!(compute_preserve_count(12), 6);
-        // 20 messages: keep ceil(20 * 0.5) = 10
-        assert_eq!(compute_preserve_count(20), 10);
-        // 50 messages: keep 25
-        assert_eq!(compute_preserve_count(50), 25);
-        // 100 messages: keep 50
-        assert_eq!(compute_preserve_count(100), 50);
-    }
-
-    #[test]
-    fn test_compute_preserve_count_never_below_minimum() {
-        // Even at threshold, result must be >= COMPACT_PRESERVE_COUNT
-        for n in 0..200 {
-            assert!(compute_preserve_count(n) >= COMPACT_PRESERVE_COUNT);
-        }
+    fn a_short_history_keeps_what_it_has() {
+        let msgs: Vec<_> = (0..3)
+            .map(|_| make_msg("user", Some("short"), None))
+            .collect();
+        assert_eq!(preserve_count(&msgs), 3);
     }
 
     // ── build_summary_prompt ────────────────────────────────────────────

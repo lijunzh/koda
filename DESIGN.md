@@ -441,7 +441,7 @@ thresholds and have different costs:
 | Layer | Trigger | Cost | Mechanism |
 |---|---|---|---|
 | **Microcompact** (`microcompact.rs`) | Time gap since last assistant msg > 5min, AND old tool results exist | Zero LLM tokens — SQL `UPDATE` only | Replaces stale tool result bodies with `[Old tool result content cleared]` stub. Reversible by `RecallContext`. |
-| **Full compact** (`compact.rs`) | Context usage > ~80% (auto), or `/compact` (manual) | One LLM call to a Standard-tier model | Summarizes all prior messages into a single synthesis message; archives originals in DB. Stored as a `system` row and sent as the first user message, as Codex carries its summary. |
+| **Full compact** (`compact.rs`) | Context usage ≥ 85% (auto), or `/compact` (manual) | One LLM call to a Standard-tier model | Summarizes all prior messages into a single synthesis message; archives originals in DB. Stored as a `system` row and sent as the first user message, as Codex carries its summary. |
 
 Both are inspired by Claude Code's identically-named layers. We adopt the
 two-layer approach because:
@@ -450,6 +450,28 @@ two-layer approach because:
   reclaim the *messages* themselves; long sessions still blow the budget.
 - **Full compact alone is too expensive**: every long pause would trigger
   an LLM round-trip just to age out a `Bash` output.
+
+**Full compact keeps the task out of the model's hands.** Four rules, each
+from a real run or from what most peer agents do:
+
+- **The provider's count outranks the estimate.** The estimate runs low (one
+  run was at 106-119% of its window while it read 64-73%), so the gap the last
+  reported count showed is added to later estimates. It only ever raises them,
+  so one bad report can't delay a compaction. It is dropped after a compaction,
+  when it describes a context that is gone, and with no report the estimate
+  decides alone: local servers and cut-off replies don't always give one.
+- **The user's words travel beside the summary, verbatim.** Codex keeps them
+  outside the summary too. A summary can lose the request or invent a
+  restriction; a copy can't. The budget is 4,000 characters, newest first.
+- **The tail is measured by size, not rows.** The newest 30% stays, the share
+  Gemini CLI uses. Rows vary by orders of magnitude, so a count could keep a few
+  huge tool results and free nothing.
+- **A compaction replaces the last summary.** Its row sorts after the tail it
+  was stored with, so compaction reads summaries first, the order the model
+  sees them, or the next summary is written without the first one.
+
+A history under a fifth of the window is left alone: the system prompt and
+tools can't shrink, so compacting would free nothing and fire again next call.
 
 **`COMPACTABLE_TOOLS` lists both PascalCase and snake_case** (`"Read", "read",
 "Bash", "bash"`) as defense-in-depth even though `tool_normalize.rs` should

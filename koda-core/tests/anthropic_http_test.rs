@@ -39,6 +39,19 @@ fn user_msg(text: &str) -> ChatMessage {
 
 // ── chat() ────────────────────────────────────────────────────────────────
 
+/// `input_tokens` leaves out cached tokens, but they still fill the window.
+#[test]
+fn context_tokens_counts_the_cache() {
+    let provider = AnthropicProvider::new("sk-ant-test".into(), None);
+    let usage = koda_core::providers::TokenUsage {
+        prompt_tokens: 288,
+        cache_read_tokens: 20_000,
+        cache_creation_tokens: 3_535,
+        ..Default::default()
+    };
+    assert_eq!(provider.context_tokens(&usage), 23_823);
+}
+
 /// Compaction reads this to tell a reply cut off at the cap from a finished one.
 #[tokio::test]
 async fn chat_reports_the_stop_reason() {

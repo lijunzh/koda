@@ -11,8 +11,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **Every model call gets a log line.** The session log now records purpose, provider, model, estimated and reported tokens, time to first chunk, total time, stop reason and reply size for each call, plus a `model call failed` line. No conversation text.
 - **The log says when a row leaves the model's view.** Each sanitization pass that removes rows writes a `history edited` line with the pass, row ids and characters, as a warning when text is lost.
 
+### Changed
+
+- **Compaction keeps less history verbatim, measured by size.** The newest 30% of the history stays, at least four rows, instead of half the rows. A row count could keep a few huge tool results and free almost nothing.
+- **The summary prompt no longer lists the user's messages,** since they are now kept word for word.
+
 ### Fixed
 
+- **A headless run no longer loses its last log lines.** It exited without flushing the log writer, so the `turn end` line could go missing, most often on a busy machine.
+- **The provider's token count drives compaction when it reports one.** Koda's estimate runs low, so a run could pass its window while the meter read about 70%. The estimate is now raised by what the last count showed it missed, and never lowered. With no count, after a compaction or on a cut-off reply, the estimate decides. The `model call` line gained `context_tokens`, and the context meter now counts Anthropic's cached tokens.
+- **The user's own messages survive compaction word for word.** They are stored beside the summary, up to 4,000 characters, newest first, so a poor summary can't lose or rewrite the task.
+- **Compaction skips a history too small to help.** On a window the system prompt and tools nearly fill, it would free nothing and fire again on the next call.
 - **The context estimate counts tool definitions.** They travel with every request but were left out, so a run could pass its window while the meter said about 70%, and a local server with a hard limit could reject the request. Compaction now fires earlier on small windows.
 - **Usage totals include compaction calls.** They were logged but missing from `run_summary` and session usage. In one run they were a fifth of the tokens and most of the time.
 - **The log says how much the summarizer clips.** The `compaction` line gained `clipped_chars`, because `truncated=false` could sit beside 35,000 clipped characters.
