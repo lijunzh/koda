@@ -193,6 +193,15 @@ async fn empty_summary_keeps_the_task_and_the_run_carries_on() {
     let (result, requests, log) = run_koda(&server).await;
 
     assert_task_survived(&result, &requests);
+    // The stub's turns report no usage, so this is the summary calls alone.
+    let summary_calls = requests
+        .iter()
+        .filter(|r| r["messages"].is_array() && r["stream"] != json!(true));
+    assert_eq!(
+        result["usage"]["prompt_tokens"],
+        10 * summary_calls.count() as i64,
+        "{result}"
+    );
     log_line(
         &log,
         "compaction",

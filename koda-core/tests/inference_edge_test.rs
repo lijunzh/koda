@@ -463,7 +463,8 @@ async fn footer_includes_token_usage() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn multi_step_tool_chain_persists_all() {
-    let env = Env::new().await;
+    // Room for the tool definitions: this is about persistence, not compaction.
+    let env = Env::builder().max_context_tokens(100_000).build().await;
     let target = env.root.join("chained.txt");
     env.insert_user_message("create then read a file").await;
 

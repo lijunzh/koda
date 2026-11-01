@@ -359,12 +359,14 @@ pub trait Persistence: Send + Sync {
     /// summary, into a summary.
     ///
     /// Takes a row id because `preserve_count` counts raw rows, which include
-    /// any that `load_context` prunes.
+    /// any that `load_context` prunes. `usage` is what the summary cost, stored
+    /// on its row so session totals include it.
     async fn compact_session_before(
         &self,
         session_id: &str,
         summary: &str,
         keep_from_id: i64,
+        usage: Option<&crate::providers::TokenUsage>,
     ) -> Result<usize>;
 
     // ── Microcompact ──

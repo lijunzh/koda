@@ -43,9 +43,9 @@ use crate::file_tracker::FileTracker;
 use crate::inference_helpers::{
     AUTO_COMPACT_THRESHOLD, CONTEXT_WARN_THRESHOLD, ContextShape, ModelCall,
     RATE_LIMIT_MAX_RETRIES, assemble_messages, context_limit_from_error, ends_with_question,
-    estimate_subagent_preflight, estimate_tokens, is_context_overflow_error, is_failed_stop,
-    is_image_rejection_error, is_network_transient_error, is_rate_limit_error, is_server_error,
-    rate_limit_backoff, short_hash,
+    estimate_subagent_preflight, estimate_tokens, estimate_tool_defs, is_context_overflow_error,
+    is_failed_stop, is_image_rejection_error, is_network_transient_error, is_rate_limit_error,
+    is_server_error, rate_limit_backoff, short_hash,
 };
 use crate::loop_guard::{LoopAction, LoopDetector};
 use crate::persistence::Persistence;
@@ -164,7 +164,7 @@ async fn assemble_context(turn: &TurnState<'_>) -> Result<(Vec<ChatMessage>, usi
         last_user.images = Some(imgs.to_vec());
     }
 
-    let context_used = estimate_tokens(&messages);
+    let context_used = estimate_tokens(&messages) + estimate_tool_defs(turn.tool_defs);
     let shape = ContextShape::of(&messages);
     let (largest_index, largest_role, largest_chars) = shape.largest.unwrap_or_default();
     tracing::info!(
@@ -1320,7 +1320,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
             provider: provider.provider_name(),
             model: &config.model,
             messages: messages.len(),
-            estimated_tokens: estimate_tokens(&messages),
+            estimated_tokens: estimate_tokens(&messages) + estimate_tool_defs(turn.tool_defs),
             first_chunk: stream_result
                 .first_chunk_at
                 .map(|at| at.duration_since(call_started)),

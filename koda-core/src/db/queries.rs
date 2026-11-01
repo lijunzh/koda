@@ -203,6 +203,7 @@ impl Database {
         session_id: &str,
         summary: &str,
         keep: KeepRows,
+        usage: Option<&crate::providers::TokenUsage>,
     ) -> Result<usize> {
         // `BEGIN IMMEDIATE`, not the default deferred `BEGIN`: this
         // transaction reads first and writes later. In WAL mode a
@@ -261,11 +262,18 @@ impl Database {
 
         // Insert the summary as a system message
         sqlx::query(
-            "INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, prompt_tokens, completion_tokens)
-             VALUES (?, 'system', ?, NULL, NULL, NULL, NULL)",
+            "INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id,
+                 prompt_tokens, completion_tokens, cache_read_tokens, cache_creation_tokens,
+                 thinking_tokens)
+             VALUES (?, 'system', ?, NULL, NULL, ?, ?, ?, ?, ?)",
         )
         .bind(session_id)
         .bind(summary)
+        .bind(usage.map(|u| u.prompt_tokens))
+        .bind(usage.map(|u| u.completion_tokens))
+        .bind(usage.map(|u| u.cache_read_tokens))
+        .bind(usage.map(|u| u.cache_creation_tokens))
+        .bind(usage.map(|u| u.thinking_tokens))
         .execute(&mut *tx)
         .await?;
 
@@ -994,7 +1002,7 @@ impl Persistence for Database {
         summary: &str,
         preserve_count: usize,
     ) -> Result<usize> {
-        self.archive_into_summary(session_id, summary, KeepRows::Last(preserve_count))
+        self.archive_into_summary(session_id, summary, KeepRows::Last(preserve_count), None)
             .await
     }
 
@@ -1003,8 +1011,9 @@ impl Persistence for Database {
         session_id: &str,
         summary: &str,
         keep_from_id: i64,
+        usage: Option<&crate::providers::TokenUsage>,
     ) -> Result<usize> {
-        self.archive_into_summary(session_id, summary, KeepRows::From(keep_from_id))
+        self.archive_into_summary(session_id, summary, KeepRows::From(keep_from_id), usage)
             .await
     }
 

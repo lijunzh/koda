@@ -181,7 +181,7 @@ async fn compaction_leaves_the_system_prompt_alone() {
         .args(["-p", "Read the notes", "--output-format", "json"])
         .args(["--provider", "gemini", "--model", "gemini-flash-latest"])
         .args(["--base-url", &server.url()])
-        .args(["--max-context-tokens", "12000"])
+        .args(["--max-context-tokens", "32000"])
         .arg("--project-root")
         .arg(tmp.path())
         .env("XDG_CONFIG_HOME", tmp.path())
@@ -229,6 +229,7 @@ async fn compaction_leaves_the_system_prompt_alone() {
             "rows_archived=",
             "conversation_chars=",
             "attempts=1",
+            "clipped_chars=",
             "reply_chars=",
             "stop_reason=",
             "summary_chars=",
@@ -239,7 +240,7 @@ async fn compaction_leaves_the_system_prompt_alone() {
         &log,
         "context assembled",
         &[
-            "window=12000",
+            "window=32000",
             "percent=",
             "tool_chars=",
             "tool_calls_chars=",
@@ -247,6 +248,19 @@ async fn compaction_leaves_the_system_prompt_alone() {
             "largest_chars=",
             "duplicate_read_tokens=",
         ],
+    );
+    assert!(!compaction.contains("clipped_chars=0 "), "{compaction}");
+    // The first request holds the prompt, one short message and the tool
+    // definitions, so an estimate of the messages alone would come in far below.
+    let opening = log_line(&log, "context assembled", &["iteration=0"]);
+    let field = |name: &str| -> usize {
+        let (_, rest) = opening.split_once(name).unwrap();
+        rest.split(' ').next().unwrap().parse().unwrap()
+    };
+    let messages_only = field("system_chars=") * 2 / 7;
+    assert!(
+        field("estimated_tokens=") > messages_only + 1_000,
+        "tool definitions left out: {opening}"
     );
     log_line(&log, "turn end", &[r#"outcome="complete""#]);
 

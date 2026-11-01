@@ -71,6 +71,17 @@ pub fn estimate_tokens(messages: &[ChatMessage]) -> usize {
         .sum()
 }
 
+/// Tokens a request spends on tool definitions, which travel as JSON beside the
+/// messages and fill the window like them.
+///
+/// `serde_json::to_string` failures are vanishingly unlikely for our owned
+/// types, but treat any failure as zero rather than panicking: an estimate that
+/// crashes is strictly worse than one that runs a few k tokens low.
+pub fn estimate_tool_defs(tool_defs: &[crate::providers::ToolDefinition]) -> usize {
+    let chars = serde_json::to_string(tool_defs).map_or(0, |s| s.len());
+    (chars as f64 / CHARS_PER_TOKEN) as usize
+}
+
 /// What a request is made of, in characters. `estimate_tokens` gives the
 /// total; this says which part of it moved.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -188,15 +199,7 @@ pub fn estimate_subagent_preflight(
         + PER_MESSAGE_OVERHEAD
         + SYSTEM_PROMPT_OVERHEAD;
 
-    // Tool defs travel as JSON; the serialized form is the wire-cost proxy.
-    // serde_json::to_string failures are vanishingly unlikely for our owned
-    // types, but treat any failure as zero rather than panicking — a
-    // pre-flight that crashes is strictly worse than a pre-flight that
-    // under-estimates by a few k tokens.
-    let tool_defs_chars = serde_json::to_string(tool_defs)
-        .map(|s| s.len())
-        .unwrap_or(0);
-    let tool_defs_tokens = (tool_defs_chars as f64 / CHARS_PER_TOKEN) as usize;
+    let tool_defs_tokens = estimate_tool_defs(tool_defs);
 
     let user_prompt_tokens =
         (user_prompt.len() as f64 / CHARS_PER_TOKEN) as usize + PER_MESSAGE_OVERHEAD;

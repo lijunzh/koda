@@ -108,6 +108,12 @@ const MAX_CARRIED_CHARS: usize = 4_000;
 /// Maximum number of head-truncation retries when history is too large.
 const MAX_TRUNCATION_RETRIES: usize = 3;
 
+/// Characters of a message the summarizer sees.
+const MAX_SUMMARIZED_CONTENT_CHARS: usize = 2000;
+
+/// Characters of a message's tool calls the summarizer sees.
+const MAX_SUMMARIZED_TOOL_CALL_CHARS: usize = 500;
+
 /// A reply shorter than this can't describe a conversation. Storing it would
 /// lose the task the way an empty summary would, so it counts as none.
 const MIN_SUMMARY_CHARS: usize = 8;
@@ -226,6 +232,7 @@ pub async fn compact_session_with_provider(
     // Codex both summarize that way. Only the output cap and temperature differ.
     let mut cap = first_cap;
     let mut attempts = 0u32;
+    let mut usage = crate::providers::TokenUsage::default();
     let (summary, reply) = loop {
         attempts += 1;
         let compact_settings = ModelSettings {
@@ -235,6 +242,11 @@ pub async fn compact_session_with_provider(
         };
         let call_started = std::time::Instant::now();
         let response = provider.chat(&messages, &[], &compact_settings).await?;
+        usage.prompt_tokens += response.usage.prompt_tokens;
+        usage.completion_tokens += response.usage.completion_tokens;
+        usage.cache_read_tokens += response.usage.cache_read_tokens;
+        usage.cache_creation_tokens += response.usage.cache_creation_tokens;
+        usage.thinking_tokens += response.usage.thinking_tokens;
         crate::inference_helpers::ModelCall {
             purpose: "compaction",
             system_hash: None,
@@ -319,7 +331,14 @@ pub async fn compact_session_with_provider(
         );
         no_summary_text(&history[..compact_count])
     });
-    let deleted = replace_with_summary(db, session_id, &summary, history[compact_count].id).await?;
+    let deleted = replace_with_summary(
+        db,
+        session_id,
+        &summary,
+        history[compact_count].id,
+        Some(&usage),
+    )
+    .await?;
 
     if no_summary {
         // The history is smaller, but the model is still not summarizing.
@@ -337,6 +356,7 @@ pub async fn compact_session_with_provider(
         conversation_chars,
         prompt_chars = summary_prompt.len(),
         truncated = final_text.len() < conversation_chars,
+        clipped_chars = clipped_chars(to_compact),
         attempts,
         reply_chars,
         stop_reason = %stop_reason,
@@ -371,7 +391,8 @@ pub async fn compact_without_summary(
     );
     let compact_count = history.len() - preserve_count;
     let text = no_summary_text(&history[..compact_count]);
-    let deleted = replace_with_summary(db, session_id, &text, history[compact_count].id).await?;
+    let deleted =
+        replace_with_summary(db, session_id, &text, history[compact_count].id, None).await?;
     tracing::info!(
         branch = "dropped",
         rows_summarized = compact_count,
@@ -482,11 +503,12 @@ async fn replace_with_summary(
     session_id: &str,
     summary: &str,
     keep_from_id: i64,
+    usage: Option<&crate::providers::TokenUsage>,
 ) -> Result<usize> {
     let compact_message = format!("{SUMMARY_HEADING}\n\n{summary}");
     // Debug only: this is conversation text, which the default logs leave out.
     tracing::debug!("Stored compaction summary:\n{summary}");
-    db.compact_session_before(session_id, &compact_message, keep_from_id)
+    db.compact_session_before(session_id, &compact_message, keep_from_id, usage)
         .await
 }
 
@@ -799,19 +821,42 @@ fn build_conversation_text(history: &[crate::db::Message]) -> String {
     for msg in history {
         let role = msg.role.as_str();
         if let Some(ref content) = msg.content {
-            let limit = match msg.role {
-                Role::System => usize::MAX,
-                _ => 2000,
-            };
+            let limit = content_limit(msg);
             let truncated: String = content.chars().take(limit).collect();
             text.push_str(&format!("[{role}]: {truncated}\n\n"));
         }
         if let Some(ref tool_calls) = msg.tool_calls {
-            let truncated: String = tool_calls.chars().take(500).collect();
+            let truncated: String = tool_calls
+                .chars()
+                .take(MAX_SUMMARIZED_TOOL_CALL_CHARS)
+                .collect();
             text.push_str(&format!("[{role} tool_calls]: {truncated}\n\n"));
         }
     }
     text
+}
+
+/// How much of a message's content the summarizer sees.
+fn content_limit(msg: &crate::db::Message) -> usize {
+    match msg.role {
+        Role::System => usize::MAX,
+        _ => MAX_SUMMARIZED_CONTENT_CHARS,
+    }
+}
+
+/// Characters [`build_conversation_text`] cuts from these messages.
+fn clipped_chars(history: &[crate::db::Message]) -> usize {
+    let over = |text: &Option<String>, limit: usize| {
+        let chars = text.as_deref().map_or(0, |t| t.chars().count());
+        chars.saturating_sub(limit)
+    };
+    history
+        .iter()
+        .map(|msg| {
+            over(&msg.content, content_limit(msg))
+                + over(&msg.tool_calls, MAX_SUMMARIZED_TOOL_CALL_CHARS)
+        })
+        .sum()
 }
 
 #[cfg(test)]
@@ -880,6 +925,19 @@ mod tests {
         let text = build_conversation_text(&msgs);
         // Each msg content capped at 2000 chars
         assert!(text.len() < 2100);
+    }
+
+    #[test]
+    fn clipped_chars_counts_what_the_summarizer_loses() {
+        let long = "x".repeat(2_300);
+        let calls = "y".repeat(600);
+        let msgs = vec![
+            make_msg("user", Some(&long), None),
+            make_msg("assistant", None, Some(&calls)),
+            make_msg("system", Some(&long), None),
+            make_msg("user", Some("short"), None),
+        ];
+        assert_eq!(clipped_chars(&msgs), 300 + 100);
     }
 
     #[test]
