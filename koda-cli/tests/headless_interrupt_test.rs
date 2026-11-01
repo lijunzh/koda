@@ -42,7 +42,8 @@ async fn sigint_during_a_model_call_still_reports_the_turn() {
         .spawn()
         .unwrap();
 
-    // Signal once the request is in flight.
+    // Signal once the chat request is in flight. Earlier requests are startup
+    // probes, sent before koda listens for SIGINT, so the signal would kill it.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     while !has_chat_request(&server).await {
         assert!(tokio::time::Instant::now() < deadline, "no model call");
@@ -80,5 +81,5 @@ async fn has_chat_request(server: &FakeLlmServer) -> bool {
         .received_requests()
         .await
         .iter()
-        .any(|request| !request.body.is_empty())
+        .any(|request| request.url.path().ends_with("/chat/completions"))
 }

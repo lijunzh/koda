@@ -191,16 +191,19 @@ mod tests {
             Ok(mut sock) => {
                 // Some kernels accept the SYN into the orphaned backlog
                 // before delivering the FIN. The connect "succeeds" but
-                // the read returns 0. Verify that.
+                // the read returns 0, or a reset if that backlog is torn
+                // down first. Both mean closed; verify it's one of them.
                 let mut buf = [0u8; 16];
-                let n = tokio::time::timeout(
+                let read = tokio::time::timeout(
                     Duration::from_millis(200),
                     tokio::io::AsyncReadExt::read(&mut sock, &mut buf),
                 )
                 .await
-                .expect("read must not hang post-drop")
-                .expect("read must not error");
-                assert_eq!(n, 0, "post-drop socket must EOF immediately");
+                .expect("read must not hang post-drop");
+                match read {
+                    Ok(n) => assert_eq!(n, 0, "post-drop socket must EOF immediately"),
+                    Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::ConnectionReset),
+                }
             }
         }
     }
