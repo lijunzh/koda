@@ -66,7 +66,9 @@ Summarises old conversation history to free context tokens. Koda
 auto-compacts when the context window hits **85%** full, but you can
 trigger it manually at any time:
 
-- All but the **last 4 messages** are summarised by the model
+- The newest **30% of the history by size** stays as it is (at least 4 messages)
+- The rest is summarised by the model, and your own messages from that part
+  are kept word for word beside the summary
 - The summary replaces the old messages in the DB
 - The compressed session continues normally
 - Use `/purge` later to clean up the archived messages
@@ -120,7 +122,8 @@ usage, and a banner if the previous turn was interrupted mid-inference.
 
 ```text
 /memory        ← show the paths to project and global memory files
-/memory save   ← ask the model to summarise the session and append to MEMORY.md
+/memory add <text>      ← append to the project memory file
+/memory global <text>   ← append to the global memory file
 ```
 
 See [Memory](./memory.md) for the full memory system.
@@ -132,13 +135,14 @@ See [Memory](./memory.md) for the full memory system.
 /skills security     ← filter by name or description
 ```
 
-## `/agent <name>`
+## `/agent`
 
-Switches to a named sub-agent for the current session. The agent's
-system prompt, model, and allowed tools replace the current defaults.
+Lists the available agents, built-in and custom. To run a session as a
+named agent, start Koda with `--agent <name>`.
 
 ```text
-/agent testgen     ← use the "testgen" agent definition
+/agent
+koda --agent testgen
 ```
 
 ## `/agents`
@@ -243,7 +247,7 @@ Wrote debug bundle → /Users/you/.config/koda/debug-bundles/koda-debug-20260429
 | `metadata.json` | Session ID, title, started-at, model, provider, current PID, capture timestamp |
 | `env.txt` | Allowlist-filtered environment variables (see below) |
 | `logs/koda-{PID}.log` | Full per-process tracing log captured by the active session |
-| `logs/panic.log` | Present only if the session encountered a panic; mirrors `~/.config/koda/logs/panic.log` |
+| `logs/panic.log` | A copy of `~/.config/koda/logs/panic.log` if it exists, so it can hold panics from other sessions |
 
 The `.zip` format was chosen for **random-access reads** — LLM debugging
 workflows that poke at one file at a time pay O(file) instead of

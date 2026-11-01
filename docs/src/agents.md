@@ -17,7 +17,7 @@ Place JSON files in `.koda/agents/` (project-local) or
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `name` | ✓ | Identifier used with `/agent <name>` and `InvokeAgent` |
+| `name` | ✓ | Identifier used with `--agent <name>` and `InvokeAgent` |
 | `system_prompt` | ✓ | The agent's persona and instructions |
 | `trust` | | `"plan"` (read-only), `"safe"` (write-capable, default), or `"auto"` (auto-approve mutations within sandbox). See [Trust modes](./approval.md). |
 | `model` | | Model alias or ID (defaults to current saved model) |
@@ -145,11 +145,13 @@ pattern is sub-agent-only.
 ## Using agents
 
 ```text
-/agent testgen     ← switch to a named agent for the current session
+koda --agent testgen     ← run the session as a named agent
+/agent                   ← list the available agents
 ```
 
 The main model dispatches to sub-agents via the `InvokeAgent` tool. Each
-sub-agent runs in its own worktree with its own model, tools, and session.
+sub-agent gets its own model, tools, and session. Write-capable sub-agents
+also get an [isolated copy of the project](./sandbox.md#workspace-providers).
 
 ## Built-in agents
 

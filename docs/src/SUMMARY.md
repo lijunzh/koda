@@ -38,4 +38,5 @@
 - [ACP server (editor integration)](./acp.md)
 - [Privacy & data](./privacy.md)
 - [Troubleshooting](./troubleshooting.md)
+- [Debugging a run](./debugging.md)
 - [Development reference](./development.md)

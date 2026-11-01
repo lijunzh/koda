@@ -61,7 +61,7 @@ Everything lives in `~/.config/koda/`:
 | Path | Content |
 |------|---------|
 | `db/koda.db` | SQLite — sessions, messages, settings, API keys, input history |
-| `logs/koda.log` | Rolling daily tracing log (not shown in the TUI) |
+| `logs/koda-<pid>.log` | Tracing log, one per process; `logs/latest` links to the newest (see [Debugging a run](./debugging.md)) |
 | `agents/` | Global custom agent JSON definitions |
 | `skills/` | Global custom skill markdown files |
 | `memory.md` | Global memory (injected into all system prompts) |
