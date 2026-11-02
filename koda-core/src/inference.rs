@@ -36,6 +36,7 @@
 //! - **Rate Limit Retry (P2)**: Exponential backoff for 429 errors. Long
 //!   sessions with Opus hit rate limits regularly.
 
+use crate::approval_flow::CommandInbox;
 use crate::config::KodaConfig;
 use crate::db::{Database, Role};
 use crate::engine::{
@@ -818,6 +819,10 @@ pub struct InferenceContext<'a> {
     pub cancel: CancellationToken,
     /// Channel for receiving client commands (approval responses, etc.).
     pub cmd_rx: &'a mut mpsc::Receiver<EngineCommand>,
+    /// Steering text read from `cmd_rx` and not yet in the conversation.
+    /// Owned by [`crate::session::KodaSession`], so what a turn doesn't use
+    /// survives it, even if the turn is dropped.
+    pub queued_steers: &'a mut Vec<String>,
     /// File lifecycle tracker for ownership-aware approval (#465).
     pub file_tracker: &'a mut FileTracker,
     /// Background sub-agent registry (#1022 B12). Owned by [`crate::session::KodaSession`]
@@ -997,10 +1002,12 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
         sink,
         cancel,
         cmd_rx,
+        queued_steers,
         file_tracker,
         bg_agents,
         sub_agent_cache,
     } = ctx;
+    let mut cmd_rx = CommandInbox::new(cmd_rx, queued_steers);
 
     // #1108 P1b: wrap the user-facing sink with `PersistingSink` so
     // every `Info` / `ChildTaskUpdate` event lands in `session_events`
@@ -1194,51 +1201,6 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
             }
         }
 
-        // Drain any `QueueNext` inputs the client sent during the previous
-        // iteration ("mid-turn steer" lane).  We non-blockingly drain the
-        // whole channel, collect texts, and batch-insert one user message
-        // before re-querying the provider.
-        //
-        // Other command types (ApprovalResponse, AskUserResponse, LoopDecision)
-        // are only ever sent while the engine is actively blocking on cmd_rx
-        // inside their respective select! arms, so they will not be present
-        // here at iteration start.  Any unexpected commands are logged and
-        // discarded — they are benign at this position.
-        {
-            let mut next_texts: Vec<String> = Vec::new();
-            while let Ok(cmd) = cmd_rx.try_recv() {
-                match cmd {
-                    EngineCommand::QueueNext { text } => next_texts.push(text),
-                    other => {
-                        // #1232 §6: name the variant instead of
-                        // dumping `Discriminant(N)` (which forces
-                        // devs to grep the source to figure out
-                        // which `EngineCommand` integer N maps to)
-                        // — and use `.kind()` rather than `{:?}` so
-                        // potentially-sensitive payload fields
-                        // (e.g. `AskUserResponse.answer`,
-                        // `QueueNext.text`) stay out of logs.
-                        tracing::warn!(
-                            "inference_loop: unexpected command at iteration start (discarded): {}",
-                            other.kind()
-                        );
-                    }
-                }
-            }
-            if !next_texts.is_empty() {
-                let combined = next_texts.join("\n\n");
-                sink.emit(EngineEvent::Info {
-                    message: format!(
-                        "  \u{1f4e5} Injecting {} steer{} into current turn",
-                        next_texts.len(),
-                        if next_texts.len() == 1 { "" } else { "s" },
-                    ),
-                });
-                db.insert_message(session_id, &Role::User, Some(&combined), None, None, None)
-                    .await?;
-            }
-        }
-
         if iteration >= hard_cap {
             let recent = loop_detector.recent_names();
             let request_id = uuid::Uuid::new_v4().to_string();
@@ -1271,6 +1233,36 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
                 break Ok(());
             }
             hard_cap += extra;
+        }
+
+        // A wait or a tool stopped by a cancel returns here. Stop before the
+        // text below goes in, or it reaches the model behind the user's next
+        // prompt.
+        if cancel.is_cancelled() {
+            sink.emit(EngineEvent::SpinnerStop);
+            sink.emit(EngineEvent::Warn {
+                message: "Interrupted".into(),
+            });
+            return Ok(());
+        }
+
+        // Inject the "mid-turn steer" lane: batch whatever the client sent
+        // since the last model call into one user message. This comes after
+        // the loop cap so a stop there leaves the text out of the history.
+        // Text left over when a turn ends comes back to the client from
+        // `KodaSession::take_queued_steers`.
+        let next_texts = cmd_rx.take_steers();
+        if !next_texts.is_empty() {
+            let combined = next_texts.join("\n\n");
+            sink.emit(EngineEvent::Info {
+                message: format!(
+                    "  \u{1f4e5} Injecting {} steer{} into current turn",
+                    next_texts.len(),
+                    if next_texts.len() == 1 { "" } else { "s" },
+                ),
+            });
+            db.insert_message(session_id, &Role::User, Some(&combined), None, None, None)
+                .await?;
         }
 
         // Build system prompt with git context.
@@ -1628,6 +1620,22 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
                     ),
                 });
             }
+
+            total_prompt_tokens += usage.prompt_tokens;
+            total_completion_tokens += usage.completion_tokens;
+            total_cache_read_tokens += usage.cache_read_tokens;
+            total_thinking_tokens += usage.thinking_tokens;
+            total_char_count += char_count;
+
+            // The user typed while this reply streamed. It answers them in
+            // this turn: ending here would leave the text for their next
+            // prompt, with nothing on screen to say so.
+            if !cancel.is_cancelled() && cmd_rx.has_steers() {
+                stats.limit = None;
+                iteration += 1;
+                continue;
+            }
+
             stats.final_reply = Some((full_text.len(), ends_with_question(&full_text)));
 
             // `last_prompt_tokens` (this iteration's prompt size) drives the
@@ -1635,11 +1643,6 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
             // `total_prompt_tokens` (cumulative across iterations) drives the
             // Footer billing line. Conflating them caused #946 — see below.
             let last_prompt_tokens = provider.context_tokens(&usage);
-            total_prompt_tokens += usage.prompt_tokens;
-            total_completion_tokens += usage.completion_tokens;
-            total_cache_read_tokens += usage.cache_read_tokens;
-            total_thinking_tokens += usage.thinking_tokens;
-            total_char_count += char_count;
 
             let display_tokens = if total_completion_tokens > 0 {
                 total_completion_tokens
@@ -1786,9 +1789,10 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
         {
             execute_tools_parallel(&remaining_tools, tool_ctx, file_tracker).await?;
         } else if remaining_tools.len() > 1 && !has_file_conflict(&remaining_tools) {
-            execute_tools_split_batch(&remaining_tools, tool_ctx, cmd_rx, file_tracker).await?;
+            execute_tools_split_batch(&remaining_tools, tool_ctx, &mut cmd_rx, file_tracker)
+                .await?;
         } else if !remaining_tools.is_empty() {
-            execute_tools_sequential(&remaining_tools, tool_ctx, cmd_rx, file_tracker).await?;
+            execute_tools_sequential(&remaining_tools, tool_ctx, &mut cmd_rx, file_tracker).await?;
         }
 
         // Update skill scope: if any ActivateSkill call was made, check whether

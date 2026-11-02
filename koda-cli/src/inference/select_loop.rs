@@ -400,7 +400,7 @@ impl TuiContext {
         }
 
         // Post-turn cleanup
-        self.post_turn_cleanup(ui_rx, &cancel_token).await;
+        self.post_turn_cleanup(ui_rx, cmd_rx, &cancel_token).await;
         Ok(())
     }
 }

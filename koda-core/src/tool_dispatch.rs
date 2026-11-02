@@ -27,9 +27,9 @@
 //!   `match` in `ToolRegistry::execute()`, not a `HashMap<String, Box<dyn Tool>>`.
 //!   Rust's exhaustive matching catches missing handlers at compile time.
 
-use crate::approval_flow::{handle_ask_user, request_approval};
+use crate::approval_flow::{CommandInbox, handle_ask_user, request_approval};
 use crate::db::Role;
-use crate::engine::{ApprovalDecision, EngineCommand, EngineEvent};
+use crate::engine::{ApprovalDecision, EngineEvent};
 use crate::file_tracker::FileTracker;
 use crate::persistence::Persistence;
 use crate::preview;
@@ -535,7 +535,7 @@ pub(crate) async fn execute_tools_parallel(
 pub(crate) async fn execute_tools_split_batch(
     tool_calls: &[ToolCall],
     tx: ToolExecutionContext<'_>,
-    cmd_rx: &mut mpsc::Receiver<EngineCommand>,
+    cmd_rx: &mut CommandInbox<'_>,
     file_tracker: &mut FileTracker,
 ) -> Result<()> {
     let ctx = tx.turn;
@@ -603,7 +603,7 @@ pub(crate) async fn execute_tools_split_batch(
 pub(crate) async fn execute_tools_sequential(
     tool_calls: &[ToolCall],
     tx: ToolExecutionContext<'_>,
-    cmd_rx: &mut mpsc::Receiver<EngineCommand>,
+    cmd_rx: &mut CommandInbox<'_>,
     file_tracker: &mut FileTracker,
 ) -> Result<()> {
     let ctx = tx.turn;

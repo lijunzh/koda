@@ -5,7 +5,7 @@
 //! Each sub-agent gets its own session, provider, and (optionally) worktree
 //! for isolation. Results are cached by `(agent_name, prompt_hash)`.
 
-use crate::approval_flow::request_approval;
+use crate::approval_flow::{CommandInbox, request_approval};
 use crate::config::KodaConfig;
 use crate::db::{Database, Role};
 use crate::engine::{ApprovalDecision, EngineCommand, EngineEvent};
@@ -1637,9 +1637,12 @@ pub(crate) fn execute_sub_agent<'a>(
                                     &parsed_args,
                                     &tools,
                                 );
+                                // Sub-agents read a closed channel, so nothing
+                                // can be queued here.
+                                let mut no_steers = Vec::new();
                                 match request_approval(
                                     sink,
-                                    cmd_rx,
+                                    &mut CommandInbox::new(cmd_rx, &mut no_steers),
                                     &cancel,
                                     &tc.function_name,
                                     &detail,

@@ -10,12 +10,83 @@ use crate::engine::{ApprovalDecision, EngineCommand, EngineEvent};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+/// The engine's end of the command channel for one turn.
+///
+/// Steering text can arrive at any moment, but it can only join the
+/// conversation between model calls: a user message can't sit between a tool
+/// call and its result. So every read of the channel goes through here and
+/// keeps the text in `steers`, which outlives the turn. What the turn didn't
+/// use reaches the client through
+/// [`KodaSession::take_queued_steers`](crate::session::KodaSession::take_queued_steers).
+pub(crate) struct CommandInbox<'a> {
+    rx: &'a mut mpsc::Receiver<EngineCommand>,
+    steers: &'a mut Vec<String>,
+}
+
+impl<'a> CommandInbox<'a> {
+    pub(crate) fn new(
+        rx: &'a mut mpsc::Receiver<EngineCommand>,
+        steers: &'a mut Vec<String>,
+    ) -> Self {
+        Self { rx, steers }
+    }
+
+    /// Wait for the next command that isn't steering text.
+    ///
+    /// Cancel safe, like [`mpsc::Receiver::recv`], so waits can `select!` on it.
+    pub(crate) async fn recv(&mut self) -> Option<EngineCommand> {
+        loop {
+            match self.rx.recv().await {
+                Some(EngineCommand::QueueNext { text }) => self.steers.push(text),
+                other => return other,
+            }
+        }
+    }
+
+    /// Whether any steering text is waiting.
+    pub(crate) fn has_steers(&mut self) -> bool {
+        self.collect();
+        !self.steers.is_empty()
+    }
+
+    /// Take the waiting steering text, oldest first.
+    pub(crate) fn take_steers(&mut self) -> Vec<String> {
+        self.collect();
+        std::mem::take(self.steers)
+    }
+
+    /// Read the channel without waiting.
+    ///
+    /// Responses are only sent while a wait is reading the channel, so one
+    /// seen here is stale and is discarded.
+    fn collect(&mut self) {
+        while let Ok(cmd) = self.rx.try_recv() {
+            match cmd {
+                EngineCommand::QueueNext { text } => self.steers.push(text),
+                other => {
+                    // #1232 §6: name the variant instead of dumping
+                    // `Discriminant(N)` (which forces devs to grep the source
+                    // to figure out which `EngineCommand` integer N maps to)
+                    // — and use `.kind()` rather than `{:?}` so
+                    // potentially-sensitive payload fields (e.g.
+                    // `AskUserResponse.answer`, `QueueNext.text`) stay out of
+                    // logs.
+                    tracing::warn!(
+                        "unexpected command outside a wait (discarded): {}",
+                        other.kind()
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Emit an `AskUserRequest` and wait for the user's typed response.
 ///
 /// Returns `None` if the session was interrupted or cancelled.
 pub(crate) async fn handle_ask_user(
     sink: &dyn crate::engine::EngineSink,
-    cmd_rx: &mut mpsc::Receiver<EngineCommand>,
+    cmd_rx: &mut CommandInbox<'_>,
     cancel: &CancellationToken,
     args: &serde_json::Value,
 ) -> Option<String> {
@@ -47,7 +118,7 @@ pub(crate) async fn handle_ask_user(
                     return None;
                 }
                 None => return None,
-                _ => continue,
+                _ => continue, // ignore stale responses
             },
             _ = cancel.cancelled() => return None,
         }
@@ -59,7 +130,7 @@ pub(crate) async fn handle_ask_user(
 /// Returns `None` if the session was interrupted or cancelled.
 pub(crate) async fn request_approval(
     sink: &dyn crate::engine::EngineSink,
-    cmd_rx: &mut mpsc::Receiver<EngineCommand>,
+    cmd_rx: &mut CommandInbox<'_>,
     cancel: &CancellationToken,
     tool_name: &str,
     detail: &str,
@@ -86,7 +157,7 @@ pub(crate) async fn request_approval(
                     return None;
                 }
                 None => return None,  // channel closed
-                _ => continue,        // ignore unrelated commands
+                _ => continue,        // ignore stale responses
             },
             _ = cancel.cancelled() => return None,
         }
@@ -101,6 +172,76 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    // ── CommandInbox ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn recv_keeps_steers_and_returns_the_next_command() {
+        let (cmd_tx, mut cmd_rx) = mpsc::channel::<EngineCommand>(8);
+        let mut steers = Vec::new();
+        let mut inbox = CommandInbox::new(&mut cmd_rx, &mut steers);
+        for text in ["one", "two"] {
+            let text = text.into();
+            cmd_tx
+                .send(EngineCommand::QueueNext { text })
+                .await
+                .unwrap();
+        }
+        cmd_tx.send(EngineCommand::Interrupt).await.unwrap();
+
+        assert!(matches!(inbox.recv().await, Some(EngineCommand::Interrupt)));
+        assert_eq!(inbox.take_steers(), ["one", "two"]);
+    }
+
+    #[tokio::test]
+    async fn take_steers_keeps_arrival_order_across_recv_and_the_channel() {
+        let (cmd_tx, mut cmd_rx) = mpsc::channel::<EngineCommand>(8);
+        let mut steers = Vec::new();
+        let mut inbox = CommandInbox::new(&mut cmd_rx, &mut steers);
+        let steer = |text: &str| EngineCommand::QueueNext { text: text.into() };
+        cmd_tx.send(steer("waited")).await.unwrap();
+        cmd_tx.send(EngineCommand::Interrupt).await.unwrap();
+        cmd_tx.send(steer("not waited")).await.unwrap();
+
+        inbox.recv().await;
+        assert!(inbox.has_steers());
+        assert_eq!(inbox.take_steers(), ["waited", "not waited"]);
+        assert!(!inbox.has_steers());
+    }
+
+    #[tokio::test]
+    async fn collecting_discards_a_stale_response() {
+        let (cmd_tx, mut cmd_rx) = mpsc::channel::<EngineCommand>(8);
+        let mut steers = Vec::new();
+        let mut inbox = CommandInbox::new(&mut cmd_rx, &mut steers);
+        cmd_tx
+            .send(EngineCommand::ApprovalResponse {
+                id: "old".into(),
+                decision: ApprovalDecision::Approve,
+            })
+            .await
+            .unwrap();
+
+        assert!(!inbox.has_steers());
+        assert!(cmd_rx.is_empty());
+    }
+
+    #[tokio::test]
+    async fn steers_outlive_the_inbox() {
+        let (cmd_tx, mut cmd_rx) = mpsc::channel::<EngineCommand>(8);
+        let mut steers = Vec::new();
+        cmd_tx
+            .send(EngineCommand::QueueNext {
+                text: "kept".into(),
+            })
+            .await
+            .unwrap();
+        cmd_tx.send(EngineCommand::Interrupt).await.unwrap();
+
+        CommandInbox::new(&mut cmd_rx, &mut steers).recv().await;
+
+        assert_eq!(steers, ["kept"]);
+    }
+
     // ── handle_ask_user ────────────────────────────────────────────────────
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -114,6 +255,8 @@ mod tests {
         let cancel2 = cancel.clone();
         let task = tokio::spawn(async move {
             let mut rx = cmd_rx;
+            let mut steers = Vec::new();
+            let mut rx = CommandInbox::new(&mut rx, &mut steers);
             handle_ask_user(&*sink2, &mut rx, &cancel2, &args).await
         });
 
@@ -151,6 +294,8 @@ mod tests {
         let cancel2 = cancel.clone();
         let _task = tokio::spawn(async move {
             let mut rx = cmd_rx;
+            let mut steers = Vec::new();
+            let mut rx = CommandInbox::new(&mut rx, &mut steers);
             handle_ask_user(&*sink2, &mut rx, &cancel2, &args).await
         });
 
@@ -180,6 +325,8 @@ mod tests {
         let cancel2 = cancel.clone();
         let task = tokio::spawn(async move {
             let mut rx = cmd_rx;
+            let mut steers = Vec::new();
+            let mut rx = CommandInbox::new(&mut rx, &mut steers);
             handle_ask_user(&*sink2, &mut rx, &cancel2, &args).await
         });
 
@@ -223,6 +370,8 @@ mod tests {
         let cancel2 = cancel.clone();
         let task = tokio::spawn(async move {
             let mut rx = cmd_rx;
+            let mut steers = Vec::new();
+            let mut rx = CommandInbox::new(&mut rx, &mut steers);
             handle_ask_user(&*sink2, &mut rx, &cancel2, &args).await
         });
 
@@ -249,6 +398,8 @@ mod tests {
         let cancel2 = cancel.clone();
         let task = tokio::spawn(async move {
             let mut rx = cmd_rx;
+            let mut steers = Vec::new();
+            let mut rx = CommandInbox::new(&mut rx, &mut steers);
             handle_ask_user(&*sink2, &mut rx, &cancel2, &args).await
         });
 
@@ -272,6 +423,8 @@ mod tests {
         let cancel2 = cancel.clone();
         let task = tokio::spawn(async move {
             let mut rx = cmd_rx;
+            let mut steers = Vec::new();
+            let mut rx = CommandInbox::new(&mut rx, &mut steers);
             handle_ask_user(&*sink2, &mut rx, &cancel2, &args).await
         });
 
@@ -296,6 +449,8 @@ mod tests {
         let cancel2 = cancel.clone();
         let task = tokio::spawn(async move {
             let mut rx = cmd_rx;
+            let mut steers = Vec::new();
+            let mut rx = CommandInbox::new(&mut rx, &mut steers);
             request_approval(
                 &*sink2,
                 &mut rx,
@@ -337,6 +492,8 @@ mod tests {
         let cancel2 = cancel.clone();
         let task = tokio::spawn(async move {
             let mut rx = cmd_rx;
+            let mut steers = Vec::new();
+            let mut rx = CommandInbox::new(&mut rx, &mut steers);
             request_approval(
                 &*sink2,
                 &mut rx,
@@ -378,6 +535,8 @@ mod tests {
         let cancel2 = cancel.clone();
         let _task = tokio::spawn(async move {
             let mut rx = cmd_rx;
+            let mut steers = Vec::new();
+            let mut rx = CommandInbox::new(&mut rx, &mut steers);
             request_approval(
                 &*sink2,
                 &mut rx,
@@ -415,6 +574,8 @@ mod tests {
         let cancel2 = cancel.clone();
         let task = tokio::spawn(async move {
             let mut rx = cmd_rx;
+            let mut steers = Vec::new();
+            let mut rx = CommandInbox::new(&mut rx, &mut steers);
             request_approval(
                 &*sink2,
                 &mut rx,
@@ -466,6 +627,8 @@ mod tests {
         let cancel2 = cancel.clone();
         let task = tokio::spawn(async move {
             let mut rx = cmd_rx;
+            let mut steers = Vec::new();
+            let mut rx = CommandInbox::new(&mut rx, &mut steers);
             request_approval(
                 &*sink2,
                 &mut rx,
@@ -498,6 +661,8 @@ mod tests {
         let cancel2 = cancel.clone();
         let task = tokio::spawn(async move {
             let mut rx = cmd_rx;
+            let mut steers = Vec::new();
+            let mut rx = CommandInbox::new(&mut rx, &mut steers);
             request_approval(
                 &*sink2,
                 &mut rx,
@@ -529,6 +694,8 @@ mod tests {
         let cancel2 = cancel.clone();
         let task = tokio::spawn(async move {
             let mut rx = cmd_rx;
+            let mut steers = Vec::new();
+            let mut rx = CommandInbox::new(&mut rx, &mut steers);
             request_approval(
                 &*sink2,
                 &mut rx,
