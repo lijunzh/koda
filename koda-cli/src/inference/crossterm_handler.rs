@@ -51,7 +51,6 @@ pub(super) async fn handle_crossterm_event_inline(
     completer: &mut crate::completer::InputCompleter,
     history: &mut Vec<String>,
     history_idx: &mut Option<usize>,
-    later_queue: &mut std::collections::VecDeque<String>,
     paste_blocks: &mut Vec<input::PasteBlock>,
     db: &koda_core::db::Database,
     bg_agents: &koda_core::child_agent::ChildAgentRegistry,
@@ -102,7 +101,6 @@ pub(super) async fn handle_crossterm_event_inline(
                 completer,
                 history,
                 history_idx,
-                later_queue,
                 db,
                 bg_agents,
                 bg_processes,
@@ -129,7 +127,6 @@ async fn handle_inference_key_inline(
     completer: &mut crate::completer::InputCompleter,
     history: &mut Vec<String>,
     history_idx: &mut Option<usize>,
-    later_queue: &mut std::collections::VecDeque<String>,
     db: &koda_core::db::Database,
     bg_agents: &koda_core::child_agent::ChildAgentRegistry,
     bg_processes: &koda_core::tools::bg_process::BgRegistry,
@@ -347,44 +344,6 @@ async fn handle_inference_key_inline(
                 let _ = cmd_tx.send(EngineCommand::QueueNext { text }).await;
             }
         }
-        // Ctrl+J during inference — "later" lane: defer text until after the
-        // current turn fully completes, then batch with other later items into
-        // one new turn.
-        (KeyCode::Char('j'), m) if m.contains(KeyModifiers::CONTROL) => {
-            let text = textarea.text().to_string();
-            if !text.trim().is_empty() {
-                // #1211: same slash guard as the QueueNext path. A
-                // slash command queued for "later" would still arrive
-                // at the model as raw text — same silent-steer footgun,
-                // same fix.
-                if is_slash_command_attempt(&text) {
-                    textarea.set_text_clearing_elements("");
-                    crate::tui_output::warn_msg(
-                        scroll_buffer,
-                        "Slash commands are disabled during inference. \
-                         Press Esc to interrupt, then run the command at idle."
-                            .into(),
-                    );
-                    return;
-                }
-                textarea.set_text_clearing_elements("");
-                history.push(text.clone());
-                let _ = db.history_push(&text).await;
-                *history_idx = None;
-
-                let preview = truncate_preview(&text, 80);
-                if let Some(later_n) = crate::queue_lanes::enqueue_later(later_queue, text) {
-                    scroll_buffer.push(Line::from(vec![
-                        Span::raw("  "),
-                        Span::styled(
-                            format!("\u{1f4cb} Later ({later_n}): "),
-                            Style::default().fg(Color::Yellow),
-                        ),
-                        Span::styled(preview, Style::default().fg(Color::DarkGray)),
-                    ]));
-                }
-            }
-        }
         (KeyCode::Esc, _) => {
             // #1216: Gemini-style cascade. `session.interrupt()` fires
             // the session-lifetime cancel root — collapsing the
@@ -418,19 +377,6 @@ async fn handle_inference_key_inline(
                 child_activity,
             );
         }
-        // Ctrl+U: clear the later_queue (deferred messages) without cancelling inference.
-        (KeyCode::Char('u'), m) if m.contains(KeyModifiers::CONTROL) => {
-            let n = crate::queue_lanes::clear_later(later_queue);
-            if n > 0 {
-                scroll_buffer.push(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(
-                        format!("\u{1f6ab} Cleared {n} deferred message(s)"),
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                ]));
-            }
-        }
         (KeyCode::BackTab, _) => {
             // Sandbox-aware cycle (#860 hard refusal). Keep the user
             // in the current mode and surface a visible warning if
@@ -442,24 +388,6 @@ async fn handle_inference_key_inline(
                     format!("\u{26a0} {msg}"),
                     Style::default().fg(Color::Yellow),
                 ));
-            }
-        }
-        // Up during inference: pop the last later_queue item back into the
-        // editor so the user can edit it before re-submitting.
-        // Falls back to normal textarea movement when the queue is empty.
-        (KeyCode::Up, KeyModifiers::NONE) => {
-            if let Some(popped) = crate::queue_lanes::pop_later(later_queue) {
-                textarea.set_text_clearing_elements("");
-                textarea.insert_str(&popped);
-                scroll_buffer.push(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(
-                        "\u{21a9} Popped from later queue",
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                ]));
-            } else {
-                textarea.input(key);
             }
         }
         (KeyCode::Tab, KeyModifiers::NONE) => {
@@ -510,8 +438,7 @@ mod slash_guard_tests {
     //! inference must not silently steer.
     //!
     //! These pin the classifier (`is_slash_command_attempt`) that the
-    //! Enter (QueueNext) and Ctrl+J (later) handlers consult before
-    //! sending. The handlers themselves are deeply entangled with
+    //! Enter (QueueNext) handler consults before sending. The handlers themselves are deeply entangled with
     //! `TuiContext` field-borrows and the engine command channel — the
     //! cleanest unit-level surface is the classifier, so we keep these
     //! tests focused there. End-to-end coverage of the rejection path

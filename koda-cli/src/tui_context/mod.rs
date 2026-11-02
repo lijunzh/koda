@@ -33,7 +33,6 @@ use ratatui::{
     style::{Color, Style},
     text::{Line, Span},
 };
-use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -65,13 +64,6 @@ pub(crate) struct TuiContext {
 
     // ── Control flow ──────────────────────────────────────────
     pub paste_blocks: Vec<input::PasteBlock>,
-    /// Inputs queued during inference for injection into the **next** turn
-    /// after the current one completes.  All pending items are joined with
-    /// `\n\n` and submitted as a single new turn ("later" lane).
-    ///
-    /// Mid-turn injection ("next" lane) is handled by sending
-    /// `EngineCommand::QueueNext` directly to the engine via `cmd_tx`.
-    pub later_queue: VecDeque<String>,
     pub pending_command: Option<String>,
     pub should_quit: bool,
     /// #1216: Ctrl+C-arm timestamp. When the user presses Ctrl+C at
@@ -539,7 +531,6 @@ impl TuiContext {
             provider_wizard: None,
             pending_approval_id: None,
             paste_blocks: Vec::new(),
-            later_queue: VecDeque::new(),
             pending_command: None,
             should_quit: false,
             quit_armed_at: None,
@@ -586,15 +577,6 @@ impl TuiContext {
         let ctx = self.context_pct;
         let tui_state = self.tui_state;
         let prompt_mode = &self.prompt_mode;
-        let queue_total = self.later_queue.len();
-        // Collect at most MAX_VISIBLE preview items *before* the terminal.draw
-        // borrow so we don't fight the borrow checker on &mut self.terminal.
-        let queue_preview: Vec<String> = self
-            .later_queue
-            .iter()
-            .take(crate::widgets::queue_preview::MAX_VISIBLE)
-            .cloned()
-            .collect();
         let elapsed = self
             .inference_start
             .map(|s| s.elapsed().as_secs())
@@ -634,8 +616,6 @@ impl TuiContext {
                 ctx,
                 tui_state,
                 prompt_mode,
-                &queue_preview,
-                queue_total,
                 elapsed,
                 last_turn,
                 menu,
@@ -707,7 +687,6 @@ impl TuiContext {
             if self.tui_state == TuiState::Idle
                 && self.auto_resume_pending
                 && self.pending_command.is_none()
-                && self.later_queue.is_empty()
             {
                 self.auto_resume_pending = false;
                 self.run_inference_turn(None, ui_tx, ui_rx, cmd_tx, cmd_rx)
@@ -715,9 +694,9 @@ impl TuiContext {
                 continue;
             }
 
-            // ── Dispatch queued / pending commands ───────────
+            // ── Dispatch pending commands ────────────────────
             if self.tui_state == TuiState::Idle
-                && let Some(raw) = self.dequeue_input()
+                && let Some(raw) = self.pending_command.take()
             {
                 match self.dispatch_command(&raw).await {
                     CommandOutcome::NoInput => {}
@@ -790,43 +769,6 @@ impl TuiContext {
     // ═══════════════════════════════════════════════════════════
     // Command dispatch (slash commands, dropdown openers, inference prep)
     // ═══════════════════════════════════════════════════════════
-
-    /// Dequeue the next pending input, if any.
-    ///
-    /// Priority order:
-    /// 1. `pending_command` — set by slash commands that need a follow-up prompt
-    /// 2. `later_queue` — all items are joined with `\n\n` and returned as one
-    ///    batched string so they become a single new inference turn.
-    fn dequeue_input(&mut self) -> Option<String> {
-        if let Some(cmd) = self.pending_command.take() {
-            return Some(cmd);
-        }
-        if let Some(first) = self.later_queue.front().cloned() {
-            // Drain the whole later_queue and batch into one turn.
-            let (joined, count) = crate::queue_lanes::drain_later_as_batch(&mut self.later_queue)
-                .expect("front() returned Some, drain must too");
-            let mode = trust::read_trust(&self.shared_mode);
-            let icon = match mode {
-                TrustMode::Plan => "\u{1f4cb}",
-                TrustMode::Safe => "\u{1f512}",
-                TrustMode::Auto => "\u{26a1}",
-            };
-            self.scroll_buffer.push(Line::from(vec![
-                Span::styled(format!("{icon}> "), Style::default().fg(Color::Cyan)),
-                Span::raw(first),
-                if count > 1 {
-                    Span::styled(
-                        format!(" (+{} batched)", count - 1),
-                        Style::default().fg(Color::DarkGray),
-                    )
-                } else {
-                    Span::raw("")
-                },
-            ]));
-            return Some(joined);
-        }
-        None
-    }
 
     /// Dispatch a raw input string.
     async fn dispatch_command(&mut self, raw: &str) -> CommandOutcome {

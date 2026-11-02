@@ -7,7 +7,6 @@
 
 use crate::scroll_buffer::ScrollBuffer;
 use crate::tui_types::{MenuContent, PromptMode, Term, TuiState};
-use crate::widgets::queue_preview::QueuePreview;
 use crate::widgets::status_bar::StatusBar;
 use koda_core::mcp::manager::McpStatusBarInfo;
 
@@ -34,10 +33,6 @@ pub(crate) fn draw_viewport(
     context_pct: u32,
     state: TuiState,
     prompt_mode: &PromptMode,
-    // Items to show in the queue preview (at most `QueuePreview::MAX_VISIBLE`).
-    queue_items: &[String],
-    // Total deferred queue length (may be > queue_items.len()).
-    queue_total: usize,
     elapsed_secs: u64,
     last_turn: Option<&crate::widgets::status_bar::TurnStats>,
     menu: &MenuContent,
@@ -89,18 +84,14 @@ pub(crate) fn draw_viewport(
         }
     };
 
-    // Queue preview height: 0 when idle / queue empty.
-    let queue_preview_height = QueuePreview::height_for(queue_total);
-
-    // Bg-activity overlay height (#1210): 0 when no live work; mirrors
-    // QueuePreview's collapse-when-empty pattern so the chrome reflows
-    // automatically as fan-out agents come and go.
+    // Bg-activity overlay height (#1210): 0 when no live work, so the chrome
+    // reflows automatically as fan-out agents come and go.
     let child_activity_height =
         crate::widgets::child_activity_overlay::ChildActivityOverlay::height_for(
             child_activity_total,
         );
 
-    // Layout: History | TopSep | Input | BotSep | Status | Queue? | Menu
+    // Layout: History | TopSep | Input | BotSep | Status | Menu
     //
     // The bottom separator (#1194/#1195) mirrors the top one as a plain
     // horizontal rule — codex creates the same visual grouping with a
@@ -110,8 +101,7 @@ pub(crate) fn draw_viewport(
     //
     // Round 4 (#1194/#1195): the `? for shortcuts` hint moved to the
     // banner (shown on every session start). The footer is now just
-    // the status bar + optional queue preview — saves 1 row of
-    // persistent chrome.
+    // the status bar — saves 1 row of persistent chrome.
     let [
         history_area,
         top_sep_row,
@@ -119,7 +109,6 @@ pub(crate) fn draw_viewport(
         bot_sep_row,
         child_activity_row,
         status_row,
-        queue_preview_row,
         menu_area,
     ] = Layout::vertical([
         Constraint::Min(1),                        // history: fill remaining space
@@ -128,7 +117,6 @@ pub(crate) fn draw_viewport(
         Constraint::Length(1),                     // bottom separator (─────)
         Constraint::Length(child_activity_height), // #1210 live bg-activity overlay (0 when empty)
         Constraint::Length(1),                     // status bar
-        Constraint::Length(queue_preview_height),  // later_queue preview (0 when empty)
         Constraint::Length(menu_height),           // dropdown menu (0 when inactive)
     ])
     .areas(area);
@@ -266,14 +254,6 @@ pub(crate) fn draw_viewport(
         );
     }
 
-    // ── Queue preview (above status bar, hidden when empty) ─────────────
-    if queue_preview_height > 0 {
-        frame.render_widget(
-            QueuePreview::new(queue_items, queue_total),
-            queue_preview_row,
-        );
-    }
-
     // ── Status bar ────────────────────────────────────────────────
     // Status bar (#1194/#1195 follow-up): cwd dropped — banner already
     // shows it; static info doesn't earn its keep in the persistent
@@ -286,9 +266,6 @@ pub(crate) fn draw_viewport(
         // top-level option there). `is_available()` is cached after
         // first probe so this is a cheap function call per draw.
         .with_sandbox_status(Some(koda_core::sandbox::is_available()));
-    if queue_total > 0 {
-        sb = sb.with_queue(queue_total);
-    }
     if elapsed_secs > 0 {
         sb = sb.with_elapsed(elapsed_secs);
     }

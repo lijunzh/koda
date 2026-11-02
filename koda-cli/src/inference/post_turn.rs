@@ -23,28 +23,7 @@ impl TuiContext {
         &mut self,
         ui_rx: &mut mpsc::UnboundedReceiver<UiEvent>,
         cmd_rx: &mut mpsc::Receiver<EngineCommand>,
-        turn_cancel: &tokio_util::sync::CancellationToken,
     ) {
-        // If the turn was cancelled, clear the later_queue so deferred
-        // messages don’t immediately fire a new turn that may block on a
-        // single-slot local server (LM Studio, ollama) (#825).
-        //
-        // #1200: check the per-turn child token, not `session.cancel`.
-        // The session root is now stable across turn boundaries so bg
-        // agents derived from it keep their cancel cascade live; the
-        // child is the one that actually fires on Ctrl+C.
-        if turn_cancel.is_cancelled() && !self.later_queue.is_empty() {
-            let n = self.later_queue.len();
-            self.later_queue.clear();
-            self.scroll_buffer.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(
-                    format!("\u{1f6ab} Cleared {n} deferred message(s)"),
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]));
-        }
-
         self.tui_state = TuiState::Idle;
         self.inference_start = None;
         // #1200: do NOT replace `session.cancel`. The session root is
@@ -84,11 +63,12 @@ impl TuiContext {
         // Steering text the turn didn't deliver goes back in the composer, so
         // it isn't lost and doesn't go out behind the next prompt. Nothing
         // runs until the user presses Enter: they may have stopped the turn
-        // on purpose.
+        // on purpose, and a new turn can block on a single-slot local server
+        // that is still busy with the cancelled one (#825).
         let unsent = self.session.take_queued_steers(cmd_rx);
         if !unsent.is_empty() {
             let has_draft = !self.textarea.text().is_empty();
-            let draft = crate::queue_lanes::unsent_steers_as_draft(&unsent, has_draft);
+            let draft = unsent_steers_as_draft(&unsent, has_draft);
             self.textarea.insert_str_at(0, &draft);
             self.scroll_buffer.push(Line::from(vec![
                 Span::raw("  "),
@@ -177,5 +157,35 @@ impl TuiContext {
                 ));
             }
         }
+    }
+}
+
+/// What to put in front of the composer when queued text comes back unsent.
+///
+/// `steers` is oldest first, as from `KodaSession::take_queued_steers`. A draft
+/// already in the composer stays after it, one blank line down.
+fn unsent_steers_as_draft(steers: &[String], has_draft: bool) -> String {
+    let joined = steers.join("\n\n");
+    if has_draft {
+        format!("{joined}\n\n")
+    } else {
+        joined
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unsent_steers_as_draft;
+
+    #[test]
+    fn unsent_steers_keep_their_order() {
+        let steers = ["one".to_string(), "two".to_string()];
+        assert_eq!(unsent_steers_as_draft(&steers, false), "one\n\ntwo");
+    }
+
+    #[test]
+    fn unsent_steers_leave_room_for_the_draft() {
+        let steers = ["one".to_string()];
+        assert_eq!(unsent_steers_as_draft(&steers, true), "one\n\n");
     }
 }
