@@ -23,6 +23,7 @@
 //! (e.g., main REPL + background sub-agents) without shared mutable state.
 
 use crate::agent::KodaAgent;
+use crate::approval_flow::CommandInbox;
 use crate::child_agent::{self, ChildAgentRegistry};
 use crate::config::KodaConfig;
 use crate::db::Database;
@@ -270,6 +271,14 @@ pub struct KodaSession {
     /// `KodaSession` via struct literal and need to populate every
     /// field. Default is `None` (no forwarder spawned).
     pub event_forwarder: Option<tokio_util::task::AbortOnDropHandle<()>>,
+
+    /// Steering text a turn read but hasn't put in the conversation.
+    ///
+    /// Lives here, like [`Self::bg_agents`], so it survives the turn however
+    /// that ends, including a future dropped after
+    /// [`crate::inference::CANCEL_GRACE`]. Clients read it with
+    /// [`Self::take_queued_steers`].
+    pub queued_steers: Vec<String>,
 }
 
 impl KodaSession {
@@ -372,6 +381,7 @@ impl KodaSession {
             // `attach_event_sink` to spawn it. Headless paths leave
             // it `None` and rely on the legacy synchronous drain.
             event_forwarder: None,
+            queued_steers: Vec::new(),
         }
     }
 
@@ -559,6 +569,7 @@ impl KodaSession {
             // tests pass `None` and keep the legacy session-token behaviour.
             cancel: effective_cancel.clone(),
             cmd_rx,
+            queued_steers: &mut self.queued_steers,
             file_tracker: &mut self.file_tracker,
             git_snapshot: &self.git_snapshot,
             bg_agents: &self.bg_agents,
@@ -598,6 +609,19 @@ impl KodaSession {
             ),
             TurnOutcome::Finished | TurnOutcome::Aborted(_) => Ok(()),
         }
+    }
+
+    /// Take the steering text that didn't reach the model, oldest first.
+    ///
+    /// A client that sends [`EngineCommand::QueueNext`] calls this after each
+    /// turn, once it has stopped sending. Text is left over when the turn was
+    /// cancelled, stopped on a limit or failed, or when it arrived just as the
+    /// turn ended. Left alone, it would go out with the next prompt.
+    pub fn take_queued_steers(
+        &mut self,
+        cmd_rx: &mut mpsc::Receiver<EngineCommand>,
+    ) -> Vec<String> {
+        CommandInbox::new(cmd_rx, &mut self.queued_steers).take_steers()
     }
 
     /// Replace the provider (e.g., after switching models or providers).

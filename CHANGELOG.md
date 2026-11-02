@@ -41,6 +41,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **Text you type while the model works always reaches it, or comes back to you.** An approval, a question or the iteration limit could swallow it: the TUI showed `Next:` and the model never saw it. Text sent just before a final reply arrived with your next prompt, and nothing said so. Now the waits keep it, and a final reply with text pending continues the turn so the model answers in that turn.
+- **A turn that can't deliver your text puts it back in the input box.** That covers `Esc`, stopping at the iteration limit and a failed turn. It no longer goes out behind your next prompt, or stays in the history unanswered.
+- **A cancelled turn stops before its next model call.** A cancel during an approval or a tool could still send one more request.
 - **`/exit` quits when picked from the slash popup.** That's how it normally runs, since typing `/` opens the popup. It printed `Goodbye!` and left the TUI running. A command picked from the popup now takes the same path as one typed with the popup closed.
 - **A command can't outlive its timeout by closing its output.** Bash and Cargo timed only the reading of output, so a command that closed stdout and stderr could hold a turn for as long as it ran.
 - **Glob respects `.gitignore`, as its description says.** Ignored files no longer take up result slots, and `.git` is skipped. To search an ignored directory, name it in the pattern or `file_path`.

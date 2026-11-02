@@ -10,7 +10,7 @@ use crate::sink::UiEvent;
 use crate::tui_context::TuiContext;
 use crate::tui_types::TuiState;
 
-use koda_core::engine::EngineEvent;
+use koda_core::engine::{EngineCommand, EngineEvent};
 use koda_core::persistence::Persistence;
 use ratatui::{
     style::{Color, Style},
@@ -22,6 +22,7 @@ impl TuiContext {
     pub(super) async fn post_turn_cleanup(
         &mut self,
         ui_rx: &mut mpsc::UnboundedReceiver<UiEvent>,
+        cmd_rx: &mut mpsc::Receiver<EngineCommand>,
         turn_cancel: &tokio_util::sync::CancellationToken,
     ) {
         // If the turn was cancelled, clear the later_queue so deferred
@@ -78,6 +79,24 @@ impl TuiContext {
                 self.child_activity.record_activity(*task_id, kind);
             }
             self.renderer.render_to_buffer(e, &mut self.scroll_buffer);
+        }
+
+        // Steering text the turn didn't deliver goes back in the composer, so
+        // it isn't lost and doesn't go out behind the next prompt. Nothing
+        // runs until the user presses Enter: they may have stopped the turn
+        // on purpose.
+        let unsent = self.session.take_queued_steers(cmd_rx);
+        if !unsent.is_empty() {
+            let has_draft = !self.textarea.text().is_empty();
+            let draft = crate::queue_lanes::unsent_steers_as_draft(&unsent, has_draft);
+            self.textarea.insert_str_at(0, &draft);
+            self.scroll_buffer.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    "\u{21a9} Not sent to the model. It's back in the input box.",
+                    Style::default().fg(Color::Yellow),
+                ),
+            ]));
         }
 
         // Keep the server's real window for the rest of the session, so

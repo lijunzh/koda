@@ -54,6 +54,13 @@ model sees it immediately — useful for course-correcting mid-task.
   📥 Next: add the missing error handling too
 ```
 
+If the model finishes its reply first, the turn goes on so it can answer you.
+Text sent while an approval or a question is open waits for the tool to finish.
+
+If the turn ends without delivering your text, because you pressed `Esc`, chose
+to stop at the iteration limit, or the turn failed, the text returns to the
+input box. Press `Enter` to send it as a new prompt.
+
 **Slash commands (`/cancel`, `/compact`, `/model`, …) are not accepted
 mid-inference** (#1211/#1222). Type `/cancel agent:1` while the model is
 thinking and you'll see a transient "slash commands disabled during

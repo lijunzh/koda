@@ -74,6 +74,19 @@ pub(crate) fn drain_later_as_batch(queue: &mut VecDeque<String>) -> Option<(Stri
     Some((items.join("\n\n"), count))
 }
 
+/// What to put in front of the composer when queued text comes back unsent.
+///
+/// `steers` is oldest first, as from `KodaSession::take_queued_steers`. A draft
+/// already in the composer stays after it, one blank line down.
+pub(crate) fn unsent_steers_as_draft(steers: &[String], has_draft: bool) -> String {
+    let joined = steers.join("\n\n");
+    if has_draft {
+        format!("{joined}\n\n")
+    } else {
+        joined
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,6 +97,20 @@ mod tests {
 
     fn seeded(items: &[&str]) -> VecDeque<String> {
         items.iter().map(|s| s.to_string()).collect()
+    }
+
+    // ── unsent_steers_as_draft ────────────────────────────────────────────
+
+    #[test]
+    fn unsent_steers_keep_their_order() {
+        let steers = ["one".to_string(), "two".to_string()];
+        assert_eq!(unsent_steers_as_draft(&steers, false), "one\n\ntwo");
+    }
+
+    #[test]
+    fn unsent_steers_leave_room_for_the_draft() {
+        let steers = ["one".to_string()];
+        assert_eq!(unsent_steers_as_draft(&steers, true), "one\n\n");
     }
 
     // ── enqueue_later ─────────────────────────────────────────────────────

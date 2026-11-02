@@ -29,6 +29,7 @@ async fn only_the_matching_decision_resumes_the_turn() {
         koda_core::file_tracker::FileTracker::new(&env.session_id, env.db.clone()).await;
     let cache = koda_core::sub_agent_cache::SubAgentCache::new();
     let git = koda_core::git::GitSnapshot::default();
+    let mut steers = Vec::new();
     let turn = inference::inference_loop(InferenceContext {
         project_root: &env.root,
         config: &env.config,
@@ -44,6 +45,7 @@ async fn only_the_matching_decision_resumes_the_turn() {
         sink: sink.as_ref(),
         cancel: CancellationToken::new(),
         cmd_rx: &mut cmd_rx,
+        queued_steers: &mut steers,
         file_tracker: &mut file_tracker,
         bg_agents: &env.bg_agents,
         sub_agent_cache: &cache,

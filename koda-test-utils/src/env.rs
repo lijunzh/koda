@@ -291,6 +291,7 @@ impl Env {
             sink: sink.as_ref(),
             cancel,
             cmd_rx: &mut cmd_rx,
+            queued_steers: &mut Vec::new(),
             file_tracker: &mut file_tracker,
             bg_agents: &bg_agents,
             sub_agent_cache: &sub_agent_cache,
