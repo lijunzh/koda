@@ -70,7 +70,7 @@ The menu area shows the tool name, the action detail, and hotkeys:
 
 ```
   Bash  rm -rf dist/
-  [y] approve   [n] reject   [f] feedback   [a] always
+  [y] approve   [n] reject   [f] feedback   [a] always   [esc] stop
 ```
 
 See [Approval & trust modes](./approval.md) for the full reference.

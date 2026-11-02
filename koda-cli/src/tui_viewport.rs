@@ -420,7 +420,9 @@ fn render_menu(frame: &mut ratatui::Frame, menu: &MenuContent, menu_area: ratatu
                     Span::styled("[f]", Style::default().fg(Color::Yellow)),
                     Span::styled(" feedback  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("[a]", Style::default().fg(Color::Rgb(124, 111, 100))),
-                    Span::styled(" always", Style::default().fg(Color::DarkGray)),
+                    Span::styled(" always  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[esc]", Style::default().fg(Color::Rgb(124, 111, 100))),
+                    Span::styled(" stop", Style::default().fg(Color::DarkGray)),
                 ]),
             ];
             frame.render_widget(Paragraph::new(lines), menu_area);
@@ -484,7 +486,7 @@ fn render_menu(frame: &mut ratatui::Frame, menu: &MenuContent, menu_area: ratatu
                     Span::styled("  ", Style::default()),
                     Span::styled(hint, Style::default().fg(Color::DarkGray)),
                     Span::styled(
-                        "  · Esc to skip",
+                        "  · Esc to stop",
                         Style::default().fg(Color::Rgb(80, 80, 80)),
                     ),
                 ]),
@@ -568,7 +570,7 @@ fn build_ask_user_hint(options: &[String]) -> String {
 /// The two rendered lines are:
 /// - `"  ❓ " + question` (prefix is 5 visual cols: 2 spaces + wide
 ///   emoji + 1 space).
-/// - `"  " + hint + "  · Esc to skip"` (prefix is 2 visual cols).
+/// - `"  " + hint + "  · Esc to stop"` (prefix is 2 visual cols).
 ///
 /// We compute the wrap count of each by reusing
 /// [`crate::wrap_util::visual_line_count`] \u2014 the same word-wrap
@@ -593,7 +595,7 @@ fn ask_user_menu_height(
     let q_rows = visual_line_count(&q_text, viewport_width as usize);
 
     let hint = build_ask_user_hint(options);
-    let h_text = format!("  {hint}  \u{00b7} Esc to skip");
+    let h_text = format!("  {hint}  \u{00b7} Esc to stop");
     let h_rows = visual_line_count(&h_text, viewport_width as usize);
 
     let total = (q_rows + h_rows) as u16;

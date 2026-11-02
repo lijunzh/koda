@@ -1228,7 +1228,8 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
                 }
             };
 
-            if extra == 0 {
+            // A cancel falls through to the stop below, like any other wait.
+            if extra == 0 && !cancel.is_cancelled() {
                 stats.limit = Some("iteration_cap");
                 break Ok(());
             }

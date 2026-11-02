@@ -60,6 +60,15 @@ impl TuiContext {
             self.renderer.render_to_buffer(e, &mut self.scroll_buffer);
         }
 
+        // A dialog that reached the screen as the turn stopped has no one
+        // waiting for its answer.
+        super::crossterm_handler::close_dialog(
+            &mut self.menu,
+            &mut self.prompt_mode,
+            &mut self.pending_approval_id,
+            &mut self.textarea,
+        );
+
         // Steering text the turn didn't deliver goes back in the composer, so
         // it isn't lost and doesn't go out behind the next prompt. Nothing
         // runs until the user presses Enter: they may have stopped the turn

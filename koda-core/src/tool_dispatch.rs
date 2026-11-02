@@ -599,6 +599,29 @@ pub(crate) async fn execute_tools_split_batch(
     Ok(())
 }
 
+/// What the model reads for a call the user stopped before it ran.
+const STOPPED_TOOL_RESULT: &str = "The user stopped the turn before this ran.";
+
+/// Answer the calls a stopped turn left open.
+///
+/// An unanswered call gets its assistant message pruned on the next load, which
+/// would hide what the model proposed and the results of the calls that ran.
+async fn record_stopped_calls(tool_calls: &[ToolCall], ctx: &TurnContext<'_>) -> Result<()> {
+    for tc in tool_calls {
+        ctx.db
+            .insert_message(
+                ctx.session_id,
+                &Role::Tool,
+                Some(STOPPED_TOOL_RESULT),
+                None,
+                Some(&tc.id),
+                None,
+            )
+            .await?;
+    }
+    Ok(())
+}
+
 /// Run tool calls one at a time (when confirmation is needed, or single call).
 pub(crate) async fn execute_tools_sequential(
     tool_calls: &[ToolCall],
@@ -617,13 +640,13 @@ pub(crate) async fn execute_tools_sequential(
         ref cancel,
         ..
     } = *ctx;
-    for tc in tool_calls {
+    for (i, tc) in tool_calls.iter().enumerate() {
         // Check for interrupt before each tool
         if cancel.is_cancelled() {
             sink.emit(EngineEvent::Warn {
                 message: "Interrupted".into(),
             });
-            return Ok(());
+            return record_stopped_calls(&tool_calls[i..], ctx).await;
         }
 
         let parsed_args: serde_json::Value =
@@ -643,7 +666,7 @@ pub(crate) async fn execute_tools_sequential(
             let result = match answer {
                 Some(text) if !text.trim().is_empty() => text,
                 Some(_) => "User did not provide an answer.".into(),
-                None => return Ok(()), // cancelled
+                None => return record_stopped_calls(&tool_calls[i..], ctx).await,
             };
             record_tool_result(tc, &result, true, None, ctx, file_tracker).await?;
             continue;
@@ -769,10 +792,7 @@ pub(crate) async fn execute_tools_sequential(
                         .await?;
                         continue;
                     }
-                    None => {
-                        // Cancelled
-                        return Ok(());
-                    }
+                    None => return record_stopped_calls(&tool_calls[i..], ctx).await,
                 }
             }
         }

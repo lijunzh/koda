@@ -123,7 +123,10 @@ When a confirmation prompt appears:
 | `n`   | Reject this one action                                            |
 | `a`   | Approve **and** enable Auto mode for the rest of the session      |
 | `f`   | Reject and provide written feedback the model can act on          |
-| `Esc` | Reject (same as `n`)                                              |
+| `Esc` / `Ctrl+C` | Stop the turn; the action does not run                |
+
+`n` and `f` let the model carry on and try something else. `Esc` and `Ctrl+C`
+stop it until your next prompt, and the model sees that you stopped the action.
 
 ## Per-agent trust declaration
 
