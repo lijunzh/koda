@@ -45,6 +45,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **A sub-agent in a worktree knows Koda commits for it.** The sandbox blocks its `git add` and `git commit`, by design, and the failure looked like something to work around. Its work was always saved to the branch.
 - **`/sessions delete` can't erase the session you're in.** The check compared the full id, so a short id, which is what `/sessions` shows, got past it and left the running conversation unable to save.
 - **An agent's `max_iterations` applies to the main agent.** Any model setup reset it to 200: `--model`, a restored provider, auto-detect, `/model` and `/provider`. It now holds through all of them.
 - **`Ctrl+C` works while a dialog is open.** It did nothing at an approval, a question, the feedback prompt or the loop cap. It now stops the turn, as it does everywhere else.
