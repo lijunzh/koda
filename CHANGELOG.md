@@ -29,6 +29,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- **Edit takes `old_str` and `new_str` directly, one change per call.** Its `replacements` list is gone. Haiku, Sonnet and Laguna often sent that list as a broken string, which failed 32%, 29% and 41% of their Edit calls in saved runs. Several Edits to one file run in order, so one response can still make several changes, though they no longer apply as a single all-or-nothing step. A call in the old shape is refused with a message saying what to send.
 - **The Anthropic provider caches the conversation, not only the system prompt and tools.** The last content block of the last message now carries a cache breakpoint, so the next request reads the conversation so far from the prompt cache instead of paying full input price for it. The request uses three of Anthropic's four breakpoints. Compaction rewrites the history and costs one cache miss each time.
 - **The system prompt is smaller.** Rules that appeared twice now appear once, and headless runs, ACP and sub-agents no longer carry a TUI quick reference they can't use. `CLAUDE.md` went from 29K to 10K characters, with the rest in the development reference.
 - **Memory is capped at 16,000 characters in the system prompt.** Past that it is cut with a note telling the model to use `MemoryRead`, which still returns everything, and to ask you to trim the file.
