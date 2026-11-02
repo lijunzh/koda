@@ -51,9 +51,10 @@ async fn safe_trust_sub_agent_can_write_files() {
     // approves the Write because mutating ops at Safe in sub-agent
     // context default to AutoApprove.
     let _lock = ENV_MUTEX.lock().await;
-    // Parent at Safe trust (the production scenario where the bug
-    // surfaced — running `koda --mode safe` and delegating to `task`).
-    let env = Env::builder().trust(TrustMode::Safe).build().await;
+    // Parent at Auto, so the agent's declared Safe is what's under test. A
+    // parent at Safe sends the write to a worktree, which needs a git repo:
+    // `e2e_sub_agent_workspace_test.rs` covers that.
+    let env = Env::builder().trust(TrustMode::Auto).build().await;
     write_safe_trust_sub_agent(&env, "writer");
 
     // Sub-agent script: emit a Write tool call, then a final text reply.

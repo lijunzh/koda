@@ -815,10 +815,11 @@ different set.
   `"isolation": "worktree"`, and any writer in Safe mode, because a sub-agent
   has no approval channel and Safe promises nothing changes without the
   user's OK. A branch with work on it always survives release.
-  **Provision failure on a worktree does not silently downgrade**
-  (#1022 B21): the dispatch short-circuits with a structural failure marker
-  (see next invariant) instead of dropping the sub-agent into the project,
-  which would break Safe's promise. The user-visible warning surfaces through
+  **A required worktree that can't be made does not silently downgrade**
+  (#1022 B21), whether provisioning failed or there is no git repository:
+  the dispatch short-circuits with a structural failure marker (see next
+  invariant) instead of dropping the sub-agent into the project, which would
+  break Safe's promise. The user-visible warning surfaces through
   `EngineEvent::Info` so it isn't buried in trace logs.
 - **Structural failures use the `[ERROR: ...]` marker convention**
   (#1022 B18, B21). When a sub-agent can't produce an answer for

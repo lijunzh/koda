@@ -131,12 +131,11 @@ impl WorkspaceProvider for CwdProvider {
 /// Discard: git branch -D koda/wt/<agent>-<id>
 /// ```
 ///
-/// ## Fallback
+/// ## Outside git
 ///
-/// If `git` is not in `PATH` or the project is not a git repo,
-/// `provision` returns the `project_root` unchanged and `release` is a
-/// no-op. No error is surfaced — the sub-agent just runs without
-/// worktree isolation.
+/// If `git` is not in `PATH` or the project is not a git repo, `provision`
+/// fails. A caller picks this provider because it needs the isolation, so
+/// handing back the project would quietly remove it.
 #[derive(Debug, Clone)]
 pub struct GitWorktreeProvider {
     project_root: PathBuf,
@@ -218,10 +217,7 @@ impl WorkspaceProvider for GitWorktreeProvider {
         }
 
         if !self.is_git_repo().await {
-            tracing::debug!(
-                "Not a git repo or git unavailable — skipping worktree isolation for {slot_id}"
-            );
-            return Ok(self.project_root.clone());
+            anyhow::bail!("{} is not a git repository", self.project_root.display());
         }
 
         let wt_path = self.worktree_path(slot_id);
@@ -262,7 +258,7 @@ impl WorkspaceProvider for GitWorktreeProvider {
     }
 
     async fn release(&self, slot_id: &str, path: &Path) -> Result<Option<String>> {
-        // Fallback path — provision returned project_root directly.
+        // Never remove the project itself.
         if path == self.project_root {
             return Ok(None);
         }
@@ -485,14 +481,6 @@ mod tests {
                 .await
                 .unwrap();
         }
-    }
-
-    #[tokio::test]
-    async fn provision_not_git_repo_falls_back() {
-        let tmp = tempfile::tempdir().unwrap();
-        let p = GitWorktreeProvider::new(tmp.path(), "agent");
-        let result = p.provision("slot-abc").await.unwrap();
-        assert_eq!(result, tmp.path());
     }
 
     #[tokio::test]
@@ -804,10 +792,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn release_fallback_path_is_noop() {
+    async fn outside_git_provision_fails_rather_than_share_the_project() {
         let tmp = tempfile::tempdir().unwrap();
         let p = GitWorktreeProvider::new(tmp.path(), "agent");
-        // path == project_root → must be no-op even if not a git repo
+        let refused = p.provision("slot-x").await.unwrap_err();
+        assert!(
+            refused.to_string().contains("not a git repository"),
+            "{refused}"
+        );
+    }
+
+    #[tokio::test]
+    async fn release_of_the_project_itself_is_a_noop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = GitWorktreeProvider::new(tmp.path(), "agent");
         let hint = p.release("slot-x", tmp.path()).await.unwrap();
         assert!(hint.is_none());
     }

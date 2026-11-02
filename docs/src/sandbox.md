@@ -183,7 +183,7 @@ do. Where its writes land is a separate choice, and it follows your mode:
 | Session | Writes go to |
 |---------|--------------|
 | Auto | The project, like the main agent's. `/undo` takes them back with the turn. |
-| Safe | A git worktree of its own. A sub-agent can't ask for approval, so nothing reaches the project until you merge its branch. |
+| Safe | A git worktree of its own. A sub-agent can't ask for approval, so its file edits don't reach the project until you merge its branch. |
 | Plan | Nowhere. Sub-agents are read-only. |
 
 An agent can ask for a worktree in any mode with `"isolation": "worktree"`
@@ -195,11 +195,17 @@ removed along with its branch.
 A worktree is a fresh checkout of `HEAD`, so it doesn't have your
 uncommitted edits, untracked files or build output.
 
-Outside a git repository there are no worktrees, so a sub-agent writes in
-the project in every mode.
+Outside a git repository there are no worktrees. A sub-agent that needs one
+doesn't start, and the main agent is told why, so it can do the work itself:
+in Safe that means you approve each edit. In Auto, sub-agents write in the
+project as usual.
+
+Safe moves agents that have `Write`, `Edit` or `Delete`. An agent denied all
+three stays in the project, so `verify` can run your tests against your build
+output. Its commands aren't reviewed first, so deny `Bash` too if an agent
+shouldn't run any.
 
 Sub-agents in the project share it with each other. The main agent is told
 to give each one files no other is touching.
 
-**Read-only sub-agents** (no `Write` or `Edit` tools) always use the project,
-in every mode.
+Agents in Plan trust always use the project, in every mode.

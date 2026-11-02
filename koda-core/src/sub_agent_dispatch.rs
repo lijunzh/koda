@@ -994,23 +994,25 @@ pub(crate) fn execute_sub_agent<'a>(
         // expects. Two cases get a git worktree instead: an agent that asks for
         // one, and any writer in Safe mode. Safe promises that nothing changes
         // without the user's OK and a sub-agent can't ask, so its work waits on
-        // a branch for the user to merge.
-        let has_write_tools = !sub_config
-            .disallowed_tools
-            .iter()
-            .any(|t| t == "Write" || t == "Edit");
+        // a branch for the user to merge. Where a worktree is needed and can't
+        // be had, the sub-agent doesn't start: the project is no substitute.
+        let needs_isolation = needs_worktree(
+            sub_config.trust,
+            edits_files(&sub_config.allowed_tools, &sub_config.disallowed_tools),
+            isolation,
+            mode,
+        );
         // Phase 1 of #1022: explicit `+ Send + Sync` on the trait object.
         // The supertrait bound `WorkspaceProvider: Send + Sync` constrains
         // *implementors*, but Rust trait objects don't auto-inherit those
         // bounds — `Box<dyn WorkspaceProvider>` is `!Send` without the
         // explicit annotation, which makes the whole `execute_sub_agent`
         // future `!Send` and unspawnable.
-        let workspace: Box<dyn WorkspaceProvider + Send + Sync> =
-            if needs_worktree(has_write_tools, isolation, mode) {
-                Box::new(GitWorktreeProvider::new(project_root, agent_name))
-            } else {
-                Box::new(CwdProvider::new(project_root))
-            };
+        let workspace: Box<dyn WorkspaceProvider + Send + Sync> = if needs_isolation {
+            Box::new(GitWorktreeProvider::new(project_root, agent_name))
+        } else {
+            Box::new(CwdProvider::new(project_root))
+        };
         let effective_root = match workspace.provision(&sub_session).await {
             Ok(path) => {
                 if path != project_root {
@@ -1023,7 +1025,7 @@ pub(crate) fn execute_sub_agent<'a>(
                 }
                 path
             }
-            Err(e) if has_write_tools => {
+            Err(e) if needs_isolation => {
                 // **#1022 B21**: pre-fix this branch silently fell
                 // back to `project_root.to_path_buf()`. With write
                 // tools requested, that drops the sub-agent into
@@ -1756,9 +1758,29 @@ async fn release_workspace(
     }
 }
 
+/// Whether an agent's tool lists leave it any of the file-writing tools. An empty
+/// allow list means every tool, as in `get_definitions`.
+fn edits_files(allowed: &[String], disallowed: &[String]) -> bool {
+    ["Write", "Edit", "Delete"].iter().any(|tool| {
+        let allowed = allowed.is_empty() || allowed.iter().any(|t| t == tool);
+        allowed && !disallowed.iter().any(|t| t == tool)
+    })
+}
+
 /// Whether a sub-agent gets a git worktree rather than the project itself.
-fn needs_worktree(has_write_tools: bool, isolation: AgentIsolation, mode: TrustMode) -> bool {
-    has_write_tools && (isolation == AgentIsolation::Worktree || mode == TrustMode::Safe)
+///
+/// `trust` is the sub-agent's own, and in Plan it can't change anything. An agent
+/// that asks for a worktree gets one whatever its tools, since Bash can write too.
+/// Safe only moves agents with file tools: `verify` runs commands in the project
+/// and is denied the rest, and a worktree has no build output to test against.
+fn needs_worktree(
+    trust: TrustMode,
+    edits_files: bool,
+    isolation: AgentIsolation,
+    mode: TrustMode,
+) -> bool {
+    trust != TrustMode::Plan
+        && (isolation == AgentIsolation::Worktree || (mode == TrustMode::Safe && edits_files))
 }
 
 /// A sub-agent's answer, with where its work went if that isn't the project.
@@ -1809,7 +1831,7 @@ async fn tool_output(
 /// markers so the model treats it as failure metadata rather
 /// than a sub-agent answer. Includes the failure reason so the
 /// parent can adapt (e.g. switch to a read-only sub-agent if
-/// the underlying issue is non-APFS volume / no git repo).
+/// the underlying issue is no git repo).
 fn workspace_provision_failure_marker(agent_name: &str, reason: &str) -> String {
     format!(
         "[ERROR: sub-agent '{agent_name}' could not provision an isolated workspace and was not \
@@ -2024,7 +2046,7 @@ mod recover_last_assistant_text_tests {
 
 #[cfg(test)]
 mod release_workspace_tests {
-    use super::{needs_worktree, release_workspace, with_workspace_hint};
+    use super::{edits_files, needs_worktree, release_workspace, with_workspace_hint};
     use crate::config::AgentIsolation;
     use crate::engine::EngineEvent;
     use crate::engine::sink::TestSink;
@@ -2083,14 +2105,64 @@ mod release_workspace_tests {
 
     #[test]
     fn writers_stay_in_the_project_unless_safe_or_asked() {
+        use TrustMode::{Auto, Plan, Safe};
         let none = AgentIsolation::None;
         let worktree = AgentIsolation::Worktree;
-        assert!(!needs_worktree(true, none, TrustMode::Auto));
-        assert!(!needs_worktree(true, none, TrustMode::Plan));
-        assert!(needs_worktree(true, none, TrustMode::Safe));
-        assert!(needs_worktree(true, worktree, TrustMode::Auto));
-        assert!(!needs_worktree(false, none, TrustMode::Safe));
-        assert!(!needs_worktree(false, worktree, TrustMode::Auto));
+        assert!(!needs_worktree(Safe, true, none, Auto));
+        assert!(!needs_worktree(Plan, true, none, Plan));
+        assert!(needs_worktree(Safe, true, none, Safe));
+        assert!(needs_worktree(Safe, true, worktree, Auto));
+    }
+
+    #[test]
+    fn safe_leaves_an_agent_without_file_tools_in_the_project() {
+        let none = AgentIsolation::None;
+        assert!(!needs_worktree(
+            TrustMode::Safe,
+            false,
+            none,
+            TrustMode::Safe
+        ));
+    }
+
+    #[test]
+    fn asking_for_a_worktree_holds_without_file_tools_but_not_in_plan() {
+        let worktree = AgentIsolation::Worktree;
+        assert!(needs_worktree(
+            TrustMode::Safe,
+            false,
+            worktree,
+            TrustMode::Auto
+        ));
+        assert!(!needs_worktree(
+            TrustMode::Plan,
+            false,
+            worktree,
+            TrustMode::Auto
+        ));
+    }
+
+    fn names(tools: &[&str]) -> Vec<String> {
+        tools.iter().map(|t| t.to_string()).collect()
+    }
+
+    #[test]
+    fn denying_one_file_tool_leaves_the_others() {
+        assert!(edits_files(&[], &names(&["Edit"])));
+        assert!(edits_files(&[], &names(&["Write"])));
+        assert!(
+            edits_files(&[], &names(&["Write", "Edit"])),
+            "Delete remains"
+        );
+        assert!(!edits_files(&[], &names(&["Write", "Edit", "Delete"])));
+    }
+
+    #[test]
+    fn an_allow_list_decides_what_is_left() {
+        assert!(edits_files(&[], &[]));
+        assert!(edits_files(&names(&["Read", "Write"]), &[]));
+        assert!(!edits_files(&names(&["Read", "Grep"]), &[]));
+        assert!(!edits_files(&names(&["Write"]), &names(&["Write"])));
     }
 }
 
