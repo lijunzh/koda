@@ -23,7 +23,7 @@ pub fn inject_builtin_skills(agent: &mut KodaAgent) {
         Some(
             "Use when the user asks how to use Koda: commands, flags, TUI keybindings, \
              configuration, sessions, providers, approval modes, trust modes, \
-             sandbox, security, safety, privacy, undo, tools, MCP servers, \
+             sandbox, security, safety, privacy, tools, MCP servers, \
              context management, memory, file attachments, skills, sub-agents, \
              troubleshooting, panic logs, crash diagnosis, or any \
              other feature documented in the user manual. \

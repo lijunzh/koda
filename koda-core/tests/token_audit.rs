@@ -1,7 +1,7 @@
 //! Token audit: dump tool definitions for analysis.
 //!
 //! Migrated to `ToolCatalog` directly in #1265 item 5 PR-2 — we
-//! only need definitions, not the full registry's FS / undo /
+//! only need definitions, not the full registry's FS /
 //! caps / proxy state. Construction is pure (no project root, no
 //! skill discovery), making this test cheaper and clearer.
 

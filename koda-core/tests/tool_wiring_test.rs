@@ -8,7 +8,7 @@ use std::path::PathBuf;
 /// Get all built-in tool names from the registry.
 ///
 /// Migrated to `ToolCatalog` in #1265 item 5 PR-2 — we only need
-/// names, not the full registry. Avoids constructing FS / undo /
+/// names, not the full registry. Avoids constructing FS /
 /// caps state we'd never touch.
 fn all_tool_names() -> Vec<String> {
     koda_core::tools::ToolCatalog::new().all_builtin_tool_names()

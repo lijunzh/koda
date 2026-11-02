@@ -86,18 +86,6 @@ in your current session.
 
 Requires `y` to confirm. Deleted messages are gone permanently.
 
-## `/undo`
-
-Reverts all file mutations from the **previous inference turn** — Write,
-Edit, and Delete tool calls. One `/undo` per turn; call again to go back
-another turn. Bash commands (e.g. `cargo build`) are **not** undoable.
-
-```text
-# Koda wrote bad code in the last turn
-/undo    ← all file changes from that turn are reverted
-/undo    ← undo the turn before that
-```
-
 ## `/diff`
 
 Shows a summary of uncommitted `git diff` in the project root. Then offers:

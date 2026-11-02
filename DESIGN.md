@@ -808,7 +808,7 @@ different set.
   `AbortOnDropHandle`) ensures registry drop = task abort = workspace release.
 - **Sub-agents write in the project** (P2). They inherit the session's mode
   and work where the main agent works, as Claude Code's and Codex's do, so
-  edits land where the user expects and `/undo` covers them. Copying the
+  edits land where the user expects. Copying the
   project per sub-agent (`clonefile(2)` on macOS) lost finished work, because
   a copy needs a way back that a shared directory doesn't, and it was gone
   with the copy. Worktrees remain for two cases: an agent that sets
@@ -1228,6 +1228,20 @@ this turn, it’s auto-approved.
   `ToolRegistry::execute()`) — failed writes don't register ownership
 - Tracker resets per turn via `reset()` — no cross-turn state leakage
 - In-memory only — no persistence needed since ownership is turn-scoped
+
+### No File Undo (P2)
+
+Koda keeps no history of file changes, and there is no `/undo`. If a change can
+be recovered with git or the shell, that's how to recover it. If it can't, a
+second history inside Koda isn't the answer: it would cover only some changes,
+and the user would have to learn where it stops. It could never cover Bash,
+which changes files too, so it would promise less than it seemed to.
+
+The cost is real: a change to work that isn't committed can't be brought back,
+and Auto makes those changes without asking. Commit what you want to keep.
+
+Peers split here. Claude Code's `/rewind` keeps snapshots, and Codex dropped its
+`/undo` and removed the snapshots behind it, so this follows neither by default.
 
 ---
 

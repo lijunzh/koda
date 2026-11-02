@@ -1799,10 +1799,7 @@ mod tests {
         );
         assert!(def.parameters["properties"]["package"].is_object());
         assert!(def.parameters["properties"]["test_filter"].is_object());
-        assert!(
-            t.extract_undo_path(&json!({"subcommand": "build"}))
-                .is_none()
-        );
+        assert!(t.mutated_path(&json!({"subcommand": "build"})).is_none());
     }
 
     /// The guidance on when to run it lives in the description, not the

@@ -110,7 +110,7 @@ pub async fn glob_search(
 // =============================================================
 // Tool trait implementation (#1265 item 5, PR-5/N).
 //
-// `Glob` is read-only — no `extract_undo_path` override needed.
+// `Glob` is read-only — no `mutated_path` override needed.
 // Reads `caps.glob_results` off the context.
 // =============================================================
 
@@ -268,7 +268,7 @@ mod tests {
         assert_eq!(t.name(), "Glob");
         assert_eq!(t.definition().name, "Glob");
         assert_eq!(t.classify(&serde_json::json!({})), ToolEffect::ReadOnly);
-        assert!(t.extract_undo_path(&serde_json::json!({})).is_none());
+        assert!(t.mutated_path(&serde_json::json!({})).is_none());
     }
 
     #[tokio::test]

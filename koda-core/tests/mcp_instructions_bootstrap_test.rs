@@ -73,7 +73,7 @@ async fn make_session_with_mcp(
         tools,
         // #1265 item 5 PR-2: definitions come from a fresh
         // `ToolCatalog` — a second full `ToolRegistry` here would be
-        // wasteful (we'd never touch its FS / undo / caps state).
+        // wasteful (we'd never touch its FS / caps state).
         tool_defs: koda_core::tools::ToolCatalog::new().get_definitions(&[], &[]),
         // Important: this is the STATIC prompt — it must NOT contain the
         // MCP block. The fix in #929 composes the MCP section per-turn in

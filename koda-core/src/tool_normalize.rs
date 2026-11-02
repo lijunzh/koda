@@ -3,7 +3,7 @@
 //! Models sometimes emit tool names in lowercase (`list`, `read`) or
 //! snake_case (`list_files`, `read_file`) instead of the canonical PascalCase
 //! (`List`, `Read`). This module provides a single normalization point at the
-//! API boundary so all downstream code (dispatch, approval, loop guard, undo)
+//! API boundary so all downstream code (dispatch, approval, loop guard)
 //! sees canonical names.
 //!
 //! ## Design

@@ -491,7 +491,7 @@ mod tests {
         assert_eq!(t.definition().name, "TodoWrite");
         // ReadOnly: only mutates Koda's own state (#1212).
         assert_eq!(t.classify(&json!({})), crate::tools::ToolEffect::ReadOnly,);
-        assert!(t.extract_undo_path(&json!({})).is_none());
+        assert!(t.mutated_path(&json!({})).is_none());
     }
 
     /// No-session path returns a graceful Ok message (preserves

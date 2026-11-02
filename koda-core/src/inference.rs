@@ -837,17 +837,6 @@ pub struct InferenceContext<'a> {
 }
 
 /// Run the inference loop: send messages, stream responses, dispatch tool calls.
-///
-/// This is a thin wrapper around the private `inference_loop_inner`
-/// that always finalizes the undo stack's pending snapshots on return — regardless
-/// of whether the inner loop completed, errored, or was cancelled
-/// (#1264). Without this, file mutations made by tools during the
-/// turn would stay in `pending` forever and never become an undoable
-/// entry, so the `/undo` slash command would always report "Nothing
-/// to undo" no matter how many files had been written.
-///
-/// `commit_turn` is a no-op when `pending` is empty, so turns with
-/// zero file mutations don't grow the undo stack.
 #[tracing::instrument(skip_all, fields(session_id = %ctx.session_id, agent = %ctx.config.agent_name))]
 pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
     inference_loop_outcome(ctx).await.map(|_| ())
@@ -964,18 +953,11 @@ async fn until_abandoned(
 /// Like [`inference_loop`], but says whether the turn stopped early on a
 /// warning. `inference_loop` keeps returning `Ok(())` for those turns.
 pub async fn inference_loop_outcome(ctx: InferenceContext<'_>) -> Result<TurnOutcome> {
-    // `&ToolRegistry` is `Copy`, so capturing here doesn't move `ctx`.
-    // We need this handle to call `commit_turn` after the inner
-    // function returns and releases its borrow on `ctx.tools`.
-    let tools = ctx.tools;
     let session_id = ctx.session_id;
     let cancel = ctx.cancel.clone();
     let mut stats = TurnStats::default();
     let result = until_abandoned(inference_loop_inner(ctx, &mut stats), &cancel).await;
     stats.log(session_id, stats.outcome(&result, cancel.is_cancelled()));
-    if let Ok(mut undo) = tools.undo.lock() {
-        undo.commit_turn();
-    }
     match result {
         Ok(()) => Ok(TurnOutcome::Finished),
         Err(e) if e.is::<TurnAbandoned>() => Ok(TurnOutcome::Abandoned),
@@ -1524,7 +1506,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
         // Models may emit lowercase or snake_case names ("list", "read_file").
         // This runs for all providers — the canonical fast-path is a single
         // HashMap lookup — and must happen here (not in providers) so dispatch,
-        // approval, loop guard, undo, and persistence all see consistent
+        // approval, loop guard, and persistence all see consistent
         // canonical names.
         let tool_calls = crate::tool_normalize::normalize_tool_calls(stream_result.tool_calls);
         let usage = stream_result.usage;

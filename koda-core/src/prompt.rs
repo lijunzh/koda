@@ -11,7 +11,7 @@
 //! 1. **Base prompt** — from the agent's `system_prompt` field
 //! 2. **Behavioral instructions** — `instructions.md` (how to act)
 //! 3. **Environment** — working dir, platform, shell, model
-//! 4. **Quick Reference** — slash commands, trust modes and undo (REPL only)
+//! 4. **Quick Reference** — slash commands, trust modes and file history (REPL only)
 //! 5. **Sub-agents** — available agents with descriptions and delegation guidance
 //! 6. **Skills** — live listing with `when_to_use` hints; model MUST activate before responding
 //! 7. **Memory** — project and global learned facts
@@ -94,9 +94,8 @@ pub fn build_system_prompt(
              auto (default; confirm destructive operations only).\n",
         );
         prompt.push_str(
-            "- `/undo` rolls back file changes from the most recent turn. Its stack is \
-             **in-memory only** and dies with the process, so tell the user to commit \
-             to git if they want durable rollback.\n",
+            "- Koda keeps no history of file changes. Git is how to get them back, so \
+             tell the user to commit anything they want to keep.\n",
         );
     }
 
@@ -858,9 +857,7 @@ mod tests {
 
     /// Regression guard: the system prompt must NOT promise the model
     /// an auto-git-snapshot/checkpoint feature, because no such feature
-    /// exists. The only undo mechanism is the in-memory stack in
-    /// [`crate::undo`], which dies with the process. Telling the model
-    /// otherwise causes it to reassure users ("don't worry, your changes
+    /// exists. Telling the model otherwise causes it to reassure users ("don't worry, your changes
     /// are checkpointed in git") that data loss is impossible — a lie.
     ///
     /// If a real git-backed checkpoint subsystem ever lands, delete this
@@ -869,7 +866,7 @@ mod tests {
     fn prompt_does_not_lie_about_git_checkpointing() {
         let env = test_env();
         let registry = SkillRegistry::default();
-        let prompt = build_system_prompt("You are koda.", "", &env, &["/undo"], &registry);
+        let prompt = build_system_prompt("You are koda.", "", &env, &["/diff"], &registry);
 
         // Phrases from the old (deleted) lie. If any of these come back,
         // either ship the feature or delete them again — do not just
@@ -886,9 +883,7 @@ mod tests {
             );
         }
 
-        // Positive: the truthful undo line is present and explicitly
-        // calls out the durability gap.
-        assert!(prompt.contains("`/undo`"));
-        assert!(prompt.contains("in-memory only"));
+        // Positive: the model knows Koda can't bring a file back.
+        assert!(prompt.contains("keeps no history of file changes"));
     }
 }

@@ -812,7 +812,7 @@ impl Tool for WriteTool {
     fn classify(&self, _args: &Value) -> ToolEffect {
         ToolEffect::LocalMutation
     }
-    fn extract_undo_path(&self, args: &Value) -> Option<std::path::PathBuf> {
+    fn mutated_path(&self, args: &Value) -> Option<std::path::PathBuf> {
         extract_file_path_arg(args)
     }
     async fn execute(&self, ctx: &ToolExecCtx<'_>, args: &Value) -> ToolResult {
@@ -835,7 +835,7 @@ impl Tool for EditTool {
     fn classify(&self, _args: &Value) -> ToolEffect {
         ToolEffect::LocalMutation
     }
-    fn extract_undo_path(&self, args: &Value) -> Option<std::path::PathBuf> {
+    fn mutated_path(&self, args: &Value) -> Option<std::path::PathBuf> {
         extract_file_path_arg(args)
     }
     async fn execute(&self, ctx: &ToolExecCtx<'_>, args: &Value) -> ToolResult {
@@ -857,10 +857,10 @@ impl Tool for DeleteTool {
     }
     fn classify(&self, _args: &Value) -> ToolEffect {
         // Matches the pre-#1265 `tools::classify_tool` arm — Delete
-        // is irreversible-without-undo, the strictest gating tier.
+        // is irreversible, the strictest gating tier.
         ToolEffect::Destructive
     }
-    fn extract_undo_path(&self, args: &Value) -> Option<std::path::PathBuf> {
+    fn mutated_path(&self, args: &Value) -> Option<std::path::PathBuf> {
         extract_file_path_arg(args)
     }
     async fn execute(&self, ctx: &ToolExecCtx<'_>, args: &Value) -> ToolResult {
@@ -890,9 +890,7 @@ impl Tool for ListTool {
 }
 
 /// Pull `file_path` (or its `path` alias) out of an args object.
-/// Used by `Write`/`Edit`/`Delete`'s `extract_undo_path`. Replaces
-/// the legacy `undo::extract_file_path` free function (deleted in
-/// PR-9 of #1265 item 5).
+/// Used by `Write`/`Edit`/`Delete`'s `mutated_path`.
 fn extract_file_path_arg(args: &Value) -> Option<std::path::PathBuf> {
     args.get("file_path")
         .or_else(|| args.get("path"))
@@ -1614,10 +1612,10 @@ mod tests {
     //   2. `classify()` returns the wrong tier — breaks approval
     //      gating (this is what the duplicated `is_mutating_tool`
     //      lists allowed pre-PR).
-    //   3. `extract_undo_path()` returns `None` for a mutating tool
-    //      — breaks `/undo`.
-    //   4. `extract_undo_path()` returns `Some` for a read-only
-    //      tool — wastes snapshot work and pollutes the undo stack.
+    //   3. `mutated_path()` returns `None` for a mutating tool
+    //      — lets two edits to one file run at once.
+    //   4. `mutated_path()` returns `Some` for a read-only
+    //      tool — claims a change it doesn't make.
     // =========================================================
 
     /// All five file-op trait impls plus their expected metadata.
@@ -1626,7 +1624,7 @@ mod tests {
         &'static str,
         Box<dyn crate::tools::Tool>,
         ToolEffect,
-        bool, // expects an undo path when args carry `file_path`
+        bool, // expects a path when args carry `file_path`
     )> {
         vec![
             ("Read", Box::new(ReadTool), ToolEffect::ReadOnly, false),
@@ -1672,18 +1670,13 @@ mod tests {
     }
 
     #[test]
-    fn extract_undo_path_only_for_mutating_tools() {
+    fn mutated_path_only_for_mutating_tools() {
         // Mutating cohort returns Some(path); read-only cohort returns
-        // None even when `file_path` is present. Prevents pollution
-        // of the undo stack with read-only operations.
+        // None even when `file_path` is present.
         let args = serde_json::json!({"file_path": "src/main.rs"});
         for (name, tool, _, expects_path) in cohort() {
-            let actual = tool.extract_undo_path(&args);
-            assert_eq!(
-                actual.is_some(),
-                expects_path,
-                "{name} undo-path extraction wrong",
-            );
+            let actual = tool.mutated_path(&args);
+            assert_eq!(actual.is_some(), expects_path, "{name} mutated path wrong",);
             if expects_path {
                 assert_eq!(actual, Some(std::path::PathBuf::from("src/main.rs")));
             }
@@ -1691,28 +1684,26 @@ mod tests {
     }
 
     #[test]
-    fn extract_undo_path_accepts_path_alias() {
-        // The legacy `undo::extract_file_path` (deleted in PR-9)
-        // accepted both `file_path` and `path`. Migrated tools must
-        // too — some
-        // older test fixtures and a few prompt examples use `path`.
+    fn mutated_path_accepts_path_alias() {
+        // Some older test fixtures and a few prompt examples use `path`
+        // for `file_path`.
         let args = serde_json::json!({"path": "lib.rs"});
         assert_eq!(
-            WriteTool.extract_undo_path(&args),
+            WriteTool.mutated_path(&args),
             Some(std::path::PathBuf::from("lib.rs")),
         );
         assert_eq!(
-            EditTool.extract_undo_path(&args),
+            EditTool.mutated_path(&args),
             Some(std::path::PathBuf::from("lib.rs")),
         );
         assert_eq!(
-            DeleteTool.extract_undo_path(&args),
+            DeleteTool.mutated_path(&args),
             Some(std::path::PathBuf::from("lib.rs")),
         );
     }
 
     #[test]
-    fn extract_undo_path_handles_missing_args_gracefully() {
+    fn mutated_path_handles_missing_args_gracefully() {
         // No path at all — must return None, not panic. (A common
         // failure mode of "unwrap because args _should_ have it".)
         for tool in [
@@ -1720,10 +1711,10 @@ mod tests {
             Box::new(EditTool),
             Box::new(DeleteTool),
         ] {
-            assert!(tool.extract_undo_path(&serde_json::json!({})).is_none());
+            assert!(tool.mutated_path(&serde_json::json!({})).is_none());
             // Wrong-typed value — also graceful.
             assert!(
-                tool.extract_undo_path(&serde_json::json!({"file_path": 42}))
+                tool.mutated_path(&serde_json::json!({"file_path": 42}))
                     .is_none()
             );
         }
