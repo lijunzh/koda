@@ -219,8 +219,8 @@ pub async fn run_shell_command(
     // Lines are always streamed to the TUI, but collection into Vec stops
     // once max_lines or MAX_COLLECT_BYTES is reached (OOM protection).
     let sink_info = sink.map(|(s, id)| (s, id.to_string()));
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(timeout_secs),
+    // One deadline for both: a command can close its output and keep running.
+    let result = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), async {
         read_streams(
             stdout,
             stderr,
@@ -229,17 +229,15 @@ pub async fn run_shell_command(
             max_lines,
             &mut uncaptured,
             &sink_info,
-        ),
-    )
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("Stream read error: {e}"))?;
+        child.wait().await.map_err(|e| anyhow::anyhow!("wait: {e}"))
+    })
     .await;
 
     match result {
-        Ok(Ok(())) => {
-            // Wait for exit status after streams are drained.
-            let status = child
-                .wait()
-                .await
-                .map_err(|e| anyhow::anyhow!("wait: {e}"))?;
+        Ok(Ok(status)) => {
             group.release();
             let exit_code = status.code().unwrap_or(-1);
 
@@ -269,7 +267,7 @@ pub async fn run_shell_command(
                 success: exit_code == 0,
             })
         }
-        Ok(Err(e)) => Err(anyhow::anyhow!("Stream read error: {e}")),
+        Ok(Err(e)) => Err(e),
         Err(_) => {
             // Timeout — kill the command and all it started.
             group.kill();
@@ -942,6 +940,20 @@ mod tests {
 
         tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
         assert!(!tmp.path().join("forked").exists());
+    }
+
+    #[tokio::test]
+    async fn the_timeout_holds_after_a_command_closes_its_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let command = "exec > /dev/null 2>&1; sleep 30";
+        let args = serde_json::json!({ "command": command, "timeout": 1 });
+        let call = run_in(tmp.path(), &args);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), call)
+            .await
+            .expect("the call outlived its timeout")
+            .unwrap();
+        assert!(!result.success, "{}", result.summary);
+        assert!(result.summary.contains("timed out"), "{}", result.summary);
     }
 
     #[tokio::test]

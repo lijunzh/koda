@@ -40,6 +40,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **A command can't outlive its timeout by closing its output.** Bash and Cargo timed only the reading of output, so a command that closed stdout and stderr could hold a turn for as long as it ran.
+- **Glob respects `.gitignore`, as its description says.** Ignored files no longer take up result slots, and `.git` is skipped. To search an ignored directory, name it in the pattern or `file_path`.
 - **Several changes to one file in one response all land.** In Auto mode, two auto-approved calls to the same file ran at the same time, so each could read the original and one change was silently lost while both reported success. Such a batch now runs one call at a time, in the order the model gave.
 - **A cancelled turn always closes.** Something that doesn't listen for the cancel, like a running Bash command, could hold a turn past it, and on SIGINT headless gave up after five seconds and reported `success: true` with no `turn_end`. A turn that hasn't stopped five seconds after its cancel is now dropped inside the engine, so it still sends `turn_summary` and `turn_end`, keeps what it used and commits its undo snapshots. `run_summary` says `success: false` and the run exits 1. The TUI and ACP get the same limit, and the TUI shows the failed turn.
 - **A sub-agent's Bash works in a Linux git worktree.** Its sandbox policy made `.git/hooks` and `.git/config` read-only, but in a worktree `.git` is a file, so those paths don't exist and `bwrap` couldn't start. Every Bash call from a write-capable sub-agent failed.

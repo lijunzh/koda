@@ -28,6 +28,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
         description: "Find files by glob pattern. Returns relative paths, respects .gitignore. \
             Use '**/*.rs' for recursive matching, 'src/**/mod.rs' for specific names, \
             '*.toml' for current-directory-only. \
+            To search an ignored directory, name it: 'target/**/*.rs'. \
             Prefer this over List when you know the filename pattern you want. \
             Prefer Grep when you need to search file contents, not names."
             .to_string(),
@@ -64,8 +65,8 @@ pub async fn glob_search(
         .unwrap_or(".");
     let base = resolve_read_path(project_root, path_str)?;
 
-    // Delegate to the FileSystem abstraction — LocalFileSystem joins the
-    // pattern against `base` and returns sorted absolute paths; SandboxedFileSystem
+    // Delegate to the FileSystem abstraction — LocalFileSystem walks from
+    // `base`, skips ignored files and returns sorted absolute paths; SandboxedFileSystem
     // does the same through the worker (Phase 2d, #934).
     let all_matches = fs
         .glob(pattern, &base)
@@ -89,7 +90,9 @@ pub async fn glob_search(
     let capped = matches.len() >= max_results;
 
     if matches.is_empty() {
-        Ok(format!("No files matched pattern: {pattern}"))
+        Ok(format!(
+            "No files matched pattern: {pattern} (files ignored by .gitignore are skipped)"
+        ))
     } else {
         let count = matches.len();
         let cap_note = if capped {
@@ -228,6 +231,33 @@ mod tests {
             .unwrap();
         assert!(result.contains("mod.rs"));
         assert!(!result.contains("main.rs"));
+    }
+
+    #[tokio::test]
+    async fn ignored_files_take_no_result_slots() {
+        let tmp = setup();
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        std::fs::write(tmp.path().join(".gitignore"), "a_deps/\n").unwrap();
+        std::fs::create_dir(tmp.path().join("a_deps")).unwrap();
+        for n in 0..50 {
+            std::fs::write(tmp.path().join(format!("a_deps/{n}.rs")), "").unwrap();
+        }
+        let args = json!({ "pattern": "**/*.rs" });
+        let result = glob_search(tmp.path(), &args, 10, &LocalFileSystem::new())
+            .await
+            .unwrap();
+        assert!(!result.contains("a_deps"), "{result}");
+        assert!(result.contains("main.rs"), "{result}");
+    }
+
+    #[tokio::test]
+    async fn no_match_says_ignored_files_were_skipped() {
+        let tmp = setup();
+        let args = json!({ "pattern": "**/*.xyz" });
+        let result = glob_search(tmp.path(), &args, 200, &LocalFileSystem::new())
+            .await
+            .unwrap();
+        assert!(result.contains("ignored"), "{result}");
     }
 
     // ── Tool trait invariants (#1265 PR-5) ─────────────────────

@@ -105,6 +105,10 @@ pub trait FileSystem: Send + Sync {
 
     /// Expand a glob pattern relative to `root`. Returns matches in
     /// deterministic (sorted) order.
+    ///
+    /// Honors `.gitignore` / `.ignore` and skips `.git`. Hidden files
+    /// match. Directories the pattern or `root` names are searched even
+    /// if ignored.
     async fn glob(&self, pattern: &str, root: &Path) -> FsResult<Vec<PathBuf>>;
 
     /// Recursive regex grep starting at `root`. `include` is an

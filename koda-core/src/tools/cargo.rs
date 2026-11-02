@@ -1120,15 +1120,17 @@ async fn run_cargo_with_env(
 
     let mut collected = Collected::default();
     let sink_info = sink.map(|(s, id)| (s, id.to_string()));
-    let result = tokio::time::timeout(
-        Duration::from_secs(TIMEOUT_SECS),
-        read_streams(stdout, stderr, &mut collected, &sink_info),
-    )
+    // One deadline for both: a command can close its output and keep running.
+    let result = tokio::time::timeout(Duration::from_secs(TIMEOUT_SECS), async {
+        read_streams(stdout, stderr, &mut collected, &sink_info)
+            .await
+            .map_err(|e| anyhow!("Stream read error: {e}"))?;
+        child.wait().await.map_err(|e| anyhow!("wait: {e}"))
+    })
     .await;
 
     match result {
-        Ok(Ok(())) => {
-            let status = child.wait().await.map_err(|e| anyhow!("wait: {e}"))?;
+        Ok(Ok(status)) => {
             group.release();
             let exit_code = status.code().unwrap_or(-1);
             crate::tools::shell::annotate_violations(exit_code, &command, &mut collected.stderr);
@@ -1151,7 +1153,7 @@ async fn run_cargo_with_env(
                 success: exit_code == 0,
             })
         }
-        Ok(Err(e)) => Err(anyhow!("Stream read error: {e}")),
+        Ok(Err(e)) => Err(e),
         Err(_) => {
             group.kill();
             let _ = child.kill().await;
