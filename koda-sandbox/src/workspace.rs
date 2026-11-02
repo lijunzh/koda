@@ -41,12 +41,19 @@ fn succeeded(
     Err(format!("{step}: {}", said.trim()))
 }
 
-/// A `git` command in `dir`, killed if its call is dropped. A hook it's running
-/// and the hook's own children aren't, and neither is any half-made worktree
-/// cleaned up.
+/// A `git` command in `dir`, killed if its call is dropped. A half-made worktree
+/// isn't cleaned up.
+///
+/// These run outside the sandbox on a tree the sub-agent wrote, so nothing it
+/// wrote may decide what they execute. A relative `core.hooksPath` finds hooks
+/// inside the worktree, and `--no-verify` only skips some hooks. Turning hooks
+/// off means a project's own hooks, `post-checkout` included, don't run here.
 fn git(dir: &Path) -> Command {
     let mut cmd = Command::new("git");
-    cmd.current_dir(dir).kill_on_drop(true);
+    cmd.args(["-c", "core.hooksPath=/dev/null"])
+        .args(["-c", "core.fsmonitor=false"])
+        .current_dir(dir)
+        .kill_on_drop(true);
     cmd
 }
 
@@ -317,7 +324,8 @@ impl GitWorktreeProvider {
     }
 
     /// Commit everything in the worktree to its branch. This is Koda's own save
-    /// point, so the project's commit hooks and signing don't get a say.
+    /// point, so the project's signing doesn't get a say, and [`git`] has already
+    /// turned off its hooks.
     async fn save_changes(&self, path: &Path) -> std::result::Result<(), String> {
         succeeded("git add", git(path).args(["add", "-A"]).output().await)?;
         let commit_msg = format!("koda: sub-agent '{}' changes", self.agent_name);
@@ -330,7 +338,6 @@ impl GitWorktreeProvider {
                 "-c",
                 "commit.gpgsign=false",
                 "commit",
-                "--no-verify",
                 "-m",
                 &commit_msg,
             ])
@@ -1000,6 +1007,93 @@ mod tests {
         let hint = provider.release("slot-dirty", &worktree).await.unwrap();
         assert!(hint.unwrap().contains("git merge"));
         assert!(!worktree.exists());
+        assert_saved(tmp.path()).await;
+    }
+
+    /// An executable script that leaves `canary` behind if anything runs it.
+    #[cfg(unix)]
+    fn canary_script(path: &Path, canary: &Path) {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, format!("#!/bin/sh\ntouch {}\n", canary.display())).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    async fn git_ok(dir: &Path, args: &[&str]) {
+        let done = Command::new("git")
+            .args(["-c", "user.name=test", "-c", "user.email=t@t"])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .await
+            .unwrap();
+        assert!(done.status.success(), "git {args:?}: {done:?}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_relative_hooks_path_runs_nothing_koda_does() {
+        let outside = tempfile::tempdir().unwrap();
+        let canary = outside.path().join("hook-ran");
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path()).await;
+        git_ok(tmp.path(), &["config", "core.hooksPath", ".githooks"]).await;
+        canary_script(&tmp.path().join(".githooks/post-checkout"), &canary);
+        git_ok(tmp.path(), &["add", "-A"]).await;
+        git_ok(tmp.path(), &["commit", "--no-verify", "-m", "hooks"]).await;
+        std::fs::remove_file(tmp.path().join(".githooks/post-checkout")).unwrap();
+        git_ok(tmp.path(), &["checkout", "--", ".githooks"]).await;
+        assert!(canary.exists(), "git ran no post-checkout hook here");
+        std::fs::remove_file(&canary).unwrap();
+
+        let provider = GitWorktreeProvider::new(tmp.path(), "refactor");
+        let worktree = provider.provision("slot-dirty").await.unwrap();
+        assert!(!canary.exists(), "provisioning ran a hook");
+
+        // The hooks a child can write, in its own worktree.
+        for hook in ["prepare-commit-msg", "post-commit"] {
+            canary_script(&worktree.join(".githooks").join(hook), &canary);
+        }
+        std::fs::write(worktree.join("output.rs"), "// generated").unwrap();
+        // `--no-verify` doesn't stop these, so that alone wouldn't be enough.
+        git_ok(
+            &worktree,
+            &["commit", "--allow-empty", "--no-verify", "-m", "control"],
+        )
+        .await;
+        assert!(canary.exists(), "git ran no commit hook here");
+        std::fs::remove_file(&canary).unwrap();
+
+        let hint = provider.release("slot-dirty", &worktree).await.unwrap();
+
+        assert!(!canary.exists(), "release ran a hook");
+        assert!(hint.unwrap().contains("git merge"));
+        assert_saved(tmp.path()).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_planted_fsmonitor_runs_nothing_koda_does() {
+        let outside = tempfile::tempdir().unwrap();
+        let canary = outside.path().join("fsmonitor-ran");
+        let script = outside.path().join("fsmonitor");
+        canary_script(&script, &canary);
+        let (tmp, provider, worktree) = dirty_worktree().await;
+        git_ok(tmp.path(), &["config", "extensions.worktreeConfig", "true"]).await;
+        std::fs::write(
+            tmp.path().join(".git/worktrees/slot-dirty/config.worktree"),
+            format!("[core]\n\tfsmonitor = {}\n", script.display()),
+        )
+        .unwrap();
+        git_ok(&worktree, &["status"]).await;
+        assert!(canary.exists(), "git ran no fsmonitor here");
+        std::fs::remove_file(&canary).unwrap();
+
+        let hint = provider.release("slot-dirty", &worktree).await.unwrap();
+
+        assert!(!canary.exists(), "release ran the fsmonitor");
+        assert!(hint.unwrap().contains("git merge"));
         assert_saved(tmp.path()).await;
     }
 
