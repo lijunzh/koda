@@ -60,6 +60,7 @@ use crate::providers::{
 use crate::skill_scope::SkillToolScope;
 use crate::tool_dispatch::{
     can_parallelize, execute_tools_parallel, execute_tools_sequential, execute_tools_split_batch,
+    has_file_conflict,
 };
 use crate::tools::ToolRegistry;
 use crate::trust::TrustMode;
@@ -1785,7 +1786,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
             && can_parallelize(&remaining_tools, mode, project_root, Some(file_tracker))
         {
             execute_tools_parallel(&remaining_tools, tool_ctx, file_tracker).await?;
-        } else if remaining_tools.len() > 1 {
+        } else if remaining_tools.len() > 1 && !has_file_conflict(&remaining_tools) {
             execute_tools_split_batch(&remaining_tools, tool_ctx, cmd_rx, file_tracker).await?;
         } else if !remaining_tools.is_empty() {
             execute_tools_sequential(&remaining_tools, tool_ctx, cmd_rx, file_tracker).await?;

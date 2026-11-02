@@ -61,7 +61,7 @@ async fn test_edit_file_replacement() {
     .unwrap();
     let args = json!({
         "path": "example.rs",
-        "replacements": [{"old_str": "\"old\"", "new_str": "\"new\""}]
+        "old_str": "\"old\"", "new_str": "\"new\""
     });
     file_tools::edit_file(tmp.path(), &args, &empty_cache(), &fs())
         .await
@@ -81,7 +81,7 @@ async fn test_edit_file_delete_snippet() {
     .unwrap();
     let args = json!({
         "path": "with_comment.rs",
-        "replacements": [{"old_str": "// TODO: remove this\n", "new_str": ""}]
+        "old_str": "// TODO: remove this\n", "new_str": ""
     });
     file_tools::edit_file(tmp.path(), &args, &empty_cache(), &fs())
         .await
@@ -101,7 +101,7 @@ async fn test_edit_replace_all_replaces_every_occurrence() {
     .unwrap();
     let args = json!({
         "path": "vars.rs",
-        "replacements": [{"old_str": "foo", "new_str": "bar", "replace_all": true}]
+        "old_str": "foo", "new_str": "bar", "replace_all": true
     });
     let result = file_tools::edit_file(tmp.path(), &args, &empty_cache(), &fs())
         .await
@@ -123,7 +123,7 @@ async fn test_edit_without_replace_all_errors_on_multi_match() {
     std::fs::write(tmp.path().join("vars.rs"), "let foo = 1;\nlet foo = 2;\n").unwrap();
     let args = json!({
         "path": "vars.rs",
-        "replacements": [{"old_str": "foo", "new_str": "bar"}]
+        "old_str": "foo", "new_str": "bar"
     });
     let err = file_tools::edit_file(tmp.path(), &args, &empty_cache(), &fs())
         .await
@@ -142,7 +142,7 @@ async fn test_edit_replace_all_single_occurrence_no_count_label() {
     std::fs::write(tmp.path().join("one.rs"), "let x = old;\n").unwrap();
     let args = json!({
         "path": "one.rs",
-        "replacements": [{"old_str": "old", "new_str": "new", "replace_all": true}]
+        "old_str": "old", "new_str": "new", "replace_all": true
     });
     let result = file_tools::edit_file(tmp.path(), &args, &empty_cache(), &fs())
         .await

@@ -303,7 +303,7 @@ async fn path_traversal_in_edit_is_blocked() {
             "Edit",
             serde_json::json!({
                 "file_path": "../../../../etc/passwd",
-                "replacements": [{"old_str": "root", "new_str": "hacked"}]
+                "old_str": "root", "new_str": "hacked"
             }),
         ),
         MockResponse::Text("Tried to edit.".into()),
@@ -341,7 +341,7 @@ async fn edit_fuzzy_matches_trailing_whitespace() {
             "Edit",
             serde_json::json!({
                 "file_path": "whitespace.txt",
-                "replacements": [{"old_str": "hello world\nfoo bar", "new_str": "greetings\nbaz qux"}]
+                "old_str": "hello world\nfoo bar", "new_str": "greetings\nbaz qux"
             }),
         ),
         MockResponse::Text("Edited!".into()),

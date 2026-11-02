@@ -1231,7 +1231,7 @@ mod tests {
             ),
             (
                 "Edit",
-                serde_json::json!({"file_path": "a.rs", "replacements": []}),
+                serde_json::json!({"file_path": "a.rs", "old_str": "a", "new_str": "b"}),
                 "a.rs",
             ),
             (

@@ -219,9 +219,18 @@ pub(crate) fn can_parallelize(
         return false;
     }
 
+    !has_file_conflict(tool_calls)
+}
+
+/// Whether two mutating calls in the batch target the same file. Such a batch
+/// has to run in the order the model gave it, so neither
+/// [`execute_tools_parallel`] nor [`execute_tools_split_batch`] can take it:
+/// concurrent Edits can each read the original file and lose the other's
+/// change, and a split can put a later call first.
+pub(crate) fn has_file_conflict(tool_calls: &[ToolCall]) -> bool {
     let mut seen = std::collections::HashSet::new();
     let catalog = crate::tools::ToolCatalog::default_static();
-    let has_conflict = tool_calls.iter().any(|tc| {
+    tool_calls.iter().any(|tc| {
         let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
         if !catalog.is_mutating_call(&tc.function_name, &args) {
             return false;
@@ -237,9 +246,7 @@ pub(crate) fn can_parallelize(
         } else {
             false
         }
-    });
-
-    !has_conflict
+    })
 }
 
 /// Execute a single tool call, returning (tool_call_id, result_output, success).

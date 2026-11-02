@@ -1323,7 +1323,7 @@ mod tests {
     fn edit_json(file: &str, old: &str, new: &str) -> String {
         json!({
             "file_path": file,
-            "replacements": [{"old_str": old, "new_str": new}]
+            "old_str": old, "new_str": new
         })
         .to_string()
     }

@@ -127,7 +127,7 @@ async fn test_grep_no_matches_in_sandbox() {
     );
 }
 
-// ── Edit (replacements) ────────────────────────────────────────
+// ── Edit ────────────────────────────────────────
 
 #[tokio::test]
 async fn test_edit_tool_replacement_e2e() {
@@ -143,9 +143,7 @@ async fn test_edit_tool_replacement_e2e() {
             "Edit",
             serde_json::json!({
                 "path": target.to_string_lossy(),
-                "replacements": [
-                    {"old_str": "port = 8080", "new_str": "port = 3000"}
-                ]
+                "old_str": "port = 8080", "new_str": "port = 3000"
             }),
         ),
         MockResponse::Text("Port updated.".into()),
@@ -319,9 +317,7 @@ async fn test_edit_introduces_syntax_error_has_no_ast_warning() {
             "Edit",
             serde_json::json!({
                 "path": target.to_string_lossy(),
-                "replacements": [
-                    {"old_str": "println!(\"ok\");", "new_str": "let x = "}  // incomplete
-                ]
+                "old_str": "println!(\"ok\");", "new_str": "let x = "
             }),
         ),
         MockResponse::Text("Edit completed.".into()),
@@ -345,7 +341,7 @@ async fn test_edit_introduces_syntax_error_has_no_ast_warning() {
         "edit introducing syntax error should not be flagged by AST: {edit_output}"
     );
     assert!(
-        edit_output.contains("Applied 1 edit(s)"),
+        edit_output.contains("Applied edit"),
         "should still report successful edit output: {edit_output}"
     );
 }
@@ -495,7 +491,7 @@ async fn test_edit_validation_old_str_not_found() {
             "Edit",
             serde_json::json!({
                 "path": "greet.txt",
-                "replacements": [{"old_str": "goodbye world", "new_str": "hi"}]
+                "old_str": "goodbye world", "new_str": "hi"
             }),
         ),
         MockResponse::Text("I see the edit failed.".into()),
@@ -533,7 +529,7 @@ async fn test_edit_validation_file_not_found() {
             "Edit",
             serde_json::json!({
                 "path": "nope.txt",
-                "replacements": [{"old_str": "x", "new_str": "y"}]
+                "old_str": "x", "new_str": "y"
             }),
         ),
         MockResponse::Text("File doesn't exist.".into()),
@@ -555,4 +551,53 @@ async fn test_edit_validation_file_not_found() {
         output.contains("Cannot read"),
         "error should mention file not readable: {output}",
     );
+}
+
+// ── Several Edits to one file in one response ──────────────────
+
+/// Two Edits to `order.txt`, sent in one response, then a closing reply.
+fn two_edits(first: (&str, &str), second: (&str, &str)) -> MockProvider {
+    let edit = |id: &str, (old_str, new_str): (&str, &str)| koda_core::providers::ToolCall {
+        id: id.into(),
+        function_name: "Edit".into(),
+        arguments: serde_json::json!({
+            "file_path": "order.txt",
+            "old_str": old_str,
+            "new_str": new_str,
+        })
+        .to_string(),
+        thought_signature: None,
+    };
+    MockProvider::new(vec![
+        MockResponse::ToolCalls(vec![edit("e1", first), edit("e2", second)]),
+        MockResponse::Text("Done.".into()),
+    ])
+}
+
+/// Both auto-approve, so this is the batch that used to run concurrently: each
+/// Edit could read the original file and overwrite the other's change.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_edits_to_one_file_both_land() {
+    let env = Env::new().await;
+    let file = env.root.join("order.txt");
+    std::fs::write(&file, "alpha\nbeta\n").unwrap();
+    env.insert_user_message("change both").await;
+
+    let provider = two_edits(("alpha", "ALPHA"), ("beta", "BETA"));
+    env.run_inference(&provider).await;
+
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "ALPHA\nBETA\n");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_second_edit_can_use_what_the_first_wrote() {
+    let env = Env::new().await;
+    let file = env.root.join("order.txt");
+    std::fs::write(&file, "one\n").unwrap();
+    env.insert_user_message("change it twice").await;
+
+    let provider = two_edits(("one", "two"), ("two", "three"));
+    env.run_inference(&provider).await;
+
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "three\n");
 }
