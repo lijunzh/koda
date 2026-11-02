@@ -242,17 +242,6 @@ pub async fn handle_slash_command(
             SlashAction::Continue
         }
 
-        "/undo" => {
-            match agent.tools.undo.lock() {
-                Ok(mut undo) => match undo.undo() {
-                    Some(summary) => tui_output::ok_msg(buffer, summary),
-                    None => tui_output::warn_msg(buffer, "Nothing to undo.".to_string()),
-                },
-                Err(e) => tui_output::err_msg(buffer, format!("Undo error: {e}")),
-            }
-            SlashAction::Continue
-        }
-
         "/skills" => {
             crate::tui_wizards::handle_list_skills(buffer, arg, &agent.tools);
             SlashAction::Continue
@@ -279,7 +268,10 @@ pub async fn handle_slash_command(
             SlashAction::Continue
         }
 
-        _ => SlashAction::Continue,
+        _ => {
+            tui_output::warn_msg(buffer, format!("Unknown command: {cmd}. Try /help."));
+            SlashAction::Continue
+        }
     }
 }
 

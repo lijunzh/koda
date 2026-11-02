@@ -1,5 +1,5 @@
-//! Post-turn cleanup: deferred-queue housekeeping, undo commit,
-//! residual UI-event drain, auto-compact.
+//! Post-turn cleanup: deferred-queue housekeeping, residual UI-event
+//! drain, auto-compact.
 //!
 //! Runs once per turn after the inner select loop in
 //! [`super::select_loop::TuiContext::run_inference_turn`] breaks. Lives
@@ -32,11 +32,6 @@ impl TuiContext {
         // fixes the cascade-broken-across-turns bug where bg agents
         // reserved during turn N were orphaned the moment turn N
         // finished and `session.cancel` was swapped out from under them.
-
-        // Commit undo snapshots for this turn
-        if let Ok(mut undo) = self.agent.tools.undo.lock() {
-            undo.commit_turn();
-        }
 
         // Drain remaining UI events
         while let Ok(UiEvent::Engine(e)) = ui_rx.try_recv() {

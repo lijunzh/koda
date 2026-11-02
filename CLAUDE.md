@@ -88,9 +88,8 @@ In `koda-core/src/`:
 - **Providers:** `providers/` (all implement the `LlmProvider` trait),
   `provider_catalog.rs`, `model_alias.rs`, `keystore.rs`
 - **Storage and protocol:** `db/`, `persistence.rs`, `engine/`, `mcp/`, `config.rs`
-- **Undo:** `undo.rs` is an in-memory snapshot stack; `/undo` rolls back the most
-  recent turn. It does NOT survive process restarts. There is no on-disk or
-  git-backed checkpoint subsystem.
+- **File history:** there is none, and no `/undo`. Git and the shell are how
+  changes come back.
 
 In `koda-cli/src/`:
 - **TUI:** `tui_app.rs`, `app.rs`, `tui_context/`, `inference/`, `tui_commands.rs`

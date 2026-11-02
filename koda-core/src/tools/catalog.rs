@@ -67,7 +67,7 @@ use super::{
 /// The read-only metadata side of [`crate::tools::ToolRegistry`].
 ///
 /// Owns the built-in tool definition map and the MCP manager slot.
-/// Does **not** own filesystem state, caches, undo, session/DB
+/// Does **not** own filesystem state, caches, session/DB
 /// handles, or proxy ports — those stay on `ToolRegistry` because
 /// they're either mutable per-turn or only meaningful during
 /// execution.
@@ -94,7 +94,7 @@ pub struct ToolCatalog {
 
     /// Migrated built-in tools (#1265 item 5, PR-4..PR-N), keyed by
     /// name. Each entry implements [`Tool`] and is the authoritative
-    /// source for that tool's classification, undo behavior, and
+    /// source for that tool's classification, mutated path, and
     /// execution.
     ///
     /// Coexists with [`Self::definitions`] during the migration
@@ -197,8 +197,7 @@ impl ToolCatalog {
         // file-ops cohort. Subsequent PRs (5..8) register the search,
         // bash, misc, and meta cohorts here; the cleanup PR drops
         // the legacy match arms in `ToolRegistry::execute` and the
-        // duplicated `is_mutating_tool` / `extract_file_path` lists
-        // in `crate::undo`.
+        // duplicated `is_mutating_tool` / `extract_file_path` lists.
         //
         // Each `boxed(...)` cost is a single allocation at construction
         // time — negligible compared to the rest of session start-up.
@@ -455,7 +454,7 @@ impl Default for ToolCatalog {
 #[cfg(test)]
 mod tests {
     //! Catalog-only tests. Construct a `ToolCatalog` in isolation
-    //! (no FS, no project root, no undo stack, no caps) — the whole
+    //! (no FS, no project root, no caps) — the whole
     //! point of this PR is that you *can*. Pre-#1265 these tests
     //! had to build a full `ToolRegistry`.
     //!

@@ -101,9 +101,7 @@ pub async fn memory_write(project_root: &Path, args: &Value) -> Result<String> {
 // =============================================================
 // Tool trait implementations (#1265 item 5, PR-7/N).
 //
-// `MemoryRead` is read-only; `MemoryWrite` is `LocalMutation`. The
-// memory file (`.koda/memory.md`) is its own concern — we don't
-// integrate it into the file-undo stack (matches pre-#1265 behavior).
+// `MemoryRead` is read-only; `MemoryWrite` is `LocalMutation`.
 // =============================================================
 
 use crate::tools::{Tool, ToolEffect, ToolExecCtx, ToolResult};
@@ -148,12 +146,6 @@ impl Tool for MemoryWriteTool {
     }
     fn classify(&self, _args: &serde_json::Value) -> ToolEffect {
         ToolEffect::LocalMutation
-    }
-    /// `extract_undo_path` returns `None` because the memory file
-    /// is intentionally outside the file-undo stack — same as
-    /// pre-#1265 (`MemoryWrite` was not in `undo::is_mutating_tool`).
-    fn extract_undo_path(&self, _args: &serde_json::Value) -> Option<std::path::PathBuf> {
-        None
     }
     async fn execute(&self, ctx: &ToolExecCtx<'_>, args: &serde_json::Value) -> ToolResult {
         let r = memory_write(ctx.project_root, args).await;

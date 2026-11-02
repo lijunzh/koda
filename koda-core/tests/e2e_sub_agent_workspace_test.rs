@@ -93,7 +93,7 @@ fn branches(env: &Env) -> Vec<String> {
 
 #[cfg(feature = "test-support")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn in_auto_the_edit_lands_in_the_project_and_undo_takes_it_back() {
+async fn in_auto_the_edit_lands_in_the_project() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::builder().trust(TrustMode::Auto).build().await;
     init_repo(&env.root);
@@ -101,14 +101,11 @@ async fn in_auto_the_edit_lands_in_the_project_and_undo_takes_it_back() {
 
     let told = delegate_a_write(&env).await;
 
-    let written = env.root.join(WRITTEN);
-    let content = std::fs::read_to_string(&written).expect("the edit must reach the project");
+    let content =
+        std::fs::read_to_string(env.root.join(WRITTEN)).expect("the edit must reach the project");
     assert_eq!(content, "from the sub-agent");
     assert!(branches(&env).is_empty(), "no branch in Auto");
     assert!(told.contains("Done writing."), "{told}");
-
-    env.tools.undo.lock().unwrap().undo().expect("undo entry");
-    assert!(!written.exists(), "undo must cover a sub-agent's edit");
 }
 
 #[cfg(feature = "test-support")]

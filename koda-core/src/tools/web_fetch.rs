@@ -563,7 +563,7 @@ fn strip_html(html: &str) -> String {
 // =============================================================
 // Tool trait implementation (#1265 item 5, PR-7/N).
 //
-// `WebFetch` is read-only — GET-only fetch, no undo, no mutation.
+// `WebFetch` is read-only — GET-only fetch, no mutation.
 // Reads `caps.web_body_chars` off the context.
 // =============================================================
 

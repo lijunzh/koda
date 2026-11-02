@@ -37,7 +37,7 @@ fn build_agent(root: std::path::PathBuf, max_context_tokens: usize) -> Arc<KodaA
     let tools = ToolRegistry::new(root.clone(), max_context_tokens);
     // #1265 item 5 PR-2: definitions come from a fresh `ToolCatalog`
     // — no need to spin up a second `ToolRegistry` (with its FS,
-    // proxy, undo, and skill-discovery state) just to read names.
+    // proxy and skill-discovery state) just to read names.
     let tool_defs = koda_core::tools::ToolCatalog::new().get_definitions(&[], &[]);
     Arc::new(KodaAgent {
         project_root: root,

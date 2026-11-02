@@ -134,7 +134,5 @@ pub mod trust;
 /// Per-turn ambient context (`TurnContext`, `ToolExecutionContext`)
 /// — see #1265 item 4.
 pub mod turn_context;
-/// Undo stack for file mutations.
-pub mod undo;
 /// Version string and update-check helpers.
 pub mod version;

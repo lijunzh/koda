@@ -1092,13 +1092,6 @@ pub(crate) fn execute_sub_agent<'a>(
                 effective_root_ref,
             );
             let registry = registry.with_sandbox_policy(composed_policy);
-            // Edits to the project go back with the parent's turn on `/undo`.
-            // A worktree's don't: its branch is the record of them.
-            let registry = if effective_root == project_root {
-                registry.with_shared_undo(parent_tx.turn.tools.undo.clone())
-            } else {
-                registry
-            };
             match parent_cache {
                 Some(cache) => registry.with_shared_cache(cache),
                 None => registry,
