@@ -747,9 +747,11 @@ pub enum EngineCommand {
     /// User typed a message during inference and wants it injected into the
     /// **current** turn before the next provider request.
     ///
-    /// The engine drains all pending `QueueNext` commands at the top of each
-    /// loop iteration, batches them with `\n\n`, and inserts one user message
-    /// into session history before re-querying the provider.  This is the
+    /// The engine batches pending `QueueNext` commands with `\n\n` and inserts
+    /// one user message into session history before each provider request.
+    /// Waits for approval, an answer or a loop decision keep them, and a final
+    /// reply with text pending continues the turn.  Text a turn can't deliver
+    /// comes back from `KodaSession::take_queued_steers`.  This is the
     /// "mid-turn steer" lane — the TUI's `later_queue` handles the separate
     /// "after this turn" lane entirely on the client side.
     QueueNext {

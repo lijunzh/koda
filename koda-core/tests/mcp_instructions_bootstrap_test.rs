@@ -110,6 +110,7 @@ async fn make_session_with_mcp(
         // #1321: tests don't need the bg-event forwarder; production
         // (the TUI) calls `attach_event_sink` to spawn it.
         event_forwarder: None,
+        queued_steers: Vec::new(),
     };
     (session, cancel, recorded)
 }

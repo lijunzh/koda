@@ -129,6 +129,7 @@ async fn test_cancel_during_chat_stream_returns_immediately() {
         sink: &sink,
         cancel,
         cmd_rx: &mut cmd_rx,
+        queued_steers: &mut Vec::new(),
         file_tracker: &mut file_tracker,
         bg_agents: &koda_core::child_agent::new_shared(),
         sub_agent_cache: &koda_core::sub_agent_cache::SubAgentCache::new(),
