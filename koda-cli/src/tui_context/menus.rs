@@ -466,9 +466,9 @@ impl TuiContext {
                         // so the user can type the argument and press Enter.
                         self.textarea.insert_str(&format!("{cmd} "));
                     } else {
-                        // Self-contained / picker-opener: execute immediately.
-                        self.dispatch_slash(&cmd).await;
-                        self.reinit_after_slash().await;
+                        // Self-contained / picker-opener: the event loop runs
+                        // it next, as if typed, and acts on its outcome.
+                        self.pending_command = Some(cmd);
                     }
                 }
                 return; // skip the trailing self.menu = None
