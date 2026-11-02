@@ -174,7 +174,7 @@ mod tests {
 
     // ── CommandInbox ───────────────────────────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn recv_keeps_steers_and_returns_the_next_command() {
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<EngineCommand>(8);
         let mut steers = Vec::new();
@@ -192,7 +192,7 @@ mod tests {
         assert_eq!(inbox.take_steers(), ["one", "two"]);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn take_steers_keeps_arrival_order_across_recv_and_the_channel() {
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<EngineCommand>(8);
         let mut steers = Vec::new();
@@ -208,7 +208,7 @@ mod tests {
         assert!(!inbox.has_steers());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn collecting_discards_a_stale_response() {
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<EngineCommand>(8);
         let mut steers = Vec::new();
@@ -225,7 +225,7 @@ mod tests {
         assert!(cmd_rx.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn steers_outlive_the_inbox() {
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<EngineCommand>(8);
         let mut steers = Vec::new();
