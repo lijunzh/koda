@@ -32,8 +32,15 @@ pub enum MockResponse {
     /// Each tool call is emitted as a `ToolCallReady` chunk — the same path that
     /// enables eager execution during streaming.
     ToolCallsEager(Vec<ToolCall>),
-    /// Simulate a provider error.
+    /// Simulate an error that isn't a provider failure.
     Error(String),
+    /// Simulate a non-2xx HTTP response.
+    Http {
+        /// The status code.
+        status: u16,
+        /// The response body.
+        body: String,
+    },
     /// Simulate a rate limit (429) error.
     RateLimit,
     /// Simulate a context overflow error.
@@ -137,6 +144,11 @@ impl MockProvider {
                     MockResponse::tool_call(tool, args)
                 } else if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
                     MockResponse::Error(err.to_string())
+                } else if let Some(status) = v.get("status").and_then(|s| s.as_u64()) {
+                    MockResponse::Http {
+                        status: status as u16,
+                        body: v["body"].as_str().unwrap_or_default().to_string(),
+                    }
                 } else if v.get("rate_limit").is_some() {
                     MockResponse::RateLimit
                 } else if v.get("context_overflow").is_some() {
@@ -239,11 +251,11 @@ impl LlmProvider for MockProvider {
                 usage: TokenUsage::default(),
             }),
             MockResponse::Error(msg) => Err(anyhow::anyhow!(msg)),
-            MockResponse::RateLimit => {
-                Err(anyhow::anyhow!("LLM API returned 429: Too Many Requests"))
-            }
-            MockResponse::ContextOverflow => Err(anyhow::anyhow!(
-                "LLM API returned 400: prompt is too long, maximum context length exceeded"
+            MockResponse::Http { status, body } => Err(http_error(status, &body)),
+            MockResponse::RateLimit => Err(http_error(429, "Too Many Requests")),
+            MockResponse::ContextOverflow => Err(http_error(
+                400,
+                "prompt is too long, maximum context length exceeded",
             )),
             MockResponse::NetworkError { .. } => Err(anyhow::anyhow!("network error")),
         }
@@ -261,12 +273,12 @@ impl LlmProvider for MockProvider {
         // Error responses fail at the call site, not inside the stream.
         match &response {
             MockResponse::Error(msg) => return Err(anyhow::anyhow!("{msg}")),
-            MockResponse::RateLimit => {
-                return Err(anyhow::anyhow!("LLM API returned 429: Too Many Requests"));
-            }
+            MockResponse::Http { status, body } => return Err(http_error(*status, body)),
+            MockResponse::RateLimit => return Err(http_error(429, "Too Many Requests")),
             MockResponse::ContextOverflow => {
-                return Err(anyhow::anyhow!(
-                    "LLM API returned 400: prompt is too long, maximum context length exceeded"
+                return Err(http_error(
+                    400,
+                    "prompt is too long, maximum context length exceeded",
                 ));
             }
             _ => {}
@@ -340,6 +352,7 @@ impl LlmProvider for MockProvider {
                     let _ = tx.send(StreamChunk::NetworkError(error)).await;
                 }
                 MockResponse::Error(_)
+                | MockResponse::Http { .. }
                 | MockResponse::RateLimit
                 | MockResponse::ContextOverflow => unreachable!(),
             }
@@ -358,6 +371,13 @@ impl LlmProvider for MockProvider {
     fn provider_name(&self) -> &str {
         "mock"
     }
+}
+
+/// The error the real HTTP path builds for this status and body.
+fn http_error(status: u16, body: &str) -> anyhow::Error {
+    let headers = reqwest::header::HeaderMap::new();
+    super::error::ProviderError::from_response("LLM", status, &status.to_string(), &headers, body)
+        .into()
 }
 
 #[cfg(test)]

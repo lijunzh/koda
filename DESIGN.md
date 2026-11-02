@@ -455,12 +455,15 @@ the saved pinned id, headless never resolves aliases, and users of other
 providers should not pay for an Anthropic request. One request per run;
 a second `/model` costs nothing.
 
-### Rate Limit Retry (P2)
+### Provider Retries (P2, P3)
 
-Exponential backoff retry for 429/rate-limit errors. Up to 5 attempts with
-delays of 2, 4, 8, 16, 32 seconds. Long sessions with Opus hit rate limits
-regularly. Previously, a 429 killed the session. Now the user sees a
-countdown and the request automatically retries.
+An HTTP failure is classified once, in `providers/error.rs`, from its status, headers and body. The inference loop matches on the kind and never reads the message. Text matching stays only where a provider states something no other way, overflow and image rejection, and it stays in that file.
+
+Koda follows Codex's limits rather than inventing its own: four retries of a request on a 429, 5xx or network failure, and five of a reply whose stream failed. A wait the server names replaces the backoff. Past five minutes the limit won't lift within a turn, so the request fails.
+
+**Local servers get the same retries.** No peer we checked retries less on a local server, and Goose retries Ollama more. The cost is LM Studio's bare 500, which can mean overflow: it now waits up to 15 seconds before the turn ends. It is still not read as overflow, because the same page comes back for failures unrelated to size.
+
+**A cut-off reply starts over, even after text was shown.** Codex, Gemini CLI and Pi all do this; Goose stops at the first item. It is safe because Koda only runs read-only tools during streaming, and anything that changes files waits for the whole reply. The partial text stays on screen, marked as starting over, and is never stored.
 
 ### Compaction: Two Layers (P2, P3)
 

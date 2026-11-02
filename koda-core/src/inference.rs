@@ -45,17 +45,16 @@ use crate::engine::{
 };
 use crate::file_tracker::FileTracker;
 use crate::inference_helpers::{
-    AUTO_COMPACT_THRESHOLD, CONTEXT_WARN_THRESHOLD, ContextShape, MIN_COMPACTABLE_DIVISOR,
-    ModelCall, RATE_LIMIT_MAX_RETRIES, assemble_messages, context_limit_from_error,
-    ends_with_question, estimate_subagent_preflight, estimate_tokens, estimate_tool_defs,
-    is_context_overflow_error, is_failed_stop, is_image_rejection_error,
-    is_network_transient_error, is_rate_limit_error, is_server_error, rate_limit_backoff,
-    short_hash,
+    AUTO_COMPACT_THRESHOLD, CONTEXT_WARN_THRESHOLD, ContextShape, MAX_SERVER_DELAY,
+    MIN_COMPACTABLE_DIVISOR, ModelCall, RATE_LIMIT_MAX_RETRIES, STREAM_MAX_RETRIES,
+    assemble_messages, ends_with_question, estimate_subagent_preflight, estimate_tokens,
+    estimate_tool_defs, is_failed_stop, rate_limit_backoff, short_hash,
 };
 use crate::loop_guard::{LoopAction, LoopDetector, MAX_TRUNCATED_REPLIES};
 use crate::persistence::Persistence;
 use crate::providers::{
     ChatMessage, ImageData, LlmProvider, StreamChunk, TokenUsage, ToolCall, ToolDefinition,
+    error::{ProviderError, ProviderErrorKind, stream_error_is_final},
     stream_collector::SseCollector,
 };
 use crate::skill_scope::SkillToolScope;
@@ -407,14 +406,27 @@ async fn shrink_if_over_window(
     Ok(messages)
 }
 
+/// How long to wait before retrying `err`, or `None` if the server asked for
+/// longer than Koda will wait.
+fn retry_delay(err: &anyhow::Error, attempt: u32) -> Option<std::time::Duration> {
+    match ProviderError::of(err).and_then(|e| e.retry_after) {
+        Some(delay) => (delay <= MAX_SERVER_DELAY).then_some(delay),
+        None => Some(rate_limit_backoff(attempt)),
+    }
+}
+
 /// Attempt to start a chat stream with exponential backoff on retryable errors.
 ///
-/// Retries on:
-/// - Rate-limit / overload signals (`is_rate_limit_error`)
-/// - Transient network failures (`is_network_transient_error`) — idle
-///   read timeouts, connection resets, broken pipes, DNS hiccups, etc.
-///   These are the dominant failure mode on long reasoning turns where the
-///   model server goes silent past `KODA_READ_TIMEOUT_SECS`. See #1119.
+/// Retries what `ProviderErrorKind::is_retryable` allows:
+/// - Rate limits and overload.
+/// - Server errors. Every peer retries these, on local servers too.
+/// - Network failures — idle read timeouts, connection resets, broken pipes,
+///   DNS hiccups, etc. These are the dominant failure mode on long reasoning
+///   turns where the model server goes silent past
+///   `KODA_READ_TIMEOUT_SECS`. See #1119.
+///
+/// A wait the server names replaces the backoff, unless it's past
+/// [`MAX_SERVER_DELAY`].
 ///
 /// Returns `Ok(Some(rx))` on success, `Ok(None)` if cancelled during retries,
 /// or `Err` for non-retriable failures.
@@ -435,14 +447,15 @@ async fn try_with_rate_limit(
         match result {
             Ok(collector) => return Ok(Some(collector)),
             Err(e)
-                if (is_rate_limit_error(&e) || is_network_transient_error(&e))
-                    && attempt + 1 < RATE_LIMIT_MAX_RETRIES =>
+                if ProviderError::kind_of(&e).is_retryable()
+                    && attempt + 1 < RATE_LIMIT_MAX_RETRIES
+                    && retry_delay(&e, attempt).is_some() =>
             {
-                let delay = rate_limit_backoff(attempt);
-                let (reason, kind) = if is_rate_limit_error(&e) {
-                    (RetryReason::RateLimit, "Rate limited")
-                } else {
-                    (RetryReason::Network, "Network glitch")
+                let delay = retry_delay(&e, attempt).unwrap_or_default();
+                let (reason, kind) = match ProviderError::kind_of(&e) {
+                    ProviderErrorKind::RateLimited => (RetryReason::RateLimit, "Rate limited"),
+                    ProviderErrorKind::ServerError => (RetryReason::ServerError, "Server error"),
+                    _ => (RetryReason::Network, "Network glitch"),
                 };
                 sink.emit(EngineEvent::SpinnerStop);
                 sink.emit(EngineEvent::Retry {
@@ -452,7 +465,7 @@ async fn try_with_rate_limit(
                     delay_ms: delay.as_millis() as u64,
                     notice: Some(Notice::Warn(format!(
                         "\u{23f3} {kind}. Retrying in {}s (attempt {}/{})...",
-                        delay.as_secs(),
+                        delay.as_secs_f64().ceil(),
                         attempt + 1,
                         RATE_LIMIT_MAX_RETRIES
                     ))),
@@ -463,7 +476,10 @@ async fn try_with_rate_limit(
                     attempt + 1,
                     RATE_LIMIT_MAX_RETRIES
                 );
-                tokio::time::sleep(delay).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(delay) => {}
+                    _ = cancel.cancelled() => return Ok(None),
+                }
                 sink.emit(EngineEvent::SpinnerStart {
                     message: format!("Retrying (attempt {})...", attempt + 2),
                 });
@@ -742,15 +758,12 @@ async fn collect_stream(
                 break;
             }
             StreamChunk::NetworkError(err) => {
-                // The stream failed partway. Stop rendering and surface a
-                // warning. The partial response will be discarded by the caller.
+                // The stream failed partway. Stop rendering; the caller
+                // discards the partial response and retries or ends the turn.
                 sink.emit(EngineEvent::SpinnerStop);
                 if !full_text.is_empty() {
                     sink.emit(EngineEvent::TextDone);
                 }
-                sink.emit(EngineEvent::Warn {
-                    message: format!("Stream failed mid-reply — turn discarded ({err})"),
-                });
                 return StreamResult {
                     text: full_text,
                     first_chunk_at,
@@ -1038,6 +1051,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
     let mut last_tools_hash: Option<String> = None;
     let mut retried_empty = false;
     let mut truncated_replies = 0u32;
+    let mut stream_retries = 0u32;
     let mut loop_detector = LoopDetector::new();
     // #1022 B12: `bg_agents` and `sub_agent_cache` now live on
     // `KodaSession` and are borrowed in via `InferenceContext`. Local
@@ -1359,8 +1373,8 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
             handle: sse_handle,
         } = match stream_result {
             Ok(c) => c,
-            Err(e) if is_context_overflow_error(&e) => {
-                let stated = context_limit_from_error(&e);
+            Err(e) if ProviderError::kind_of(&e) == ProviderErrorKind::ContextOverflow => {
+                let stated = ProviderError::of(&e).and_then(|p| p.context_limit);
                 if let Some(limit) = stated {
                     let floor = estimate_subagent_preflight(
                         &system_prompt_full,
@@ -1396,7 +1410,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
                     }
                 }
             }
-            Err(e) if is_server_error(&e) => {
+            Err(e) if ProviderError::kind_of(&e) == ProviderErrorKind::ServerError => {
                 sink.emit(EngineEvent::SpinnerStop);
                 let message = format!(
                     "Provider returned a server error: {e:#}. \
@@ -1408,7 +1422,9 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
                 });
                 return Err(TurnAborted(message).into());
             }
-            Err(e) if had_images && is_image_rejection_error(&e) => {
+            Err(e)
+                if had_images && ProviderError::kind_of(&e) == ProviderErrorKind::ImageRejected =>
+            {
                 sink.emit(EngineEvent::SpinnerStop);
                 let message = format!(
                     "⚠ This model rejected the image attachment — \
@@ -1490,15 +1506,46 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
             return Ok(());
         }
 
-        // Failed stream: warning already emitted by collect_stream.
-        // Discard the partial response — storing it would corrupt the session.
+        // Failed stream: discard the partial response — storing it would
+        // corrupt the session. Only read-only tools run during streaming, so
+        // nothing the retry repeats has changed anything. What was shown stays
+        // on screen, with a line saying the reply starts over.
         if let Some(err) = stream_result.network_error {
             tracing::debug!("Discarded partial reply:\n{}", stream_result.text);
             sse_handle.abort();
-            return Err(
-                TurnAborted(format!("Stream failed mid-reply — turn discarded ({err})")).into(),
-            );
+            if stream_retries < STREAM_MAX_RETRIES && !stream_error_is_final(&err) {
+                let delay = rate_limit_backoff(stream_retries);
+                stream_retries += 1;
+                sink.emit(EngineEvent::Retry {
+                    reason: RetryReason::StreamFailed,
+                    attempt: stream_retries,
+                    max_attempts: STREAM_MAX_RETRIES,
+                    delay_ms: delay.as_millis() as u64,
+                    notice: Some(Notice::Warn(format!(
+                        "\u{23f3} Reply cut off, starting it over in {}s (retry {stream_retries}/{STREAM_MAX_RETRIES})...",
+                        delay.as_secs()
+                    ))),
+                });
+                tracing::warn!(
+                    "Stream failed (retry {stream_retries}/{STREAM_MAX_RETRIES}): {err}"
+                );
+                tokio::select! {
+                    _ = tokio::time::sleep(delay) => continue,
+                    _ = cancel.cancelled() => {
+                        sink.emit(EngineEvent::Warn {
+                            message: "Interrupted".into(),
+                        });
+                        return Ok(());
+                    }
+                }
+            }
+            let message = format!("Stream failed mid-reply — turn discarded ({err})");
+            sink.emit(EngineEvent::Warn {
+                message: message.clone(),
+            });
+            return Err(TurnAborted(message).into());
         }
+        stream_retries = 0;
 
         let full_text = stream_result.text;
         let stream_thinking = stream_result.thinking_content;
@@ -1870,6 +1917,27 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
 mod tests {
     use super::*;
     use crate::engine::sink::TestSink;
+    use std::time::Duration;
+
+    fn limited(retry_after: &str) -> anyhow::Error {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("retry-after", retry_after.parse().unwrap());
+        ProviderError::from_response("LLM", 429, "429", &headers, "").into()
+    }
+
+    #[test]
+    fn the_server_names_the_wait_up_to_a_limit() {
+        assert_eq!(retry_delay(&limited("7"), 0), Some(Duration::from_secs(7)));
+        assert_eq!(retry_delay(&limited("300"), 0), Some(MAX_SERVER_DELAY));
+        assert_eq!(retry_delay(&limited("301"), 0), None);
+    }
+
+    #[test]
+    fn without_a_named_wait_the_backoff_applies() {
+        let err = anyhow::anyhow!("boom");
+        assert_eq!(retry_delay(&err, 2), Some(Duration::from_secs(4)));
+    }
+
     use crate::providers::{StreamChunk, TokenUsage, ToolCall};
     use crate::trust::TrustMode;
     use tokio::sync::mpsc;

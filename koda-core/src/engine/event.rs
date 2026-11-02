@@ -551,6 +551,10 @@ pub enum RetryReason {
     RateLimit,
     /// A connection failed or timed out.
     Network,
+    /// The provider answered with a server error.
+    ServerError,
+    /// The reply's stream failed partway. Whatever it had shown is discarded.
+    StreamFailed,
     /// The provider rejected the context as too long; it was compacted first.
     ContextOverflow,
     /// The model returned nothing.

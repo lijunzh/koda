@@ -367,6 +367,41 @@ async fn a_retry_is_typed() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_server_error_waits_as_long_as_the_server_says() {
+    let busy = ResponseTemplate::new(500)
+        .insert_header("retry-after", "0")
+        .set_body_string("boom");
+    let server = stub(vec![busy], no_other_calls).await;
+    let run = run_koda(&server).await;
+
+    assert_eq!(run.output.status.code(), Some(0), "{}", run.stdout);
+    let retry = run.one("retry");
+    assert_eq!(retry["reason"], "server_error", "{retry}");
+    assert_eq!(retry["delay_ms"], 0, "{retry}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reply_cut_off_partway_starts_over() {
+    let chunk = json!({"choices": [{"delta": {"content": "half a re"}}]});
+    let cut_off = ResponseTemplate::new(200)
+        .insert_header("content-type", "text/event-stream")
+        .set_body_string(format!("data: {chunk}\n\n"));
+    let server = stub(vec![cut_off], no_other_calls).await;
+    let run = run_koda(&server).await;
+
+    assert_eq!(run.output.status.code(), Some(0), "{}", run.stdout);
+    let retry = run.one("retry");
+    assert_eq!(retry["reason"], "stream_failed", "{retry}");
+    assert_eq!(retry["attempt"], 1, "{retry}");
+    assert_eq!(retry["max_attempts"], 5, "{retry}");
+    let calls = server.received_requests().await;
+    let chats = calls
+        .iter()
+        .filter(|r| r.url.path().ends_with("/completions"));
+    assert_eq!(chats.count(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn an_empty_reply_is_a_typed_retry_and_its_tokens_count() {
     let empty = sse(&[
         json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
@@ -523,7 +558,7 @@ async fn a_failed_turn_still_reports_what_it_used() {
     let server = stub(
         vec![
             tool_call("a", "Bash", json!({"command": "true"})),
-            ResponseTemplate::new(500).set_body_string("boom"),
+            ResponseTemplate::new(400).set_body_string("boom"),
         ],
         no_other_calls,
     )

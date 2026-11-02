@@ -35,6 +35,8 @@
 
 /// Anthropic Claude API provider.
 pub mod anthropic;
+/// Typed provider failures.
+pub mod error;
 /// Google Gemini API provider.
 pub mod gemini;
 /// OpenAI-compatible provider (LM Studio, Ollama, vLLM, OpenRouter, etc.).

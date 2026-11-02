@@ -49,12 +49,13 @@
 //! name in the `.context(...)` string; this just lifts the literal
 //! up by one stack frame.
 
+use super::error::ProviderError;
 use anyhow::{Context, Result, anyhow};
 use reqwest::{RequestBuilder, Response};
 use serde::de::DeserializeOwned;
 
 /// Send a request; if the response status is not 2xx, read the body
-/// and bail with `"<provider> API returned <status>: <body>"`.
+/// and fail with `"<provider> API returned <status>: <body>"`.
 /// Otherwise return the [`Response`] for further processing.
 ///
 /// Use this when you want to inspect headers, stream the body, or
@@ -63,24 +64,39 @@ use serde::de::DeserializeOwned;
 ///
 /// ## Errors
 ///
-/// - The underlying transport (`reqwest::Error`) wrapped in a
-///   `"Failed to call <provider> API"` context.
+/// A [`ProviderError`] in both cases:
+///
+/// - The underlying transport (`reqwest::Error`), with the message
+///   `"Failed to call <provider> API: <cause>"`.
 /// - HTTP non-2xx status, with the response body included verbatim
 ///   so the model has something to act on.
 pub(crate) async fn send_or_bail(request: RequestBuilder, provider_name: &str) -> Result<Response> {
-    let resp = request
-        .send()
-        .await
-        .with_context(|| format!("Failed to call {provider_name} API"))?;
+    let resp = request.send().await.map_err(|e| {
+        let is_builder = e.is_builder();
+        let message = format!("Failed to call {provider_name} API: {:#}", anyhow!(e));
+        if is_builder {
+            ProviderError::request(message)
+        } else {
+            ProviderError::network(message)
+        }
+    })?;
 
     if !resp.status().is_success() {
         let status = resp.status();
+        let headers = resp.headers().clone();
         // `text()` consumes the response, so we read it eagerly here
         // and surface it inside the bail message. `unwrap_or_default`
         // mirrors pre-#1265 behavior — a body-read failure shouldn't
         // mask the underlying status code.
         let body = resp.text().await.unwrap_or_default();
-        return Err(anyhow!("{provider_name} API returned {status}: {body}"));
+        return Err(ProviderError::from_response(
+            provider_name,
+            status.as_u16(),
+            &status.to_string(),
+            &headers,
+            &body,
+        )
+        .into());
     }
     Ok(resp)
 }

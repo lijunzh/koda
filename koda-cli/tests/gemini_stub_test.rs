@@ -97,7 +97,7 @@ async fn a_busy_server_and_a_failed_reply_do_not_end_the_turn() {
         .map(|r| serde_json::from_slice(&r.body).unwrap())
         .collect();
     let log = read_log(tmp.path());
-    assert!(log.contains("Rate limited"), "the 503: {log}");
+    assert!(log.contains("Server error"), "the 503: {log}");
     log_line(
         &log,
         "model call",

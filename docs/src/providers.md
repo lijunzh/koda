@@ -102,7 +102,8 @@ but a stalled connection (server hung after last byte) will fail fast.
 - **Long-running model on a flaky link?** Bump `KODA_READ_TIMEOUT_SECS` to
   600+. Read-phase timeouts manifest as a partial response cut short
   partway through generation. (Note: koda also auto-retries transient
-  network errors up to 5 times with exponential backoff; see `is_network_transient_error`.)
+  network errors, with up to five attempts and exponential backoff; see
+  `providers/error.rs`.)
 - **Local provider (Ollama, LM Studio, vLLM) and you want fail-fast?**
   Drop `KODA_READ_TIMEOUT_SECS` to 30 — local models that hang are usually
   truly hung, not slow.

@@ -161,10 +161,12 @@ async fn test_network_error_next_turn_gets_clean_context() {
     env.insert_user_message("research the inference loop").await;
 
     // First call: network error after partial text
-    let provider = MockProvider::new(vec![MockResponse::NetworkError {
+    let dropped = MockResponse::NetworkError {
         partial_text: "I'll start by".into(),
         error: "connection reset".into(),
-    }]);
+    };
+    // The first attempt and all five retries fail.
+    let provider = MockProvider::new(vec![dropped; 6]);
 
     let (result, events) = env.run_inference_result(&provider).await;
     assert!(
@@ -334,9 +336,12 @@ async fn test_compaction_survives_concurrent_event_inserts() {
 
 /// llama-server's 400 body, as the OpenAI-compat provider reports it.
 fn llama_cpp_overflow(n_ctx: usize) -> MockResponse {
-    MockResponse::Error(format!(
-        r#"LLM API returned 400 Bad Request: {{"error":{{"code":400,"message":"request (40000 tokens) exceeds the available context size ({n_ctx} tokens), try increasing it","type":"exceed_context_size_error","n_prompt_tokens":40000,"n_ctx":{n_ctx}}}}}"#
-    ))
+    MockResponse::Http {
+        status: 400,
+        body: format!(
+            r#"{{"error":{{"code":400,"message":"request (40000 tokens) exceeds the available context size ({n_ctx} tokens), try increasing it","type":"exceed_context_size_error","n_prompt_tokens":40000,"n_ctx":{n_ctx}}}}}"#
+        ),
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

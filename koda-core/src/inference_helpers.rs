@@ -8,8 +8,6 @@
 //!   when to compact or truncate
 //! - **Message assembly** — convert tool results and progress into the
 //!   format expected by each provider
-//! - **Error classification** — distinguish retryable errors (rate limits,
-//!   network) from fatal ones (auth, invalid model)
 
 use crate::providers::{ChatMessage, ToolCall};
 
@@ -331,68 +329,6 @@ pub(crate) fn repair_alternation(messages: &mut Vec<ChatMessage>, bridge: &str) 
     }
 }
 
-/// Detect if an error is a server error (5xx) from the provider.
-///
-/// These are typically transient (LM Studio choking on malformed input,
-/// Ollama OOM, etc.) and should end the turn gracefully rather than crash.
-///
-/// # Examples
-///
-/// ```
-/// use koda_core::inference_helpers::is_server_error;
-///
-/// assert!(is_server_error(&anyhow::anyhow!("HTTP 500 from provider")));
-/// assert!(is_server_error(&anyhow::anyhow!("bad gateway")));
-/// assert!(!is_server_error(&anyhow::anyhow!("401 Unauthorized")));
-/// ```
-pub fn is_server_error(err: &anyhow::Error) -> bool {
-    let msg = format!("{err:#}").to_lowercase();
-    msg.contains("500")
-        || msg.contains("502")
-        || msg.contains("503")
-        || msg.contains("internal server error")
-        || msg.contains("bad gateway")
-        || msg.contains("service unavailable")
-}
-
-/// Detect if an error is a rate limit or overload response from the provider.
-///
-/// Matches HTTP 429 (Too Many Requests) and Anthropic's HTTP 529 (overloaded),
-/// plus common text patterns across providers.
-///
-/// # Examples
-///
-/// ```
-/// use koda_core::inference_helpers::is_rate_limit_error;
-///
-/// assert!(is_rate_limit_error(&anyhow::anyhow!("429 Too Many Requests")));
-/// assert!(is_rate_limit_error(&anyhow::anyhow!("quota exceeded")));
-/// assert!(!is_rate_limit_error(&anyhow::anyhow!("prompt is too long")));
-/// ```
-pub fn is_rate_limit_error(err: &anyhow::Error) -> bool {
-    let msg = format!("{err:#}").to_lowercase();
-    // Bare numeric HTTP codes need word-boundary checks: a substring
-    // match like `contains("429")` false-positives on ephemeral ports
-    // (e.g. wiremock binding 127.0.0.1:14290 makes a totally-unrelated
-    // timeout error look rate-limited). The original predicate caused
-    // a Linux-only flake in `read_timeout_triggers_auto_retry_not_hard_failure`
-    // because Linux's ephemeral port range overlaps the danger zone
-    // ~1% of the time. We require the code to appear in a textual
-    // status-line context (`status: 429`, `429 too many`, ` 429 `).
-    let has_status_429 = has_http_status(&msg, "429");
-    let has_status_529 = has_http_status(&msg, "529"); // Anthropic: API overloaded
-    has_status_429
-        || has_status_529
-        || msg.contains("rate limit")
-        || msg.contains("rate_limit")
-        || msg.contains("too many requests")
-        || msg.contains("quota exceeded")
-        || msg.contains("overloaded") // Anthropic overload text
-        // Gemini under load; a local server still loading a model says 503 too.
-        || has_http_status(&msg, "503")
-        || msg.contains("high demand")
-}
-
 /// One finished model call, for the log. Holds no conversation text.
 pub(crate) struct ModelCall<'a> {
     /// What the call was for: `turn` or `compaction`.
@@ -489,84 +425,17 @@ pub fn is_failed_stop(stop_reason: &str) -> bool {
     )
 }
 
-/// True iff `code` appears in `msg` (already lowercased) in a context
-/// that's plausibly an HTTP status code rather than (e.g.) a port
-/// number embedded in a URL. Cheap heuristic: look for the canonical
-/// shapes — `"status: 429"`, `"429 too many"`, or surrounded by ASCII
-/// whitespace / punctuation that bare port numbers don't produce.
-fn has_http_status(msg: &str, code: &str) -> bool {
-    // Common shapes from reqwest / hyper / openai / anthropic.
-    if msg.contains(&format!("status: {code}"))
-        || msg.contains(&format!("status code: {code}"))
-        || msg.contains(&format!("http {code}"))
-        || msg.contains(&format!("{code} too many"))
-        || msg.contains(&format!("{code} overloaded"))
-        || msg.contains(&format!("\"{code}\""))
-    {
-        return true;
-    }
-    // Generic word-boundary fallback: `code` flanked by non-digit
-    // characters on both sides. Rules out port numbers (`:14290`,
-    // `42935/`) and other digit-runs that happen to contain `code`.
-    msg.split(code).enumerate().any(|(i, segment)| {
-        if i == 0 {
-            return false;
-        }
-        let left_ok = msg[..msg.len() - segment.len() - code.len()]
-            .chars()
-            .last()
-            .is_none_or(|c| !c.is_ascii_digit());
-        let right_ok = segment.chars().next().is_none_or(|c| !c.is_ascii_digit());
-        left_ok && right_ok
-    })
-}
-
-/// Maximum number of retries for rate-limited requests.
+/// Attempts a request gets: the first, then four retries, matching Codex's
+/// `DEFAULT_REQUEST_MAX_RETRIES`.
 pub const RATE_LIMIT_MAX_RETRIES: u32 = 5;
 
-/// Detect if an error is a transient network/transport failure that's worth
-/// auto-retrying with backoff.
-///
-/// Covers low-level network conditions that don't surface as HTTP status
-/// codes: idle-read timeouts, dropped half-open sockets, broken pipes,
-/// short-lived DNS / TLS hiccups, etc. These are NOT recoverable via
-/// context compaction (so they don't belong in `is_context_overflow_error`)
-/// and they're NOT rate-limit signals (so they don't belong in
-/// `is_rate_limit_error`), but they ARE worth retrying because the typical
-/// cause is a stale TCP connection or a transiently-flaky network rather
-/// than a permanent failure.
-///
-/// String patterns mirror the `RETRYABLE_NETWORK_CODES` list maintained by
-/// gemini-cli (`packages/core/src/utils/retry.ts`), translated into the
-/// human-readable forms that `reqwest` / `anyhow` emit on the Rust side.
-/// See issue #1119 for the comparative analysis.
-///
-/// # Examples
-///
-/// ```
-/// use koda_core::inference_helpers::is_network_transient_error;
-///
-/// assert!(is_network_transient_error(&anyhow::anyhow!("operation timed out")));
-/// assert!(is_network_transient_error(&anyhow::anyhow!("connection reset by peer")));
-/// assert!(is_network_transient_error(&anyhow::anyhow!("broken pipe")));
-/// assert!(!is_network_transient_error(&anyhow::anyhow!("401 Unauthorized")));
-/// ```
-pub fn is_network_transient_error(err: &anyhow::Error) -> bool {
-    let msg = format!("{err:#}").to_lowercase();
-    msg.contains("operation timed out")
-        || msg.contains("timed out")
-        || msg.contains("connection reset")
-        || msg.contains("connection closed")
-        || msg.contains("connection aborted")
-        || msg.contains("connection refused")
-        || msg.contains("broken pipe")
-        || msg.contains("unexpected end of file")
-        || msg.contains("unexpected eof")
-        || msg.contains("error trying to connect")
-        || msg.contains("dns error")
-        || msg.contains("failed to lookup address")
-        || msg.contains("tls handshake")
-}
+/// Retries for a reply whose stream failed partway, matching Codex's
+/// `DEFAULT_STREAM_MAX_RETRIES`.
+pub const STREAM_MAX_RETRIES: u32 = 5;
+
+/// The longest wait a server can ask for. Past it the limit won't lift
+/// within a turn, so the request fails instead of sitting silent.
+pub const MAX_SERVER_DELAY: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Compute exponential backoff delay for a retry attempt (1-indexed).
 /// Returns duration in seconds: 2, 4, 8, 16, 32 (capped at 32s).
@@ -584,113 +453,6 @@ pub fn is_network_transient_error(err: &anyhow::Error) -> bool {
 pub fn rate_limit_backoff(attempt: u32) -> std::time::Duration {
     let secs = 2u64.pow(attempt).min(32);
     std::time::Duration::from_secs(secs)
-}
-
-/// Detect if an error is a context window overflow from the provider.
-///
-/// Checks for common error patterns across providers:
-/// - Anthropic: "prompt is too long", "input is too long"
-/// - OpenAI: "maximum context length exceeded", "context_length_exceeded"
-/// - llama.cpp: "exceeds the available context size" (`exceed_context_size_error`)
-/// - Generic: HTTP 400/413 with size-related messages
-///
-/// Not an overflow: LM Studio's answer to an overflowed request, a bare
-/// `500 Internal Server Error` HTML page (`<pre>Internal Server Error</pre>`)
-/// with nothing in it about size. It is the same page LM Studio returns for
-/// other failures: in the 2026-10-28 eval screens Flint got it three times
-/// past its 65,536-token load, and Qwen3.8 once at 18,647 tokens. Compacting
-/// on it would throw away history for a failure that may not be about size,
-/// then fail the same way, so it stays a server error (`is_server_error`),
-/// which ends the turn. Codex and Claude Code draw the same line: Codex
-/// types `ContextWindowExceeded` from the API's `context_length_exceeded`
-/// code and Claude Code matches "prompt is too long" or a 413; neither reads
-/// overflow into a bare 5xx. Koda avoids the LM Studio overflow instead by
-/// counting against the window it loaded (`loaded_context_length`, see
-/// `providers::openai_compat`) and compacting at the pre-flight threshold.
-///
-/// # Examples
-///
-/// ```
-/// use koda_core::inference_helpers::is_context_overflow_error;
-///
-/// assert!(is_context_overflow_error(&anyhow::anyhow!("prompt is too long")));
-/// assert!(is_context_overflow_error(&anyhow::anyhow!("context_length_exceeded")));
-/// assert!(!is_context_overflow_error(&anyhow::anyhow!("rate limit exceeded")));
-/// ```
-pub fn is_context_overflow_error(err: &anyhow::Error) -> bool {
-    let msg = format!("{err:#}").to_lowercase();
-    msg.contains("too long")
-        || msg.contains("context_length_exceeded")
-        || msg.contains("maximum context length")
-        || msg.contains("token limit")
-        || msg.contains("exceeds the model")
-        || msg.contains("request too large")
-        || msg.contains("exceeds the available context size")
-        || msg.contains("exceed_context_size_error")
-        || (msg.contains("413") && msg.contains("too large"))
-}
-
-/// The server's context window, when its overflow error states one.
-///
-/// Lets Koda learn the real limit from a rejected request instead of
-/// trusting a guess the server never confirmed:
-/// - llama.cpp: `{"error":{"type":"exceed_context_size_error","n_ctx":4096,…}}`
-/// - OpenAI and vLLM: "This model's maximum context length is 8192 tokens."
-///
-/// Returns `None` when no limit is stated (Anthropic's "prompt is too long",
-/// LM Studio) or the number is zero.
-///
-/// # Examples
-///
-/// ```
-/// use koda_core::inference_helpers::context_limit_from_error;
-///
-/// let body = r#"LLM API returned 400: {"error":{"n_prompt_tokens":6052,"n_ctx":4096}}"#;
-/// let e = anyhow::anyhow!("{body}");
-/// assert_eq!(context_limit_from_error(&e), Some(4096));
-/// assert_eq!(context_limit_from_error(&anyhow::anyhow!("prompt is too long")), None);
-/// ```
-pub fn context_limit_from_error(err: &anyhow::Error) -> Option<usize> {
-    static PATTERNS: std::sync::LazyLock<[regex::Regex; 3]> = std::sync::LazyLock::new(|| {
-        [
-            regex::Regex::new(r#""n_ctx"\s*:\s*(\d+)"#).unwrap(),
-            regex::Regex::new(r"maximum context length is (\d+)").unwrap(),
-            regex::Regex::new(r"available context size \((\d+) tokens\)").unwrap(),
-        ]
-    });
-    let msg = format!("{err:#}");
-    PATTERNS
-        .iter()
-        .find_map(|re| re.captures(&msg)?.get(1)?.as_str().parse::<usize>().ok())
-        .filter(|&n| n > 0)
-}
-
-/// Detect if an error is a provider rejection of image / vision input.
-///
-/// Fires when the model or API endpoint does not support multimodal input and
-/// returns an explicit error rather than silently ignoring the image bytes.
-/// Matches the documented rejection messages from OpenAI-compat servers
-/// (LM Studio, Ollama), the OpenAI API, and Gemini.
-///
-/// # Examples
-///
-/// ```
-/// use koda_core::inference_helpers::is_image_rejection_error;
-///
-/// assert!(is_image_rejection_error(&anyhow::anyhow!("This model does not support image input")));
-/// assert!(is_image_rejection_error(&anyhow::anyhow!("Invalid image. The model does not support vision input.")));
-/// assert!(is_image_rejection_error(&anyhow::anyhow!("multimodal content is not supported")));
-/// assert!(!is_image_rejection_error(&anyhow::anyhow!("rate limit exceeded")));
-/// assert!(!is_image_rejection_error(&anyhow::anyhow!("prompt is too long")));
-/// ```
-pub fn is_image_rejection_error(err: &anyhow::Error) -> bool {
-    let msg = format!("{err:#}").to_lowercase();
-    // "image" alone is too broad; require it alongside a support-denial word.
-    (msg.contains("image") && (msg.contains("support") || msg.contains("invalid")))
-        || (msg.contains("vision")
-            && (msg.contains("support") || msg.contains("not") || msg.contains("unavailable")))
-        || (msg.contains("multimodal")
-            && (msg.contains("support") || msg.contains("not") || msg.contains("unavailable")))
 }
 
 #[cfg(test)]
@@ -936,124 +698,6 @@ mod tests {
         assert_eq!(out[1].role, "user");
     }
 
-    /// llama-server's body for a 6,052-token request against `-c 4096`.
-    const LLAMA_CPP_OVERFLOW: &str = r#"LLM API returned 400 Bad Request: {"error":{"code":400,"message":"request (6052 tokens) exceeds the available context size (4096 tokens), try increasing it","type":"exceed_context_size_error","n_prompt_tokens":6052,"n_ctx":4096}}"#;
-
-    #[test]
-    fn context_limit_is_read_from_overflow_errors() {
-        let cases = [
-            (LLAMA_CPP_OVERFLOW, Some(4096)),
-            // The message alone, without the JSON fields.
-            (
-                "request (6052 tokens) exceeds the available context size (8192 tokens)",
-                Some(8192),
-            ),
-            (
-                "This model's maximum context length is 32768 tokens. However, you requested 40000 tokens.",
-                Some(32768),
-            ),
-            ("Anthropic API returned 400: prompt is too long", None),
-            ("context_length_exceeded", None),
-            (r#"{"n_ctx":0}"#, None),
-        ];
-        for (msg, want) in cases {
-            assert_eq!(
-                context_limit_from_error(&anyhow::anyhow!("{msg}")),
-                want,
-                "{msg}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_is_context_overflow_error() {
-        // Should match
-        assert!(is_context_overflow_error(&anyhow::anyhow!(
-            "Anthropic API returned 400: prompt is too long"
-        )));
-        assert!(is_context_overflow_error(&anyhow::anyhow!(
-            "context_length_exceeded: max 200000 tokens"
-        )));
-        assert!(is_context_overflow_error(&anyhow::anyhow!(
-            "maximum context length exceeded"
-        )));
-        assert!(is_context_overflow_error(&anyhow::anyhow!(
-            "request exceeds the model's input limit"
-        )));
-        // llama-server, verbatim from a real 400 on 2026-10-27.
-        assert!(is_context_overflow_error(&anyhow::anyhow!(
-            "{}",
-            LLAMA_CPP_OVERFLOW
-        )));
-
-        // Should NOT match
-        assert!(!is_context_overflow_error(&anyhow::anyhow!(
-            "rate limit exceeded"
-        )));
-        assert!(!is_context_overflow_error(&anyhow::anyhow!(
-            "connection refused"
-        )));
-    }
-
-    /// LM Studio's answer to an overflowed request, verbatim from the
-    /// 2026-10-28 Flint eval screen. The same page comes back for failures
-    /// that are not about size, so it is a server error, not an overflow.
-    const LM_STUDIO_BARE_500: &str = "LLM API returned 500 Internal Server Error: <!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Internal Server Error</pre>\n</body>\n</html>\n";
-
-    #[test]
-    fn lm_studio_bare_500_is_a_server_error_not_an_overflow() {
-        let err = anyhow::anyhow!("{}", LM_STUDIO_BARE_500);
-        assert!(!is_context_overflow_error(&err));
-        assert_eq!(context_limit_from_error(&err), None);
-        assert!(is_server_error(&err));
-    }
-
-    #[test]
-    fn test_is_rate_limit_error() {
-        assert!(is_rate_limit_error(&anyhow::anyhow!(
-            "429 Too Many Requests"
-        )));
-        assert!(is_rate_limit_error(&anyhow::anyhow!("529 API overloaded")));
-        assert!(is_rate_limit_error(&anyhow::anyhow!("rate limit exceeded")));
-        assert!(is_rate_limit_error(&anyhow::anyhow!("rate_limit_exceeded")));
-        assert!(is_rate_limit_error(&anyhow::anyhow!("too many requests")));
-        assert!(is_rate_limit_error(&anyhow::anyhow!("quota exceeded")));
-        assert!(is_rate_limit_error(&anyhow::anyhow!(
-            "Anthropic API is overloaded"
-        )));
-
-        assert!(!is_rate_limit_error(&anyhow::anyhow!("prompt is too long")));
-        assert!(!is_rate_limit_error(&anyhow::anyhow!("connection refused")));
-
-        // Regression: ephemeral port numbers must NOT trip the
-        // bare-numeric matchers. wiremock's `MockServer` binds to
-        // 127.0.0.1:<random> and Linux's range overlaps the danger
-        // zone roughly 1% of the time — caused intermittent CI
-        // failures in `read_timeout_triggers_auto_retry_not_hard_failure`
-        // before the word-boundary fix.
-        assert!(
-            !is_rate_limit_error(&anyhow::anyhow!(
-                "error sending request for url (http://127.0.0.1:14290/v1/chat/completions): \
-                 operation timed out"
-            )),
-            "port containing 429 must NOT classify as rate-limit"
-        );
-        assert!(
-            !is_rate_limit_error(&anyhow::anyhow!(
-                "http://127.0.0.1:42935/path: connection reset by peer"
-            )),
-            "port containing 429 anywhere must NOT classify as rate-limit"
-        );
-        assert!(
-            !is_rate_limit_error(&anyhow::anyhow!("http://127.0.0.1:5295/foo: timed out")),
-            "port containing 529 must NOT classify as rate-limit"
-        );
-        // But a real status line with the port in it is still a hit.
-        assert!(is_rate_limit_error(&anyhow::anyhow!(
-            "POST http://api.example.com:14290/v1/chat returned status: 429"
-        )));
-    }
-
     #[test]
     fn test_rate_limit_backoff() {
         assert_eq!(rate_limit_backoff(0).as_secs(), 1);
@@ -1061,71 +705,6 @@ mod tests {
         assert_eq!(rate_limit_backoff(2).as_secs(), 4);
         assert_eq!(rate_limit_backoff(3).as_secs(), 8);
         assert_eq!(rate_limit_backoff(10).as_secs(), 32); // capped
-    }
-
-    #[test]
-    fn test_is_network_transient_error() {
-        // Idle / read timeouts (the original #1119 trigger)
-        assert!(is_network_transient_error(&anyhow::anyhow!(
-            "error sending request: operation timed out"
-        )));
-        assert!(is_network_transient_error(&anyhow::anyhow!(
-            "request timed out after 180s"
-        )));
-
-        // Connection-state failures
-        assert!(is_network_transient_error(&anyhow::anyhow!(
-            "connection reset by peer"
-        )));
-        assert!(is_network_transient_error(&anyhow::anyhow!(
-            "connection closed before message completed"
-        )));
-        assert!(is_network_transient_error(&anyhow::anyhow!(
-            "connection aborted"
-        )));
-        assert!(is_network_transient_error(&anyhow::anyhow!(
-            "connection refused"
-        )));
-        assert!(is_network_transient_error(&anyhow::anyhow!("broken pipe")));
-
-        // Premature stream termination
-        assert!(is_network_transient_error(&anyhow::anyhow!(
-            "unexpected end of file"
-        )));
-        assert!(is_network_transient_error(&anyhow::anyhow!(
-            "unexpected EOF"
-        )));
-
-        // Connect-phase failures (caller may want to retry once before erroring)
-        assert!(is_network_transient_error(&anyhow::anyhow!(
-            "error trying to connect: tcp connect error"
-        )));
-        assert!(is_network_transient_error(&anyhow::anyhow!(
-            "dns error: failed to lookup address information"
-        )));
-        assert!(is_network_transient_error(&anyhow::anyhow!(
-            "failed to lookup address information"
-        )));
-        assert!(is_network_transient_error(&anyhow::anyhow!(
-            "tls handshake eof"
-        )));
-
-        // Should NOT match — these belong to other classifiers
-        assert!(!is_network_transient_error(&anyhow::anyhow!(
-            "401 Unauthorized"
-        )));
-        assert!(!is_network_transient_error(&anyhow::anyhow!(
-            "prompt is too long"
-        )));
-        assert!(!is_network_transient_error(&anyhow::anyhow!(
-            "429 Too Many Requests"
-        )));
-        assert!(!is_network_transient_error(&anyhow::anyhow!(
-            "500 Internal Server Error"
-        )));
-        assert!(!is_network_transient_error(&anyhow::anyhow!(
-            "invalid JSON in response"
-        )));
     }
 
     #[test]
@@ -1247,101 +826,5 @@ mod tests {
             !pf.is_over_budget(),
             "exactly-at-limit must not trip the gate — over-budget should be strict >"
         );
-    }
-
-    // ── is_server_error ───────────────────────────────────────────────────
-
-    #[test]
-    fn test_is_server_error_http_codes() {
-        for code in ["500", "502", "503"] {
-            let err = anyhow::anyhow!("HTTP {code} from provider");
-            assert!(is_server_error(&err), "{code} should be server error");
-        }
-    }
-
-    #[test]
-    fn test_is_server_error_text_patterns() {
-        let patterns = [
-            "internal server error",
-            "bad gateway",
-            "service unavailable",
-        ];
-        for text in patterns {
-            let err = anyhow::anyhow!("{text}");
-            assert!(is_server_error(&err), "'{text}' should be server error");
-        }
-    }
-
-    #[test]
-    fn test_is_server_error_case_insensitive() {
-        let err = anyhow::anyhow!("Internal Server Error from upstream");
-        assert!(is_server_error(&err));
-    }
-
-    #[test]
-    fn test_is_not_server_error_for_rate_limit() {
-        let err = anyhow::anyhow!("429 Too Many Requests");
-        assert!(
-            !is_server_error(&err),
-            "rate limit should not be server error"
-        );
-    }
-
-    #[test]
-    fn test_is_not_server_error_for_auth() {
-        let err = anyhow::anyhow!("401 Unauthorized");
-        assert!(!is_server_error(&err));
-    }
-
-    #[test]
-    fn test_is_image_rejection_error_matches() {
-        // LM Studio / Ollama
-        assert!(is_image_rejection_error(&anyhow::anyhow!(
-            "LLM API returned 400: This model does not support image input"
-        )));
-        // OpenAI
-        assert!(is_image_rejection_error(&anyhow::anyhow!(
-            "Invalid image. The model does not support vision input."
-        )));
-        // Generic multimodal rejection
-        assert!(is_image_rejection_error(&anyhow::anyhow!(
-            "multimodal content is not supported by this endpoint"
-        )));
-        // Case-insensitive
-        assert!(is_image_rejection_error(&anyhow::anyhow!(
-            "Vision capability not available"
-        )));
-        // Anthropic — model does not support vision (#819)
-        assert!(is_image_rejection_error(&anyhow::anyhow!(
-            "400 Bad Request: Images are not supported for this model"
-        )));
-        // Anthropic — invalid image data (base64 corruption, wrong format)
-        assert!(is_image_rejection_error(&anyhow::anyhow!(
-            "400 Bad Request: Invalid image: unable to decode image data"
-        )));
-    }
-
-    #[test]
-    fn test_is_image_rejection_error_no_false_positives() {
-        assert!(!is_image_rejection_error(&anyhow::anyhow!(
-            "rate limit exceeded"
-        )));
-        assert!(!is_image_rejection_error(&anyhow::anyhow!(
-            "prompt is too long"
-        )));
-        assert!(!is_image_rejection_error(&anyhow::anyhow!(
-            "502 bad gateway"
-        )));
-        // "image" alone without support/invalid context should not match
-        assert!(!is_image_rejection_error(&anyhow::anyhow!(
-            "failed to load image/png from request body"
-        )));
-        // Bare "vision" or "multimodal" without denial context → no match
-        assert!(!is_image_rejection_error(&anyhow::anyhow!(
-            "Invalid API key for vision endpoint"
-        )));
-        assert!(!is_image_rejection_error(&anyhow::anyhow!(
-            "multimodal endpoint rate limit"
-        )));
     }
 }

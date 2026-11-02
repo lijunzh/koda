@@ -441,14 +441,14 @@ async fn session_persists_messages_across_two_turns() {
 /// return the `TurnEnd` reason, asserting that `run_turn` itself still
 /// returns `Ok` (the TUI relies on that) and that the user saw `warn_text`.
 async fn early_stop_turn_end(
-    response: MockResponse,
+    responses: Vec<MockResponse>,
     images: Option<Vec<koda_core::providers::ImageData>>,
     warn_text: &str,
 ) -> TurnEndReason {
     let env = Env::new().await;
     env.insert_user_message("hello").await;
 
-    let provider = Box::new(MockProvider::new(vec![response]));
+    let provider = Box::new(MockProvider::new(responses));
     let (mut session, _cancel) = make_session(&env, provider).await;
 
     let sink = TestSink::new();
@@ -476,7 +476,13 @@ async fn early_stop_turn_end(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn session_server_error_turn_ends_with_error() {
     let reason = early_stop_turn_end(
-        MockResponse::Error("LLM API returned 500: Internal Server Error".into()),
+        vec![
+            MockResponse::Http {
+                status: 500,
+                body: "Internal Server Error".into(),
+            };
+            5
+        ],
         None,
         "server error",
     )
@@ -495,7 +501,10 @@ async fn session_image_rejection_turn_ends_with_error() {
         base64: "AAAA".into(),
     };
     let reason = early_stop_turn_end(
-        MockResponse::Error("this model does not support image input".into()),
+        vec![MockResponse::Http {
+            status: 400,
+            body: "this model does not support image input".into(),
+        }],
         Some(vec![image]),
         "rejected the image",
     )
@@ -512,10 +521,13 @@ async fn session_image_rejection_turn_ends_with_error() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn session_network_drop_turn_ends_with_error() {
     let reason = early_stop_turn_end(
-        MockResponse::NetworkError {
-            partial_text: "partial".into(),
-            error: "connection reset".into(),
-        },
+        vec![
+            MockResponse::NetworkError {
+                partial_text: "partial".into(),
+                error: "connection reset".into(),
+            };
+            6
+        ],
         None,
         "Stream failed",
     )

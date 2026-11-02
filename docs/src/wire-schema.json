@@ -276,6 +276,16 @@
           "type": "string"
         },
         {
+          "const": "server_error",
+          "description": "The provider answered with a server error.",
+          "type": "string"
+        },
+        {
+          "const": "stream_failed",
+          "description": "The reply's stream failed partway. Whatever it had shown is discarded.",
+          "type": "string"
+        },
+        {
           "const": "context_overflow",
           "description": "The provider rejected the context as too long; it was compacted first.",
           "type": "string"

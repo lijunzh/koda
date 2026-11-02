@@ -6,7 +6,11 @@
 //!
 //! Run with: `cargo test -p koda-core --features test-support --test inference_edge_test`
 
-use koda_core::{engine::EngineEvent, loop_guard::MAX_TRUNCATED_REPLIES, persistence::Persistence};
+use koda_core::{
+    engine::{EngineEvent, event::RetryReason},
+    loop_guard::MAX_TRUNCATED_REPLIES,
+    persistence::{Persistence, Role},
+};
 use koda_test_utils::{Env, MockProvider, MockResponse};
 
 // ── Rate limit retry ─────────────────────────────────────────
@@ -68,6 +72,72 @@ async fn rate_limit_exhausted_returns_error() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_error_is_retried() {
+    let env = Env::new().await;
+    env.insert_user_message("hello").await;
+
+    let provider = MockProvider::new(vec![
+        MockResponse::Http {
+            status: 502,
+            body: "Bad Gateway".into(),
+        },
+        MockResponse::Text("recovered".into()),
+    ]);
+    let events = env.run_inference(&provider).await;
+
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            EngineEvent::Retry {
+                reason: RetryReason::ServerError,
+                ..
+            }
+        )),
+        "{events:?}"
+    );
+    let last = env
+        .db
+        .last_assistant_message(&env.session_id)
+        .await
+        .unwrap();
+    assert!(last.contains("recovered"), "DB: {last}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_exhausted_quota_is_not_retried() {
+    let env = Env::new().await;
+    env.insert_user_message("hello").await;
+
+    let provider = MockProvider::new(vec![
+        MockResponse::Http {
+            status: 429,
+            body: r#"{"error":{"code":"insufficient_quota"}}"#.into(),
+        },
+        MockResponse::Text("never reached".into()),
+    ]);
+    let (result, _) = env.run_inference_result(&provider).await;
+
+    assert!(result.is_err(), "the turn fails with the provider's error");
+    assert_eq!(provider.recorded_calls().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn esc_during_a_request_retry_wait_stops_at_once() {
+    let env = Env::new().await;
+    env.insert_user_message("hello").await;
+
+    let provider = MockProvider::new(vec![
+        MockResponse::RateLimit,
+        MockResponse::Text("never reached".into()),
+    ]);
+    let (_, events) = env
+        .run_inference_cancel_on_event(&provider, |e| matches!(e, EngineEvent::Retry { .. }))
+        .await;
+
+    assert_eq!(provider.recorded_calls().len(), 1, "{events:?}");
+}
+
 // ── Network error mid-stream ─────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -75,11 +145,27 @@ async fn network_error_mid_stream_discards_response() {
     let env = Env::new().await;
     env.insert_user_message("hello").await;
 
-    let provider = MockProvider::new(vec![MockResponse::NetworkError {
+    let dropped = MockResponse::NetworkError {
         partial_text: "partial respo".into(),
         error: "connection reset by peer".into(),
-    }]);
+    };
+    // The first attempt and all five retries fail.
+    let provider = MockProvider::new(vec![dropped; 6]);
     let (result, events) = env.run_inference_result(&provider).await;
+
+    let retries = events
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                EngineEvent::Retry {
+                    reason: RetryReason::StreamFailed,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(retries, 5, "{events:?}");
 
     // Should end gracefully (not crash).
     assert!(result.is_ok(), "network error should be graceful");
@@ -99,6 +185,86 @@ async fn network_error_mid_stream_discards_response() {
     assert!(
         assistant_msgs.is_empty(),
         "partial response should not be persisted: {assistant_msgs:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dropped_stream_starts_the_reply_over() {
+    let env = Env::new().await;
+    env.insert_user_message("hello").await;
+
+    let provider = MockProvider::new(vec![
+        MockResponse::NetworkError {
+            partial_text: "half a re".into(),
+            error: "connection reset by peer".into(),
+        },
+        MockResponse::Text("the whole reply".into()),
+    ]);
+    let (result, events) = env.run_inference_result(&provider).await;
+
+    assert!(result.is_ok(), "{result:?}");
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            EngineEvent::Retry {
+                reason: RetryReason::StreamFailed,
+                attempt: 1,
+                max_attempts: 5,
+                delay_ms: 1000,
+                ..
+            }
+        )),
+        "{events:?}"
+    );
+
+    let messages = env.db.load_context(&env.session_id).await.unwrap();
+    let replies: Vec<_> = messages
+        .iter()
+        .filter(|m| m.role == Role::Assistant)
+        .map(|m| m.content.as_deref().unwrap_or_default())
+        .collect();
+    assert_eq!(replies, ["the whole reply"]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rejected_request_in_a_stream_is_not_retried() {
+    let env = Env::new().await;
+    env.insert_user_message("hello").await;
+
+    let provider = MockProvider::new(vec![
+        MockResponse::NetworkError {
+            partial_text: String::new(),
+            error: "Anthropic stream error: authentication_error: bad key".into(),
+        },
+        MockResponse::Text("never reached".into()),
+    ]);
+    let (_, events) = env.run_inference_result(&provider).await;
+
+    assert_eq!(provider.recorded_calls().len(), 1, "{events:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn esc_during_a_stream_retry_wait_stops_at_once() {
+    let env = Env::new().await;
+    env.insert_user_message("hello").await;
+
+    let provider = MockProvider::new(vec![
+        MockResponse::NetworkError {
+            partial_text: String::new(),
+            error: "connection reset".into(),
+        },
+        MockResponse::Text("never reached".into()),
+    ]);
+    let (_, events) = env
+        .run_inference_cancel_on_event(&provider, |e| matches!(e, EngineEvent::Retry { .. }))
+        .await;
+
+    assert_eq!(provider.recorded_calls().len(), 1, "{events:?}");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, EngineEvent::Warn { message } if message == "Interrupted")),
+        "{events:?}"
     );
 }
 
@@ -380,10 +546,12 @@ async fn server_error_exits_gracefully() {
     let env = Env::new().await;
     env.insert_user_message("hello").await;
 
-    // Simulate a 500 Internal Server Error.
-    let provider = MockProvider::new(vec![MockResponse::Error(
-        "LLM API returned 500: Internal Server Error".into(),
-    )]);
+    // A 500 on every attempt.
+    let server_error = MockResponse::Http {
+        status: 500,
+        body: "Internal Server Error".into(),
+    };
+    let provider = MockProvider::new(vec![server_error; 5]);
     let (result, events) = env.run_inference_result(&provider).await;
 
     // Should exit gracefully, not crash.
