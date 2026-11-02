@@ -127,7 +127,7 @@ async fn test_grep_no_matches_in_sandbox() {
     );
 }
 
-// ── Edit (replacements) ────────────────────────────────────────
+// ── Edit ────────────────────────────────────────
 
 #[tokio::test]
 async fn test_edit_tool_replacement_e2e() {
@@ -143,9 +143,7 @@ async fn test_edit_tool_replacement_e2e() {
             "Edit",
             serde_json::json!({
                 "path": target.to_string_lossy(),
-                "replacements": [
-                    {"old_str": "port = 8080", "new_str": "port = 3000"}
-                ]
+                "old_str": "port = 8080", "new_str": "port = 3000"
             }),
         ),
         MockResponse::Text("Port updated.".into()),
@@ -319,9 +317,7 @@ async fn test_edit_introduces_syntax_error_has_no_ast_warning() {
             "Edit",
             serde_json::json!({
                 "path": target.to_string_lossy(),
-                "replacements": [
-                    {"old_str": "println!(\"ok\");", "new_str": "let x = "}  // incomplete
-                ]
+                "old_str": "println!(\"ok\");", "new_str": "let x = "
             }),
         ),
         MockResponse::Text("Edit completed.".into()),
@@ -345,7 +341,7 @@ async fn test_edit_introduces_syntax_error_has_no_ast_warning() {
         "edit introducing syntax error should not be flagged by AST: {edit_output}"
     );
     assert!(
-        edit_output.contains("Applied 1 edit(s)"),
+        edit_output.contains("Applied edit"),
         "should still report successful edit output: {edit_output}"
     );
 }
@@ -495,7 +491,7 @@ async fn test_edit_validation_old_str_not_found() {
             "Edit",
             serde_json::json!({
                 "path": "greet.txt",
-                "replacements": [{"old_str": "goodbye world", "new_str": "hi"}]
+                "old_str": "goodbye world", "new_str": "hi"
             }),
         ),
         MockResponse::Text("I see the edit failed.".into()),
@@ -533,7 +529,7 @@ async fn test_edit_validation_file_not_found() {
             "Edit",
             serde_json::json!({
                 "path": "nope.txt",
-                "replacements": [{"old_str": "x", "new_str": "y"}]
+                "old_str": "x", "new_str": "y"
             }),
         ),
         MockResponse::Text("File doesn't exist.".into()),

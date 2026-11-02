@@ -88,10 +88,10 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "Edit".to_string(),
             description: "Targeted find-and-replace in an existing file. \
-                Each replacement matches exact 'old_str' and replaces with 'new_str'. \
+                Matches exact 'old_str' and replaces it with 'new_str'. \
                 ALWAYS Read the file first to get exact text. \
                 Keep each diff small — target only the minimal snippet you want changed. \
-                Apply multiple sequential Edit calls for large refactors. \
+                Make one Edit call per change; calls to one file run in order. \
                 Never paste an entire file inside old_str."
                 .to_string(),
             parameters: json!({
@@ -101,30 +101,20 @@ pub fn definitions() -> Vec<ToolDefinition> {
                         "type": "string",
                         "description": "Path to the file to edit"
                     },
-                    "replacements": {
-                        "type": "array",
-                        "description": "List of find-and-replace operations",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "old_str": {
-                                    "type": "string",
-                                    "description": "Exact text to find in the file"
-                                },
-                                "new_str": {
-                                    "type": "string",
-                                    "description": "Text to replace it with"
-                                },
-                                "replace_all": {
-                                    "type": "boolean",
-                                    "description": "Replace all occurrences instead of just the first (default: false)"
-                                }
-                            },
-                            "required": ["old_str", "new_str"]
-                        }
+                    "old_str": {
+                        "type": "string",
+                        "description": "Exact text to find in the file"
+                    },
+                    "new_str": {
+                        "type": "string",
+                        "description": "Text to replace it with"
+                    },
+                    "replace_all": {
+                        "type": "boolean",
+                        "description": "Replace all occurrences instead of just the first (default: false)"
                     }
                 },
-                "required": ["file_path", "replacements"]
+                "required": ["file_path", "old_str", "new_str"]
             }),
         },
         ToolDefinition {
@@ -387,6 +377,11 @@ fn match_line_numbers(haystack: &str, needle: &str) -> Vec<usize> {
         .collect()
 }
 
+/// What a call without `old_str` is told. It says what to send because this is
+/// how a model recovers from guessing the shape, or from an older session's.
+pub(super) const MISSING_OLD_STR: &str = "Missing 'old_str' argument. Edit takes 'file_path', \
+     'old_str' and 'new_str' as plain top-level strings, one change per call.";
+
 /// Apply targeted find-and-replace edits to an existing file.
 ///
 /// Staleness check: if the model previously read this file (full read) the
@@ -404,9 +399,16 @@ pub async fn edit_file(
         .as_str()
         .or_else(|| args["path"].as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing 'file_path' argument"))?;
-    let replacements = args["replacements"]
-        .as_array()
-        .ok_or_else(|| anyhow::anyhow!("Missing 'replacements' argument"))?;
+    let old_str = args["old_str"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!(MISSING_OLD_STR))?;
+    let new_str = args["new_str"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Missing 'new_str' argument"))?;
+    if old_str.is_empty() {
+        anyhow::bail!("'old_str' cannot be empty");
+    }
+    let replace_all = args["replace_all"].as_bool().unwrap_or(false);
 
     let resolved = safe_resolve_path(project_root, path_str)?;
 
@@ -448,95 +450,76 @@ pub async fn edit_file(
 
     let mut changes = Vec::new();
 
-    for (i, replacement) in replacements.iter().enumerate() {
-        let old_str = replacement["old_str"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Replacement {i}: missing 'old_str'"))?;
-        let new_str = replacement["new_str"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Replacement {i}: missing 'new_str'"))?;
+    // ── Exact match path ─────────────────────────────────────────────────────────────
+    if content.contains(old_str) {
+        let count = content.matches(old_str).count();
 
-        if old_str.is_empty() {
-            anyhow::bail!("Replacement {i}: 'old_str' cannot be empty");
-        }
-
-        let replace_all = replacement["replace_all"].as_bool().unwrap_or(false);
-
-        // ── Exact match path ─────────────────────────────────────────────────────────────
-        if content.contains(old_str) {
-            let count = content.matches(old_str).count();
-
-            if replace_all {
-                content = content.replace(old_str, new_str);
-                for line in old_str.lines() {
-                    changes.push(format!("-{line}"));
-                }
-                for line in new_str.lines() {
-                    changes.push(format!("+{line}"));
-                }
-                if count > 1 {
-                    changes.push(format!("({count} occurrences replaced)"));
-                }
-            } else if count > 1 {
-                // Multiple exact matches: report line numbers so the model
-                // can tighten the snippet in one shot (Claude Code strategy).
-                let lines = match_line_numbers(&content, old_str);
-                let line_list = lines
-                    .iter()
-                    .map(|n| n.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                anyhow::bail!(
-                    "Replacement {i}: 'old_str' matches {count} times in '{}' \
-                     (at lines {line_list}). Set replace_all=true to replace \
-                     every occurrence, or expand the snippet to uniquely \
-                     identify the one you want.",
-                    path_str
-                );
-            } else {
-                content = content.replacen(old_str, new_str, 1);
-                for line in old_str.lines() {
-                    changes.push(format!("-{line}"));
-                }
-                for line in new_str.lines() {
-                    changes.push(format!("+{line}"));
-                }
+        if replace_all {
+            content = content.replace(old_str, new_str);
+            for line in old_str.lines() {
+                changes.push(format!("-{line}"));
             }
+            for line in new_str.lines() {
+                changes.push(format!("+{line}"));
+            }
+            if count > 1 {
+                changes.push(format!("({count} occurrences replaced)"));
+            }
+        } else if count > 1 {
+            // Multiple exact matches: report line numbers so the model
+            // can tighten the snippet in one shot (Claude Code strategy).
+            let lines = match_line_numbers(&content, old_str);
+            let line_list = lines
+                .iter()
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            anyhow::bail!(
+                "'old_str' matches {count} times in '{}' \
+                 (at lines {line_list}). Set replace_all=true to replace \
+                 every occurrence, or expand the snippet to uniquely \
+                 identify the one you want.",
+                path_str
+            );
         } else {
-            // ── Fuzzy fallback (trailing-whitespace-normalized) ──────────
-            let ranges = super::fuzzy::fuzzy_match_ranges(old_str, &content);
-            match ranges.len() {
-                0 => anyhow::bail!(
-                    "Replacement {i}: 'old_str' not found in '{}'. \
-                     Read the file first to get the exact text.",
-                    path_str
-                ),
-                1 => {
-                    let r = ranges.into_iter().next().unwrap();
-                    for line in old_str.lines() {
-                        changes.push(format!("-{line}"));
-                    }
-                    for line in new_str.lines() {
-                        changes.push(format!("+{line}"));
-                    }
-                    changes.push("(fuzzy match: trailing whitespace ignored)".into());
-                    content = format!("{}{}{}", &content[..r.start], new_str, &content[r.end..]);
-                }
-                n => anyhow::bail!(
-                    "Replacement {i}: 'old_str' is ambiguous — {n} fuzzy matches \
-                     in '{}' (at lines {}). Use a more specific snippet.",
-                    path_str,
-                    ranges
-                        .iter()
-                        .map(|r| byte_offset_to_line(&content, r.start).to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
+            content = content.replacen(old_str, new_str, 1);
+            for line in old_str.lines() {
+                changes.push(format!("-{line}"));
+            }
+            for line in new_str.lines() {
+                changes.push(format!("+{line}"));
             }
         }
-
-        if replacements.len() > 1 {
-            changes.push(String::new()); // separator between replacements
+    } else {
+        // ── Fuzzy fallback (trailing-whitespace-normalized) ──────────
+        let ranges = super::fuzzy::fuzzy_match_ranges(old_str, &content);
+        match ranges.len() {
+            0 => anyhow::bail!(
+                "'old_str' not found in '{}'. \
+                 Read the file first to get the exact text.",
+                path_str
+            ),
+            1 => {
+                let r = ranges.into_iter().next().unwrap();
+                for line in old_str.lines() {
+                    changes.push(format!("-{line}"));
+                }
+                for line in new_str.lines() {
+                    changes.push(format!("+{line}"));
+                }
+                changes.push("(fuzzy match: trailing whitespace ignored)".into());
+                content = format!("{}{}{}", &content[..r.start], new_str, &content[r.end..]);
+            }
+            n => anyhow::bail!(
+                "'old_str' is ambiguous — {n} fuzzy matches \
+                 in '{}' (at lines {}). Use a more specific snippet.",
+                path_str,
+                ranges
+                    .iter()
+                    .map(|r| byte_offset_to_line(&content, r.start).to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
         }
     }
 
@@ -545,8 +528,7 @@ pub async fn edit_file(
         .map_err(|e| anyhow::anyhow!("Failed to write {}: {}", resolved.display(), e))?;
 
     Ok(format!(
-        "Applied {} edit(s) to {}\n{}",
-        replacements.len(),
+        "Applied edit to {}\n{}",
         resolved.display(),
         changes.join("\n")
     ))
@@ -1072,10 +1054,10 @@ mod tests {
 
         let args = json!({
             "file_path": "edit_me.txt",
-            "replacements": [{"old_str": "foo", "new_str": "baz"}]
+            "old_str": "foo", "new_str": "baz"
         });
         let result = edit_file(tmp.path(), &args, &cache(), &fs()).await.unwrap();
-        assert!(result.contains("Applied 1 edit"));
+        assert!(result.contains("Applied edit"));
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "hello world\nbaz bar");
     }
 
@@ -1087,7 +1069,7 @@ mod tests {
 
         let args = json!({
             "file_path": "multi.txt",
-            "replacements": [{"old_str": "aaa", "new_str": "zzz", "replace_all": true}]
+            "old_str": "aaa", "new_str": "zzz", "replace_all": true
         });
         let result = edit_file(tmp.path(), &args, &cache(), &fs()).await.unwrap();
         assert!(result.contains("3 occurrences"));
@@ -1109,7 +1091,7 @@ mod tests {
 
             let args = json!({
                 "file_path": "unicode.txt",
-                "replacements": [{"old_str": target, "new_str": "E"}]
+                "old_str": target, "new_str": "E"
             });
             let err = edit_file(tmp.path(), &args, &cache(), &fs())
                 .await
@@ -1146,7 +1128,7 @@ mod tests {
 
         let args = json!({
             "file_path": "script.sh",
-            "replacements": [{"old_str": "before", "new_str": "after"}]
+            "old_str": "before", "new_str": "after"
         });
         edit_file(tmp.path(), &args, &cache(), &fs()).await.unwrap();
 
@@ -1162,7 +1144,7 @@ mod tests {
 
         let args = json!({
             "file_path": "multi_match.txt",
-            "replacements": [{"old_str": "aaa", "new_str": "zzz"}]
+            "old_str": "aaa", "new_str": "zzz"
         });
         let err = edit_file(tmp.path(), &args, &cache(), &fs())
             .await
@@ -1185,7 +1167,7 @@ mod tests {
 
         let args = json!({
             "file_path": "edit_me.txt",
-            "replacements": [{"old_str": "not here", "new_str": "x"}]
+            "old_str": "not here", "new_str": "x"
         });
         let result = edit_file(tmp.path(), &args, &cache(), &fs()).await;
         assert!(result.is_err());
@@ -1200,28 +1182,43 @@ mod tests {
 
         let args = json!({
             "file_path": "edit.txt",
-            "replacements": [{"old_str": "", "new_str": "x"}]
+            "old_str": "", "new_str": "x"
         });
         let result = edit_file(tmp.path(), &args, &cache(), &fs()).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("empty"));
     }
 
+    /// The shape Edit used to take, and the broken string Haiku and Sonnet
+    /// sent for it. Either way the error says what to send instead.
     #[tokio::test]
-    async fn edit_file_multiple_replacements() {
+    async fn edit_file_explains_a_call_without_old_str() {
         let tmp = tempfile::tempdir().unwrap();
-        let f = tmp.path().join("multi_edit.txt");
-        std::fs::write(&f, "alpha beta gamma").unwrap();
+        std::fs::write(tmp.path().join("old_shape.txt"), "alpha").unwrap();
 
-        let args = json!({
-            "file_path": "multi_edit.txt",
-            "replacements": [
-                {"old_str": "alpha", "new_str": "ALPHA"},
-                {"old_str": "gamma", "new_str": "GAMMA"}
-            ]
-        });
-        edit_file(tmp.path(), &args, &cache(), &fs()).await.unwrap();
-        assert_eq!(std::fs::read_to_string(&f).unwrap(), "ALPHA beta GAMMA");
+        for replacements in [
+            json!([{"old_str": "alpha", "new_str": "ALPHA"}]),
+            json!("[{\"old_str\">alpha"),
+        ] {
+            let args = json!({"file_path": "old_shape.txt", "replacements": replacements});
+            let err = edit_file(tmp.path(), &args, &cache(), &fs())
+                .await
+                .unwrap_err()
+                .to_string();
+            assert_eq!(err, MISSING_OLD_STR);
+        }
+    }
+
+    #[test]
+    fn the_edit_schema_takes_plain_strings() {
+        let tools = definitions();
+        let edit = tools.iter().find(|t| t.name == "Edit").unwrap();
+        let properties = &edit.parameters["properties"];
+        for name in ["file_path", "old_str", "new_str"] {
+            assert_eq!(properties[name]["type"], "string", "{name}");
+        }
+        assert_eq!(properties["replace_all"]["type"], "boolean");
+        assert!(properties.get("replacements").is_none());
     }
 
     /// Staleness guard: if the read cache has a SHA-256 for a file and the
@@ -1253,7 +1250,7 @@ mod tests {
         // Edit must be rejected with a staleness error.
         let args = json!({
             "file_path": "staleness.txt",
-            "replacements": [{"old_str": "line one", "new_str": "LINE ONE"}]
+            "old_str": "line one", "new_str": "LINE ONE"
         });
         let err = edit_file(tmp.path(), &args, &c, &fs()).await.unwrap_err();
         let msg = err.to_string();
@@ -1537,7 +1534,7 @@ mod tests {
         // mutate. Defense in depth.
         let args = json!({
             "file_path": link.to_str().unwrap(),
-            "replacements": [{"old_str": "KODA_ATTACK_NEEDLE_XYZ", "new_str": "PWNED"}],
+            "old_str": "KODA_ATTACK_NEEDLE_XYZ", "new_str": "PWNED",
         });
         let err = edit_file(project.path(), &args, &cache, &fs)
             .await

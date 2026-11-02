@@ -234,7 +234,8 @@ async fn preview_edit(args: &serde_json::Value, project_root: &Path) -> Option<D
         .get("path")
         .or(inner.get("file_path"))
         .and_then(|v| v.as_str())?;
-    let replacements = inner.get("replacements")?.as_array()?;
+    let old_str = inner.get("old_str")?.as_str()?;
+    let new_str = inner.get("new_str").and_then(|v| v.as_str()).unwrap_or("");
 
     let resolved = safe_resolve_path(project_root, path_str).ok()?;
     if !resolved.exists() {
@@ -242,18 +243,10 @@ async fn preview_edit(args: &serde_json::Value, project_root: &Path) -> Option<D
     }
     let old_content = tokio::fs::read_to_string(&resolved).await.ok()?;
 
-    // Apply all replacements sequentially to produce new_content
+    // Replace first occurrence only (matches Edit tool behavior)
     let mut new_content = old_content.clone();
-    for replacement in replacements {
-        let old_str = replacement.get("old_str")?.as_str()?;
-        let new_str = replacement
-            .get("new_str")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        // Replace first occurrence only (matches Edit tool behavior)
-        if let Some(pos) = new_content.find(old_str) {
-            new_content.replace_range(pos..pos + old_str.len(), new_str);
-        }
+    if let Some(pos) = new_content.find(old_str) {
+        new_content.replace_range(pos..pos + old_str.len(), new_str);
     }
 
     let preview = build_unified_diff(path_str, &old_content, &new_content);
@@ -344,10 +337,8 @@ mod tests {
 
         let args = json!({
             "path": file.to_str().unwrap(),
-            "replacements": [{
-                "old_str": "println!(\"hello\");",
-                "new_str": "println!(\"world\");"
-            }]
+            "old_str": "println!(\"hello\");",
+            "new_str": "println!(\"world\");"
         });
 
         let preview = compute("Edit", &args, tmp.path()).await.unwrap();
@@ -374,37 +365,6 @@ mod tests {
                     .find(|l| l.tag == DiffTag::Insert)
                     .unwrap();
                 assert!(ins.content.contains("world"));
-            }
-            other => panic!("expected UnifiedDiff, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_edit_multiple_replacements() {
-        let tmp = TempDir::new().unwrap();
-        let file = tmp.path().join("test.rs");
-        // 20 lines — changes at line 2 and 19 are >6 lines apart,
-        // so with 3 context lines they produce separate hunks.
-        let content: String = (1..=20).map(|i| format!("line {i}\n")).collect();
-        std::fs::write(&file, &content).unwrap();
-
-        let args = json!({
-            "path": file.to_str().unwrap(),
-            "replacements": [
-                { "old_str": "line 2", "new_str": "LINE TWO" },
-                { "old_str": "line 19", "new_str": "LINE NINETEEN" }
-            ]
-        });
-
-        let preview = compute("Edit", &args, tmp.path()).await.unwrap();
-        match preview {
-            DiffPreview::UnifiedDiff(diff) => {
-                assert_eq!(
-                    diff.hunks.len(),
-                    2,
-                    "expected 2 hunks, got {:?}",
-                    diff.hunks
-                );
             }
             other => panic!("expected UnifiedDiff, got {other:?}"),
         }
@@ -466,7 +426,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let args = json!({
             "path": "nonexistent.rs",
-            "replacements": [{ "old_str": "x", "new_str": "y" }]
+            "old_str": "x", "new_str": "y"
         });
         let preview = compute("Edit", &args, tmp.path()).await.unwrap();
         assert!(matches!(preview, DiffPreview::FileNotYetExists));
@@ -480,7 +440,7 @@ mod tests {
 
         let args = json!({
             "path": file.to_str().unwrap(),
-            "replacements": [{ "old_str": "c", "new_str": "C" }]
+            "old_str": "c", "new_str": "C"
         });
 
         let preview = compute("Edit", &args, tmp.path()).await.unwrap();

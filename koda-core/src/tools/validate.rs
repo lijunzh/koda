@@ -145,8 +145,8 @@ fn writer_hint(
     String::new()
 }
 
-/// Edit: file must exist, replacements must be non-empty, each old_str must
-/// be non-empty and actually present in the file.  Also warns if the file has
+/// Edit: file must exist, old_str must be non-empty and actually present in
+/// the file, and new_str must be there.  Also warns if the file has
 /// been modified on disk since the model last read it.
 async fn validate_edit(
     args: &serde_json::Value,
@@ -168,10 +168,13 @@ async fn validate_edit(
         Err(e) => return Some(format!("Invalid path: {e}")),
     };
 
-    let replacements = match args["replacements"].as_array() {
-        Some(arr) if !arr.is_empty() => arr,
-        Some(_) => return Some("'replacements' array is empty.".into()),
-        None => return Some("Missing 'replacements' argument.".into()),
+    let old_str = match args["old_str"].as_str() {
+        Some(s) if !s.is_empty() => s,
+        Some(_) => return Some("'old_str' cannot be empty.".into()),
+        None => return Some(super::file_tools::MISSING_OLD_STR.into()),
+    };
+    let Some(new_str) = args["new_str"].as_str() else {
+        return Some("Missing 'new_str' argument.".into());
     };
 
     // File must exist (Edit is not Write)
@@ -227,52 +230,31 @@ async fn validate_edit(
         }
     }
 
-    // Validate each replacement
-    for (i, replacement) in replacements.iter().enumerate() {
-        let old_str = match replacement["old_str"].as_str() {
-            Some(s) if !s.is_empty() => s,
-            Some(_) => {
-                return Some(format!("Replacement {i}: 'old_str' cannot be empty."));
-            }
-            None => {
-                return Some(format!("Replacement {i}: missing 'old_str'."));
-            }
-        };
+    // Omission placeholder detection: catch lazy model output like
+    // "// rest of code ..." or "(unchanged methods ...)" before it
+    // silently replaces real code with a comment.
+    if let Some(msg) = detect_new_omission_placeholder(old_str, new_str) {
+        return Some(msg);
+    }
 
-        let new_str = match replacement["new_str"].as_str() {
-            Some(s) => s,
-            None => {
-                return Some(format!("Replacement {i}: missing 'new_str'."));
-            }
-        };
-
-        // Omission placeholder detection: catch lazy model output like
-        // "// rest of code ..." or "(unchanged methods ...)" before it
-        // silently replaces real code with a comment.
-        if let Some(msg) = detect_new_omission_placeholder(old_str, new_str, i) {
-            return Some(msg);
+    if !content.contains(old_str) {
+        // Try fuzzy (whitespace-normalized) before hard-failing.
+        let ranges = super::fuzzy::fuzzy_match_ranges(old_str, &content);
+        if ranges.is_empty() {
+            return Some(format!(
+                "'old_str' not found in '{}'. Read the file first to get the exact text.",
+                path_str
+            ));
         }
-
-        if !content.contains(old_str) {
-            // Try fuzzy (whitespace-normalized) before hard-failing.
-            let ranges = super::fuzzy::fuzzy_match_ranges(old_str, &content);
-            if ranges.is_empty() {
-                return Some(format!(
-                    "Replacement {i}: 'old_str' not found in '{}'. \
-                     Read the file first to get the exact text.",
-                    path_str
-                ));
-            }
-            // 2+ fuzzy matches is also a problem — flag it now so the model
-            // can tighten the snippet before burning an approval prompt.
-            if ranges.len() > 1 {
-                return Some(format!(
-                    "Replacement {i}: 'old_str' is ambiguous — {} fuzzy matches in '{}'. \
-                     Use a more specific snippet.",
-                    ranges.len(),
-                    path_str
-                ));
-            }
+        // 2+ fuzzy matches is also a problem — flag it now so the model
+        // can tighten the snippet before burning an approval prompt.
+        if ranges.len() > 1 {
+            return Some(format!(
+                "'old_str' is ambiguous — {} fuzzy matches in '{}'. \
+                 Use a more specific snippet.",
+                ranges.len(),
+                path_str
+            ));
         }
     }
 
@@ -382,11 +364,7 @@ const OMISSION_PREFIXES: &[&str] = &[
 /// Check if `new_str` introduces an omission placeholder not present in `old_str`.
 ///
 /// Returns an error message if the model is being lazy, or `None` if clean.
-fn detect_new_omission_placeholder(
-    old_str: &str,
-    new_str: &str,
-    replacement_idx: usize,
-) -> Option<String> {
+fn detect_new_omission_placeholder(old_str: &str, new_str: &str) -> Option<String> {
     let new_placeholders = detect_omission_placeholders(new_str);
     if new_placeholders.is_empty() {
         return None;
@@ -397,7 +375,7 @@ fn detect_new_omission_placeholder(
     for p in &new_placeholders {
         if !old_set.contains(p) {
             return Some(format!(
-                "Replacement {replacement_idx}: 'new_str' contains an omission placeholder \
+                "'new_str' contains an omission placeholder \
                  ('{p}'). Write the actual code instead of abbreviating with comments."
             ));
         }
@@ -495,7 +473,7 @@ mod tests {
         let dir = setup();
         let args = json!({
             "path": "hello.txt",
-            "replacements": [{"old_str": "line two", "new_str": "line TWO"}]
+            "old_str": "line two", "new_str": "line TWO"
         });
         assert!(
             validate_edit(&args, dir.path(), None, None, None)
@@ -507,7 +485,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn edit_missing_path() {
         let dir = setup();
-        let args = json!({"replacements": [{"old_str": "x", "new_str": "y"}]});
+        let args = json!({"old_str": "x", "new_str": "y"});
         let err = validate_edit(&args, dir.path(), None, None, None)
             .await
             .unwrap();
@@ -519,7 +497,7 @@ mod tests {
         let dir = setup();
         let args = json!({
             "path": "nope.txt",
-            "replacements": [{"old_str": "x", "new_str": "y"}]
+            "old_str": "x", "new_str": "y"
         });
         let err = validate_edit(&args, dir.path(), None, None, None)
             .await
@@ -529,13 +507,13 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn edit_empty_replacements() {
+    async fn edit_without_old_str_says_what_to_send() {
         let dir = setup();
         let args = json!({"path": "hello.txt", "replacements": []});
         let err = validate_edit(&args, dir.path(), None, None, None)
             .await
             .unwrap();
-        assert!(err.contains("empty"), "{err}");
+        assert_eq!(err, super::super::file_tools::MISSING_OLD_STR);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -543,7 +521,7 @@ mod tests {
         let dir = setup();
         let args = json!({
             "path": "hello.txt",
-            "replacements": [{"old_str": "", "new_str": "y"}]
+            "old_str": "", "new_str": "y"
         });
         let err = validate_edit(&args, dir.path(), None, None, None)
             .await
@@ -562,7 +540,7 @@ mod tests {
         .unwrap();
         let args = json!({
             "path": "hello.txt",
-            "replacements": [{"old_str": "line two", "new_str": "LINE TWO"}]
+            "old_str": "line two", "new_str": "LINE TWO"
         });
         assert!(
             validate_edit(&args, dir.path(), None, None, None)
@@ -577,7 +555,7 @@ mod tests {
         let dir = setup();
         let args = json!({
             "path": "hello.txt",
-            "replacements": [{"old_str": "does not exist", "new_str": "y"}]
+            "old_str": "does not exist", "new_str": "y"
         });
         let err = validate_edit(&args, dir.path(), None, None, None)
             .await
@@ -590,7 +568,7 @@ mod tests {
         let dir = setup();
         let args = json!({
             "path": "hello.txt",
-            "replacements": [{"old_str": "line one"}]
+            "old_str": "line one"
         });
         let err = validate_edit(&args, dir.path(), None, None, None)
             .await
@@ -670,7 +648,7 @@ mod tests {
         let dir = setup();
         let args = json!({
             "file_path": "hello.txt",
-            "replacements": [{"old_str": "line two", "new_str": "LINE TWO"}]
+            "old_str": "line two", "new_str": "LINE TWO"
         });
         assert!(
             validate_edit(&args, dir.path(), None, None, None)
@@ -736,7 +714,7 @@ mod tests {
         let cache = make_cache(&file, SystemTime::UNIX_EPOCH);
         let args = json!({
             "path": "hello.txt",
-            "replacements": [{"old_str": "line two", "new_str": "LINE TWO"}]
+            "old_str": "line two", "new_str": "LINE TWO"
         });
         let err = validate_edit(&args, dir.path(), Some(&cache), None, None)
             .await
@@ -754,7 +732,7 @@ mod tests {
         let cache = make_cache(&file, current_mtime);
         let args = json!({
             "path": "hello.txt",
-            "replacements": [{"old_str": "line two", "new_str": "LINE TWO"}]
+            "old_str": "line two", "new_str": "LINE TWO"
         });
         assert!(
             validate_edit(&args, dir.path(), Some(&cache), None, None)
@@ -771,7 +749,7 @@ mod tests {
         let empty_cache = super::super::FileReadCache::default();
         let args = json!({
             "path": "hello.txt",
-            "replacements": [{"old_str": "line two", "new_str": "LINE TWO"}]
+            "old_str": "line two", "new_str": "LINE TWO"
         });
         assert!(
             validate_edit(&args, dir.path(), Some(&empty_cache), None, None)
@@ -798,7 +776,7 @@ mod tests {
 
         let args = json!({
             "path": "hello.txt",
-            "replacements": [{"old_str": "line two", "new_str": "LINE TWO"}]
+            "old_str": "line two", "new_str": "LINE TWO"
         });
         let err = validate_edit(&args, dir.path(), Some(&cache), Some(&last_writer), None)
             .await
@@ -823,7 +801,7 @@ mod tests {
 
         let args = json!({
             "path": "hello.txt",
-            "replacements": [{"old_str": "line two", "new_str": "LINE TWO"}]
+            "old_str": "line two", "new_str": "LINE TWO"
         });
         let err = validate_edit(
             &args,
@@ -859,7 +837,7 @@ mod tests {
 
         let args = json!({
             "path": "hello.txt",
-            "replacements": [{"old_str": "line two", "new_str": "LINE TWO"}]
+            "old_str": "line two", "new_str": "LINE TWO"
         });
         let err = validate_edit(
             &args,
@@ -948,14 +926,14 @@ mod tests {
         // old_str already has the placeholder — model is preserving, not creating.
         let old = "fn foo() {\n    // rest of code ...\n}";
         let new = "fn foo() {\n    do_thing();\n    // rest of code ...\n}";
-        assert!(detect_new_omission_placeholder(old, new, 0).is_none());
+        assert!(detect_new_omission_placeholder(old, new).is_none());
     }
 
     #[test]
     fn omission_introducing_new_placeholder_rejected() {
         let old = "fn foo() {\n    real_code();\n    more_code();\n}";
         let new = "fn foo() {\n    real_code();\n    // rest of code ...\n}";
-        let err = detect_new_omission_placeholder(old, new, 0).unwrap();
+        let err = detect_new_omission_placeholder(old, new).unwrap();
         assert!(err.contains("omission placeholder"), "{err}");
         assert!(err.contains("actual code"), "{err}");
     }
@@ -965,10 +943,8 @@ mod tests {
         let dir = setup();
         let args = json!({
             "path": "hello.txt",
-            "replacements": [{
-                "old_str": "line two",
-                "new_str": "// rest of code ..."
-            }]
+            "old_str": "line two",
+            "new_str": "// rest of code ..."
         });
         let err = validate_edit(&args, dir.path(), None, None, None)
             .await
@@ -981,10 +957,8 @@ mod tests {
         let dir = setup();
         let args = json!({
             "path": "hello.txt",
-            "replacements": [{
-                "old_str": "line two",
-                "new_str": "line TWO\n// This comment has dots: ..."
-            }]
+            "old_str": "line two",
+            "new_str": "line TWO\n// This comment has dots: ..."
         });
         // "..." without a known prefix should NOT be detected
         assert!(

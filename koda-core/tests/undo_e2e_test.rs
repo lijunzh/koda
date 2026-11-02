@@ -174,9 +174,7 @@ async fn undo_after_edit_restores_original_through_inference_loop() {
             "Edit",
             serde_json::json!({
                 "file_path": "config.toml",
-                "replacements": [
-                    {"old_str": "alpha", "new_str": "beta"}
-                ],
+                "old_str": "alpha", "new_str": "beta",
             }),
         ),
         MockResponse::Text("Renamed.".into()),
