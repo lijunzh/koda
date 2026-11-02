@@ -4,7 +4,7 @@
 //! `koda` binary on a pty and type at it the way a user does.
 #![cfg(unix)]
 
-use koda_test_utils::network::{FakeLlmServer, ResponseTemplate};
+use koda_test_utils::network::{FakeLlmServer, Request, ResponseTemplate};
 use serde_json::{Value, json};
 use std::fs::File;
 use std::io::{Read, Write};
@@ -12,6 +12,7 @@ use std::os::fd::{FromRawFd, RawFd};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -20,6 +21,15 @@ const IDLE_HINT: &str = "Type a message";
 
 /// How long the composer waits before it stops treating fast typing as a paste.
 const PASTE_SETTLE: Duration = Duration::from_millis(400);
+
+const ESC: &str = "\x1b";
+const CTRL_C: &str = "\x03";
+
+/// The engine's warning when a turn stops.
+const INTERRUPTED: &str = "Interrupted";
+
+/// What the model reads for a call the user stopped.
+const STOPPED: &str = "The user stopped the turn before this ran.";
 
 /// Nothing listens here: tests that use it never reach a model.
 const NO_SERVER: &str = "http://127.0.0.1:9/v1";
@@ -93,10 +103,20 @@ impl Tui {
     }
 
     fn wait_for_output(&self, text: &str) {
+        self.wait_for_output_after(0, text);
+    }
+
+    /// How much output there is so far, for [`Self::wait_for_output_after`].
+    fn output_len(&self) -> usize {
+        self.output.lock().unwrap().len()
+    }
+
+    /// Wait for `text` to appear past the first `start` bytes of output.
+    fn wait_for_output_after(&self, start: usize, text: &str) {
         let deadline = Instant::now() + Duration::from_secs(60);
         while Instant::now() < deadline {
             let output = self.output.lock().unwrap();
-            if String::from_utf8_lossy(&output).contains(text) {
+            if String::from_utf8_lossy(&output[start..]).contains(text) {
                 return;
             }
             drop(output);
@@ -109,6 +129,19 @@ impl Tui {
     fn type_text(&mut self, text: &str) {
         self.input.write_all(text.as_bytes()).unwrap();
         std::thread::sleep(PASTE_SETTLE);
+    }
+
+    /// Type `text` and press Enter.
+    fn submit(&mut self, text: &str) {
+        self.type_text(text);
+        self.type_text("\r");
+    }
+
+    /// Press `key` and wait for the engine to say the turn stopped.
+    fn stop_turn(&mut self, key: &str) {
+        let start = self.output_len();
+        self.type_text(key);
+        self.wait_for_output_after(start, INTERRUPTED);
     }
 
     /// Whether `koda` exits within a few seconds.
@@ -167,6 +200,15 @@ fn home() -> tempfile::TempDir {
     home
 }
 
+/// A home whose agent file caps a turn at one model call.
+fn home_with_a_loop_cap_of_one() -> tempfile::TempDir {
+    let home = home();
+    std::fs::create_dir(home.path().join("agents")).unwrap();
+    let agent = json!({"name": "default", "system_prompt": "Test.", "max_iterations": 1});
+    std::fs::write(home.path().join("agents/default.json"), agent.to_string()).unwrap();
+    home
+}
+
 #[test]
 fn exit_quits_from_the_slash_popup() {
     let home = home();
@@ -191,57 +233,273 @@ fn exit_quits_with_the_popup_closed() {
     assert!(tui.exits(), "koda stayed up after /exit");
 }
 
-/// A streamed reply that calls `List`.
-fn list_call() -> ResponseTemplate {
-    let chunks = [
-        json!({"choices": [{"delta": {"tool_calls": [{
-            "index": 0,
-            "id": "call_0",
-            "type": "function",
-            "function": {"name": "List", "arguments": "{}"},
-        }]}}]}),
-        json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
-    ];
-    let mut body: String = chunks
-        .iter()
-        .map(|c: &Value| format!("data: {c}\n\n"))
-        .collect();
+fn sse(chunks: &[Value]) -> ResponseTemplate {
+    let mut body: String = chunks.iter().map(|c| format!("data: {c}\n\n")).collect();
     body.push_str("data: [DONE]\n\n");
     ResponseTemplate::new(200)
         .insert_header("content-type", "text/event-stream")
         .set_body_string(body)
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn an_agent_file_keeps_its_loop_cap_across_a_model_switch() {
+/// A reply that makes these tool calls, each a `(name, arguments)` pair.
+fn tool_calls(calls: &[(&str, Value)]) -> ResponseTemplate {
+    let calls: Vec<Value> = calls
+        .iter()
+        .enumerate()
+        .map(|(index, (name, args))| {
+            json!({
+                "index": index,
+                "id": format!("call_{index}"),
+                "type": "function",
+                "function": {"name": name, "arguments": args.to_string()},
+            })
+        })
+        .collect();
+    sse(&[
+        json!({"choices": [{"delta": {"tool_calls": calls}}]}),
+        json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+    ])
+}
+
+fn write_file(name: &str) -> (&'static str, Value) {
+    ("Write", json!({"file_path": name, "content": "x\n"}))
+}
+
+fn ask_user() -> ResponseTemplate {
+    tool_calls(&[("AskUser", json!({"question": "Which one?"}))])
+}
+
+fn final_text() -> ResponseTemplate {
+    sse(&[
+        json!({"choices": [{"delta": {"content": "All done."}}]}),
+        json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+    ])
+}
+
+/// A model that sends `replies` in order, then a final reply to anything else.
+async fn scripted_model(replies: Vec<ResponseTemplate>) -> FakeLlmServer {
     let server = FakeLlmServer::spawn().await;
+    let next = AtomicUsize::new(0);
     server
-        .mount_fn("POST", r".*/chat/completions$", |_| list_call())
+        .mount_fn("POST", r".*/chat/completions$", move |_| {
+            replies
+                .get(next.fetch_add(1, Ordering::SeqCst))
+                .cloned()
+                .unwrap_or_else(final_text)
+        })
         .await;
+    server
+}
+
+async fn model_calls(server: &FakeLlmServer) -> Vec<Request> {
+    server
+        .received_requests()
+        .await
+        .into_iter()
+        .filter(|request| request.url.path().ends_with("/chat/completions"))
+        .collect()
+}
+
+/// Wait for model call number `count`, and return what the model was sent.
+async fn wait_for_model_call(server: &FakeLlmServer, count: usize) -> String {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let calls = model_calls(server).await;
+        if let Some(call) = calls.get(count - 1) {
+            return String::from_utf8_lossy(&call.body).into_owned();
+        }
+        assert!(Instant::now() < deadline, "no model call {count}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// After a stop, no model call follows, and the next prompt runs normally.
+async fn assert_stopped(tui: &mut Tui, server: &FakeLlmServer, calls_so_far: usize) -> String {
+    assert_eq!(
+        model_calls(server).await.len(),
+        calls_so_far,
+        "the turn called the model after the stop"
+    );
+    tui.submit("second prompt");
+    let sent = wait_for_model_call(server, calls_so_far + 1).await;
+    assert!(sent.contains("second prompt"), "{sent}");
+    sent
+}
+
+async fn stops_at_an_approval(key: &str) {
+    let server = scripted_model(vec![tool_calls(&[write_file("a.txt")])]).await;
     let home = home();
-    std::fs::create_dir(home.path().join("agents")).unwrap();
-    let agent = json!({"name": "default", "system_prompt": "Test.", "max_iterations": 1});
-    std::fs::write(home.path().join("agents/default.json"), agent.to_string()).unwrap();
     let mut tui = Tui::start_with_model(home.path(), &server.url());
 
-    tui.type_text("/model other-model");
-    tui.type_text("\r");
-    tui.type_text("List the files");
-    tui.type_text("\r");
+    tui.submit("first prompt");
+    tui.wait_for_output("approve");
+    tui.stop_turn(key);
 
-    // One word at a time: a redraw skips the blank cells between words. The
-    // stub repeats itself, so at the default cap the loop guard ends the turn
-    // long before this line shows.
+    assert!(!home.path().join("a.txt").exists(), "the tool ran");
+    let sent = assert_stopped(&mut tui, &server, 1).await;
+    assert!(sent.contains("a.txt"), "the model lost its call: {sent}");
+    assert!(sent.contains(STOPPED), "no word of the stop: {sent}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn esc_stops_the_turn_at_an_approval() {
+    stops_at_an_approval(ESC).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ctrl_c_stops_the_turn_at_an_approval() {
+    stops_at_an_approval(CTRL_C).await;
+}
+
+async fn stops_at_a_question(key: &str) {
+    let server = scripted_model(vec![ask_user()]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.submit("first prompt");
+    tui.wait_for_output("Which one?");
+    tui.type_text("half an answer");
+    tui.stop_turn(key);
+
+    let sent = assert_stopped(&mut tui, &server, 1).await;
+    assert!(sent.contains(STOPPED), "no word of the stop: {sent}");
+    assert!(!sent.contains("half an answer"), "{sent}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn esc_stops_the_turn_at_a_question() {
+    stops_at_a_question(ESC).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ctrl_c_stops_the_turn_at_a_question() {
+    stops_at_a_question(CTRL_C).await;
+}
+
+async fn stops_while_typing_feedback(key: &str) {
+    let server = scripted_model(vec![tool_calls(&[write_file("a.txt")])]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.submit("first prompt");
+    tui.wait_for_output("approve");
+    tui.type_text("f");
+    tui.type_text("half a reason");
+    tui.stop_turn(key);
+
+    let sent = assert_stopped(&mut tui, &server, 1).await;
+    assert!(sent.contains(STOPPED), "no word of the stop: {sent}");
+    assert!(!sent.contains("half a reason"), "{sent}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn esc_stops_the_turn_while_typing_feedback() {
+    stops_while_typing_feedback(ESC).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ctrl_c_stops_the_turn_while_typing_feedback() {
+    stops_while_typing_feedback(CTRL_C).await;
+}
+
+async fn stops_at_the_loop_cap(key: &str) {
+    let server = scripted_model(vec![tool_calls(&[("List", json!({}))])]).await;
+    let home = home_with_a_loop_cap_of_one();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.submit("first prompt");
+    tui.wait_for_output("Hard cap reached. Continue?");
+    tui.stop_turn(key);
+
+    assert_stopped(&mut tui, &server, 1).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_file_keeps_its_loop_cap_across_a_model_switch() {
+    let server = scripted_model(vec![tool_calls(&[("List", json!({}))])]).await;
+    let home = home_with_a_loop_cap_of_one();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.submit("/model other-model");
+    tui.submit("first prompt");
+
+    // One word at a time: a redraw skips the blank cells between words. At the
+    // default cap the turn ends on the stub's final reply, with no dialog.
     tui.wait_for_output("iterations)");
     tui.wait_for_output("(1");
-    let calls = server.received_requests().await;
-    let call = calls
-        .iter()
-        .find(|call| call.url.path().ends_with("/chat/completions"))
-        .expect("no model call");
-    let sent = String::from_utf8_lossy(&call.body);
+    let sent = wait_for_model_call(&server, 1).await;
     assert!(
         sent.contains("other-model"),
         "the switch didn't land: {sent}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn esc_stops_the_turn_at_the_loop_cap() {
+    stops_at_the_loop_cap(ESC).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ctrl_c_stops_the_turn_at_the_loop_cap() {
+    stops_at_the_loop_cap(CTRL_C).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn n_rejects_and_lets_the_model_go_on() {
+    let server = scripted_model(vec![tool_calls(&[write_file("a.txt")])]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.submit("first prompt");
+    tui.wait_for_output("approve");
+    tui.type_text("n");
+
+    let sent = wait_for_model_call(&server, 2).await;
+    assert!(sent.contains("User rejected this action."), "{sent}");
+}
+
+/// Stopping at the second call of a batch keeps what the first one did.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stop_keeps_the_calls_that_already_ran() {
+    let batch = tool_calls(&[write_file("a.txt"), write_file("b.txt")]);
+    let server = scripted_model(vec![batch]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.submit("first prompt");
+    tui.wait_for_output("a.txt");
+    tui.wait_for_output("approve");
+    let start = tui.output_len();
+    tui.type_text("y");
+    tui.wait_for_output_after(start, "b.txt");
+    tui.stop_turn(ESC);
+
+    assert!(home.path().join("a.txt").exists());
+    assert!(!home.path().join("b.txt").exists());
+    let sent = assert_stopped(&mut tui, &server, 1).await;
+    assert!(
+        sent.contains("call_0"),
+        "the model lost the first call: {sent}"
+    );
+    assert!(sent.contains(STOPPED), "no word of the stop: {sent}");
+}
+
+/// Text typed before the stop comes back to the composer instead of being lost.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stop_hands_steering_text_back() {
+    let reply = tool_calls(&[write_file("a.txt")]).set_delay(Duration::from_secs(3));
+    let server = scripted_model(vec![reply]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.submit("first prompt");
+    wait_for_model_call(&server, 1).await;
+    tui.submit("steering text");
+    tui.wait_for_output("approve");
+    tui.stop_turn(CTRL_C);
+
+    assert_eq!(model_calls(&server).await.len(), 1);
+    tui.type_text("\r");
+    let sent = wait_for_model_call(&server, 2).await;
+    assert!(sent.contains("steering text"), "{sent}");
 }
