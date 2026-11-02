@@ -1559,6 +1559,13 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
         let usage = stream_result.usage;
         let char_count = stream_result.char_count;
 
+        // Every reply is billed, including the ones retried below.
+        total_prompt_tokens += usage.prompt_tokens;
+        total_completion_tokens += usage.completion_tokens;
+        total_cache_read_tokens += usage.cache_read_tokens;
+        total_thinking_tokens += usage.thinking_tokens;
+        total_char_count += char_count;
+
         // Empty response after tool use — retry once before giving up.
         if tool_calls.is_empty()
             && (made_tool_calls || is_failed_stop(&usage.stop_reason))
@@ -1567,6 +1574,10 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
             && !retried_empty
         {
             retried_empty = true;
+            // Never marked complete, so `load_context` leaves it out of the
+            // conversation while the session's usage totals still count it.
+            db.insert_message(session_id, &Role::Assistant, None, None, None, Some(&usage))
+                .await?;
             sink.emit(EngineEvent::Retry {
                 reason: RetryReason::EmptyResponse,
                 attempt: 1,
@@ -1651,12 +1662,6 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
                 });
             }
 
-            total_prompt_tokens += usage.prompt_tokens;
-            total_completion_tokens += usage.completion_tokens;
-            total_cache_read_tokens += usage.cache_read_tokens;
-            total_thinking_tokens += usage.thinking_tokens;
-            total_char_count += char_count;
-
             // The user typed while this reply streamed. It answers them in
             // this turn: ending here would leave the text for their next
             // prompt, with nothing on screen to say so.
@@ -1722,17 +1727,6 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
 
             return Ok(());
         }
-
-        // Accumulate token usage across iterations.
-        // (`last_prompt_tokens` is scoped to the no-tool-calls terminating
-        // branch above — the only reader of it. Each loop iteration creates
-        // its own binding when that branch runs, so there's nothing to update
-        // here for the meter.)
-        total_prompt_tokens += usage.prompt_tokens;
-        total_completion_tokens += usage.completion_tokens;
-        total_cache_read_tokens += usage.cache_read_tokens;
-        total_thinking_tokens += usage.thinking_tokens;
-        total_char_count += char_count;
 
         made_tool_calls = true;
 

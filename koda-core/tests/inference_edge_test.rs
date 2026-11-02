@@ -301,6 +301,58 @@ async fn empty_response_after_tool_use_retries_once() {
     assert!(last.contains("Done!"), "DB: {last}");
 }
 
+fn footer_tokens(events: &[EngineEvent]) -> (i64, i64) {
+    events
+        .iter()
+        .find_map(|e| match e {
+            EngineEvent::Footer {
+                prompt_tokens,
+                completion_tokens,
+                ..
+            } => Some((*prompt_tokens, *completion_tokens)),
+            _ => None,
+        })
+        .expect("Footer event must be emitted")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_empty_reply_counts_in_the_footer_and_the_db() {
+    let env = Env::new().await;
+    env.insert_user_message("do something").await;
+
+    let provider = MockProvider::new(vec![
+        MockResponse::tool_call("Bash", serde_json::json!({"command": "echo hi"})),
+        MockResponse::Text("".into()),
+        MockResponse::Text("Done!".into()),
+    ]);
+    let events = env.run_inference(&provider).await;
+
+    assert_eq!(footer_tokens(&events), (30, 6), "{events:?}");
+    let usage = env.db.session_token_usage(&env.session_id).await.unwrap();
+    assert_eq!((usage.prompt_tokens, usage.completion_tokens), (30, 6));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_empty_reply_stays_out_of_the_conversation() {
+    let env = Env::new().await;
+    env.insert_user_message("do something").await;
+
+    let provider = MockProvider::new(vec![
+        MockResponse::tool_call("Bash", serde_json::json!({"command": "echo hi"})),
+        MockResponse::Text("".into()),
+        MockResponse::Text("Done!".into()),
+    ]);
+    env.run_inference(&provider).await;
+
+    let context = env.db.load_context(&env.session_id).await.unwrap();
+    let blank = context.iter().find(|m| {
+        m.role == Role::Assistant
+            && m.tool_calls.is_none()
+            && m.content.as_deref().unwrap_or("").is_empty()
+    });
+    assert!(blank.is_none(), "{context:?}");
+}
+
 // ── max_tokens truncation ────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -332,6 +384,22 @@ async fn max_tokens_continues_loop() {
         last.contains("conclusion"),
         "should have continued after truncation: {last}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_truncated_reply_counts_in_the_footer() {
+    let env = Env::new().await;
+    env.insert_user_message("write a long essay").await;
+
+    let provider = MockProvider::new(vec![
+        MockResponse::TextMaxTokens("x".repeat(400)),
+        MockResponse::Text("done".into()),
+    ]);
+    let events = env.run_inference(&provider).await;
+
+    assert_eq!(footer_tokens(&events), (20, 101), "{events:?}");
+    let usage = env.db.session_token_usage(&env.session_id).await.unwrap();
+    assert_eq!((usage.prompt_tokens, usage.completion_tokens), (20, 101));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
