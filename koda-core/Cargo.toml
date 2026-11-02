@@ -104,6 +104,7 @@ tokio-util = { workspace = true }
 test-support = []
 
 [dev-dependencies]
+tracing-subscriber = { workspace = true }
 # MCP HTTP integration test: rmcp server-side HTTP transport + axum
 rmcp = { version = "3", features = [
     "server",
