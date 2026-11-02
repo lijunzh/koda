@@ -381,6 +381,26 @@ async fn cancelling_a_wait_hands_the_text_back() {
     assert_eq!(h.session.take_queued_steers(&mut h.cmd_rx), vec![STEER]);
 }
 
+/// The model's call stays in the history with a result, or the next load
+/// would prune the call and everything that ran with it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelling_a_wait_answers_the_call() {
+    let env = Env::new().await;
+    let mut h = Harness::new(env, vec![write()]).await;
+    let sink = TestSink::new();
+    let cancel = h.session.cancel_handle();
+
+    let mut turn = Box::pin(
+        h.session
+            .run_turn(&h.env.config, None, &sink, &mut h.cmd_rx, None),
+    );
+    request(&mut turn, &sink, approval_id).await;
+    cancel.interrupt();
+    finish(turn).await;
+
+    assert!(h.history_holds("The user stopped the turn").await);
+}
+
 /// Both a cancel and a queued steer can land in the same reply.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_cancelled_reply_hands_the_text_back() {

@@ -143,6 +143,15 @@ async fn handle_inference_key_inline(
         return;
     }
 
+    // Esc and Ctrl+C stop the turn from any dialog, so they close it and fall
+    // through to the cascade below. `n` is the way to reject and let the
+    // model go on, and `f` the way to tell it why.
+    let stops_turn = key.code == KeyCode::Esc
+        || (key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL));
+    if stops_turn {
+        close_dialog(menu, prompt_mode, pending_approval_id, textarea);
+    }
+
     // Approval hotkeys
     if let MenuContent::Approval { id, .. } = menu {
         let approval_id = id.clone();
@@ -183,7 +192,6 @@ async fn handle_inference_key_inline(
                 textarea.set_text_clearing_elements("");
                 None
             }
-            KeyCode::Esc => Some(ApprovalDecision::Reject),
             _ => None,
         };
         if let Some(d) = decision {
@@ -205,7 +213,7 @@ async fn handle_inference_key_inline(
             KeyCode::Char('y') | KeyCode::Char('Y') => {
                 Some(koda_core::loop_guard::LoopContinuation::Continue200)
             }
-            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+            KeyCode::Char('n') | KeyCode::Char('N') => {
                 Some(koda_core::loop_guard::LoopContinuation::Stop)
             }
             _ => None,
@@ -239,19 +247,6 @@ async fn handle_inference_key_inline(
                         .await;
                 }
             }
-            (KeyCode::Esc, _) => {
-                textarea.set_text_clearing_elements("");
-                *prompt_mode = PromptMode::Chat;
-                if let MenuContent::AskUser { id, .. } = std::mem::replace(menu, MenuContent::None)
-                {
-                    let _ = cmd_tx
-                        .send(EngineCommand::AskUserResponse {
-                            id,
-                            answer: String::new(),
-                        })
-                        .await;
-                }
-            }
             _ => {
                 textarea.input(key);
             }
@@ -278,19 +273,6 @@ async fn handle_inference_key_inline(
                     };
                     let _ = cmd_tx
                         .send(EngineCommand::ApprovalResponse { id: aid, decision })
-                        .await;
-                }
-            }
-            (KeyCode::Esc, _) => {
-                textarea.set_text_clearing_elements("");
-                *prompt_mode = PromptMode::Chat;
-                *menu = MenuContent::None;
-                if let Some(aid) = pending_approval_id.take() {
-                    let _ = cmd_tx
-                        .send(EngineCommand::ApprovalResponse {
-                            id: aid,
-                            decision: ApprovalDecision::Reject,
-                        })
                         .await;
                 }
             }
@@ -402,6 +384,32 @@ async fn handle_inference_key_inline(
             textarea.input(key);
         }
     }
+}
+
+/// Close whatever dialog is open, along with its text box.
+///
+/// Used when the turn stops. The engine's wait ends with the turn, so an answer
+/// to a dialog left on screen would go nowhere.
+pub(super) fn close_dialog(
+    menu: &mut MenuContent,
+    prompt_mode: &mut PromptMode,
+    pending_approval_id: &mut Option<String>,
+    textarea: &mut crate::composer::textarea::TextArea,
+) {
+    let typing = matches!(prompt_mode, PromptMode::WizardInput { .. });
+    if typing {
+        textarea.set_text_clearing_elements("");
+        *prompt_mode = PromptMode::Chat;
+    }
+    if typing
+        || matches!(
+            menu,
+            MenuContent::Approval { .. } | MenuContent::LoopCap { .. }
+        )
+    {
+        *menu = MenuContent::None;
+    }
+    *pending_approval_id = None;
 }
 
 /// Detect a slash-command attempt typed during inference (#1211).

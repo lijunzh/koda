@@ -28,6 +28,10 @@
 | `Ctrl+C` | Cancel current inference |
 | `Ctrl+D` | Quit koda |
 
+`Esc` and `Ctrl+C` also stop the turn while an approval, a question or the
+loop-cap prompt is open. To say no and let the model carry on, press `n` at an
+approval, or `f` to tell it why. To skip a question, press `Enter` with no answer.
+
 ## Editor (composer)
 
 Deletion chords inside the input composer. The redundant variants exist
@@ -55,7 +59,7 @@ These keys appear when the agent asks to execute a tool:
 | `n` | Reject this action |
 | `a` | Approve and switch to auto mode (no more confirmations this session) |
 | `f` | Reject and type written feedback explaining why |
-| `Esc` | Reject (same as `n`) |
+| `Esc` / `Ctrl+C` | Stop the turn; the action does not run |
 
 ## Vim mode
 

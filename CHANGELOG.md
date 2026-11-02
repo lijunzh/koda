@@ -31,6 +31,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Changed
 
 - **`Ctrl+J` no longer queues text for after the turn.** Press `Enter` instead: the model gets the text in the current turn, so say so if it should finish first. The queue preview, the `queued` count in the status bar, and `Up` and `Ctrl+U` acting on that queue are gone with it.
+- **`Esc` at a dialog stops the turn.** At an approval, a question or the feedback prompt it used to answer the dialog and let the model carry on. To do that now, press `n` to reject, `f` to say why, or `Enter` with no answer to skip a question.
 - **Edit takes `old_str` and `new_str` directly, one change per call.** Its `replacements` list is gone. Haiku, Sonnet and Laguna often sent that list as a broken string, which failed 32%, 29% and 41% of their Edit calls in saved runs. Several Edits to one file run in order, so one response can still make several changes, though they no longer apply as a single all-or-nothing step. A call in the old shape is refused with a message saying what to send.
 - **The Anthropic provider caches the conversation, not only the system prompt and tools.** The last content block of the last message now carries a cache breakpoint, so the next request reads the conversation so far from the prompt cache instead of paying full input price for it. The request uses three of Anthropic's four breakpoints. Compaction rewrites the history and costs one cache miss each time.
 - **The system prompt is smaller.** Rules that appeared twice now appear once, and headless runs, ACP and sub-agents no longer carry a TUI quick reference they can't use. `CLAUDE.md` went from 29K to 10K characters, with the rest in the development reference.
@@ -42,6 +43,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **`Ctrl+C` works while a dialog is open.** It did nothing at an approval, a question, the feedback prompt or the loop cap. It now stops the turn, as it does everywhere else.
+- **A stopped turn keeps the model's tool calls in the history.** Stopping at an approval or a question wrote no result, so the next load dropped the call, along with the results of any calls that ran beside it. The model now sees what it tried and that you stopped it.
 - **Text you type while the model works always reaches it, or comes back to you.** An approval, a question or the iteration limit could swallow it: the TUI showed `Next:` and the model never saw it. Text sent just before a final reply arrived with your next prompt, and nothing said so. Now the waits keep it, and a final reply with text pending continues the turn so the model answers in that turn.
 - **A turn that can't deliver your text puts it back in the input box.** That covers `Esc`, stopping at the iteration limit and a failed turn. It no longer goes out behind your next prompt, or stays in the history unanswered.
 - **A cancelled turn stops before its next model call.** A cancel during an approval or a tool could still send one more request.
