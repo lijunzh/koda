@@ -41,6 +41,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **`/exit` quits when picked from the slash popup.** That's how it normally runs, since typing `/` opens the popup. It printed `Goodbye!` and left the TUI running. A command picked from the popup now takes the same path as one typed with the popup closed.
 - **A command can't outlive its timeout by closing its output.** Bash and Cargo timed only the reading of output, so a command that closed stdout and stderr could hold a turn for as long as it ran.
 - **Glob respects `.gitignore`, as its description says.** Ignored files no longer take up result slots, and `.git` is skipped. To search an ignored directory, name it in the pattern or `file_path`.
 - **Several changes to one file in one response all land.** In Auto mode, two auto-approved calls to the same file ran at the same time, so each could read the original and one change was silently lost while both reported success. Such a batch now runs one call at a time, in the order the model gave.
