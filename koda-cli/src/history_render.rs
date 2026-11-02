@@ -190,6 +190,14 @@ fn render_user_message(lines: &mut Vec<Line<'static>>, msg: &Message) {
 
 /// Render an assistant response: separator + text + any tool call headers.
 fn render_assistant_message(lines: &mut Vec<Line<'static>>, msg: &Message) {
+    // An empty reply is kept for its usage only; there's nothing to show.
+    if msg.content.as_deref().is_none_or(|c| c.trim().is_empty())
+        && msg.tool_calls.is_none()
+        && msg.thinking_content.as_deref().is_none_or(str::is_empty)
+    {
+        return;
+    }
+
     // Response separator
     lines.push(Line::styled("  \u{2500}\u{2500}\u{2500}", DIM));
 
@@ -801,5 +809,15 @@ mod tests {
         let shim_text = collect_text(&via_shim);
         let new_text = collect_text(&via_new);
         assert_eq!(shim_text, new_text, "shim and new fn must agree");
+    }
+
+    #[test]
+    fn an_empty_reply_draws_nothing() {
+        let empty = Message {
+            content: None,
+            ..msg(Role::Assistant, "")
+        };
+        let lines = render_history_messages(&[empty]);
+        assert_eq!(collect_text(&lines).trim(), "");
     }
 }
