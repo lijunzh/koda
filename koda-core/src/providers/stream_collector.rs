@@ -24,6 +24,10 @@ pub trait ChunkParser: Send + 'static {
     /// Returns zero or more chunks to emit immediately.
     fn process_line(&mut self, data: &str) -> Vec<StreamChunk>;
 
+    /// Called on the `[DONE]` sentinel, just before [`finish`](Self::finish), so
+    /// a parser can tell it from a connection that closed early.
+    fn saw_done(&mut self) {}
+
     /// Called when the stream ends (`[DONE]` received or connection closed).
     /// Return any buffered chunks (accumulated tool calls, `Done`, etc.).
     fn finish(&mut self) -> Vec<StreamChunk>;
@@ -122,6 +126,7 @@ async fn drive_sse_stream<S, B, E>(
 
             // Standard SSE terminator (OpenAI convention)
             if data.trim() == "[DONE]" {
+                parser.saw_done();
                 for chunk in parser.finish() {
                     let _ = tx.send(chunk).await;
                 }
@@ -143,7 +148,8 @@ async fn drive_sse_stream<S, B, E>(
         // synthetic Done that would make the partial response look complete.
         let _ = tx.send(StreamChunk::NetworkError(err)).await;
     } else {
-        // Stream ended without [DONE] (Anthropic, Gemini) — flush remaining
+        // Stream ended without [DONE] (Anthropic, Gemini) — flush remaining.
+        // A parser whose format has a terminal event reports a missing one here.
         for chunk in parser.finish() {
             let _ = tx.send(chunk).await;
         }

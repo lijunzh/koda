@@ -196,8 +196,12 @@ struct CompletionTokensDetails {
 
 #[derive(Deserialize)]
 struct StreamChatResponse {
+    #[serde(default)]
     choices: Vec<StreamChoice>,
     usage: Option<UsageResponse>,
+    /// A failure reported after the 200, as an object or, on some servers, a
+    /// plain string.
+    error: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -246,6 +250,8 @@ pub(crate) struct OpenAiChunkParser {
     think_filter: super::stream_tag_filter::StreamTagFilter,
     /// Told when the server reasons under the plain `reasoning` key.
     reasoning_plain: Option<Arc<AtomicBool>>,
+    /// A `finish_reason` or `[DONE]` arrived. Without either the stream was cut.
+    finished: bool,
 }
 
 impl OpenAiChunkParser {
@@ -255,6 +261,7 @@ impl OpenAiChunkParser {
             usage: TokenUsage::default(),
             think_filter: super::stream_tag_filter::StreamTagFilter::new(),
             reasoning_plain: None,
+            finished: false,
         }
     }
 
@@ -265,6 +272,15 @@ impl OpenAiChunkParser {
     }
 }
 
+/// The words for a failure a server reported inside the stream.
+fn stream_error_message(error: &serde_json::Value) -> String {
+    let message = error["message"]
+        .as_str()
+        .or(error.as_str())
+        .unwrap_or("unknown");
+    format!("OpenAI-compatible stream error: {message}")
+}
+
 impl ChunkParser for OpenAiChunkParser {
     fn process_line(&mut self, data: &str) -> Vec<StreamChunk> {
         let chunk = match serde_json::from_str::<StreamChatResponse>(data) {
@@ -272,11 +288,15 @@ impl ChunkParser for OpenAiChunkParser {
             Err(e) => {
                 tracing::debug!(
                     "OpenAI-compat: failed to parse SSE chunk: {e} — raw: {truncated}",
-                    truncated = &data[..data.len().min(200)]
+                    truncated = &data[..data.floor_char_boundary(200)]
                 );
                 return vec![];
             }
         };
+
+        if let Some(error) = &chunk.error {
+            return vec![StreamChunk::NetworkError(stream_error_message(error))];
+        }
 
         let mut chunks = Vec::new();
 
@@ -292,6 +312,7 @@ impl ChunkParser for OpenAiChunkParser {
         for choice in &chunk.choices {
             // Capture finish_reason
             if let Some(reason) = &choice.finish_reason {
+                self.finished = true;
                 self.usage.stop_reason = if reason == "length" {
                     "max_tokens".to_string()
                 } else {
@@ -345,7 +366,16 @@ impl ChunkParser for OpenAiChunkParser {
         chunks
     }
 
+    fn saw_done(&mut self) {
+        self.finished = true;
+    }
+
     fn finish(&mut self) -> Vec<StreamChunk> {
+        if !self.finished {
+            return vec![StreamChunk::NetworkError(
+                "OpenAI-compatible stream ended before a finish_reason or [DONE]".to_string(),
+            )];
+        }
         let mut chunks = Vec::new();
         if !self.tool_calls.is_empty() {
             let tcs = self
@@ -938,6 +968,71 @@ mod tests {
     }
 
     // ── Reasoning: read under either key, replay under the server's own ──
+
+    fn failure(chunks: &[StreamChunk]) -> &str {
+        match chunks {
+            [StreamChunk::NetworkError(why)] => why,
+            _ => panic!("expected only a failure"),
+        }
+    }
+
+    #[test]
+    fn an_error_object_fails_the_stream() {
+        let mut parser = OpenAiChunkParser::new();
+        let data = r#"{"error":{"message":"worker failed","type":"server_error"}}"#;
+        assert!(failure(&parser.process_line(data)).contains("worker failed"));
+    }
+
+    #[test]
+    fn an_error_string_fails_the_stream() {
+        let mut parser = OpenAiChunkParser::new();
+        let chunks = parser.process_line(r#"{"error":"out of memory"}"#);
+        assert!(failure(&chunks).contains("out of memory"));
+    }
+
+    #[test]
+    fn an_error_beside_choices_still_fails_the_stream() {
+        let mut parser = OpenAiChunkParser::new();
+        let data = r#"{"error":{"message":"upstream"},"choices":[{"delta":{"content":"x"},"finish_reason":"error"}]}"#;
+        assert!(failure(&parser.process_line(data)).contains("upstream"));
+    }
+
+    #[test]
+    fn a_stream_with_no_end_fails_and_drops_its_tool_calls() {
+        let mut parser = OpenAiChunkParser::new();
+        let data = r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"Write","arguments":"{}"}}]},"finish_reason":null}]}"#;
+        parser.process_line(data);
+        assert!(failure(&parser.finish()).contains("[DONE]"));
+    }
+
+    #[test]
+    fn a_finish_reason_ends_a_stream_with_no_done() {
+        let mut parser = OpenAiChunkParser::new();
+        parser.process_line(r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#);
+        let chunks = parser.finish();
+        assert!(matches!(chunks.last(), Some(StreamChunk::Done(_))));
+    }
+
+    #[test]
+    fn done_ends_a_stream_with_no_finish_reason() {
+        let mut parser = OpenAiChunkParser::new();
+        parser.saw_done();
+        let chunks = parser.finish();
+        assert!(matches!(chunks.last(), Some(StreamChunk::Done(_))));
+    }
+
+    #[test]
+    fn logging_a_malformed_event_stops_at_a_character() {
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_writer(std::io::sink)
+            .finish();
+        // Three bytes each, so byte 200 falls inside one.
+        let data = "界".repeat(100);
+        tracing::subscriber::with_default(subscriber, || {
+            assert!(OpenAiChunkParser::new().process_line(&data).is_empty());
+        });
+    }
 
     fn parse_chunks(parser: &mut OpenAiChunkParser, data: &str) -> Vec<StreamChunk> {
         parser.process_line(data)
