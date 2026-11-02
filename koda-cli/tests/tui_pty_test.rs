@@ -138,7 +138,8 @@ fn open_pty() -> (RawFd, RawFd) {
             &mut slave,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            &mut size,
+            // `*mut` on macOS and `*const` on Linux.
+            &raw mut size,
         )
     };
     assert_eq!(opened, 0, "openpty: {}", std::io::Error::last_os_error());
