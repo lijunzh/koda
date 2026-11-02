@@ -501,6 +501,9 @@ impl KodaSession {
         sink.emit(crate::engine::EngineEvent::TurnStart {
             turn_id: turn_id.clone(),
         });
+        let started = std::time::Instant::now();
+        let meter = crate::engine::sink::TurnMeter::new(sink);
+        let sink: &dyn EngineSink = &meter;
 
         // Compose the per-turn system prompt: static `agent.system_prompt`
         // plus a dynamically-rendered MCP server-instructions section. We
@@ -570,6 +573,7 @@ impl KodaSession {
             Ok(TurnOutcome::Aborted(message)) => crate::engine::event::TurnEndReason::Error {
                 message: message.clone(),
             },
+            Ok(TurnOutcome::Abandoned) => crate::engine::event::TurnEndReason::Cancelled,
             Ok(TurnOutcome::Finished) if effective_cancel.is_cancelled() => {
                 crate::engine::event::TurnEndReason::Cancelled
             }
@@ -578,9 +582,22 @@ impl KodaSession {
                 message: e.to_string(),
             },
         };
+        sink.emit(crate::engine::EngineEvent::TurnSummary {
+            turn_id: turn_id.clone(),
+            usage: meter.usage(),
+            elapsed_ms: started.elapsed().as_millis() as u64,
+        });
         sink.emit(crate::engine::EngineEvent::TurnEnd { turn_id, reason });
 
-        result.map(|_| ())
+        // The turn is closed, but it stopped on a dropped future and not on
+        // its own, so a caller must not read this as a clean cancel.
+        match result? {
+            TurnOutcome::Abandoned => anyhow::bail!(
+                "the turn did not stop within {}s of being cancelled",
+                crate::inference::CANCEL_GRACE.as_secs()
+            ),
+            TurnOutcome::Finished | TurnOutcome::Aborted(_) => Ok(()),
+        }
     }
 
     /// Replace the provider (e.g., after switching models or providers).

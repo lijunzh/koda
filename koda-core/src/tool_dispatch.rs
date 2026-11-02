@@ -72,6 +72,7 @@ pub(crate) async fn record_tool_result(
         id: tc.id.clone(),
         name: tc.function_name.clone(),
         output: result.to_string(),
+        outcome: success.into(),
     });
 
     // If we have separate full output (Bash smart summary), use the dedicated

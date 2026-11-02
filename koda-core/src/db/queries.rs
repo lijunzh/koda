@@ -799,9 +799,13 @@ impl Persistence for Database {
                 COALESCE(SUM(thinking_tokens), 0),
                 COUNT(*)
              FROM messages
-             WHERE session_id = ?
+             WHERE (session_id = ?
+                    OR session_id IN (SELECT session_id FROM session_metadata
+                                      WHERE key = ? AND value = ?))
                AND (prompt_tokens IS NOT NULL OR completion_tokens IS NOT NULL)",
         )
+        .bind(session_id)
+        .bind(crate::persistence::PARENT_SESSION_KEY)
         .bind(session_id)
         .fetch_one(&self.pool)
         .await?;
@@ -815,26 +819,34 @@ impl Persistence for Database {
         })
     }
 
-    /// Get token usage broken down by agent name.
+    /// Get token usage broken down by agent name. A sub-agent's calls are
+    /// listed under its name; the session's own are `main`.
     async fn session_usage_by_agent(
         &self,
         session_id: &str,
     ) -> Result<Vec<(String, SessionUsage)>> {
         let rows: Vec<(String, i64, i64, i64, i64, i64, i64)> = sqlx::query_as(
             "SELECT
-                COALESCE(agent_name, 'main'),
-                COALESCE(SUM(prompt_tokens), 0),
-                COALESCE(SUM(completion_tokens), 0),
-                COALESCE(SUM(cache_read_tokens), 0),
-                COALESCE(SUM(cache_creation_tokens), 0),
-                COALESCE(SUM(thinking_tokens), 0),
+                CASE WHEN m.session_id = ? THEN COALESCE(m.agent_name, 'main')
+                     ELSE s.agent_name END AS agent,
+                COALESCE(SUM(m.prompt_tokens), 0),
+                COALESCE(SUM(m.completion_tokens), 0),
+                COALESCE(SUM(m.cache_read_tokens), 0),
+                COALESCE(SUM(m.cache_creation_tokens), 0),
+                COALESCE(SUM(m.thinking_tokens), 0),
                 COUNT(*)
-             FROM messages
-             WHERE session_id = ?
-               AND (prompt_tokens IS NOT NULL OR completion_tokens IS NOT NULL)
-             GROUP BY COALESCE(agent_name, 'main')
-             ORDER BY COALESCE(SUM(prompt_tokens), 0) + COALESCE(SUM(completion_tokens), 0) DESC",
+             FROM messages m
+             JOIN sessions s ON s.id = m.session_id
+             WHERE (m.session_id = ?
+                    OR m.session_id IN (SELECT session_id FROM session_metadata
+                                        WHERE key = ? AND value = ?))
+               AND (m.prompt_tokens IS NOT NULL OR m.completion_tokens IS NOT NULL)
+             GROUP BY agent
+             ORDER BY COALESCE(SUM(m.prompt_tokens), 0) + COALESCE(SUM(m.completion_tokens), 0) DESC",
         )
+        .bind(session_id)
+        .bind(session_id)
+        .bind(crate::persistence::PARENT_SESSION_KEY)
         .bind(session_id)
         .fetch_all(&self.pool)
         .await?;

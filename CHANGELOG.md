@@ -6,12 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Breaking
+
+- **`stream-json` is now a versioned protocol, not the engine's events.** A run opens with `hello` and `session_ready` and ends with `run_summary`. Every line after `hello` has `session_id`, and lines inside a turn have `turn_id`. `is_sub_agent` is gone: sub-agent lines carry `parent_id`, the id of the tool call that started them. `footer` is replaced by `turn_summary`, `loop_cap_reached` is now `loop_cap_request`, and `spinner_start`, `spinner_stop`, `status_update`, `response_start`, `bg_task_update` and `bg_child_activity` no longer appear. Compaction, retries and the loop guard are typed `compaction`, `retry` and `loop_guard` lines instead of `info` and `warn` text, so anything matching that text has to move. See [the protocol](https://lijunzh.github.io/koda/headless.html#wire-protocol).
+
 ### Known gaps
 
 - Gemini works, with known limits: it compacts early, and in eval runs it read code without ever editing it. See #1473, which asks for help.
 
 ### Added
 
+- **A schema for the wire protocol.** `wire-schema.json` is generated from the code, and CI fails if it goes stale. The headless guide states how readers treat a type they don't know.
+- **`turn_summary` reports what a turn used, however it ended.** It counts this turn alone, including sub-agents, compaction and failed or cancelled turns.
+- **Tool results say whether they worked.** `tool_call_result` has an `outcome` of `success` or `error`.
+- **Loop-cap requests have an id.** `LoopCapReached` and `LoopDecision` now carry one, so a stale answer can't resume a turn.
 - **A debugging guide.** [Debugging a run](https://lijunzh.github.io/koda/debugging.html) shows how to triage a run from its logs and reproduce a bug without an API key.
 - **The log shows what each request holds and how each turn ended.** New `context assembled` and `turn end` lines, and a `compaction` line with the branch taken and the rows summarized and kept.
 - **Debug logging can show the text, and trace logging the requests.** `RUST_LOG=koda_core=debug` adds conversation text, and `koda_core::providers=trace` adds request bodies. The `model call` line gained a hash of the system prompt and tools, so you can see when the prompt changed.
@@ -31,6 +39,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **A cancelled turn always closes.** Something that doesn't listen for the cancel, like a running Bash command, could hold a turn past it, and on SIGINT headless gave up after five seconds and reported `success: true` with no `turn_end`. A turn that hasn't stopped five seconds after its cancel is now dropped inside the engine, so it still sends `turn_summary` and `turn_end`, keeps what it used and commits its undo snapshots. `run_summary` says `success: false` and the run exits 1. The TUI and ACP get the same limit, and the TUI shows the failed turn.
+- **A sub-agent's Bash works in a Linux git worktree.** Its sandbox policy made `.git/hooks` and `.git/config` read-only, but in a worktree `.git` is a file, so those paths don't exist and `bwrap` couldn't start. Every Bash call from a write-capable sub-agent failed.
+- **A sub-agent in a worktree can't write the git metadata Koda later trusts.** The main repo's config and hooks are shared with a worktree, and a repo under `/tmp`, `/var/tmp` or a cache directory is writable in the sandbox. A sub-agent could change them, and Koda then ran git there outside the sandbox when it released the workspace. Policy now also denies writes to the `.git` pointer, the shared config and hooks, and the worktree's own `commondir`, `gitdir` and `config.worktree`. That last file is created empty first, since a new worktree has none and git would read one a sub-agent added.
+- **Koda's git commands in a sub-agent's workspace run no hooks or fsmonitor.** They run outside the sandbox on a tree the sub-agent wrote, and a relative `core.hooksPath`, like this repo's `.githooks`, finds hooks inside it. `--no-verify` doesn't stop `prepare-commit-msg` or `post-commit`. As a result, a project's hooks, `post-checkout` included, no longer run in a sub-agent's worktree.
+- **A failed save no longer deletes a sub-agent's work.** When Koda couldn't commit a dirty worktree, it logged a warning, force-removed the worktree and still said the changes were on the branch. If git can't report status, add or commit, the worktree now stays where it is and a hint names the path and says the work wasn't committed. Koda's save commit also skips the project's signing, and runs no hooks, the usual refusals. Cancelling a sub-agent now shows the same hints, and the worktree's path is announced when it's created.
+- **A sub-agent that fails gives back its workspace.** A provider or database error left its worktree or clone behind, with no word of any changes in it. It now goes through the same release as a normal finish, so changes in a worktree stay on a branch and the hint says which.
+- **A cancelled sub-agent stops at once and gives back its workspace.** Its model call and tool calls ignored the cancel, so it could only be dropped, which left its worktree or clone behind with any uncommitted work. They now stop on the cancel and take the existing release path. The git commands behind a workspace are also killed if their call is dropped, though a half-made worktree isn't cleaned up.
+- **Stopping a Bash or Cargo command stops all of it.** On a timeout, or when a turn is dropped, only the direct child was killed. Under `bwrap` that's bwrap, so the command itself kept running, and on every platform a job the shell had forked survived. Each foreground command now runs in its own process group, and the whole group is killed. A command that finishes normally leaves its background jobs running, as before. Bash commands also get an empty stdin now, as Cargo and background commands already did, so one that reads stdin sees end of file and doesn't wait for its timeout.
+- **A failed Bash command is still named when a later Edit finds the file changed.** The hint was recorded only for commands that succeeded, so one that changed a file and then exited non-zero left it out or named an older command. The Edit was refused either way.
+- **`run_summary.usage` counts sub-agents.** Their tokens were left out, though the docs said otherwise, because they are stored in sessions of their own. `usage_by_agent` now lists each agent by name. Token figures rise for runs that delegate. Sub-agents from before this change stay uncounted on a resumed session.
+- **A failed Bash or Cargo command counts as a failed tool call.** A non-zero exit or a timeout was recorded as a success, with the failure only in the text.
+- **A sub-agent's start is reported once.** Every sub-agent dispatch announced itself twice, in the TUI as well.
 - **Read always returns the file.** A second full read of an unchanged file returned a note saying the content was already in the conversation. That was false for a sub-agent whose parent or sibling read it first, and after compaction removed the first read. The note is gone.
 - **Editing a file keeps its permissions.** Edit and Write replaced the file with a new one that had default permissions, so a `0755` script stopped running and a `0600` file could become readable. Setuid and setgid bits are dropped on a rewrite.
 - **A failed Anthropic stream no longer counts as a finished reply.** An `error` event sent partway through a reply, such as `overloaded_error`, was ignored, so the partial answer was saved as complete and its tool calls ran. A stream that ends without `message_stop` is treated the same way. The turn now ends with a warning and the partial reply is discarded.

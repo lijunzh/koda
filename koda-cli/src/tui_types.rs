@@ -86,7 +86,10 @@ pub enum MenuContent {
         options: Vec<String>,
     },
     /// Loop cap hotkey bar — continue or stop after the iteration limit is hit.
-    LoopCap,
+    LoopCap {
+        /// The request this answers.
+        id: String,
+    },
     /// Purge confirmation bar — \[y\] confirm / \[n\] cancel.
     PurgeConfirm { min_age_days: u32, detail: String },
     /// Ctrl+R reverse history search overlay.

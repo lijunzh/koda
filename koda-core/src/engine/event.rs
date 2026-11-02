@@ -80,6 +80,8 @@ pub enum EngineEvent {
         name: String,
         /// The tool's output text.
         output: String,
+        /// Whether the call succeeded.
+        outcome: ToolOutcome,
     },
 
     /// A line of streaming output from a tool (currently Bash only).
@@ -301,6 +303,67 @@ pub enum EngineEvent {
         active_tools: usize,
     },
 
+    /// Context was compacted, or a compaction was tried.
+    ///
+    /// `notice` is the line a person reads, if the step has one.
+    Compaction {
+        /// What set it off.
+        trigger: CompactionTrigger,
+        /// How far it got.
+        status: CompactionStatus,
+        /// What a text client shows for this step.
+        notice: Option<Notice>,
+    },
+
+    /// A model call failed or came back empty and will be tried again.
+    Retry {
+        /// Why the call is being retried.
+        reason: RetryReason,
+        /// The attempt that just failed, counting from 1.
+        attempt: u32,
+        /// How many attempts the call gets in total.
+        max_attempts: u32,
+        /// How long the engine waits before the next attempt.
+        delay_ms: u64,
+        /// What a text client shows for this step.
+        notice: Option<Notice>,
+    },
+
+    /// The loop guard saw the model repeating itself.
+    LoopGuard {
+        /// What the guard did about it.
+        action: LoopGuardAction,
+        /// What the model repeated.
+        detail: String,
+        /// What a text client shows for this step.
+        notice: Option<Notice>,
+    },
+
+    /// Tokens one model call used, for the turn's meter.
+    ///
+    /// Sent by the main loop, compaction and sub-agents. [`TurnMeter`] sums
+    /// these into [`EngineEvent::TurnSummary`] and doesn't pass them on.
+    ///
+    /// [`TurnMeter`]: crate::engine::sink::TurnMeter
+    ModelUsage {
+        /// Tokens the provider reported for the call.
+        usage: UsageTotals,
+    },
+
+    /// What a turn used, however it ended. Emitted just before `TurnEnd`.
+    ///
+    /// Counts this turn only, sub-agents and compaction included, so a
+    /// resumed session's earlier turns aren't in it. A call cut off before
+    /// the provider reported usage counts for nothing.
+    TurnSummary {
+        /// Matches the `turn_id` from `TurnStart`.
+        turn_id: String,
+        /// Tokens and model calls.
+        usage: UsageTotals,
+        /// Wall-clock time of the turn in milliseconds.
+        elapsed_ms: u64,
+    },
+
     /// Inference completion footer with timing and token stats.
     Footer {
         /// Input tokens used.
@@ -361,6 +424,8 @@ pub enum EngineEvent {
     /// The client must respond with `EngineCommand::LoopDecision`.
     /// Until the client responds, the inference loop is paused.
     LoopCapReached {
+        /// Unique ID for this request.
+        id: String,
         /// The iteration cap that was hit.
         cap: u32,
         /// Recent tool names for context.
@@ -385,6 +450,177 @@ pub enum EngineEvent {
         /// The error message.
         message: String,
     },
+}
+
+impl EngineEvent {
+    /// The plain `Info` or `Warn` a typed state event reads as, for clients
+    /// that show lines of text. `None` for every other event, and for a
+    /// typed step with nothing to show.
+    pub fn notice(&self) -> Option<EngineEvent> {
+        let notice = match self {
+            Self::Compaction { notice, .. }
+            | Self::Retry { notice, .. }
+            | Self::LoopGuard { notice, .. } => notice.as_ref()?,
+            _ => return None,
+        };
+        Some(match notice {
+            Notice::Info(message) => Self::Info {
+                message: message.clone(),
+            },
+            Notice::Warn(message) => Self::Warn {
+                message: message.clone(),
+            },
+        })
+    }
+}
+
+/// A line of text that goes with a typed state event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Notice {
+    /// Shown like [`EngineEvent::Info`].
+    Info(String),
+    /// Shown like [`EngineEvent::Warn`].
+    Warn(String),
+}
+
+/// Whether a tool call succeeded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolOutcome {
+    /// The tool did what was asked.
+    Success,
+    /// It failed: bad arguments, an execution error, a timeout, or a command
+    /// that exited non-zero.
+    Error,
+}
+
+impl From<bool> for ToolOutcome {
+    fn from(success: bool) -> Self {
+        if success { Self::Success } else { Self::Error }
+    }
+}
+
+/// What set off a compaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactionTrigger {
+    /// Context passed the auto-compact threshold before a model call.
+    Threshold,
+    /// The provider rejected a request as too long.
+    Overflow,
+    /// The estimate was past the window, so history was dropped unsummarized.
+    Window,
+    /// A session idle long enough had its old tool results cleared.
+    Idle,
+}
+
+/// How far a compaction got.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum CompactionStatus {
+    /// Summarizing has begun. One of the other statuses follows.
+    Started {
+        /// Context used when it began, where the trigger measured it.
+        context_percent: Option<usize>,
+    },
+    /// History was replaced.
+    Completed {
+        /// Rows taken out of the context (tool results, for `idle`).
+        messages_removed: usize,
+        /// Estimated size of the summary. `None` when there is no summary.
+        summary_tokens: Option<usize>,
+    },
+    /// A precondition stopped it, and nothing changed.
+    Skipped {
+        /// `pending_tool_calls`, `too_short` or `history_too_large`.
+        reason: String,
+    },
+    /// The summary call failed, and nothing changed.
+    Failed {
+        /// What went wrong.
+        error: String,
+    },
+}
+
+/// Why a model call is being retried.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RetryReason {
+    /// The provider said to slow down.
+    RateLimit,
+    /// A connection failed or timed out.
+    Network,
+    /// The provider rejected the context as too long; it was compacted first.
+    ContextOverflow,
+    /// The model returned nothing.
+    EmptyResponse,
+}
+
+/// What the loop guard did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LoopGuardAction {
+    /// It told the model to change course, and the turn goes on.
+    Feedback,
+    /// The model ignored that, so the turn stops.
+    Stop,
+}
+
+/// Token and call counts, for one model call or added up over a turn.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct UsageTotals {
+    /// Input tokens.
+    pub prompt_tokens: i64,
+    /// Output tokens.
+    pub completion_tokens: i64,
+    /// Input tokens read from the provider's cache.
+    pub cache_read_tokens: i64,
+    /// Input tokens written to the provider's cache.
+    pub cache_creation_tokens: i64,
+    /// Tokens used for reasoning.
+    pub thinking_tokens: i64,
+    /// Model calls that finished.
+    pub api_calls: i64,
+}
+
+impl UsageTotals {
+    /// Add `other` to these totals.
+    pub fn add(&mut self, other: &Self) {
+        self.prompt_tokens += other.prompt_tokens;
+        self.completion_tokens += other.completion_tokens;
+        self.cache_read_tokens += other.cache_read_tokens;
+        self.cache_creation_tokens += other.cache_creation_tokens;
+        self.thinking_tokens += other.thinking_tokens;
+        self.api_calls += other.api_calls;
+    }
+}
+
+impl From<&crate::providers::TokenUsage> for UsageTotals {
+    /// One finished call.
+    fn from(usage: &crate::providers::TokenUsage) -> Self {
+        Self {
+            prompt_tokens: usage.prompt_tokens,
+            completion_tokens: usage.completion_tokens,
+            cache_read_tokens: usage.cache_read_tokens,
+            cache_creation_tokens: usage.cache_creation_tokens,
+            thinking_tokens: usage.thinking_tokens,
+            api_calls: 1,
+        }
+    }
+}
+
+impl From<&crate::persistence::SessionUsage> for UsageTotals {
+    fn from(usage: &crate::persistence::SessionUsage) -> Self {
+        Self {
+            prompt_tokens: usage.prompt_tokens,
+            completion_tokens: usage.completion_tokens,
+            cache_read_tokens: usage.cache_read_tokens,
+            cache_creation_tokens: usage.cache_creation_tokens,
+            thinking_tokens: usage.thinking_tokens,
+            api_calls: usage.api_calls,
+        }
+    }
 }
 
 /// What kind of activity happened inside a running background sub-agent.
@@ -449,7 +685,7 @@ fn default_is_background_true() -> bool {
 }
 
 /// Why an inference turn ended.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum TurnEndReason {
@@ -502,6 +738,8 @@ pub enum EngineCommand {
     /// Tells the engine whether to continue or stop after hitting
     /// the iteration hard cap.
     LoopDecision {
+        /// Must match the `id` from the `LoopCapReached`.
+        id: String,
         /// Whether to continue or stop.
         action: crate::loop_guard::LoopContinuation,
     },
@@ -798,6 +1036,7 @@ mod tests {
     #[test]
     fn test_loop_cap_reached_roundtrip() {
         let event = EngineEvent::LoopCapReached {
+            id: "cap-1".into(),
             cap: 200,
             recent_tools: vec!["Bash".into(), "Edit".into()],
         };
@@ -806,7 +1045,7 @@ mod tests {
         let deserialized: EngineEvent = serde_json::from_str(&json).unwrap();
         assert!(matches!(
             deserialized,
-            EngineEvent::LoopCapReached { cap: 200, .. }
+            EngineEvent::LoopCapReached { cap: 200, ref id, .. } if id == "cap-1"
         ));
     }
 
@@ -815,6 +1054,7 @@ mod tests {
         use crate::loop_guard::LoopContinuation;
 
         let cmd = EngineCommand::LoopDecision {
+            id: "cap-1".into(),
             action: LoopContinuation::Continue50,
         };
         let json = serde_json::to_string(&cmd).unwrap();
@@ -822,11 +1062,13 @@ mod tests {
         assert!(matches!(
             deserialized,
             EngineCommand::LoopDecision {
-                action: LoopContinuation::Continue50
+                action: LoopContinuation::Continue50,
+                ..
             }
         ));
 
         let cmd_stop = EngineCommand::LoopDecision {
+            id: "cap-1".into(),
             action: LoopContinuation::Stop,
         };
         let json = serde_json::to_string(&cmd_stop).unwrap();
@@ -953,6 +1195,48 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn typed_state_reads_as_the_info_or_warn_it_replaced() {
+        let event = EngineEvent::Compaction {
+            trigger: CompactionTrigger::Threshold,
+            status: CompactionStatus::Started {
+                context_percent: Some(85),
+            },
+            notice: Some(Notice::Info("compacting".into())),
+        };
+        assert!(matches!(
+            event.notice(),
+            Some(EngineEvent::Info { message }) if message == "compacting"
+        ));
+
+        let event = EngineEvent::LoopGuard {
+            action: LoopGuardAction::Stop,
+            detail: "Bash repeated".into(),
+            notice: Some(Notice::Warn("stopping".into())),
+        };
+        assert!(matches!(
+            event.notice(),
+            Some(EngineEvent::Warn { message }) if message == "stopping"
+        ));
+
+        // A step with no text shows nothing, and other events have no notice.
+        let event = EngineEvent::Retry {
+            reason: RetryReason::EmptyResponse,
+            attempt: 1,
+            max_attempts: 2,
+            delay_ms: 0,
+            notice: None,
+        };
+        assert!(event.notice().is_none());
+        assert!(
+            EngineEvent::Info {
+                message: "hi".into()
+            }
+            .notice()
+            .is_none()
+        );
+    }
+
     // ── EngineCommand::kind (#1232 §6) ──────────────────────────
 
     /// Pin every variant → stable name. If a future PR adds a new
@@ -980,6 +1264,7 @@ mod tests {
             ),
             (
                 EngineCommand::LoopDecision {
+                    id: "x".into(),
                     action: crate::loop_guard::LoopContinuation::Stop,
                 },
                 "LoopDecision",

@@ -26,7 +26,7 @@ const MAX_WRITE_NEW_LINES: usize = 60;
 /// Structured diff preview produced by the engine.
 ///
 /// Clients render this however they want (ratatui, HTML, plain text, …).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind")]
 pub enum DiffPreview {
     /// Unified diff with context lines and hunk headers.
@@ -45,7 +45,7 @@ pub enum DiffPreview {
 }
 
 /// A proper unified diff between old and new file content.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct UnifiedDiffPreview {
     /// File path (as given in the tool args).
     pub path: String,
@@ -60,7 +60,7 @@ pub struct UnifiedDiffPreview {
 }
 
 /// A single hunk in a unified diff.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct DiffHunk {
     /// 1-based starting line in the old file.
     pub old_start: usize,
@@ -75,7 +75,7 @@ pub struct DiffHunk {
 }
 
 /// A single line within a diff hunk.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct DiffLine {
     /// Whether this line is context, inserted, or deleted.
     pub tag: DiffTag,
@@ -88,7 +88,9 @@ pub struct DiffLine {
 }
 
 /// The type of a diff line.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub enum DiffTag {
     /// Unchanged context line.
     Context,
@@ -99,7 +101,7 @@ pub enum DiffTag {
 }
 
 /// Preview of a Write (new file) operation.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct WriteNewPreview {
     /// File path.
     pub path: String,
@@ -114,7 +116,7 @@ pub struct WriteNewPreview {
 }
 
 /// Preview of a single file deletion.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct DeleteFilePreview {
     /// Line count of the file being deleted.
     pub line_count: usize,
@@ -123,7 +125,7 @@ pub struct DeleteFilePreview {
 }
 
 /// Preview of a directory deletion.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct DeleteDirPreview {
     /// Whether the deletion is recursive.
     pub recursive: bool,

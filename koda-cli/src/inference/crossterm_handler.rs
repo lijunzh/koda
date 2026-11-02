@@ -202,7 +202,8 @@ async fn handle_inference_key_inline(
     }
 
     // Loop cap hotkeys
-    if matches!(menu, MenuContent::LoopCap) {
+    if let MenuContent::LoopCap { id } = menu {
+        let id = id.clone();
         let action = match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
                 Some(koda_core::loop_guard::LoopContinuation::Continue200)
@@ -214,7 +215,9 @@ async fn handle_inference_key_inline(
         };
         if let Some(a) = action {
             *menu = MenuContent::None;
-            let _ = cmd_tx.send(EngineCommand::LoopDecision { action: a }).await;
+            let _ = cmd_tx
+                .send(EngineCommand::LoopDecision { id, action: a })
+                .await;
         }
         return;
     }

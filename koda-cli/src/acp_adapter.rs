@@ -74,7 +74,8 @@ pub fn engine_event_to_acp(
     event: &EngineEvent,
     session_id: &str,
 ) -> Option<acp::SessionNotification> {
-    match event {
+    let notice = event.notice();
+    match notice.as_ref().unwrap_or(event) {
         EngineEvent::TextDelta { text } => {
             let cb = acp::ContentBlock::Text(acp::TextContent::new(text.clone()));
             Some(acp::SessionNotification::new(
@@ -112,6 +113,7 @@ pub fn engine_event_to_acp(
             id,
             name: _,
             output,
+            ..
         } => {
             let content = vec![acp::ToolCallContent::Content(acp::Content::new(
                 acp::ContentBlock::Text(acp::TextContent::new(output.clone())),
@@ -386,8 +388,9 @@ impl EngineSink for AcpSink {
         }
 
         // Handle loop cap — server always auto-continues
-        if matches!(event, EngineEvent::LoopCapReached { .. }) {
+        if let EngineEvent::LoopCapReached { ref id, .. } = event {
             let _ = self.cmd_tx.try_send(EngineCommand::LoopDecision {
+                id: id.clone(),
                 action: koda_core::loop_guard::LoopContinuation::Continue200,
             });
             return;
@@ -506,6 +509,7 @@ mod tests {
             id: "call_1".into(),
             name: "Read".into(),
             output: "file contents".into(),
+            outcome: koda_core::engine::ToolOutcome::Success,
         };
         let acp = engine_event_to_acp(&event, "s1").unwrap();
         match acp.update {
@@ -834,6 +838,7 @@ mod tests {
                 reason: koda_core::engine::event::TurnEndReason::Complete,
             },
             EngineEvent::LoopCapReached {
+                id: "c1".into(),
                 cap: 200,
                 recent_tools: vec![],
             },

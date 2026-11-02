@@ -66,7 +66,9 @@ pub(crate) fn draw_viewport(
     // Determine menu height (only when active)
     let menu_height = match menu {
         MenuContent::None => 0u16,
-        MenuContent::Approval { .. } | MenuContent::LoopCap | MenuContent::PurgeConfirm { .. } => 2,
+        MenuContent::Approval { .. }
+        | MenuContent::LoopCap { .. }
+        | MenuContent::PurgeConfirm { .. } => 2,
         MenuContent::AskUser {
             question, options, ..
         } => ask_user_menu_height(question, options, area.width, area.height),
@@ -446,7 +448,7 @@ fn render_menu(frame: &mut ratatui::Frame, menu: &MenuContent, menu_area: ratatu
             ];
             frame.render_widget(Paragraph::new(lines), menu_area);
         }
-        MenuContent::LoopCap => {
+        MenuContent::LoopCap { .. } => {
             let lines = vec![
                 Line::from(vec![
                     Span::styled("  \u{26a0} ", Style::default().fg(Color::Yellow)),

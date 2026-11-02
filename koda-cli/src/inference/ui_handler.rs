@@ -69,7 +69,11 @@ pub(super) fn handle_inference_ui_inline(
                 detail,
             };
         }
-        UiEvent::Engine(EngineEvent::LoopCapReached { cap, recent_tools }) => {
+        UiEvent::Engine(EngineEvent::LoopCapReached {
+            id,
+            cap,
+            recent_tools,
+        }) => {
             buffer.push(Line::from(vec![
                 Span::raw("  "),
                 Span::styled(
@@ -86,7 +90,7 @@ pub(super) fn handle_inference_ui_inline(
                     ),
                 ]));
             }
-            *menu = MenuContent::LoopCap;
+            *menu = MenuContent::LoopCap { id };
         }
         UiEvent::Engine(event) => {
             // Tap bg-activity events into the live tracker BEFORE the

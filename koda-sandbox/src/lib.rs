@@ -43,6 +43,7 @@ pub mod policy;
 pub mod policy_check;
 #[cfg(unix)]
 pub mod pool;
+pub mod process_group;
 pub mod proxy;
 pub mod rlimits;
 #[cfg(target_os = "macos")]

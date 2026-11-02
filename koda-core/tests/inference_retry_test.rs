@@ -139,7 +139,7 @@ async fn read_timeout_triggers_auto_retry_not_hard_failure() {
     );
 
     // Contract 2: the user saw a "Network glitch" retry warning.
-    let has_glitch_warn = events.iter().any(|e| {
+    let has_glitch_warn = events.iter().filter_map(EngineEvent::notice).any(|e| {
         matches!(
             e,
             EngineEvent::Warn { message } if message.contains("Network glitch")

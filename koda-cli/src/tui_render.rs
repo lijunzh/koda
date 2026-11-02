@@ -103,7 +103,7 @@ impl TuiRenderer {
 
     /// Render an engine event into the scroll buffer.
     pub fn render_to_buffer(&mut self, event: EngineEvent, buffer: &mut ScrollBuffer) {
-        match event {
+        match event.notice().unwrap_or(event) {
             EngineEvent::TextDelta { text } => {
                 self.text_buf.push_str(&text);
                 // Flush complete lines (skip leading blank lines)
@@ -209,7 +209,9 @@ impl TuiRenderer {
                     ]),
                 );
             }
-            EngineEvent::ToolCallResult { id, name, output } => {
+            EngineEvent::ToolCallResult {
+                id, name, output, ..
+            } => {
                 // If we streamed output lines, skip rendering the full result
                 // (the user already saw it in real-time). Just show exit code.
                 let streamed = self.streaming_tool_ids.remove(&id);
@@ -577,6 +579,7 @@ mod tests {
                 id: "t1".into(),
                 name: "Read".into(),
                 output: content.to_string(),
+                outcome: koda_core::engine::ToolOutcome::Success,
             },
             &mut buffer,
         );
@@ -608,6 +611,7 @@ mod tests {
                 id: "t1".into(),
                 name: tool_name.into(),
                 output: output.to_string(),
+                outcome: koda_core::engine::ToolOutcome::Success,
             },
             &mut buffer,
         );

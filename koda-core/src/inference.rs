@@ -38,7 +38,10 @@
 
 use crate::config::KodaConfig;
 use crate::db::{Database, Role};
-use crate::engine::{EngineCommand, EngineEvent, EngineSink};
+use crate::engine::{
+    CompactionStatus, CompactionTrigger, EngineCommand, EngineEvent, EngineSink, LoopGuardAction,
+    Notice, RetryReason,
+};
 use crate::file_tracker::FileTracker;
 use crate::inference_helpers::{
     AUTO_COMPACT_THRESHOLD, CONTEXT_WARN_THRESHOLD, ContextShape, MIN_COMPACTABLE_DIVISOR,
@@ -265,8 +268,14 @@ async fn preflight_compact_if_needed(
     }
 
     tracing::warn!("Pre-flight: context at {ctx_pct}%, attempting auto-compact");
-    turn.sink.emit(EngineEvent::Info {
-        message: format!("\u{1f4e6} Context at {ctx_pct}% \u{2014} compacting before sending..."),
+    turn.sink.emit(EngineEvent::Compaction {
+        trigger: CompactionTrigger::Threshold,
+        status: CompactionStatus::Started {
+            context_percent: Some(ctx_pct),
+        },
+        notice: Some(Notice::Info(format!(
+            "\u{1f4e6} Context at {ctx_pct}% \u{2014} compacting before sending..."
+        ))),
     });
 
     match crate::compact::compact_session_with_provider(
@@ -279,21 +288,24 @@ async fn preflight_compact_if_needed(
     .await
     {
         Ok(Ok(result)) => {
-            let message = if result.no_summary {
-                format!(
+            let notice = if result.no_summary {
+                Notice::Warn(format!(
                     "\u{26a0}\u{fe0f} The model returned no summary; dropped {} older messages",
                     result.deleted
-                )
+                ))
             } else {
-                format!(
+                Notice::Info(format!(
                     "\u{2705} Compacted {} messages (~{} token summary)",
                     result.deleted, result.summary_tokens
-                )
+                ))
             };
-            turn.sink.emit(if result.no_summary {
-                EngineEvent::Warn { message }
-            } else {
-                EngineEvent::Info { message }
+            turn.sink.emit(EngineEvent::ModelUsage {
+                usage: result.usage.clone(),
+            });
+            turn.sink.emit(EngineEvent::Compaction {
+                trigger: CompactionTrigger::Threshold,
+                status: compaction_completed(&result),
+                notice: Some(notice),
             });
             turn.context_correction.store(0, Ordering::Relaxed);
             let (messages, context_used) = assemble_context(turn).await?;
@@ -301,15 +313,24 @@ async fn preflight_compact_if_needed(
         }
         Ok(Err(skip)) => {
             tracing::info!("Pre-flight compact skipped: {skip:?}");
-            if matches!(skip, crate::compact::CompactSkip::HistoryTooLarge) {
+            let too_large = matches!(skip, crate::compact::CompactSkip::HistoryTooLarge);
+            if too_large {
                 crate::compact::record_compact_failure();
-                turn.sink.emit(EngineEvent::Warn {
-                    message: "\u{26a0}\u{fe0f} Context is full but history is too large for \
-                              this model to summarize. Start a new session (/session) or \
-                              switch to a model with a larger context window."
-                        .to_string(),
-                });
             }
+            turn.sink.emit(EngineEvent::Compaction {
+                trigger: CompactionTrigger::Threshold,
+                status: CompactionStatus::Skipped {
+                    reason: skip.reason().to_string(),
+                },
+                notice: too_large.then(|| {
+                    Notice::Warn(
+                        "\u{26a0}\u{fe0f} Context is full but history is too large for \
+                         this model to summarize. Start a new session (/session) or \
+                         switch to a model with a larger context window."
+                            .to_string(),
+                    )
+                }),
+            });
             shrink_if_over_window(turn, messages, context_used).await
         }
         Err(e) => {
@@ -320,11 +341,23 @@ async fn preflight_compact_if_needed(
             } else {
                 " Continuing anyway..."
             };
-            turn.sink.emit(EngineEvent::Warn {
-                message: format!("Compact failed: {e:#}.{suffix}"),
+            turn.sink.emit(EngineEvent::Compaction {
+                trigger: CompactionTrigger::Threshold,
+                status: CompactionStatus::Failed {
+                    error: format!("{e:#}"),
+                },
+                notice: Some(Notice::Warn(format!("Compact failed: {e:#}.{suffix}"))),
             });
             shrink_if_over_window(turn, messages, context_used).await
         }
+    }
+}
+
+/// The status for a compaction that replaced history.
+fn compaction_completed(result: &crate::compact::CompactResult) -> CompactionStatus {
+    CompactionStatus::Completed {
+        messages_removed: result.deleted,
+        summary_tokens: (!result.no_summary).then_some(result.summary_tokens),
     }
 }
 
@@ -347,12 +380,14 @@ async fn shrink_if_over_window(
     for _ in 0..3 {
         match crate::compact::compact_without_summary(turn.db, turn.session_id).await {
             Ok(Ok(result)) if result.deleted > 0 => {
-                turn.sink.emit(EngineEvent::Warn {
-                    message: format!(
+                turn.sink.emit(EngineEvent::Compaction {
+                    trigger: CompactionTrigger::Window,
+                    status: compaction_completed(&result),
+                    notice: Some(Notice::Warn(format!(
                         "\u{26a0}\u{fe0f} Context was past the window; dropped {} older \
                          messages without a summary.",
                         result.deleted
-                    ),
+                    ))),
                 });
                 turn.context_correction.store(0, Ordering::Relaxed);
                 (messages, context_used) = assemble_context(turn).await?;
@@ -402,19 +437,23 @@ async fn try_with_rate_limit(
                     && attempt + 1 < RATE_LIMIT_MAX_RETRIES =>
             {
                 let delay = rate_limit_backoff(attempt);
-                let kind = if is_rate_limit_error(&e) {
-                    "Rate limited"
+                let (reason, kind) = if is_rate_limit_error(&e) {
+                    (RetryReason::RateLimit, "Rate limited")
                 } else {
-                    "Network glitch"
+                    (RetryReason::Network, "Network glitch")
                 };
                 sink.emit(EngineEvent::SpinnerStop);
-                sink.emit(EngineEvent::Warn {
-                    message: format!(
+                sink.emit(EngineEvent::Retry {
+                    reason,
+                    attempt: attempt + 1,
+                    max_attempts: RATE_LIMIT_MAX_RETRIES,
+                    delay_ms: delay.as_millis() as u64,
+                    notice: Some(Notice::Warn(format!(
                         "\u{23f3} {kind}. Retrying in {}s (attempt {}/{})...",
                         delay.as_secs(),
                         attempt + 1,
                         RATE_LIMIT_MAX_RETRIES
-                    ),
+                    ))),
                 });
                 tracing::warn!(
                     "{} (attempt {}/{}): {e:#}",
@@ -462,40 +501,68 @@ async fn try_overflow_recovery(
         ..*turn
     };
     turn.sink.emit(EngineEvent::SpinnerStop);
-    turn.sink.emit(EngineEvent::Warn {
-        message: format!(
+    turn.sink.emit(EngineEvent::Compaction {
+        trigger: CompactionTrigger::Overflow,
+        status: CompactionStatus::Started {
+            context_percent: None,
+        },
+        notice: Some(Notice::Warn(format!(
             "\u{26a0}\u{fe0f} Provider rejected request (context overflow).{learned_note} \
              Compacting and retrying..."
-        ),
+        ))),
     });
     tracing::warn!("Context overflow from provider: {original_err:#}");
 
-    match crate::compact::compact_session_with_provider(
+    let compacted = crate::compact::compact_session_with_provider(
         turn.db,
         turn.session_id,
         turn.max_context_tokens,
         &turn.config.model_settings,
         turn.provider,
     )
-    .await
-    {
+    .await;
+    let status = match compacted {
         Ok(Ok(result)) => {
             turn.context_correction.store(0, Ordering::Relaxed);
-            turn.sink.emit(EngineEvent::Info {
-                message: format!(
+            turn.sink.emit(EngineEvent::ModelUsage {
+                usage: result.usage.clone(),
+            });
+            turn.sink.emit(EngineEvent::Compaction {
+                trigger: CompactionTrigger::Overflow,
+                status: compaction_completed(&result),
+                notice: Some(Notice::Info(format!(
                     "\u{2705} Compacted {} messages. Retrying...",
                     result.deleted
-                ),
+                ))),
             });
+            None
         }
-        _ => {
-            return Err(original_err)
-                .context("LLM inference failed (context overflow, compaction unsuccessful)");
-        }
+        Ok(Err(skip)) => Some(CompactionStatus::Skipped {
+            reason: skip.reason().to_string(),
+        }),
+        Err(e) => Some(CompactionStatus::Failed {
+            error: format!("{e:#}"),
+        }),
+    };
+    if let Some(status) = status {
+        turn.sink.emit(EngineEvent::Compaction {
+            trigger: CompactionTrigger::Overflow,
+            status,
+            notice: None,
+        });
+        return Err(original_err)
+            .context("LLM inference failed (context overflow, compaction unsuccessful)");
     }
 
     let (messages, _) = assemble_context(turn).await?;
 
+    turn.sink.emit(EngineEvent::Retry {
+        reason: RetryReason::ContextOverflow,
+        attempt: 1,
+        max_attempts: 2,
+        delay_ms: 0,
+        notice: None,
+    });
     turn.sink.emit(EngineEvent::SpinnerStart {
         message: "Retrying...".into(),
     });
@@ -790,7 +857,14 @@ pub enum TurnOutcome {
     /// produced. The TUI shows the warning and carries on; headless
     /// reports the turn as failed with this message.
     Aborted(String),
+    /// Cancelled, but it hadn't stopped after [`CANCEL_GRACE`], so it was
+    /// dropped wherever it was.
+    Abandoned,
 }
+
+/// How long a cancelled turn gets to stop before it's dropped. Not everything
+/// a turn awaits listens for the cancel: a running Bash command doesn't.
+pub const CANCEL_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// What the `turn end` line reports, gathered as the loop runs.
 #[derive(Debug, Default)]
@@ -823,6 +897,7 @@ impl TurnStats {
     fn outcome(&self, result: &Result<()>, cancelled: bool) -> &'static str {
         match result {
             Err(e) if e.is::<TurnAborted>() => "aborted",
+            Err(e) if e.is::<TurnAbandoned>() => "abandoned",
             Err(_) => "error",
             Ok(()) if cancelled => "cancelled",
             Ok(()) => self.limit.unwrap_or(if self.final_reply.is_some() {
@@ -847,6 +922,39 @@ impl std::fmt::Display for TurnAborted {
 
 impl std::error::Error for TurnAborted {}
 
+/// Marker error for a turn [`until_abandoned`] gave up on: like
+/// [`TurnAborted`], it never reaches callers.
+#[derive(Debug)]
+struct TurnAbandoned;
+
+impl std::fmt::Display for TurnAbandoned {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the turn did not stop after being cancelled")
+    }
+}
+
+impl std::error::Error for TurnAbandoned {}
+
+/// Run `turn` to the end, or until [`CANCEL_GRACE`] after `cancel` fires.
+async fn until_abandoned(
+    turn: impl std::future::Future<Output = Result<()>>,
+    cancel: &CancellationToken,
+) -> Result<()> {
+    tokio::pin!(turn);
+    let expired = async {
+        cancel.cancelled().await;
+        tokio::time::sleep(CANCEL_GRACE).await;
+    };
+    tokio::select! {
+        biased;
+        result = &mut turn => result,
+        () = expired => {
+            tracing::warn!("turn still running {CANCEL_GRACE:?} after its cancel; dropping it");
+            Err(TurnAbandoned.into())
+        }
+    }
+}
+
 /// Like [`inference_loop`], but says whether the turn stopped early on a
 /// warning. `inference_loop` keeps returning `Ok(())` for those turns.
 pub async fn inference_loop_outcome(ctx: InferenceContext<'_>) -> Result<TurnOutcome> {
@@ -857,13 +965,14 @@ pub async fn inference_loop_outcome(ctx: InferenceContext<'_>) -> Result<TurnOut
     let session_id = ctx.session_id;
     let cancel = ctx.cancel.clone();
     let mut stats = TurnStats::default();
-    let result = inference_loop_inner(ctx, &mut stats).await;
+    let result = until_abandoned(inference_loop_inner(ctx, &mut stats), &cancel).await;
     stats.log(session_id, stats.outcome(&result, cancel.is_cancelled()));
     if let Ok(mut undo) = tools.undo.lock() {
         undo.commit_turn();
     }
     match result {
         Ok(()) => Ok(TurnOutcome::Finished),
+        Err(e) if e.is::<TurnAbandoned>() => Ok(TurnOutcome::Abandoned),
         Err(e) => match e.downcast::<TurnAborted>() {
             Ok(TurnAborted(message)) => Ok(TurnOutcome::Aborted(message)),
             Err(e) => Err(e),
@@ -964,11 +1073,16 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
     // Time-based trigger — only fires when the idle gap since the last
     // assistant message exceeds the threshold (not during active tool use).
     if let Ok(Some(mc)) = crate::microcompact::microcompact_session(db, session_id).await {
-        sink.emit(EngineEvent::Info {
-            message: format!(
+        sink.emit(EngineEvent::Compaction {
+            trigger: CompactionTrigger::Idle,
+            status: CompactionStatus::Completed {
+                messages_removed: mc.cleared,
+                summary_tokens: None,
+            },
+            notice: Some(Notice::Info(format!(
                 "\u{1f9f9} Microcompact: cleared {} old tool results (~{} tokens)",
                 mc.cleared, mc.tokens_saved,
-            ),
+            ))),
         });
     }
 
@@ -1127,7 +1241,9 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
 
         if iteration >= hard_cap {
             let recent = loop_detector.recent_names();
+            let request_id = uuid::Uuid::new_v4().to_string();
             sink.emit(EngineEvent::LoopCapReached {
+                id: request_id.clone(),
                 cap: hard_cap,
                 recent_tools: recent,
             });
@@ -1136,7 +1252,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
             let extra = loop {
                 tokio::select! {
                     cmd = cmd_rx.recv() => match cmd {
-                        Some(EngineCommand::LoopDecision { action }) => {
+                        Some(EngineCommand::LoopDecision { id, action }) if id == request_id => {
                             break action.extra_iterations();
                         }
                         Some(EngineCommand::Interrupt) => {
@@ -1338,6 +1454,11 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
         // Collect the streamed response
         let stream_result = collect_stream(&mut rx, sink, &cancel, tools, mode, project_root).await;
         let estimated_tokens = estimate_tokens(&messages) + estimate_tool_defs(turn.tool_defs);
+        if !stream_result.interrupted && stream_result.network_error.is_none() {
+            sink.emit(EngineEvent::ModelUsage {
+                usage: (&stream_result.usage).into(),
+            });
+        }
         let context_tokens = provider.context_tokens(&stream_result.usage);
         if context_tokens > 0 {
             let correction = (context_tokens as usize).saturating_sub(estimated_tokens);
@@ -1424,6 +1545,13 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
             && !retried_empty
         {
             retried_empty = true;
+            sink.emit(EngineEvent::Retry {
+                reason: RetryReason::EmptyResponse,
+                attempt: 1,
+                max_attempts: 2,
+                delay_ms: 0,
+                notice: None,
+            });
             sink.emit(EngineEvent::SpinnerStart {
                 message: "Empty response — retrying...".into(),
             });
@@ -1701,10 +1829,12 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
             LoopAction::Ok => {}
             LoopAction::InjectFeedback(detail) => {
                 tracing::warn!(%detail, "Loop detected — injecting feedback");
-                sink.emit(EngineEvent::Warn {
-                    message: format!(
+                sink.emit(EngineEvent::LoopGuard {
+                    action: LoopGuardAction::Feedback,
+                    detail: detail.clone(),
+                    notice: Some(Notice::Warn(format!(
                         "Loop detected: {detail}. Injecting feedback to nudge the model."
-                    ),
+                    ))),
                 });
                 // Inject a system-style user message to redirect the model.
                 db.insert_message(
@@ -1725,13 +1855,15 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
                 // Continue the loop — give the model a chance to recover
             }
             LoopAction::HardStop(detail) => {
-                sink.emit(EngineEvent::Warn {
-                    message: format!(
+                sink.emit(EngineEvent::LoopGuard {
+                    action: LoopGuardAction::Stop,
+                    notice: Some(Notice::Warn(format!(
                         "Loop guard: {detail} — model ignored feedback, stopping. \
                          This often means the current model isn't capable enough for the \
                          task; consider switching to a stronger model. \
                          Send a follow-up message to continue."
-                    ),
+                    ))),
+                    detail,
                 });
                 stats.limit = Some("loop_guard");
                 break Ok(());
@@ -1754,6 +1886,47 @@ mod tests {
     use crate::providers::{StreamChunk, TokenUsage, ToolCall};
     use crate::trust::TrustMode;
     use tokio::sync::mpsc;
+
+    /// A turn that never finishes, the way a stuck model call looks.
+    async fn stuck() -> Result<()> {
+        std::future::pending().await
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_cancelled_turn_is_dropped_after_the_grace() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let started = tokio::time::Instant::now();
+        let result = until_abandoned(stuck(), &cancel).await;
+        assert!(result.unwrap_err().is::<TurnAbandoned>());
+        assert_eq!(started.elapsed(), CANCEL_GRACE);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_cancelled_turn_that_stops_in_time_keeps_its_result() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let turn = async {
+            tokio::time::sleep(CANCEL_GRACE / 2).await;
+            anyhow::bail!("its own error")
+        };
+        let result = until_abandoned(turn, &cancel).await;
+        assert_eq!(result.unwrap_err().to_string(), "its own error");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn only_a_cancel_starts_the_clock() {
+        let cancel = CancellationToken::new();
+        let waited = tokio::time::timeout(CANCEL_GRACE * 100, until_abandoned(stuck(), &cancel));
+        assert!(waited.await.is_err(), "still running");
+    }
+
+    #[test]
+    fn an_abandoned_turn_is_logged_as_one() {
+        let result = Err(TurnAbandoned.into());
+        let outcome = TurnStats::default().outcome(&result, true);
+        assert_eq!(outcome, "abandoned");
+    }
 
     /// Helper: create a ToolRegistry backed by a temp directory.
     fn test_tools(root: &Path) -> ToolRegistry {

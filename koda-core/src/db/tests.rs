@@ -1451,6 +1451,58 @@ async fn test_session_usage_by_agent() {
     );
 }
 
+/// A sub-agent's session counts toward the session that started it, under the
+/// agent's name, and an unrelated session doesn't.
+#[tokio::test]
+async fn usage_includes_linked_sub_agent_sessions() {
+    use crate::persistence::PARENT_SESSION_KEY;
+
+    let (db, _tmp) = setup().await;
+    let parent = db.create_session("default", _tmp.path()).await.unwrap();
+    let child = db.create_session("explore", _tmp.path()).await.unwrap();
+    let other = db.create_session("default", _tmp.path()).await.unwrap();
+    db.set_metadata(&child, PARENT_SESSION_KEY, &parent)
+        .await
+        .unwrap();
+
+    let usage = |prompt_tokens| crate::providers::TokenUsage {
+        prompt_tokens,
+        completion_tokens: 1,
+        ..Default::default()
+    };
+    for (session, tokens) in [(&parent, 100), (&child, 30), (&child, 30), (&other, 7)] {
+        db.insert_message(
+            session,
+            &Role::Assistant,
+            Some("reply"),
+            None,
+            None,
+            Some(&usage(tokens)),
+        )
+        .await
+        .unwrap();
+    }
+
+    let total = db.session_token_usage(&parent).await.unwrap();
+    assert_eq!(total.prompt_tokens, 160);
+    assert_eq!(total.api_calls, 3);
+
+    let by_agent: std::collections::HashMap<_, _> = db
+        .session_usage_by_agent(&parent)
+        .await
+        .unwrap()
+        .into_iter()
+        .collect();
+    assert_eq!(by_agent.len(), 2, "{by_agent:?}");
+    assert_eq!(by_agent["main"].prompt_tokens, 100);
+    assert_eq!(by_agent["explore"].prompt_tokens, 60);
+    assert_eq!(by_agent["explore"].api_calls, 2);
+
+    // A child's own totals stay its own.
+    let own = db.session_token_usage(&child).await.unwrap();
+    assert_eq!(own.prompt_tokens, 60);
+}
+
 #[tokio::test]
 async fn test_purge_compacted() {
     let (db, _tmp) = setup().await;

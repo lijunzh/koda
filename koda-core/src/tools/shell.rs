@@ -34,6 +34,7 @@ use crate::engine::{EngineEvent, EngineSink};
 use crate::providers::ToolDefinition;
 use crate::tools::bg_process::BgRegistry;
 use anyhow::Result;
+use koda_sandbox::process_group::{self, ProcessGroup};
 use serde_json::{Value, json};
 use std::path::Path;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -64,6 +65,8 @@ pub struct ShellOutput {
     /// Full untruncated output for DB storage / RecallContext retrieval.
     /// `None` for background commands (no output to capture).
     pub full_output: Option<String>,
+    /// The command exited zero, or was started in the background.
+    pub success: bool,
 }
 
 /// Return tool definitions for the LLM.
@@ -163,6 +166,7 @@ pub async fn run_shell_command(
         return Ok(ShellOutput {
             summary: msg,
             full_output: None,
+            success: true,
         });
     }
 
@@ -185,18 +189,24 @@ pub async fn run_shell_command(
     // sub-agent dispatch; defaults to `strict_default()` for the main
     // agent). PR-3 will start populating the policy with non-default
     // values via [`crate::sandbox::policy_for_agent`].
-    let mut child = crate::sandbox::build(
+    let mut cmd = crate::sandbox::build(
         command,
         project_root,
         trust,
         policy,
         proxy_port,
         socks5_port,
-    )?
-    .stdout(std::process::Stdio::piped())
-    .stderr(std::process::Stdio::piped())
-    .spawn()
-    .map_err(|e| anyhow::anyhow!("Failed to execute command: {e}"))?;
+    )?;
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    process_group::isolate(&mut cmd);
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to execute command: {e}"))?;
+    // Nothing here listens for a cancel, so a turn that's given up on drops
+    // this call. The command mustn't carry on with nobody watching it.
+    let mut group = ProcessGroup::of(&child);
 
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
@@ -230,6 +240,7 @@ pub async fn run_shell_command(
                 .wait()
                 .await
                 .map_err(|e| anyhow::anyhow!("wait: {e}"))?;
+            group.release();
             let exit_code = status.code().unwrap_or(-1);
 
             // Phase 1 of #934: surface kernel-sandbox denials to the model.
@@ -255,16 +266,19 @@ pub async fn run_shell_command(
             Ok(ShellOutput {
                 summary,
                 full_output: Some(full),
+                success: exit_code == 0,
             })
         }
         Ok(Err(e)) => Err(anyhow::anyhow!("Stream read error: {e}")),
         Err(_) => {
-            // Timeout — kill the child.
+            // Timeout — kill the command and all it started.
+            group.kill();
             let _ = child.kill().await;
             let msg = format!("Command timed out after {timeout_secs}s: {command}");
             Ok(ShellOutput {
                 summary: msg.clone(),
                 full_output: Some(msg),
+                success: false,
             })
         }
     }
@@ -738,7 +752,7 @@ impl Tool for BashTool {
         {
             Ok(so) => ToolResult {
                 output: so.summary,
-                success: true,
+                success: so.success,
                 full_output: so.full_output,
             },
             Err(e) => ToolResult {
@@ -881,6 +895,74 @@ mod tests {
             "truncation marker should name the policy-supplied cap, got tail: {:?}",
             full.lines().last()
         );
+    }
+
+    /// Run `command` in the foreground with the arguments these tests share.
+    async fn run_in(
+        dir: &std::path::Path,
+        args: &serde_json::Value,
+    ) -> anyhow::Result<ShellOutput> {
+        run_shell_command(
+            dir,
+            args,
+            256,
+            &BgRegistry::new(),
+            None,
+            &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
+            None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn dropping_a_foreground_call_kills_all_it_started() {
+        let tmp = tempfile::tempdir().unwrap();
+        // The shell's next line, and a job it forked.
+        let command = "(sleep 1; touch forked) & sleep 1; touch finished";
+        let args = serde_json::json!({ "command": command });
+        let call = run_in(tmp.path(), &args);
+        let cut_off = tokio::time::timeout(std::time::Duration::from_millis(300), call);
+        assert!(cut_off.await.is_err(), "the command was still running");
+
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        assert!(!tmp.path().join("finished").exists());
+        assert!(!tmp.path().join("forked").exists());
+    }
+
+    #[tokio::test]
+    async fn a_timeout_kills_all_the_command_started() {
+        let tmp = tempfile::tempdir().unwrap();
+        let command = "(sleep 2; touch forked) & sleep 30";
+        let args = serde_json::json!({ "command": command, "timeout": 1 });
+        let result = run_in(tmp.path(), &args).await.unwrap();
+        assert!(!result.success, "{}", result.summary);
+
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        assert!(!tmp.path().join("forked").exists());
+    }
+
+    #[tokio::test]
+    async fn a_finished_command_leaves_its_background_jobs_running() {
+        let tmp = tempfile::tempdir().unwrap();
+        let command = "(sleep 1; touch survived) > /dev/null 2>&1 &";
+        let args = serde_json::json!({ "command": command });
+        let result = run_in(tmp.path(), &args).await.unwrap();
+        assert!(result.success, "{}", result.summary);
+
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        assert!(tmp.path().join("survived").exists());
+    }
+
+    #[tokio::test]
+    async fn a_command_reading_stdin_sees_end_of_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let args = serde_json::json!({ "command": "cat; echo done" });
+        let result = run_in(tmp.path(), &args).await.unwrap();
+        assert!(result.success, "{}", result.summary);
+        assert!(result.full_output.unwrap().contains("done"));
     }
 
     #[tokio::test]
@@ -1223,6 +1305,7 @@ mod tests {
         let so = ShellOutput {
             summary: "Exit code: 0".into(),
             full_output: Some("full output here".into()),
+            success: true,
         };
         assert_eq!(so.summary, "Exit code: 0");
         assert_eq!(so.full_output.unwrap(), "full output here");

@@ -48,7 +48,7 @@
 //! covers the state machine adequately.
 
 use koda_core::compact::reset_compact_failures;
-use koda_core::engine::EngineEvent;
+use koda_core::engine::{CompactionStatus, CompactionTrigger, EngineEvent};
 use koda_core::persistence::Persistence;
 use koda_core::persistence::Role;
 use koda_test_utils::{Env, MockProvider, MockResponse};
@@ -97,36 +97,48 @@ async fn fill_history_with_pairs(env: &Env, n: usize, padding: &str) {
     }
 }
 
-/// Did the engine emit the pre-flight compaction "📦 Context at X% —
-/// compacting before sending..." Info event? Matches by substring so
-/// the percentage value doesn't have to be predicted exactly.
+/// Did the engine start a pre-flight compaction?
 fn saw_preflight_compact_start(events: &[EngineEvent]) -> bool {
-    events.iter().any(|e| match e {
-        EngineEvent::Info { message } => message.contains("compacting before sending"),
-        _ => false,
+    events.iter().any(|e| {
+        matches!(
+            e,
+            EngineEvent::Compaction {
+                trigger: CompactionTrigger::Threshold,
+                status: CompactionStatus::Started { .. },
+                ..
+            }
+        )
     })
 }
 
-/// Did the engine emit the post-success "✅ Compacted N messages..."
-/// Info event? Matches both the pre-flight ("✅ Compacted N messages
-/// (~M token summary)") and the overflow-recovery ("✅ Compacted N
-/// messages. Retrying...") variants.
+/// Did a compaction finish with a summary, pre-flight or in overflow recovery?
 fn saw_compact_success(events: &[EngineEvent]) -> bool {
-    events.iter().any(|e| match e {
-        EngineEvent::Info { message } => {
-            message.contains("Compacted") && message.contains("messages")
-        }
-        _ => false,
+    events.iter().any(|e| {
+        matches!(
+            e,
+            EngineEvent::Compaction {
+                status: CompactionStatus::Completed {
+                    summary_tokens: Some(_),
+                    ..
+                },
+                ..
+            }
+        )
     })
 }
 
-/// Did the engine emit the overflow-recovery "⚠️ Provider rejected
-/// request (context overflow)..." Warn event? This is the canary that
+/// Did the engine start an overflow compaction? This is the canary that
 /// `try_overflow_recovery` was actually entered.
 fn saw_overflow_recovery_warn(events: &[EngineEvent]) -> bool {
-    events.iter().any(|e| match e {
-        EngineEvent::Warn { message } => message.contains("context overflow"),
-        _ => false,
+    events.iter().any(|e| {
+        matches!(
+            e,
+            EngineEvent::Compaction {
+                trigger: CompactionTrigger::Overflow,
+                status: CompactionStatus::Started { .. },
+                ..
+            }
+        )
     })
 }
 

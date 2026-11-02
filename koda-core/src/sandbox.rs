@@ -341,14 +341,90 @@ pub fn policy_for_agent(trust: crate::trust::TrustMode, project_root: &Path) -> 
     // variant has a side effect (pre-creating `.git/hooks` to close the
     // SEC-002 TOCTOU window). Cleanup of the redundant deny emission is a
     // separate refactor — security fix stays minimal.
+    //
+    // In a worktree `.git` is a file pointing at the real one, so those paths
+    // can't exist and bwrap can't start on a read-only bind of them.
+    // [`git_file_denies`] protects what's really there.
     if !policy.fs.allow_git_config {
-        policy.fs.deny_write_within_allow = vec![
-            canonical_root.join(".git/hooks").into(),
-            canonical_root.join(".git/config").into(),
-        ];
+        let git = canonical_root.join(".git");
+        policy.fs.deny_write_within_allow = if git.is_file() {
+            git_file_denies(&git).into_iter().map(Into::into).collect()
+        } else {
+            vec![git.join("hooks").into(), git.join("config").into()]
+        };
     }
 
     policy
+}
+
+/// What a child mustn't write when `.git` is a file, as in a worktree or a
+/// submodule: the pointer, and the metadata it leads to that git trusts.
+///
+/// Koda runs git here outside the sandbox when it releases a workspace, and
+/// these decide what that git executes. Rewriting the pointer or `commondir`
+/// would choose its hooks. Being outside the child's root doesn't protect
+/// them, since temp and cache roots are writable: a repo under `/tmp` is.
+///
+/// Call this before the child starts. It reads what git just wrote, not
+/// anything the child could have touched.
+///
+/// With `extensions.worktreeConfig` on, git reads `config.worktree` if it's
+/// there, and a new worktree doesn't have one. Denying a file that doesn't exist
+/// wouldn't stop a child adding it, with a `filter.*.clean` of its choosing, so
+/// each is created empty here. Git treats that the same as no file.
+fn git_file_denies(git_file: &Path) -> Vec<std::path::PathBuf> {
+    let mut denied = vec![git_file.to_path_buf()];
+    let Some(git_dir) = git_dir_of(git_file) else {
+        tracing::warn!("Can't read {}; protecting only that", git_file.display());
+        return denied;
+    };
+    // A worktree shares its config and hooks with the main repo. A submodule
+    // has neither a `commondir` nor anything to share.
+    let common = std::fs::read_to_string(git_dir.join("commondir"))
+        .ok()
+        .and_then(|dir| git_dir.join(dir.trim()).canonicalize().ok())
+        .unwrap_or_else(|| git_dir.clone());
+
+    // bwrap needs a source to bind, and a child mustn't be able to add this.
+    let hooks = common.join("hooks");
+    let _ = std::fs::create_dir_all(&hooks);
+
+    let worktree_configs = [
+        common.join("config.worktree"),
+        git_dir.join("config.worktree"),
+    ];
+    for config in &worktree_configs {
+        // `create_new` fails on any existing path, and doesn't follow a link.
+        let created = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(config);
+        if let Err(e) = created
+            && e.kind() != std::io::ErrorKind::AlreadyExists
+        {
+            tracing::warn!("Can't create {}: {e}", config.display());
+        }
+    }
+
+    denied.extend(
+        [common.join("config"), hooks]
+            .into_iter()
+            .chain(worktree_configs)
+            .chain([git_dir.join("commondir"), git_dir.join("gitdir")])
+            // Not `exists`, which would drop a dangling link. bwrap then refuses
+            // to start, rather than the child writing through it.
+            .filter(|path| path.symlink_metadata().is_ok()),
+    );
+    denied.sort();
+    denied.dedup();
+    denied
+}
+
+/// The directory a `.git` file points at.
+fn git_dir_of(git_file: &Path) -> Option<std::path::PathBuf> {
+    let pointer = std::fs::read_to_string(git_file).ok()?;
+    let target = pointer.strip_prefix("gitdir:")?.trim();
+    git_file.parent()?.join(target).canonicalize().ok()
 }
 
 /// Compute a sub-agent's effective policy by composing the parent's
@@ -1483,6 +1559,258 @@ mod tests {
                 "seeded allow_write path must be the canonicalized project root"
             );
         }
+    }
+
+    fn git_in(dir: &Path, args: &[&str]) {
+        let done = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(done.status.success(), "git {args:?}: {done:?}");
+    }
+
+    /// A repo with a linked worktree. Returns the repo and the worktree.
+    fn repo_with_worktree(parent: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        let repo = parent.join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        git_in(&repo, &["init", "-q"]);
+        git_in(&repo, &["commit", "-q", "--allow-empty", "-m", "start"]);
+        git_in(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "slot",
+                ".koda/worktrees/slot",
+            ],
+        );
+        (repo.clone(), repo.join(".koda/worktrees/slot"))
+    }
+
+    /// Run `script` in `root` under `policy`, in the real sandbox.
+    #[cfg(unix)]
+    async fn sandboxed(
+        script: String,
+        root: &Path,
+        policy: &SandboxPolicy,
+    ) -> std::process::Output {
+        let trust = crate::trust::TrustMode::Safe;
+        build(&script, root, &trust, policy, None, None)
+            .unwrap()
+            .output()
+            .await
+            .unwrap()
+    }
+
+    /// Temp roots are writable in the sandbox, so nothing but the policy keeps
+    /// a child in a worktree out of the metadata that git outside it trusts.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_child_in_a_worktree_cannot_touch_shared_git_metadata() {
+        if !is_available() {
+            eprintln!("skipped: no sandbox backend");
+            return;
+        }
+        let tmp = tempfile::tempdir_in("/tmp").unwrap();
+        let parent = tmp.path().canonicalize().unwrap();
+        let (repo, worktree) = repo_with_worktree(&parent);
+        let git_dir = repo.join(".git");
+        let linked = git_dir.join("worktrees/slot");
+        let policy = policy_for_agent(crate::trust::TrustMode::Safe, &worktree);
+
+        // The control: the sandbox runs, and the temp root is writable.
+        let probe = git_dir.join("objects/probe");
+        let script = format!("touch work.txt {}", probe.display());
+        let wrote = sandboxed(script, &worktree, &policy).await;
+        assert!(wrote.status.success(), "{wrote:?}");
+        assert!(worktree.join("work.txt").exists() && probe.exists());
+
+        for target in [
+            git_dir.join("config"),
+            git_dir.join("hooks/pre-commit"),
+            linked.join("commondir"),
+            linked.join("gitdir"),
+            worktree.join(".git"),
+        ] {
+            let before = std::fs::read(&target).ok();
+            let script = format!("echo bad >> {}", target.display());
+            let wrote = sandboxed(script, &worktree, &policy).await;
+            assert!(!wrote.status.success(), "{target:?} was writable");
+            assert_eq!(std::fs::read(&target).ok(), before, "{target:?}");
+        }
+    }
+
+    /// A new worktree has no `config.worktree`, and git would read one a child
+    /// added. It must be there and read-only before the child starts.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_child_cannot_add_a_worktree_config() {
+        if !is_available() {
+            eprintln!("skipped: no sandbox backend");
+            return;
+        }
+        let tmp = tempfile::tempdir_in("/tmp").unwrap();
+        let parent = tmp.path().canonicalize().unwrap();
+        let (repo, worktree) = repo_with_worktree(&parent);
+        git_in(&repo, &["config", "extensions.worktreeConfig", "true"]);
+        let git_dir = repo.join(".git");
+        let linked = git_dir.join("worktrees/slot");
+        let targets = [
+            linked.join("config.worktree"),
+            git_dir.join("config.worktree"),
+        ];
+        assert!(targets.iter().all(|target| !target.exists()));
+
+        let policy = policy_for_agent(crate::trust::TrustMode::Safe, &worktree);
+
+        // The control: this directory is writable, so only the policy stops
+        // these, and `spare` is there to move over the target.
+        let spare = linked.join("spare");
+        let script = format!("echo bad > {}", spare.display());
+        let wrote = sandboxed(script, &worktree, &policy).await;
+        assert!(wrote.status.success(), "{wrote:?}");
+
+        for target in &targets {
+            let (target_path, spare_path) = (target.display(), spare.display());
+            for script in [
+                format!("echo bad >> {target_path}"),
+                format!("rm {target_path}"),
+                format!("mv {spare_path} {target_path}"),
+            ] {
+                let wrote = sandboxed(script.clone(), &worktree, &policy).await;
+                assert!(!wrote.status.success(), "ran: {script}");
+                assert_eq!(std::fs::read(target).unwrap(), b"", "after: {script}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_new_worktree_config_is_empty_and_harmless() {
+        let tmp = tempfile::tempdir().unwrap();
+        let parent = tmp.path().canonicalize().unwrap();
+        let (repo, worktree) = repo_with_worktree(&parent);
+        git_in(&repo, &["config", "extensions.worktreeConfig", "true"]);
+        let linked = repo.join(".git/worktrees/slot/config.worktree");
+
+        let denied = git_file_denies(&worktree.join(".git"));
+
+        assert!(denied.contains(&linked), "{denied:?}");
+        assert_eq!(std::fs::read(&linked).unwrap(), b"");
+        git_in(&worktree, &["status"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_planted_link_is_not_followed_or_forgotten() {
+        let tmp = tempfile::tempdir().unwrap();
+        let parent = tmp.path().canonicalize().unwrap();
+        let (repo, worktree) = repo_with_worktree(&parent);
+        let linked = repo.join(".git/worktrees/slot/config.worktree");
+        let target = parent.join("planted");
+        std::os::unix::fs::symlink(&target, &linked).unwrap();
+
+        let denied = git_file_denies(&worktree.join(".git"));
+
+        assert!(!target.exists(), "followed the link");
+        assert!(denied.contains(&linked), "{denied:?}");
+    }
+
+    #[test]
+    fn a_worktree_denies_its_shared_metadata() {
+        let tmp = tempfile::tempdir().unwrap();
+        let parent = tmp.path().canonicalize().unwrap();
+        let (repo, worktree) = repo_with_worktree(&parent);
+        git_in(&repo, &["config", "extensions.worktreeConfig", "true"]);
+        git_in(&worktree, &["config", "--worktree", "user.name", "x"]);
+        let git_dir = repo.join(".git");
+        let linked = git_dir.join("worktrees/slot");
+
+        let policy = policy_for_agent(crate::trust::TrustMode::Safe, &worktree);
+
+        let denied: Vec<_> = policy
+            .fs
+            .deny_write_within_allow
+            .iter()
+            .map(|p| p.as_path().to_path_buf())
+            .collect();
+        for path in [
+            worktree.join(".git"),
+            git_dir.join("config"),
+            git_dir.join("hooks"),
+            linked.join("commondir"),
+            linked.join("gitdir"),
+            linked.join("config.worktree"),
+        ] {
+            assert!(denied.contains(&path), "{path:?} not in {denied:?}");
+        }
+    }
+
+    #[test]
+    fn a_relative_git_pointer_resolves_from_the_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let linked = root.join("repo/.git/worktrees/a");
+        std::fs::create_dir_all(&linked).unwrap();
+        std::fs::write(root.join("repo/.git/config"), "").unwrap();
+        std::fs::write(linked.join("commondir"), "../..\n").unwrap();
+        let worktree = root.join("wt");
+        std::fs::create_dir(&worktree).unwrap();
+        std::fs::write(worktree.join(".git"), "gitdir: ../repo/.git/worktrees/a\n").unwrap();
+
+        let denied = git_file_denies(&worktree.join(".git"));
+
+        assert!(
+            denied.contains(&root.join("repo/.git/config")),
+            "{denied:?}"
+        );
+        assert!(denied.contains(&root.join("repo/.git/hooks")), "{denied:?}");
+    }
+
+    #[test]
+    fn a_submodule_has_no_common_dir_to_follow() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let git_dir = root.join("super/.git/modules/sub");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        std::fs::write(git_dir.join("config"), "").unwrap();
+        let sub = root.join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        let pointer = format!("gitdir: {}\n", git_dir.display());
+        std::fs::write(sub.join(".git"), pointer).unwrap();
+
+        let denied = git_file_denies(&sub.join(".git"));
+
+        assert!(denied.contains(&git_dir.join("config")), "{denied:?}");
+    }
+
+    #[test]
+    fn an_unreadable_git_pointer_still_protects_itself() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join(".git");
+        std::fs::write(&file, "not a pointer").unwrap();
+        assert_eq!(git_file_denies(&file), [file]);
+    }
+
+    #[test]
+    fn policy_for_agent_protects_the_pointer_in_a_worktree() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".git"), "gitdir: /repo/.git/worktrees/a\n").unwrap();
+        let root = dir.path().canonicalize().unwrap();
+
+        let policy = policy_for_agent(crate::trust::TrustMode::Safe, dir.path());
+
+        let denied: Vec<_> = policy
+            .fs
+            .deny_write_within_allow
+            .iter()
+            .map(|p| p.as_path().to_path_buf())
+            .collect();
+        assert!(denied.contains(&root.join(".git")), "{denied:?}");
+        assert!(!denied.contains(&root.join(".git/hooks")), "{denied:?}");
     }
 
     #[test]

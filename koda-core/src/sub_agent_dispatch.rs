@@ -571,9 +571,12 @@ pub(crate) fn execute_sub_agent<'a>(
         // only place this could double-emit, but that path's `sink`
         // is a `BufferingSink` inside `run_bg_agent`, so the duplicate
         // is silently captured and never reaches a user surface.
-        sink.emit(EngineEvent::SubAgentStart {
-            agent_name: agent_name.to_string(),
-        });
+        sink.emit_from(
+            parent_tool_call_id,
+            EngineEvent::SubAgentStart {
+                agent_name: agent_name.to_string(),
+            },
+        );
 
         // **#1163 (Lean A)**: cache lookup MUST happen before the
         // bg-spawn block, not after. Pre-#1163 it lived in the (then
@@ -587,9 +590,12 @@ pub(crate) fn execute_sub_agent<'a>(
         // directly asserts both behaviours. Cheap to retry idempotent
         // tasks; no provider hit, no worktree, no registry churn.
         if let Some(cached) = sub_agent_cache.get(agent_name, prompt) {
-            sink.emit(EngineEvent::Info {
-                message: format!("  \u{26a1} {agent_name}: cache hit, skipping LLM call"),
-            });
+            sink.emit_from(
+                parent_tool_call_id,
+                EngineEvent::Info {
+                    message: format!("  \u{26a1} {agent_name}: cache hit, skipping LLM call"),
+                },
+            );
             tracing::Span::current().record("cached", true);
             return Ok(cached);
         }
@@ -770,7 +776,11 @@ pub(crate) fn execute_sub_agent<'a>(
         // duration of this scope; the original `sink` reference is
         // shadowed below so every existing emit site downstream
         // routes through the wrapper without code changes.
-        let fg_sink = crate::engine::sink::FgForwardingSink::new(sink, fg_emitter.clone());
+        let fg_sink = crate::engine::sink::FgForwardingSink::new(
+            sink,
+            fg_emitter.clone(),
+            parent_tool_call_id.map(str::to_string),
+        );
         let sink: &dyn crate::engine::EngineSink = &fg_sink;
         // Now that the registry entry exists, transition to
         // `Running { iter: 0 }` so the overlay shows the agent as
@@ -799,10 +809,6 @@ pub(crate) fn execute_sub_agent<'a>(
         // asymmetry in the PR body; can be tightened in a follow-up
         // if downstream consumers grow a hard dependency on the
         // terminal tag.
-
-        sink.emit(EngineEvent::SubAgentStart {
-            agent_name: agent_name.to_string(),
-        });
 
         // Fork inherits parent config; named agents load their own persona
         // but fall back to the parent's provider and model for anything not
@@ -952,6 +958,12 @@ pub(crate) fn execute_sub_agent<'a>(
             let sid = db
                 .create_session(&sub_config.agent_name, project_root)
                 .await?;
+            db.set_metadata(
+                &sid,
+                crate::persistence::PARENT_SESSION_KEY,
+                parent_session_id,
+            )
+            .await?;
             // Fork: copy parent conversation history into the new session.
             //
             // **#1022 B20**: was a per-row loop — N×(`insert_message`
@@ -970,6 +982,12 @@ pub(crate) fn execute_sub_agent<'a>(
 
         db.insert_message(&sub_session, &Role::User, Some(prompt), None, None, None)
             .await?;
+
+        let semantic_memory = if sub_config.skip_memory {
+            String::new()
+        } else {
+            memory::load(project_root)?
+        };
 
         let provider = crate::providers::create_provider(&sub_config);
         // Select workspace provider. Write-capable agents get an isolated
@@ -1007,7 +1025,10 @@ pub(crate) fn execute_sub_agent<'a>(
             Ok(path) => {
                 if path != project_root {
                     sink.emit(EngineEvent::Info {
-                        message: format!("  \u{1f333} {agent_name}: isolated in worktree"),
+                        message: format!(
+                            "  \u{1f333} {agent_name}: isolated in {}",
+                            path.display()
+                        ),
                     });
                 }
                 path
@@ -1141,11 +1162,6 @@ pub(crate) fn execute_sub_agent<'a>(
             // hid these tools from sub-agents has been removed.
             tools.get_definitions(&sub_config.allowed_tools, &denied)
         };
-        let semantic_memory = if sub_config.skip_memory {
-            String::new()
-        } else {
-            memory::load(project_root)?
-        };
         let env = crate::prompt::EnvironmentInfo {
             project_root: effective_root_ref,
             model: &sub_config.model,
@@ -1233,7 +1249,14 @@ pub(crate) fn execute_sub_agent<'a>(
             // Best-effort cleanup mirrors the cancel path below — release
             // any provisioned workspace before bubbling so we don't leak
             // a tempdir on every over-budget sub-agent invocation.
-            let _ = workspace.release(&sub_session, &effective_root).await;
+            release_workspace(
+                workspace.as_ref(),
+                &sub_session,
+                &effective_root,
+                agent_name,
+                sink,
+            )
+            .await;
             anyhow::bail!(
                 "Sub-agent '{agent_name}' context exceeds model window: {summary}. \
                  Reduce the prompt, drop tools (set `disallowed_tools` on the agent), \
@@ -1242,423 +1265,515 @@ pub(crate) fn execute_sub_agent<'a>(
             );
         }
 
-        for iter in 1u32.. {
-            // #1110: sub-agents have no hardcoded iteration cap. Termination
-            // is driven by the model (clean stop, no tool calls), `LoopDetector`
-            // (consecutive identical calls -> feedback -> hard stop), parent
-            // cancellation, or context exhaustion. Per DESIGN.md P3:
-            // "Let the model drive [...] don't scaffold around weakness."
-            //
-            // Layer 4 of #996 + #1076: push the live iteration counter
-            // so `/agents`, the status-bar pill, AND ACP / headless /
-            // TUI clients all reflect real progress instead of the
-            // Layer-0 placeholder `iter: 0` that `run_bg_agent` sends
-            // on entry.  Fan-out failures inside the emitter are
-            // silently absorbed for the same reason as the terminal
-            // sends: if the receiver is gone, the user can't see the
-            // update and we don't want noise.
-            if let Some(ref e) = emitter {
-                e.send(crate::child_agent::AgentStatus::Running { iter });
-            }
-            // Respect parent cancellation (#286)
-            if cancel.is_cancelled() {
-                // Release workspace on cancellation (best-effort, no user hint).
-                let _ = workspace.release(&sub_session, &effective_root).await;
-                return Ok("[cancelled by parent]".to_string());
-            }
-            let history = db.load_context(&sub_session).await?;
-            let mut messages = crate::inference_helpers::assemble_messages(
-                &ChatMessage::text("system", &system_prompt),
-                &history,
-            );
-
-            sink.emit(EngineEvent::SpinnerStart {
-                message: format!("  \u{1f9a5} {agent_name} thinking..."),
-            });
-
-            // #1135: append the grace-turn reminder when this iteration
-            // is the one that exceeded the cap. The reminder is stuffed
-            // into the OUTGOING `messages` only — it is not persisted
-            // to the DB, so a future replay won't see it twice. The
-            // strict "text only, no tools" framing matches gemini's
-            // wording (`local-executor.ts::getFinalWarningMessage`).
-            //
-            // It goes out as `user`: only the leading system prompt reaches
-            // the model as `system`. Anthropic would drop a later one and
-            // Gemini would let it replace the system prompt.
-            if iter > max_turns && !grace_turn_done {
-                grace_turn_done = true;
-                let warning = format!(
-                    "You have reached the maximum number of turns ({max_turns}) for this \
-                     sub-agent invocation. You have ONE final chance to complete the task. \
-                     You MUST respond with your best answer NOW as plain text. DO NOT call \
-                     any more tools \u{2014} any tool calls in this response will be ignored. \
-                     Summarize what you found, what you would do next if you had more turns, \
-                     and explain that your investigation was interrupted by the budget."
-                );
-                crate::inference_helpers::repair_alternation(&mut messages, GRACE_TURN_BRIDGE);
-                messages.push(ChatMessage::text("user", &warning));
-                tracing::warn!(
-                    agent = agent_name,
-                    iter,
-                    max_turns,
-                    "sub-agent reached max_turns; running grace turn"
-                );
-                sink.emit(EngineEvent::Info {
-                    message: format!(
-                        "  \u{23f3} {agent_name}: reached max turns ({max_turns}); requesting final summary"
-                    ),
-                });
-            }
-
-            let response = provider
-                .chat(&messages, &tool_defs, &sub_config.model_settings)
-                .await?;
-            sink.emit(EngineEvent::SpinnerStop);
-
-            let tool_calls_json = if response.tool_calls.is_empty() {
-                None
-            } else {
-                Some(serde_json::to_string(&response.tool_calls)?)
-            };
-
-            // **koda#1101**: capture msg_id and mark the assistant
-            // message complete. Pre-fix this call discarded the row
-            // ID and never marked complete, so `load_context` (which
-            // filters out `(role = 'assistant' AND completed_at IS
-            // NULL)`) dropped every sub-agent assistant turn from
-            // the next iteration's history. The orphan tool-result
-            // rows then got pruned by `prune_mismatched_tool_calls`,
-            // leaving the sub-agent with `[system, user]` only — it
-            // re-issued the same tool call every iteration until the
-            // cap. Mirrors the parent inference loop's pattern at
-            // `inference.rs::mark_message_complete`. The contract is
-            // pinned by `db::tests::load_context_excludes_incomplete_assistant_messages`.
-            let assistant_msg_id = db
-                .insert_message(
-                    &sub_session,
-                    &Role::Assistant,
-                    response.content.as_deref(),
-                    tool_calls_json.as_deref(),
-                    None,
-                    Some(&response.usage),
-                )
-                .await?;
-            db.mark_message_complete(assistant_msg_id).await?;
-            if let Some(reasoning) = response.reasoning.as_deref() {
-                db.update_message_thinking_content(assistant_msg_id, reasoning)
-                    .await?;
-            }
-
-            // #1135: if this iteration was the grace turn, return
-            // immediately regardless of whether the model called tools.
-            // The grace contract is exactly one extra LLM call —
-            // dispatching its tool calls would defeat the budget.
-            // Falls through to the normal empty-tool-calls return path
-            // when the model complied (typical case after the strong
-            // "text only" framing); short-circuits with a marker if the
-            // model defied the instruction and tried to keep tooling.
-            if grace_turn_done {
-                let result = match response.content.as_deref() {
-                    Some(text) if !text.trim().is_empty() => text.to_string(),
-                    _ => format!(
-                        "[max_turns reached: agent exceeded the {max_turns}-turn budget \
-                         and did not produce a final summary on its grace turn. \
-                         {n} pending tool call(s) were dropped.]",
-                        n = response.tool_calls.len(),
-                    ),
-                };
-                sub_agent_cache.put(agent_name, prompt, &result);
-                if let Ok(Some(hint)) = workspace.release(&sub_session, &effective_root).await {
-                    sink.emit(EngineEvent::Info {
-                        message: format!("  \u{1f335} {agent_name}: {hint}"),
-                    });
+        // An async block so every `?` in the loop ends up below, where the
+        // workspace goes back and any work left in it stays findable.
+        let result: Result<String> = async {
+            for iter in 1u32.. {
+                // #1110: sub-agents have no hardcoded iteration cap. Termination
+                // is driven by the model (clean stop, no tool calls), `LoopDetector`
+                // (consecutive identical calls -> feedback -> hard stop), parent
+                // cancellation, or context exhaustion. Per DESIGN.md P3:
+                // "Let the model drive [...] don't scaffold around weakness."
+                //
+                // Layer 4 of #996 + #1076: push the live iteration counter
+                // so `/agents`, the status-bar pill, AND ACP / headless /
+                // TUI clients all reflect real progress instead of the
+                // Layer-0 placeholder `iter: 0` that `run_bg_agent` sends
+                // on entry.  Fan-out failures inside the emitter are
+                // silently absorbed for the same reason as the terminal
+                // sends: if the receiver is gone, the user can't see the
+                // update and we don't want noise.
+                if let Some(ref e) = emitter {
+                    e.send(crate::child_agent::AgentStatus::Running { iter });
                 }
-                return Ok(result);
-            }
-
-            if response.tool_calls.is_empty() {
-                // **#1369**: pre-fix this branch did
-                //     `response.content.unwrap_or_else(|| "(no output)".to_string())`
-                // and returned. That worked when the model produced a
-                // final summary, but a sub-agent loop can also exit
-                // here with `content == None` (or `Some("")`) when the
-                // model emits a bare stop signal after a long tool
-                // chain — a documented Gemini behavior, and reachable
-                // from any provider per `providers/{anthropic,gemini,
-                // openai_compat}.rs` which all normalize empty text
-                // to `None`. The literal sentinel `"(no output)"`
-                // then surfaced as the sub-agent's "answer", and the
-                // parent (especially after #1366 phase 1's sync
-                // dispatch) treated that string as the agent's
-                // conclusion — either re-invoking in a loop or acting
-                // on garbage. Fix mirrors `claude_code_src/src/tools/
-                // AgentTool/agentToolUtils.ts::finalizeAgentTool`
-                // (~line 297, also vendored under `peers/`): if the
-                // final assistant turn is empty, walk backward through
-                // history for the most recent assistant text. Falls
-                // through to a structured marker only if the entire
-                // run produced no assistant text at all (which means
-                // something is genuinely wrong, not just a quiet last
-                // turn). #1370 will layer a stricter `complete_task`
-                // contract on top of this; the scan-back stays as the
-                // robust fallback.
-                let result = match response.content.as_deref() {
-                    Some(text) if !text.trim().is_empty() => text.to_string(),
-                    _ => recover_last_assistant_text(&messages).unwrap_or_else(|| {
-                        format!(
-                            "[sub-agent '{agent_name}' finished after {iter} turn(s) without \
-                             producing any text response. The model may have hit a \
-                             provider-specific stop condition (e.g. Gemini's bare-stop after \
-                             long tool chains). Try rephrasing the prompt, simplifying the \
-                             task, or switching models.]"
-                        )
-                    }),
-                };
-                // Cache the result for future identical calls
-                sub_agent_cache.put(agent_name, prompt, &result);
-                // Release workspace; surface branch hint if agent left changes.
-                if let Ok(Some(hint)) = workspace.release(&sub_session, &effective_root).await {
-                    sink.emit(EngineEvent::Info {
-                        message: format!("  \u{1f335} {agent_name}: {hint}"),
-                    });
+                // Respect parent cancellation (#286)
+                if cancel.is_cancelled() {
+                    // Release workspace on cancellation.
+                    release_workspace(
+                        workspace.as_ref(),
+                        &sub_session,
+                        &effective_root,
+                        agent_name,
+                        sink,
+                    )
+                    .await;
+                    return anyhow::Ok("[cancelled by parent]".to_string());
                 }
-                return Ok(result);
-            }
+                let history = db.load_context(&sub_session).await?;
+                let mut messages = crate::inference_helpers::assemble_messages(
+                    &ChatMessage::text("system", &system_prompt),
+                    &history,
+                );
 
-            for tc in &response.tool_calls {
-                sink.emit(EngineEvent::ToolCallStart {
-                    id: tc.id.clone(),
-                    name: tc.function_name.clone(),
-                    args: serde_json::from_str(&tc.arguments).unwrap_or_default(),
-                    is_sub_agent: true,
+                sink.emit(EngineEvent::SpinnerStart {
+                    message: format!("  \u{1f9a5} {agent_name} thinking..."),
                 });
 
-                // Sub-agents inherit the parent's approval mode
-                let parsed_args: serde_json::Value =
-                    serde_json::from_str(&tc.arguments).unwrap_or_default();
-
-                // #1022 B7 (revised): defense-in-depth refusal of
-                // `InvokeAgent` and `AskUser`. Both are filtered from
-                // the sub-agent's `tool_defs` above, so a well-behaved
-                // model never emits them. A misbehaving or scripted
-                // model still might — short-circuit here with a clear
-                // refusal message instead of falling through to
-                // `execute_one_tool` (which would happily recurse for
-                // InvokeAgent) or the registry stub (which returns
-                // confusing `success=false` boilerplate).
-                if tc.function_name == "InvokeAgent" {
-                    let refusal = "InvokeAgent is not available inside a sub-agent. \
-                                   Sub-agents are autonomous workers and cannot spawn \
-                                   further sub-agents. Complete the task directly with \
-                                   the tools you have, or report back what additional \
-                                   dispatch the parent agent should perform.";
-                    db.insert_message(
-                        &sub_session,
-                        &Role::Tool,
-                        Some(refusal),
-                        None,
-                        Some(&tc.id),
-                        None,
-                    )
-                    .await?;
-                    continue;
-                }
-                // #1325 Phase 5a: SpawnAgent re-maps to InvokeAgent at
-                // dispatch time (`tool_dispatch.rs::execute_one_tool`),
-                // so a rogue or scripted model emitting `SpawnAgent`
-                // would otherwise drive the same unbounded recursion
-                // the InvokeAgent block above prevents. Refuse with
-                // the same shape so the deny-list filter at line 1356
-                // and this defense-in-depth refusal stay symmetric.
-                if tc.function_name == "SpawnAgent" {
-                    let refusal = "SpawnAgent is not available inside a sub-agent. \
-                                   Sub-agents are autonomous workers and cannot spawn \
-                                   further sub-agents. Complete the task directly with \
-                                   the tools you have, or report back what additional \
-                                   dispatch the parent agent should perform.";
-                    db.insert_message(
-                        &sub_session,
-                        &Role::Tool,
-                        Some(refusal),
-                        None,
-                        Some(&tc.id),
-                        None,
-                    )
-                    .await?;
-                    continue;
-                }
-                if tc.function_name == "AskUser" {
-                    let refusal = "AskUser is not available inside a sub-agent. \
-                                   Sub-agents have no channel to the user; the parent \
-                                   agent gathers any required input before delegating. \
-                                   Proceed with the information you already have or \
-                                   report what's missing.";
-                    db.insert_message(
-                        &sub_session,
-                        &Role::Tool,
-                        Some(refusal),
-                        None,
-                        Some(&tc.id),
-                        None,
-                    )
-                    .await?;
-                    continue;
+                // #1135: append the grace-turn reminder when this iteration
+                // is the one that exceeded the cap. The reminder is stuffed
+                // into the OUTGOING `messages` only — it is not persisted
+                // to the DB, so a future replay won't see it twice. The
+                // strict "text only, no tools" framing matches gemini's
+                // wording (`local-executor.ts::getFinalWarningMessage`).
+                //
+                // It goes out as `user`: only the leading system prompt reaches
+                // the model as `system`. Anthropic would drop a later one and
+                // Gemini would let it replace the system prompt.
+                if iter > max_turns && !grace_turn_done {
+                    grace_turn_done = true;
+                    let warning = format!(
+                        "You have reached the maximum number of turns ({max_turns}) for this \
+                         sub-agent invocation. You have ONE final chance to complete the task. \
+                         You MUST respond with your best answer NOW as plain text. DO NOT call \
+                         any more tools \u{2014} any tool calls in this response will be ignored. \
+                         Summarize what you found, what you would do next if you had more turns, \
+                         and explain that your investigation was interrupted by the budget."
+                    );
+                    crate::inference_helpers::repair_alternation(&mut messages, GRACE_TURN_BRIDGE);
+                    messages.push(ChatMessage::text("user", &warning));
+                    tracing::warn!(
+                        agent = agent_name,
+                        iter,
+                        max_turns,
+                        "sub-agent reached max_turns; running grace turn"
+                    );
+                    sink.emit(EngineEvent::Info {
+                        message: format!(
+                            "  \u{23f3} {agent_name}: reached max turns ({max_turns}); requesting final summary"
+                        ),
+                    });
                 }
 
-                // #1022 B14: pre-flight validation — catch obvious errors
-                // (missing path, bad regex, file-cache violations) before
-                // we burn an approval prompt or execute. The top-level
-                // sequential dispatcher does the same; without this the
-                // sub-agent would hit the same class of errors *after*
-                // the user had already approved.
-                let validation_error = tools::validate::validate_with_registry(
-                    &tools,
-                    &tc.function_name,
-                    &parsed_args,
-                    effective_root_ref,
-                )
-                .await;
+                let chat = provider.chat(&messages, &tool_defs, &sub_config.model_settings);
+                let Some(response) = unless_cancelled(&cancel, chat).await else {
+                    sink.emit(EngineEvent::SpinnerStop);
+                    release_workspace(
+                        workspace.as_ref(),
+                        &sub_session,
+                        &effective_root,
+                        agent_name,
+                        sink,
+                    )
+                    .await;
+                    return Ok("[cancelled by parent]".to_string());
+                };
+                let response = response?;
+                sink.emit(EngineEvent::ModelUsage {
+                    usage: (&response.usage).into(),
+                });
+                sink.emit(EngineEvent::SpinnerStop);
 
-                let output = if let Some(error) = validation_error {
-                    format!("Validation error: {error}")
+                let tool_calls_json = if response.tool_calls.is_empty() {
+                    None
                 } else {
-                    // #1250: sub-agent context. The dead approval channel
-                    // (line 173) means `NeedsConfirmation` is meaningless
-                    // here. `check_tool_for_sub_agent` resolves it per the
-                    // safe-side rule: mutating ops auto-approve (the agent
-                    // was invoked to do work), destructive ops block.
-                    let approval = trust::check_tool_for_sub_agent(
+                    Some(serde_json::to_string(&response.tool_calls)?)
+                };
+
+                // **koda#1101**: capture msg_id and mark the assistant
+                // message complete. Pre-fix this call discarded the row
+                // ID and never marked complete, so `load_context` (which
+                // filters out `(role = 'assistant' AND completed_at IS
+                // NULL)`) dropped every sub-agent assistant turn from
+                // the next iteration's history. The orphan tool-result
+                // rows then got pruned by `prune_mismatched_tool_calls`,
+                // leaving the sub-agent with `[system, user]` only — it
+                // re-issued the same tool call every iteration until the
+                // cap. Mirrors the parent inference loop's pattern at
+                // `inference.rs::mark_message_complete`. The contract is
+                // pinned by `db::tests::load_context_excludes_incomplete_assistant_messages`.
+                let assistant_msg_id = db
+                    .insert_message(
+                        &sub_session,
+                        &Role::Assistant,
+                        response.content.as_deref(),
+                        tool_calls_json.as_deref(),
+                        None,
+                        Some(&response.usage),
+                    )
+                    .await?;
+                db.mark_message_complete(assistant_msg_id).await?;
+                if let Some(reasoning) = response.reasoning.as_deref() {
+                    db.update_message_thinking_content(assistant_msg_id, reasoning)
+                        .await?;
+                }
+
+                // #1135: if this iteration was the grace turn, return
+                // immediately regardless of whether the model called tools.
+                // The grace contract is exactly one extra LLM call —
+                // dispatching its tool calls would defeat the budget.
+                // Falls through to the normal empty-tool-calls return path
+                // when the model complied (typical case after the strong
+                // "text only" framing); short-circuits with a marker if the
+                // model defied the instruction and tried to keep tooling.
+                if grace_turn_done {
+                    let result = match response.content.as_deref() {
+                        Some(text) if !text.trim().is_empty() => text.to_string(),
+                        _ => format!(
+                            "[max_turns reached: agent exceeded the {max_turns}-turn budget \
+                             and did not produce a final summary on its grace turn. \
+                             {n} pending tool call(s) were dropped.]",
+                            n = response.tool_calls.len(),
+                        ),
+                    };
+                    sub_agent_cache.put(agent_name, prompt, &result);
+                    release_workspace(
+                        workspace.as_ref(),
+                        &sub_session,
+                        &effective_root,
+                        agent_name,
+                        sink,
+                    )
+                    .await;
+                    return Ok(result);
+                }
+
+                if response.tool_calls.is_empty() {
+                    // **#1369**: pre-fix this branch did
+                    //     `response.content.unwrap_or_else(|| "(no output)".to_string())`
+                    // and returned. That worked when the model produced a
+                    // final summary, but a sub-agent loop can also exit
+                    // here with `content == None` (or `Some("")`) when the
+                    // model emits a bare stop signal after a long tool
+                    // chain — a documented Gemini behavior, and reachable
+                    // from any provider per `providers/{anthropic,gemini,
+                    // openai_compat}.rs` which all normalize empty text
+                    // to `None`. The literal sentinel `"(no output)"`
+                    // then surfaced as the sub-agent's "answer", and the
+                    // parent (especially after #1366 phase 1's sync
+                    // dispatch) treated that string as the agent's
+                    // conclusion — either re-invoking in a loop or acting
+                    // on garbage. Fix mirrors `claude_code_src/src/tools/
+                    // AgentTool/agentToolUtils.ts::finalizeAgentTool`
+                    // (~line 297, also vendored under `peers/`): if the
+                    // final assistant turn is empty, walk backward through
+                    // history for the most recent assistant text. Falls
+                    // through to a structured marker only if the entire
+                    // run produced no assistant text at all (which means
+                    // something is genuinely wrong, not just a quiet last
+                    // turn). #1370 will layer a stricter `complete_task`
+                    // contract on top of this; the scan-back stays as the
+                    // robust fallback.
+                    let result = match response.content.as_deref() {
+                        Some(text) if !text.trim().is_empty() => text.to_string(),
+                        _ => recover_last_assistant_text(&messages).unwrap_or_else(|| {
+                            format!(
+                                "[sub-agent '{agent_name}' finished after {iter} turn(s) without \
+                                 producing any text response. The model may have hit a \
+                                 provider-specific stop condition (e.g. Gemini's bare-stop after \
+                                 long tool chains). Try rephrasing the prompt, simplifying the \
+                                 task, or switching models.]"
+                            )
+                        }),
+                    };
+                    // Cache the result for future identical calls
+                    sub_agent_cache.put(agent_name, prompt, &result);
+                    // Release workspace; surface branch hint if agent left changes.
+                    release_workspace(
+                        workspace.as_ref(),
+                        &sub_session,
+                        &effective_root,
+                        agent_name,
+                        sink,
+                    )
+                    .await;
+                    return Ok(result);
+                }
+
+                for tc in &response.tool_calls {
+                    sink.emit(EngineEvent::ToolCallStart {
+                        id: tc.id.clone(),
+                        name: tc.function_name.clone(),
+                        args: serde_json::from_str(&tc.arguments).unwrap_or_default(),
+                        is_sub_agent: true,
+                    });
+
+                    // Sub-agents inherit the parent's approval mode
+                    let parsed_args: serde_json::Value =
+                        serde_json::from_str(&tc.arguments).unwrap_or_default();
+
+                    // #1022 B7 (revised): defense-in-depth refusal of
+                    // `InvokeAgent` and `AskUser`. Both are filtered from
+                    // the sub-agent's `tool_defs` above, so a well-behaved
+                    // model never emits them. A misbehaving or scripted
+                    // model still might — short-circuit here with a clear
+                    // refusal message instead of falling through to
+                    // `execute_one_tool` (which would happily recurse for
+                    // InvokeAgent) or the registry stub (which returns
+                    // confusing `success=false` boilerplate).
+                    if tc.function_name == "InvokeAgent" {
+                        let refusal = "InvokeAgent is not available inside a sub-agent. \
+                                       Sub-agents are autonomous workers and cannot spawn \
+                                       further sub-agents. Complete the task directly with \
+                                       the tools you have, or report back what additional \
+                                       dispatch the parent agent should perform.";
+                        db.insert_message(
+                            &sub_session,
+                            &Role::Tool,
+                            Some(refusal),
+                            None,
+                            Some(&tc.id),
+                            None,
+                        )
+                        .await?;
+                        continue;
+                    }
+                    // #1325 Phase 5a: SpawnAgent re-maps to InvokeAgent at
+                    // dispatch time (`tool_dispatch.rs::execute_one_tool`),
+                    // so a rogue or scripted model emitting `SpawnAgent`
+                    // would otherwise drive the same unbounded recursion
+                    // the InvokeAgent block above prevents. Refuse with
+                    // the same shape so the deny-list filter at line 1356
+                    // and this defense-in-depth refusal stay symmetric.
+                    if tc.function_name == "SpawnAgent" {
+                        let refusal = "SpawnAgent is not available inside a sub-agent. \
+                                       Sub-agents are autonomous workers and cannot spawn \
+                                       further sub-agents. Complete the task directly with \
+                                       the tools you have, or report back what additional \
+                                       dispatch the parent agent should perform.";
+                        db.insert_message(
+                            &sub_session,
+                            &Role::Tool,
+                            Some(refusal),
+                            None,
+                            Some(&tc.id),
+                            None,
+                        )
+                        .await?;
+                        continue;
+                    }
+                    if tc.function_name == "AskUser" {
+                        let refusal = "AskUser is not available inside a sub-agent. \
+                                       Sub-agents have no channel to the user; the parent \
+                                       agent gathers any required input before delegating. \
+                                       Proceed with the information you already have or \
+                                       report what's missing.";
+                        db.insert_message(
+                            &sub_session,
+                            &Role::Tool,
+                            Some(refusal),
+                            None,
+                            Some(&tc.id),
+                            None,
+                        )
+                        .await?;
+                        continue;
+                    }
+
+                    // #1022 B14: pre-flight validation — catch obvious errors
+                    // (missing path, bad regex, file-cache violations) before
+                    // we burn an approval prompt or execute. The top-level
+                    // sequential dispatcher does the same; without this the
+                    // sub-agent would hit the same class of errors *after*
+                    // the user had already approved.
+                    let validation_error = tools::validate::validate_with_registry(
+                        &tools,
                         &tc.function_name,
                         &parsed_args,
-                        mode,
-                        Some(effective_root_ref),
-                    );
+                        effective_root_ref,
+                    )
+                    .await;
 
-                    match approval {
-                        ToolApproval::AutoApprove => {
-                            // #1022 B6 + B7: route through `execute_one_tool`
-                            // (instead of calling `tools.execute()` directly)
-                            // so that:
-                            //   - mutating tool calls invalidate the
-                            //     `SubAgentCache` (B6) — otherwise an
-                            //     identical follow-up `InvokeAgent` returns
-                            //     a stale cached result.
-                            //   - nested `InvokeAgent` from inside this
-                            //     sub-agent dispatches recursively into
-                            //     `execute_sub_agent` (B7), instead of
-                            //     hitting the registry stub that returns
-                            //     "InvokeAgent is handled by the inference
-                            //     loop." with success=false.
-                            //   - Bash output streams through the parent
-                            //     sink (free visibility win).
-                            let (_id, result, _success, _full) = execute_one_tool(tc, sub_tx).await;
-                            result
-                        }
-                        ToolApproval::Blocked => {
-                            let detail = tools::describe_action(&tc.function_name, &parsed_args);
-                            let diff_preview = preview::compute(
-                                &tc.function_name,
-                                &parsed_args,
-                                effective_root_ref,
-                            )
-                            .await;
-                            sink.emit(EngineEvent::ActionBlocked {
-                                tool_name: tc.function_name.clone(),
-                                detail,
-                                preview: diff_preview,
-                            });
-                            "[safe mode] Action blocked.".to_string()
-                        }
-                        ToolApproval::NeedsConfirmation => {
-                            let detail = tools::describe_action(&tc.function_name, &parsed_args);
-                            let diff_preview = preview::compute(
-                                &tc.function_name,
-                                &parsed_args,
-                                effective_root_ref,
-                            )
-                            .await;
-                            let effect = crate::trust::resolve_tool_effect_with_registry(
-                                &tc.function_name,
-                                &parsed_args,
-                                &tools,
-                            );
-                            match request_approval(
-                                sink,
-                                cmd_rx,
-                                &cancel,
-                                &tc.function_name,
-                                &detail,
-                                diff_preview,
-                                effect,
-                            )
-                            .await
-                            {
-                                Some(ApprovalDecision::Approve) => {
-                                    let (_id, result, _success, _full) =
-                                        execute_one_tool(tc, sub_tx).await;
-                                    result
-                                }
-                                Some(ApprovalDecision::Reject) => "[rejected by user]".to_string(),
-                                Some(ApprovalDecision::RejectWithFeedback { feedback }) => {
-                                    format!("[rejected: {feedback}]")
-                                }
-                                Some(ApprovalDecision::RejectAuto { reason }) => {
-                                    // #1022 B15: same shape as the existing
-                                    // sub-agent auto-reject below, so the model
-                                    // sees a uniform "no human, here's why"
-                                    // signal regardless of whether the auto-
-                                    // rejection came from headless policy or
-                                    // from a closed approval channel.
-                                    format!("[auto-rejected: {reason}]")
-                                }
-                                None => {
-                                    // #1022 B10: `request_approval` returns `None`
-                                    // when the command channel is closed (sub-agents
-                                    // don't have a live channel to the user) or
-                                    // cancelled. Distinguish the two so the model
-                                    // gets actionable signal instead of a generic
-                                    // "[cancelled]" that looked like the user
-                                    // hit Ctrl+C.
-                                    if cancel.is_cancelled() {
-                                        "[cancelled]".to_string()
-                                    } else {
-                                        format!(
-                                            "[auto-rejected: '{tool}' requires user \
-                                             confirmation but this sub-agent has no \
-                                             channel to the user. The parent agent \
-                                             must pre-approve destructive operations \
-                                             or run the tool itself.]",
-                                            tool = tc.function_name,
-                                        )
+                    let output = if let Some(error) = validation_error {
+                        format!("Validation error: {error}")
+                    } else {
+                        // #1250: sub-agent context. The dead approval channel
+                        // (line 173) means `NeedsConfirmation` is meaningless
+                        // here. `check_tool_for_sub_agent` resolves it per the
+                        // safe-side rule: mutating ops auto-approve (the agent
+                        // was invoked to do work), destructive ops block.
+                        let approval = trust::check_tool_for_sub_agent(
+                            &tc.function_name,
+                            &parsed_args,
+                            mode,
+                            Some(effective_root_ref),
+                        );
+
+                        match approval {
+                            ToolApproval::AutoApprove => {
+                                // #1022 B6 + B7: route through `execute_one_tool`
+                                // (instead of calling `tools.execute()` directly)
+                                // so that:
+                                //   - mutating tool calls invalidate the
+                                //     `SubAgentCache` (B6) — otherwise an
+                                //     identical follow-up `InvokeAgent` returns
+                                //     a stale cached result.
+                                //   - nested `InvokeAgent` from inside this
+                                //     sub-agent dispatches recursively into
+                                //     `execute_sub_agent` (B7), instead of
+                                //     hitting the registry stub that returns
+                                //     "InvokeAgent is handled by the inference
+                                //     loop." with success=false.
+                                //   - Bash output streams through the parent
+                                //     sink (free visibility win).
+                                tool_output(tc, sub_tx, &cancel).await
+                            }
+                            ToolApproval::Blocked => {
+                                let detail =
+                                    tools::describe_action(&tc.function_name, &parsed_args);
+                                let diff_preview = preview::compute(
+                                    &tc.function_name,
+                                    &parsed_args,
+                                    effective_root_ref,
+                                )
+                                .await;
+                                sink.emit(EngineEvent::ActionBlocked {
+                                    tool_name: tc.function_name.clone(),
+                                    detail,
+                                    preview: diff_preview,
+                                });
+                                "[safe mode] Action blocked.".to_string()
+                            }
+                            ToolApproval::NeedsConfirmation => {
+                                let detail =
+                                    tools::describe_action(&tc.function_name, &parsed_args);
+                                let diff_preview = preview::compute(
+                                    &tc.function_name,
+                                    &parsed_args,
+                                    effective_root_ref,
+                                )
+                                .await;
+                                let effect = crate::trust::resolve_tool_effect_with_registry(
+                                    &tc.function_name,
+                                    &parsed_args,
+                                    &tools,
+                                );
+                                match request_approval(
+                                    sink,
+                                    cmd_rx,
+                                    &cancel,
+                                    &tc.function_name,
+                                    &detail,
+                                    diff_preview,
+                                    effect,
+                                )
+                                .await
+                                {
+                                    Some(ApprovalDecision::Approve) => {
+                                        tool_output(tc, sub_tx, &cancel).await
+                                    }
+                                    Some(ApprovalDecision::Reject) => {
+                                        "[rejected by user]".to_string()
+                                    }
+                                    Some(ApprovalDecision::RejectWithFeedback { feedback }) => {
+                                        format!("[rejected: {feedback}]")
+                                    }
+                                    Some(ApprovalDecision::RejectAuto { reason }) => {
+                                        // #1022 B15: same shape as the existing
+                                        // sub-agent auto-reject below, so the model
+                                        // sees a uniform "no human, here's why"
+                                        // signal regardless of whether the auto-
+                                        // rejection came from headless policy or
+                                        // from a closed approval channel.
+                                        format!("[auto-rejected: {reason}]")
+                                    }
+                                    None => {
+                                        // #1022 B10: `request_approval` returns `None`
+                                        // when the command channel is closed (sub-agents
+                                        // don't have a live channel to the user) or
+                                        // cancelled. Distinguish the two so the model
+                                        // gets actionable signal instead of a generic
+                                        // "[cancelled]" that looked like the user
+                                        // hit Ctrl+C.
+                                        if cancel.is_cancelled() {
+                                            "[cancelled]".to_string()
+                                        } else {
+                                            format!(
+                                                "[auto-rejected: '{tool}' requires user \
+                                                 confirmation but this sub-agent has no \
+                                                 channel to the user. The parent agent \
+                                                 must pre-approve destructive operations \
+                                                 or run the tool itself.]",
+                                                tool = tc.function_name,
+                                            )
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
-                };
+                    };
 
-                db.insert_message(
-                    &sub_session,
-                    &Role::Tool,
-                    Some(&output),
-                    None,
-                    Some(&tc.id),
-                    None,
-                )
-                .await?;
+                    db.insert_message(
+                        &sub_session,
+                        &Role::Tool,
+                        Some(&output),
+                        None,
+                        Some(&tc.id),
+                        None,
+                    )
+                    .await?;
+                }
             }
+            // #1110 + #1135: unreachable in practice. The `for iter in 1u32..`
+            // range is unbounded; exits are:
+            //   - `return Ok(content)` on a clean (no-tool-calls) response,
+            //   - `return Ok(grace_summary)` after the #1135 grace turn,
+            //   - `return Ok("[cancelled by parent]")` on parent cancellation,
+            //   - `?` on a provider/persistence failure.
+            // The grace-turn path guarantees termination within `max_turns + 1`
+            // iterations even when the model refuses to stop on its own — the
+            // class of bug from #1135.
+            unreachable!("sub-agent loop exits via return; the iteration range is unbounded");
         }
-        // #1110 + #1135: unreachable in practice. The `for iter in 1u32..`
-        // range is unbounded; exits are:
-        //   - `return Ok(content)` on a clean (no-tool-calls) response,
-        //   - `return Ok(grace_summary)` after the #1135 grace turn,
-        //   - `return Ok("[cancelled by parent]")` on parent cancellation,
-        //   - `return Err(...)` on a provider/persistence failure.
-        // The grace-turn path guarantees termination within `max_turns + 1`
-        // iterations even when the model refuses to stop on its own — the
-        // class of bug from #1135.
-        unreachable!("sub-agent loop exits via return; the iteration range is unbounded");
+        .await;
+
+        if result.is_err() {
+            release_workspace(
+                workspace.as_ref(),
+                &sub_session,
+                &effective_root,
+                agent_name,
+                sink,
+            )
+            .await;
+        }
+        result
+    }
+}
+
+/// Give back a sub-agent's workspace and say what became of any work in it.
+async fn release_workspace(
+    workspace: &(dyn WorkspaceProvider + Send + Sync),
+    slot_id: &str,
+    path: &std::path::Path,
+    agent_name: &str,
+    sink: &dyn crate::engine::EngineSink,
+) {
+    match workspace.release(slot_id, path).await {
+        Ok(Some(hint)) => sink.emit(EngineEvent::Info {
+            message: format!("  \u{1f335} {agent_name}: {hint}"),
+        }),
+        Ok(None) => {}
+        Err(e) => tracing::warn!("Workspace release failed for '{agent_name}': {e}"),
+    }
+}
+
+/// `work`'s result, or `None` once `cancel` fires.
+///
+/// A sub-agent holds a workspace that only its own cancel path gives back, so
+/// it can't sit on something that doesn't listen for the cancel. If it did,
+/// the turn's [`crate::inference::CANCEL_GRACE`] would drop it, workspace and
+/// all.
+async fn unless_cancelled<T>(
+    cancel: &CancellationToken,
+    work: impl std::future::Future<Output = T>,
+) -> Option<T> {
+    tokio::select! {
+        biased;
+        () = cancel.cancelled() => None,
+        result = work => Some(result),
+    }
+}
+
+/// Run one tool for a sub-agent. A cancel drops the call, which kills any
+/// command it's running, and the loop's cancel check does the rest.
+async fn tool_output(
+    tc: &crate::providers::ToolCall,
+    tx: crate::turn_context::ToolExecutionContext<'_>,
+    cancel: &CancellationToken,
+) -> String {
+    match unless_cancelled(cancel, execute_one_tool(tc, tx)).await {
+        Some((_id, result, _success, _full)) => result,
+        None => "[cancelled]".to_string(),
     }
 }
 
@@ -1934,6 +2049,84 @@ mod recover_last_assistant_text_tests {
     #[test]
     fn returns_none_for_empty_messages() {
         assert_eq!(recover_last_assistant_text(&[]), None);
+    }
+}
+
+#[cfg(test)]
+mod release_workspace_tests {
+    use super::release_workspace;
+    use crate::engine::EngineEvent;
+    use crate::engine::sink::TestSink;
+    use koda_sandbox::WorkspaceProvider;
+    use std::path::{Path, PathBuf};
+
+    struct Saying(&'static str);
+
+    #[async_trait::async_trait]
+    impl WorkspaceProvider for Saying {
+        async fn provision(&self, _slot_id: &str) -> anyhow::Result<PathBuf> {
+            unimplemented!("only release runs here")
+        }
+
+        async fn release(&self, _slot_id: &str, _path: &Path) -> anyhow::Result<Option<String>> {
+            match self.0 {
+                "nothing" => Ok(None),
+                "fails" => anyhow::bail!("no"),
+                hint => Ok(Some(hint.to_string())),
+            }
+        }
+    }
+
+    async fn messages(provider: Saying) -> Vec<String> {
+        let sink = TestSink::new();
+        release_workspace(&provider, "slot", Path::new("/w"), "task", &sink).await;
+        sink.events()
+            .into_iter()
+            .filter_map(|event| match event {
+                EngineEvent::Info { message } => Some(message),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_hint_reaches_the_user() {
+        let said = messages(Saying("still in /w")).await;
+        assert_eq!(said.len(), 1);
+        assert!(said[0].contains("task: still in /w"), "{said:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn no_hint_says_nothing() {
+        assert!(messages(Saying("nothing")).await.is_empty());
+        assert!(messages(Saying("fails")).await.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod unless_cancelled_tests {
+    use super::unless_cancelled;
+    use tokio_util::sync::CancellationToken;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_cancel_abandons_the_work() {
+        let cancel = CancellationToken::new();
+        let waiting = unless_cancelled(&cancel, std::future::pending::<()>());
+        cancel.cancel();
+        assert_eq!(waiting.await, None);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_cancelled_token_never_starts_the_work() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        assert_eq!(unless_cancelled(&cancel, async { 1 }).await, None);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn finished_work_keeps_its_result() {
+        let cancel = CancellationToken::new();
+        assert_eq!(unless_cancelled(&cancel, async { 1 }).await, Some(1));
     }
 }
 

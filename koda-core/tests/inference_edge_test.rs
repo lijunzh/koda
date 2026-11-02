@@ -26,6 +26,7 @@ async fn rate_limit_then_success() {
     // Should see a warning about rate limiting.
     let has_rate_warn = events
         .iter()
+        .filter_map(EngineEvent::notice)
         .any(|e| matches!(e, EngineEvent::Warn { message } if message.contains("Rate limited")));
     assert!(has_rate_warn, "expected rate limit warning in: {events:?}");
 
@@ -213,7 +214,8 @@ async fn loop_detection_injects_feedback_then_stops() {
     let events = env.run_inference(&provider).await;
 
     // Should see the feedback injection warning first — with count + tool name
-    let feedback_msg = events.iter().find_map(|e| match e {
+    let notices: Vec<_> = events.iter().filter_map(EngineEvent::notice).collect();
+    let feedback_msg = notices.iter().find_map(|e| match e {
         EngineEvent::Warn { message } if message.contains("Loop detected") => {
             Some(message.as_str())
         }
@@ -234,7 +236,7 @@ async fn loop_detection_injects_feedback_then_stops() {
     );
 
     // Should see the hard stop warning second — also with count + tool name
-    let hard_stop_msg = events.iter().find_map(|e| match e {
+    let hard_stop_msg = notices.iter().find_map(|e| match e {
         EngineEvent::Warn { message } if message.contains("Loop guard") => Some(message.as_str()),
         _ => None,
     });
@@ -432,10 +434,9 @@ async fn context_overflow_attempts_compact_and_retry() {
     // If it worked, we'll see a Compacted info event.
     // If it failed, we'll see an error (which is OK — the test validates the
     // recovery path was attempted).
-    let _attempted_recovery = events.iter().any(|e| {
-        matches!(e, EngineEvent::Warn { message } if message.contains("overflow"))
-            || matches!(e, EngineEvent::Info { message } if message.contains("Compact"))
-    });
+    let _attempted_recovery = events
+        .iter()
+        .any(|e| matches!(e, EngineEvent::Compaction { .. }));
 
     // At minimum, the overflow should not crash.
     if let Err(err) = result {
