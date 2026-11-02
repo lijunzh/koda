@@ -22,12 +22,7 @@ follow the same order. Keys saved with /key are loaded from the
 local keystore at startup and injected as env vars — shell env
 vars always win over stored keys.
 
-Usage: koda [OPTIONS] [PROMPT] [COMMAND]
-
-Commands:
-  server   Start an ACP (Agent Client Protocol) server for editor/client integrations
-  connect  Connect to a running Koda server (not yet implemented)
-  help     Print this message or the help of the given subcommand(s)
+Usage: koda [OPTIONS] [PROMPT]
 
 Arguments:
   [PROMPT]
@@ -111,5 +106,4 @@ Examples:
   git diff | koda                     # pipe diff as the prompt
   koda "refactor" --model o3         # one-shot with a specific model
   KODA_MODEL=gemini-flash-latest koda "..." # env-var model override
-  koda server --stdio                 # ACP stdio server for editor plugins
   koda -s abc123 "continue"          # resume a saved session

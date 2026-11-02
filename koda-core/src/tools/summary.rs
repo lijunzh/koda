@@ -40,7 +40,7 @@
 //! truncation. Renderers (currently `koda-cli/src/tool_header.rs`)
 //! pattern-match on the `ToolCallKind` enum and produce their own
 //! medium-specific output. This keeps `koda-core` headless and means
-//! a future ACP/JSON renderer can plug in without touching this
+//! a future JSON renderer can plug in without touching this
 //! module at all.
 
 use serde_json::Value;

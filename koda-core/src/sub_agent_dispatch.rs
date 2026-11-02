@@ -160,7 +160,7 @@ async fn run_bg_agent(
     // loop can forward it to the active `EngineSink`. Pre-#1076 this
     // was a raw `watch::Sender` and only the TUI (which polled the
     // registry directly) saw transitions; now every client surface
-    // (TUI / headless / ACP) gets the same event stream.
+    // (TUI / headless) gets the same event stream.
     //
     // `send` failures on the underlying watch are silently absorbed
     // by the emitter — the only way that fails is if the registry
@@ -294,7 +294,7 @@ async fn run_bg_agent(
         // loop can push live `Running { iter }` updates that fan out
         // to BOTH the watch channel (for `/agents` snapshots) and
         // the registry's event queue (for the inference-loop → sink
-        // path that ACP / headless / TUI all read from). Cloned so
+        // path that headless / TUI all read from). Cloned so
         // the terminal sends below still have access after
         // `execute_sub_agent` returns.
         Some(emitter.clone()),
@@ -485,7 +485,7 @@ pub(crate) fn execute_sub_agent<'a>(
     // bg-agent's `ChildStatusEmitter` so each loop iteration can push
     // `Running { iter }` to BOTH the registry's per-task watch
     // channel (`/agents`, status-bar pill) AND the engine event
-    // queue (`EngineSink` → TUI / ACP / headless).  Foreground
+    // queue (`EngineSink` → TUI / headless).  Foreground
     // sub-agents pass `None` — they have no status channel because
     // they're not tracked in the registry at all.
     emitter: Option<crate::child_agent::ChildStatusEmitter>,
@@ -563,7 +563,7 @@ pub(crate) fn execute_sub_agent<'a>(
         // dispatch synchronously. Pre-#1163 this fired only on the
         // (now-deleted) inline foreground path, and the bg path leaked
         // through with just an `Info { "\u{1f680} ... launched in
-        // background" }` line. ACP / headless clients (and the
+        // background" }` line. headless clients (and the
         // e2e tests in `e2e_agent_test.rs`) rely on `SubAgentStart`
         // as the canonical "a sub-agent was just dispatched" signal,
         // independent of whether dispatch resolves inline (cache hit)
@@ -659,7 +659,7 @@ pub(crate) fn execute_sub_agent<'a>(
             // the active `EngineSink`).  This is what closes the
             // engine/UI boundary leak: the TUI no longer needs to
             // poll the registry directly to render live status, and
-            // ACP / headless gain visibility for free.
+            // headless gain visibility for free.
             let emitter = crate::child_agent::ChildStatusEmitter::new(
                 task_id,
                 parent_spawner,
@@ -801,7 +801,7 @@ pub(crate) fn execute_sub_agent<'a>(
         // the entry from the registry at the instant the function
         // returns. The overlay's `build_rows` prunes activity for
         // missing task ids on the very next frame — visually
-        // identical to receiving a terminal event. ACP / headless
+        // identical to receiving a terminal event. headless
         // clients that subscribe to the raw `ChildTaskUpdate`
         // stream will see the event flow simply stop for that
         // task_id, which mirrors how a bg drain looks to them once
@@ -1238,7 +1238,7 @@ pub(crate) fn execute_sub_agent<'a>(
         );
         if preflight.is_over_budget() {
             // Surface to the inference loop's normal narrative so the
-            // master TUI / ACP / headless clients all see the same
+            // master TUI / headless clients all see the same
             // structured signal alongside the bubbled error.
             sink.emit(EngineEvent::Info {
                 message: format!(
@@ -1276,7 +1276,7 @@ pub(crate) fn execute_sub_agent<'a>(
                 // "Let the model drive [...] don't scaffold around weakness."
                 //
                 // Layer 4 of #996 + #1076: push the live iteration counter
-                // so `/agents`, the status-bar pill, AND ACP / headless /
+                // so `/agents`, the status-bar pill, AND headless /
                 // TUI clients all reflect real progress instead of the
                 // Layer-0 placeholder `iter: 0` that `run_bg_agent` sends
                 // on entry.  Fan-out failures inside the emitter are

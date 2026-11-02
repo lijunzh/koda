@@ -333,7 +333,7 @@ mod provider_key_flow {
 /// Regression test for #982: `--mode safe` was silently overridden by a
 /// hardcoded `TrustMode::Auto` at every `KodaSession::new` call site.
 ///
-/// We can't cheaply unit-test the headless / server / TUI bootstrap paths
+/// We can't cheaply unit-test the headless / TUI bootstrap paths
 /// without a real provider, terminal, and database. Instead, this is a
 /// structural test: scan the source files that previously held the hardcoded
 /// `TrustMode::Auto` literal as the 5th argument to `KodaSession::new` and
@@ -376,11 +376,6 @@ mod hardcoded_trust_mode_at_session_creation {
     #[test]
     fn headless_path_does_not_hardcode_auto() {
         assert_no_hardcoded_auto_in_session_new("koda-cli/src/headless.rs");
-    }
-
-    #[test]
-    fn acp_server_path_does_not_hardcode_auto() {
-        assert_no_hardcoded_auto_in_session_new("koda-cli/src/server.rs");
     }
 
     #[test]

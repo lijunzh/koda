@@ -99,7 +99,7 @@ pub struct TodoItem {
 /// Before/after pair for a todo whose `status` and/or `priority` changed
 /// while keeping the same `content` string.
 ///
-/// Computed server-side by [`todo_write`] so every client (TUI / ACP /
+/// Computed server-side by [`todo_write`] so every client (TUI /
 /// headless / future) gets the same animation primitives without
 /// having to maintain its own previous-list snapshot. Surfaces on
 /// [`crate::engine::EngineEvent::TodoUpdate`].
@@ -405,7 +405,7 @@ fn format_todo_list(todos: &[TodoItem]) -> String {
 //
 // Special wrinkle: on success, `TodoWrite` emits an
 // `EngineEvent::TodoUpdate` to the streaming sink so all clients
-// (TUI / ACP / headless) see the transition (#1077 Phase A). We
+// (TUI / headless) see the transition (#1077 Phase A). We
 // fold that emit *into* the trait's `execute`, so the registry's
 // dispatch fast path doesn't need a `name == "TodoWrite"` arm —
 // the trait owns its own side-effect plumbing.
@@ -547,8 +547,8 @@ mod tests {
         // (#1077 Phase B) Persistence verified through the public DB
         // accessor instead of the deleted `get_todo_section` helper.
         // Clients now mirror state from `EngineEvent::TodoUpdate`;
-        // the DB row stays as the source-of-truth for ACP
-        // reconnects but is no longer read into the system prompt.
+        // the DB row stays as the source-of-truth but is no
+        // longer read into the system prompt.
         use crate::persistence::Persistence;
         let raw = db.get_todo(&sid).await.unwrap().expect("row persisted");
         assert!(raw.contains("Add tests"));
@@ -889,7 +889,7 @@ mod tests {
 
     /// `TodoWriteOutcome.items` must always carry the full list,
     /// even on the dedup-nudge path. This is what lets clients
-    /// (e.g. ACP IDEs) mirror the latest state without re-reading
+    /// mirror the latest state without re-reading
     /// from the DB on every event.
     #[tokio::test]
     async fn outcome_items_populated_on_dedup_path() {

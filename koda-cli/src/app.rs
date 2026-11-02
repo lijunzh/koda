@@ -42,7 +42,6 @@ const AFTER_HELP: &str = "Examples:
   git diff | koda                     # pipe diff as the prompt
   koda \"refactor\" --model o3         # one-shot with a specific model
   KODA_MODEL=gemini-flash-latest koda \"...\" # env-var model override
-  koda server --stdio                 # ACP stdio server for editor plugins
   koda -s abc123 \"continue\"          # resume a saved session";
 
 /// Koda 🐻 - A high-performance AI coding agent built in Rust
@@ -140,21 +139,19 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Start an ACP (Agent Client Protocol) server for editor/client integrations
+    // Without this, `server` would be read as a prompt and sent to the model.
+    /// Removed: Koda no longer has a server mode
+    #[command(hide = true)]
     Server {
-        /// WebSocket port (not yet implemented — use --stdio instead)
-        #[arg(long, default_value = "9999")]
-        port: u16,
-        /// Use stdin/stdout JSON-RPC transport (required for VS Code, Zed, etc.)
-        ///
-        /// Reads newline-delimited JSON-RPC 2.0 from stdin and writes to stdout.
-        /// This is the standard ACP transport for local agent integrations.
-        #[arg(long)]
-        stdio: bool,
+        #[arg(hide = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
-    /// Connect to a running Koda server (not yet implemented)
-    Connect { url: String },
 }
+
+const SERVER_REMOVED: &str = "`koda server` has been removed. Koda no longer speaks ACP, \
+so editors can't connect to it.
+Run `koda` in a terminal, or `koda -p <prompt> --output-format stream-json` from a script.
+See https://lijunzh.github.io/koda/acp.html";
 
 pub(crate) async fn run() -> Result<()> {
     // Intercept --version / -V before clap so we can append the
@@ -184,54 +181,9 @@ pub(crate) async fn run() -> Result<()> {
 
     let cli = Cli::parse();
 
-    // Handle subcommands first
-    if let Some(cmd) = &cli.command {
-        match cmd {
-            Command::Server { port, stdio } => {
-                if *stdio {
-                    // Init stderr tracing early so any startup hang in the
-                    // stdio server is at least observable. Stdout is
-                    // reserved for JSON-RPC; logs go to stderr.
-                    init_server_tracing();
-
-                    let project_root = cli.project_root.clone().unwrap_or_else(|| {
-                        std::env::current_dir().expect("Failed to get current directory")
-                    });
-                    let project_root = std::fs::canonicalize(&project_root)?;
-
-                    // Init DB and inject keys (#693)
-                    let db = koda_core::db::Database::init(&koda_core::db::config_dir()?).await?;
-                    if let Err(e) = koda_core::keystore::inject_into_env(&db).await {
-                        tracing::warn!("Failed to load keystore: {e}");
-                    }
-
-                    let config = koda_core::config::KodaConfig::load(&project_root, &cli.agent)?;
-                    let config = config
-                        .with_overrides(
-                            cli.base_url.clone(),
-                            cli.model.clone(),
-                            cli.provider.clone(),
-                        )
-                        .with_model_overrides(
-                            cli.max_tokens,
-                            cli.temperature,
-                            cli.thinking_budget,
-                            cli.reasoning_effort.clone(),
-                        )
-                        .with_context_override(cli.max_context_tokens)
-                        .with_trust(parse_top_level_trust_mode(&cli.mode));
-                    server::run_stdio_server(project_root, config).await?;
-                } else {
-                    eprintln!("WebSocket server (--port {port}) not yet implemented. Use --stdio.");
-                    std::process::exit(1);
-                }
-                return Ok(());
-            }
-            Command::Connect { url } => {
-                println!("Not implemented: Connect to {}", url);
-                std::process::exit(0);
-            }
-        }
+    if matches!(cli.command, Some(Command::Server { .. })) {
+        eprintln!("{SERVER_REMOVED}");
+        std::process::exit(1);
     }
 
     // Resolve headless prompt: -p flag, positional arg, or stdin
@@ -361,36 +313,17 @@ pub(crate) async fn run() -> Result<()> {
     .await
 }
 
-/// Initialize tracing for the stdio server subcommand.
-///
-/// Logs go to **stderr** so stdout stays reserved for newline-delimited
-/// JSON-RPC. The default filter is `info` so a freshly-spawned subprocess
-/// always announces itself — invaluable when debugging a hung server from
-/// an integration test (set `RUST_LOG=koda_cli=debug,koda_core=debug` for
-/// more detail). `try_init` is used so we silently no-op if the parent
-/// already initialized a subscriber (e.g. from `cargo test`).
-fn init_server_tracing() {
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("koda_core=info,koda_cli=info"));
-    let _ = tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(filter)
-        .with_target(true)
-        .try_init();
-    tracing::info!("koda server --stdio: tracing initialized");
-}
-
 /// Parse the `--mode` CLI flag and coerce to a top-level-valid trust
 /// mode, emitting a warning to stderr if Plan was requested.
 ///
-/// **#1244**: this is the single CLI-side coercion point. Three
+/// **#1244**: this is the single CLI-side coercion point. The
 /// `with_trust(...)` call sites in this file used to call
 /// `TrustMode::parse(&cli.mode).unwrap_or_default()` directly, which
 /// silently let `--mode plan` through to the top-level session —
 /// where Plan is sub-agent-only and just makes every write tool fail.
-/// Funneling all three through here ensures the rule lives in one
-/// place (DRY) and the warning is consistent across stdio-server,
-/// headless, and TUI launch modes.
+/// Funneling them through here ensures the rule lives in one
+/// place (DRY) and the warning is consistent across headless and
+/// TUI launch modes.
 ///
 /// **#860 / Auto-requires-sandbox**: after the Plan coercion, also
 /// validate that Auto isn't requested on a system without kernel

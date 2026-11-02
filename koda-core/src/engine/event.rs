@@ -2,7 +2,7 @@
 //!
 //! These types form the contract between the Koda engine and any client surface.
 //! They are serde-serializable so they can be sent over in-process channels
-//! (CLI mode) or over the wire (ACP server mode).
+//! (the TUI) or projected onto the wire protocol in `wire.rs` (headless mode).
 //!
 //! ## Design (DESIGN.md)
 //!
@@ -19,7 +19,7 @@
 //! - **Bidirectional**: The engine emits `EngineEvent`s and accepts `EngineCommand`s.
 //!   Some commands (like approval) are request/response pairs.
 //! - **Serde-first**: All types derive `Serialize`/`Deserialize` for future
-//!   wire transport (ACP/WebSocket).
+//!   wire transport.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -138,7 +138,7 @@ pub enum EngineEvent {
     /// (`Pending` → `Running { iter }` → terminal). Drained from the
     /// registry's status queue inside the inference loop alongside
     /// [`crate::child_agent::ChildAgentRegistry::drain_completed`], so any sink
-    /// (CLI / TUI / headless / ACP) sees the same event stream without
+    /// (CLI / TUI / headless) sees the same event stream without
     /// having to poll the registry directly.
     ///
     /// Closes the engine/UI boundary leak documented in #1076 — prior to
@@ -148,7 +148,7 @@ pub enum EngineEvent {
     ///
     /// **PR-A0.5 of #1232**: renamed from `BgTaskUpdate`. The wire tag
     /// (`"type":"bg_task_update"`) is preserved via `#[serde(rename)]`
-    /// so ACP / headless clients keep parsing the same envelope. The
+    /// so headless clients keep parsing the same envelope. The
     /// new `is_background` field defaults to `true` on legacy payloads
     /// for the same reason.
     #[serde(rename = "bg_task_update")]
@@ -191,7 +191,7 @@ pub enum EngineEvent {
     /// `is_background: true`.
     ///
     /// Wire format (`"type":"bg_child_activity"`) is preserved via
-    /// `#[serde(rename)]` so ACP / headless clients keep parsing the
+    /// `#[serde(rename)]` so headless clients keep parsing the
     /// same envelope. PR-A will revisit the wire tag once fg actually
     /// flows through here.
     ///
@@ -981,7 +981,7 @@ mod tests {
     /// #1022 B15: wire-format guard. The `decision` tag for the new
     /// `RejectAuto` variant must be `"reject_auto"` (snake_case via
     /// `#[serde(rename_all = "snake_case")]`). Renaming this would
-    /// break ACP clients silently — they'd see an unknown decision
+    /// break clients silently — they'd see an unknown decision
     /// and fall through to `Reject`, re-introducing the bug.
     #[test]
     fn test_reject_auto_wire_tag_is_snake_case() {
@@ -1105,7 +1105,7 @@ mod tests {
     }
 
     /// #1201 B + PR-A0 of #1232: ChildAgentActivity must roundtrip
-    /// cleanly so ACP / headless clients see the same wire shape as
+    /// cleanly so headless clients see the same wire shape as
     /// the in-process TUI. Tests all three kinds, the envelope, and
     /// the wire-tag preservation (still `bg_child_activity` for back
     /// compat).
@@ -1149,7 +1149,7 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         assert!(
             json.contains("\"type\":\"bg_child_activity\""),
-            "envelope must preserve historical wire tag for ACP / headless clients"
+            "envelope must preserve historical wire tag for headless clients"
         );
         assert!(
             json.contains("\"kind\":\"tool_start\""),

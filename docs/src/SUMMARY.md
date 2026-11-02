@@ -35,7 +35,7 @@
 # Reference
 
 - [Tools reference](./tools.md)
-- [ACP server (editor integration)](./acp.md)
+- [ACP (removed)](./acp.md)
 - [Privacy & data](./privacy.md)
 - [Troubleshooting](./troubleshooting.md)
 - [Debugging a run](./debugging.md)

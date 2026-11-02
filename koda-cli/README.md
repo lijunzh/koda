@@ -26,7 +26,6 @@ Install it with your package manager (`apt install bubblewrap`,
 koda                              # Interactive REPL
 koda --provider anthropic         # Use a cloud provider
 koda -p "fix the bug in auth.rs"  # Headless one-shot
-koda server --stdio               # ACP server for editor integration
 ```
 
 ## Trust modes

@@ -1,39 +1,31 @@
-# ACP server (editor integration)
+# ACP (removed)
 
-Koda implements the [Agent Client Protocol](https://agentclientprotocol.com)
-over stdio JSON-RPC 2.0. This lets editors connect to Koda as a local agent
-without network setup.
+Koda no longer has an ACP server. `koda server` has been removed, so editors
+that speak the [Agent Client Protocol](https://agentclientprotocol.com) can't
+connect to Koda. The `koda connect` placeholder, which never did anything, is
+gone too.
 
-```bash
-# Start the server (editors launch this automatically)
-koda server --stdio
-```
+If you registered Koda as an agent in your editor, remove that entry. Running
+`koda server` now exits with an error that points to this page.
 
-## Protocol lifecycle
+## Why it went
 
-```text
-Editor → initialize           (negotiate protocol version)
-Koda   ← InitializeResponse
+It didn't work. The server stopped reading input while a turn ran, so the first
+approval in Safe mode deadlocked. It also ignored the workspace and session a
+client asked for, and treated "always allow" as a rejection.
 
-Editor → session/new          (create a session)
-Koda   ← NewSessionResponse   (returns session_id)
+Fixing that meant building a second protocol for a client nobody was using.
+Koda now has one protocol instead of two half-built ones.
 
-Editor → session/prompt       (send a user message)
-Koda   ← [stream of session/update events]
-Koda   ← PromptResponse       (turn complete)
+## What to use instead
 
-Editor → Cancel               (optional — aborts the running turn)
-```
+| You want to | Use |
+|-------------|-----|
+| Work with Koda from an editor | Run `koda` in the editor's terminal |
+| Call Koda from a script | `koda -p "prompt"` ([headless mode](headless.md)) |
+| Read a run's events from a program | `koda -p "prompt" --output-format stream-json` ([wire protocol](headless.md#wire-protocol)) |
 
-Each line on stdin/stdout is a complete, self-contained JSON-RPC object.
-
-## Editor setup
-
-For VS Code, Zed, and other editors, see your editor's extension docs for
-how to configure a local ACP agent. The command to register is:
-
-```text
-koda server --stdio
-```
-
-No ports, no tokens, no network configuration required.
+`stream-json` is output only. A run takes one prompt and applies the
+[headless policy](headless.md#trust-mode-in-headless-mode) to approvals, so
+another program can follow a run but can't steer it or answer its approvals.
+There's no way to do that yet.

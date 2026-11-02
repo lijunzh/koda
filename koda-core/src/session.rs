@@ -368,7 +368,7 @@ impl KodaSession {
             bg_agents,
             git_snapshot: crate::git::GitSnapshot::default(),
             sub_agent_cache: SubAgentCache::new(),
-            // No forwarder yet; clients (TUI / ACP) call
+            // No forwarder yet; clients (the TUI) call
             // `attach_event_sink` to spawn it. Headless paths leave
             // it `None` and rely on the legacy synchronous drain.
             event_forwarder: None,
@@ -383,7 +383,7 @@ impl KodaSession {
     /// is moved out of the registry exactly once via
     /// [`ChildAgentRegistry::take_event_receiver`], so calling this
     /// twice is a no-op (returns `false` on the second call without
-    /// spawning anything). Production wires it once at TUI / ACP
+    /// spawning anything). Production wires it once at TUI
     /// startup and forgets about it.
     ///
     /// Returns `true` if the forwarder was spawned, `false` if the
@@ -394,7 +394,7 @@ impl KodaSession {
     /// **Lifetime**: the spawned task lives as long as `self` lives;
     /// the `AbortOnDropHandle` in [`Self::event_forwarder`] aborts
     /// it on session drop. If the consumer side of `sink` closes
-    /// (TUI exits, ACP socket dies) the forwarder exits naturally
+    /// (the TUI exits) the forwarder exits naturally
     /// when its `recv()` next yields — the channel side stays
     /// healthy and any future re-attach reuses it.
     ///
@@ -487,8 +487,8 @@ impl KodaSession {
     /// without cancelling the session-lifetime `self.cancel` (which bg agents
     /// derive from — see #1200 for why session.cancel must stay stable across
     /// turns). When `None`, the inference loop falls back to `self.cancel`,
-    /// which preserves the pre-#1208 behaviour every test, the headless
-    /// driver, and the ACP server already rely on.
+    /// which preserves the pre-#1208 behaviour every test and the
+    /// headless driver already rely on.
     pub async fn run_turn(
         &mut self,
         config: &KodaConfig,
@@ -555,7 +555,7 @@ impl KodaSession {
             sink,
             // #1208: prefer the caller-supplied per-turn cancel so the TUI
             // can stop *just this turn* with Ctrl+C without nuking the
-            // session-lifetime token bg agents share. Headless / server /
+            // session-lifetime token bg agents share. Headless and
             // tests pass `None` and keep the legacy session-token behaviour.
             cancel: effective_cancel.clone(),
             cmd_rx,

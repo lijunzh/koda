@@ -24,6 +24,4 @@
 
 | Command | Description |
 |---------|-------------|
-| `koda server --stdio` | Start ACP server over stdin/stdout (for editors) |
-| `koda server --port <N>` | WebSocket ACP server on port N (not yet implemented) |
 | `koda --version` | Print version + kernel sandbox availability (one line, paste-friendly for bug reports) |

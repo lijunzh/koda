@@ -44,12 +44,12 @@ koda -p "explain auth.rs" --model claude-opus-5-5
 
 # Pipe input directly into Koda
 echo "review this diff" | koda
-
-# Start the ACP server for editor/IDE integration
-koda server --stdio
 ```
 
 Inside the TUI, type `/help` to see all commands and keyboard shortcuts.
+
+Koda no longer has an ACP server, so `koda server` and editor connections over
+ACP are gone. [What changed, and what to use instead](https://lijunzh.github.io/koda/acp.html).
 
 ---
 
@@ -57,7 +57,7 @@ Inside the TUI, type `/help` to see all commands and keyboard shortcuts.
 
 | Crate | Description |
 |---|---|
-| [**koda-cli**](koda-cli/) | Terminal frontend (TUI + headless + ACP server) |
+| [**koda-cli**](koda-cli/) | Terminal frontend (TUI + headless) |
 | [**koda-core**](koda-core/) | Engine library — providers, tools, inference loop |
 | [**koda-sandbox**](koda-sandbox/) | Capability-aware sandbox layer — kernel-enforced FS/net/exec policies |
 | [**koda-test-utils**](koda-test-utils/) | Test utilities — mock providers, test sinks, and E2E harness |

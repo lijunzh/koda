@@ -1096,9 +1096,8 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
         // does nothing.
         //
         // For clients that don't / can't attach a session-lifetime
-        // sink — headless mode (per-turn `HeadlessSink`), the ACP
-        // server (per-turn `AcpSink` with per-turn `session_id`),
-        // tests, and any external embedder using `inference_loop`
+        // sink — headless mode (per-turn `HeadlessSink`), tests,
+        // and any external embedder using `inference_loop`
         // directly — this drain is the only way bg-status events
         // reach the sink. It still incurs the pre-#1321 latency
         // bound (events visible only between iterations, parked

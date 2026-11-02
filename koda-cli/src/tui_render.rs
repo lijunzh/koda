@@ -295,7 +295,7 @@ impl TuiRenderer {
                 // the event stream directly and drop the polling.
                 // (#1077 Phase A) TodoUpdate is rendered by the TUI's
                 // todo-list panel from the tool-result message stream;
-                // the structured event is for ACP / headless clients
+                // the structured event is for headless clients
                 // that want diff-driven animation. Same future-cleanup
                 // path as ChildTaskUpdate.
                 // (#1201 B2) ChildAgentActivity is dropped from TUI
@@ -307,7 +307,7 @@ impl TuiRenderer {
                 // dim lines live + the same trace again at the end.
                 // The Info line is the durable record; the status
                 // pill and `/agents` panel cover "is it still
-                // running". Headless/ACP keep the live lines because
+                // running". Headless keep the live lines because
                 // those contexts are tail-friendly. A future Phase
                 // B3 may add a Gemini-style live overlay above the
                 // composer that renders activity from state without
@@ -916,7 +916,7 @@ mod tests {
     // emitted by `inference.rs` after `drain_completed()` — a 50-tool
     // bg agent surfaced 100 dim lines live + the same trace again at
     // the end. B2 drops the live render in TUI scrollback while
-    // leaving headless/ACP untouched (those tail-friendly contexts
+    // leaving headless untouched (those tail-friendly contexts
     // benefit from per-line streaming).
     //
     // This test pins that decision so a future refactor doesn't

@@ -16,7 +16,6 @@ compile_error!(
      https://learn.microsoft.com/windows/wsl"
 );
 
-pub(crate) mod acp_adapter;
 pub(crate) mod ansi_parse;
 pub(crate) mod app;
 pub(crate) mod builtin_skills;
@@ -39,7 +38,6 @@ pub(crate) mod onboarding;
 pub(crate) mod panic_log;
 pub(crate) mod queue_lanes;
 pub(crate) mod scroll_buffer;
-pub(crate) mod server;
 pub(crate) mod sink;
 pub(crate) mod startup;
 pub(crate) mod theme;
