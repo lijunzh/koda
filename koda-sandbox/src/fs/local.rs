@@ -148,6 +148,32 @@ async fn kept_permissions(target: &Path) -> Option<std::fs::Permissions> {
     Some(permissions)
 }
 
+/// Split a glob pattern into the directories it names outright and the rest.
+/// A walk starts in those directories, which is how naming an ignored
+/// directory reaches inside it. The last component always goes in the rest.
+fn split_literal_dirs(pattern: &str) -> (PathBuf, PathBuf) {
+    let components: Vec<_> = Path::new(pattern).components().collect();
+    let literal = components
+        .iter()
+        .take(components.len().saturating_sub(1))
+        .take_while(|c| !c.as_os_str().to_string_lossy().contains(['*', '?', '[']))
+        .count();
+    let (dirs, rest) = components.split_at(literal);
+    (dirs.iter().collect(), rest.iter().collect())
+}
+
+/// Walk from `start`, skipping ignored files and `.git`, no deeper than `rest`
+/// can match. `*` stops at a directory, so without `**` that's one level per
+/// component.
+fn glob_walk(start: &Path, rest: &Path) -> ignore::Walk {
+    let recursive = rest.components().any(|c| c.as_os_str() == "**");
+    ignore::WalkBuilder::new(start)
+        .hidden(false)
+        .max_depth((!recursive).then(|| rest.components().count()))
+        .filter_entry(|entry| entry.depth() == 0 || entry.file_name() != ".git")
+        .build()
+}
+
 /// Unsandboxed, in-process [`FileSystem`].
 ///
 /// Construct with `LocalFileSystem::new()` (or `Default`) — there's
@@ -239,24 +265,37 @@ impl FileSystem for LocalFileSystem {
     }
 
     async fn glob(&self, pattern: &str, root: &Path) -> FsResult<Vec<PathBuf>> {
-        // The `glob` crate is sync and walks the tree itself; offload
-        // to spawn_blocking so we don't park a runtime worker.
+        // The walk is sync; offload to spawn_blocking so we don't park
+        // a runtime worker.
         let pattern = pattern.to_string();
         let root = root.to_path_buf();
         tokio::task::spawn_blocking(move || -> FsResult<Vec<PathBuf>> {
-            // Anchor the pattern at `root` unless the caller already
-            // supplied an absolute pattern. Matches the existing
-            // `Glob` tool's expected behavior.
-            let full = if Path::new(&pattern).is_absolute() {
-                pattern.clone()
-            } else {
-                root.join(&pattern).to_string_lossy().into_owned()
-            };
-            let mut out: Vec<PathBuf> = glob::glob(&full)
-                .map_err(|e| FsError::InvalidPattern {
+            let (dirs, rest) = split_literal_dirs(&pattern);
+            let matcher = glob::Pattern::new(&rest.to_string_lossy()).map_err(|e| {
+                FsError::InvalidPattern {
                     message: format!("glob pattern {pattern:?}: {e}"),
-                })?
+                }
+            })?;
+            // `*` stops at a directory, as it does in a shell. A leading
+            // dot needs no literal match: `**/*.yml` should find
+            // `.github/ci.yml`.
+            let options = glob::MatchOptions {
+                case_sensitive: true,
+                require_literal_separator: true,
+                require_literal_leading_dot: false,
+            };
+            // Joining keeps an absolute pattern absolute.
+            let start = root.join(dirs);
+            let mut out: Vec<PathBuf> = glob_walk(&start, &rest)
                 .filter_map(Result::ok)
+                .filter(|entry| entry.depth() > 0)
+                .filter(|entry| {
+                    entry
+                        .path()
+                        .strip_prefix(&start)
+                        .is_ok_and(|path| matcher.matches_path_with(path, options))
+                })
+                .map(ignore::DirEntry::into_path)
                 .collect();
             // Sorted output = deterministic for snapshot tests + LLM
             // context stability.
@@ -589,6 +628,93 @@ mod tests {
             .await
             .expect_err("invalid pattern must error");
         assert!(matches!(err, FsError::InvalidPattern { .. }));
+    }
+
+    /// A git project with `target/` ignored and one file on each side of it.
+    fn ignoring_fixture() -> (TempDir, LocalFileSystem) {
+        let (dir, fs) = fixture();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        std::fs::write(dir.path().join(".gitignore"), b"target/\n").unwrap();
+        std::fs::create_dir_all(dir.path().join("target/debug")).unwrap();
+        std::fs::write(dir.path().join("target/debug/built.rs"), b"").unwrap();
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/lib.rs"), b"").unwrap();
+        (dir, fs)
+    }
+
+    fn relative(dir: &TempDir, paths: Vec<PathBuf>) -> Vec<PathBuf> {
+        paths
+            .into_iter()
+            .map(|p| p.strip_prefix(dir.path()).unwrap().to_path_buf())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn glob_skips_ignored_files() {
+        let (dir, fs) = ignoring_fixture();
+        let got = fs.glob("**/*.rs", dir.path()).await.unwrap();
+        assert_eq!(relative(&dir, got), [Path::new("src/lib.rs")]);
+    }
+
+    #[tokio::test]
+    async fn glob_reaches_an_ignored_directory_it_names() {
+        let (dir, fs) = ignoring_fixture();
+        let got = fs.glob("target/**/*.rs", dir.path()).await.unwrap();
+        assert_eq!(relative(&dir, got), [Path::new("target/debug/built.rs")]);
+
+        let got = fs.glob("*.rs", &dir.path().join("target/debug")).await;
+        assert_eq!(got.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn glob_finds_hidden_files_but_stays_out_of_git() {
+        let (dir, fs) = ignoring_fixture();
+        std::fs::create_dir(dir.path().join(".github")).unwrap();
+        std::fs::write(dir.path().join(".github/ci.yml"), b"").unwrap();
+        std::fs::write(dir.path().join(".git/config.yml"), b"").unwrap();
+        let got = fs.glob("**/*.yml", dir.path()).await.unwrap();
+        assert_eq!(relative(&dir, got), [Path::new(".github/ci.yml")]);
+    }
+
+    #[tokio::test]
+    async fn glob_star_stays_inside_one_directory() {
+        let (dir, fs) = fixture();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("top.rs"), b"").unwrap();
+        std::fs::write(dir.path().join("sub/inner.rs"), b"").unwrap();
+        let got = fs.glob("*.rs", dir.path()).await.unwrap();
+        assert_eq!(relative(&dir, got), [Path::new("top.rs")]);
+    }
+
+    #[test]
+    fn glob_walks_only_as_deep_as_the_pattern_reaches() {
+        let (dir, _fs) = fixture();
+        std::fs::create_dir_all(dir.path().join("a/b/c")).unwrap();
+        std::fs::write(dir.path().join("a/b/c/deep.rs"), b"").unwrap();
+        let deepest = |pattern: &str| {
+            let (_, rest) = split_literal_dirs(pattern);
+            glob_walk(dir.path(), &rest)
+                .filter_map(Result::ok)
+                .map(|entry| entry.depth())
+                .max()
+                .unwrap()
+        };
+        assert_eq!(deepest("*.rs"), 1);
+        assert_eq!(deepest("deep.rs"), 1);
+        assert_eq!(deepest("*/*.rs"), 2);
+        assert_eq!(deepest("**/*.rs"), 4);
+        assert_eq!(deepest("*/**/*.rs"), 4);
+    }
+
+    #[tokio::test]
+    async fn glob_keeps_absolute_patterns_and_directories() {
+        let (dir, fs) = fixture();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/inner.rs"), b"").unwrap();
+        let elsewhere = TempDir::new().unwrap();
+        let pattern = format!("{}/s*", dir.path().display());
+        let got = fs.glob(&pattern, elsewhere.path()).await.unwrap();
+        assert_eq!(relative(&dir, got), [Path::new("sub")]);
     }
 
     // ── grep ────────────────────────────────────────────────────────
