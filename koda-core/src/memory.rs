@@ -216,7 +216,7 @@ pub fn load(project_root: &Path) -> Result<String> {
 ///
 /// If the entry starts with a `## Heading`, and a section with that
 /// heading already exists in the file, the existing section is
-/// **replaced** (updated in place). Otherwise the entry is appended.
+/// **replaced** (updated in place). Otherwise the entry is added.
 ///
 /// Always targets the active memory file (or `MEMORY.md` if none exists).
 pub fn append(project_root: &Path, entry: &str) -> Result<()> {
@@ -241,7 +241,7 @@ pub fn active_project_file(project_root: &Path) -> Option<String> {
 /// Write an entry to the global memory file (~/.config/koda/memory.md).
 ///
 /// If the entry starts with a `## Heading` that already exists, the
-/// section is replaced. Otherwise the entry is appended.
+/// section is replaced. Otherwise the entry is added.
 pub fn append_global(entry: &str) -> Result<()> {
     let path = global_memory_path()
         .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory for global memory"))?;
@@ -259,8 +259,9 @@ pub fn append_global(entry: &str) -> Result<()> {
 ///
 /// If `entry` starts with `## <heading>`, we look for an existing section
 /// with the same heading. If found, the old section (heading through to
-/// the next `##` heading or EOF) is replaced with `entry`. If not found
-/// (or `entry` has no heading), the entry is appended.
+/// the next `##` heading or EOF) is replaced with `entry`. If not found, a
+/// new section goes at the end. An entry with no heading goes above the first
+/// section, because replacing a section takes everything up to the next one.
 fn write_or_replace_section(path: &Path, entry: &str) -> Result<()> {
     let heading = extract_heading(entry);
     let existing = if path.exists() {
@@ -271,20 +272,32 @@ fn write_or_replace_section(path: &Path, entry: &str) -> Result<()> {
 
     let new_content = match heading {
         Some(ref h) if section_exists(&existing, h) => replace_section(&existing, h, entry),
-        _ => {
-            // No heading or heading not found → append
-            let mut buf = existing;
-            if !buf.is_empty() && !buf.ends_with('\n') {
-                buf.push('\n');
-            }
-            buf.push_str(&format!("\n- {entry}"));
-            buf.push('\n');
-            buf
-        }
+        Some(_) => append_block(existing, entry),
+        None => match first_section_start(&existing) {
+            Some(at) => format!("{}- {entry}\n\n{}", &existing[..at], &existing[at..]),
+            None => append_block(existing, &format!("- {entry}")),
+        },
     };
 
     std::fs::write(path, new_content)?;
     Ok(())
+}
+
+/// Add `block` to the end of `content`, after a blank line.
+fn append_block(mut content: String, block: &str) -> String {
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+    content.push_str(&format!("\n{block}\n"));
+    content
+}
+
+/// Byte offset of the first `## ` heading line.
+fn first_section_start(content: &str) -> Option<usize> {
+    content
+        .match_indices("## ")
+        .map(|(at, _)| at)
+        .find(|&at| at == 0 || content.as_bytes()[at - 1] == b'\n')
 }
 
 /// Extract a `## Heading` from the first line of an entry.
@@ -591,6 +604,50 @@ mod tests {
         assert!(content.contains("## Existing Section"));
         assert!(content.contains("## New Section"));
         assert!(content.contains("- new item"));
+    }
+
+    #[test]
+    fn test_append_replaces_a_section_it_wrote() {
+        let tmp = TempDir::new().unwrap();
+        append(tmp.path(), "## Preferences\n- old").unwrap();
+        append(tmp.path(), "## Preferences\n- new").unwrap();
+
+        let content = std::fs::read_to_string(tmp.path().join("MEMORY.md")).unwrap();
+        assert!(content.contains("- new"));
+        assert!(!content.contains("- old"), "{content}");
+        assert_eq!(content.matches("## Preferences").count(), 1, "{content}");
+        assert!(
+            content.lines().any(|line| line == "## Preferences"),
+            "the heading must stay a heading: {content}"
+        );
+    }
+
+    #[test]
+    fn test_plain_note_survives_a_section_update() {
+        let tmp = TempDir::new().unwrap();
+        append(tmp.path(), "## Preferences\n- old").unwrap();
+        append(tmp.path(), "keep this note").unwrap();
+        append(tmp.path(), "## Preferences\n- new").unwrap();
+
+        let content = std::fs::read_to_string(tmp.path().join("MEMORY.md")).unwrap();
+        assert!(content.contains("- keep this note"), "{content}");
+        assert!(content.contains("- new"));
+        assert!(!content.contains("- old"), "{content}");
+    }
+
+    #[test]
+    fn test_plain_entry_stays_after_a_preamble() {
+        let tmp = TempDir::new().unwrap();
+        let existing = "# Title\n\nIntro with a ## in it.\n\n## Section\n- item\n";
+        std::fs::write(tmp.path().join("MEMORY.md"), existing).unwrap();
+
+        append(tmp.path(), "a note").unwrap();
+
+        let content = std::fs::read_to_string(tmp.path().join("MEMORY.md")).unwrap();
+        assert_eq!(
+            content,
+            "# Title\n\nIntro with a ## in it.\n\n- a note\n\n## Section\n- item\n"
+        );
     }
 
     #[test]
