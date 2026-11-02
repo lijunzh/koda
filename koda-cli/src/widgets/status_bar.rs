@@ -25,7 +25,6 @@ pub struct StatusBar<'a> {
     model: &'a str,
     mode_label: &'a str,
     context_pct: u32,
-    queue_len: usize,
     /// Elapsed seconds during inference (0 = idle).
     elapsed_secs: u64,
     /// Last turn stats (shown after inference completes).
@@ -70,7 +69,6 @@ impl<'a> StatusBar<'a> {
             model,
             mode_label,
             context_pct,
-            queue_len: 0,
             elapsed_secs: 0,
             last_turn: None,
             scroll_info: None,
@@ -78,11 +76,6 @@ impl<'a> StatusBar<'a> {
             vim_label: None,
             sandbox_available: None,
         }
-    }
-
-    pub fn with_queue(mut self, queue_len: usize) -> Self {
-        self.queue_len = queue_len;
-        self
     }
 
     pub fn with_elapsed(mut self, secs: u64) -> Self {
@@ -300,22 +293,6 @@ impl Widget for StatusBar<'_> {
             spans.push(Span::styled(
                 format!(" \u{23f3} {}s ", self.elapsed_secs),
                 Style::default().fg(Color::Cyan),
-            ));
-        }
-
-        // Queue indicator — show count + Ctrl+U hint
-        if self.queue_len > 0 {
-            spans.push(Span::styled(
-                "\u{2502}",
-                Style::default().fg(Color::Rgb(60, 60, 60)),
-            ));
-            spans.push(Span::styled(
-                format!(" \u{1f4cb} {} queued ", self.queue_len),
-                Style::default().fg(Color::Yellow),
-            ));
-            spans.push(Span::styled(
-                "^U clear ",
-                Style::default().fg(Color::Rgb(100, 100, 100)),
             ));
         }
 

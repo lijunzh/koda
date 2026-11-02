@@ -10,10 +10,9 @@
 //!
 //! ## Why a separate module
 //!
-//! Same separation as `queue_lanes.rs` (state) vs
-//! `widgets::queue_preview` (render): the widget is a pure renderer
-//! with zero engine dependencies, the tracker holds frame-spanning
-//! state and bridges the engine event stream to the render layer.
+//! The widget is a pure renderer with zero engine dependencies; the
+//! tracker holds frame-spanning state and bridges the engine event
+//! stream to the render layer.
 //! Keeps the widget testable without faking up engine snapshots, and
 //! keeps the tracker testable without spinning up ratatui buffers.
 //!

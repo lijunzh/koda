@@ -4,14 +4,12 @@
 
 | Key | Action |
 |-----|--------|
-| `Enter` | Send message (or queue as **next** during inference; slash commands rejected mid-inference — press `Esc` first) |
-| `Ctrl+J` | Queue message as **later** during inference (slash commands rejected mid-inference — press `Esc` first) |
+| `Enter` | Send message, including during inference, when the model gets it in the current turn (slash commands rejected mid-inference — press `Esc` first) |
 | `Alt+Enter` | Insert newline (multi-line input) |
 | `Tab` | Autocomplete slash commands and `@file` paths |
 | `Shift+Tab` | Cycle trust mode (Safe ↔ Auto) |
-| `↑ / ↓` | Cycle through input history (idle) · pop `later` queue into editor (during inference) |
+| `↑ / ↓` | Cycle through input history |
 | `Ctrl+R` | Reverse history search |
-| `Ctrl+U` | Clear deferred (`later`) queue during inference |
 
 ## Navigation
 

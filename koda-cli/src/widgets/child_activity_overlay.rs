@@ -1,8 +1,7 @@
 //! Live background-work activity overlay (#1210).
 //!
 //! Renders above the composer whenever there's at least one running
-//! bg agent or bg shell process, mirroring `widgets/queue_preview.rs`
-//! in shape:
+//! bg agent or bg shell process:
 //!
 //! ```text
 //!   🤖 explore   (12s)  · Read src/auth.rs
@@ -28,8 +27,7 @@
 //! - **Snapshot-frozen at render time**: callers compute the row list
 //!   once per frame (cheap — bounded by [`MAX_VISIBLE`]).
 //! - **Zero-dep on engine internals**: takes pre-formatted row data,
-//!   no `koda-core` types in the public API. Decoupling matches the
-//!   `queue_preview` precedent.
+//!   no `koda-core` types in the public API.
 //!
 //! ## What this widget does NOT do
 //!
@@ -53,10 +51,9 @@ use ratatui::{
 };
 
 /// Maximum number of activity rows rendered. Overflow collapses to
-/// `+ N more` on the hint row, mirroring [`super::queue_preview::MAX_VISIBLE`].
+/// `+ N more` on the hint row.
 ///
-/// Capped at 5 rather than 3 (queue_preview's cap) because bg fan-out
-/// of 4-5 agents is a normal pattern for `explore` / `verify` / `lint`
+/// Capped at 5 because bg fan-out of 4-5 agents is a normal pattern for `explore` / `verify` / `lint`
 /// wave spawning, and collapsing too aggressively defeats the point of
 /// the at-a-glance surface.
 pub const MAX_VISIBLE: usize = 5;
@@ -126,7 +123,7 @@ impl<'a> ChildActivityOverlay<'a> {
     /// work items.
     ///
     /// Returns 0 when `total == 0` so the caller can omit the layout
-    /// slot entirely (matches `QueuePreview::height_for`).
+    /// slot entirely.
     pub fn height_for(total: usize) -> u16 {
         if total == 0 {
             return 0;

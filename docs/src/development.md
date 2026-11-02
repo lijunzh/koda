@@ -113,7 +113,6 @@ koda/
 │   │   ├── hyperlink.rs    # OSC 8 hyperlink post-render pass
 │   │   ├── inference/      # Inference turn lifecycle: inner event loop + post-turn cleanup
 │   │   ├── panic_log.rs    # Forensic record of a panic in ~/.config/koda/logs/panic.log
-│   │   ├── queue_lanes.rs  # Helpers for the TUI's two input queue lanes
 │   │   ├── theme.rs        # Semantic color tokens
 │   │   ├── tui_context/    # TUI shared mutable state (split into submodules)
 │   │   │   ├── mod.rs      # TuiContext struct, event loop, command dispatch
@@ -153,7 +152,6 @@ koda/
 │   │       ├── file_menu.rs# @file autocomplete menu
 │   │       ├── model_menu.rs # Model picker menu
 │   │       ├── provider_menu.rs # Provider picker menu
-│   │       ├── queue_preview.rs # Queued-input preview
 │   │       ├── session_menu.rs # Session picker menu
 │   │       ├── shortcuts_overlay.rs # Keybinding reference overlay
 │   │       └── status_bar.rs# Model, mode, context meter, elapsed time

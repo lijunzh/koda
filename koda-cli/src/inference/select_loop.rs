@@ -249,13 +249,6 @@ impl TuiContext {
                         let process_snaps = agent_for_status.tools.bg_registry.snapshot();
                         let (child_activity_rows, child_activity_total) =
                             self.child_activity.build_rows(&agent_snaps, &process_snaps);
-                        let queue_total = self.later_queue.len();
-                        let queue_preview: Vec<String> = self
-                            .later_queue
-                            .iter()
-                            .take(crate::widgets::queue_preview::MAX_VISIBLE)
-                            .cloned()
-                            .collect();
                         let _ = self.terminal.draw(|f| {
                             draw_viewport(
                                 f,
@@ -265,8 +258,6 @@ impl TuiContext {
                                 ctx,
                                 self.tui_state,
                                 &self.prompt_mode,
-                                &queue_preview,
-                                queue_total,
                                 self.inference_start
                                     .map(|s| s.elapsed().as_secs())
                                     .unwrap_or(0),
@@ -309,7 +300,6 @@ impl TuiContext {
                             &mut self.completer,
                             &mut self.history,
                             &mut self.history_idx,
-                            &mut self.later_queue,
                             &mut self.paste_blocks,
                             &db_handle,
                             &bg_agents_for_status,
@@ -400,7 +390,7 @@ impl TuiContext {
         }
 
         // Post-turn cleanup
-        self.post_turn_cleanup(ui_rx, cmd_rx, &cancel_token).await;
+        self.post_turn_cleanup(ui_rx, cmd_rx).await;
         Ok(())
     }
 }
