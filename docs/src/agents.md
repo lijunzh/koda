@@ -20,6 +20,7 @@ Place JSON files in `.koda/agents/` (project-local) or
 | `name` | ✓ | Identifier used with `--agent <name>` and `InvokeAgent` |
 | `system_prompt` | ✓ | The agent's persona and instructions |
 | `trust` | | `"plan"` (read-only), `"safe"` (write-capable, default), or `"auto"` (auto-approve mutations within sandbox). See [Trust modes](./approval.md). |
+| `isolation` | | `"worktree"` to work in a git worktree of its own and leave the work on a branch. It needs a git repository: without one, the agent doesn't start. By default it writes in the project, or in a worktree in Safe mode. See [Where sub-agents write](sandbox.md#where-sub-agents-write). |
 | `model` | | Model alias or ID (defaults to current saved model) |
 | `allowed_tools` | | Subset of tools the agent can call (defaults to all) |
 | `disallowed_tools` | | Tools to deny even if `allowed_tools` is empty |

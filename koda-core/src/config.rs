@@ -97,6 +97,7 @@ impl ModelSettings {
 /// - **`model`** — Override the default model (e.g. `"gemini-2.5-flash"` for cheap workers)
 /// - **`write_access`** — Grant Write/Edit/Delete tools (default: `false`)
 /// - **`max_iterations`** — Cap inference loops (prevents runaway agents)
+/// - **`isolation`** — `"worktree"` for a git worktree of its own (default: the project)
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentConfig {
     /// Agent identifier.
@@ -170,6 +171,22 @@ pub struct AgentConfig {
     /// compat with every existing agent JSON that doesn't set this.
     #[serde(default)]
     pub trust: Option<String>,
+    /// Where the agent writes when it isn't made to use a worktree anyway.
+    #[serde(default)]
+    pub isolation: AgentIsolation,
+}
+
+/// Where a sub-agent's writes go.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentIsolation {
+    /// In the project, like the main agent's. Safe mode still uses a worktree:
+    /// a sub-agent can't ask for approval, so nothing it does reaches the
+    /// project until the user merges it.
+    #[default]
+    None,
+    /// In a git worktree of its own, on a branch the user can merge.
+    Worktree,
 }
 
 /// Runtime configuration assembled from CLI args, env vars, and agent JSON.

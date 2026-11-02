@@ -34,7 +34,7 @@ tracing-subscriber = { workspace = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = { workspace = true }
 
-# macOS needs libc for clonefile(2) used by ClonefileProvider (Phase 4d).
+# macOS needs libc for process groups and rlimits.
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = { workspace = true }
 
@@ -62,9 +62,8 @@ name = "acquire_slot"
 harness = false
 required-features = []
 
-# Phase 4g of #934: 30-parallel sub-agent demo + ClonefileProvider
-# vs GitWorktreeProvider comparison. Also reports the signal data
-# that drives the deferred 4e/4f decisions.
+# Phase 4g of #934: 30-parallel sub-agent demo. Also reports the signal
+# data that drives the deferred 4e/4f decisions.
 [[bench]]
 name = "parallel_dispatch"
 harness = false

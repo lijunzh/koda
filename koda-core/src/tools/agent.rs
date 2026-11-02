@@ -82,7 +82,9 @@ WHEN TO USE InvokeAgent
 AGENT SELECTION
 
 - For read-only exploration / search / analysis, prefer `explore` (faster, cheaper, no isolated workspace)
-- For implementation that needs file writes, use `task` (general-purpose worker; isolated worktree)
+- For implementation that needs file writes, use `task` (general-purpose worker)
+- Sub-agents write in the project, so give each one files no other is touching, and don't edit those files yourself until it returns
+- In Safe mode its work lands on a branch instead, and its result names the branch
 
 WHEN NOT TO USE InvokeAgent
 
