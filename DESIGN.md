@@ -806,18 +806,20 @@ different set.
   via `tokio_util::sync::CancellationToken`. Bg agents are no exception:
   Ctrl+C in the parent kills in-flight bg work. `tokio::task::JoinSet` (or
   `AbortOnDropHandle`) ensures registry drop = task abort = workspace release.
-- **Workspace isolation** (P3). Write-capable sub-agents get an isolated
-  worktree (macOS: `ClonefileProvider` ~3-4× faster; Linux:
-  `GitWorktreeProvider`). Read-only agents share the parent root via
-  `CwdProvider`. Parallel write-agents cannot trample each other.
-  **Provision failure on a write-tool sub-agent does not silently
-  downgrade** (#1022 B21): the dispatch short-circuits with a
-  structural failure marker (see next invariant) instead of dropping
-  the sub-agent into the parent's unisolated tree, which would let
-  parallel sub-agents race on the same files. The user-visible warning
-  surfaces through `EngineEvent::Info` so it isn't buried in trace
-  logs. Read-only failures keep the project_root fallback because
-  there's no race-on-files corruption mode without write tools.
+- **Sub-agents write in the project** (P2). They inherit the session's mode
+  and work where the main agent works, as Claude Code's and Codex's do, so
+  edits land where the user expects and `/undo` covers them. Copying the
+  project per sub-agent (`clonefile(2)` on macOS) lost finished work, because
+  a copy needs a way back that a shared directory doesn't, and it was gone
+  with the copy. Worktrees remain for two cases: an agent that sets
+  `"isolation": "worktree"`, and any writer in Safe mode, because a sub-agent
+  has no approval channel and Safe promises nothing changes without the
+  user's OK. A branch with work on it always survives release.
+  **Provision failure on a worktree does not silently downgrade**
+  (#1022 B21): the dispatch short-circuits with a structural failure marker
+  (see next invariant) instead of dropping the sub-agent into the project,
+  which would break Safe's promise. The user-visible warning surfaces through
+  `EngineEvent::Info` so it isn't buried in trace logs.
 - **Structural failures use the `[ERROR: ...]` marker convention**
   (#1022 B18, B21). When a sub-agent can't produce an answer for
   reasons that are *not* the model's fault — iteration cap exhausted,

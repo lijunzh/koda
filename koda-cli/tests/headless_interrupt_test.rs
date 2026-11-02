@@ -156,8 +156,8 @@ async fn stub_with_a_sub_agent(first: ResponseTemplate, then: ResponseTemplate) 
     server
 }
 
-/// A project in a git repo, with `HOME` beside it, so a sub-agent's workspace
-/// lands somewhere the test can see on every platform.
+/// A project in a git repo, with `HOME` beside it, in Safe mode, where a
+/// sub-agent gets a worktree that a stopped turn has to give back.
 struct Project {
     tmp: tempfile::TempDir,
 }
@@ -205,6 +205,7 @@ impl Project {
             .args(["-p", "Fix the parser", "--output-format", "stream-json"])
             .args(["--provider", "lmstudio", "--model", "stub"])
             .args(["--base-url", &server.url()])
+            .args(["--mode", "safe"])
             .arg("--project-root")
             .arg(self.root())
             .env("XDG_CONFIG_HOME", self.home())
@@ -296,9 +297,7 @@ fn assert_clean_cancel(run: &Interrupted) {
     assert_eq!(run.output.status.code(), Some(0), "{}", run.stdout);
 }
 
-/// The work reached git where the provider keeps it: a worktree commits it to
-/// a branch, and a macOS clone is thrown away, which is that provider's design.
-#[cfg(not(target_os = "macos"))]
+/// The work reached the worktree's branch.
 fn assert_work_is_on_a_branch(project: &Project, name: &str) {
     let log = std::process::Command::new("git")
         .args(["log", "--all", "--format=%s", "--", name])
@@ -308,9 +307,6 @@ fn assert_work_is_on_a_branch(project: &Project, name: &str) {
     let log = String::from_utf8_lossy(&log.stdout);
     assert!(log.contains("koda: sub-agent 'task' changes"), "{log}");
 }
-
-#[cfg(target_os = "macos")]
-fn assert_work_is_on_a_branch(_project: &Project, _name: &str) {}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_sub_agent_waiting_on_its_model_releases_its_workspace() {

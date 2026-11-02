@@ -265,7 +265,7 @@ pub struct ToolRegistry {
     /// Most recent Bash invocation for staleness error context (#804 item 7).
     last_bash: LastBashCache,
     /// Undo stack for file mutations.
-    pub undo: std::sync::Mutex<crate::undo::UndoStack>,
+    pub undo: Arc<std::sync::Mutex<crate::undo::UndoStack>>,
     /// Discovered skills.
     pub skill_registry: crate::skills::SkillRegistry,
     /// Database handle for tools that need session access (RecallContext).
@@ -333,7 +333,7 @@ impl ToolRegistry {
             fs: Arc::new(LocalFileSystem::new()),
             last_writer: Arc::new(std::sync::Mutex::new(HashMap::new())),
             last_bash: Arc::new(std::sync::Mutex::new(None)),
-            undo: std::sync::Mutex::new(crate::undo::UndoStack::new()),
+            undo: Arc::new(std::sync::Mutex::new(crate::undo::UndoStack::new())),
             skill_registry,
             db: std::sync::RwLock::new(None),
             session_id: std::sync::RwLock::new(None),
@@ -355,6 +355,14 @@ impl ToolRegistry {
     /// read without the edit being refused as stale.
     pub fn with_shared_cache(mut self, cache: FileReadCache) -> Self {
         self.read_cache = cache;
+        self
+    }
+
+    /// Record this registry's file changes on another registry's undo stack, so
+    /// a sub-agent's edits to the project go back with its parent's turn.
+    #[must_use]
+    pub fn with_shared_undo(mut self, undo: Arc<std::sync::Mutex<crate::undo::UndoStack>>) -> Self {
+        self.undo = undo;
         self
     }
 

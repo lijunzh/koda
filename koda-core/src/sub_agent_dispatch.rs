@@ -6,6 +6,7 @@
 //! for isolation. Results are cached by `(agent_name, prompt_hash)`.
 
 use crate::approval_flow::{CommandInbox, request_approval};
+use crate::config::AgentIsolation;
 use crate::config::KodaConfig;
 use crate::db::{Database, Role};
 use crate::engine::{ApprovalDecision, EngineCommand, EngineEvent};
@@ -23,8 +24,6 @@ use crate::turn_context::ToolExecutionContext;
 use anyhow::{Context, Result};
 use koda_sandbox::{CwdProvider, GitWorktreeProvider, WorkspaceProvider};
 
-#[cfg(target_os = "macos")]
-use koda_sandbox::ClonefileProvider;
 use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -831,7 +830,7 @@ pub(crate) fn execute_sub_agent<'a>(
         // distinguish "explicit max_iterations" from "defaulted to 200
         // in `KodaConfig::for_agent_invocation`". A tuple return keeps
         // both values in scope without a redundant disk read.
-        let (sub_config, max_turns) = if is_fork {
+        let (sub_config, max_turns, isolation) = if is_fork {
             // Fork inherits the parent config verbatim, *except* for
             // trust — which must come from the **runtime** mode
             // (see `derive_child_trust` doc).
@@ -868,7 +867,7 @@ pub(crate) fn execute_sub_agent<'a>(
             // the sub-agent default on a fork because the model is
             // continuing the parent's work, not starting a fresh task.
             let max_turns = cfg.max_iterations;
-            (cfg, max_turns)
+            (cfg, max_turns, AgentIsolation::None)
         } else {
             // Load the raw JSON first to see what the agent explicitly set.
             let raw = crate::config::KodaConfig::load_agent_json(project_root, agent_name)
@@ -951,7 +950,7 @@ pub(crate) fn execute_sub_agent<'a>(
             // nothing for the agents that triggered #1135 (which
             // don't set the field).
             let max_turns = raw.max_iterations.unwrap_or(DEFAULT_SUB_AGENT_MAX_TURNS);
-            (cfg, max_turns)
+            (cfg, max_turns, raw.isolation)
         };
 
         let sub_session = {
@@ -990,22 +989,12 @@ pub(crate) fn execute_sub_agent<'a>(
         };
 
         let provider = crate::providers::create_provider(&sub_config);
-        // Select workspace provider. Write-capable agents get an isolated
-        // workspace; read-only agents share the parent root for free.
-        //
-        // Per-platform write-isolation choice:
-        //
-        // - **macOS:** `ClonefileProvider` (APFS clonefile(2)) is
-        //   preferred for its ~3-4× provision speedup over git worktree
-        //   (Phase 4d / #934). Falls back to git worktree if construction
-        //   fails (e.g. `$HOME` unset, project path can't canonicalize).
-        // - **Linux + others:** `GitWorktreeProvider`. The Linux CoW
-        //   equivalent (4e in #934) is deferred until production
-        //   telemetry shows it's worth building.
-        //
-        // **Documented platform divergence** — see `docs/src/sandbox.md`
-        // → "Workspace providers". Both backends provide the same
-        // isolation guarantees; only provision speed differs.
+        // A sub-agent writes in the project, like the main agent and like
+        // Claude Code's and Codex's sub-agents, so its edits land where the user
+        // expects. Two cases get a git worktree instead: an agent that asks for
+        // one, and any writer in Safe mode. Safe promises that nothing changes
+        // without the user's OK and a sub-agent can't ask, so its work waits on
+        // a branch for the user to merge.
         let has_write_tools = !sub_config
             .disallowed_tools
             .iter()
@@ -1016,11 +1005,12 @@ pub(crate) fn execute_sub_agent<'a>(
         // bounds — `Box<dyn WorkspaceProvider>` is `!Send` without the
         // explicit annotation, which makes the whole `execute_sub_agent`
         // future `!Send` and unspawnable.
-        let workspace: Box<dyn WorkspaceProvider + Send + Sync> = if has_write_tools {
-            pick_write_provider(project_root, agent_name)
-        } else {
-            Box::new(CwdProvider::new(project_root))
-        };
+        let workspace: Box<dyn WorkspaceProvider + Send + Sync> =
+            if needs_worktree(has_write_tools, isolation, mode) {
+                Box::new(GitWorktreeProvider::new(project_root, agent_name))
+            } else {
+                Box::new(CwdProvider::new(project_root))
+            };
         let effective_root = match workspace.provision(&sub_session).await {
             Ok(path) => {
                 if path != project_root {
@@ -1100,6 +1090,13 @@ pub(crate) fn execute_sub_agent<'a>(
                 effective_root_ref,
             );
             let registry = registry.with_sandbox_policy(composed_policy);
+            // Edits to the project go back with the parent's turn on `/undo`.
+            // A worktree's don't: its branch is the record of them.
+            let registry = if effective_root == project_root {
+                registry.with_shared_undo(parent_tx.turn.tools.undo.clone())
+            } else {
+                registry
+            };
             match parent_cache {
                 Some(cache) => registry.with_shared_cache(cache),
                 None => registry,
@@ -1415,8 +1412,7 @@ pub(crate) fn execute_sub_agent<'a>(
                             n = response.tool_calls.len(),
                         ),
                     };
-                    sub_agent_cache.put(agent_name, prompt, &result);
-                    release_workspace(
+                    let hint = release_workspace(
                         workspace.as_ref(),
                         &sub_session,
                         &effective_root,
@@ -1424,6 +1420,8 @@ pub(crate) fn execute_sub_agent<'a>(
                         sink,
                     )
                     .await;
+                    let result = with_workspace_hint(result, hint);
+                    sub_agent_cache.put(agent_name, prompt, &result);
                     return Ok(result);
                 }
 
@@ -1465,10 +1463,8 @@ pub(crate) fn execute_sub_agent<'a>(
                             )
                         }),
                     };
-                    // Cache the result for future identical calls
-                    sub_agent_cache.put(agent_name, prompt, &result);
                     // Release workspace; surface branch hint if agent left changes.
-                    release_workspace(
+                    let hint = release_workspace(
                         workspace.as_ref(),
                         &sub_session,
                         &effective_root,
@@ -1476,6 +1472,9 @@ pub(crate) fn execute_sub_agent<'a>(
                         sink,
                     )
                     .await;
+                    let result = with_workspace_hint(result, hint);
+                    // Cache the result for future identical calls
+                    sub_agent_cache.put(agent_name, prompt, &result);
                     return Ok(result);
                 }
 
@@ -1734,19 +1733,39 @@ pub(crate) fn execute_sub_agent<'a>(
 }
 
 /// Give back a sub-agent's workspace and say what became of any work in it.
+/// Returns the same words for the parent model, which has to know too.
 async fn release_workspace(
     workspace: &(dyn WorkspaceProvider + Send + Sync),
     slot_id: &str,
     path: &std::path::Path,
     agent_name: &str,
     sink: &dyn crate::engine::EngineSink,
-) {
+) -> Option<String> {
     match workspace.release(slot_id, path).await {
-        Ok(Some(hint)) => sink.emit(EngineEvent::Info {
-            message: format!("  \u{1f335} {agent_name}: {hint}"),
-        }),
-        Ok(None) => {}
-        Err(e) => tracing::warn!("Workspace release failed for '{agent_name}': {e}"),
+        Ok(Some(hint)) => {
+            sink.emit(EngineEvent::Info {
+                message: format!("  \u{1f335} {agent_name}: {hint}"),
+            });
+            Some(hint)
+        }
+        Ok(None) => None,
+        Err(e) => {
+            tracing::warn!("Workspace release failed for '{agent_name}': {e}");
+            None
+        }
+    }
+}
+
+/// Whether a sub-agent gets a git worktree rather than the project itself.
+fn needs_worktree(has_write_tools: bool, isolation: AgentIsolation, mode: TrustMode) -> bool {
+    has_write_tools && (isolation == AgentIsolation::Worktree || mode == TrustMode::Safe)
+}
+
+/// A sub-agent's answer, with where its work went if that isn't the project.
+fn with_workspace_hint(result: String, hint: Option<String>) -> String {
+    match hint {
+        Some(hint) => format!("{result}\n\n{hint}"),
+        None => result,
     }
 }
 
@@ -1778,58 +1797,6 @@ async fn tool_output(
         Some((_id, result, _success, _full)) => result,
         None => "[cancelled]".to_string(),
     }
-}
-
-// ── Workspace provider selection ────────────────────────────────────────────
-//
-// Two cfg-gated definitions of `pick_write_provider` rather than
-// inline `cfg!()` branches because:
-//
-//  * `ClonefileProvider` is itself `cfg(target_os = "macos")` in
-//    koda-sandbox; inline branches would still need cfg gating to
-//    avoid "unresolved import" on Linux.
-//  * Each platform's selection logic is small but distinct (macOS
-//    has a fallback path, Linux doesn't), and side-by-side cfg
-//    bodies read more honestly than a tangled inline form.
-//
-// Behavior is documented for users in `docs/src/sandbox.md`
-// → "Workspace providers".
-
-#[cfg(target_os = "macos")]
-fn pick_write_provider(
-    project_root: &std::path::Path,
-    agent_name: &str,
-) -> Box<dyn WorkspaceProvider + Send + Sync> {
-    // Try `ClonefileProvider` first — its 3-4× provision speedup
-    // (Phase 4d / #934 bench) is durable and the implementation is
-    // a thin wrapper over the OS primitive designed for this.
-    //
-    // Fall back to `GitWorktreeProvider` only if construction itself
-    // fails (e.g. `$HOME` unset, project path can't canonicalize).
-    // Runtime `clonefile(2)` failures (non-APFS volume etc.) surface
-    // through the existing `provision()` error path — **#1022 B21**
-    // makes that path short-circuit with a structural-failure marker
-    // instead of silently dropping the sub-agent into the parent's
-    // unisolated working tree (which would let parallel sub-agents
-    // race on the same files).
-    match ClonefileProvider::new(project_root) {
-        Ok(p) => Box::new(p),
-        Err(e) => {
-            tracing::warn!("ClonefileProvider unavailable, falling back to git worktree: {e}");
-            Box::new(GitWorktreeProvider::new(project_root, agent_name))
-        }
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn pick_write_provider(
-    project_root: &std::path::Path,
-    agent_name: &str,
-) -> Box<dyn WorkspaceProvider + Send + Sync> {
-    // Linux + others: GitWorktreeProvider. The Linux CoW equivalent
-    // (4e in #934) is parked until production telemetry shows it's
-    // worth building — see #934 deferral comments.
-    Box::new(GitWorktreeProvider::new(project_root, agent_name))
 }
 
 /// isolated sub-agent's workspace provider can't provision.
@@ -2057,9 +2024,11 @@ mod recover_last_assistant_text_tests {
 
 #[cfg(test)]
 mod release_workspace_tests {
-    use super::release_workspace;
+    use super::{needs_worktree, release_workspace, with_workspace_hint};
+    use crate::config::AgentIsolation;
     use crate::engine::EngineEvent;
     use crate::engine::sink::TestSink;
+    use crate::trust::TrustMode;
     use koda_sandbox::WorkspaceProvider;
     use std::path::{Path, PathBuf};
 
@@ -2103,6 +2072,25 @@ mod release_workspace_tests {
     async fn no_hint_says_nothing() {
         assert!(messages(Saying("nothing")).await.is_empty());
         assert!(messages(Saying("fails")).await.is_empty());
+    }
+
+    #[test]
+    fn a_hint_follows_the_answer() {
+        let told = with_workspace_hint("Done.".into(), Some("On branch x".into()));
+        assert_eq!(told, "Done.\n\nOn branch x");
+        assert_eq!(with_workspace_hint("Done.".into(), None), "Done.");
+    }
+
+    #[test]
+    fn writers_stay_in_the_project_unless_safe_or_asked() {
+        let none = AgentIsolation::None;
+        let worktree = AgentIsolation::Worktree;
+        assert!(!needs_worktree(true, none, TrustMode::Auto));
+        assert!(!needs_worktree(true, none, TrustMode::Plan));
+        assert!(needs_worktree(true, none, TrustMode::Safe));
+        assert!(needs_worktree(true, worktree, TrustMode::Auto));
+        assert!(!needs_worktree(false, none, TrustMode::Safe));
+        assert!(!needs_worktree(false, worktree, TrustMode::Auto));
     }
 }
 
@@ -2168,7 +2156,7 @@ mod b21_tests {
 
     #[test]
     fn marker_has_error_prefix() {
-        let m = workspace_provision_failure_marker("writer", "clonefile: ENOTSUP");
+        let m = workspace_provision_failure_marker("writer", "git worktree add failed");
         assert!(
             m.starts_with("[ERROR:"),
             "marker must start with `[ERROR:` so the model treats it as \
@@ -2178,7 +2166,7 @@ mod b21_tests {
 
     #[test]
     fn marker_includes_agent_name() {
-        let m = workspace_provision_failure_marker("writer", "clonefile: ENOTSUP");
+        let m = workspace_provision_failure_marker("writer", "git worktree add failed");
         assert!(
             m.contains("'writer'"),
             "marker must name the sub-agent that failed so multi-agent \
@@ -2193,9 +2181,9 @@ mod b21_tests {
         // volume, missing git repo, or something else. This
         // guarantees the underlying `e.to_string()` reaches the
         // parent agent intact.
-        let m = workspace_provision_failure_marker("writer", "clonefile: ENOTSUP");
+        let m = workspace_provision_failure_marker("writer", "git worktree add failed");
         assert!(
-            m.contains("clonefile: ENOTSUP"),
+            m.contains("git worktree add failed"),
             "marker must include the failure reason verbatim so it's \
              diagnosable; got: {m}"
         );
@@ -2232,7 +2220,7 @@ mod b21_tests {
 
     #[test]
     fn marker_is_single_line() {
-        let m = workspace_provision_failure_marker("writer", "clonefile: ENOTSUP");
+        let m = workspace_provision_failure_marker("writer", "git worktree add failed");
         assert!(
             !m.contains('\n'),
             "marker must be single-line for clean tool-result formatting; got:\n{m}"

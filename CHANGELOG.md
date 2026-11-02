@@ -30,6 +30,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- **Sub-agents write in your project, and their work stays.** On macOS a writing sub-agent worked in a copy of the project, and the copy was deleted when it finished, so its edits never reached you. In Auto, sub-agents now edit the project directly, as Claude Code's and Codex's do, and `/undo` takes those edits back with the turn. In Safe they work in a git worktree, since they can't ask you first, and leave a branch to merge. Set `"isolation": "worktree"` on an agent to get that in any mode. Sub-agents in a worktree no longer see uncommitted edits, untracked files or build output.
 - **`Ctrl+J` no longer queues text for after the turn.** Press `Enter` instead: the model gets the text in the current turn, so say so if it should finish first. The queue preview, the `queued` count in the status bar, and `Up` and `Ctrl+U` acting on that queue are gone with it.
 - **`Esc` at a dialog stops the turn.** At an approval, a question or the feedback prompt it used to answer the dialog and let the model carry on. To do that now, press `n` to reject, `f` to say why, or `Enter` with no answer to skip a question.
 - **Edit takes `old_str` and `new_str` directly, one change per call.** Its `replacements` list is gone. Haiku, Sonnet and Laguna often sent that list as a broken string, which failed 32%, 29% and 41% of their Edit calls in saved runs. Several Edits to one file run in order, so one response can still make several changes, though they no longer apply as a single all-or-nothing step. A call in the old shape is refused with a message saying what to send.
@@ -43,6 +44,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **A commit a sub-agent made survives cleanup.** A worktree with a clean tree had its branch deleted, even if the branch held the sub-agent's commits.
+- **The main agent hears where a sub-agent's work went.** The branch name reached only you, so the model could report the work as done in the project.
 - **An agent's `max_iterations` applies to the main agent.** Any model setup reset it to 200: `--model`, a restored provider, auto-detect, `/model` and `/provider`. It now holds through all of them.
 - **`Ctrl+C` works while a dialog is open.** It did nothing at an approval, a question, the feedback prompt or the loop cap. It now stops the turn, as it does everywhere else.
 - **A stopped turn keeps the model's tool calls in the history.** Stopping at an approval or a question wrote no result, so the next load dropped the call, along with the results of any calls that ran beside it. The model now sees what it tried and that you stopped it.

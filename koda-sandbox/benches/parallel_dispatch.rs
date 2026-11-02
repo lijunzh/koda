@@ -1,11 +1,10 @@
-//! Phase 4g of #934: 30-parallel sub-agent dispatch demo + provider comparison.
+//! Phase 4g of #934: 30-parallel sub-agent dispatch demo.
 //!
-//! This is the headline bench. It answers all three questions Phase 4
-//! committed to from #934 §12 + the [4e/4f deferral comments][1]:
+//! This is the headline bench. It answers the questions Phase 4 committed
+//! to from #934 §12 + the [4e/4f deferral comments][1]:
 //!
 //! 1. Does 30-parallel dispatch run "in single-digit seconds vs minutes"?
-//! 2. Does `ClonefileProvider` actually beat `GitWorktreeProvider` on macOS?
-//! 3. What fraction of slots actually write? (informs whether the
+//! 2. What fraction of slots actually write? (informs whether the
 //!    deferred 4f lazy-provisioning slice is worth ever building)
 //!
 //! [1]: https://github.com/lijunzh/koda/issues/934#issuecomment-4296452786
@@ -14,11 +13,8 @@
 //!
 //! 1. Builds a fixture git repo in a tempdir (~50 small files), so
 //!    `GitWorktreeProvider` has something to fork.
-//! 2. Spawns 30 sandbox slots in parallel against that fixture, twice:
-//!    - **Round A:** `GitWorktreeProvider` (today's default on Linux,
-//!      and the macOS fallback when ClonefileProvider isn't wired in)
-//!    - **Round B:** `ClonefileProvider` (macOS only; round skipped on
-//!      Linux with a clear note)
+//! 2. Spawns 30 sandbox slots in parallel against that fixture, each in
+//!    its own `GitWorktreeProvider` worktree.
 //! 3. Each slot does a deterministic mix of real `koda-fs-worker`
 //!    RPCs: every slot does N reads, half also do M writes. This
 //!    gives us realistic-shaped wall-clock without dragging in an
@@ -49,9 +45,6 @@ use std::time::{Duration, Instant};
 use koda_sandbox::policy::SandboxPolicy;
 use koda_sandbox::pool::SandboxPool;
 use koda_sandbox::workspace::{GitWorktreeProvider, WorkspaceProvider};
-
-#[cfg(target_os = "macos")]
-use koda_sandbox::workspace::ClonefileProvider;
 
 // ── Knobs ────────────────────────────────────────────────────────────────────
 
@@ -96,28 +89,10 @@ fn main() {
         &project_root,
     ));
 
-    #[cfg(target_os = "macos")]
-    let clonefile_round = {
-        let provider = Arc::new(
-            ClonefileProvider::new(&project_root)
-                .expect("ClonefileProvider::new (need APFS + $HOME)"),
-        );
-        Some(runtime.block_on(run_round("ClonefileProvider", provider, &project_root)))
-    };
-    #[cfg(not(target_os = "macos"))]
-    let clonefile_round: Option<RoundStats> = {
-        println!("(Skipping ClonefileProvider round: not on macOS.)");
-        println!();
-        None
-    };
-
-    print_comparison(&worktree_round, clonefile_round.as_ref());
+    print_summary(&worktree_round);
 
     println!();
     println!("BENCH_JSON: {}", worktree_round.to_json());
-    if let Some(c) = &clonefile_round {
-        println!("BENCH_JSON: {}", c.to_json());
-    }
 }
 
 // ── One round = one provider × N parallel slots ──────────────────────────────
@@ -133,8 +108,8 @@ async fn run_round(
     let pool = SandboxPool::new(PARALLEL_SLOTS);
 
     // No pre-warming: this round measures the EXPENSIVE side of
-    // cold acquires, since pre-warming would hide the worktree /
-    // clonefile cost we want to compare. The warm-acquire bench
+    // cold acquires, since pre-warming would hide the worktree
+    // cost we want to measure. The warm-acquire bench
     // (acquire_slot.rs) covers the steady state.
 
     let round_start = Instant::now();
@@ -277,32 +252,12 @@ impl RoundStats {
     }
 }
 
-fn print_comparison(worktree: &RoundStats, clonefile: Option<&RoundStats>) {
-    println!("=== Comparison ===");
-    let speedup =
-        clonefile.map(|c| worktree.total_wall.as_secs_f64() / c.total_wall.as_secs_f64().max(1e-9));
-    let prov_speedup = clonefile
-        .map(|c| worktree.mean_provision.as_secs_f64() / c.mean_provision.as_secs_f64().max(1e-9));
+fn print_summary(worktree: &RoundStats) {
+    println!("=== Summary ===");
     println!(
         "  GitWorktreeProvider:  total {:>9?}, mean provision {:>9?}",
         worktree.total_wall, worktree.mean_provision
     );
-    if let Some(c) = clonefile {
-        println!(
-            "  ClonefileProvider:    total {:>9?}, mean provision {:>9?}",
-            c.total_wall, c.mean_provision
-        );
-        println!();
-        println!(
-            "  Wall-clock speedup:   {:.2}× (clonefile vs worktree)",
-            speedup.unwrap()
-        );
-        println!(
-            "  Provision speedup:    {:.2}× (clonefile vs worktree)",
-            prov_speedup.unwrap()
-        );
-    }
-
     println!();
     println!("=== Acceptance ===");
     let pass = worktree.total_wall < Duration::from_secs(10);
@@ -344,14 +299,6 @@ fn print_comparison(worktree: &RoundStats, clonefile: Option<&RoundStats>) {
         (provision_secs / 30.0 * 100.0).min(100.0),
         (provision_secs / 5.0 * 100.0).min(100.0)
     );
-    if let Some(c) = clonefile {
-        println!(
-            "  ClonefileProvider mean provision: {:.2} s on macOS — the\n\
-            \x20    Linux equivalent (4e) would land somewhere between this\n\
-            \x20    floor and the worktree ceiling above.",
-            c.mean_provision.as_secs_f64()
-        );
-    }
     println!(
         "  4e decision: build it iff Linux users actually run\n\
         \x20    write-heavy 30-parallel fan-out workloads. If they don't,\n\

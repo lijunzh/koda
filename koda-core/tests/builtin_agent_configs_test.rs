@@ -8,7 +8,7 @@
 //! returned `true`, so:
 //!
 //! 1. They were routed through the slow workspace provider
-//!    (clonefile / git worktree, ~30s spin-up on this repo with a 56 GB
+//!    (git worktree, ~30s spin-up on this repo with a 56 GB
 //!    `target/`) for no reason \u2014 they never wrote anything.
 //! 2. Defense-in-depth was missing: nothing actually stopped the model
 //!    from writing if it ignored the system prompt.
@@ -96,8 +96,8 @@ fn readonly_by_prompt_agents_must_disallow_write_tools() {
         violations.is_empty(),
         "#1361 regression: read-only-by-prompt agents must disallow write \
          tools at the config level so the dispatcher routes them to the \
-         fast `CwdProvider` workspace path (skipping ~30s of clonefile/\
-         worktree provisioning) AND so the model literally cannot bypass \
+         fast `CwdProvider` workspace path (skipping ~30s of worktree \
+         provisioning) AND so the model literally cannot bypass \
          the system-prompt rule.\n\nViolations:\n  - {}",
         violations.join("\n  - ")
     );
