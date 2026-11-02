@@ -193,7 +193,10 @@ branch name, and tells the main agent too. A worktree with no new work is
 removed along with its branch.
 
 A worktree is a fresh checkout of `HEAD`, so it doesn't have your
-uncommitted edits, untracked files or build output.
+uncommitted edits, untracked files or build output. A sub-agent there can't
+run `git add` or `git commit`, because git keeps a worktree's index and refs
+under the main repository's `.git`, which is outside its write root. Koda
+commits for it at the end.
 
 Outside a git repository there are no worktrees. A sub-agent that needs one
 doesn't start, and the main agent is told why, so it can do the work itself:
