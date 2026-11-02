@@ -151,7 +151,11 @@ async fn test_provider_error_emits_error_event() {
     let env = Env::new().await;
     env.insert_user_message("trigger error").await;
 
-    let provider = MockProvider::new(vec![MockResponse::Error("Internal server error".into())]);
+    let server_error = MockResponse::Http {
+        status: 500,
+        body: "Internal Server Error".into(),
+    };
+    let provider = MockProvider::new(vec![server_error; 5]);
     let sink = koda_core::engine::sink::TestSink::new();
     let (_, mut cmd_rx) = mpsc::channel::<EngineCommand>(1);
     let tool_defs = env.tool_defs();

@@ -142,7 +142,7 @@ Ignore capability names you don't know.
 | `context_usage` | `used`, `max` | |
 | `context_window_changed` | `tokens` | |
 | `compaction` | `trigger`, `status` | See below |
-| `retry` | `reason`, `attempt`, `max_attempts`, `delay_ms` | `reason` is `rate_limit`, `network`, `context_overflow` or `empty_response`. `attempt` is the one that just failed, counting from 1 |
+| `retry` | `reason`, `attempt`, `max_attempts`, `delay_ms` | `reason` is `rate_limit`, `network`, `server_error`, `stream_failed`, `context_overflow` or `empty_response`. `attempt` is the one that just failed, counting from 1 |
 | `loop_guard` | `action`, `detail` | `action` is `feedback`, or `stop` when the model ignored it |
 | `info`, `warn`, `error` | `message` | For people. Don't parse them |
 | `turn_summary` | `usage`, `elapsed_ms` | Just before `turn_end` |

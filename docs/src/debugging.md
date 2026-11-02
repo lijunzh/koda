@@ -209,8 +209,10 @@ Plain-text lines worth a search:
 
 | Line | Meaning |
 |---|---|
-| `Rate limited (attempt 1/5): …` | A 429, 503, 529 or similar. Backs off and retries. |
+| `Rate limited (attempt 1/5): …` | A 429 or 529. Backs off and retries, or waits as long as the server's `Retry-After` says. |
+| `Server error (attempt 1/5): …` | Any other 5xx. Same retries. |
 | `Network glitch (attempt 1/5): …` | A transient network error. Backs off and retries. |
+| `Stream failed (retry 1/5): …` | The reply was cut off partway. It's discarded and requested again. |
 | `Context overflow from provider: …` | The provider rejected the request as too long. Koda compacts and retries once. |
 | `Pre-flight: context at N%, attempting auto-compact` | Compaction started |
 | `Pre-flight: context at N% but the history is too small to compact` | System prompt and tools fill the window |
@@ -264,7 +266,7 @@ the text behind questions 3 and 4, which needs `debug` or `trace`.
 
 | # | Question | Where to look |
 |---|---|---|
-| 1 | Did a call fail, retry or stop abnormally? | `model call failed`, `Rate limited`, `Network glitch`; `failed_stop=true` or `stop_reason=max_tokens` on `model call` |
+| 1 | Did a call fail, retry or stop abnormally? | `model call failed`, `Rate limited`, `Server error`, `Network glitch`; `failed_stop=true` or `stop_reason=max_tokens` on `model call` |
 | 2 | What did each call cost? | `prompt_tokens`, `completion_tokens`, `cache_read_tokens`, `thinking_tokens`, `elapsed_ms` on `model call`; totals in `run_summary.usage` |
 | 3 | What did the model see on a given call? | Shape: the last `context assembled` before that `model call`. Text: the `request body` line, or `System prompt:` plus the database rows. |
 | 4 | Did compaction keep the request, and what did the summarizer get and return? | `Stored compaction summary:` should carry the request. `Compaction prompt:` and `Compaction reply:` hold the text. At `info`: `branch`, `conversation_chars`, `clipped_chars`, `reply_chars` on `compaction`. |
