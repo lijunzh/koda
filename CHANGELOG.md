@@ -45,6 +45,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **Retried replies count in the footer.** A reply that came back empty or cut off was billed but left out of the turn's token totals, so the footer showed the least when Koda was spending the most. An empty reply was also missing from the session's totals. Both now count, and an empty reply still stays out of the conversation.
 - **Updating a memory section replaces it.** Koda wrote a new section's heading as a bullet, so it never found it again, and each update added a copy that could contradict the last. Plain notes now go above the first section, so updating a section can't remove them.
 - **A sub-agent in a worktree knows Koda commits for it.** The sandbox blocks its `git add` and `git commit`, by design, and the failure looked like something to work around. Its work was always saved to the branch.
 - **`/sessions delete` can't erase the session you're in.** The check compared the full id, so a short id, which is what `/sessions` shows, got past it and left the running conversation unable to save.
