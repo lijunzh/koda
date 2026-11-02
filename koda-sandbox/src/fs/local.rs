@@ -162,6 +162,18 @@ fn split_literal_dirs(pattern: &str) -> (PathBuf, PathBuf) {
     (dirs.iter().collect(), rest.iter().collect())
 }
 
+/// Walk from `start`, skipping ignored files and `.git`, no deeper than `rest`
+/// can match. `*` stops at a directory, so without `**` that's one level per
+/// component.
+fn glob_walk(start: &Path, rest: &Path) -> ignore::Walk {
+    let recursive = rest.components().any(|c| c.as_os_str() == "**");
+    ignore::WalkBuilder::new(start)
+        .hidden(false)
+        .max_depth((!recursive).then(|| rest.components().count()))
+        .filter_entry(|entry| entry.depth() == 0 || entry.file_name() != ".git")
+        .build()
+}
+
 /// Unsandboxed, in-process [`FileSystem`].
 ///
 /// Construct with `LocalFileSystem::new()` (or `Default`) — there's
@@ -274,10 +286,7 @@ impl FileSystem for LocalFileSystem {
             };
             // Joining keeps an absolute pattern absolute.
             let start = root.join(dirs);
-            let mut out: Vec<PathBuf> = ignore::WalkBuilder::new(&start)
-                .hidden(false)
-                .filter_entry(|entry| entry.depth() == 0 || entry.file_name() != ".git")
-                .build()
+            let mut out: Vec<PathBuf> = glob_walk(&start, &rest)
                 .filter_map(Result::ok)
                 .filter(|entry| entry.depth() > 0)
                 .filter(|entry| {
@@ -675,6 +684,26 @@ mod tests {
         std::fs::write(dir.path().join("sub/inner.rs"), b"").unwrap();
         let got = fs.glob("*.rs", dir.path()).await.unwrap();
         assert_eq!(relative(&dir, got), [Path::new("top.rs")]);
+    }
+
+    #[test]
+    fn glob_walks_only_as_deep_as_the_pattern_reaches() {
+        let (dir, _fs) = fixture();
+        std::fs::create_dir_all(dir.path().join("a/b/c")).unwrap();
+        std::fs::write(dir.path().join("a/b/c/deep.rs"), b"").unwrap();
+        let deepest = |pattern: &str| {
+            let (_, rest) = split_literal_dirs(pattern);
+            glob_walk(dir.path(), &rest)
+                .filter_map(Result::ok)
+                .map(|entry| entry.depth())
+                .max()
+                .unwrap()
+        };
+        assert_eq!(deepest("*.rs"), 1);
+        assert_eq!(deepest("deep.rs"), 1);
+        assert_eq!(deepest("*/*.rs"), 2);
+        assert_eq!(deepest("**/*.rs"), 4);
+        assert_eq!(deepest("*/**/*.rs"), 4);
     }
 
     #[tokio::test]
