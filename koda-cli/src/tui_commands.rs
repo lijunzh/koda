@@ -427,33 +427,41 @@ async fn handle_delete_session(
     id: &str,
     project_root: &std::path::Path,
 ) {
-    if id == session.id {
-        tui_output::err_msg(buffer, "Cannot delete the current session.".into());
-    } else {
-        match session.db.list_sessions(100, project_root).await {
-            Ok(sessions) => {
-                let matches: Vec<_> = sessions.iter().filter(|s| s.id.starts_with(id)).collect();
-                match matches.len() {
-                    0 => tui_output::err_msg(buffer, format!("No session found matching '{id}'.")),
-                    1 => {
-                        let full_id = &matches[0].id;
-                        match session.db.delete_session(full_id).await {
-                            Ok(true) => tui_output::ok_msg(
-                                buffer,
-                                format!("Deleted session {}", &full_id[..8]),
-                            ),
-                            Ok(false) => tui_output::err_msg(buffer, "Session not found.".into()),
-                            Err(e) => tui_output::err_msg(buffer, format!("Error: {e}")),
-                        }
-                    }
-                    n => tui_output::err_msg(
-                        buffer,
-                        format!("Ambiguous: '{id}' matches {n} sessions. Be more specific."),
-                    ),
-                }
-            }
-            Err(e) => tui_output::err_msg(buffer, format!("Error: {e}")),
-        }
+    let sessions = match session.db.list_sessions(100, project_root).await {
+        Ok(sessions) => sessions,
+        Err(e) => return tui_output::err_msg(buffer, format!("Error: {e}")),
+    };
+    let known: Vec<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
+    let full_id = match session_to_delete(id, &known, &session.id) {
+        Ok(full_id) => full_id,
+        Err(why) => return tui_output::err_msg(buffer, why),
+    };
+    match session.db.delete_session(full_id).await {
+        Ok(true) => tui_output::ok_msg(buffer, format!("Deleted session {}", &full_id[..8])),
+        Ok(false) => tui_output::err_msg(buffer, "Session not found.".into()),
+        Err(e) => tui_output::err_msg(buffer, format!("Error: {e}")),
+    }
+}
+
+/// The session `id` or an id prefix names, or why it can't be deleted.
+///
+/// The running session is checked after the prefix resolves, since `/sessions`
+/// shows short ids and that's what people type.
+fn session_to_delete<'a>(id: &str, known: &[&'a str], current: &str) -> Result<&'a str, String> {
+    let matches: Vec<&'a str> = known
+        .iter()
+        .copied()
+        .filter(|s| s.starts_with(id))
+        .collect();
+    match matches[..] {
+        _ if id == current => Err("Cannot delete the current session.".into()),
+        [] => Err(format!("No session found matching '{id}'.")),
+        [only] if only == current => Err("Cannot delete the current session.".into()),
+        [only] => Ok(only),
+        _ => Err(format!(
+            "Ambiguous: '{id}' matches {} sessions. Be more specific.",
+            matches.len()
+        )),
     }
 }
 
@@ -916,4 +924,38 @@ fn chrono_like_now_iso() -> String {
         dt.minute(),
         dt.second(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::session_to_delete;
+
+    const CURRENT: &str = "aaaa1111-running";
+    const OTHER: &str = "bbbb2222-finished";
+    const NEIGHBOUR: &str = "bbbb3333-finished";
+
+    fn resolve(id: &str) -> Result<&'static str, String> {
+        session_to_delete(id, &[CURRENT, OTHER, NEIGHBOUR], CURRENT)
+    }
+
+    #[test]
+    fn the_running_session_is_refused_by_full_id_or_prefix() {
+        for id in [CURRENT, "aaaa1111", "aaaa"] {
+            let refused = resolve(id).unwrap_err();
+            assert!(refused.contains("current session"), "{id}: {refused}");
+        }
+    }
+
+    #[test]
+    fn another_session_resolves_from_a_prefix() {
+        assert_eq!(resolve("bbbb2222"), Ok(OTHER));
+        assert_eq!(resolve(OTHER), Ok(OTHER));
+    }
+
+    #[test]
+    fn an_unknown_or_ambiguous_prefix_deletes_nothing() {
+        assert!(resolve("cccc").unwrap_err().contains("No session"));
+        assert!(resolve("bbbb").unwrap_err().contains("Ambiguous"));
+        assert!(resolve("").unwrap_err().contains("Ambiguous"));
+    }
 }
