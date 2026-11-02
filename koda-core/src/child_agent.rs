@@ -421,7 +421,7 @@ impl ChildStatusEmitter {
     /// 1. The per-task `watch::Sender` (so `snapshot()` / `/agents`
     ///    see the new state on the next read — no behavior change).
     /// 2. The registry's event queue, drained by the inference loop
-    ///    and forwarded to the active `EngineSink` (so the TUI / ACP
+    ///    and forwarded to the active `EngineSink` (so the TUI
     ///    / headless clients all see the same `ChildTaskUpdate` event).
     ///
     /// `watch::Sender::send` only fails if every receiver was dropped,
@@ -450,7 +450,7 @@ impl ChildStatusEmitter {
     /// start/end, info line). The event lands on the same registry
     /// queue as `ChildTaskUpdate`, so the inference loop's existing
     /// drain in [`crate::inference`] forwards it to whatever sink
-    /// is active (TUI / headless / ACP) without further plumbing.
+    /// is active (TUI / headless) without further plumbing.
     ///
     /// Cheap: a single mutex acquisition + `VecDeque::push_back`,
     /// the same cost as [`Self::send`]. The activity feed runs at
@@ -622,7 +622,7 @@ impl ChildAgentRegistry {
     /// **Headless / test paths** that never call this can keep using
     /// [`Self::drain_status_events`] — the receiver stays in the
     /// registry's `Mutex<Option<_>>` and `try_recv`-drain works as
-    /// before. Production (TUI / ACP) calls this exactly once at
+    /// before. Production (the TUI) calls this exactly once at
     /// session startup so events flow continuously to the user's
     /// `EngineSink` regardless of what tool is currently in flight.
     pub fn take_event_receiver(&self) -> Option<mpsc::UnboundedReceiver<EngineEvent>> {
@@ -1769,7 +1769,7 @@ mod tests {
         // The watch fan-out is what `/agents` and `snapshot()` read.
         // Sink fan-out (queue) is for the inference-loop → EngineSink
         // path.  Both targets must see every transition or `/agents`
-        // and the TUI/ACP/headless clients will disagree on state.
+        // and the TUI/headless clients will disagree on state.
         let reg = Arc::new(ChildAgentRegistry::new());
         let (tx, mut rx) = watch::channel(AgentStatus::Pending);
         let emitter = ChildStatusEmitter::new(3, None, true, tx, reg.clone());
@@ -1817,7 +1817,7 @@ mod tests {
 
     #[test]
     fn agent_status_round_trips_through_serde() {
-        // `EngineEvent::ChildTaskUpdate` is the wire format for ACP /
+        // `EngineEvent::ChildTaskUpdate` is the wire format for
         // headless / future transports.  All `AgentStatus` variants
         // must survive a serde round-trip or the boundary leak fix
         // creates a new boundary leak (engine emits, transport drops
@@ -2016,7 +2016,7 @@ mod tests {
     /// Fg emitter's `send_activity` must tag events with
     /// `is_background: false`. Pre-PR-A the emitter hardcoded `true`,
     /// which would have made every fg activity event mis-tagged on
-    /// the wire — ACP / headless filters keying on that flag would
+    /// the wire — headless filters keying on that flag would
     /// silently drop fg events.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn fg_emitter_tags_activity_events_with_is_background_false() {

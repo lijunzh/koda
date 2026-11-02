@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Breaking
 
+- **The ACP server is gone, and so is `koda server`.** Editors can no longer connect to Koda over the Agent Client Protocol. The server deadlocked at the first approval, ignored the workspace and session a client asked for, and treated "always allow" as a rejection, so fixing it meant building a second protocol for a client nobody was using. `koda server` now exits with an error that says so, and the `koda connect` placeholder is gone too. Use `koda` in a terminal, or `--output-format stream-json` from a script. See [what changed](https://lijunzh.github.io/koda/acp.html).
 - **`stream-json` is now a versioned protocol, not the engine's events.** A run opens with `hello` and `session_ready` and ends with `run_summary`. Every line after `hello` has `session_id`, and lines inside a turn have `turn_id`. `is_sub_agent` is gone: sub-agent lines carry `parent_id`, the id of the tool call that started them. `footer` is replaced by `turn_summary`, `loop_cap_reached` is now `loop_cap_request`, and `spinner_start`, `spinner_stop`, `status_update`, `response_start`, `bg_task_update` and `bg_child_activity` no longer appear. Compaction, retries and the loop guard are typed `compaction`, `retry` and `loop_guard` lines instead of `info` and `warn` text, so anything matching that text has to move. See [the protocol](https://lijunzh.github.io/koda/headless.html#wire-protocol).
 
 ### Known gaps

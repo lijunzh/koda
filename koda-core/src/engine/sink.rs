@@ -173,7 +173,7 @@ impl EngineSink for BufferingSink {
 /// [`crate::child_agent::ChildStatusEmitter::send_activity`]. The
 /// inference loop's existing drain in `inference.rs` forwards the
 /// resulting `ChildAgentActivity` event to whatever sink is active
-/// (TUI / headless / ACP) without further plumbing.
+/// (TUI / headless) without further plumbing.
 ///
 /// **The narrative trace is preserved.** Every event that hits this
 /// sink is also forwarded to the inner `BufferingSink`, so the
@@ -347,7 +347,7 @@ impl EngineSink for FgForwardingSink<'_> {
         // Forward to the parent's sink so the master TUI's normal
         // event stream is preserved — fg sub-agents have always
         // emitted directly to the parent and downstream clients
-        // (CLI, ACP, headless) depend on that. The wrapper only
+        // (CLI, headless) depend on that. The wrapper only
         // *adds* the activity fan-out; it never swallows events.
         self.inner.emit_from(self.parent_id.as_deref(), event);
     }

@@ -9,7 +9,6 @@ data on your machine, and connects to any LLM provider you choose.
 |------|--------------|----------|
 | **Interactive TUI** | `koda` (no args) | Long sessions, iterative coding |
 | **Headless** | `koda "prompt"` or `echo … \| koda` | Scripts, CI, one-shot tasks |
-| **ACP server** | `koda server --stdio` | Editor plugins (VS Code, Zed, …) |
 
 ## Quick start
 

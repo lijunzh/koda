@@ -374,7 +374,7 @@
       "type": "object"
     },
     "TodoChange": {
-      "description": "Before/after pair for a todo whose `status` and/or `priority` changed\nwhile keeping the same `content` string.\n\nComputed server-side by [`todo_write`] so every client (TUI / ACP /\nheadless / future) gets the same animation primitives without\nhaving to maintain its own previous-list snapshot. Surfaces on\n[`crate::engine::EngineEvent::TodoUpdate`].",
+      "description": "Before/after pair for a todo whose `status` and/or `priority` changed\nwhile keeping the same `content` string.\n\nComputed server-side by [`todo_write`] so every client (TUI /\nheadless / future) gets the same animation primitives without\nhaving to maintain its own previous-list snapshot. Surfaces on\n[`crate::engine::EngineEvent::TodoUpdate`].",
       "properties": {
         "after": {
           "$ref": "#/$defs/TodoItem",

@@ -86,7 +86,7 @@ pub struct TurnContext<'a> {
     /// Active session id for `db` writes.
     pub session_id: &'a str,
 
-    /// Engine event sink (TUI / headless / ACP).
+    /// Engine event sink (TUI / headless).
     pub sink: &'a dyn EngineSink,
 
     /// Per-turn child cancel token. Stored by value because

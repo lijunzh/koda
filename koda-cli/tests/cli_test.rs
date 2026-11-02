@@ -143,31 +143,24 @@ fn test_cli_help_snapshot() {
     );
 }
 
-/// Snapshot test — `koda server --help` must match the committed snapshot.
-///
-/// Fails when any server flag is added, removed, renamed, or its description
-/// edited. To update: run `cargo run -p koda-cli -- server --help > \
-/// koda-cli/tests/snapshots/server_help.snap`, then edit `docs/src/acp.md`.
+/// `koda server` used to start the ACP server. It has to fail with a reason:
+/// a plain `server` would otherwise be read as a prompt.
 #[test]
-fn test_cli_server_help_snapshot() {
-    let output = Command::new(koda_bin())
-        .args(["server", "--help"])
-        .output()
-        .expect("Failed to run koda server --help");
-
-    assert!(output.status.success());
-    let actual = String::from_utf8_lossy(&output.stdout).replace("\r\n", "\n");
-    let snapshot = include_str!("snapshots/server_help.snap").replace("\r\n", "\n");
-    assert_eq!(
-        actual.trim(),
-        snapshot.trim(),
-        concat!(
-            "\n\nkoda server --help output changed — update snapshot + docs:\n",
-            "  cargo run -p koda-cli -- server --help ",
-            "> koda-cli/tests/snapshots/server_help.snap\n",
-            "  # then edit docs/src/acp.md\n"
-        )
-    );
+fn the_removed_server_command_says_so() {
+    for args in [
+        &["server"][..],
+        &["server", "--stdio"],
+        &["server", "--port", "9999"],
+    ] {
+        let output = Command::new(koda_bin())
+            .args(args)
+            .output()
+            .expect("Failed to run koda");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{args:?}");
+        assert!(stderr.contains("has been removed"), "{args:?}: {stderr}");
+        assert!(stderr.contains("acp.html"), "{args:?}: {stderr}");
+    }
 }
 
 #[test]

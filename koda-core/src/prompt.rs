@@ -39,7 +39,7 @@ pub struct EnvironmentInfo<'a> {
 /// Build the system prompt with instructions, environment, memory, and tool schemas.
 ///
 /// `commands` lists the user-facing slash commands (e.g. `"/help"`). Pass `&[]`
-/// when there is no REPL (sub-agents, headless, ACP): the quick reference is
+/// when there is no REPL (sub-agents, headless): the quick reference is
 /// left out.
 ///
 /// `skill_registry` is used to build the live `## Skills` section so the model
@@ -79,7 +79,7 @@ pub fn build_system_prompt(
     }
     prompt.push_str(&format!("- Model: {}\n", env.model));
 
-    // Quick reference for the REPL. Headless runs, ACP and sub-agents pass no
+    // Quick reference for the REPL. Headless runs and sub-agents pass no
     // commands, and none of this applies to them. Command descriptions live
     // in `/help` and the manual: the prompt is paid on every call, and "what
     // can you do?" is a rare question.

@@ -5,7 +5,7 @@
 //! so it can answer "how do I use koda?" questions via `WebFetch`.
 //!
 //! Call [`inject_builtin_skills`] once after [`KodaAgent::new`] in each
-//! CLI entry point (TUI, headless, ACP server).
+//! CLI entry point (TUI, headless).
 
 use koda_core::agent::KodaAgent;
 
@@ -25,7 +25,7 @@ pub fn inject_builtin_skills(agent: &mut KodaAgent) {
              configuration, sessions, providers, approval modes, trust modes, \
              sandbox, security, safety, privacy, undo, tools, MCP servers, \
              context management, memory, file attachments, skills, sub-agents, \
-             ACP server, troubleshooting, panic logs, crash diagnosis, or any \
+             troubleshooting, panic logs, crash diagnosis, or any \
              other feature documented in the user manual. \
              Fetch the manual from the URL below with WebFetch.",
         ),
@@ -50,7 +50,7 @@ pub fn inject_builtin_skills(agent: &mut KodaAgent) {
              - {url}context.html — context window management\n\
              - {url}memory.html — cross-session memory\n\
              - {url}keybindings.html — full keybinding reference\n\
-             - {url}acp.html — ACP server (editor integration)\n\
+             - {url}acp.html — ACP and `koda server` (removed), and what to use instead\n\
              - {url}troubleshooting.html — panic logs, crash diagnosis, common issues\n\
              - {url}introduction.html — overview and getting started",
             url = KODA_DOCS_URL,

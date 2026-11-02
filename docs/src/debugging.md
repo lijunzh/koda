@@ -21,9 +21,6 @@ you set that variable.
 | Debug bundle | `<config>/debug-bundles/*.zip` | Written by [`/debug-bundle`](./commands.md#debug-bundle) in the TUI. |
 | Headless output | stdout | A run summary, with `--output-format json` or `stream-json`. |
 
-`koda server --stdio` is the exception: it logs to stderr, not to a file, since
-stdout carries JSON-RPC.
-
 ### The database
 
 `koda.db` is plain SQLite. Open it from your own shell: the sandbox denies

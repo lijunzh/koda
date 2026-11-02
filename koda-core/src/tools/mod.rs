@@ -1182,7 +1182,7 @@ mod tests {
     // 2. emit nothing on the dedup-nudge path (empty diff);
     // 3. always return the model-facing message string regardless.
     //
-    // These are the contract a future TUI / ACP renderer will rely on.
+    // These are the contract a future TUI renderer will rely on.
     // If you find yourself loosening any of them, revisit `DESIGN.md
     // § Progress Tracking: Model-Owned, History-Persisted,
     // Engine-Surfaced` first — the suppression rule in particular is

@@ -101,7 +101,7 @@ koda/
 ├── koda-cli/               # CLI binary
 │   ├── src/
 │   │   ├── main.rs         # CLI entry point (clap)
-│   │   ├── lib.rs          # Crate root (exports acp_adapter)
+│   │   ├── lib.rs          # Crate root
 │   │   ├── tui_app.rs      # Main TUI event loop (ratatui Viewport::Fullscreen)
 │   │   ├── app.rs          # App struct: aggregated TUI state + lifecycle
 │   │   ├── builtin_skills.rs # Built-in skill definitions (URL index)
@@ -142,8 +142,6 @@ koda/
 │   │   ├── input.rs        # @file reference processing + image loading
 │   │   ├── headless.rs     # Single-prompt headless mode
 │   │   ├── sink.rs         # CliSink (unbounded channel forwarding for TUI)
-│   │   ├── server.rs       # ACP server over stdio JSON-RPC
-│   │   ├── acp_adapter.rs  # ACP protocol adapter
 │   │   ├── onboarding.rs   # First-run wizard (provider + API key setup)
 │   │   ├── tool_history.rs # Tool output history for /expand
 │   │   ├── util.rs         # Shared utilities
@@ -268,7 +266,6 @@ parsing, highlighting.
 
 - `tests/cli_test.rs` — binary subprocess invocation
 - `tests/regression_test.rs` — REPL dispatch, input processing
-- `tests/server_test.rs` — ACP server integration (JSON-RPC lifecycle)
 - `tests/skill_agent_e2e_test.rs` — skill activation + agent switching E2E
 
 **koda-cli smoke tests** (MockProvider, CI-safe): `tests/smoke_test.rs` covers

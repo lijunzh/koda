@@ -48,7 +48,6 @@ principle.
 ```bash
 koda                      # Auto-starts embedded engine + CLI client (default)
 koda -p "fix the bug"     # Headless mode (direct engine, no server)
-koda server --stdio       # ACP server over stdio (for editor integration)
 ```
 
 ---
@@ -68,7 +67,7 @@ and a recompile.
   No vendor lock-in. The tool serves the person, not the platform
 - **Customization over configuration.** If a decision can be made at compile
   time, it must be. Flags that select an execution scenario are fine (`-p`
-  for headless, `server --stdio` for ACP) — flags that alter behavior within
+  for headless) — flags that alter behavior within
   a scenario are not (`--autonomy`, `--model-tier`). If something needs to
   change, change the code.
   
@@ -201,16 +200,13 @@ Studied four projects:
 - **Neovim**: C core + msgpack-RPC. Terminal TUI is just one client.
 
 **Zed's approach inspires; Koda finishes the job**: engine and primary client
-in the same binary, server mode optional. But Koda goes one step further than
+in the same binary. But Koda goes one step further than
 Zed — `koda-core` has zero IO, all output goes through `EngineSink`, all
 input arrives via `EngineCommand` over `mpsc::Receiver`, and `EngineEvent` is
-`Serialize`. The proof is the ACP surface in `koda-cli/src/server.rs` (~500
-LOC for JSON-RPC framing + session lifecycle) plus `koda-cli/src/acp_adapter.rs`
-(~550 LOC for the `EngineSink` impl that translates `EngineEvent` → ACP
-notifications) — ~1,050 LOC total, vs. Zed's equivalent in
-`zed/crates/agent_servers/src/acp.rs` (~3,467 LOC). Koda's smaller because
-the engine boundary is a serializable enum, not a bridge between gpui's
-`Entity`/`Task` world and the wire protocol.
+`Serialize`. The proof is `koda-core/src/engine/wire.rs`: headless output is a
+small projection of the same events the TUI renders, because the engine
+boundary is a serializable enum, not a bridge between a UI framework's world
+and the wire protocol.
 
 **Concrete consequence**: `KodaAgent` (immutable, `Arc`-shared) is separated
 from `KodaSession` (per-conversation, mutable). Zed conflates these into
@@ -227,7 +223,7 @@ places: the per-task `watch::Sender<AgentStatus>` (read by
 status-event queue (drained by the inference loop alongside
 [`BgAgentRegistry::drain_completed`] and forwarded to the active
 `EngineSink`). Same drain, same FIFO ordering, same sink — the
-TUI, headless mode, and ACP clients see identical event streams.
+TUI and headless mode see identical event streams.
 The TUI's bg-task panel still uses `snapshot()` for its primary
 render, but that is now a presentational choice (snapshot is
 cheaper for a panel that re-renders every frame), not the
@@ -256,12 +252,22 @@ is discarded isn't stored at all. Stored totals do include sub-agents: each one
 keeps its messages in its own session, linked to its parent by the
 `parent_session` metadata key.
 
-### ACP (Agent Client Protocol) (P3)
+### One Client Protocol, and ACP Removed (P2)
 
-Koda's server mode will speak ACP. Both Zed and Goose independently converged
-on ACP (`@agentclientprotocol/sdk`). ACP defines session management, streaming
-messages, tool calls with permissions, and status updates — exactly what
-Koda needs. Adopting ACP gives us Zed integration for free.
+Koda has one client protocol: the versioned `stream-json` projection in
+`koda-core/src/engine/wire.rs`. It is output only, since the only clients are
+scripts and the eval harness, and the TUI runs in-process.
+
+Koda used to speak ACP through `koda server --stdio`, on the theory that it
+would give us Zed integration for free. It was removed on 2026-11-01. Its input
+reader waited for the turn, so the first Safe-mode approval deadlocked, and it
+ignored the requested workspace and session. Fixing that meant building a
+second protocol for a client nobody was using, and two half-built systems are
+worse than one working one (P2).
+
+Input over the wire waits for a client that needs it, and it has to start with
+a reader that never awaits the turn. Editor support, if it's ever wanted, is an
+adapter outside the core.
 
 ### Extensibility: Thin Core + First-Party Libraries (P1, P2)
 
@@ -345,10 +351,10 @@ vector embeddings, graph relationships, or multi-device sync.
 ### Async Approval Flow (P3)
 
 Tool approval is an async request/response, not a blocking function call.
-In server mode, the approval decision comes from a remote client. The engine
+The engine
 emits `EngineEvent::ApprovalRequest` and awaits
-`EngineCommand::ApprovalResponse` — works identically over in-process
-channels or network transport.
+`EngineCommand::ApprovalResponse` — the TUI answers over an in-process
+channel, and nothing in the engine depends on that.
 
 **Decision variants distinguish the source of "no" (#1022 B15)**.
 `ApprovalDecision` has four variants, not three: `Approve`, `Reject`,
@@ -427,7 +433,7 @@ value counts as unknown).
 **Precedence**: API value > hardcoded lookup > MIN_CONTEXT (4096).
 
 `query_and_apply_capabilities()` runs in all entry points (TUI, headless,
-ACP server, model switch, provider setup).
+model switch, provider setup).
 
 ### Claude Family Aliases Follow the Models API (P1, P3)
 
@@ -557,7 +563,7 @@ this design:
 
 | Decision | Field | Koda |
 |---|---|---|
-| Persist latest list in engine? | Split: CC yes, Codex/Zed/Gemini no | **Yes** — keyed by `session_id`, for ACP clients reconnecting mid-session. Persistence ≠ re-injection. |
+| Persist latest list in engine? | Split: CC yes, Codex/Zed/Gemini no | **Yes** — keyed by `session_id`, for clients reconnecting mid-session. Persistence ≠ re-injection. |
 | Validate "max 1 in_progress" in tool? | Only Gemini does | **Yes** — small, deterministic, removes one class of model mistake |
 | Diff-in-tool-result for UI animation? | Only Claude Code | **Yes** — return `{added, changed, removed}` so UI can highlight transitions; model still gets a plain reminder string |
 | `FileTracker` summarized into prompt? | None do this | **No** — same anti-pattern as `progress.rs`. `FileTracker` stays scoped to trust / auto-approve-delete only. |
@@ -588,7 +594,7 @@ is really about — not just `progress.rs`:
    of relying on prompt discipline (~10 LOC).
 4. **Drop `get_todo_section` system-prompt injection** — remove the
    call site in `prompt.rs` and the helper itself. The DB row stays
-   (it's how reconnecting ACP clients get the snapshot), but it no
+   (it's how a reconnecting client gets the snapshot), but it no
    longer rides into the system prompt every turn (~40 LOC removed).
 5. **Delete `progress.rs`** and its call sites in `tool_dispatch.rs`
    and `inference.rs` (~365 LOC removed).
@@ -695,7 +701,7 @@ auto-rejected approval) capped at 256 lines and shipped back over the
 result oneshot as a `BgPayload = (output, Vec<String>)` for surface at
 result-injection time. The forwarding wrapper additionally fans every
 interesting event out as `EngineEvent::ChildAgentActivity` on the
-parent's sink so the TUI / ACP / headless surfaces render live
+parent's sink so the TUI and headless surfaces render live
 progress without polling. `NullSink` is preserved for tests and any
 future fully-detached path. Streaming text (`TextDelta`/`TextDone`)
 is intentionally *not* captured — the final output already crosses

@@ -96,7 +96,7 @@ In `koda-cli/src/`:
 - **TUI:** `tui_app.rs`, `app.rs`, `tui_context/`, `inference/`, `tui_commands.rs`
   (slash commands), `tui_render.rs`, `tui_viewport.rs`, `scroll_buffer.rs`,
   `composer/` (input box, `SLASH_COMMANDS`), `widgets/`
-- **Other frontends:** `headless.rs`, `server.rs` + `acp_adapter.rs` (ACP)
+- **Other frontends:** `headless.rs`
 - **Startup:** `main.rs`, `onboarding.rs`, `builtin_skills.rs`
 
 ### Approval
@@ -190,7 +190,7 @@ The `test-support` feature gates `MockProvider` and `TestSink`, so E2E tests nee
   `guarantee_matrix_test.rs` (trust mode × tool effect), `tool_wiring_test.rs`
   (every tool routable and approval-handled), `snapshot_test.rs` (tool schemas).
 - **koda-cli integration:** `tests/cli_test.rs`, `regression_test.rs`,
-  `server_test.rs`, `skill_agent_e2e_test.rs`.
+  `skill_agent_e2e_test.rs`.
 - **koda-cli smoke:** `tests/smoke_test.rs`, headless with `MockProvider`; live
   variants need `KODA_TEST_LMSTUDIO=1`.
 - **koda-cli stub server:** real headless runs against `FakeLlmServer`, in
