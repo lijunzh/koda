@@ -401,6 +401,19 @@ async fn the_loop_guard_is_typed() {
     assert!(!run.stdout.contains("Loop guard:"), "{}", run.stdout);
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_file_sets_the_loop_cap() {
+    let server = stub(vec![tool_call("one", "List", json!({}))], no_other_calls).await;
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(tmp.path().join("agents")).unwrap();
+    let agent = json!({"name": "default", "system_prompt": "Test.", "max_iterations": 1});
+    std::fs::write(tmp.path().join("agents/default.json"), agent.to_string()).unwrap();
+
+    let run = finish(command(&server, tmp.path())).await;
+
+    assert_eq!(run.one("loop_cap_request")["cap"], 1, "{}", run.stdout);
+}
+
 /// Stub an agent that reads big files until a summary call arrives.
 async fn filling_stub() -> FakeLlmServer {
     let server = FakeLlmServer::spawn().await;

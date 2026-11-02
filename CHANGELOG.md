@@ -43,6 +43,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **An agent's `max_iterations` applies to the main agent.** Any model setup reset it to 200: `--model`, a restored provider, auto-detect, `/model` and `/provider`. It now holds through all of them.
 - **`Ctrl+C` works while a dialog is open.** It did nothing at an approval, a question, the feedback prompt or the loop cap. It now stops the turn, as it does everywhere else.
 - **A stopped turn keeps the model's tool calls in the history.** Stopping at an approval or a question wrote no result, so the next load dropped the call, along with the results of any calls that ran beside it. The model now sees what it tried and that you stopped it.
 - **Text you type while the model works always reaches it, or comes back to you.** An approval, a question or the iteration limit could swallow it: the TUI showed `Next:` and the model never saw it. Text sent just before a final reply arrived with your next prompt, and nothing said so. Now the waits keep it, and a final reply with text pending continues the turn so the model answers in that turn.

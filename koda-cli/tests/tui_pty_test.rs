@@ -31,9 +31,6 @@ const INTERRUPTED: &str = "Interrupted";
 /// What the model reads for a call the user stopped.
 const STOPPED: &str = "The user stopped the turn before this ran.";
 
-/// Model calls before the loop-cap dialog. Agent configs can't lower it.
-const DEFAULT_LOOP_CAP: usize = 200;
-
 /// Nothing listens here: tests that use it never reach a model.
 const NO_SERVER: &str = "http://127.0.0.1:9/v1";
 
@@ -200,6 +197,15 @@ fn stdio(fd: RawFd) -> Stdio {
 fn home() -> tempfile::TempDir {
     let home = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(home.path().join(".config/koda")).unwrap();
+    home
+}
+
+/// A home whose agent file caps a turn at one model call.
+fn home_with_a_loop_cap_of_one() -> tempfile::TempDir {
+    let home = home();
+    std::fs::create_dir(home.path().join("agents")).unwrap();
+    let agent = json!({"name": "default", "system_prompt": "Test.", "max_iterations": 1});
+    std::fs::write(home.path().join("agents/default.json"), agent.to_string()).unwrap();
     home
 }
 
@@ -397,20 +403,35 @@ async fn ctrl_c_stops_the_turn_while_typing_feedback() {
 }
 
 async fn stops_at_the_loop_cap(key: &str) {
-    // Different arguments each time, or the loop guard stops it first.
-    let replies = (0..DEFAULT_LOOP_CAP)
-        .map(|i| tool_calls(&[("Glob", json!({"pattern": format!("f{i}*")}))]))
-        .collect();
-    let server = scripted_model(replies).await;
-    let home = home();
+    let server = scripted_model(vec![tool_calls(&[("List", json!({}))])]).await;
+    let home = home_with_a_loop_cap_of_one();
     let mut tui = Tui::start_with_model(home.path(), &server.url());
 
     tui.submit("first prompt");
     tui.wait_for_output("Hard cap reached. Continue?");
-    let calls = model_calls(&server).await.len();
     tui.stop_turn(key);
 
-    assert_stopped(&mut tui, &server, calls).await;
+    assert_stopped(&mut tui, &server, 1).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_file_keeps_its_loop_cap_across_a_model_switch() {
+    let server = scripted_model(vec![tool_calls(&[("List", json!({}))])]).await;
+    let home = home_with_a_loop_cap_of_one();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.submit("/model other-model");
+    tui.submit("first prompt");
+
+    // One word at a time: a redraw skips the blank cells between words. At the
+    // default cap the turn ends on the stub's final reply, with no dialog.
+    tui.wait_for_output("iterations)");
+    tui.wait_for_output("(1");
+    let sent = wait_for_model_call(&server, 1).await;
+    assert!(
+        sent.contains("other-model"),
+        "the switch didn't land: {sent}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

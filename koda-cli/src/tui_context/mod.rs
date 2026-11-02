@@ -1174,6 +1174,23 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn restoring_the_saved_row_keeps_the_agent_loop_cap() {
+            let last = saved(
+                ProviderType::Anthropic,
+                "https://api.anthropic.com",
+                "claude-sonnet-4-6",
+            )
+            .await;
+            let (mut config, overrides) = loaded(None, None, None);
+            config.max_iterations = 7;
+
+            apply_last_provider(&mut config, &last, overrides, None);
+
+            assert_eq!(config.model, "claude-sonnet-4-6");
+            assert_eq!(config.max_iterations, 7);
+        }
+
+        #[tokio::test]
         async fn no_overrides_restores_the_saved_row() {
             let last = saved(
                 ProviderType::Anthropic,

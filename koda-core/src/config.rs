@@ -298,7 +298,9 @@ impl KodaConfig {
             settings.reasoning_effort = Some(re.clone());
         }
 
-        let max_iterations = agent.max_iterations.unwrap_or(200);
+        let max_iterations = agent
+            .max_iterations
+            .unwrap_or(crate::loop_guard::MAX_ITERATIONS_DEFAULT);
 
         // **#1246**: derive the agent's declared trust mode from the
         // optional `"trust"` JSON field. This is the agent's *intent*
@@ -489,10 +491,10 @@ impl KodaConfig {
         self
     }
 
-    /// Recalculate model-derived settings (context window, tier, iteration limits).
+    /// Recalculate model-derived settings (the context window).
     ///
     /// Call this whenever `self.model` or `self.provider_type` changes to keep
-    /// context window, tier, and iteration defaults in sync with the new model.
+    /// the context window in sync with the new model.
     /// Uses the hardcoded lookup table as a synchronous fallback, unless the
     /// user pinned a window ([`Self::context_override`]).
     /// For API-sourced values, call `apply_provider_capabilities` after this.
@@ -502,8 +504,6 @@ impl KodaConfig {
             .unwrap_or_else(|| crate::model_context::context_window_for_model(&self.model));
         self.max_context_tokens = new_ctx;
         self.model_settings.max_context_tokens = new_ctx;
-
-        self.max_iterations = 200;
     }
 
     /// Apply capabilities queried from the provider API.
@@ -1113,7 +1113,18 @@ mod tests {
 
         assert_eq!(config.max_context_tokens, 1_000_000);
         assert_eq!(config.model_settings.max_context_tokens, 1_000_000);
-        assert_eq!(config.max_iterations, 200);
+    }
+
+    #[test]
+    fn the_agent_loop_cap_survives_a_model_switch() {
+        let mut config = KodaConfig::default_for_testing(ProviderType::LMStudio);
+        config.max_iterations = 7;
+        config.model = "gpt-4o".to_string();
+        config.model_settings.model = config.model.clone();
+        config.recalculate_model_derived();
+        assert_eq!(config.max_iterations, 7);
+        let config = config.with_overrides(None, Some("flint".into()), None);
+        assert_eq!(config.max_iterations, 7);
     }
 
     #[test]

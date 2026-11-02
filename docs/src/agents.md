@@ -23,7 +23,7 @@ Place JSON files in `.koda/agents/` (project-local) or
 | `model` | | Model alias or ID (defaults to current saved model) |
 | `allowed_tools` | | Subset of tools the agent can call (defaults to all) |
 | `disallowed_tools` | | Tools to deny even if `allowed_tools` is empty |
-| `max_iterations` | | Per-sub-agent turn cap (default: **30** for sub-agents, 200 for top-level). See [Sub-agent budget](#sub-agent-budget). |
+| `max_iterations` | | Turn cap (default: **30** for sub-agents, 200 for top-level). See [Sub-agent budget](#sub-agent-budget). |
 | `skip_memory` | | Skip injecting project/global memory into the prompt (saves tokens for read-only agents) |
 | ~~`write_access`~~ | | **Deprecated** — use `trust` instead. Pre-existing JSONs still work; a warning is logged at load. See [Migration from `write_access`](#migration-from-write_access). |
 
