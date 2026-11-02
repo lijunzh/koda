@@ -44,6 +44,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **Updating a memory section replaces it.** Koda wrote a new section's heading as a bullet, so it never found it again, and each update added a copy that could contradict the last. Plain notes now go above the first section, so updating a section can't remove them.
 - **`/sessions delete` can't erase the session you're in.** The check compared the full id, so a short id, which is what `/sessions` shows, got past it and left the running conversation unable to save.
 - **An agent's `max_iterations` applies to the main agent.** Any model setup reset it to 200: `--model`, a restored provider, auto-detect, `/model` and `/provider`. It now holds through all of them.
 - **`Ctrl+C` works while a dialog is open.** It did nothing at an approval, a question, the feedback prompt or the loop cap. It now stops the turn, as it does everywhere else.
