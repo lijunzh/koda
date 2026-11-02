@@ -76,7 +76,7 @@ fn drain_bounded<T, F: FnMut(T)>(
 impl TuiContext {
     /// Run a full inference turn: start the turn future, handle events
     /// inside the inner `tokio::select!` loop, and perform post-turn
-    /// cleanup (undo commit, event drain, auto-compact).
+    /// cleanup (event drain, auto-compact).
     pub(crate) async fn run_inference_turn(
         &mut self,
         pending_images: Option<Vec<koda_core::providers::ImageData>>,

@@ -261,7 +261,7 @@ mod tests {
             t.classify(&serde_json::json!({})),
             crate::tools::ToolEffect::ReadOnly,
         );
-        assert!(t.extract_undo_path(&serde_json::json!({})).is_none());
+        assert!(t.mutated_path(&serde_json::json!({})).is_none());
     }
 
     #[test]

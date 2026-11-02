@@ -181,7 +181,7 @@ fn truncate_line(line: &str, max_bytes: usize) -> &str {
 // =============================================================
 // Tool trait implementation (#1265 item 5, PR-5/N).
 //
-// `Grep` is read-only — no `extract_undo_path` override needed.
+// `Grep` is read-only — no `mutated_path` override needed.
 // Reads `caps.grep_matches` off the context (added to `ToolExecCtx`
 // in PR-4 alongside `caps.list_entries`).
 // =============================================================
@@ -438,9 +438,8 @@ mod tests {
         assert_eq!(t.name(), "Grep");
         assert_eq!(t.definition().name, "Grep");
         assert_eq!(t.classify(&serde_json::json!({})), ToolEffect::ReadOnly);
-        // Read-only tools must NOT register an undo path — prevents
-        // pollution of the undo stack with no-op snapshots.
-        assert!(t.extract_undo_path(&serde_json::json!({})).is_none());
+        // Read-only tools change no file.
+        assert!(t.mutated_path(&serde_json::json!({})).is_none());
     }
 
     #[tokio::test]

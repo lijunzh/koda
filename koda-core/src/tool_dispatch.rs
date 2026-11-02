@@ -235,11 +235,9 @@ pub(crate) fn has_file_conflict(tool_calls: &[ToolCall]) -> bool {
         if !catalog.is_mutating_call(&tc.function_name, &args) {
             return false;
         }
-        // Per-tool undo path now lives on the trait — single source
-        // of truth for which tools snapshot which arg.
         if let Some(path) = catalog
             .get_tool(&tc.function_name)
-            .and_then(|tool| tool.extract_undo_path(&args))
+            .and_then(|tool| tool.mutated_path(&args))
         {
             // If the path is already in the set, we have a conflict
             !seen.insert(path.to_string_lossy().into_owned())

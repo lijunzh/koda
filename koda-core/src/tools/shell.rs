@@ -689,11 +689,6 @@ pub(crate) fn annotate_violations(exit_code: i32, command: &str, stderr_lines: &
 // (which then delegated to `bash_safety` itself). Folding it into
 // the trait closes the per-tool/per-call gap that `tools::
 // classify_tool` had to paper over.
-//
-// `extract_undo_path` returns `None` — Bash can mutate anything,
-// and we make no attempt to snapshot all of `$PWD` before each
-// command. Pre-#1265 behavior preserved exactly (Bash was not in
-// `undo::is_mutating_tool`'s list).
 // =============================================================
 
 use crate::tools::{Tool, ToolEffect, ToolExecCtx, ToolResult};
@@ -722,11 +717,6 @@ impl Tool for BashTool {
             Some(cmd) => crate::bash_safety::classify_bash_command(cmd),
             None => ToolEffect::Destructive,
         }
-    }
-    /// `Bash` doesn't participate in `/undo`. The pre-#1265
-    /// `undo::is_mutating_tool` did not list it; preserved exactly.
-    fn extract_undo_path(&self, _args: &serde_json::Value) -> Option<std::path::PathBuf> {
-        None
     }
     async fn execute(&self, ctx: &ToolExecCtx<'_>, args: &serde_json::Value) -> ToolResult {
         // Bash is special-cased on result mapping: success returns
@@ -1608,8 +1598,8 @@ mod tests {
         let t = BashTool;
         assert_eq!(t.name(), "Bash");
         assert_eq!(t.definition().name, "Bash");
-        // Bash never participates in /undo — same as pre-#1265.
-        assert!(t.extract_undo_path(&serde_json::json!({})).is_none());
+        // A command can change anything, so it names no one file.
+        assert!(t.mutated_path(&serde_json::json!({})).is_none());
     }
 
     /// Per-call classify is the headline feature of PR-6: same

@@ -182,7 +182,7 @@ do. Where its writes land is a separate choice, and it follows your mode:
 
 | Session | Writes go to |
 |---------|--------------|
-| Auto | The project, like the main agent's. `/undo` takes them back with the turn. |
+| Auto | The project, like the main agent's. |
 | Safe | A git worktree of its own. A sub-agent can't ask for approval, so its file edits don't reach the project until you merge its branch. |
 | Plan | Nowhere. Sub-agents are read-only. |
 
@@ -193,7 +193,10 @@ branch name, and tells the main agent too. A worktree with no new work is
 removed along with its branch.
 
 A worktree is a fresh checkout of `HEAD`, so it doesn't have your
-uncommitted edits, untracked files or build output.
+uncommitted edits, untracked files or build output. A sub-agent there can't
+run `git add` or `git commit`, because git keeps a worktree's index and refs
+under the main repository's `.git`, which is outside its write root. Koda
+commits for it at the end.
 
 Outside a git repository there are no worktrees. A sub-agent that needs one
 doesn't start, and the main agent is told why, so it can do the work itself:

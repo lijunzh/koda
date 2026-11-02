@@ -264,8 +264,6 @@ pub struct ToolRegistry {
     last_writer: LastWriterCache,
     /// Most recent Bash invocation for staleness error context (#804 item 7).
     last_bash: LastBashCache,
-    /// Undo stack for file mutations.
-    pub undo: Arc<std::sync::Mutex<crate::undo::UndoStack>>,
     /// Discovered skills.
     pub skill_registry: crate::skills::SkillRegistry,
     /// Database handle for tools that need session access (RecallContext).
@@ -333,7 +331,6 @@ impl ToolRegistry {
             fs: Arc::new(LocalFileSystem::new()),
             last_writer: Arc::new(std::sync::Mutex::new(HashMap::new())),
             last_bash: Arc::new(std::sync::Mutex::new(None)),
-            undo: Arc::new(std::sync::Mutex::new(crate::undo::UndoStack::new())),
             skill_registry,
             db: std::sync::RwLock::new(None),
             session_id: std::sync::RwLock::new(None),
@@ -355,14 +352,6 @@ impl ToolRegistry {
     /// read without the edit being refused as stale.
     pub fn with_shared_cache(mut self, cache: FileReadCache) -> Self {
         self.read_cache = cache;
-        self
-    }
-
-    /// Record this registry's file changes on another registry's undo stack, so
-    /// a sub-agent's edits to the project go back with its parent's turn.
-    #[must_use]
-    pub fn with_shared_undo(mut self, undo: Arc<std::sync::Mutex<crate::undo::UndoStack>>) -> Self {
-        self.undo = undo;
         self
     }
 
@@ -476,10 +465,8 @@ impl ToolRegistry {
     /// Borrow the underlying read-only metadata catalog.
     ///
     /// Use this for per-call classification
-    /// ([`ToolCatalog::classify_call`]) and per-tool undo-path
-    /// resolution ([`ToolCatalog::get_tool`]) — both replaced the
-    /// legacy `tools::classify_tool` / `undo::extract_file_path`
-    /// free functions in PR-9 of #1265 item 5.
+    /// ([`ToolCatalog::classify_call`]) and per-tool lookups
+    /// ([`ToolCatalog::get_tool`]).
     pub fn catalog(&self) -> &ToolCatalog {
         &self.catalog
     }
@@ -588,26 +575,6 @@ impl ToolRegistry {
             "Executing tool: {name} with args: [{} chars]",
             arguments.len()
         );
-
-        // Snapshot file before mutation (for /undo).
-        //
-        // Every built-in tool is now on the `Tool` trait (#1265 item 5,
-        // PR-4..PR-8) and owns its own undo behavior via
-        // `Tool::extract_undo_path`. The trait's `None` default means
-        // "don't snapshot". MCP tools (`server__tool` names) aren't
-        // in the catalog, so they get `None` here — matching the
-        // pre-#1265 behavior where MCP tools weren't in the legacy
-        // `undo::is_mutating_tool` allowlist either.
-        let undo_path = self
-            .catalog
-            .get_tool(name)
-            .and_then(|tool| tool.extract_undo_path(&args));
-        if let Some(file_path) = undo_path {
-            let resolved = self.project_root.join(&file_path);
-            if let Ok(mut undo) = self.undo.lock() {
-                undo.snapshot(&resolved);
-            }
-        }
 
         // Trait dispatch for migrated tools (#1265 item 5, PR-4..PR-N).
         //

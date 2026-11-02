@@ -33,12 +33,12 @@
 //! legacy free functions called out above (`tools::classify_tool`,
 //! `tools::is_mutating_tool`, `undo::is_mutating_tool`,
 //! `undo::extract_file_path`) are deleted. Per-call classification
-//! and undo-path resolution flow through this trait via
+//! and mutated-path resolution flow through this trait via
 //! [`ToolCatalog::classify_call`] /
 //! [`ToolCatalog::get_tool`]\.
 //!
 //! - [`Tool`] — the trait every built-in tool implements. Owns the
-//!   tool's name, schema, classification, undo behavior, and
+//!   tool's name, schema, classification, mutated path, and
 //!   execution. MCP tools intentionally don't implement this — they
 //!   route through [`crate::mcp::McpManager`] via a separate dispatch
 //!   path because their schema/behavior is server-defined at runtime.
@@ -233,7 +233,7 @@ pub struct ToolExecCtx<'a> {
 ///
 /// Each implementor is a unit struct (or near-unit; some tools like
 /// `BashTool` may carry small pre-computed config) that owns its name,
-/// JSON schema, effect classification, undo behavior, and execution.
+/// JSON schema, effect classification, mutated path, and execution.
 ///
 /// # Implementing
 ///
@@ -255,8 +255,8 @@ pub struct ToolExecCtx<'a> {
 /// }
 /// ```
 ///
-/// `extract_undo_path` and `classify` have safe defaults: tools that
-/// don't override them are treated as mutating-but-untracked-in-undo.
+/// `mutated_path` and `classify` have safe defaults: tools that
+/// don't override them are treated as mutating with no known file.
 /// That's the same conservative treatment unknown tools get from
 /// today's [`crate::tools::ToolCatalog::classify_call`] (which
 /// returns [`crate::tools::ToolEffect::LocalMutation`] for unknown
@@ -311,17 +311,11 @@ pub trait Tool: Send + Sync {
         ToolEffect::LocalMutation
     }
 
-    /// If this tool is about to mutate a file, return the path that
-    /// should be snapshotted into the undo stack *before* execution.
-    /// `None` means "don't snapshot" — the default for read-only
-    /// tools and for mutating tools whose target path can't be
-    /// statically extracted from the arguments (e.g. `Bash`).
-    ///
-    /// Pre-#1265 this logic lived in `undo::extract_file_path` as a
-    /// separate `match` on tool name (deleted in PR-9). Lifting it
-    /// onto the implementing struct means adding a mutating tool
-    /// can't forget to wire its undo behavior.
-    fn extract_undo_path(&self, _args: &Value) -> Option<PathBuf> {
+    /// The file this call will change, so two calls to one file in a batch
+    /// run in the order the model gave them. `None` is the default for
+    /// read-only tools and for mutating tools whose target can't be read
+    /// from the arguments (e.g. `Bash`).
+    fn mutated_path(&self, _args: &Value) -> Option<PathBuf> {
         None
     }
 
@@ -494,8 +488,8 @@ mod tests {
         }
     }
 
-    /// Mock mutating tool that declares an undo path. Verifies the
-    /// `extract_undo_path` override is wired through.
+    /// Mock mutating tool that declares the file it changes. Verifies the
+    /// `mutated_path` override is wired through.
     struct MutatingMockTool;
 
     #[async_trait]
@@ -513,7 +507,7 @@ mod tests {
         fn classify(&self, _args: &Value) -> ToolEffect {
             ToolEffect::LocalMutation
         }
-        fn extract_undo_path(&self, args: &Value) -> Option<PathBuf> {
+        fn mutated_path(&self, args: &Value) -> Option<PathBuf> {
             args.get("path").and_then(|v| v.as_str()).map(PathBuf::from)
         }
         async fn execute(&self, _ctx: &ToolExecCtx<'_>, _args: &Value) -> ToolResult {
@@ -635,22 +629,22 @@ mod tests {
     }
 
     #[test]
-    fn extract_undo_path_default_is_none() {
+    fn mutated_path_default_is_none() {
         // The default impl returns None — read-only tools don't need
         // to override it.
-        assert!(EchoReadTool.extract_undo_path(&json!({})).is_none());
+        assert!(EchoReadTool.mutated_path(&json!({})).is_none());
     }
 
     #[test]
-    fn extract_undo_path_override_picks_up_args() {
+    fn mutated_path_override_picks_up_args() {
         let t = MutatingMockTool;
         // Path present → Some
-        let p = t.extract_undo_path(&json!({"path": "src/main.rs"}));
+        let p = t.mutated_path(&json!({"path": "src/main.rs"}));
         assert_eq!(p, Some(PathBuf::from("src/main.rs")));
         // No path arg → None (graceful)
-        assert!(t.extract_undo_path(&json!({})).is_none());
+        assert!(t.mutated_path(&json!({})).is_none());
         // Wrong type → None (graceful)
-        assert!(t.extract_undo_path(&json!({"path": 42})).is_none());
+        assert!(t.mutated_path(&json!({"path": 42})).is_none());
     }
 
     #[test]

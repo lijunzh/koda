@@ -1092,13 +1092,6 @@ pub(crate) fn execute_sub_agent<'a>(
                 effective_root_ref,
             );
             let registry = registry.with_sandbox_policy(composed_policy);
-            // Edits to the project go back with the parent's turn on `/undo`.
-            // A worktree's don't: its branch is the record of them.
-            let registry = if effective_root == project_root {
-                registry.with_shared_undo(parent_tx.turn.tools.undo.clone())
-            } else {
-                registry
-            };
             match parent_cache {
                 Some(cache) => registry.with_shared_cache(cache),
                 None => registry,
@@ -1167,7 +1160,7 @@ pub(crate) fn execute_sub_agent<'a>(
             platform: std::env::consts::OS,
         };
         let system_prompt = build_system_prompt(
-            &sub_config.system_prompt,
+            &instructions_for(&sub_config.system_prompt, effective_root != project_root),
             &semantic_memory,
             &env,
             &[], // sub-agents have no REPL commands
@@ -1758,6 +1751,22 @@ async fn release_workspace(
     }
 }
 
+/// What a sub-agent in a worktree has to know. Git keeps a worktree's index and
+/// refs under the main repo's `.git`, outside the sandbox's write root, and that's
+/// deliberate: a sub-agent that could write refs could move `main` in Safe.
+const WORKTREE_NOTE: &str = "You are working in a git worktree of your own. Koda commits \
+     what you leave here to a branch when you finish, so don't run `git add` or `git commit`: \
+     the sandbox blocks them.";
+
+/// An agent's instructions, plus what its workspace changes about them.
+fn instructions_for(instructions: &str, in_worktree: bool) -> String {
+    if in_worktree {
+        format!("{instructions}\n\n{WORKTREE_NOTE}")
+    } else {
+        instructions.to_string()
+    }
+}
+
 /// Whether an agent's tool lists leave it any of the file-writing tools. An empty
 /// allow list means every tool, as in `get_definitions`.
 fn edits_files(allowed: &[String], disallowed: &[String]) -> bool {
@@ -2046,7 +2055,10 @@ mod recover_last_assistant_text_tests {
 
 #[cfg(test)]
 mod release_workspace_tests {
-    use super::{edits_files, needs_worktree, release_workspace, with_workspace_hint};
+    use super::{
+        WORKTREE_NOTE, edits_files, instructions_for, needs_worktree, release_workspace,
+        with_workspace_hint,
+    };
     use crate::config::AgentIsolation;
     use crate::engine::EngineEvent;
     use crate::engine::sink::TestSink;
@@ -2094,6 +2106,14 @@ mod release_workspace_tests {
     async fn no_hint_says_nothing() {
         assert!(messages(Saying("nothing")).await.is_empty());
         assert!(messages(Saying("fails")).await.is_empty());
+    }
+
+    #[test]
+    fn only_a_worktree_adds_to_the_instructions() {
+        assert_eq!(instructions_for("Do it.", false), "Do it.");
+        let told = instructions_for("Do it.", true);
+        assert!(told.starts_with("Do it."), "{told}");
+        assert!(told.ends_with(WORKTREE_NOTE), "{told}");
     }
 
     #[test]

@@ -59,7 +59,6 @@ koda/
 │   │   ├── trust.rs        # TrustMode (Plan/Safe/Auto), ToolApproval, check_tool()
 │   │   ├── truncate.rs     # Token-safe output truncation
 │   │   ├── turn_context.rs # TurnContext and ToolExecutionContext bundles
-│   │   ├── undo.rs         # Undo stack for file mutations
 │   │   ├── version.rs      # Background version checker (queries crates.io)
 │   │   ├── engine/         # EngineEvent, EngineCommand, EngineSink trait
 │   │   │   ├── mod.rs      # Module root + re-exports
