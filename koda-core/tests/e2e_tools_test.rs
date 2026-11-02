@@ -552,3 +552,52 @@ async fn test_edit_validation_file_not_found() {
         "error should mention file not readable: {output}",
     );
 }
+
+// ── Several Edits to one file in one response ──────────────────
+
+/// Two Edits to `order.txt`, sent in one response, then a closing reply.
+fn two_edits(first: (&str, &str), second: (&str, &str)) -> MockProvider {
+    let edit = |id: &str, (old_str, new_str): (&str, &str)| koda_core::providers::ToolCall {
+        id: id.into(),
+        function_name: "Edit".into(),
+        arguments: serde_json::json!({
+            "file_path": "order.txt",
+            "old_str": old_str,
+            "new_str": new_str,
+        })
+        .to_string(),
+        thought_signature: None,
+    };
+    MockProvider::new(vec![
+        MockResponse::ToolCalls(vec![edit("e1", first), edit("e2", second)]),
+        MockResponse::Text("Done.".into()),
+    ])
+}
+
+/// Both auto-approve, so this is the batch that used to run concurrently: each
+/// Edit could read the original file and overwrite the other's change.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_edits_to_one_file_both_land() {
+    let env = Env::new().await;
+    let file = env.root.join("order.txt");
+    std::fs::write(&file, "alpha\nbeta\n").unwrap();
+    env.insert_user_message("change both").await;
+
+    let provider = two_edits(("alpha", "ALPHA"), ("beta", "BETA"));
+    env.run_inference(&provider).await;
+
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "ALPHA\nBETA\n");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_second_edit_can_use_what_the_first_wrote() {
+    let env = Env::new().await;
+    let file = env.root.join("order.txt");
+    std::fs::write(&file, "one\n").unwrap();
+    env.insert_user_message("change it twice").await;
+
+    let provider = two_edits(("one", "two"), ("two", "three"));
+    env.run_inference(&provider).await;
+
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "three\n");
+}
