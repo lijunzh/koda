@@ -4,6 +4,8 @@
 //! `koda` binary on a pty and type at it the way a user does.
 #![cfg(unix)]
 
+use koda_test_utils::network::{FakeLlmServer, ResponseTemplate};
+use serde_json::{Value, json};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::{FromRawFd, RawFd};
@@ -19,6 +21,9 @@ const IDLE_HINT: &str = "Type a message";
 /// How long the composer waits before it stops treating fast typing as a paste.
 const PASTE_SETTLE: Duration = Duration::from_millis(400);
 
+/// Nothing listens here: tests that use it never reach a model.
+const NO_SERVER: &str = "http://127.0.0.1:9/v1";
+
 /// A `koda` process on a pty. Dropping it kills the process.
 struct Tui {
     child: Child,
@@ -29,12 +34,16 @@ struct Tui {
 impl Tui {
     /// Start `koda` in `home` and wait for the idle composer.
     fn start(home: &Path) -> Self {
+        Self::start_with_model(home, NO_SERVER)
+    }
+
+    /// Start `koda` in `home` against the model at `base_url`.
+    fn start_with_model(home: &Path, base_url: &str) -> Self {
         let (master, slave) = open_pty();
         let mut command = Command::new(env!("CARGO_BIN_EXE_koda"));
         command
             .args(["--provider", "lmstudio"])
-            // Nothing listens here: these tests never reach a model.
-            .args(["--base-url", "http://127.0.0.1:9/v1"])
+            .args(["--base-url", base_url])
             .args(["--model", "stub-model"])
             .args(["--max-context-tokens", "64000"])
             .args(["--mode", "safe"])
@@ -180,4 +189,59 @@ fn exit_quits_with_the_popup_closed() {
     tui.type_text("\r");
 
     assert!(tui.exits(), "koda stayed up after /exit");
+}
+
+/// A streamed reply that calls `List`.
+fn list_call() -> ResponseTemplate {
+    let chunks = [
+        json!({"choices": [{"delta": {"tool_calls": [{
+            "index": 0,
+            "id": "call_0",
+            "type": "function",
+            "function": {"name": "List", "arguments": "{}"},
+        }]}}]}),
+        json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+    ];
+    let mut body: String = chunks
+        .iter()
+        .map(|c: &Value| format!("data: {c}\n\n"))
+        .collect();
+    body.push_str("data: [DONE]\n\n");
+    ResponseTemplate::new(200)
+        .insert_header("content-type", "text/event-stream")
+        .set_body_string(body)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_file_keeps_its_loop_cap_across_a_model_switch() {
+    let server = FakeLlmServer::spawn().await;
+    server
+        .mount_fn("POST", r".*/chat/completions$", |_| list_call())
+        .await;
+    let home = home();
+    std::fs::create_dir(home.path().join("agents")).unwrap();
+    let agent = json!({"name": "default", "system_prompt": "Test.", "max_iterations": 1});
+    std::fs::write(home.path().join("agents/default.json"), agent.to_string()).unwrap();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.type_text("/model other-model");
+    tui.type_text("\r");
+    tui.type_text("List the files");
+    tui.type_text("\r");
+
+    // One word at a time: a redraw skips the blank cells between words. The
+    // stub repeats itself, so at the default cap the loop guard ends the turn
+    // long before this line shows.
+    tui.wait_for_output("iterations)");
+    tui.wait_for_output("(1");
+    let calls = server.received_requests().await;
+    let call = calls
+        .iter()
+        .find(|call| call.url.path().ends_with("/chat/completions"))
+        .expect("no model call");
+    let sent = String::from_utf8_lossy(&call.body);
+    assert!(
+        sent.contains("other-model"),
+        "the switch didn't land: {sent}"
+    );
 }
