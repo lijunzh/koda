@@ -365,6 +365,9 @@ mod tests {
             "OpenAI-compatible stream ended before a finish_reason or [DONE]",
             "OpenAI-compatible stream error: worker failed",
             "error decoding response body",
+            // LM Studio's shared cache filled up under several requests:
+            // the request fits on its own, so it is worth sending again.
+            "OpenAI-compatible stream error: Context size has been exceeded.",
         ] {
             assert!(!stream_error_is_final(message), "{message}");
         }

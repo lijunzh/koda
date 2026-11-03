@@ -47,6 +47,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **LM Studio's "Context size has been exceeded" no longer fails every sub-agent at once.** LM Studio and llama.cpp loaded with several parallel slots share one context cache between them. Requests that each fit can still fail together mid-reply when they run at the same time, and retrying them together failed them all again. Koda now says the server's cache is full, and from then on it sends that server one request at a time, so the retries get through. It doesn't compact, because no single request was too long.
 - **`Read` returns a whole file when it fits.** A fixed 20,000-byte limit cut files that the context window had room for, so a 30K file took several reads. One read now follows the same limit as other tool results, which scales with the window: 40,000 on a 1M window, 12,800 on 128K.
 - **Claude keeps its reasoning between tool calls.** Koda threw away the thinking blocks Anthropic sent, so the model lost its reasoning at every tool call. They now go back on the next request, to the same model only, and the API drops any block whose history compaction has changed. Sub-agents and summaries don't replay them yet. The footer also counts thinking tokens now.
 - **A failed request is retried the way Codex does it.** Every 5xx gets four retries, on local servers too; 500, 502 and 504 used to end the turn. A wait the server names with `Retry-After` replaces the backoff, up to five minutes. An exhausted quota stops at once.

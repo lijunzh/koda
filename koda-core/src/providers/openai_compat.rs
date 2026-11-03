@@ -10,8 +10,66 @@ use super::{
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock, Mutex};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+
+/// What llama.cpp, and so LM Studio, sends inside a 200 stream when its
+/// context cache has no room left for a request it is working on.
+const CACHE_FULL: &str = "context size has been exceeded";
+
+/// Servers that ran out of context cache with several requests in flight,
+/// by base URL. Their requests from this process go one at a time.
+///
+/// llama.cpp loaded with `--parallel N` and a unified cache, LM Studio's
+/// default, gives every slot the whole window, but the slots share one cache
+/// of that size. Each request fits, but several at once may not. Then every
+/// request still being worked on fails with "Context size has been exceeded."
+/// A lone request can't cause it. One that outgrows the window stops with
+/// `finish_reason: "length"`, and a prompt that is too big is refused before
+/// the stream starts.
+///
+/// So it means the server is busy, not that the request is too big.
+/// Compacting would throw history away for nothing. Retrying every failed
+/// request together fails them all again, because they still don't fit
+/// together. Koda's own parallel sub-agents hit this against LM Studio on
+/// 2026-05-03: three requests of 73K, 49K and 51K tokens failed at once
+/// in a 131K cache.
+static CACHE_FULL_SERVERS: LazyLock<Mutex<HashMap<String, Arc<Semaphore>>>> =
+    LazyLock::new(Default::default);
+
+/// The one-at-a-time gate for `base_url`, once it has reported a full cache.
+fn cache_full_gate(base_url: &str) -> Option<Arc<Semaphore>> {
+    let servers = CACHE_FULL_SERVERS.lock().unwrap_or_else(|e| e.into_inner());
+    servers.get(base_url).cloned()
+}
+
+/// From now on, send `base_url` one request at a time.
+fn mark_cache_full(base_url: &str) {
+    let mut servers = CACHE_FULL_SERVERS.lock().unwrap_or_else(|e| e.into_inner());
+    servers.entry(base_url.to_string()).or_insert_with(|| {
+        tracing::warn!(
+            server = base_url,
+            "the server's context cache is full with several requests at once; \
+             sending it one request at a time from now on"
+        );
+        Arc::new(Semaphore::new(1))
+    });
+}
+
+/// Wait for `base_url`'s gate, if it has one. The permit is held until the
+/// reply ends.
+async fn wait_for_turn(base_url: &str) -> Result<Option<OwnedSemaphorePermit>> {
+    match cache_full_gate(base_url) {
+        Some(gate) => Ok(Some(
+            gate.acquire_owned()
+                .await
+                .context("the server's request gate closed")?,
+        )),
+        None => Ok(None),
+    }
+}
 
 /// Client for OpenAI-compatible APIs.
 pub struct OpenAiCompatProvider {
@@ -252,6 +310,11 @@ pub(crate) struct OpenAiChunkParser {
     reasoning_plain: Option<Arc<AtomicBool>>,
     /// A `finish_reason` or `[DONE]` arrived. Without either the stream was cut.
     finished: bool,
+    /// The server's base URL, to mark if it reports a full cache.
+    server: Option<String>,
+    /// This request's place in the server's gate, given back when the
+    /// stream's reader drops the parser.
+    _turn: Option<OwnedSemaphorePermit>,
 }
 
 impl OpenAiChunkParser {
@@ -262,12 +325,22 @@ impl OpenAiChunkParser {
             think_filter: super::stream_tag_filter::StreamTagFilter::new(),
             reasoning_plain: None,
             finished: false,
+            server: None,
+            _turn: None,
         }
     }
 
     /// Record the reasoning key the server uses in `flag`, for replaying history.
     fn noting_reasoning_field(mut self, flag: Arc<AtomicBool>) -> Self {
         self.reasoning_plain = Some(flag);
+        self
+    }
+
+    /// Hold `turn` for as long as the stream lasts, and mark `base_url` if
+    /// it reports a full cache.
+    fn for_server(mut self, base_url: &str, turn: Option<OwnedSemaphorePermit>) -> Self {
+        self.server = Some(base_url.to_string());
+        self._turn = turn;
         self
     }
 }
@@ -278,6 +351,12 @@ fn stream_error_message(error: &serde_json::Value) -> String {
         .as_str()
         .or(error.as_str())
         .unwrap_or("unknown");
+    if message.to_lowercase().contains(CACHE_FULL) {
+        return format!(
+            "OpenAI-compatible stream error: {message} The server's shared context \
+             cache is full: it has more requests at once than fit."
+        );
+    }
     format!("OpenAI-compatible stream error: {message}")
 }
 
@@ -295,7 +374,13 @@ impl ChunkParser for OpenAiChunkParser {
         };
 
         if let Some(error) = &chunk.error {
-            return vec![StreamChunk::NetworkError(stream_error_message(error))];
+            let message = stream_error_message(error);
+            if message.to_lowercase().contains(CACHE_FULL)
+                && let Some(server) = &self.server
+            {
+                mark_cache_full(server);
+            }
+            return vec![StreamChunk::NetworkError(message)];
         }
 
         let mut chunks = Vec::new();
@@ -531,7 +616,9 @@ impl LlmProvider for OpenAiCompatProvider {
 
         super::trace_request("openai-compat", &request);
         let resp_req = req.json(&request);
+        let turn = wait_for_turn(&self.base_url).await?;
         let chat_resp: ChatResponse = super::http::send_and_parse_json(resp_req, "LLM").await?;
+        drop(turn);
 
         let choice = chat_resp
             .choices
@@ -607,11 +694,16 @@ impl LlmProvider for OpenAiCompatProvider {
         }
 
         super::trace_request("openai-compat", &request);
+        let turn = wait_for_turn(&self.base_url).await?;
         let resp = super::http::send_or_bail(req.json(&request), "LLM").await?;
 
         let collector = super::stream_collector::spawn_sse_collector(
             resp,
-            Box::new(OpenAiChunkParser::new().noting_reasoning_field(self.reasoning_plain.clone())),
+            Box::new(
+                OpenAiChunkParser::new()
+                    .noting_reasoning_field(self.reasoning_plain.clone())
+                    .for_server(&self.base_url, turn),
+            ),
         );
 
         Ok(collector)
@@ -991,6 +1083,54 @@ mod tests {
         let mut parser = OpenAiChunkParser::new();
         let chunks = parser.process_line(r#"{"error":"out of memory"}"#);
         assert!(failure(&chunks).contains("out of memory"));
+    }
+
+    /// What LM Studio sent on 2026-11-03 when four 35K requests overflowed
+    /// Ornith's shared 131K cache.
+    const LM_STUDIO_CACHE_FULL: &str = r#"{"error":{"code":500,"message":"Context size has been exceeded.","type":"server_error"}}"#;
+
+    #[test]
+    fn a_full_cache_says_why_and_is_retried_not_compacted() {
+        let mut parser = OpenAiChunkParser::new();
+        let chunks = parser.process_line(LM_STUDIO_CACHE_FULL);
+        let why = failure(&chunks);
+        assert!(why.contains("more requests at once than fit"), "{why}");
+        // Not final, so the reply is retried; and not an overflow, which
+        // would compact history the request never outgrew.
+        assert!(!super::super::error::stream_error_is_final(why), "{why}");
+    }
+
+    #[test]
+    fn a_full_cache_puts_the_server_on_one_at_a_time() {
+        let server = "http://cache-full.test/v1";
+        let other = "http://cache-fine.test/v1";
+        let mut parser = OpenAiChunkParser::new().for_server(server, None);
+        parser.process_line(LM_STUDIO_CACHE_FULL);
+        let mut parser = OpenAiChunkParser::new().for_server(other, None);
+        parser.process_line(r#"{"error":{"message":"worker failed"}}"#);
+        assert!(cache_full_gate(server).is_some());
+        assert!(cache_full_gate(other).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_gated_server_takes_one_request_at_a_time() {
+        let server = "http://one-at-a-time.test/v1";
+        assert!(wait_for_turn(server).await.unwrap().is_none());
+        mark_cache_full(server);
+
+        let first = wait_for_turn(server).await.unwrap().unwrap();
+        // The parser holds the permit for the stream, as `chat_stream` does.
+        let parser = OpenAiChunkParser::new().for_server(server, Some(first));
+        let second = tokio::spawn(async move { wait_for_turn(server).await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!second.is_finished(), "the second request didn't wait");
+        drop(parser);
+        let second = tokio::time::timeout(std::time::Duration::from_secs(5), second)
+            .await
+            .expect("the second request never got its turn")
+            .unwrap()
+            .unwrap();
+        assert!(second.is_some());
     }
 
     #[test]
@@ -1428,6 +1568,38 @@ mod tests {
             let (provider, ct) = spawn(app).await;
             let caps = provider.model_capabilities("m").await.unwrap();
             assert_eq!(caps.context_window, Some(32768));
+            ct.cancel();
+        }
+
+        /// A real stream from a stub that answers like LM Studio with a full
+        /// cache: the server gets a gate, and the next request goes through it.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_streamed_full_cache_gates_the_server() {
+            use axum::routing::post;
+            let app = Router::new().route(
+                "/v1/chat/completions",
+                post(|| async {
+                    (
+                        [("content-type", "text/event-stream")],
+                        format!("data: {}\n\n", super::LM_STUDIO_CACHE_FULL),
+                    )
+                }),
+            );
+            let (provider, ct) = spawn(app).await;
+            assert!(cache_full_gate(&provider.base_url).is_none());
+            let settings = crate::config::ModelSettings::defaults_for(
+                "m",
+                &crate::config::ProviderType::LMStudio,
+            );
+            let mut collector = provider.chat_stream(&[], &[], &settings).await.unwrap();
+            let mut why = None;
+            while let Some(chunk) = collector.rx.recv().await {
+                if let StreamChunk::NetworkError(e) = chunk {
+                    why = Some(e);
+                }
+            }
+            assert!(why.unwrap().contains("Context size has been exceeded"));
+            assert!(cache_full_gate(&provider.base_url).is_some());
             ct.cancel();
         }
 
