@@ -36,7 +36,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "Read".to_string(),
-            description: "Read the contents of a file. The output includes line numbers. \
+            description: "Read the contents of a file. Each line comes back as its line \
+                number, a tab, then the text, like `cat -n`. A file too long for one result \
+                stops at a whole line and says which start_line continues it. \
                 For large files (>500 lines), use start_line and num_lines to read specific \
                 portions instead of the whole file. ALWAYS read a file before editing it — \
                 never guess at file contents."
@@ -50,11 +52,11 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     },
                     "start_line": {
                         "type": "integer",
-                        "description": "Optional 1-based start line for partial reads"
+                        "description": "1-based line to start from (default: 1)"
                     },
                     "num_lines": {
                         "type": "integer",
-                        "description": "Number of lines to read from start_line"
+                        "description": "How many lines to read (default: to the end of the file)"
                     }
                 },
                 "required": ["file_path"]
@@ -103,7 +105,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     },
                     "old_str": {
                         "type": "string",
-                        "description": "Exact text to find in the file"
+                        "description": "Exact text to find in the file: the text after the line number and tab that Read shows, never the number itself"
                     },
                     "new_str": {
                         "type": "string",
@@ -210,39 +212,12 @@ pub async fn read_file(
         .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", resolved.display(), e))?;
     let raw_content = String::from_utf8_lossy(&raw_bytes).into_owned();
 
-    let output = match (start_line, num_lines) {
-        (Some(start), Some(count)) => {
-            // Line-range slice — the file is already in memory from the trait call above.
-            let start_idx = (start as usize).saturating_sub(1); // 1-based to 0-based
-            raw_content
-                .lines()
-                .skip(start_idx)
-                .take(count as usize)
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-        _ => {
-            // Full read with token safety cap.
-            // Hash the raw (un-truncated) content so edit_file can detect if
-            // the file changes between this read and the subsequent write.
-            content_sha256 = format!("{:x}", Sha256::digest(raw_content.as_bytes()));
-
-            if raw_content.len() > max_bytes {
-                // Snap to char boundary to avoid panic on multi-byte chars
-                let mut end = max_bytes;
-                while !raw_content.is_char_boundary(end) {
-                    end -= 1;
-                }
-                format!(
-                    "{}\n\n... [TRUNCATED: file is {} bytes. Use start_line/num_lines for large files]",
-                    &raw_content[..end],
-                    raw_content.len()
-                )
-            } else {
-                raw_content
-            }
-        }
-    };
+    let output = numbered_window(&raw_content, start_line, num_lines, max_bytes);
+    if start_line.is_none() && num_lines.is_none() {
+        // Hash the whole file, even when the window stops short, so
+        // edit_file can tell if it changes between this read and a write.
+        content_sha256 = format!("{:x}", Sha256::digest(raw_content.as_bytes()));
+    }
 
     // Update the cache after a successful read
     {
@@ -251,6 +226,57 @@ pub async fn read_file(
     }
 
     Ok(output)
+}
+
+/// Lines `start_line..` of `content` (1-based, from the first line when
+/// omitted), at most `num_lines` of them (to the end when omitted), each shown
+/// as its line number, a tab and the text, like `cat -n`. Stops at a whole line
+/// before `max_bytes` and says which line continues it; a single line longer
+/// than that is cut at a character boundary.
+fn numbered_window(
+    content: &str,
+    start_line: Option<u64>,
+    num_lines: Option<u64>,
+    max_bytes: usize,
+) -> String {
+    let total = content.lines().count();
+    if total == 0 {
+        return "(empty file)".to_string();
+    }
+    let start = usize::try_from(start_line.unwrap_or(1))
+        .unwrap_or(usize::MAX)
+        .max(1);
+    if start > total {
+        return format!("The file has {total} lines; start_line {start} is past the end.");
+    }
+    let want = num_lines.map_or(usize::MAX, |n| usize::try_from(n).unwrap_or(usize::MAX));
+    let mut out = String::new();
+    for (i, line) in content.lines().enumerate().skip(start - 1).take(want) {
+        let numbered = format!("{:>6}\t{line}\n", i + 1);
+        if out.len() + numbered.len() > max_bytes {
+            if out.is_empty() {
+                let mut end = max_bytes.min(numbered.len());
+                while !numbered.is_char_boundary(end) {
+                    end -= 1;
+                }
+                return format!(
+                    "{}\n\n... [Line {} is {} bytes and is cut here. Read a narrower \
+                     range with Bash, such as `cut -c1-2000`.]",
+                    &numbered[..end],
+                    i + 1,
+                    line.len()
+                );
+            }
+            out.push_str(&format!(
+                "\n... [Showing lines {start}-{i} of {total}. Continue with start_line={}.]",
+                i + 1
+            ));
+            return out;
+        }
+        out.push_str(&numbered);
+    }
+    out.pop();
+    out
 }
 
 /// Cache key for the state Koda itself last wrote to a file.
@@ -371,6 +397,16 @@ fn byte_offset_to_line(content: &str, offset: usize) -> usize {
         .filter(|&c| c == '\n')
         .count()
         + 1
+}
+
+/// Whether every line of `text` opens with a Read line-number prefix: spaces,
+/// digits, then a tab.
+fn has_line_number_prefixes(text: &str) -> bool {
+    text.lines().all(|line| {
+        let rest = line.trim_start_matches(' ');
+        let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        digits > 0 && rest[digits..].starts_with('\t')
+    })
 }
 
 /// Return the 1-based line numbers of every occurrence of `needle` in `haystack`.
@@ -498,6 +534,12 @@ pub async fn edit_file(
         // ── Fuzzy fallback (trailing-whitespace-normalized) ──────────
         let ranges = super::fuzzy::fuzzy_match_ranges(old_str, &content);
         match ranges.len() {
+            0 if has_line_number_prefixes(old_str) => anyhow::bail!(
+                "'old_str' not found in '{}'. It starts each line with a line number \
+                 and a tab, as Read shows them; those aren't in the file. Use only the \
+                 text after the tab.",
+                path_str
+            ),
             0 => anyhow::bail!(
                 "'old_str' not found in '{}'. \
                  Read the file first to get the exact text.",
@@ -990,8 +1032,78 @@ mod tests {
         let result = read_file(tmp.path(), &args, &cache(), &fs(), 20_000)
             .await
             .unwrap();
-        assert!(result.contains("TRUNCATED"));
+        assert!(
+            result.contains("Line 1 is 30000 bytes and is cut here"),
+            "{result}"
+        );
         assert!(result.len() < 25_000);
+    }
+
+    #[tokio::test]
+    async fn read_file_numbers_every_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("hello.txt");
+        std::fs::write(&f, "line1\n\tindented\nline3\n").unwrap();
+
+        let args = json!({"file_path": f.to_string_lossy()});
+        let result = read_file(tmp.path(), &args, &cache(), &fs(), TEST_CAP)
+            .await
+            .unwrap();
+        assert_eq!(result, "     1\tline1\n     2\t\tindented\n     3\tline3");
+    }
+
+    /// `start_line` alone reads to the end. It used to be ignored, so the
+    /// model got the file from line 1 again.
+    #[tokio::test]
+    async fn read_file_start_line_alone_reads_to_the_end() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("lines.txt");
+        let content: String = (1..=10).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(&f, &content).unwrap();
+
+        let args = json!({"file_path": f.to_string_lossy(), "start_line": 9});
+        let result = read_file(tmp.path(), &args, &cache(), &fs(), TEST_CAP)
+            .await
+            .unwrap();
+        assert_eq!(result, "     9\tline 9\n    10\tline 10");
+    }
+
+    #[tokio::test]
+    async fn read_file_too_long_says_where_to_continue() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("lines.txt");
+        let content: String = (1..=1000).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(&f, &content).unwrap();
+
+        let args = json!({"file_path": f.to_string_lossy()});
+        let result = read_file(tmp.path(), &args, &cache(), &fs(), 1_000)
+            .await
+            .unwrap();
+        let shown = result.lines().filter(|l| l.contains("\tline ")).count();
+        assert!(shown > 10, "{result}");
+        assert!(
+            result.ends_with(&format!(
+                "[Showing lines 1-{shown} of 1000. Continue with start_line={}.]",
+                shown + 1
+            )),
+            "{result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_file_past_the_end_says_how_long_the_file_is() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("lines.txt");
+        std::fs::write(&f, "a\nb\n").unwrap();
+
+        let args = json!({"file_path": f.to_string_lossy(), "start_line": 5});
+        let result = read_file(tmp.path(), &args, &cache(), &fs(), TEST_CAP)
+            .await
+            .unwrap();
+        assert_eq!(
+            result,
+            "The file has 2 lines; start_line 5 is past the end."
+        );
     }
 
     #[tokio::test]
@@ -1006,7 +1118,7 @@ mod tests {
         let result = read_file(tmp.path(), &args, &cache(), &fs(), cap)
             .await
             .unwrap();
-        assert_eq!(result, content);
+        assert_eq!(result, format!("     1\t{content}"));
     }
 
     #[tokio::test]
@@ -1207,6 +1319,25 @@ mod tests {
         let result = edit_file(tmp.path(), &args, &cache(), &fs()).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    /// An `old_str` copied with Read's line-number prefixes says what's wrong.
+    #[tokio::test]
+    async fn edit_file_names_copied_line_numbers() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("edit_me.txt"), "hello\nworld\n").unwrap();
+
+        let args = json!({
+            "file_path": "edit_me.txt",
+            "old_str": "     1\thello\n     2\tworld", "new_str": "x"
+        });
+        let err = edit_file(tmp.path(), &args, &cache(), &fs())
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("Use only the text after the tab"),
+            "{err}"
+        );
     }
 
     #[tokio::test]
