@@ -1112,7 +1112,7 @@ mod tests {
         assert!(cache_full_gate(other).is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_gated_server_takes_one_request_at_a_time() {
         let server = "http://one-at-a-time.test/v1";
         assert!(wait_for_turn(server).await.unwrap().is_none());
