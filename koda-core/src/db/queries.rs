@@ -631,6 +631,17 @@ impl Persistence for Database {
         Ok(())
     }
 
+    /// Persist signed thinking blocks. The row isn't complete yet, so no
+    /// cached context holds it and the cache needs no bump.
+    async fn update_message_thinking_blocks(&self, message_id: i64, blocks: &str) -> Result<()> {
+        sqlx::query("UPDATE messages SET thinking_blocks = ? WHERE id = ?")
+            .bind(blocks)
+            .bind(message_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Persist the accumulated thinking/reasoning text for an assistant message.
     ///
     /// Called after `insert_message` so the INSERT signature stays lean —
@@ -691,7 +702,7 @@ impl Persistence for Database {
                 let new_rows: Vec<Message> = sqlx::query_as::<_, MessageRow>(
                     "SELECT id, session_id, role, content, full_content, tool_calls, tool_call_id,
                             prompt_tokens, completion_tokens,
-                            cache_read_tokens, cache_creation_tokens, thinking_tokens, thinking_content,
+                            cache_read_tokens, cache_creation_tokens, thinking_tokens, thinking_content, thinking_blocks,
                             created_at
                      FROM messages
                      WHERE session_id = ? AND id > ? AND compacted_at IS NULL
@@ -715,7 +726,7 @@ impl Persistence for Database {
                 let rows: Vec<Message> = sqlx::query_as::<_, MessageRow>(
                     "SELECT id, session_id, role, content, full_content, tool_calls, tool_call_id,
                             prompt_tokens, completion_tokens,
-                            cache_read_tokens, cache_creation_tokens, thinking_tokens, thinking_content,
+                            cache_read_tokens, cache_creation_tokens, thinking_tokens, thinking_content, thinking_blocks,
                             created_at
                      FROM messages
                      WHERE session_id = ? AND compacted_at IS NULL
@@ -758,7 +769,7 @@ impl Persistence for Database {
         let rows: Vec<Message> = sqlx::query_as::<_, MessageRow>(
             "SELECT id, session_id, role, content, full_content, tool_calls, tool_call_id,
                     prompt_tokens, completion_tokens,
-                    cache_read_tokens, cache_creation_tokens, thinking_tokens, thinking_content,
+                    cache_read_tokens, cache_creation_tokens, thinking_tokens, thinking_content, thinking_blocks,
                     created_at
              FROM messages
              WHERE session_id = ?

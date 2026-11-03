@@ -209,6 +209,7 @@ async fn reasoning_streamed_as_reasoning_is_sent_back_as_reasoning() {
         user_msg("hi"),
         ChatMessage {
             reasoning: Some(thinking),
+            thinking_blocks: None,
             ..ChatMessage::text("assistant", "done")
         },
         user_msg("and now?"),
@@ -250,6 +251,7 @@ async fn non_streamed_reasoning_is_returned_and_replayed() {
         user_msg("hi"),
         ChatMessage {
             reasoning: resp.reasoning,
+            thinking_blocks: None,
             ..ChatMessage::text("assistant", "ok")
         },
     ];

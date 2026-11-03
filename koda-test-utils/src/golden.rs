@@ -162,7 +162,7 @@ impl<P: LlmProvider> LlmProvider for RecordingProvider<P> {
                     while let Some(chunk) = rx.recv().await {
                         match &chunk {
                             StreamChunk::TextDelta(t) => text.push_str(t),
-                            StreamChunk::ThinkingDelta(_) => {} // skip thinking for replay
+                            StreamChunk::ThinkingDelta(_) | StreamChunk::ThinkingBlock(_) => {} // skip thinking for replay
                             StreamChunk::ToolCallReady(tc) => tool_calls.push(tc.clone()),
                             StreamChunk::ToolCalls(tcs) => tool_calls.extend(tcs.iter().cloned()),
                             StreamChunk::Done(usage) => {

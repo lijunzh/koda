@@ -879,6 +879,7 @@ mod tests {
                 base64: "iVBORw0KGgo=".into(),
             }]),
             reasoning: None,
+            thinking_blocks: None,
         }];
         let settings = default_settings();
         let request = OpenAiCompatProvider::build_request(
@@ -919,6 +920,7 @@ mod tests {
             tool_call_id: None,
             images: Some(vec![]), // Empty images vec
             reasoning: None,
+            thinking_blocks: None,
         }];
         let settings = default_settings();
         let request = OpenAiCompatProvider::build_request(
@@ -951,6 +953,7 @@ mod tests {
             tool_call_id: None,
             images: None,
             reasoning: None,
+            thinking_blocks: None,
         }];
         let settings = default_settings();
         let request = OpenAiCompatProvider::build_request(
@@ -1138,6 +1141,7 @@ mod tests {
     fn assistant_with_reasoning(reasoning: Option<&str>) -> ChatMessage {
         ChatMessage {
             reasoning: reasoning.map(Into::into),
+            thinking_blocks: None,
             ..ChatMessage::text("assistant", "done")
         }
     }

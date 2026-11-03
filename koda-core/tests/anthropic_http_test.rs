@@ -296,6 +296,55 @@ async fn chat_stream_marks_the_last_message_block_as_a_cache_breakpoint() {
     assert_conversation_breakpoint(&body);
 }
 
+/// A request that replays thinking says what to do if its history changed,
+/// because compaction edits history and the default is a 400.
+#[tokio::test]
+async fn chat_stream_asks_to_drop_thinking_that_no_longer_matches() {
+    let server = FakeLlmServer::spawn().await;
+    server
+        .mount_sse("POST", r".*/v1/messages$", &[r#"{"type":"message_stop"}"#])
+        .await;
+    let provider = AnthropicProvider::new("sk-ant-test".into(), Some(&server.url()));
+    let model = "claude-haiku-5-5";
+    let settings = ModelSettings::defaults_for(model, &ProviderType::Anthropic);
+
+    let mut turn = ChatMessage::text("assistant", "done");
+    turn.thinking_blocks = Some(
+        json!({"model": model, "blocks": [{"type": "thinking", "thinking": "", "signature": "s"}]})
+            .to_string(),
+    );
+    for messages in [
+        vec![user_msg("hi"), turn, user_msg("next")],
+        vec![user_msg("hi")],
+    ] {
+        provider
+            .chat_stream(&messages, &[], &settings)
+            .await
+            .expect("chat_stream must succeed");
+    }
+
+    let reqs = server.received_requests().await;
+    let body: Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    assert_eq!(body["messages"][1]["content"][0]["signature"], "s");
+    assert_eq!(
+        body["thinking"]["block_binding"]["prefix_mismatch_behavior"],
+        "drop_block"
+    );
+    let beta = reqs[0]
+        .headers
+        .get("anthropic-beta")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(
+        beta.contains("thinking-binding-controls-2026-08-01"),
+        "{beta}"
+    );
+
+    let plain: Value = serde_json::from_slice(&reqs[1].body).unwrap();
+    assert!(plain.get("thinking").is_none(), "{plain}");
+}
+
 // ── chat_stream() ─────────────────────────────────────────────────────────
 
 #[tokio::test]

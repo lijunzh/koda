@@ -23,6 +23,8 @@ use std::collections::HashMap;
 /// migration: `2026-10-21` rejects `temperature` / `top_p` / `top_k`.
 const ANTHROPIC_API_VERSION: &str = "2023-06-01";
 const ANTHROPIC_BETA_FEATURES: &str = "prompt-caching-2024-07-31";
+/// Lets a request say what happens to a thinking block whose history changed.
+const THINKING_BINDING_BETA: &str = "thinking-binding-controls-2026-08-01";
 
 /// Beta header value for 1M extended context.
 /// See: https://docs.anthropic.com/en/docs/about-claude/models#extended-context
@@ -216,6 +218,14 @@ struct AnthropicMessage {
     content: AnthropicContent,
 }
 
+impl AnthropicMessage {
+    fn has_thinking(&self) -> bool {
+        matches!(&self.content, AnthropicContent::Blocks(blocks) if blocks.iter().any(|b| {
+            matches!(b, ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. })
+        }))
+    }
+}
+
 #[derive(Serialize, Clone)]
 #[serde(untagged)]
 enum AnthropicContent {
@@ -241,8 +251,22 @@ enum ContentBlock {
     },
     #[serde(rename = "image")]
     Image { source: ImageSource },
-    /// A block Koda doesn't read, such as `thinking` or `redacted_thinking`.
-    /// One of these must not fail the whole response.
+    /// The model's reasoning. Its text is empty by default and the signature
+    /// carries it, so replay both as they came, in the same turn.
+    #[serde(rename = "thinking")]
+    Thinking {
+        #[serde(default)]
+        thinking: String,
+        #[serde(default)]
+        signature: String,
+    },
+    #[serde(rename = "redacted_thinking")]
+    RedactedThinking {
+        #[serde(default)]
+        data: String,
+    },
+    /// A block Koda doesn't read. One of these must not fail the whole
+    /// response.
     #[serde(other, skip_serializing)]
     Unsupported,
 }
@@ -278,6 +302,15 @@ struct AnthropicUsage {
     /// Tokens read from cache (90% cheaper than regular input).
     #[serde(default)]
     cache_read_input_tokens: i64,
+    /// Part of `output_tokens`, absent on models that don't report it.
+    #[serde(default)]
+    output_tokens_details: Option<OutputTokensDetails>,
+}
+
+#[derive(Deserialize, Debug, Clone, Default)]
+struct OutputTokensDetails {
+    #[serde(default)]
+    thinking_tokens: i64,
 }
 
 // ── Models API types ────────────────────────────────────────
@@ -431,6 +464,8 @@ struct StreamDelta {
     #[serde(default)]
     thinking: Option<String>,
     #[serde(default)]
+    signature: Option<String>,
+    #[serde(default)]
     partial_json: Option<String>,
     /// Present on message_delta events: "end_turn", "max_tokens", "stop_sequence"
     #[serde(default)]
@@ -457,6 +492,8 @@ pub(crate) struct AnthropicChunkParser {
     emitted_tool_indices: std::collections::HashSet<usize>,
     usage: TokenUsage,
     thinking_indices: std::collections::HashSet<usize>,
+    /// Thinking blocks still streaming, by index.
+    open_thinking: std::collections::HashMap<usize, serde_json::Value>,
     /// `message_stop` arrived. Without it the stream was cut, however
     /// cleanly the connection closed.
     finished: bool,
@@ -469,6 +506,7 @@ impl AnthropicChunkParser {
             emitted_tool_indices: std::collections::HashSet::new(),
             usage: TokenUsage::default(),
             thinking_indices: std::collections::HashSet::new(),
+            open_thinking: std::collections::HashMap::new(),
             finished: false,
         }
     }
@@ -485,6 +523,47 @@ fn stream_error_message(raw: &serde_json::Value) -> String {
     )
 }
 
+fn thinking_of(msg: &ChatMessage, replay_for: Option<&str>) -> Vec<ContentBlock> {
+    replay_for.map_or_else(Vec::new, |model| {
+        replayable_thinking(msg.thinking_blocks.as_deref(), model)
+    })
+}
+
+/// The API's list of what it changed in the request, when it changed anything.
+fn dropped_thinking(raw: &serde_json::Value) -> Option<&serde_json::Value> {
+    raw.get("input_transformations")
+        .or_else(|| raw.pointer("/message/input_transformations"))
+        .filter(|changes| changes.as_array().is_some_and(|list| !list.is_empty()))
+}
+
+/// Signed thinking blocks as Koda stores them on a turn.
+#[derive(Serialize, Deserialize)]
+struct StoredThinking {
+    model: String,
+    blocks: Vec<serde_json::Value>,
+}
+
+/// The stored blocks as JSON, for the model that wrote them.
+pub(crate) fn stored_thinking(model: &str, blocks: Vec<serde_json::Value>) -> Result<String> {
+    let model = resolve_model(model).0.to_string();
+    Ok(serde_json::to_string(&StoredThinking { model, blocks })?)
+}
+
+/// Blocks to replay on a turn. A block means nothing to another model.
+fn replayable_thinking(stored: Option<&str>, model: &str) -> Vec<ContentBlock> {
+    let Some(stored) = stored.and_then(|s| serde_json::from_str::<StoredThinking>(s).ok()) else {
+        return Vec::new();
+    };
+    if stored.model != model {
+        return Vec::new();
+    }
+    stored
+        .blocks
+        .into_iter()
+        .filter_map(|block| serde_json::from_value(block).ok())
+        .collect()
+}
+
 impl ChunkParser for AnthropicChunkParser {
     fn process_line(&mut self, data: &str) -> Vec<StreamChunk> {
         // First, try to detect thinking blocks from raw JSON.
@@ -497,9 +576,16 @@ impl ChunkParser for AnthropicChunkParser {
             if raw.get("type").and_then(|t| t.as_str()) == Some("content_block_start")
                 && let Some(idx) = raw.get("index").and_then(|i| i.as_u64())
                 && let Some(cb) = raw.get("content_block")
-                && cb.get("type").and_then(|t| t.as_str()) == Some("thinking")
+                && matches!(
+                    cb.get("type").and_then(|t| t.as_str()),
+                    Some("thinking" | "redacted_thinking")
+                )
             {
                 self.thinking_indices.insert(idx as usize);
+                self.open_thinking.insert(idx as usize, cb.clone());
+            }
+            if let Some(changes) = dropped_thinking(&raw) {
+                tracing::warn!("Thinking blocks the API dropped: {changes}");
             }
         }
 
@@ -528,9 +614,18 @@ impl ChunkParser for AnthropicChunkParser {
                     let is_thinking = self.thinking_indices.contains(&idx);
 
                     if is_thinking {
+                        if let (Some(block), Some(signature)) =
+                            (self.open_thinking.get_mut(&idx), &delta.signature)
+                        {
+                            block["signature"] = serde_json::json!(signature);
+                        }
                         if let Some(text) = delta.thinking.or(delta.text)
                             && !text.is_empty()
                         {
+                            if let Some(block) = self.open_thinking.get_mut(&idx) {
+                                let so_far = block["thinking"].as_str().unwrap_or_default();
+                                block["thinking"] = serde_json::json!(format!("{so_far}{text}"));
+                            }
                             chunks.push(StreamChunk::ThinkingDelta(text));
                         }
                     } else if let Some(text) = delta.text
@@ -549,6 +644,9 @@ impl ChunkParser for AnthropicChunkParser {
             "message_delta" => {
                 if let Some(u) = event.usage {
                     self.usage.completion_tokens = u.output_tokens;
+                    if let Some(details) = u.output_tokens_details {
+                        self.usage.thinking_tokens = details.thinking_tokens;
+                    }
                 }
                 if let Some(delta) = &event.delta
                     && let Some(reason) = &delta.stop_reason
@@ -567,6 +665,11 @@ impl ChunkParser for AnthropicChunkParser {
             }
             "message_stop" => self.finished = true,
             _ => {
+                if event.event_type == "content_block_stop"
+                    && let Some(block) = event.index.and_then(|i| self.open_thinking.remove(&i))
+                {
+                    chunks.push(StreamChunk::ThinkingBlock(block));
+                }
                 // content_block_stop — emit ToolCallReady for completed tool calls
                 if event.event_type == "content_block_stop"
                     && let Some(idx) = event.index
@@ -638,7 +741,7 @@ impl LlmProvider for AnthropicProvider {
             .map(|text| Self::build_cached_system(text));
 
         // Convert messages (skip system, convert tool results)
-        let api_messages = Self::build_cached_messages(&self.convert_messages(messages))?;
+        let api_messages = Self::build_cached_messages(&self.convert_messages(messages, None))?;
         let api_tools = Self::build_cached_tools(tools);
 
         let request = MessagesRequest {
@@ -790,7 +893,9 @@ impl LlmProvider for AnthropicProvider {
             .and_then(|m| m.content.as_ref())
             .map(|text| Self::build_cached_system(text));
 
-        let api_messages = Self::build_cached_messages(&self.convert_messages(messages))?;
+        let converted = self.convert_messages(messages, Some(api_model));
+        let replays_thinking = converted.iter().any(AnthropicMessage::has_thinking);
+        let api_messages = Self::build_cached_messages(&converted)?;
         let api_tools = Self::build_cached_tools(tools);
 
         let mut max_tokens = settings.max_tokens.unwrap_or(16384);
@@ -821,6 +926,15 @@ impl LlmProvider for AnthropicProvider {
             // Temperature must not be set when thinking is enabled
             body.as_object_mut().unwrap().remove("temperature");
         }
+        // Compaction and microcompact edit history, and a block replayed after
+        // an edit is a 400 by default. Dropping it loses that reasoning only.
+        let binding = replays_thinking && settings.thinking_budget.is_none();
+        if binding {
+            body["thinking"] = serde_json::json!({
+                "type": "adaptive",
+                "block_binding": { "prefix_mismatch_behavior": "drop_block" }
+            });
+        }
         if let Some(sys) = system {
             body["system"] = sys;
         }
@@ -834,7 +948,14 @@ impl LlmProvider for AnthropicProvider {
             .post(format!("{}/v1/messages", self.base_url))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_API_VERSION)
-            .header("anthropic-beta", beta_header(extended_ctx))
+            .header("anthropic-beta", {
+                let beta = beta_header(extended_ctx);
+                if binding {
+                    format!("{beta},{THINKING_BINDING_BETA}")
+                } else {
+                    beta
+                }
+            })
             .json(&body);
 
         let resp = super::http::send_or_bail(req, "Anthropic").await?;
@@ -850,7 +971,13 @@ impl LlmProvider for AnthropicProvider {
 
 impl AnthropicProvider {
     /// Convert our unified ChatMessage format to Anthropic's format.
-    fn convert_messages(&self, messages: &[ChatMessage]) -> Vec<AnthropicMessage> {
+    /// `replay_for` names the model whose thinking blocks go back on assistant
+    /// turns. One-off requests such as summaries pass `None`.
+    fn convert_messages(
+        &self,
+        messages: &[ChatMessage],
+        replay_for: Option<&str>,
+    ) -> Vec<AnthropicMessage> {
         let mut result = Vec::new();
 
         for msg in messages {
@@ -877,7 +1004,7 @@ impl AnthropicProvider {
                 && let Some(tcs) = &msg.tool_calls
             {
                 // Assistant message with tool calls
-                let mut blocks: Vec<ContentBlock> = Vec::new();
+                let mut blocks = thinking_of(msg, replay_for);
                 if let Some(text) = &msg.content
                     && !text.is_empty()
                 {
@@ -902,6 +1029,22 @@ impl AnthropicProvider {
                     content: AnthropicContent::Blocks(blocks),
                 });
                 continue;
+            }
+
+            if msg.role == "assistant" {
+                let mut blocks = thinking_of(msg, replay_for);
+                if !blocks.is_empty() {
+                    if let Some(text) = &msg.content
+                        && !text.is_empty()
+                    {
+                        blocks.push(ContentBlock::Text { text: text.clone() });
+                    }
+                    result.push(AnthropicMessage {
+                        role: "assistant".to_string(),
+                        content: AnthropicContent::Blocks(blocks),
+                    });
+                    continue;
+                }
             }
 
             // Regular user or assistant text message
@@ -951,6 +1094,53 @@ mod tests {
         AnthropicProvider::new("fake-key".into(), None)
     }
 
+    fn parse(events: &[serde_json::Value]) -> Vec<StreamChunk> {
+        let mut parser = AnthropicChunkParser::new();
+        events
+            .iter()
+            .flat_map(|e| parser.process_line(&e.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn a_thinking_block_comes_out_whole_with_its_signature() {
+        use serde_json::json;
+        let chunks = parse(&[
+            json!({"type": "content_block_start", "index": 0,
+                   "content_block": {"type": "thinking", "thinking": "", "signature": ""}}),
+            json!({"type": "content_block_delta", "index": 0,
+                   "delta": {"type": "signature_delta", "signature": "sig"}}),
+            json!({"type": "content_block_stop", "index": 0}),
+        ]);
+        let [StreamChunk::ThinkingBlock(block)] = &chunks[..] else {
+            panic!("expected one block: {chunks:?}");
+        };
+        assert_eq!(block["signature"], "sig");
+        assert_eq!(block["thinking"], "");
+    }
+
+    #[test]
+    fn thinking_goes_back_first_and_only_to_the_model_that_wrote_it() {
+        let provider = AnthropicProvider::new("k".into(), None);
+        let block = serde_json::json!({"type": "thinking", "thinking": "", "signature": "sig"});
+        let stored = stored_thinking("claude-haiku-5-5", vec![block]).unwrap();
+        let mut turn = ChatMessage::text("assistant", "done");
+        turn.thinking_blocks = Some(stored);
+        let messages = [turn];
+
+        let sent =
+            serde_json::to_value(provider.convert_messages(&messages, Some("claude-haiku-5-5")))
+                .unwrap();
+        assert_eq!(sent[0]["content"][0]["type"], "thinking");
+        assert_eq!(sent[0]["content"][0]["signature"], "sig");
+        assert_eq!(sent[0]["content"][1]["text"], "done");
+
+        for model in [Some("claude-sonnet-5-5"), None] {
+            let sent = serde_json::to_value(provider.convert_messages(&messages, model)).unwrap();
+            assert_eq!(sent[0]["content"], "done", "{model:?}");
+        }
+    }
+
     #[test]
     fn test_convert_skips_system_messages() {
         let p = make_provider();
@@ -958,7 +1148,7 @@ mod tests {
             ChatMessage::text("system", "system prompt"),
             ChatMessage::text("user", "hello"),
         ];
-        let converted = p.convert_messages(&messages);
+        let converted = p.convert_messages(&messages, None);
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0].role, "user");
     }
@@ -973,8 +1163,9 @@ mod tests {
             tool_call_id: Some("tc_123".into()),
             images: None,
             reasoning: None,
+            thinking_blocks: None,
         }];
-        let converted = p.convert_messages(&messages);
+        let converted = p.convert_messages(&messages, None);
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0].role, "user");
         // Should be a Blocks content with ToolResult
@@ -1011,8 +1202,9 @@ mod tests {
             tool_call_id: None,
             images: None,
             reasoning: None,
+            thinking_blocks: None,
         }];
-        let converted = p.convert_messages(&messages);
+        let converted = p.convert_messages(&messages, None);
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0].role, "assistant");
         match &converted[0].content {
@@ -1027,7 +1219,7 @@ mod tests {
     fn test_convert_plain_user_message() {
         let p = make_provider();
         let messages = vec![ChatMessage::text("user", "explain this code")];
-        let converted = p.convert_messages(&messages);
+        let converted = p.convert_messages(&messages, None);
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0].role, "user");
         match &converted[0].content {
@@ -1046,8 +1238,9 @@ mod tests {
             tool_call_id: None,
             images: None,
             reasoning: None,
+            thinking_blocks: None,
         }];
-        let converted = p.convert_messages(&messages);
+        let converted = p.convert_messages(&messages, None);
         assert_eq!(converted.len(), 1);
         match &converted[0].content {
             AnthropicContent::Text(t) => assert_eq!(t, ""),
@@ -1070,8 +1263,9 @@ mod tests {
             tool_call_id: None,
             images: None,
             reasoning: None,
+            thinking_blocks: None,
         }];
-        let converted = p.convert_messages(&messages);
+        let converted = p.convert_messages(&messages, None);
         assert_eq!(converted.len(), 1);
         match &converted[0].content {
             AnthropicContent::Blocks(blocks) => {
@@ -1119,8 +1313,9 @@ mod tests {
                 tool_call_id: None,
                 images: None,
                 reasoning: None,
+                thinking_blocks: None,
             }];
-            let converted = p.convert_messages(&messages);
+            let converted = p.convert_messages(&messages, None);
             match &converted[0].content {
                 AnthropicContent::Blocks(blocks) => match &blocks[0] {
                     ContentBlock::ToolUse { input, .. } => {
@@ -1146,7 +1341,7 @@ mod tests {
             ChatMessage::text("assistant", "hello!"),
             ChatMessage::text("user", "bye"),
         ];
-        let converted = p.convert_messages(&messages);
+        let converted = p.convert_messages(&messages, None);
         // System is skipped, so 3 messages
         assert_eq!(converted.len(), 3);
         assert_eq!(converted[0].role, "user");
@@ -1167,8 +1362,9 @@ mod tests {
                 base64: "iVBORw0KGgo=".into(),
             }]),
             reasoning: None,
+            thinking_blocks: None,
         }];
-        let converted = p.convert_messages(&messages);
+        let converted = p.convert_messages(&messages, None);
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0].role, "user");
         match &converted[0].content {
@@ -1252,7 +1448,7 @@ mod tests {
 
     fn cached_messages(messages: &[ChatMessage]) -> Vec<serde_json::Value> {
         let p = make_provider();
-        AnthropicProvider::build_cached_messages(&p.convert_messages(messages)).unwrap()
+        AnthropicProvider::build_cached_messages(&p.convert_messages(messages, None)).unwrap()
     }
 
     fn tool_result(id: &str, content: &str) -> ChatMessage {
@@ -1263,6 +1459,7 @@ mod tests {
             tool_call_id: Some(id.into()),
             images: None,
             reasoning: None,
+            thinking_blocks: None,
         }
     }
 
