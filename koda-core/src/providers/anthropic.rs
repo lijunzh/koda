@@ -821,6 +821,9 @@ impl LlmProvider for AnthropicProvider {
             // Temperature must not be set when thinking is enabled
             body.as_object_mut().unwrap().remove("temperature");
         }
+        if let Some(effort) = &settings.reasoning_effort {
+            body["output_config"] = serde_json::json!({ "effort": effort });
+        }
         if let Some(sys) = system {
             body["system"] = sys;
         }

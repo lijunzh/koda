@@ -296,6 +296,30 @@ async fn chat_stream_marks_the_last_message_block_as_a_cache_breakpoint() {
     assert_conversation_breakpoint(&body);
 }
 
+/// Effort goes in `output_config`, and stays out when it isn't set.
+#[tokio::test]
+async fn chat_stream_sends_the_effort_when_set() {
+    let server = FakeLlmServer::spawn().await;
+    server
+        .mount_sse("POST", r".*/v1/messages$", &[r#"{"type":"message_stop"}"#])
+        .await;
+    let provider = AnthropicProvider::new("sk-ant-test".into(), Some(&server.url()));
+
+    let mut high = settings();
+    high.reasoning_effort = Some("high".into());
+    for settings in [&high, &settings()] {
+        provider
+            .chat_stream(&[user_msg("hi")], &[], settings)
+            .await
+            .expect("chat_stream must succeed");
+    }
+
+    let reqs = server.received_requests().await;
+    let body = |i: usize| serde_json::from_slice::<Value>(&reqs[i].body).unwrap();
+    assert_eq!(body(0)["output_config"]["effort"], "high");
+    assert!(body(1).get("output_config").is_none());
+}
+
 // ── chat_stream() ─────────────────────────────────────────────────────────
 
 #[tokio::test]

@@ -117,8 +117,8 @@ struct Cli {
     #[arg(long)]
     thinking_budget: Option<u32>,
 
-    /// OpenAI reasoning effort (low, medium, high)
-    #[arg(long)]
+    /// Reasoning effort (low, medium, high)
+    #[arg(long, env = "KODA_REASONING_EFFORT")]
     reasoning_effort: Option<String>,
 
     /// Trust mode: auto (default) or safe.
