@@ -385,3 +385,91 @@ async fn chat_stream_consumes_anthropic_sse_event_format_via_real_tcp() {
 
     assert_eq!(text, "hello world", "all SSE deltas must be reassembled");
 }
+
+// ── Cache diagnostics ─────────────────────────────────────────────────────
+
+/// Each request names its conversation's previous response, so the API can
+/// say what changed when the cache misses. A new conversation starts with
+/// `null`, and its chain is its own.
+#[tokio::test]
+async fn chat_stream_chains_cache_diagnostics_per_conversation() {
+    let server = FakeLlmServer::spawn().await;
+    server
+        .mount_sse(
+            "POST",
+            r".*/v1/messages$",
+            &[
+                r#"{"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":5,"output_tokens":0},"diagnostics":{"cache_miss_reason":{"type":"tools_changed","cache_missed_input_tokens":7000}}}}"#,
+                r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}"#,
+                r#"{"type":"message_stop"}"#,
+            ],
+        )
+        .await;
+    let provider =
+        AnthropicProvider::new("k".into(), Some(&server.url())).with_cache_diagnostics(true);
+    let first = vec![ChatMessage::text("system", "sys"), user_msg("hi")];
+    let mut second = first.clone();
+    second.push(ChatMessage::text("assistant", "hello"));
+    second.push(user_msg("more"));
+    let other = vec![ChatMessage::text("system", "sys"), user_msg("another task")];
+    for messages in [&first, &second, &other] {
+        let mut collector = provider
+            .chat_stream(messages, &[], &settings())
+            .await
+            .unwrap();
+        while collector.rx.recv().await.is_some() {}
+    }
+
+    let reqs = server.received_requests().await;
+    let previous: Vec<Value> = reqs
+        .iter()
+        .map(|r| {
+            let body: Value = serde_json::from_slice(&r.body).unwrap();
+            body["diagnostics"]["previous_message_id"].clone()
+        })
+        .collect();
+    assert_eq!(previous, [Value::Null, json!("msg_1"), Value::Null]);
+}
+
+#[tokio::test]
+async fn chat_chains_cache_diagnostics() {
+    let server = FakeLlmServer::spawn().await;
+    server
+        .mount_ok("POST", r".*/v1/messages$", ok_messages_body())
+        .await;
+    let provider =
+        AnthropicProvider::new("k".into(), Some(&server.url())).with_cache_diagnostics(true);
+    let first = vec![user_msg("hi")];
+    let mut second = first.clone();
+    second.push(ChatMessage::text("assistant", "ok"));
+    second.push(user_msg("again"));
+    for messages in [&first, &second] {
+        provider.chat(messages, &[], &settings()).await.unwrap();
+    }
+
+    let reqs = server.received_requests().await;
+    let body = |i: usize| -> Value { serde_json::from_slice(&reqs[i].body).unwrap() };
+    assert_eq!(
+        body(0)["diagnostics"],
+        json!({ "previous_message_id": null })
+    );
+    assert_eq!(body(1)["diagnostics"]["previous_message_id"], "msg_test");
+}
+
+/// A proxy or gateway may reject the field, so another base URL sends none.
+#[tokio::test]
+async fn cache_diagnostics_are_off_away_from_anthropic() {
+    let server = FakeLlmServer::spawn().await;
+    server
+        .mount_ok("POST", r".*/v1/messages$", ok_messages_body())
+        .await;
+    let provider = AnthropicProvider::new("k".into(), Some(&server.url()));
+    provider
+        .chat(&[user_msg("hi")], &[], &settings())
+        .await
+        .unwrap();
+
+    let reqs = server.received_requests().await;
+    let body: Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    assert!(body.get("diagnostics").is_none(), "{body}");
+}

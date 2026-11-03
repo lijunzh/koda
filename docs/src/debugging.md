@@ -113,6 +113,18 @@ An empty `stop_reason` means Koda has none, so don't read it as a clean stop.
 A call that returns an error writes `model call failed` at `warn` instead, with
 `purpose`, `provider`, `model`, `messages`, `elapsed_ms` and `error`.
 
+### `Prompt cache diagnostics`
+
+On Anthropic's own API, each request names the previous response of its
+conversation (Anthropic's cache diagnostics), and the reply says whether the
+request changed before the cache breakpoint. A change is logged at `info` with
+`cache_miss_reason` (`model_changed`, `system_changed`, `tools_changed` or
+`messages_changed`) and `cache_missed_tokens`, an estimate of the cacheable
+input lost. `messages_changed` is expected after compaction rewrites the
+history; anything else is a bug in how Koda builds requests. When no comparison
+was made, as with `previous_message_not_found` or `unavailable`, the line is at
+`debug`. A proxy or gateway at another base URL gets no `diagnostics` field.
+
 ### `context assembled`
 
 One line each time the context is built for a call, and again after a
@@ -275,6 +287,7 @@ the text behind questions 3 and 4, which needs `debug` or `trace`.
 | 7 | How did the run end? | `outcome` and `ends_with_question` on `turn end`; `turn_end` in `run_summary` |
 | 8 | What was re-fetched, and at what cost? | `duplicate_read_files` and `duplicate_read_tokens` on `context assembled`, which reset when a compaction removes the reads; `tool_calls` in `run_summary` |
 | 9 | Was the system prompt the same before and after compaction? | Compare `system_hash` on `purpose="turn"` lines either side of the `compaction` line |
+| 10 | Why did the prompt cache miss? | `Prompt cache diagnostics` lines (Anthropic's API only); `cache_read_tokens` falling on `model call` |
 
 For question 9, compaction calls send no system prompt, so they carry no hash.
 The git line in the prompt is captured once at session start, so it can't move

@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **Koda says why the prompt cache missed, on Anthropic's API.** Each request now carries Anthropic's cache diagnostics, naming the previous response of its conversation, so the reply says what changed if the cached prefix no longer matches: the model, the system prompt, the tools or the history. A change is logged at `info` with the reason and the tokens lost; the debugging guide lists the reasons. The tool order bug fixed in this release would have shown up as `tools_changed`. The field goes only to `api.anthropic.com`, since a proxy may reject it. Anthropic keeps a short-lived fingerprint of hashes for the comparison, not the prompt text.
 - **Advice on keeping project memory short.** The README and the [memory guide](https://lijunzh.github.io/koda/memory.html) now say what belongs in `CLAUDE.md`, and why a long one costs small models: in Koda's evals a 24,000-character file cost Haiku about half its passes on one task.
 - **A schema for the wire protocol.** `wire-schema.json` is generated from the code, and CI fails if it goes stale. The headless guide states how readers treat a type they don't know.
 - **`turn_summary` reports what a turn used, however it ended.** It counts this turn alone, including sub-agents, compaction and failed or cancelled turns.
