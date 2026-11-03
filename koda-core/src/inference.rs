@@ -121,6 +121,8 @@ struct StreamResult {
     /// read-only auto-approved tool that finished before the stream ended.
     /// These tools are skipped during normal dispatch.
     eager_results: Vec<(String, String, bool, Option<String>)>,
+    /// Signed thinking blocks to send back on later requests.
+    thinking_blocks: Vec<serde_json::Value>,
     /// Token usage statistics.
     usage: TokenUsage,
     /// Total character count of text deltas.
@@ -630,6 +632,7 @@ async fn collect_stream(
     let mut char_count: usize = 0;
     // Permanent accumulator — never cleared, flows into StreamResult.
     let mut thinking_content = String::new();
+    let mut thinking_blocks = Vec::new();
     // True while we are inside a thinking block (between ThinkingStart and ThinkingDone).
     let mut in_thinking_block = false;
     let mut response_banner_shown = false;
@@ -657,6 +660,7 @@ async fn collect_stream(
                 text: full_text,
                 first_chunk_at,
                 thinking_content,
+                thinking_blocks,
                 tool_calls,
                 eager_results,
                 usage,
@@ -693,6 +697,7 @@ async fn collect_stream(
                     text: delta.clone(),
                 });
             }
+            StreamChunk::ThinkingBlock(block) => thinking_blocks.push(block),
             StreamChunk::ThinkingDelta(delta) => {
                 if !thinking_banner_shown {
                     sink.emit(EngineEvent::SpinnerStop);
@@ -768,6 +773,7 @@ async fn collect_stream(
                     text: full_text,
                     first_chunk_at,
                     thinking_content,
+                    thinking_blocks,
                     tool_calls,
                     eager_results,
                     usage,
@@ -789,6 +795,7 @@ async fn collect_stream(
         text: full_text,
         first_chunk_at,
         thinking_content,
+        thinking_blocks,
         tool_calls,
         eager_results,
         usage,
@@ -1549,6 +1556,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
 
         let full_text = stream_result.text;
         let stream_thinking = stream_result.thinking_content;
+        let stream_blocks = stream_result.thinking_blocks;
         // Normalize tool names from model output to canonical PascalCase (#548).
         // Models may emit lowercase or snake_case names ("list", "read_file").
         // This runs for all providers — the canonical fast-path is a single
@@ -1613,6 +1621,12 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
                 Some(&usage),
             )
             .await?;
+
+        if !stream_blocks.is_empty() {
+            let stored =
+                crate::providers::anthropic::stored_thinking(&config.model, stream_blocks)?;
+            db.update_message_thinking_blocks(msg_id, &stored).await?;
+        }
 
         // Mark the message as fully delivered. This distinguishes clean
         // completions from interrupted/in-progress turns on session resume.

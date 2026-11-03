@@ -1936,6 +1936,7 @@ mod recover_last_assistant_text_tests {
             tool_call_id: None,
             images: None,
             reasoning: None,
+            thinking_blocks: None,
         }
     }
 

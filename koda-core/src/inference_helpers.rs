@@ -304,6 +304,7 @@ pub fn assemble_messages(
             tool_call_id: msg.tool_call_id.clone(),
             images: None,
             reasoning: msg.thinking_content.clone(),
+            thinking_blocks: msg.thinking_blocks.clone(),
         });
     }
 
@@ -526,6 +527,7 @@ mod tests {
             cache_creation_tokens: None,
             thinking_tokens: None,
             thinking_content: None,
+            thinking_blocks: None,
             created_at: None,
         }
     }
@@ -551,6 +553,7 @@ mod tests {
     fn context_shape_splits_by_role_and_names_the_largest() {
         let assistant = ChatMessage {
             reasoning: Some("r".repeat(5)),
+            thinking_blocks: None,
             tool_calls: Some(vec![ToolCall {
                 id: "1".into(),
                 function_name: "Read".into(),
@@ -592,6 +595,7 @@ mod tests {
         let plain = ChatMessage::text("assistant", "done");
         let with_reasoning = ChatMessage {
             reasoning: Some("x".repeat(3_500)),
+            thinking_blocks: None,
             ..plain.clone()
         };
         let base = estimate_tokens(&[plain]);

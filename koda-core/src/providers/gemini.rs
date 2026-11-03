@@ -1039,6 +1039,7 @@ mod tests {
             tool_call_id: Some(id.into()),
             images: None,
             reasoning: None,
+            thinking_blocks: None,
         }
     }
 
@@ -1062,6 +1063,7 @@ mod tests {
                 tool_call_id: None,
                 images: None,
                 reasoning: None,
+                thinking_blocks: None,
             },
             tool_result("gemini_tc_1", "a match"),
             tool_result("gemini_tc_2", "file contents"),
@@ -1098,6 +1100,7 @@ mod tests {
             tool_call_id: None,
             images: None,
             reasoning: None,
+            thinking_blocks: None,
         }];
         let (contents, _) = p.convert_messages(&messages);
         assert_eq!(contents.len(), 1);
@@ -1119,6 +1122,7 @@ mod tests {
                 base64: "iVBORw0KGgo=".into(),
             }]),
             reasoning: None,
+            thinking_blocks: None,
         }];
         let (contents, _) = p.convert_messages(&messages);
         assert_eq!(contents.len(), 1);
@@ -1399,6 +1403,7 @@ mod tests {
             tool_call_id: None,
             images: None,
             reasoning: None,
+            thinking_blocks: None,
         };
         let messages = vec![
             assistant(vec![call("a", None), call("b", None)]),

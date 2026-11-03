@@ -103,6 +103,8 @@ pub struct Message {
     /// `None` for non-Claude models, or when thinking was disabled.
     /// Persisted so the content can be re-rendered on session resume.
     pub thinking_content: Option<String>,
+    /// Signed thinking blocks to replay to the model that wrote them, as JSON.
+    pub thinking_blocks: Option<String>,
     /// ISO 8601 creation timestamp.
     pub created_at: Option<String>,
 }
@@ -340,6 +342,10 @@ pub trait Persistence: Send + Sync {
     /// Called only for Claude with extended thinking enabled. All other
     /// providers leave `thinking_content` NULL.
     async fn update_message_thinking_content(&self, message_id: i64, content: &str) -> Result<()>;
+
+    /// Persist signed thinking blocks for an assistant message. Call it before
+    /// `mark_message_complete`, so no cached context holds the row yet.
+    async fn update_message_thinking_blocks(&self, message_id: i64, blocks: &str) -> Result<()>;
 
     // ── Token usage ──
 

@@ -133,6 +133,10 @@ pub struct ChatMessage {
     /// Anthropic and Gemini carry their own thinking state and ignore it.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub reasoning: Option<String>,
+    /// Anthropic's signed thinking blocks for this turn, as stored JSON. Only
+    /// the provider that wrote them reads them.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub thinking_blocks: Option<String>,
 }
 
 impl ChatMessage {
@@ -156,6 +160,7 @@ impl ChatMessage {
             tool_call_id: None,
             images: None,
             reasoning: None,
+            thinking_blocks: None,
         }
     }
 }
@@ -355,6 +360,10 @@ pub enum StreamChunk {
     TextDelta(String),
     /// A thinking/reasoning delta from native API (Anthropic extended thinking, OpenAI reasoning).
     ThinkingDelta(String),
+    /// A finished thinking block with its signature, to send back on the
+    /// next request. Haiku 5.5 leaves the text empty, so the signature is
+    /// what carries the reasoning.
+    ThinkingBlock(serde_json::Value),
     /// A single tool call whose arguments finished streaming.
     ///
     /// Emitted by providers that support per-block completion events (Anthropic
