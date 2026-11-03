@@ -248,6 +248,28 @@ fn test_cli_refuses_effort_a_claude_model_does_not_take() {
         "{stderr}"
     );
 
+    let from_env = Command::new(koda_bin())
+        .args([
+            "-p",
+            "test",
+            "--provider",
+            "anthropic",
+            "--model",
+            "claude-haiku-5-5",
+        ])
+        .args(["--base-url", "http://127.0.0.1:9"])
+        .arg("--project-root")
+        .arg(&project)
+        .env("HOME", tmp.path())
+        .env("XDG_CONFIG_HOME", tmp.path())
+        .env("KODA_REASONING_EFFORT", "ultra")
+        .env_remove("ANTHROPIC_API_KEY")
+        .output()
+        .expect("Failed to run koda");
+    assert!(!from_env.status.success());
+    let stderr = String::from_utf8_lossy(&from_env.stderr);
+    assert!(stderr.contains("doesn't take effort \"ultra\""), "{stderr}");
+
     let budget = run(&["--thinking-budget", "8000"]);
     assert!(!budget.status.success());
     let stderr = String::from_utf8_lossy(&budget.stderr);

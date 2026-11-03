@@ -121,7 +121,12 @@ struct Cli {
     /// Reasoning effort. Claude: low, medium, high, xhigh or max; by default
     /// the level Claude Code uses for the model. OpenAI-compatible servers:
     /// passed through as `reasoning_effort`.
-    #[arg(long, alias = "effort")]
+    #[arg(
+        long,
+        alias = "effort",
+        env = "KODA_REASONING_EFFORT",
+        value_name = "LEVEL"
+    )]
     reasoning_effort: Option<String>,
 
     /// Trust mode: auto (default) or safe.
