@@ -3,13 +3,16 @@
 Memory files persist facts and preferences across sessions.
 
 **Project memory** — `MEMORY.md` in the project root (Koda also reads
-`CLAUDE.md` and `AGENTS.md` for compatibility). Injected into every
-system prompt for that project.
+`CLAUDE.md` and `AGENTS.md` for compatibility). Sent with every request
+for that project.
 
-**Global memory** — `~/.config/koda/memory.md`. Injected into every
-system prompt across all projects.
+**Global memory** — `~/.config/koda/memory.md`. Sent with every request
+across all projects.
 
-The system prompt carries at most 16,000 characters of memory, global and
+Memory opens the first user message, not the system prompt, as in Claude
+Code and Codex. The model is told it is the project's instructions and tips,
+ranked above Koda's built-in guidance and below what you ask for. A request
+carries at most 16,000 characters of memory, global and
 project together, because every model call pays for it. Past that it is cut
 with a note telling the model to use `MemoryRead` for the rest and to ask you
 to trim the file. Keep rarely needed detail in other files.

@@ -282,6 +282,7 @@ impl Env {
             db: &self.db,
             session_id: &self.session_id,
             system_prompt: "You are a test assistant.",
+            project_memory: "",
             git_snapshot: &koda_core::git::GitSnapshot::default(),
             provider,
             tools: &self.tools,

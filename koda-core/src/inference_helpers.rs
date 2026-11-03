@@ -316,6 +316,22 @@ pub fn assemble_messages(
     messages
 }
 
+/// Open the first user message with `context`, the project memory.
+///
+/// Done per request, not stored, so the memory read at startup stays out of
+/// the history. It sits at the front of every request, after the system
+/// prompt, so it doesn't break the prompt cache.
+pub fn prepend_project_memory(messages: &mut [ChatMessage], context: Option<&str>) {
+    let Some(context) = context else { return };
+    let Some(first) = messages.iter_mut().find(|m| m.role == "user") else {
+        return;
+    };
+    first.content = Some(match first.content.take() {
+        Some(text) if !text.is_empty() => format!("{context}\n\n{text}"),
+        _ => context.to_string(),
+    });
+}
+
 /// Make room for a plain `user` message at the end of `messages`.
 ///
 /// If a plain user message would immediately follow another user-side message,
@@ -476,6 +492,30 @@ mod tests {
         let text = out[1].content.as_deref().unwrap();
         assert!(text.starts_with("SUMMARY"), "{text}");
         assert!(text.contains("Do not mention the summary"), "{text}");
+    }
+
+    /// Memory opens the first user message, ahead of a compaction summary too,
+    /// and nothing else changes.
+    #[test]
+    fn project_memory_opens_the_first_user_message() {
+        let history = vec![
+            msg("user", Some("first"), None),
+            msg("assistant", Some("reply"), None),
+            msg("user", Some("second"), None),
+        ];
+        let mut out = assemble_messages(&system(), &history);
+        prepend_project_memory(&mut out, Some("MEMORY"));
+        assert_eq!(out[1].content.as_deref(), Some("MEMORY\n\nfirst"));
+        assert_eq!(out[3].content.as_deref(), Some("second"));
+
+        let mut summarised = assemble_messages(&system(), &[msg("system", Some("SUMMARY"), None)]);
+        prepend_project_memory(&mut summarised, Some("MEMORY"));
+        let text = summarised[1].content.as_deref().unwrap();
+        assert!(text.starts_with("MEMORY\n\nSUMMARY"), "{text}");
+
+        let mut untouched = assemble_messages(&system(), &history);
+        prepend_project_memory(&mut untouched, None);
+        assert_eq!(untouched[1].content.as_deref(), Some("first"));
     }
 
     /// No synthetic reply between the summary and a tail that opens with a

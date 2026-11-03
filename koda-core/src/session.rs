@@ -557,6 +557,7 @@ impl KodaSession {
             db: &self.db,
             session_id: &self.id,
             system_prompt: &system_prompt,
+            project_memory: &self.agent.semantic_memory,
             provider: self.provider.as_ref(),
             tools: &self.agent.tools,
             tool_defs: &self.agent.tool_defs,

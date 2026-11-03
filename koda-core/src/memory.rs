@@ -1,4 +1,4 @@
-//! Semantic memory: project context injected into the system prompt.
+//! Semantic memory: project context sent at the start of the first user message.
 //!
 //! Memory is stored as human-readable Markdown, loaded from two tiers:
 //!

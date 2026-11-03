@@ -38,7 +38,7 @@ koda/
 │   │   ├── last_provider.rs # Last-used provider recall (SQLite KV, not a config file)
 │   │   ├── loop_guard.rs   # Loop detection + iteration hard-cap
 │   │   ├── mcp/            # MCP client: config, manager, tool bridge
-│   │   ├── memory.rs       # Semantic memory (global + project tiers → system prompt)
+│   │   ├── memory.rs       # Semantic memory (global + project tiers → first user message)
 │   │   ├── microcompact.rs # Lightweight tool result aging between full compactions
 │   │   ├── model_alias.rs  # Curated model aliases (e.g. "sonnet" → exact model ID)
 │   │   ├── model_context.rs# Model → context window size lookup table (fallback)
