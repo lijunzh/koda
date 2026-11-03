@@ -473,3 +473,70 @@ async fn cache_diagnostics_are_off_away_from_anthropic() {
     let body: Value = serde_json::from_slice(&reqs[0].body).unwrap();
     assert!(body.get("diagnostics").is_none(), "{body}");
 }
+
+// ── Effort ────────────────────────────────────────────────────────────────
+
+async fn streamed_body(settings: &ModelSettings) -> Value {
+    let server = FakeLlmServer::spawn().await;
+    server
+        .mount_sse("POST", r".*/v1/messages$", &[r#"{"type":"message_stop"}"#])
+        .await;
+    let provider = AnthropicProvider::new("k".into(), Some(&server.url()));
+    let mut collector = provider
+        .chat_stream(&[user_msg("hi")], &[], settings)
+        .await
+        .unwrap();
+    while collector.rx.recv().await.is_some() {}
+    let reqs = server.received_requests().await;
+    serde_json::from_slice(&reqs[0].body).unwrap()
+}
+
+/// A model in the catalog gets its level sent, the chosen one or Claude
+/// Code's default; another model gets none.
+#[tokio::test]
+async fn chat_stream_sends_the_catalog_effort() {
+    let mut sonnet = ModelSettings::defaults_for("claude-sonnet-5-5", &ProviderType::Anthropic);
+    assert_eq!(
+        streamed_body(&sonnet).await["output_config"]["effort"],
+        "medium"
+    );
+    sonnet.reasoning_effort = Some("high".into());
+    assert_eq!(
+        streamed_body(&sonnet).await["output_config"]["effort"],
+        "high"
+    );
+
+    let older = streamed_body(&settings()).await;
+    assert!(older.get("output_config").is_none(), "{older}");
+}
+
+/// Current Claude models refuse a token budget with a 400, so it isn't sent.
+#[tokio::test]
+async fn chat_stream_drops_a_thinking_budget_the_model_refuses() {
+    let mut haiku = ModelSettings::defaults_for("claude-haiku-5-5", &ProviderType::Anthropic);
+    haiku.thinking_budget = Some(8000);
+    let body = streamed_body(&haiku).await;
+    assert!(body.get("thinking").is_none(), "{body}");
+    assert_eq!(body["output_config"]["effort"], "medium");
+
+    let mut older = settings();
+    older.thinking_budget = Some(8000);
+    assert_eq!(
+        streamed_body(&older).await["thinking"]["budget_tokens"],
+        8000
+    );
+}
+
+#[tokio::test]
+async fn chat_sends_the_catalog_effort() {
+    let server = FakeLlmServer::spawn().await;
+    server
+        .mount_ok("POST", r".*/v1/messages$", ok_messages_body())
+        .await;
+    let provider = AnthropicProvider::new("k".into(), Some(&server.url()));
+    let opus = ModelSettings::defaults_for("claude-opus-5-5", &ProviderType::Anthropic);
+    provider.chat(&[user_msg("hi")], &[], &opus).await.unwrap();
+    let reqs = server.received_requests().await;
+    let body: Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    assert_eq!(body["output_config"]["effort"], "medium");
+}

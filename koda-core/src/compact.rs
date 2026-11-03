@@ -263,6 +263,11 @@ pub async fn compact_session_with_provider(
             tools_hash: None,
             provider: provider.provider_name(),
             model: &model_settings.model,
+            effort: crate::model_effort::sent(
+                provider.provider_name(),
+                &compact_settings.model,
+                compact_settings.reasoning_effort.as_deref(),
+            ),
             messages: messages.len(),
             estimated_tokens: crate::inference_helpers::estimate_tokens(&messages),
             context_tokens: provider.context_tokens(&response.usage),
