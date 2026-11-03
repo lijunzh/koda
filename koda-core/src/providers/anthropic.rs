@@ -318,6 +318,8 @@ struct MessagesRequest {
     tools: Vec<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     diagnostics: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_config: Option<serde_json::Value>,
 }
 
 #[derive(Serialize, Clone)]
@@ -890,6 +892,11 @@ impl LlmProvider for AnthropicProvider {
             messages: api_messages,
             tools: api_tools,
             diagnostics,
+            output_config: crate::model_effort::applied(
+                api_model,
+                settings.reasoning_effort.as_deref(),
+            )
+            .map(|effort| serde_json::json!({ "effort": effort })),
         };
         super::trace_request("anthropic", &request);
 
@@ -1063,8 +1070,14 @@ impl LlmProvider for AnthropicProvider {
             body["temperature"] = serde_json::json!(temp);
         }
 
+        // A model that takes effort refuses a token budget with a 400, so the
+        // budget goes only to models that still take one.
+        let thinking_budget = settings
+            .thinking_budget
+            .filter(|_| !crate::model_effort::refuses_thinking_budget(api_model));
+
         // Extended thinking support
-        if let Some(budget) = settings.thinking_budget {
+        if let Some(budget) = thinking_budget {
             // max_tokens must be >= budget
             if max_tokens < budget {
                 max_tokens = budget + 4096;
@@ -1079,7 +1092,7 @@ impl LlmProvider for AnthropicProvider {
         }
         // Compaction and microcompact edit history, and a block replayed after
         // an edit is a 400 by default. Dropping it loses that reasoning only.
-        let binding = replays_thinking && settings.thinking_budget.is_none();
+        let binding = replays_thinking && thinking_budget.is_none();
         if binding {
             body["thinking"] = serde_json::json!({
                 "type": "adaptive",
@@ -1094,6 +1107,11 @@ impl LlmProvider for AnthropicProvider {
         }
         if let Some(diagnostics) = diagnostics {
             body["diagnostics"] = diagnostics;
+        }
+        if let Some(effort) =
+            crate::model_effort::applied(api_model, settings.reasoning_effort.as_deref())
+        {
+            body["output_config"] = serde_json::json!({ "effort": effort });
         }
         super::trace_request("anthropic", &body);
 

@@ -1477,6 +1477,11 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
             tools_hash: Some(&tools_hash),
             provider: provider.provider_name(),
             model: &config.model,
+            effort: crate::model_effort::sent(
+                provider.provider_name(),
+                &config.model_settings.model,
+                config.model_settings.reasoning_effort.as_deref(),
+            ),
             messages: messages.len(),
             estimated_tokens,
             context_tokens,

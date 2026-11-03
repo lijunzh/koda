@@ -99,6 +99,7 @@ One line per completed call to the model. Written in `ModelCall::log`
 | `purpose` | `turn` or `compaction` |
 | `system_hash`, `tools_hash` | Fingerprints of the system prompt and tool definitions sent. Turn calls only. Comparable within one build, not across builds. |
 | `provider`, `model` | The provider implementation (`openai-compat` for any OpenAI-compatible server) and the model id requested |
+| `effort` | The reasoning effort the request carried: the model's catalog level on Anthropic unless `--effort` chose another, the chosen level passed through elsewhere. Absent when none was sent. |
 | `messages` | Messages sent |
 | `estimated_tokens` | Koda's estimate of the prompt, before any correction |
 | `context_tokens` | What the provider says the request put in the window. `0` if it reported nothing. |

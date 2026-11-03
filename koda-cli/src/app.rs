@@ -113,12 +113,15 @@ struct Cli {
     #[arg(long)]
     temperature: Option<f64>,
 
-    /// Anthropic extended thinking budget (tokens)
+    /// Anthropic thinking budget in tokens, for Claude models that still take
+    /// one (Haiku 4.5 and older). Current Claude models take --effort instead.
     #[arg(long)]
     thinking_budget: Option<u32>,
 
-    /// OpenAI reasoning effort (low, medium, high)
-    #[arg(long)]
+    /// Reasoning effort. Claude: low, medium, high, xhigh or max; by default
+    /// the level Claude Code uses for the model. OpenAI-compatible servers:
+    /// passed through as `reasoning_effort`.
+    #[arg(long, alias = "effort")]
     reasoning_effort: Option<String>,
 
     /// Trust mode: auto (default) or safe.
@@ -238,6 +241,7 @@ pub(crate) async fn run() -> Result<()> {
     // Headless mode: skip onboarding, banner, version check
     if let Some(prompt) = headless_prompt {
         let config = koda_core::config::KodaConfig::load(&project_root, &cli.agent)?;
+        let typed = (cli.reasoning_effort.clone(), cli.thinking_budget);
         let config = config
             .with_overrides(cli.base_url, cli.model, cli.provider)
             .with_model_overrides(
@@ -248,6 +252,7 @@ pub(crate) async fn run() -> Result<()> {
             )
             .with_context_override(cli.max_context_tokens)
             .with_trust(parse_top_level_trust_mode(&cli.mode));
+        check_typed_reasoning(typed.0.as_deref(), typed.1, &config)?;
         let session_id = match cli.session {
             Some(id) => id,
             None => db.create_session(&config.agent_name, &project_root).await?,
@@ -281,6 +286,7 @@ pub(crate) async fn run() -> Result<()> {
         model: cli.model.is_some(),
     };
     let config = koda_core::config::KodaConfig::load(&project_root, &cli.agent)?;
+    let typed = (cli.reasoning_effort.clone(), cli.thinking_budget);
     let config = config
         .with_overrides(cli.base_url, cli.model, cli.provider)
         .with_model_overrides(
@@ -291,6 +297,7 @@ pub(crate) async fn run() -> Result<()> {
         )
         .with_context_override(cli.max_context_tokens)
         .with_trust(parse_top_level_trust_mode(&cli.mode));
+    check_typed_reasoning(typed.0.as_deref(), typed.1, &config)?;
 
     // Initialize database is already done above
 
@@ -311,6 +318,30 @@ pub(crate) async fn run() -> Result<()> {
         first_run,
     )
     .await
+}
+
+/// Refuse an effort or thinking budget typed for this run that the Claude
+/// model doesn't take. A person can fix the command; a setting from an agent
+/// config is corrected at request time instead (`koda_core::model_effort`).
+fn check_typed_reasoning(
+    effort: Option<&str>,
+    thinking_budget: Option<u32>,
+    config: &koda_core::config::KodaConfig,
+) -> Result<()> {
+    if config.provider_type != koda_core::config::ProviderType::Anthropic {
+        return Ok(());
+    }
+    let model = &config.model_settings.model;
+    if let Some(level) = effort {
+        koda_core::model_effort::check_typed(model, level).map_err(anyhow::Error::msg)?;
+    }
+    if thinking_budget.is_some() && koda_core::model_effort::rejects_thinking_budget(model) {
+        anyhow::bail!(
+            "{model} takes no --thinking-budget. Use --effort with one of: {}.",
+            koda_core::model_effort::LEVELS.join(", ")
+        );
+    }
+    Ok(())
 }
 
 /// Parse the `--mode` CLI flag and coerce to a top-level-valid trust

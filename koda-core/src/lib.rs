@@ -95,6 +95,8 @@ pub mod microcompact;
 pub mod model_alias;
 /// Hardcoded context-window lookup table (fallback when API doesn't report).
 pub mod model_context;
+/// Reasoning effort per model: the levels it takes and the default sent.
+pub mod model_effort;
 /// Context-scaled output caps for tool results.
 pub mod output_caps;
 /// `Persistence` trait — the database contract.

@@ -14,8 +14,8 @@
 | `--max-tokens <N>` | | Maximum output tokens |
 | `--max-context-tokens <N>` | `KODA_MAX_CONTEXT_TOKENS` | Pin the context window, in tokens, for a server that doesn't report its own (a `rec` or other OpenAI-compatible engine). Beats the agent config's `max_context_tokens`, the server's answer and the model table, and sticks across `/model` switches. Must be a positive whole number; `0` or text is an error. |
 | `--temperature <F>` | | Sampling temperature (0.0–2.0) |
-| `--thinking-budget <N>` | | Anthropic extended thinking budget (tokens) |
-| `--reasoning-effort <L>` | | OpenAI reasoning effort (`low`, `medium`, `high`) |
+| `--thinking-budget <N>` | | Anthropic thinking budget in tokens, for Claude models that still take one (Haiku 4.5 and older). Current Claude models refuse it; use `--effort`. |
+| `--effort <L>`, `--reasoning-effort <L>` | | Reasoning effort. Claude: `low`, `medium`, `high`, `xhigh` or `max`. Without it, each Claude model gets the level Claude Code uses: `medium` for the 5.5 models, `high` for Fable and the 5.0 models. A level the model doesn't take is refused. OpenAI-compatible servers get it as `reasoning_effort`. |
 | `--mode <MODE>` | `KODA_MODE` | Trust mode: `auto` (default, #1241) or `safe`. Auto auto-approves mutating actions; the kernel sandbox contains them — destructive ops (`rm -rf`, `git reset --hard`, `git push --force`, `Delete`) and outside-project writes still confirm. Auto requires the kernel sandbox; on unsandboxed platforms koda refuses to start (use `--mode safe` or install the platform sandbox backend). Safe confirms every mutation. Kernel sandbox with credential protection is always active when available. |
 | `--output-format <FMT>` | | Headless output format: `text` (default), `json` (one run-summary object on stdout), or `stream-json` (the [wire protocol](headless.md#wire-protocol), one JSON line per event). See [Headless mode](headless.md#output-formats). |
 | `--project-root <DIR>` | | Project root (defaults to cwd) |

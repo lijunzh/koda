@@ -358,6 +358,8 @@ pub(crate) struct ModelCall<'a> {
     pub provider: &'a str,
     /// The model id as requested.
     pub model: &'a str,
+    /// The reasoning effort the request carried, if any.
+    pub effort: Option<String>,
     /// Messages sent.
     pub messages: usize,
     /// Koda's estimate of the prompt, to compare with `usage.prompt_tokens`.
@@ -402,6 +404,7 @@ impl ModelCall<'_> {
             tools_hash = self.tools_hash,
             provider = self.provider,
             model = self.model,
+            effort = self.effort.as_deref(),
             messages = self.messages,
             estimated_tokens = self.estimated_tokens,
             context_tokens = self.context_tokens,

@@ -210,3 +210,46 @@ fn test_cli_max_context_tokens_rejects_zero_and_non_numbers() {
         );
     }
 }
+
+/// An effort level or thinking budget typed for a Claude model that doesn't
+/// take it is refused before any request, with the levels it does take.
+#[test]
+fn test_cli_refuses_effort_a_claude_model_does_not_take() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let run = |extra: &[&str]| {
+        Command::new(koda_bin())
+            .args([
+                "-p",
+                "test",
+                "--provider",
+                "anthropic",
+                "--model",
+                "claude-haiku-5-5",
+            ])
+            .args(["--base-url", "http://127.0.0.1:9"])
+            .args(extra)
+            .arg("--project-root")
+            .arg(&project)
+            .env("HOME", tmp.path())
+            .env("XDG_CONFIG_HOME", tmp.path())
+            .env_remove("ANTHROPIC_API_KEY")
+            .output()
+            .expect("Failed to run koda")
+    };
+
+    let effort = run(&["--effort", "ultra"]);
+    assert!(!effort.status.success());
+    let stderr = String::from_utf8_lossy(&effort.stderr);
+    assert!(
+        stderr.contains("claude-haiku-5-5 doesn't take effort \"ultra\"")
+            && stderr.contains("low, medium, high, xhigh, max"),
+        "{stderr}"
+    );
+
+    let budget = run(&["--thinking-budget", "8000"]);
+    assert!(!budget.status.success());
+    let stderr = String::from_utf8_lossy(&budget.stderr);
+    assert!(stderr.contains("takes no --thinking-budget"), "{stderr}");
+}
