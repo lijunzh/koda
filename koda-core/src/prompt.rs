@@ -201,8 +201,8 @@ pub fn build_system_prompt(
          Global: `~/.config/koda/memory.md`\n",
     );
 
-    // Semantic memory
-    if !semantic_memory.is_empty() {
+    // Experiment: project memory left out, to measure its effect.
+    if false && !semantic_memory.is_empty() {
         prompt.push_str(&format!(
             "\n## Project Memory\n\
              Project instructions and learned facts. Follow them. They override the \
