@@ -16,8 +16,8 @@
 //! 6. **Skills** — live listing with `when_to_use` hints; model MUST activate before responding
 //! 7. **Memory** — where project and global memory live
 //!
-//! The memory itself isn't here: [`project_memory_context`] opens the first
-//! user message with it.
+//! The memory itself isn't here: [`crate::prompt::project_memory_context`]
+//! opens the first user message with it.
 
 use std::path::Path;
 
