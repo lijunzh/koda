@@ -56,7 +56,7 @@
 //! [`ToolDefinition`]: crate::providers::ToolDefinition
 
 use crate::providers::ToolDefinition;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, RwLock};
 
 use super::{
@@ -84,13 +84,15 @@ use super::{
 /// ## Construction cost
 ///
 /// `new()` walks every per-tool `definitions()` function and inserts
-/// the results into a `HashMap`. That's O(builtin_tool_count) and
+/// the results into a `BTreeMap`. That's O(builtin_tool_count) and
 /// happens once per registry creation. Cheap enough that we don't
 /// bother lazy-initializing.
 pub struct ToolCatalog {
     /// All built-in tool definitions, keyed by tool name. Populated
-    /// at construction time by [`Self::new`]; never mutated.
-    definitions: HashMap<String, ToolDefinition>,
+    /// at construction time by [`Self::new`]; never mutated. A
+    /// `BTreeMap` so the model gets the tools in the same order in every
+    /// process: the list is part of every request.
+    definitions: BTreeMap<String, ToolDefinition>,
 
     /// Migrated built-in tools (#1265 item 5, PR-4..PR-N), keyed by
     /// name. Each entry implements [`Tool`] and is the authoritative
@@ -136,12 +138,10 @@ impl ToolCatalog {
     /// is partially met by the existing per-module `definitions()`
     /// pattern; this PR doesn't change that surface.
     pub fn new() -> Self {
-        let mut definitions = HashMap::new();
+        let mut definitions = BTreeMap::new();
 
-        // Register all built-in tools. Order doesn't matter — we
-        // insert into a HashMap and the LLM never sees the map's
-        // iteration order (callers that need stability sort the
-        // result, e.g. `all_builtin_tool_names`).
+        // Register all built-in tools. Registration order doesn't
+        // matter: the map keeps them sorted by name.
         for def in file_tools::definitions() {
             definitions.insert(def.name.clone(), def);
         }
@@ -392,10 +392,11 @@ impl ToolCatalog {
     /// - Both empty → all tools.
     /// - If both are specified, allowlist wins (deny ignored).
     ///
-    /// MCP tools are appended after built-ins. Within each group,
-    /// iteration order is `HashMap` order (unspecified) — deliberate:
-    /// callers that need a sorted list must sort, and most LLM
-    /// providers don't care about order.
+    /// MCP tools are appended after built-ins. Without an allowlist each
+    /// group is sorted by name; with one, tools come in the allowlist's
+    /// order. The order must not change between processes: the model
+    /// reads the list in this order, and it leads every request, so a
+    /// new order also misses the provider's prompt cache.
     pub fn get_definitions(&self, allowed: &[String], denied: &[String]) -> Vec<ToolDefinition> {
         let mut defs: Vec<ToolDefinition> = if !allowed.is_empty() {
             allowed
@@ -419,7 +420,8 @@ impl ToolCatalog {
         if let Some(mgr) = self.mcp_manager()
             && let Ok(mgr) = mgr.try_read()
         {
-            let mcp_defs = mgr.all_tool_definitions();
+            let mut mcp_defs = mgr.all_tool_definitions();
+            mcp_defs.sort_by(|a, b| a.name.cmp(&b.name));
             if !allowed.is_empty() {
                 for def in mcp_defs {
                     if allowed.contains(&def.name) {
@@ -530,6 +532,27 @@ mod tests {
         // get_definitions result. (The reverse holds by definition.)
         for name in catalog.all_builtin_tool_names() {
             assert!(names.contains(&name), "missing {name} in no-filter result");
+        }
+    }
+
+    /// Every catalog lists its tools in the same order, sorted by name.
+    /// A `HashMap` gave each process its own order, so the same request
+    /// differed from run to run.
+    #[test]
+    fn get_definitions_order_is_the_same_in_every_catalog() {
+        let names = |catalog: &ToolCatalog| -> Vec<String> {
+            catalog
+                .get_definitions(&[], &[])
+                .into_iter()
+                .map(|d| d.name)
+                .collect()
+        };
+        let first = names(&ToolCatalog::new());
+        let mut sorted = first.clone();
+        sorted.sort();
+        assert_eq!(first, sorted);
+        for _ in 0..8 {
+            assert_eq!(names(&ToolCatalog::new()), first);
         }
     }
 
