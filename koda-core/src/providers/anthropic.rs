@@ -14,6 +14,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 /// Sent on every request, the Models API included. The `2026-10-21`
 /// migration guide changes only the Messages API (with token counting and
@@ -94,6 +95,75 @@ pub struct AnthropicProvider {
     client: reqwest::Client,
     base_url: String,
     api_key: String,
+    /// Cache diagnostics, when on: each request names its conversation's
+    /// previous response, and the API says what changed if the prompt prefix
+    /// no longer matches. Only Anthropic's own API has it.
+    diagnostics: Option<Arc<DiagnosticsChain>>,
+}
+
+/// The last response id of each conversation, for cache diagnostics.
+///
+/// A conversation is its model, system prompt and first message, so the main
+/// loop, each sub-agent and a summary request each get their own chain: a
+/// response compared with another conversation's would report a change that
+/// isn't one. In-process only; the ids mean nothing after Koda exits.
+#[derive(Default)]
+struct DiagnosticsChain {
+    last: Mutex<HashMap<u64, String>>,
+}
+
+/// Where one request's response id goes.
+struct ChainSlot {
+    chain: Arc<DiagnosticsChain>,
+    key: u64,
+}
+
+impl ChainSlot {
+    fn record(&self, id: &str) {
+        let mut last = self.chain.last.lock().unwrap_or_else(|e| e.into_inner());
+        // Conversations come and go; a long session shouldn't grow this.
+        if last.len() >= 256 && !last.contains_key(&self.key) {
+            last.clear();
+        }
+        last.insert(self.key, id.to_string());
+    }
+}
+
+/// The conversation a request belongs to, for [`DiagnosticsChain`].
+fn conversation_key(model: &str, system: Option<&str>, first: Option<&AnthropicMessage>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    model.hash(&mut hasher);
+    system.hash(&mut hasher);
+    first
+        .and_then(|m| serde_json::to_string(m).ok())
+        .hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Log what cache diagnostics found. A `*_changed` reason means the request
+/// differed from the conversation's previous one before the cache breakpoint:
+/// expected after compaction rewrites history, a bug anywhere else.
+fn log_cache_diagnostics(diagnostics: Option<&serde_json::Value>) {
+    let Some(reason) = diagnostics
+        .and_then(|d| d.get("cache_miss_reason"))
+        .filter(|r| !r.is_null())
+    else {
+        return;
+    };
+    let kind = reason["type"].as_str().unwrap_or("unknown");
+    if kind.ends_with("_changed") {
+        tracing::info!(
+            cache_miss_reason = kind,
+            cache_missed_tokens = reason["cache_missed_input_tokens"].as_i64(),
+            "Prompt cache diagnostics: the request changed before the cache breakpoint"
+        );
+    } else {
+        tracing::debug!(
+            cache_miss_reason = kind,
+            "Prompt cache diagnostics made no comparison"
+        );
+    }
 }
 
 impl std::fmt::Debug for AnthropicProvider {
@@ -187,15 +257,51 @@ impl AnthropicProvider {
         }
     }
     /// Create a new Anthropic provider with the given API key and optional base URL.
+    ///
+    /// Cache diagnostics are on for Anthropic's own API and off elsewhere: a
+    /// proxy or gateway may reject the field.
     pub fn new(api_key: String, base_url: Option<&str>) -> Self {
+        let base_url = base_url
+            .unwrap_or("https://api.anthropic.com")
+            .trim_end_matches('/')
+            .to_string();
         Self {
-            client: super::build_http_client(base_url),
-            base_url: base_url
-                .unwrap_or("https://api.anthropic.com")
-                .trim_end_matches('/')
-                .to_string(),
+            client: super::build_http_client(Some(&base_url)),
+            diagnostics: (base_url == "https://api.anthropic.com")
+                .then(|| Arc::new(DiagnosticsChain::default())),
+            base_url,
             api_key,
         }
+    }
+
+    /// Turn cache diagnostics on or off, whatever the base URL.
+    pub fn with_cache_diagnostics(mut self, on: bool) -> Self {
+        self.diagnostics = on.then(|| Arc::new(DiagnosticsChain::default()));
+        self
+    }
+
+    /// The `diagnostics` field for a request, and where its response id goes.
+    fn diagnostics_for(
+        &self,
+        model: &str,
+        system: Option<&str>,
+        messages: &[AnthropicMessage],
+    ) -> Option<(serde_json::Value, ChainSlot)> {
+        let chain = self.diagnostics.as_ref()?;
+        let key = conversation_key(model, system, messages.first());
+        let previous = chain
+            .last
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key)
+            .cloned();
+        Some((
+            serde_json::json!({ "previous_message_id": previous }),
+            ChainSlot {
+                chain: Arc::clone(chain),
+                key,
+            },
+        ))
     }
 }
 
@@ -210,6 +316,8 @@ struct MessagesRequest {
     messages: Vec<serde_json::Value>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    diagnostics: Option<serde_json::Value>,
 }
 
 #[derive(Serialize, Clone)]
@@ -283,6 +391,10 @@ struct ImageSource {
 
 #[derive(Deserialize)]
 struct MessagesResponse {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    diagnostics: Option<serde_json::Value>,
     content: Vec<ContentBlock>,
     usage: AnthropicUsage,
     #[serde(default)]
@@ -497,6 +609,8 @@ pub(crate) struct AnthropicChunkParser {
     /// `message_stop` arrived. Without it the stream was cut, however
     /// cleanly the connection closed.
     finished: bool,
+    /// Where the response id goes, when cache diagnostics are on.
+    diagnostics: Option<ChainSlot>,
 }
 
 impl AnthropicChunkParser {
@@ -508,7 +622,13 @@ impl AnthropicChunkParser {
             thinking_indices: std::collections::HashSet::new(),
             open_thinking: std::collections::HashMap::new(),
             finished: false,
+            diagnostics: None,
         }
+    }
+
+    fn with_diagnostics(mut self, slot: Option<ChainSlot>) -> Self {
+        self.diagnostics = slot;
+        self
     }
 }
 
@@ -586,6 +706,17 @@ impl ChunkParser for AnthropicChunkParser {
             }
             if let Some(changes) = dropped_thinking(&raw) {
                 tracing::warn!("Thinking blocks the API dropped: {changes}");
+            }
+            // Cache diagnostics ride on `message_start`, with the response id
+            // the conversation's next request names.
+            if raw.get("type").and_then(|t| t.as_str()) == Some("message_start") {
+                if let (Some(slot), Some(id)) = (
+                    &self.diagnostics,
+                    raw.pointer("/message/id").and_then(|i| i.as_str()),
+                ) {
+                    slot.record(id);
+                }
+                log_cache_diagnostics(raw.pointer("/message/diagnostics"));
             }
         }
 
@@ -741,7 +872,15 @@ impl LlmProvider for AnthropicProvider {
             .map(|text| Self::build_cached_system(text));
 
         // Convert messages (skip system, convert tool results)
-        let api_messages = Self::build_cached_messages(&self.convert_messages(messages, None))?;
+        let converted = self.convert_messages(messages, None);
+        let system_text = messages
+            .iter()
+            .find(|m| m.role == "system")
+            .and_then(|m| m.content.as_deref());
+        let (diagnostics, slot) = self
+            .diagnostics_for(api_model, system_text, &converted)
+            .unzip();
+        let api_messages = Self::build_cached_messages(&converted)?;
         let api_tools = Self::build_cached_tools(tools);
 
         let request = MessagesRequest {
@@ -750,6 +889,7 @@ impl LlmProvider for AnthropicProvider {
             system,
             messages: api_messages,
             tools: api_tools,
+            diagnostics,
         };
         super::trace_request("anthropic", &request);
 
@@ -762,6 +902,10 @@ impl LlmProvider for AnthropicProvider {
             .json(&request);
 
         let msg_resp: MessagesResponse = super::http::send_and_parse_json(req, "Anthropic").await?;
+        if let (Some(slot), Some(id)) = (&slot, &msg_resp.id) {
+            slot.record(id);
+        }
+        log_cache_diagnostics(msg_resp.diagnostics.as_ref());
 
         // Parse response content blocks into our unified format
         let mut content_text = String::new();
@@ -894,6 +1038,13 @@ impl LlmProvider for AnthropicProvider {
             .map(|text| Self::build_cached_system(text));
 
         let converted = self.convert_messages(messages, Some(api_model));
+        let system_text = messages
+            .iter()
+            .find(|m| m.role == "system")
+            .and_then(|m| m.content.as_deref());
+        let (diagnostics, slot) = self
+            .diagnostics_for(api_model, system_text, &converted)
+            .unzip();
         let replays_thinking = converted.iter().any(AnthropicMessage::has_thinking);
         let api_messages = Self::build_cached_messages(&converted)?;
         let api_tools = Self::build_cached_tools(tools);
@@ -941,6 +1092,9 @@ impl LlmProvider for AnthropicProvider {
         if !api_tools.is_empty() {
             body["tools"] = serde_json::to_value(&api_tools)?;
         }
+        if let Some(diagnostics) = diagnostics {
+            body["diagnostics"] = diagnostics;
+        }
         super::trace_request("anthropic", &body);
 
         let req = self
@@ -962,7 +1116,7 @@ impl LlmProvider for AnthropicProvider {
 
         let collector = super::stream_collector::spawn_sse_collector(
             resp,
-            Box::new(AnthropicChunkParser::new()),
+            Box::new(AnthropicChunkParser::new().with_diagnostics(slot)),
         );
 
         Ok(collector)
@@ -1089,6 +1243,35 @@ impl AnthropicProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// On for Anthropic's own API, however its URL is written, off elsewhere.
+    #[test]
+    fn cache_diagnostics_default_to_anthropics_api() {
+        let on = |url: Option<&str>| {
+            AnthropicProvider::new("k".into(), url)
+                .diagnostics
+                .is_some()
+        };
+        assert!(on(None));
+        assert!(on(Some("https://api.anthropic.com/")));
+        assert!(!on(Some("https://gateway.example.com")));
+    }
+
+    /// The same conversation grown by a turn keeps its key; another system
+    /// prompt, first message or model doesn't.
+    #[test]
+    fn conversation_key_follows_the_conversation() {
+        let msg = |text: &str| AnthropicMessage {
+            role: "user".into(),
+            content: AnthropicContent::Text(text.into()),
+        };
+        let key = |model, system, first: &str| conversation_key(model, system, Some(&msg(first)));
+        let base = key("claude-haiku-5-5", Some("sys"), "hi");
+        assert_eq!(base, key("claude-haiku-5-5", Some("sys"), "hi"));
+        assert_ne!(base, key("claude-haiku-5-5", Some("other"), "hi"));
+        assert_ne!(base, key("claude-haiku-5-5", Some("sys"), "bye"));
+        assert_ne!(base, key("claude-sonnet-5-5", Some("sys"), "hi"));
+    }
 
     fn make_provider() -> AnthropicProvider {
         AnthropicProvider::new("fake-key".into(), None)
