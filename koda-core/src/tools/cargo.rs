@@ -68,10 +68,9 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 
 /// Wall-clock ceiling for one cargo invocation.
 ///
-/// Fixed rather than model-supplied: `Bash` caps its `timeout` argument at
-/// 300s so the model can't widen its own deadline, but a cold `cargo test`
-/// on a workspace needs longer than that, and here there is no argument
-/// for the model to abuse.
+/// Fixed rather than model-supplied, at `Bash`'s own ceiling for its
+/// `timeout` argument: a cold `cargo test` on a workspace can need that long,
+/// and here there is no argument for the model to abuse.
 pub const TIMEOUT_SECS: u64 = 600;
 /// Errors listed in the model-facing summary before "N more omitted".
 pub const MAX_ERRORS: usize = 30;

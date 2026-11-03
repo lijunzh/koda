@@ -42,9 +42,10 @@ use serde_json::{Value, json};
 use std::path::Path;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-const DEFAULT_TIMEOUT_SECS: u64 = 60;
+/// Claude Code's defaults: two minutes, and at most ten for a foreground command.
+const DEFAULT_TIMEOUT_SECS: u64 = 120;
 /// Hard ceiling to prevent LLM-controlled DoS via huge timeout values.
-const MAX_TIMEOUT_SECS: u64 = 300;
+const MAX_TIMEOUT_SECS: u64 = 600;
 /// Token budget for the model-facing summary (stderr + stdout together).
 /// Matches Codex's `DEFAULT_MAX_OUTPUT_TOKENS`: roomy enough that ordinary
 /// command output arrives whole, small enough that one noisy command can't
@@ -54,7 +55,7 @@ const SUMMARY_MAX_TOKENS: usize = 10_000;
 const BYTES_PER_TOKEN: usize = 4;
 const SUMMARY_MAX_BYTES: usize = SUMMARY_MAX_TOKENS * BYTES_PER_TOKEN;
 /// Hard memory ceiling for line collection. Pathological commands (`yes`,
-/// `cat /dev/urandom | base64`) can produce gigabytes within the 300s timeout.
+/// `cat /dev/urandom | base64`) can produce gigabytes within the timeout.
 /// Once this byte threshold is reached, lines are still streamed to the TUI
 /// but no longer collected into the in-memory Vec. The DB cap
 /// (`MAX_FULL_OUTPUT_BYTES`) handles what actually gets persisted.
@@ -97,7 +98,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "Timeout in seconds (default: 60, ignored when background=true)"
+                    "description": "Timeout in seconds (default: 120, max: 600; ignored when background=true). A command that needs longer belongs in the background."
                 },
                 "background": {
                     "type": "boolean",
@@ -284,13 +285,27 @@ pub async fn run_shell_command(
             // Timeout — kill the command and all it started.
             group.kill();
             let _ = child.kill().await;
-            let msg = format!("Command timed out after {timeout_secs}s: {command}");
+            let msg = timeout_message(timeout_secs, args["timeout"].as_u64(), command);
             Ok(ShellOutput {
                 summary: msg.clone(),
                 full_output: Some(msg),
                 success: false,
             })
         }
+    }
+}
+
+/// What a foreground command that ran out of time reports. A `timeout` over
+/// [`MAX_TIMEOUT_SECS`] was cut to it, so the model learns that, and where a
+/// longer command goes.
+fn timeout_message(timeout_secs: u64, asked: Option<u64>, command: &str) -> String {
+    match asked {
+        Some(asked) if asked > MAX_TIMEOUT_SECS => format!(
+            "Command timed out after {timeout_secs}s, the most a foreground command gets \
+             ({asked}s was asked for). Run it with background=true and read its log \
+             instead: {command}"
+        ),
+        _ => format!("Command timed out after {timeout_secs}s: {command}"),
     }
 }
 
@@ -1451,6 +1466,18 @@ mod tests {
         let full = result.full_output.unwrap();
         assert!(full.contains("1"), "Should contain first line");
         assert!(!full.contains("\n50\n"), "Should NOT contain line 50");
+    }
+
+    /// A timeout cut to the ceiling says so; one within it doesn't.
+    #[test]
+    fn a_cut_timeout_says_so() {
+        let cut = timeout_message(MAX_TIMEOUT_SECS, Some(900), "cargo test");
+        assert!(cut.contains("600s, the most a foreground command gets (900s was asked for)"));
+        assert!(cut.contains("background=true"));
+        assert_eq!(
+            timeout_message(30, Some(30), "sleep 99"),
+            "Command timed out after 30s: sleep 99"
+        );
     }
 
     #[test]

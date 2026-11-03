@@ -272,9 +272,9 @@ pub fn build(
 ///
 /// | Trust | wall_time_secs | rationale                                                  |
 /// |-------|----------------|------------------------------------------------------------|
-/// | Plan  | 60             | Read-only — 60s is more than enough for greps/reads.       |
-/// | Safe  | 60             | Matches pre-PR `DEFAULT_TIMEOUT_SECS`. Byte-for-byte parity. |
-/// | Auto  | 60             | Same as Safe today. Future PR may bump for build/test workloads once telemetry justifies it. |
+/// | Plan  | 120            | Claude Code's default, as in every mode.                   |
+/// | Safe  | 120            | Matches `DEFAULT_TIMEOUT_SECS`.                            |
+/// | Auto  | 120            | Same as Safe. Raised from 60 in November 2026: eval runs asked for more than 300s often, for builds and tests. |
 ///
 /// Tuning per-trust differently is deliberately deferred — PR-3's job
 /// is the *lift* (make limits policy-driven, not hardcoded), not the
@@ -285,7 +285,7 @@ pub fn policy_for_agent(trust: crate::trust::TrustMode, project_root: &Path) -> 
     policy.limits.wall_time_secs = Some(match trust {
         crate::trust::TrustMode::Plan
         | crate::trust::TrustMode::Safe
-        | crate::trust::TrustMode::Auto => 60,
+        | crate::trust::TrustMode::Auto => 120,
     });
     // Phase 5 PR-5 of #934: deny-rule traversal depth, derived from
     // trust mode (NOT a runtime config knob — koda is config-free).
@@ -1389,7 +1389,7 @@ mod tests {
             let policy = policy_for_agent(mode, dir.path());
             assert_eq!(
                 policy.limits.wall_time_secs,
-                Some(60),
+                Some(120),
                 "PR-3 contract: every trust mode ships with a wall_time default \
                  so the Bash dispatch path stops needing a hardcoded fallback. \
                  Mode under test: {mode:?}"
