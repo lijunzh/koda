@@ -254,7 +254,8 @@ context tracking, loop detection, config defaults, bash safety, etc.
 - `tests/tool_wiring_test.rs` — every tool routable + approval-handled
 - `tests/tool_normalize_test.rs` — snake_case → PascalCase normalization
 - `tests/golden_test.rs` — snapshot / golden file tests
-- `tests/snapshot_test.rs` — tool definition schema snapshots
+- `tests/snapshot_test.rs` — the Bash classifier's verdict on a fixed set of
+  commands, and every provider's metadata. No test pins tool descriptions.
 - `tests/token_audit.rs` — token estimation accuracy checks
 
 **koda-cli unit tests** are co-located in `src/`: markdown rendering, REPL

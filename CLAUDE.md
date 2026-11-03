@@ -187,7 +187,8 @@ The `test-support` feature gates `MockProvider` and `TestSink`, so E2E tests nee
   using the `Env` harness in `koda-test-utils/src/env.rs`.
 - **koda-core integration:** the rest of `koda-core/tests/`, such as
   `guarantee_matrix_test.rs` (trust mode × tool effect), `tool_wiring_test.rs`
-  (every tool routable and approval-handled), `snapshot_test.rs` (tool schemas).
+  (every tool routable and approval-handled), `snapshot_test.rs` (Bash
+  classifier verdicts and provider metadata). No test pins tool descriptions.
 - **koda-cli integration:** `tests/cli_test.rs`, `regression_test.rs`,
   `skill_agent_e2e_test.rs`.
 - **koda-cli smoke:** `tests/smoke_test.rs`, headless with `MockProvider`; live
