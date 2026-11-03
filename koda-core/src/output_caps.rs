@@ -36,7 +36,8 @@ pub struct OutputCaps {
     /// Base: 256 (was `MAX_OUTPUT_LINES` in `shell.rs`).
     pub shell_output_lines: usize,
 
-    /// Max grep matches returned.
+    /// Entries in one page of Grep results (paths, lines or counts) when the
+    /// model sets no `head_limit`.
     /// Base: 100 (was `MAX_MATCHES` in `grep.rs`).
     pub grep_matches: usize,
 
