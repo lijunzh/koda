@@ -14,6 +14,9 @@
 //! When `background: true` the command is spawned detached and control returns
 //! immediately with the PID. Use for dev servers, file watchers, and other
 //! long-running processes. Background processes are tracked in `BgRegistry`.
+//! Their stdout and stderr go to a log file under the temp directory, and the
+//! result names it, as Claude Code does. Without it the output was lost, and a
+//! model that backgrounded a test run got nothing back.
 //!
 //! ## Safety
 //!
@@ -81,7 +84,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
             a marker in the middle naming the omitted lines; narrow the command \
             (grep, sed -n 'A,Bp') to see them. \
             Set background=true for long-running processes (dev servers, watchers) \
-            — returns immediately with the PID."
+            — returns immediately with the PID and a log file holding the output. \
+            Run a command whose result you need, such as tests, in the foreground \
+            with a longer timeout instead."
             .to_string(),
         parameters: json!({
             "type": "object",
@@ -97,7 +102,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 "background": {
                     "type": "boolean",
                     "description": "Run in background and return immediately with PID (default: false). \
-                        Use for dev servers, file watchers, and other long-running processes."
+                        Use for dev servers, file watchers, and other long-running processes. \
+                        Its stdout and stderr go to a log file named in the result."
                 }
             },
             "required": ["command"]
@@ -153,7 +159,7 @@ pub async fn run_shell_command(
     );
 
     if background {
-        let msg = spawn_background(
+        let mut msg = spawn_background(
             project_root,
             command,
             bg,
@@ -163,6 +169,12 @@ pub async fn run_shell_command(
             socks5_port,
             caller_spawner,
         )?;
+        if args.get("timeout").is_some_and(|t| !t.is_null()) {
+            msg.push_str(
+                "\nThe timeout was ignored: a background command runs until it \
+                 exits, is killed, or the session ends.",
+            );
+        }
         return Ok(ShellOutput {
             summary: msg,
             full_output: None,
@@ -362,10 +374,31 @@ async fn read_streams(
     Ok(())
 }
 
+/// A new log file for a background command's output, under
+/// `<temp dir>/koda-bg/`. Reads are unrestricted, so the model can `Read` it,
+/// and the kernel sandbox already lets commands write to the temp directory.
+fn background_log() -> Result<(std::path::PathBuf, std::fs::File)> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let dir = std::env::temp_dir().join("koda-bg");
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| anyhow::anyhow!("Failed to create {}: {e}", dir.display()))?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis());
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = dir.join(format!("{}-{stamp}-{n}.log", std::process::id()));
+    let file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| anyhow::anyhow!("Failed to create {}: {e}", path.display()))?;
+    Ok((path, file))
+}
+
 /// Spawn a command in the background and register it.
 ///
-/// Returns immediately with PID + instructions. Sync because `spawn()` doesn't
-/// need to await — only `output()` / `wait()` block.
+/// Returns immediately with PID, log file and instructions. Sync because
+/// `spawn()` doesn't need to await — only `output()` / `wait()` block.
 #[allow(clippy::too_many_arguments)]
 fn spawn_background(
     project_root: &Path,
@@ -378,9 +411,14 @@ fn spawn_background(
     caller_spawner: Option<u32>,
 ) -> Result<String> {
     // Spawn via sandbox wrapper (enforced for all trust modes).
-    // Detach stdio so the process doesn't block on terminal I/O.
+    // No stdin, so the process doesn't block on terminal I/O; stdout and
+    // stderr share one append-mode log, in the order they were written.
     // Phase 5 PR-2 of #934: policy threaded in from the registry
     // (see comment on `run_shell_command` above for the threading rationale).
+    let (log_path, log) = background_log()?;
+    let stderr_log = log
+        .try_clone()
+        .map_err(|e| anyhow::anyhow!("Failed to share {}: {e}", log_path.display()))?;
     let child = crate::sandbox::build(
         command,
         project_root,
@@ -390,8 +428,8 @@ fn spawn_background(
         socks5_port,
     )?
     .stdin(std::process::Stdio::null())
-    .stdout(std::process::Stdio::null())
-    .stderr(std::process::Stdio::null())
+    .stdout(log)
+    .stderr(stderr_log)
     .spawn()
     .map_err(|e| anyhow::anyhow!("Failed to spawn background command: {e}"))?;
 
@@ -401,8 +439,11 @@ fn spawn_background(
 
     bg.insert(pid, command.to_string(), child, caller_spawner);
 
+    let log = log_path.display();
     Ok(format!(
-        "Background process started.\n  PID:     {pid}\n  Command: {command}\n\
+        "Background process started.\n  PID:     {pid}\n  Command: {command}\n  \
+         Output:  {log} (stdout and stderr; read it with Read, or Bash{{command: \"tail -50 {log}\"}})\n\
+         Still running?  Bash{{command: \"kill -0 {pid}\"}}\n\
          To stop:  Bash{{command: \"kill {pid}\"}}\n\
          To force: Bash{{command: \"kill -9 {pid}\"}}\n\
          Note: process will be stopped automatically when the session ends."
@@ -998,6 +1039,72 @@ mod tests {
             "background has no full_output"
         );
         assert_eq!(registry.len(), 1);
+        assert!(
+            !result.summary.contains("timeout was ignored"),
+            "{}",
+            result.summary
+        );
+    }
+
+    /// The output of a background command lands in the log the result
+    /// names, stdout and stderr both, and a passed timeout is reported as
+    /// ignored. Before, both streams went to /dev/null and the result said
+    /// nothing about either (seen on Ornith: a backgrounded test run with
+    /// `timeout: 600` came back with only a PID).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn background_output_goes_to_the_named_log() {
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = BgRegistry::new();
+        let args = serde_json::json!({
+            "command": "echo to-stdout; echo to-stderr >&2",
+            "background": true,
+            "timeout": 600,
+        });
+        let result = run_shell_command(
+            tmp.path(),
+            &args,
+            256,
+            &registry,
+            None,
+            &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(
+            result.summary.contains("timeout was ignored"),
+            "{}",
+            result.summary
+        );
+        let log = result
+            .summary
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("Output:"))
+            .and_then(|rest| rest.trim().split(' ').next())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| panic!("no log path in {}", result.summary));
+        let mut text = String::new();
+        for _ in 0..100 {
+            text = std::fs::read_to_string(&log).unwrap_or_default();
+            if text.contains("to-stdout") && text.contains("to-stderr") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(
+            text.contains("to-stdout"),
+            "log {}: {text:?}",
+            log.display()
+        );
+        assert!(
+            text.contains("to-stderr"),
+            "log {}: {text:?}",
+            log.display()
+        );
+        let _ = std::fs::remove_file(&log);
     }
 
     /// Phase E of #996 regression: when a sub-agent (caller_spawner =
