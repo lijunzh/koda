@@ -23,7 +23,8 @@ const MAX_SCALE: f64 = 4.0;
 /// Pre-computed output caps for all tools in a session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OutputCaps {
-    /// Max chars for tool results stored in conversation history.
+    /// Max chars for tool results stored in conversation history, and for one
+    /// full `Read`.
     /// Base: 10,000 (was `MAX_TOOL_RESULT_CHARS` in `tool_dispatch.rs`).
     pub tool_result_chars: usize,
 

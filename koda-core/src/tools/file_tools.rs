@@ -165,11 +165,15 @@ pub fn definitions() -> Vec<ToolDefinition> {
 /// Read file contents, with optional line-range selection.
 /// When a line range is requested, only reads lines up to the end of the range
 /// instead of loading the entire file into memory.
+///
+/// A full read stops at `max_bytes`, so the model sees how to read the rest
+/// rather than the generic cut applied to every tool result in history.
 pub async fn read_file(
     project_root: &Path,
     args: &Value,
     cache: &super::FileReadCache,
     fs: &dyn FileSystem,
+    max_bytes: usize,
 ) -> Result<String> {
     let path_str = args["file_path"]
         .as_str()
@@ -223,9 +227,9 @@ pub async fn read_file(
             // the file changes between this read and the subsequent write.
             content_sha256 = format!("{:x}", Sha256::digest(raw_content.as_bytes()));
 
-            if raw_content.len() > 20_000 {
+            if raw_content.len() > max_bytes {
                 // Snap to char boundary to avoid panic on multi-byte chars
-                let mut end = 20_000;
+                let mut end = max_bytes;
                 while !raw_content.is_char_boundary(end) {
                     end -= 1;
                 }
@@ -793,7 +797,14 @@ impl Tool for ReadTool {
         ToolEffect::ReadOnly
     }
     async fn execute(&self, ctx: &ToolExecCtx<'_>, args: &Value) -> ToolResult {
-        let r = read_file(ctx.project_root, args, ctx.read_cache, ctx.fs).await;
+        let r = read_file(
+            ctx.project_root,
+            args,
+            ctx.read_cache,
+            ctx.fs,
+            ctx.caps.tool_result_chars,
+        )
+        .await;
         crate::tools::wrap_result(r)
     }
 }
@@ -905,6 +916,9 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Mutex;
 
+    /// Large enough that no test here hits it by accident.
+    const TEST_CAP: usize = 40_000;
+
     fn cache() -> super::super::FileReadCache {
         std::sync::Arc::new(Mutex::new(HashMap::new()))
     }
@@ -922,7 +936,9 @@ mod tests {
         std::fs::write(&f, "line1\nline2\nline3").unwrap();
 
         let args = json!({"file_path": f.to_string_lossy()});
-        let result = read_file(tmp.path(), &args, &cache(), &fs()).await.unwrap();
+        let result = read_file(tmp.path(), &args, &cache(), &fs(), TEST_CAP)
+            .await
+            .unwrap();
         assert!(result.contains("line1"));
         assert!(result.contains("line3"));
     }
@@ -935,7 +951,9 @@ mod tests {
         std::fs::write(&f, &content).unwrap();
 
         let args = json!({"file_path": f.to_string_lossy(), "start_line": 50, "num_lines": 3});
-        let result = read_file(tmp.path(), &args, &cache(), &fs()).await.unwrap();
+        let result = read_file(tmp.path(), &args, &cache(), &fs(), TEST_CAP)
+            .await
+            .unwrap();
         assert!(result.contains("line 50"));
         assert!(result.contains("line 52"));
         assert!(!result.contains("line 53"));
@@ -945,7 +963,7 @@ mod tests {
     async fn read_file_nonexistent_returns_error() {
         let tmp = tempfile::tempdir().unwrap();
         let args = json!({"file_path": "does_not_exist.txt"});
-        let result = read_file(tmp.path(), &args, &cache(), &fs()).await;
+        let result = read_file(tmp.path(), &args, &cache(), &fs(), TEST_CAP).await;
         assert!(result.is_err());
     }
 
@@ -953,7 +971,7 @@ mod tests {
     async fn read_file_missing_path_arg_errors() {
         let tmp = tempfile::tempdir().unwrap();
         let args = json!({});
-        let result = read_file(tmp.path(), &args, &cache(), &fs()).await;
+        let result = read_file(tmp.path(), &args, &cache(), &fs(), TEST_CAP).await;
         assert!(result.is_err());
         assert!(
             result.unwrap_err().to_string().contains("file_path"),
@@ -969,9 +987,26 @@ mod tests {
         std::fs::write(&f, &content).unwrap();
 
         let args = json!({"file_path": f.to_string_lossy()});
-        let result = read_file(tmp.path(), &args, &cache(), &fs()).await.unwrap();
+        let result = read_file(tmp.path(), &args, &cache(), &fs(), 20_000)
+            .await
+            .unwrap();
         assert!(result.contains("TRUNCATED"));
         assert!(result.len() < 25_000);
+    }
+
+    #[tokio::test]
+    async fn read_file_returns_a_file_that_fits_the_cap_whole() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("big.txt");
+        let content = "x".repeat(30_000);
+        std::fs::write(&f, &content).unwrap();
+
+        let args = json!({"file_path": f.to_string_lossy()});
+        let cap = crate::output_caps::OutputCaps::for_context(1_000_000).tool_result_chars;
+        let result = read_file(tmp.path(), &args, &cache(), &fs(), cap)
+            .await
+            .unwrap();
+        assert_eq!(result, content);
     }
 
     #[tokio::test]
@@ -986,7 +1021,7 @@ mod tests {
         std::fs::create_dir_all(&project).unwrap();
 
         let args = json!({"file_path": "../secret.txt"});
-        let result = read_file(&project, &args, &cache(), &fs()).await;
+        let result = read_file(&project, &args, &cache(), &fs(), TEST_CAP).await;
         assert!(
             result.is_ok(),
             "read outside project root should succeed; got: {:?}",
@@ -1110,7 +1145,9 @@ mod tests {
         let args = json!({"file_path": "cached.txt"});
 
         for _ in 0..2 {
-            let output = read_file(tmp.path(), &args, &shared, &fs()).await.unwrap();
+            let output = read_file(tmp.path(), &args, &shared, &fs(), TEST_CAP)
+                .await
+                .unwrap();
             assert!(output.contains("the contents"), "{output}");
         }
     }
