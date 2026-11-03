@@ -36,6 +36,7 @@ async fn only_the_matching_decision_resumes_the_turn() {
         db: &env.db,
         session_id: &env.session_id,
         system_prompt: "You are a test assistant.",
+        project_memory: "",
         git_snapshot: &git,
         provider: provider.as_ref(),
         tools: &env.tools,

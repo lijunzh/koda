@@ -1161,7 +1161,6 @@ pub(crate) fn execute_sub_agent<'a>(
         };
         let system_prompt = build_system_prompt(
             &instructions_for(&sub_config.system_prompt, effective_root != project_root),
-            &semantic_memory,
             &env,
             &[], // sub-agents have no REPL commands
             &tools.skill_registry,
@@ -1217,10 +1216,15 @@ pub(crate) fn execute_sub_agent<'a>(
         // failure mode that drove the issue. Subsequent in-loop estimates
         // (`estimate_tokens(&messages)` further down) handle the
         // grow-during-the-conversation case.
+        let memory_context = crate::prompt::project_memory_context(&semantic_memory);
+        let first_message = match &memory_context {
+            Some(memory) => format!("{memory}\n\n{prompt}"),
+            None => prompt.to_string(),
+        };
         let preflight = crate::inference_helpers::estimate_subagent_preflight(
             &system_prompt,
             &tool_defs,
-            prompt,
+            &first_message,
             sub_config.max_context_tokens,
         );
         tracing::debug!(
@@ -1295,6 +1299,10 @@ pub(crate) fn execute_sub_agent<'a>(
                 let mut messages = crate::inference_helpers::assemble_messages(
                     &ChatMessage::text("system", &system_prompt),
                     &history,
+                );
+                crate::inference_helpers::prepend_project_memory(
+                    &mut messages,
+                    memory_context.as_deref(),
                 );
 
                 sink.emit(EngineEvent::SpinnerStart {

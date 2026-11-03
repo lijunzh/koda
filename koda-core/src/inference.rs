@@ -85,6 +85,8 @@ struct TurnState<'a> {
     db: &'a Database,
     session_id: &'a str,
     system_message: &'a ChatMessage,
+    /// Project memory that opens the first user message, if there is any.
+    memory_context: Option<&'a str>,
     pending_images: Option<&'a [ImageData]>,
     iteration: u32,
     config: &'a KodaConfig,
@@ -168,6 +170,7 @@ async fn assemble_context(turn: &TurnState<'_>) -> Result<(Vec<ChatMessage>, usi
     }
 
     let mut messages = assemble_messages(turn.system_message, &history);
+    crate::inference_helpers::prepend_project_memory(&mut messages, turn.memory_context);
 
     // Attach pending images to the last user message (first iteration only)
     if turn.iteration == 0
@@ -821,6 +824,9 @@ pub struct InferenceContext<'a> {
     pub session_id: &'a str,
     /// System prompt for this session.
     pub system_prompt: &'a str,
+    /// Project and global memory, sent at the start of the first user message.
+    /// Empty when there is none.
+    pub project_memory: &'a str,
     /// Git context taken once per session, so the prompt prefix stays stable.
     pub git_snapshot: &'a crate::git::GitSnapshot,
     /// LLM provider to use.
@@ -995,6 +1001,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
         db,
         session_id,
         system_prompt,
+        project_memory,
         git_snapshot,
         provider,
         tools,
@@ -1079,6 +1086,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
 
     // Pre-build the base system message (avoids re-cloning 4-8KB per iteration)
     let base_system_prompt = system_prompt.to_string();
+    let memory_context = crate::prompt::project_memory_context(project_memory);
 
     // Microcompact: clear old tool results before the first LLM call.
     // Time-based trigger — only fires when the idle gap since the last
@@ -1309,6 +1317,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
             db,
             session_id,
             system_message: &system_message,
+            memory_context: memory_context.as_deref(),
             pending_images: pending_images.as_deref(),
             iteration,
             config,

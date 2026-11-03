@@ -64,7 +64,7 @@ Everything lives in `~/.config/koda/`:
 | `logs/koda-<pid>.log` | Tracing log, one per process; `logs/latest` links to the newest (see [Debugging a run](./debugging.md)) |
 | `agents/` | Global custom agent JSON definitions |
 | `skills/` | Global custom skill markdown files |
-| `memory.md` | Global memory (injected into all system prompts) |
+| `memory.md` | Global memory (sent with every request) |
 
 Project-level overrides live in `.koda/` at your project root and take
 priority over global config:

@@ -5,11 +5,11 @@
 //! TUI/headless/server boot path — wasted disk I/O and duplicated log lines.
 //!
 //! After the fix, the loaded memory is cached in `KodaAgent::semantic_memory`
-//! and `rebuild_system_prompt()` reuses it without touching disk.
+//! and `rebuild_system_prompt()` doesn't touch disk.
 //!
-//! This test proves the cache works by deleting `CLAUDE.md` between the two
-//! calls. If we re-read on rebuild, the prompt would lose the memory content.
-//! With the cache, the prompt keeps the original content.
+//! Memory now opens the first user message instead of the system prompt, so
+//! the test checks both: the cache keeps the memory after `CLAUDE.md` is
+//! deleted, and neither prompt carries it.
 
 use koda_core::agent::KodaAgent;
 use koda_core::config::KodaConfig;
@@ -37,21 +37,18 @@ async fn rebuild_system_prompt_uses_cached_memory_not_disk() {
         .await
         .expect("build agent");
 
-    // Sanity: initial prompt contains the memory.
+    assert!(agent.semantic_memory.contains(MEMORY_MARKER));
     assert!(
-        agent.system_prompt.contains(MEMORY_MARKER),
-        "initial prompt should include memory"
+        !agent.system_prompt.contains(MEMORY_MARKER),
+        "memory goes in the first user message, not the system prompt"
     );
 
-    // Delete the file. If `rebuild_system_prompt` re-reads from disk,
-    // the marker will disappear from the rebuilt prompt.
     fs::remove_file(&memory_path).expect("remove memory file");
-
     agent.rebuild_system_prompt(&config, &[]);
 
     assert!(
-        agent.system_prompt.contains(MEMORY_MARKER),
-        "rebuilt prompt should still contain memory because it was cached, \
-         not re-read from disk (regression: #1136)"
+        agent.semantic_memory.contains(MEMORY_MARKER),
+        "memory stays cached, not re-read from disk (regression: #1136)"
     );
+    assert!(!agent.system_prompt.contains(MEMORY_MARKER));
 }
