@@ -13,7 +13,7 @@ prompt. See [Trust modes](./approval.md) for the canonical matrix.
 | `Delete` | Destructive | Delete a file or directory |
 | `Bash` | Varies | Run a shell command |
 | `Cargo` | Mutating | `cargo check`, `clippy`, `test` or `build` from the project root, with one line per compiler diagnostic and, for `test`, the failing tests with panic locations |
-| `Grep` | Read-only | Search for patterns across files (ripgrep) |
+| `Grep` | Read-only | Search file contents with a regex: matching files (the default), matching lines with optional context, or counts; filter by glob or file type; results in pages |
 | `Glob` | Read-only | List files matching a glob pattern |
 | `WebFetch` | Read-only | Fetch a URL and return its text content |
 | `WebSearch` | Read-only | Search the web via DuckDuckGo |
