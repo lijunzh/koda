@@ -48,6 +48,11 @@ echo "review this diff" | koda
 
 Inside the TUI, type `/help` to see all commands and keyboard shortcuts.
 
+Koda reads a project's `MEMORY.md`, `CLAUDE.md` or `AGENTS.md` into every
+request. Keep it short, especially with a small or local model. In Koda's
+evals, a 24,000-character `CLAUDE.md` cost Haiku about half its passes on one
+task, while Sonnet passed every run. See [what belongs in it](https://lijunzh.github.io/koda/memory.html).
+
 Koda no longer has an ACP server, so `koda server` and editor connections over
 ACP are gone. [What changed, and what to use instead](https://lijunzh.github.io/koda/acp.html).
 

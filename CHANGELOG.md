@@ -19,6 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **Advice on keeping project memory short.** The README and the [memory guide](https://lijunzh.github.io/koda/memory.html) now say what belongs in `CLAUDE.md`, and why a long one costs small models: in Koda's evals a 24,000-character file cost Haiku about half its passes on one task.
 - **A schema for the wire protocol.** `wire-schema.json` is generated from the code, and CI fails if it goes stale. The headless guide states how readers treat a type they don't know.
 - **`turn_summary` reports what a turn used, however it ended.** It counts this turn alone, including sub-agents, compaction and failed or cancelled turns.
 - **Tool results say whether they worked.** `tool_call_result` has an `outcome` of `success` or `error`.
