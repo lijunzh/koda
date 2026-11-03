@@ -250,6 +250,7 @@ pub struct ToolExecCtx<'a> {
 ///     async fn execute(&self, ctx: &ToolExecCtx<'_>, args: &Value) -> ToolResult {
 ///         crate::tools::file_tools::read_file(
 ///             ctx.project_root, args, ctx.read_cache, ctx.fs,
+///             ctx.caps.tool_result_chars,
 ///         ).await
 ///     }
 /// }

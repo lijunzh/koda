@@ -46,6 +46,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **`Read` returns a whole file when it fits.** A fixed 20,000-byte limit cut files that the context window had room for, so a 30K file took several reads. One read now follows the same limit as other tool results, which scales with the window: 40,000 on a 1M window, 12,800 on 128K.
 - **Claude keeps its reasoning between tool calls.** Koda threw away the thinking blocks Anthropic sent, so the model lost its reasoning at every tool call. They now go back on the next request, to the same model only, and the API drops any block whose history compaction has changed. Sub-agents and summaries don't replay them yet. The footer also counts thinking tokens now.
 - **A failed request is retried the way Codex does it.** Every 5xx gets four retries, on local servers too; 500, 502 and 504 used to end the turn. A wait the server names with `Retry-After` replaces the backoff, up to five minutes. An exhausted quota stops at once.
 - **A reply cut off partway starts over.** A dropped stream now gets up to five retries instead of ending the turn. The partial text stays on screen with a line saying the reply is starting over, and it's never stored. A rejection of the request itself isn't retried.
