@@ -461,10 +461,14 @@ pub fn create_provider(config: &KodaConfig) -> Box<dyn LlmProvider + Send + Sync
         }
         #[cfg(any(test, feature = "test-support"))]
         ProviderType::Mock => Box::new(mock::MockProvider::from_env()),
-        _ => Box::new(openai_compat::OpenAiCompatProvider::new(
-            &config.base_url,
-            api_key,
-        )),
+        _ => {
+            let provider = openai_compat::OpenAiCompatProvider::new(&config.base_url, api_key);
+            Box::new(if config.provider_type.requires_api_key() {
+                provider
+            } else {
+                provider.with_default_max_tokens(openai_compat::LOCAL_REPLY_TOKEN_CAP)
+            })
+        }
     }
 }
 

@@ -28,6 +28,18 @@ first run and require no API key. The model is discovered from the running
 server. The names are shortcuts for a default URL (`lm-studio` is
 `http://localhost:1234/v1`, `llama-cpp` is `http://localhost:8080/v1`).
 
+Two guards apply to local models only, since a local model can loop inside
+one reply and these servers set no limit of their own:
+
+- **A reply that repeats itself is stopped.** When a reply's text or
+  reasoning starts repeating the same passage, Koda stops it, drops it and
+  asks the model to carry on. Five such replies in a row end the turn. In
+  Koda's evals, Ornith once spent a whole 20-minute task repeating one
+  paragraph 900 times; the guard stops that within a few repeats.
+- **Each reply is capped at 32,768 tokens** unless you set `--max-tokens`.
+  A reply cut off at the cap is told so and asked to continue, or to reason
+  more briefly if it was cut off before answering.
+
 ## Any OpenAI-compatible server
 
 A server that speaks the OpenAI chat-completions API works with no provider

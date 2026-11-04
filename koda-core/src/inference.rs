@@ -50,7 +50,9 @@ use crate::inference_helpers::{
     assemble_messages, ends_with_question, estimate_subagent_preflight, estimate_tokens,
     estimate_tool_defs, is_failed_stop, rate_limit_backoff, short_hash,
 };
-use crate::loop_guard::{LoopAction, LoopDetector, MAX_TRUNCATED_REPLIES};
+use crate::loop_guard::{
+    LoopAction, LoopDetector, MAX_REPEATED_REPLIES, MAX_TRUNCATED_REPLIES, ReplyRepetition,
+};
 use crate::persistence::Persistence;
 use crate::providers::{
     ChatMessage, ImageData, LlmProvider, StreamChunk, TokenUsage, ToolCall, ToolDefinition,
@@ -136,6 +138,9 @@ struct StreamResult {
     /// When `true` the partial response MUST be discarded — it is incomplete
     /// and storing it would corrupt the session history on resume.
     network_error: Option<String>,
+    /// The reply was stopped for repeating itself: an excerpt of the repeat.
+    /// The partial reply is discarded, as for a network error.
+    repeated: Option<String>,
 }
 
 /// Load conversation history, assemble messages with the system prompt,
@@ -618,6 +623,9 @@ fn context_too_small_message(limit: usize, needed: usize) -> String {
 /// Handles thinking → response state transitions, cancellation via `CancellationToken`,
 /// and spinner lifecycle. Returns a `StreamResult` — the caller is responsible for
 /// persistence and early-return on interruption.
+///
+/// With `watch_repetition`, a reply whose text or reasoning starts repeating
+/// itself is stopped there ([`ReplyRepetition`]).
 async fn collect_stream(
     rx: &mut mpsc::Receiver<StreamChunk>,
     sink: &dyn EngineSink,
@@ -625,6 +633,7 @@ async fn collect_stream(
     tools: &ToolRegistry,
     mode: TrustMode,
     project_root: &Path,
+    watch_repetition: bool,
 ) -> StreamResult {
     let mut full_text = String::new();
     let mut tool_calls: Vec<ToolCall> = Vec::new();
@@ -641,6 +650,8 @@ async fn collect_stream(
     let mut response_banner_shown = false;
     let mut thinking_banner_shown = false;
     let mut interrupted = false;
+    let mut repetition = watch_repetition.then(ReplyRepetition::new);
+    let mut repeated = None;
 
     loop {
         let chunk = tokio::select! {
@@ -670,6 +681,7 @@ async fn collect_stream(
                 char_count,
                 interrupted: true,
                 network_error: None,
+                repeated: None,
             };
         }
 
@@ -699,6 +711,7 @@ async fn collect_stream(
                 sink.emit(EngineEvent::TextDelta {
                     text: delta.clone(),
                 });
+                repeated = repetition.as_mut().and_then(|r| r.push_text(&delta));
             }
             StreamChunk::ThinkingBlock(block) => thinking_blocks.push(block),
             StreamChunk::ThinkingDelta(delta) => {
@@ -712,6 +725,7 @@ async fn collect_stream(
                     text: delta.clone(),
                 });
                 thinking_content.push_str(&delta);
+                repeated = repetition.as_mut().and_then(|r| r.push_reasoning(&delta));
             }
             StreamChunk::ToolCallReady(tc) => {
                 // A single tool call finished streaming (Anthropic content_block_stop).
@@ -745,6 +759,9 @@ async fn collect_stream(
                 }
                 // Always add to tool_calls for persistence and normal flow
                 tool_calls.push(tc);
+                if let Some(r) = repetition.as_mut() {
+                    r.reset();
+                }
             }
             StreamChunk::ToolCalls(tcs) => {
                 if in_thinking_block {
@@ -783,8 +800,34 @@ async fn collect_stream(
                     char_count,
                     interrupted: false,
                     network_error: Some(err),
+                    repeated: None,
                 };
             }
+        }
+
+        if repeated.is_some() {
+            // Stop reading: the caller aborts the request, so a local server
+            // stops generating, and discards the reply.
+            sink.emit(EngineEvent::SpinnerStop);
+            if in_thinking_block {
+                sink.emit(EngineEvent::ThinkingDone);
+            }
+            if !full_text.is_empty() {
+                sink.emit(EngineEvent::TextDone);
+            }
+            return StreamResult {
+                text: full_text,
+                first_chunk_at,
+                thinking_content,
+                thinking_blocks,
+                tool_calls,
+                eager_results,
+                usage,
+                char_count,
+                interrupted: false,
+                network_error: None,
+                repeated,
+            };
         }
     }
 
@@ -805,6 +848,7 @@ async fn collect_stream(
         char_count,
         interrupted: false,
         network_error: None,
+        repeated: None,
     }
 }
 
@@ -1065,6 +1109,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
     let mut last_tools_hash: Option<String> = None;
     let mut retried_empty = false;
     let mut truncated_replies = 0u32;
+    let mut repeated_replies = 0u32;
     let mut stream_retries = 0u32;
     let mut loop_detector = LoopDetector::new();
     // #1022 B12: `bg_agents` and `sub_agent_cache` now live on
@@ -1459,9 +1504,25 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
         };
 
         // Collect the streamed response
-        let stream_result = collect_stream(&mut rx, sink, &cancel, tools, mode, project_root).await;
+        // Only local models are watched for repeating replies: the peers
+        // that serve Claude's and OpenAI's models don't, and Claude never
+        // looped in Koda's evals.
+        let watch_repetition = !config.provider_type.requires_api_key();
+        let stream_result = collect_stream(
+            &mut rx,
+            sink,
+            &cancel,
+            tools,
+            mode,
+            project_root,
+            watch_repetition,
+        )
+        .await;
         let estimated_tokens = estimate_tokens(&messages) + estimate_tool_defs(turn.tool_defs);
-        if !stream_result.interrupted && stream_result.network_error.is_none() {
+        if !stream_result.interrupted
+            && stream_result.network_error.is_none()
+            && stream_result.repeated.is_none()
+        {
             sink.emit(EngineEvent::ModelUsage {
                 usage: (&stream_result.usage).into(),
             });
@@ -1568,6 +1629,53 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
         }
         stream_retries = 0;
 
+        // The reply was repeating itself. Discard it, as a failed stream's
+        // reply is discarded, and ask the model to carry on without it. Read-
+        // only tools that ran during the stream changed nothing.
+        if let Some(excerpt) = stream_result.repeated {
+            sse_handle.abort();
+            tracing::debug!(
+                "Discarded repeating reply:\n{}{}",
+                stream_result.thinking_content,
+                stream_result.text
+            );
+            repeated_replies += 1;
+            let detail = format!("the reply kept repeating \"{excerpt}\"");
+            tracing::warn!(%detail, repeated_replies, "Reply repeating itself, stopped");
+            if repeated_replies >= MAX_REPEATED_REPLIES {
+                sink.emit(EngineEvent::LoopGuard {
+                    action: LoopGuardAction::Stop,
+                    notice: Some(Notice::Warn(format!(
+                        "Loop guard: {repeated_replies} replies in a row repeated \
+                         themselves, stopping. The model may not be able to do this \
+                         task; try a stronger model, or send a follow-up to continue."
+                    ))),
+                    detail,
+                });
+                stats.limit = Some("loop_guard");
+                break Ok(());
+            }
+            sink.emit(EngineEvent::LoopGuard {
+                action: LoopGuardAction::Feedback,
+                notice: Some(Notice::Warn(format!(
+                    "Stopped a reply that was repeating itself (\"{excerpt}\"). \
+                     Asking the model to continue."
+                ))),
+                detail,
+            });
+            db.insert_message(
+                session_id,
+                &Role::User,
+                Some(&repeated_reply_nudge(&excerpt)),
+                None,
+                None,
+                None,
+            )
+            .await?;
+            iteration += 1;
+            continue;
+        }
+
         let full_text = stream_result.text;
         let stream_thinking = stream_result.thinking_content;
         let stream_blocks = stream_result.thinking_blocks;
@@ -1657,20 +1765,37 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
         // If no tool calls, we already streamed the response — done
         if tool_calls.is_empty() {
             if usage.stop_reason == "max_tokens" {
-                sink.emit(EngineEvent::Warn {
-                    message: format!(
-                        "Model {} hit max_tokens limit — response was truncated. \
-                         The context may be too large. Try /compact or start a new session.",
-                        config.model,
-                    ),
-                });
                 // This path skips the iteration count, and headless extends
                 // the cap anyway, so nothing else stops a model that always
                 // hits its limit.
                 truncated_replies += 1;
                 if truncated_replies < MAX_TRUNCATED_REPLIES {
+                    sink.emit(EngineEvent::Warn {
+                        message: format!(
+                            "Model {} hit its reply limit (max_tokens); asking it to continue.",
+                            config.model,
+                        ),
+                    });
+                    // Say what happened, as Claude Code does, so the model
+                    // doesn't start the same long reply again.
+                    db.insert_message(
+                        session_id,
+                        &Role::User,
+                        Some(cut_off_reply_nudge(full_text.trim().is_empty())),
+                        None,
+                        None,
+                        None,
+                    )
+                    .await?;
                     continue;
                 }
+                sink.emit(EngineEvent::Warn {
+                    message: format!(
+                        "Model {} hit its reply limit (max_tokens) {MAX_TRUNCATED_REPLIES} times in a row. \
+                         Lower the effort, raise --max-tokens, or split the task.",
+                        config.model,
+                    ),
+                });
                 stats.limit = Some("max_tokens");
             } else if is_failed_stop(&usage.stop_reason) && full_text.trim().is_empty() {
                 sink.emit(EngineEvent::Warn {
@@ -1927,8 +2052,35 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
         }
 
         truncated_replies = 0;
+        repeated_replies = 0;
         iteration += 1;
     }
+}
+
+/// What the model is told after its reply hit the reply limit. A reply cut
+/// off in its reasoning had nothing to resume, so the model should reason
+/// less; one cut off in its text continues where it stopped.
+fn cut_off_reply_nudge(in_reasoning: bool) -> &'static str {
+    if in_reasoning {
+        "System: Your last reply hit the output limit while you were still reasoning, \
+         before any answer or tool call. Reason much more briefly this time and make the \
+         next tool call or give your answer well within the limit."
+    } else {
+        "System: Your last reply hit the output limit. Continue from where it stopped, \
+         without apologising or repeating what you already wrote. Break the rest of the \
+         work into smaller pieces."
+    }
+}
+
+/// What the model is told after a reply of its was stopped for repeating
+/// itself. The reply isn't kept, so there's nothing to resume.
+fn repeated_reply_nudge(excerpt: &str) -> String {
+    format!(
+        "System: Your last reply was stopped because it kept repeating the same text \
+         (\"{excerpt}\"). It wasn't kept. Don't go over it again: say in a sentence or two \
+         what you have established, then make the next tool call or give your answer. If \
+         you are stuck, take a different approach."
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -2029,7 +2181,16 @@ mod tests {
             // tx drops here → stream ends
         });
 
-        collect_stream(&mut rx, &sink, &cancel, &tools, TrustMode::Auto, tmp.path()).await
+        collect_stream(
+            &mut rx,
+            &sink,
+            &cancel,
+            &tools,
+            TrustMode::Auto,
+            tmp.path(),
+            true,
+        )
+        .await
     }
 
     // ── Text streaming ───────────────────────────────────────────
@@ -2153,8 +2314,16 @@ mod tests {
             let _ = tx.send(StreamChunk::Done(TokenUsage::default())).await;
         });
 
-        let result =
-            collect_stream(&mut rx, &sink, &cancel, &tools, TrustMode::Auto, tmp.path()).await;
+        let result = collect_stream(
+            &mut rx,
+            &sink,
+            &cancel,
+            &tools,
+            TrustMode::Auto,
+            tmp.path(),
+            true,
+        )
+        .await;
 
         assert_eq!(result.tool_calls.len(), 1, "tool call should be recorded");
         assert_eq!(result.eager_results.len(), 1, "should have 1 eager result");
@@ -2244,6 +2413,7 @@ mod tests {
             &tools,
             TrustMode::Auto,
             tmp.path(),
+            true,
         )
         .await;
 

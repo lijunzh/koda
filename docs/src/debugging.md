@@ -210,7 +210,7 @@ One line per turn. Written by `TurnStats::log` (`koda-core/src/inference.rs`).
 | `complete` | The model gave a final reply |
 | `iteration_cap` | Hit the iteration cap and wasn't extended |
 | `max_tokens` | Three replies in a row were cut off at the token cap |
-| `loop_guard` | The loop detector stopped it after its warning was ignored |
+| `loop_guard` | The loop detector stopped it: the model repeated a tool call after its warning, or five replies in a row repeated themselves |
 | `aborted` | Stopped on a warning: server error, image rejection or dropped connection |
 | `error` | Any other error |
 | `cancelled` | The user or a signal cancelled it |

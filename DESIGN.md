@@ -160,7 +160,14 @@ limitations — they'll be obsolete before they're stable.
   stop only if the model ignores feedback. No windowed fingerprinting,
   no tool-name saturation, no tool-only suppression, no per-turn caps.
   See [#823](https://github.com/lijunzh/koda/issues/823) for the full
-  analysis
+  analysis. One exception, for local models only: a reply that repeats
+  itself is stopped, and each reply is capped at 32K tokens. Here the
+  mechanism to match is the one the model's own maker ships. qwen-code, the
+  Qwen team's agent, checks each reply and its reasoning for repeated text.
+  In Koda's evals, Ornith, a Qwen fine-tune, looped like this in 8 of 481
+  runs, and 6 of those used the whole time limit. Claude never did (603
+  runs). Claude Code and Codex check no reply, and Koda doesn't either for
+  the models they serve
 - **The bets.** Local models reach frontier class on coding tasks. Agents
   do most of the editing and reading. Delegation between agents becomes
   routine. Design for these, not for today's limits
