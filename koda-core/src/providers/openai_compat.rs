@@ -79,7 +79,17 @@ pub struct OpenAiCompatProvider {
     /// Set once the server has sent its reasoning under the plain `reasoning`
     /// key (see [`ReasoningField`]).
     reasoning_plain: Arc<AtomicBool>,
+    /// The reply cap sent when the settings have none
+    /// ([`LOCAL_REPLY_TOKEN_CAP`] for a local server).
+    default_max_tokens: Option<u32>,
 }
+
+/// The reply cap for a local server, which reports none: Claude Code's and
+/// qwen-code's default for a model they don't know. Without one, a reply
+/// that never ends runs until the user stops it. No reply in a passing Koda
+/// eval run has gone past 20K tokens; the longest were a failed run's
+/// runaway reasoning, at 38K, 78K and 90K.
+pub const LOCAL_REPLY_TOKEN_CAP: u32 = 32_768;
 
 /// The JSON key an OpenAI-compatible server uses for a model's reasoning.
 ///
@@ -131,7 +141,14 @@ impl OpenAiCompatProvider {
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
             reasoning_plain: Arc::new(AtomicBool::new(false)),
+            default_max_tokens: None,
         }
+    }
+
+    /// Send `cap` as the reply cap when the settings have none.
+    pub fn with_default_max_tokens(mut self, cap: u32) -> Self {
+        self.default_max_tokens = Some(cap);
+        self
     }
 
     fn reasoning_field(&self) -> ReasoningField {
@@ -597,7 +614,7 @@ impl LlmProvider for OpenAiCompatProvider {
         tools: &[ToolDefinition],
         settings: &crate::config::ModelSettings,
     ) -> Result<LlmResponse> {
-        let request = Self::build_request(
+        let mut request = Self::build_request(
             messages,
             tools,
             &settings.model,
@@ -605,6 +622,7 @@ impl LlmProvider for OpenAiCompatProvider {
             settings,
             self.reasoning_field(),
         );
+        request.max_tokens = request.max_tokens.or(self.default_max_tokens);
 
         let mut req = self
             .client
@@ -676,7 +694,7 @@ impl LlmProvider for OpenAiCompatProvider {
         tools: &[ToolDefinition],
         settings: &crate::config::ModelSettings,
     ) -> Result<super::stream_collector::SseCollector> {
-        let request = Self::build_request(
+        let mut request = Self::build_request(
             messages,
             tools,
             &settings.model,
@@ -684,6 +702,7 @@ impl LlmProvider for OpenAiCompatProvider {
             settings,
             self.reasoning_field(),
         );
+        request.max_tokens = request.max_tokens.or(self.default_max_tokens);
 
         let mut req = self
             .client

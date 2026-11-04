@@ -102,6 +102,52 @@ async fn chat_omits_authorization_header_when_no_api_key() {
     );
 }
 
+/// The `max_tokens` a provider sent on its first request.
+async fn sent_max_tokens(
+    provider: &OpenAiCompatProvider,
+    server: &FakeLlmServer,
+    s: &ModelSettings,
+) -> Value {
+    provider.chat(&[user_msg("hi")], &[], s).await.unwrap();
+    let reqs = server.received_requests().await;
+    let body: Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    body["max_tokens"].clone()
+}
+
+#[tokio::test]
+async fn a_local_server_gets_the_default_reply_cap() {
+    use koda_core::providers::openai_compat::LOCAL_REPLY_TOKEN_CAP;
+    let server = FakeLlmServer::spawn().await;
+    server.mount_chat_ok(ok_chat_body()).await;
+    let provider = OpenAiCompatProvider::new(&server.url(), None)
+        .with_default_max_tokens(LOCAL_REPLY_TOKEN_CAP);
+    assert_eq!(
+        sent_max_tokens(&provider, &server, &settings()).await,
+        json!(32_768)
+    );
+}
+
+#[tokio::test]
+async fn a_chosen_reply_cap_beats_the_default() {
+    let server = FakeLlmServer::spawn().await;
+    server.mount_chat_ok(ok_chat_body()).await;
+    let provider = OpenAiCompatProvider::new(&server.url(), None).with_default_max_tokens(32_768);
+    let mut s = settings();
+    s.max_tokens = Some(4_096);
+    assert_eq!(sent_max_tokens(&provider, &server, &s).await, json!(4_096));
+}
+
+#[tokio::test]
+async fn a_cloud_server_gets_no_reply_cap_by_default() {
+    let server = FakeLlmServer::spawn().await;
+    server.mount_chat_ok(ok_chat_body()).await;
+    let provider = OpenAiCompatProvider::new(&server.url(), Some("k".into()));
+    assert_eq!(
+        sent_max_tokens(&provider, &server, &settings()).await,
+        Value::Null
+    );
+}
+
 #[tokio::test]
 async fn chat_returns_error_on_5xx_with_status_in_message() {
     let server = FakeLlmServer::spawn().await;

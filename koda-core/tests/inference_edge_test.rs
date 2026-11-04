@@ -7,8 +7,11 @@
 //! Run with: `cargo test -p koda-core --features test-support --test inference_edge_test`
 
 use koda_core::{
-    engine::{EngineEvent, event::RetryReason},
-    loop_guard::MAX_TRUNCATED_REPLIES,
+    engine::{
+        EngineEvent,
+        event::{LoopGuardAction, RetryReason},
+    },
+    loop_guard::{MAX_REPEATED_REPLIES, MAX_TRUNCATED_REPLIES},
     persistence::{Persistence, Role},
 };
 use koda_test_utils::{Env, MockProvider, MockResponse};
@@ -771,5 +774,156 @@ async fn multi_step_tool_chain_persists_all() {
         messages.len() >= 5,
         "expected at least 5 messages, got {}",
         messages.len()
+    );
+}
+
+// ── Replies that repeat themselves ───────────────────────────
+
+/// A paragraph Ornith repeated 900 times in one reply in Koda's evals.
+const LOOPING_PARAGRAPH: &str = "So `e` should jump to the END of the next word. Let me find \
+    which function handles `e`. Let me look at the keymap defaults and how vim_normal actions \
+    map to keys. Actually, let me search for where these are used, but actually the mapping \
+    from key to action is in the keymap defaults. The important thing is: what does the bug \
+    describe? ";
+
+fn looping_reply() -> MockResponse {
+    MockResponse::Text(LOOPING_PARAGRAPH.repeat(40))
+}
+
+fn user_messages(messages: &[koda_core::persistence::Message]) -> Vec<String> {
+    messages
+        .iter()
+        .filter(|m| m.role == Role::User)
+        .map(|m| m.content.clone().unwrap_or_default())
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reply_repeating_itself_is_stopped_and_the_model_told() {
+    let env = Env::new().await;
+    env.insert_user_message("fix the e motion").await;
+
+    let provider = MockProvider::new(vec![looping_reply(), MockResponse::Text("Fixed.".into())]);
+    let (result, events) = env.run_inference_result(&provider).await;
+
+    assert!(result.is_ok(), "{result:?}");
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            EngineEvent::LoopGuard { action: LoopGuardAction::Feedback, detail, .. }
+                if detail.contains("kept repeating")
+        )),
+        "{events:?}"
+    );
+    let messages = env.db.load_context(&env.session_id).await.unwrap();
+    let replies: Vec<_> = messages
+        .iter()
+        .filter(|m| m.role == Role::Assistant)
+        .map(|m| m.content.as_deref().unwrap_or_default())
+        .collect();
+    assert_eq!(replies, ["Fixed."], "the looping reply is not kept");
+    let nudge = user_messages(&messages);
+    assert!(
+        nudge
+            .last()
+            .unwrap()
+            .contains("kept repeating the same text"),
+        "{nudge:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn replies_that_keep_repeating_stop_the_turn() {
+    let env = Env::new().await;
+    env.insert_user_message("fix the e motion").await;
+
+    let mut responses: Vec<_> = (0..MAX_REPEATED_REPLIES).map(|_| looping_reply()).collect();
+    responses.push(MockResponse::Text("never reached".into()));
+    let provider = MockProvider::new(responses);
+    let (result, events) = env.run_inference_result(&provider).await;
+
+    assert!(result.is_ok(), "{result:?}");
+    let feedback = events
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                EngineEvent::LoopGuard {
+                    action: LoopGuardAction::Feedback,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(feedback as u32, MAX_REPEATED_REPLIES - 1, "{events:?}");
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            EngineEvent::LoopGuard {
+                action: LoopGuardAction::Stop,
+                ..
+            }
+        )),
+        "{events:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_claude_reply_is_not_watched_for_repeating() {
+    let env = Env::builder()
+        .provider_type(koda_core::config::ProviderType::Anthropic)
+        .build()
+        .await;
+    env.insert_user_message("fix the e motion").await;
+
+    let provider = MockProvider::new(vec![looping_reply()]);
+    let events = env.run_inference(&provider).await;
+
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, EngineEvent::LoopGuard { .. })),
+        "{events:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cut_off_reply_tells_the_model_where_it_stopped() {
+    let env = Env::new().await;
+    env.insert_user_message("write it").await;
+
+    let provider = MockProvider::new(vec![
+        MockResponse::TextMaxTokens("The first half of the answer".into()),
+        MockResponse::Text("and the second half.".into()),
+    ]);
+    env.run_inference(&provider).await;
+
+    let messages = env.db.load_context(&env.session_id).await.unwrap();
+    let nudge = user_messages(&messages);
+    assert!(
+        nudge
+            .last()
+            .unwrap()
+            .contains("Continue from where it stopped"),
+        "{nudge:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reply_cut_off_while_reasoning_is_asked_to_reason_less() {
+    let env = Env::new().await;
+    env.insert_user_message("write it").await;
+
+    let provider = MockProvider::new(vec![
+        MockResponse::TextMaxTokens(String::new()),
+        MockResponse::Text("Done.".into()),
+    ]);
+    env.run_inference(&provider).await;
+
+    let messages = env.db.load_context(&env.session_id).await.unwrap();
+    let nudge = user_messages(&messages);
+    assert!(
+        nudge.last().unwrap().contains("Reason much more briefly"),
+        "{nudge:?}"
     );
 }
