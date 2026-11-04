@@ -25,6 +25,11 @@ updates:
       # Tracked alongside the bincode 1.x situation (similarly transitive).
       - dependency-name: "sha2"
         versions: [">=0.11.0"]
+      # unicode-width 0.2.3 makes the halfwidth sound marks one cell wide,
+      # which ratatui-core 0.1.2 and the composer already add themselves.
+      # Held by koda-cli/Cargo.toml until a Ratatui release adapts.
+      - dependency-name: "unicode-width"
+        versions: [">=0.2.3"]
 
   - package-ecosystem: github-actions
     directory: /
