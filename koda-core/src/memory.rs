@@ -393,17 +393,12 @@ fn load_project(project_root: &Path) -> Result<Option<(String, String, bool)>> {
     Ok(None)
 }
 
-/// Path to the global memory file.
+/// Path to the global memory file, in Koda's config directory
+/// ([`crate::db::config_dir`]), so `XDG_CONFIG_HOME` moves it with the rest.
 fn global_memory_path() -> Option<PathBuf> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .ok()?;
-    Some(
-        PathBuf::from(home)
-            .join(".config")
-            .join("koda")
-            .join(GLOBAL_MEMORY_FILE),
-    )
+    crate::db::config_dir()
+        .ok()
+        .map(|dir| dir.join(GLOBAL_MEMORY_FILE))
 }
 
 #[cfg(test)]

@@ -268,13 +268,10 @@ fn load_agents_from_dir(dir: &Path, source: &'static str, agents: &mut HashMap<S
     }
 }
 
-/// Return the user-level agents directory path.
-fn user_agents_dir() -> Result<PathBuf, std::env::VarError> {
-    let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE"))?;
-    Ok(PathBuf::from(home)
-        .join(".config")
-        .join("koda")
-        .join("agents"))
+/// Return the user-level agents directory path, in Koda's config directory
+/// ([`crate::db::config_dir`]).
+fn user_agents_dir() -> anyhow::Result<PathBuf> {
+    Ok(crate::db::config_dir()?.join("agents"))
 }
 
 /// Return agent list data for display (used by /agent command and ListAgents tool).
