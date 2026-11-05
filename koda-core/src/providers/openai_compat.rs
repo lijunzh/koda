@@ -145,6 +145,13 @@ impl OpenAiCompatProvider {
         }
     }
 
+    /// Use `client` for every request, such as one with a local server's
+    /// timeouts ([`super::build_local_http_client`]).
+    pub fn with_client(mut self, client: reqwest::Client) -> Self {
+        self.client = client;
+        self
+    }
+
     /// Send `cap` as the reply cap when the settings have none.
     pub fn with_default_max_tokens(mut self, cap: u32) -> Self {
         self.default_max_tokens = Some(cap);
