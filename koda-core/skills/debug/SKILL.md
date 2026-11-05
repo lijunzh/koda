@@ -100,8 +100,9 @@ Expected: HTTP 200. Common failures:
 Check whether memory files exist and are well-formed:
 
 ```bash
-wc -l ~/.config/koda/memory.md 2>/dev/null || echo "(no global memory)"
-wc -l ./MEMORY.md 2>/dev/null || echo "(no project memory)"
+wc -l ~/.config/koda/AGENTS.md 2>/dev/null || echo "(no global instructions)"
+wc -l ./AGENTS.md ./CLAUDE.md 2>/dev/null || echo "(no project instructions)"
+ls ~/.config/koda/memories/ 2>/dev/null || echo "(no saved notes)"
 wc -l ./CLAUDE.md 2>/dev/null || echo "(no CLAUDE.md)"
 ```
 

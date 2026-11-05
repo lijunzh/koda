@@ -527,12 +527,13 @@ The system prompt carries a snapshot of the git state, taken once per session an
 The prompt, with project memory, is the largest fixed cost per model call, on a metered model and on a slow local one alike. A rule earns its place by changing what the model does, shown by an eval or by the practice of Codex and Code Puppy. The November 2026 comparison set these rules:
 
 - **Say each rule once, next to what it governs.** Skill rules sit under the skill listing, sub-agent rules under the agent listing. ActivateSkill was stated twice and called in 0 of 594 eval runs, so repetition isn't what makes a rule work.
-- **Memory is instructions, and it is capped.** Project memory is `CLAUDE.md` or `AGENTS.md` as often as `MEMORY.md`, so the prompt says to follow it, that it overrides the default guidance, and that the user overrides it. Codex ranks these files the same way. Memory stops at 16,000 characters with a notice, because both peers cap theirs. The number is a judgment: an eighth of a 32K window, between Code Puppy's 10,000 and Codex's 32 KiB. It stays on the prompt, not in `memory::load`, so `MemoryRead` still returns everything.
+- **Memory is instructions, and it is capped.** Project memory is the project's `AGENTS.md` or `CLAUDE.md`, so the prompt says to follow it, that it overrides the default guidance, and that the user overrides it. Codex ranks these files the same way. Memory stops at 16,000 characters with a notice, because both peers cap theirs. The number is a judgment: an eighth of a 32K window, between Code Puppy's 10,000 and Codex's 32 KiB. It stays on the prompt, not in `memory::load`, so `MemoryRead` still returns everything.
 - **Memory is a user message, not system prompt.** It opens the first user message, wrapped in `<system-reminder>`, added per request and never stored, so it survives compaction and a `/memory add` takes effect on the next call. Claude Code sends `CLAUDE.md` the same way; Codex sends `AGENTS.md` as a user message of its own. The framing follows Codex: instructions and tips, above the built-in guidance and below the user's request. Claude Code's "OVERRIDE any default behavior" was not copied. Measured on one task (November 2026), the move changed nothing for Haiku 5.5; the length of the file is what costs small models, wherever it sits.
+- **Instructions are `AGENTS.md`; Koda's own notes live outside the project.** Codex reads `AGENTS.md`, one per folder from the git root down (`AGENTS.override.md` first), and Claude Code reads `AGENTS.md` where a folder has no `CLAUDE.md`. Koda does the same with the names swapped: `AGENTS.md` first, `CLAUDE.md` as the fallback, one file per folder. One file per folder matters to the eval harness, which writes the same instructions under both names. What the agent writes for itself never goes in the repo: Codex keeps it in `~/.codex/memories`, Claude Code under `~/.claude/projects/<project>/memory/`, Qwen Code outside the repo unless a team tier is switched on. Koda uses Codex's layout, `<config>/memories/<project>/MEMORY.md`. Before, `MemoryWrite` added sections to the project's `CLAUDE.md` or `AGENTS.md`, a file the whole team and every other agent read. A Codex-style background pipeline that extracts notes from past sessions is a separate design, not built.
 - **No required second verification.** The prompt asks the model to run the relevant tests, linter or type-checker after a non-trivial change, and stops there. It used to add an adversarial `verify` sub-agent for complex changes, with "fix them and re-verify before reporting success". Neither Codex nor Qwen Code asks for one: Codex's built-in agents are `default`, `explorer` and `worker`, and Qwen Code's review agent runs only inside its `/review` skill. On local models the step was where long tasks stalled. Koda on Qwen3.8-27B called it in all three of the tasks it failed at a two-hour limit, after its own checks had passed; on one of them the fix and its tests were done at 55 minutes. Qwen Code on the same model ran the same checks, stopped, and passed. Across the eval history, Koda runs that called `verify` hit the time limit in 38% of runs (12 of 31), others in 10%. The `verify` agent went with it, and so did `plan`, never called in 1,345 eval runs and covered by the Plan trust mode: the built-ins are now `explore`, `task` and `fork`, the shape Codex (`explorer`, `worker`), Claude Code and Qwen Code (`Explore`, `general-purpose`) ship.
 - **The quick reference is for the REPL.** Runs with no REPL pay nothing for it. Neither peer lists its commands; `/help` and the `koda-docs` skill answer the rare question.
 - **No rule without a gap.** Peer rules the evals showed no need for stayed out: "implement, don't describe" (the control passes 13 of 13), "don't commit unless asked" (no commits in 594 runs), "don't paste files back" (none on Haiku).
-- **`CLAUDE.md` is prompt too.** It holds what an agent needs on every turn. The rest is in `docs/src/development.md`.
+- **`AGENTS.md` is prompt too.** It holds what an agent needs on every turn. The rest is in `docs/src/development.md`.
 
 ### Progress Tracking: Model-Owned, History-Persisted, Engine-Surfaced (P3-corollary)
 
@@ -1036,13 +1037,14 @@ This means:
 
 ## Interaction
 
-### No `.koda.md` — Use `CLAUDE.md` (P1, P2)
+### No `.koda.md` — Use `AGENTS.md` (P1, P2)
 
 Koda will NOT introduce a `.koda.md` project rules file. User-authored
-project instructions go in `CLAUDE.md`.
+project instructions go in `AGENTS.md`, the file Codex, Qwen Code and Claude
+Code also read.
 
-Koda already reads `CLAUDE.md` via the `memory.rs` fallback chain
-(`MEMORY.md` → `CLAUDE.md` → `AGENTS.md`). Adding `.koda.md` would:
+Koda reads `AGENTS.md` in each folder from the git root down, with
+`CLAUDE.md` as the fallback (`memory.rs`). Adding `.koda.md` would:
 - Create a redundant magic filename with confusing priority semantics
 - Force users to maintain two files with overlapping content
 - Violate DRY at the ecosystem level — one file should serve both tools

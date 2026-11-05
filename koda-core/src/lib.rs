@@ -16,7 +16,7 @@
 //! | [`trust`] | Safety gates and approval modes |
 //! | [`engine`] | Event/command protocol (client–engine boundary) |
 //! | [`compact`] | Context compaction (summarize old messages) |
-//! | [`memory`] | Persistent semantic memory (`MEMORY.md`) |
+//! | [`memory`] | Instruction files (`AGENTS.md`, `CLAUDE.md`) and Koda's notes |
 //! | [`skills`] | Expertise modules (prompt injection, zero LLM cost) |
 //! | [`db`] | SQLite persistence (sessions, history, file ownership) |
 //!
@@ -87,7 +87,7 @@ pub mod last_provider;
 pub mod loop_guard;
 /// MCP client — connect to external MCP servers (#662).
 pub mod mcp;
-/// Project memory — `MEMORY.md` / `CLAUDE.md` read/write.
+/// Instruction files (`AGENTS.md`, `CLAUDE.md`) and Koda's own notes.
 pub mod memory;
 /// Microcompact — lightweight tool result aging without full compaction.
 pub mod microcompact;

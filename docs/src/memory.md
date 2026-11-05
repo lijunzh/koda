@@ -1,13 +1,34 @@
 # Memory
 
-Memory files persist facts and preferences across sessions.
+Koda sends two kinds of memory with every request for a project: the
+instruction files you write, and the notes Koda keeps for itself.
 
-**Project memory** — `MEMORY.md` in the project root (Koda also reads
-`CLAUDE.md` and `AGENTS.md` for compatibility). Sent with every request
-for that project.
+**Instruction files.** `AGENTS.md`, the file Codex, Qwen Code and most
+other agents read. Koda reads one per folder, from the git root down to the
+project, root first:
 
-**Global memory** — `~/.config/koda/memory.md` (`$XDG_CONFIG_HOME/koda/memory.md` when that's set). Sent with every request
-across all projects.
+- `AGENTS.override.md`, if you want a folder's file replaced without editing it;
+- else `AGENTS.md`;
+- else `CLAUDE.md`, so a project set up for Claude Code still works.
+
+A folder with both `AGENTS.md` and `CLAUDE.md` gives Koda only `AGENTS.md`.
+Your own instructions for every project go in `~/.config/koda/AGENTS.md`
+(`$XDG_CONFIG_HOME/koda/AGENTS.md` when that's set), sent first.
+
+**Koda's notes.** What Koda saves with `MemoryWrite` or `/memory add` goes to
+`~/.config/koda/memories/<project>/MEMORY.md`, never into the project, where
+it would land in a file your team reads. `/memory global` and
+`MemoryWrite` with `scope: "global"` go to `~/.config/koda/memories/MEMORY.md`.
+`<project>` is the project's path with each `/` turned into `-`. The notes
+are sent after the instruction files.
+
+**Older names.** A project `MEMORY.md` and a global `~/.config/koda/memory.md`
+are still read where nothing newer exists, with a warning to rename them to
+`AGENTS.md`. Notes Koda wrote into a project file before this stay there as
+part of that file; move them if you'd rather they were private. The
+instruction files, then the notes, share the 16,000-character cap below, so
+when the files are long the notes are what gets cut; `MemoryRead` still
+returns everything.
 
 Memory opens the first user message, not the system prompt, as in Claude
 Code and Codex. The model is told it is the project's instructions and tips,
@@ -42,15 +63,15 @@ matters only now and then. If you work with a small or local model, keep it
 to a page.
 
 ```text
-/memory                 ← show the paths to both memory files
-/memory add <text>      ← append to the project memory file
-/memory global <text>   ← append to the global memory file
+/memory                 ← show the instruction file and where the notes are
+/memory add <text>      ← add to Koda's notes for this project
+/memory global <text>   ← add to Koda's global notes
 ```
 
 ## MemoryWrite tool
 
-The `MemoryWrite` tool lets the model append facts to memory directly
-during a conversation:
+The `MemoryWrite` tool lets the model add to its notes during a
+conversation:
 
 ```text
 > Remember that we use tabs not spaces in this project
@@ -58,11 +79,11 @@ during a conversation:
 
 Koda will call `MemoryWrite` automatically when you ask it to remember.
 
-## File precedence
+## Order
 
-| File | Scope | Priority |
-|------|-------|----------|
-| `MEMORY.md` | Project root | Highest |
-| `CLAUDE.md` | Project root | Used if there is no `MEMORY.md` (compatibility) |
-| `AGENTS.md` | Project root | Used if neither is there (compatibility) |
-| `~/.config/koda/memory.md` | Global | Base |
+| File | Where | Sent |
+|------|-------|------|
+| `AGENTS.override.md`, else `AGENTS.md` | Koda's config directory | First |
+| `AGENTS.override.md`, else `AGENTS.md`, else `CLAUDE.md` | Each folder from the git root down | Next, root first |
+| `memories/MEMORY.md` | Koda's config directory | Then Koda's global notes |
+| `memories/<project>/MEMORY.md` | Koda's config directory | Last, Koda's notes for this project |

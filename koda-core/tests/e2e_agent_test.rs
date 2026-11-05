@@ -461,7 +461,7 @@ async fn skip_memory_excludes_project_memory_from_sub_agent() {
     let env = Env::new().await;
 
     // Write a distinctive sentinel to the project memory file.
-    std::fs::write(env.root.join("MEMORY.md"), "SENTINEL_XYZ").unwrap();
+    std::fs::write(env.root.join("AGENTS.md"), "SENTINEL_XYZ").unwrap();
     write_agent_config(&env, "lean-agent", /* skip_memory */ true);
     runtime_env::set("KODA_MOCK_RESPONSES", r#"[{"text": "sub done"}]"#);
     let calls = invoke_agent_and_take_calls(&env, "lean-agent").await;
@@ -497,7 +497,7 @@ async fn without_skip_memory_project_memory_reaches_sub_agent() {
     let env = Env::new().await;
 
     // Same sentinel — but this agent does NOT skip memory.
-    std::fs::write(env.root.join("MEMORY.md"), "SENTINEL_XYZ").unwrap();
+    std::fs::write(env.root.join("AGENTS.md"), "SENTINEL_XYZ").unwrap();
     write_agent_config(&env, "full-agent", /* skip_memory */ false);
     runtime_env::set("KODA_MOCK_RESPONSES", r#"[{"text": "sub done"}]"#);
     let calls = invoke_agent_and_take_calls(&env, "full-agent").await;

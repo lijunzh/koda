@@ -30,7 +30,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "MemoryRead".to_string(),
-            description: "Read project and global memory (MEMORY.md + ~/.config/koda/memory.md)."
+            description: "Read the project's instruction files (AGENTS.md, or CLAUDE.md) and \
+                the notes saved with MemoryWrite."
                 .to_string(),
             parameters: json!({
                 "type": "object",
@@ -39,8 +40,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "MemoryWrite".to_string(),
-            description: "Save a project insight or rule to persistent memory (MEMORY.md). \
-                Set scope='global' for user-wide preferences (~/.config/koda/memory.md)."
+            description: "Save a project insight or rule to Koda's notes, kept outside the \
+                project and loaded in later sessions. Set scope='global' for user-wide \
+                preferences."
                 .to_string(),
             parameters: json!({
                 "type": "object",
@@ -62,38 +64,48 @@ pub fn definitions() -> Vec<ToolDefinition> {
 
 /// Read all loaded memory.
 pub async fn memory_read(project_root: &Path) -> Result<String> {
-    let content = memory::load(project_root)?;
+    memory_read_in(crate::db::config_dir().ok().as_deref(), project_root)
+}
+
+fn memory_read_in(config: Option<&Path>, project_root: &Path) -> Result<String> {
+    let content = memory::load_in(project_root, config)?;
     if content.is_empty() {
         return Ok(
             "No memory stored yet. Use MemoryWrite to save project context or preferences."
                 .to_string(),
         );
     }
-
-    let active = memory::active_project_file(project_root);
-    let header = match active {
-        Some(f) => format!("Active project memory file: {f}"),
-        None => "No project memory file (will create MEMORY.md on first write)".to_string(),
+    let notes = config
+        .map(|c| {
+            memory::project_notes_path_in(c, project_root)
+                .display()
+                .to_string()
+        })
+        .unwrap_or_else(|| "(no config directory)".to_string());
+    let header = match memory::active_project_file(project_root) {
+        Some(f) => format!("Project instructions: {f}. Koda's notes: {notes}"),
+        None => format!("No project instruction file. Koda's notes: {notes}"),
     };
-
     Ok(format!("{header}\n\n{content}"))
 }
 
-/// Write a memory entry.
+/// Write a memory entry to Koda's notes, outside the project.
 pub async fn memory_write(project_root: &Path, args: &Value) -> Result<String> {
+    memory_write_in(&crate::db::config_dir()?, project_root, args)
+}
+
+fn memory_write_in(config: &Path, project_root: &Path, args: &Value) -> Result<String> {
     let content = args["content"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Missing 'content' argument"))?;
-    let scope = args["scope"].as_str().unwrap_or("project");
-
-    match scope {
+    match args["scope"].as_str().unwrap_or("project") {
         "global" => {
-            memory::append_global(content)?;
-            Ok(format!("Saved to global memory: {content}"))
+            memory::append_global_in(config, content)?;
+            Ok(format!("Saved to Koda's global notes: {content}"))
         }
         _ => {
-            memory::append(project_root, content)?;
-            Ok(format!("Saved to project memory: {content}"))
+            memory::append_in(config, project_root, content)?;
+            Ok(format!("Saved to Koda's notes for this project: {content}"))
         }
     }
 }
@@ -201,38 +213,58 @@ mod tests {
 
     // ── memory_read / memory_write ──────────────────────────────────
 
-    #[tokio::test]
-    async fn test_memory_read_empty() {
-        let tmp = TempDir::new().unwrap();
-        let result = memory_read(tmp.path()).await.unwrap();
+    #[test]
+    fn test_memory_read_empty() {
+        let (tmp, config) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+        let result = memory_read_in(Some(config.path()), tmp.path()).unwrap();
         assert!(result.contains("No memory stored"));
     }
 
-    #[tokio::test]
-    async fn test_memory_read_with_content() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("MEMORY.md"), "# Notes\n- Uses Rust").unwrap();
-        let result = memory_read(tmp.path()).await.unwrap();
+    #[test]
+    fn test_memory_read_with_content() {
+        let (tmp, config) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+        std::fs::write(tmp.path().join("AGENTS.md"), "# Notes\n- Uses Rust").unwrap();
+        let result = memory_read_in(Some(config.path()), tmp.path()).unwrap();
         assert!(result.contains("Uses Rust"));
-        assert!(result.contains("MEMORY.md"));
+        assert!(
+            result.contains("Project instructions: AGENTS.md"),
+            "{result}"
+        );
     }
 
-    #[tokio::test]
-    async fn test_memory_write_project() {
-        let tmp = TempDir::new().unwrap();
+    #[test]
+    fn test_memory_write_stays_out_of_the_project() {
+        let (tmp, config) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+        std::fs::write(tmp.path().join("CLAUDE.md"), "rules").unwrap();
         let args = json!({ "content": "This project uses SQLite" });
-        let result = memory_write(tmp.path(), &args).await.unwrap();
-        assert!(result.contains("project memory"));
+        let result = memory_write_in(config.path(), tmp.path(), &args).unwrap();
+        assert!(result.contains("notes for this project"), "{result}");
 
-        let content = std::fs::read_to_string(tmp.path().join("MEMORY.md")).unwrap();
-        assert!(content.contains("This project uses SQLite"));
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("CLAUDE.md")).unwrap(),
+            "rules"
+        );
+        assert!(!tmp.path().join("MEMORY.md").exists());
+        let notes = memory::project_notes_path_in(config.path(), tmp.path());
+        assert!(
+            std::fs::read_to_string(notes)
+                .unwrap()
+                .contains("uses SQLite")
+        );
+        let read = memory_read_in(Some(config.path()), tmp.path()).unwrap();
+        assert!(read.contains("uses SQLite"), "{read}");
     }
 
-    #[tokio::test]
-    async fn test_memory_write_defaults_to_project() {
-        let tmp = TempDir::new().unwrap();
-        let args = json!({ "content": "no scope specified" });
-        memory_write(tmp.path(), &args).await.unwrap();
-        assert!(tmp.path().join("MEMORY.md").exists());
+    #[test]
+    fn test_memory_write_global_goes_to_the_global_notes() {
+        let (tmp, config) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+        let args = json!({ "content": "prefers tabs", "scope": "global" });
+        memory_write_in(config.path(), tmp.path(), &args).unwrap();
+        let global = config.path().join("memories/MEMORY.md");
+        assert!(
+            std::fs::read_to_string(global)
+                .unwrap()
+                .contains("prefers tabs")
+        );
     }
 }

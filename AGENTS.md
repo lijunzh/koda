@@ -1,10 +1,11 @@
-# CLAUDE.md
+# AGENTS.md
 
-Koda injects this file into its system prompt on every model call, so keep it to
-what an agent needs on every turn. Everything else goes in
-[docs/src/development.md](docs/src/development.md), which has the full workspace
-tree, per-test descriptions, release and new-capability checklists, the toolchain
-bump, and how CI, the security audit and coverage work.
+Koda sends this file with every model call, as Codex, Claude Code and most
+other agents do, so keep it to what an agent needs on every turn. Everything
+else goes in [docs/src/development.md](docs/src/development.md), which has the
+full workspace tree, per-test descriptions, release and new-capability
+checklists, the toolchain bump, and how CI, the security audit and coverage
+work.
 
 ## Project Overview
 

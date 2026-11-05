@@ -1,17 +1,27 @@
-//! Semantic memory: project context sent at the start of the first user message.
+//! Memory: the instructions people write, and the notes Koda keeps.
 //!
-//! Memory is stored as human-readable Markdown, loaded from two tiers:
+//! Both are Markdown, sent at the start of the first user message.
 //!
-//! **Global** (`~/.config/koda/memory.md`):
-//!   User-wide preferences and conventions that apply to all projects.
+//! **Instruction files** (written by people, read in this order, Codex's
+//! rules with Claude Code's file as the fallback):
+//!   1. Global: `<config>/AGENTS.override.md`, else `<config>/AGENTS.md`.
+//!   2. Project: every folder from the git root down to the project root,
+//!      root first. In each folder the first of `AGENTS.override.md`,
+//!      `AGENTS.md` and `CLAUDE.md`. So a folder with both `AGENTS.md` and
+//!      `CLAUDE.md` gives one file, which the eval harness relies on: it
+//!      writes the same text under both names.
 //!
-//! **Project-local** (first match wins):
-//!   1. `MEMORY.md`  — Koda native
-//!   2. `CLAUDE.md`  — Claude Code compatibility
-//!   3. `AGENTS.md`  — Code Puppy compatibility
+//! `<config>` is [`crate::db::config_dir`], `~/.config/koda` unless
+//! `XDG_CONFIG_HOME` moves it. The older names, a project `MEMORY.md` and
+//! a global `memory.md`, are still read where nothing newer exists, with a
+//! warning to rename them.
 //!
-//! Both tiers are concatenated and injected into the system prompt.
-//! When Koda writes (auto-memory), it always writes to `MEMORY.md`.
+//! **Koda's notes** (`MemoryWrite`, `/memory add`): never in the project,
+//! where they'd land in a file the whole team reads. They go to
+//! `<config>/memories/<project>/MEMORY.md`, or `<config>/memories/MEMORY.md`
+//! for the global scope, the layout Codex's memory pipeline uses
+//! (`~/.codex/memories`). `<project>` is the project's path with each
+//! separator turned into `-`, as Claude Code names its project folders.
 
 use anyhow::Result;
 use std::collections::HashMap;
@@ -19,14 +29,24 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
-/// Project-local memory files, checked in priority order.
-const PROJECT_MEMORY_FILES: &[&str] = &["MEMORY.md", "CLAUDE.md", "AGENTS.md"];
+/// Instruction files in a folder, in priority order: the first one found
+/// is the folder's.
+const INSTRUCTION_FILES: &[&str] = &["AGENTS.override.md", "AGENTS.md", "CLAUDE.md"];
 
-/// Global memory filename inside `~/.config/koda/`.
-const GLOBAL_MEMORY_FILE: &str = "memory.md";
+/// Global instruction files in the config directory, in priority order.
+const GLOBAL_INSTRUCTION_FILES: &[&str] = &["AGENTS.override.md", "AGENTS.md"];
 
-/// Koda's native project memory filename (used for writes).
-const KODA_MEMORY_FILE: &str = "MEMORY.md";
+/// The project instruction file before `AGENTS.md`; read with a warning.
+const LEGACY_PROJECT_FILE: &str = "MEMORY.md";
+
+/// The global instruction file before `AGENTS.md`; read with a warning.
+const LEGACY_GLOBAL_FILE: &str = "memory.md";
+
+/// Koda's notes folder inside the config directory.
+const NOTES_DIR: &str = "memories";
+
+/// The notes file in each notes folder.
+const NOTES_FILE: &str = "MEMORY.md";
 
 /// Per-file memoization for [`load`] (#1232 §3b).
 ///
@@ -66,6 +86,21 @@ struct CachedEntry {
 /// current process has actually touched (typically 1-3 paths per
 /// koda session: maybe one project memory + the global file).
 static MEMORY_CACHE: OnceLock<Mutex<HashMap<PathBuf, CachedEntry>>> = OnceLock::new();
+
+/// Legacy files already warned about, so a warning is logged once per
+/// process, not on every agent and sub-agent start.
+static WARNED_LEGACY: OnceLock<Mutex<std::collections::HashSet<PathBuf>>> = OnceLock::new();
+
+/// Log `message` the first time `path` is seen.
+fn warn_once(path: &Path, message: &str) {
+    let mut seen = WARNED_LEGACY
+        .get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    if seen.insert(path.to_path_buf()) {
+        tracing::warn!("{}: {message}", path.display());
+    }
+}
 
 fn cache() -> &'static Mutex<HashMap<PathBuf, CachedEntry>> {
     MEMORY_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
@@ -170,87 +205,211 @@ pub(crate) fn clear_cache_for_tests() {
 #[cfg(test)]
 pub(crate) static MEMORY_TEST_LOCK: Mutex<()> = Mutex::new(());
 
-/// Load memory from both global and project-local sources.
+/// Load the instruction files and Koda's notes for `project_root`.
 ///
-/// Returns the combined content (global first, then project-local).
-/// Returns an empty string if no memory files exist.
+/// Returns them joined with blank lines: global instructions, then the
+/// project's from the git root down, then Koda's global and project notes.
+/// Returns an empty string if there are none.
 ///
-/// **#1232 §3b**: this function is memoized per resolved file path
-/// with `(mtime, len)` invalidation. Calling it N times in a row
-/// without touching the underlying files (e.g. parallel sub-agent
-/// fan-out) reads disk exactly once and emits the `info!` log line
-/// exactly once. Edits via `append` / `append_global` (or any
-/// out-of-process `MemoryWrite`) update mtime, so the next call
-/// re-reads transparently.
+/// **#1232 §3b**: memoized per resolved file path with `(mtime, len)`
+/// invalidation, so parallel sub-agent fan-out reads each file once.
 pub fn load(project_root: &Path) -> Result<String> {
+    load_in(project_root, crate::db::config_dir().ok().as_deref())
+}
+
+pub(crate) fn load_in(project_root: &Path, config: Option<&Path>) -> Result<String> {
     let mut parts: Vec<String> = Vec::new();
-
-    // 1. Global memory (~/.config/koda/memory.md)
-    if let Some((content, was_hit)) = load_global()? {
-        if !was_hit {
-            tracing::info!("Loaded global memory ({} bytes)", content.len());
+    let mut push = |path: &Path, what: &str| -> Result<()> {
+        let (content, was_hit) = read_through_cache(path)?;
+        if content.trim().is_empty() {
+            return Ok(());
         }
-        parts.push(content);
-    }
-
-    // 2. Project-local memory (first match wins)
-    if let Some((filename, content, was_hit)) = load_project(project_root)? {
         if !was_hit {
             tracing::info!(
-                "Loaded project memory from {filename} ({} bytes)",
+                "Loaded {what} from {} ({} bytes)",
+                path.display(),
                 content.len()
             );
         }
         parts.push(content);
-    } else {
-        // "no file" log stays at info; it's once-per-load and
-        // genuinely informative for diagnosing missing-memory
-        // confusion. Not a cache concern (nothing to cache).
-        tracing::info!("No project memory file found");
-    }
+        Ok(())
+    };
 
+    if let Some(path) = config.and_then(global_instruction_file) {
+        push(&path, "global instructions")?;
+    }
+    let project_files = project_instruction_files(project_root);
+    if project_files.is_empty() {
+        tracing::info!("No project instruction file found");
+    }
+    for path in &project_files {
+        push(path, "project instructions")?;
+    }
+    if let Some(config) = config {
+        for path in [
+            global_notes_file(config),
+            project_notes_file(config, project_root),
+        ] {
+            if path.is_file() {
+                push(&path, "Koda's notes")?;
+            }
+        }
+    }
     Ok(parts.join("\n\n"))
 }
 
-/// Write an entry to the project's memory file.
+/// Save `entry` to Koda's notes for this project, outside the project.
 ///
 /// If the entry starts with a `## Heading`, and a section with that
-/// heading already exists in the file, the existing section is
-/// **replaced** (updated in place). Otherwise the entry is added.
-///
-/// Always targets the active memory file (or `MEMORY.md` if none exists).
+/// heading already exists, that section is **replaced**. Otherwise the
+/// entry is added.
 pub fn append(project_root: &Path, entry: &str) -> Result<()> {
-    let target_filename =
-        active_project_file(project_root).unwrap_or_else(|| KODA_MEMORY_FILE.to_string());
-    let path = project_root.join(&target_filename);
-    write_or_replace_section(&path, entry)?;
-    tracing::info!("Wrote to {target_filename}: {entry}");
-    Ok(())
+    let path = project_notes_path(project_root)?;
+    write_note(&path, entry)
 }
 
-/// Return which project memory file is active (for display purposes).
-pub fn active_project_file(project_root: &Path) -> Option<String> {
-    for filename in PROJECT_MEMORY_FILES {
-        if project_root.join(filename).exists() {
-            return Some(filename.to_string());
-        }
-    }
-    None
-}
-
-/// Write an entry to the global memory file (~/.config/koda/memory.md).
-///
-/// If the entry starts with a `## Heading` that already exists, the
-/// section is replaced. Otherwise the entry is added.
+/// Save `entry` to Koda's global notes (`<config>/memories/MEMORY.md`).
 pub fn append_global(entry: &str) -> Result<()> {
-    let path = global_memory_path()
-        .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory for global memory"))?;
+    let path = global_notes_path()?;
+    write_note(&path, entry)
+}
+
+/// The instruction file Koda reads at the project root, for display.
+pub fn active_project_file(project_root: &Path) -> Option<String> {
+    folder_instruction_file(project_root)
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+}
+
+/// Where Koda's notes for this project are kept.
+pub fn project_notes_path(project_root: &Path) -> Result<PathBuf> {
+    Ok(project_notes_file(&crate::db::config_dir()?, project_root))
+}
+
+/// Where Koda's global notes are kept.
+pub fn global_notes_path() -> Result<PathBuf> {
+    Ok(global_notes_file(&crate::db::config_dir()?))
+}
+
+/// [`append`] with an explicit config directory.
+pub(crate) fn append_in(config: &Path, project_root: &Path, entry: &str) -> Result<()> {
+    write_note(&project_notes_file(config, project_root), entry)
+}
+
+/// [`append_global`] with an explicit config directory.
+pub(crate) fn append_global_in(config: &Path, entry: &str) -> Result<()> {
+    write_note(&global_notes_file(config), entry)
+}
+
+/// [`project_notes_path`] with an explicit config directory.
+pub(crate) fn project_notes_path_in(config: &Path, project_root: &Path) -> PathBuf {
+    project_notes_file(config, project_root)
+}
+
+fn write_note(path: &Path, entry: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    write_or_replace_section(&path, entry)?;
-    tracing::info!("Wrote to global memory: {entry}");
+    write_or_replace_section(path, entry)?;
+    tracing::info!("Wrote to {}: {entry}", path.display());
     Ok(())
+}
+
+fn global_notes_file(config: &Path) -> PathBuf {
+    config.join(NOTES_DIR).join(NOTES_FILE)
+}
+
+fn project_notes_file(config: &Path, project_root: &Path) -> PathBuf {
+    config
+        .join(NOTES_DIR)
+        .join(project_key(project_root))
+        .join(NOTES_FILE)
+}
+
+/// The project's folder name under `memories/`: its absolute path with each
+/// separator (and a Windows drive's `:`) turned into `-`, as Claude Code
+/// names its project folders (`/Users/me/repo/koda` → `-Users-me-repo-koda`).
+fn project_key(project_root: &Path) -> String {
+    let path = project_root
+        .canonicalize()
+        .unwrap_or_else(|_| project_root.to_path_buf());
+    path.to_string_lossy()
+        .chars()
+        .map(|c| {
+            if matches!(c, '/' | '\\' | ':') {
+                '-'
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+/// The global instruction file, if any: `AGENTS.override.md`, then
+/// `AGENTS.md`, then the legacy `memory.md` with a warning.
+fn global_instruction_file(config: &Path) -> Option<PathBuf> {
+    if let Some(path) = first_existing(config, GLOBAL_INSTRUCTION_FILES) {
+        return Some(path);
+    }
+    let legacy = config.join(LEGACY_GLOBAL_FILE);
+    legacy.is_file().then(|| {
+        warn_once(
+            &legacy,
+            "the global memory.md is deprecated: rename it to AGENTS.md if it holds \
+             instructions, or move it to memories/MEMORY.md if it holds Koda's notes",
+        );
+        legacy
+    })
+}
+
+/// One instruction file per folder from the git root down to
+/// `project_root`, root first. Without a git root, `project_root` alone.
+/// Codex reads the same span and never walks past the git root.
+fn project_instruction_files(project_root: &Path) -> Vec<PathBuf> {
+    let mut folders = vec![project_root.to_path_buf()];
+    let mut cursor = project_root;
+    while !cursor.join(".git").exists() {
+        match cursor.parent() {
+            Some(parent) => {
+                folders.push(parent.to_path_buf());
+                cursor = parent;
+            }
+            // No git root above: only the project root counts.
+            None => {
+                folders.truncate(1);
+                break;
+            }
+        }
+    }
+    folders.reverse();
+    folders
+        .iter()
+        .filter_map(|folder| folder_instruction_file(folder))
+        .collect()
+}
+
+/// A folder's instruction file: the first of [`INSTRUCTION_FILES`], else
+/// the legacy `MEMORY.md` with a warning.
+fn folder_instruction_file(folder: &Path) -> Option<PathBuf> {
+    if let Some(path) = first_existing(folder, INSTRUCTION_FILES) {
+        return Some(path);
+    }
+    let legacy = folder.join(LEGACY_PROJECT_FILE);
+    legacy.is_file().then(|| {
+        warn_once(
+            &legacy,
+            "a project MEMORY.md is deprecated: rename it to AGENTS.md if it holds \
+             instructions, or move it out of the project (see /memory) if it holds \
+             Koda's notes",
+        );
+        legacy
+    })
+}
+
+fn first_existing(folder: &Path, names: &[&str]) -> Option<PathBuf> {
+    names
+        .iter()
+        .map(|name| folder.join(name))
+        .find(|path| path.is_file())
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────
@@ -357,147 +516,154 @@ fn replace_section(content: &str, heading: &str, replacement: &str) -> String {
     result
 }
 
-/// Load global memory from `~/.config/koda/memory.md`.
-///
-/// Returns `(content, was_cache_hit)` so the caller can suppress
-/// duplicate log lines on cache-hit (#1232 §3b).
-fn load_global() -> Result<Option<(String, bool)>> {
-    let path = global_memory_path();
-    match path {
-        Some(p) if p.exists() => {
-            let (content, was_hit) = read_through_cache(&p)?;
-            if content.trim().is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some((content, was_hit)))
-            }
-        }
-        _ => Ok(None),
-    }
-}
-
-/// Load project-local memory (first matching file wins).
-///
-/// Returns `(filename, content, was_cache_hit)` so the caller can
-/// suppress duplicate log lines on cache-hit (#1232 §3b).
-fn load_project(project_root: &Path) -> Result<Option<(String, String, bool)>> {
-    for filename in PROJECT_MEMORY_FILES {
-        let path = project_root.join(filename);
-        if path.exists() {
-            let (content, was_hit) = read_through_cache(&path)?;
-            if !content.trim().is_empty() {
-                return Ok(Some((filename.to_string(), content, was_hit)));
-            }
-        }
-    }
-    Ok(None)
-}
-
-/// Path to the global memory file, in Koda's config directory
-/// ([`crate::db::config_dir`]), so `XDG_CONFIG_HOME` moves it with the rest.
-fn global_memory_path() -> Option<PathBuf> {
-    crate::db::config_dir()
-        .ok()
-        .map(|dir| dir.join(GLOBAL_MEMORY_FILE))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    /// A project in its own git repository, with a separate config dir.
+    fn project() -> (TempDir, TempDir) {
+        let root = TempDir::new().unwrap();
+        std::fs::create_dir(root.path().join(".git")).unwrap();
+        (root, TempDir::new().unwrap())
+    }
+
+    fn write(path: &Path, text: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+
     #[test]
     fn test_load_missing_memory_returns_empty() {
-        let tmp = TempDir::new().unwrap();
-        let content = load(tmp.path()).unwrap();
-        assert!(content.is_empty());
+        let (root, config) = project();
+        assert!(
+            load_in(root.path(), Some(config.path()))
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
-    fn test_load_memory_md() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("MEMORY.md"), "# Project notes\n- Uses Rust").unwrap();
-        let content = load(tmp.path()).unwrap();
-        assert!(content.contains("Uses Rust"));
-    }
-
-    #[test]
-    fn test_load_claude_md_compat() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("CLAUDE.md"), "# Claude rules\n- Be concise").unwrap();
-        let content = load(tmp.path()).unwrap();
-        assert!(content.contains("Be concise"));
-    }
-
-    #[test]
-    fn test_load_agents_md_compat() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("AGENTS.md"), "# Agent rules\n- DRY").unwrap();
-        let content = load(tmp.path()).unwrap();
-        assert!(content.contains("DRY"));
-    }
-
-    #[test]
-    fn test_memory_md_takes_priority_over_claude_md() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("MEMORY.md"), "koda-memory").unwrap();
-        std::fs::write(tmp.path().join("CLAUDE.md"), "claude-rules").unwrap();
-        let content = load(tmp.path()).unwrap();
-        assert!(content.contains("koda-memory"));
-        assert!(!content.contains("claude-rules"));
-    }
-
-    #[test]
-    fn test_claude_md_takes_priority_over_agents_md() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("CLAUDE.md"), "claude-rules").unwrap();
-        std::fs::write(tmp.path().join("AGENTS.md"), "puppy-rules").unwrap();
-        let content = load(tmp.path()).unwrap();
+    fn agents_md_is_read_first_and_claude_md_is_the_fallback() {
+        let (root, config) = project();
+        write(&root.path().join("CLAUDE.md"), "claude-rules");
+        let content = load_in(root.path(), Some(config.path())).unwrap();
         assert!(content.contains("claude-rules"));
-        assert!(!content.contains("puppy-rules"));
+
+        write(&root.path().join("AGENTS.md"), "agents-rules");
+        let content = load_in(root.path(), Some(config.path())).unwrap();
+        assert!(content.contains("agents-rules"));
+        // One file per folder: the eval harness writes the same text under
+        // both names, and the model must get it once.
+        assert!(!content.contains("claude-rules"), "{content}");
+
+        write(&root.path().join("AGENTS.override.md"), "override-rules");
+        let content = load_in(root.path(), Some(config.path())).unwrap();
+        assert_eq!(content, "override-rules");
     }
 
     #[test]
-    fn test_append_creates_and_appends() {
-        let tmp = TempDir::new().unwrap();
-        append(tmp.path(), "first entry").unwrap();
-        append(tmp.path(), "second entry").unwrap();
+    fn memory_md_is_read_only_when_nothing_newer_exists() {
+        let (root, config) = project();
+        write(&root.path().join("MEMORY.md"), "legacy-memory");
+        let content = load_in(root.path(), Some(config.path())).unwrap();
+        assert!(content.contains("legacy-memory"));
 
-        let content = load(tmp.path()).unwrap();
-        assert!(content.contains("first entry"));
-        assert!(content.contains("second entry"));
+        write(&root.path().join("CLAUDE.md"), "claude-rules");
+        let content = load_in(root.path(), Some(config.path())).unwrap();
+        assert!(content.contains("claude-rules"));
+        assert!(!content.contains("legacy-memory"), "{content}");
     }
 
     #[test]
-    fn test_append_writes_to_active_file() {
-        let tmp = TempDir::new().unwrap();
-        // If CLAUDE.md exists, append writes directly to CLAUDE.md
-        std::fs::write(tmp.path().join("CLAUDE.md"), "existing claude rules").unwrap();
-        append(tmp.path(), "new koda insight").unwrap();
+    fn folders_from_the_git_root_down_are_joined_root_first() {
+        let (root, config) = project();
+        let sub = root.path().join("crates/app");
+        write(&root.path().join("AGENTS.md"), "root-rules");
+        write(&root.path().join("crates/CLAUDE.md"), "crates-rules");
+        write(&sub.join("AGENTS.md"), "app-rules");
+        let content = load_in(&sub, Some(config.path())).unwrap();
+        assert_eq!(content, "root-rules\n\ncrates-rules\n\napp-rules");
+    }
 
-        // It should NOT create MEMORY.md
-        assert!(!tmp.path().join("MEMORY.md").exists());
+    #[test]
+    fn without_a_git_root_only_the_project_folder_counts() {
+        let parent = TempDir::new().unwrap();
+        let config = TempDir::new().unwrap();
+        let sub = parent.path().join("sub");
+        write(&parent.path().join("AGENTS.md"), "parent-rules");
+        write(&sub.join("AGENTS.md"), "sub-rules");
+        let content = load_in(&sub, Some(config.path())).unwrap();
+        assert_eq!(content, "sub-rules");
+    }
 
-        // It SHOULD append to CLAUDE.md
-        let memory = std::fs::read_to_string(tmp.path().join("CLAUDE.md")).unwrap();
-        assert!(memory.contains("new koda insight"));
+    #[test]
+    fn global_agents_md_comes_first_and_memory_md_is_its_fallback() {
+        let (root, config) = project();
+        write(&root.path().join("AGENTS.md"), "project-rules");
+        write(&config.path().join("memory.md"), "legacy-global");
+        let content = load_in(root.path(), Some(config.path())).unwrap();
+        assert_eq!(content, "legacy-global\n\nproject-rules");
+
+        write(&config.path().join("AGENTS.md"), "global-rules");
+        let content = load_in(root.path(), Some(config.path())).unwrap();
+        assert_eq!(content, "global-rules\n\nproject-rules");
+    }
+
+    #[test]
+    fn notes_are_kept_outside_the_project_and_loaded_after_instructions() {
+        let (root, config) = project();
+        write(&root.path().join("CLAUDE.md"), "project-rules");
+        append_in(config.path(), root.path(), "first entry").unwrap();
+        append_in(config.path(), root.path(), "second entry").unwrap();
+
+        // Nothing written into the project.
+        let claude = std::fs::read_to_string(root.path().join("CLAUDE.md")).unwrap();
+        assert_eq!(claude, "project-rules");
+        assert!(!root.path().join("MEMORY.md").exists());
+
+        let notes = project_notes_file(config.path(), root.path());
+        assert!(
+            notes.starts_with(config.path().join("memories")),
+            "{notes:?}"
+        );
+        let content = load_in(root.path(), Some(config.path())).unwrap();
+        assert!(content.starts_with("project-rules\n\n"), "{content}");
+        assert!(content.contains("first entry") && content.contains("second entry"));
+    }
+
+    #[test]
+    fn each_project_has_its_own_notes() {
+        let (a, config) = project();
+        let b = TempDir::new().unwrap();
+        std::fs::create_dir(b.path().join(".git")).unwrap();
+        append_in(config.path(), a.path(), "alpha note").unwrap();
+        let in_b = load_in(b.path(), Some(config.path())).unwrap();
+        assert!(!in_b.contains("alpha note"), "{in_b}");
+        write(&global_notes_file(config.path()), "- shared note\n");
+        let in_b = load_in(b.path(), Some(config.path())).unwrap();
+        assert!(in_b.contains("shared note"), "{in_b}");
+    }
+
+    #[test]
+    fn project_key_turns_separators_into_dashes() {
+        let key = project_key(Path::new("/no/such/dir/koda"));
+        assert_eq!(key, "-no-such-dir-koda");
     }
 
     #[test]
     fn test_active_project_file() {
-        let tmp = TempDir::new().unwrap();
-        assert_eq!(active_project_file(tmp.path()), None);
-
-        std::fs::write(tmp.path().join("AGENTS.md"), "rules").unwrap();
+        let (root, _config) = project();
+        assert_eq!(active_project_file(root.path()), None);
+        write(&root.path().join("CLAUDE.md"), "rules");
         assert_eq!(
-            active_project_file(tmp.path()),
-            Some("AGENTS.md".to_string())
+            active_project_file(root.path()).as_deref(),
+            Some("CLAUDE.md")
         );
-
-        std::fs::write(tmp.path().join("MEMORY.md"), "memory").unwrap();
+        write(&root.path().join("AGENTS.md"), "rules");
         assert_eq!(
-            active_project_file(tmp.path()),
-            Some("MEMORY.md".to_string())
+            active_project_file(root.path()).as_deref(),
+            Some("AGENTS.md")
         );
     }
 
@@ -559,17 +725,18 @@ mod tests {
 
     #[test]
     fn test_append_merges_existing_section() {
-        let tmp = TempDir::new().unwrap();
-        let existing = "## Workflow Preferences\n- old item\n";
-        std::fs::write(tmp.path().join("MEMORY.md"), existing).unwrap();
+        let (tmp, config) = project();
+        let notes = project_notes_file(config.path(), tmp.path());
+        write(&notes, "## Workflow Preferences\n- old item\n");
 
-        append(
+        append_in(
+            config.path(),
             tmp.path(),
             "## Workflow Preferences\n- updated item\n- new item",
         )
         .unwrap();
 
-        let content = std::fs::read_to_string(tmp.path().join("MEMORY.md")).unwrap();
+        let content = std::fs::read_to_string(&notes).unwrap();
         assert!(
             content.contains("- updated item"),
             "Should contain new content"
@@ -589,13 +756,13 @@ mod tests {
 
     #[test]
     fn test_append_new_section_still_appends() {
-        let tmp = TempDir::new().unwrap();
-        let existing = "## Existing Section\n- item\n";
-        std::fs::write(tmp.path().join("MEMORY.md"), existing).unwrap();
+        let (tmp, config) = project();
+        let notes = project_notes_file(config.path(), tmp.path());
+        write(&notes, "## Existing Section\n- item\n");
 
-        append(tmp.path(), "## New Section\n- new item").unwrap();
+        append_in(config.path(), tmp.path(), "## New Section\n- new item").unwrap();
 
-        let content = std::fs::read_to_string(tmp.path().join("MEMORY.md")).unwrap();
+        let content = std::fs::read_to_string(&notes).unwrap();
         assert!(content.contains("## Existing Section"));
         assert!(content.contains("## New Section"));
         assert!(content.contains("- new item"));
@@ -603,11 +770,12 @@ mod tests {
 
     #[test]
     fn test_append_replaces_a_section_it_wrote() {
-        let tmp = TempDir::new().unwrap();
-        append(tmp.path(), "## Preferences\n- old").unwrap();
-        append(tmp.path(), "## Preferences\n- new").unwrap();
+        let (tmp, config) = project();
+        let notes = project_notes_file(config.path(), tmp.path());
+        append_in(config.path(), tmp.path(), "## Preferences\n- old").unwrap();
+        append_in(config.path(), tmp.path(), "## Preferences\n- new").unwrap();
 
-        let content = std::fs::read_to_string(tmp.path().join("MEMORY.md")).unwrap();
+        let content = std::fs::read_to_string(&notes).unwrap();
         assert!(content.contains("- new"));
         assert!(!content.contains("- old"), "{content}");
         assert_eq!(content.matches("## Preferences").count(), 1, "{content}");
@@ -619,12 +787,13 @@ mod tests {
 
     #[test]
     fn test_plain_note_survives_a_section_update() {
-        let tmp = TempDir::new().unwrap();
-        append(tmp.path(), "## Preferences\n- old").unwrap();
-        append(tmp.path(), "keep this note").unwrap();
-        append(tmp.path(), "## Preferences\n- new").unwrap();
+        let (tmp, config) = project();
+        let notes = project_notes_file(config.path(), tmp.path());
+        append_in(config.path(), tmp.path(), "## Preferences\n- old").unwrap();
+        append_in(config.path(), tmp.path(), "keep this note").unwrap();
+        append_in(config.path(), tmp.path(), "## Preferences\n- new").unwrap();
 
-        let content = std::fs::read_to_string(tmp.path().join("MEMORY.md")).unwrap();
+        let content = std::fs::read_to_string(&notes).unwrap();
         assert!(content.contains("- keep this note"), "{content}");
         assert!(content.contains("- new"));
         assert!(!content.contains("- old"), "{content}");
@@ -632,13 +801,16 @@ mod tests {
 
     #[test]
     fn test_plain_entry_stays_after_a_preamble() {
-        let tmp = TempDir::new().unwrap();
-        let existing = "# Title\n\nIntro with a ## in it.\n\n## Section\n- item\n";
-        std::fs::write(tmp.path().join("MEMORY.md"), existing).unwrap();
+        let (tmp, config) = project();
+        let notes = project_notes_file(config.path(), tmp.path());
+        write(
+            &notes,
+            "# Title\n\nIntro with a ## in it.\n\n## Section\n- item\n",
+        );
 
-        append(tmp.path(), "a note").unwrap();
+        append_in(config.path(), tmp.path(), "a note").unwrap();
 
-        let content = std::fs::read_to_string(tmp.path().join("MEMORY.md")).unwrap();
+        let content = std::fs::read_to_string(&notes).unwrap();
         assert_eq!(
             content,
             "# Title\n\nIntro with a ## in it.\n\n- a note\n\n## Section\n- item\n"
@@ -647,11 +819,12 @@ mod tests {
 
     #[test]
     fn test_append_plain_entry_still_appends() {
-        let tmp = TempDir::new().unwrap();
-        append(tmp.path(), "just a plain note").unwrap();
-        append(tmp.path(), "another plain note").unwrap();
+        let (tmp, config) = project();
+        let notes = project_notes_file(config.path(), tmp.path());
+        append_in(config.path(), tmp.path(), "just a plain note").unwrap();
+        append_in(config.path(), tmp.path(), "another plain note").unwrap();
 
-        let content = std::fs::read_to_string(tmp.path().join("MEMORY.md")).unwrap();
+        let content = std::fs::read_to_string(&notes).unwrap();
         assert!(content.contains("just a plain note"));
         assert!(content.contains("another plain note"));
     }
@@ -680,14 +853,14 @@ mod tests {
         let path = tmp.path().join("CLAUDE.md");
         std::fs::write(&path, "# pinned content\n- entry one").unwrap();
 
-        let first = load(tmp.path()).unwrap();
+        let first = load_in(tmp.path(), None).unwrap();
         assert!(first.contains("entry one"));
 
         // Hammer the cache. Pre-fix this would have hit disk N times.
         // The output must stay byte-identical to the first read because
         // nothing on disk changed and the cache must serve every call.
         for _ in 0..10 {
-            let again = load(tmp.path()).unwrap();
+            let again = load_in(tmp.path(), None).unwrap();
             assert_eq!(again, first, "cache must serve identical bytes");
         }
 
@@ -708,10 +881,13 @@ mod tests {
     fn test_cache_invalidates_on_append() {
         let _guard = MEMORY_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         clear_cache_for_tests();
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("MEMORY.md"), "## Initial\n- one\n").unwrap();
+        let (tmp, config) = project();
+        write(
+            &project_notes_file(config.path(), tmp.path()),
+            "## Initial\n- one\n",
+        );
 
-        let before = load(tmp.path()).unwrap();
+        let before = load_in(tmp.path(), Some(config.path())).unwrap();
         assert!(before.contains("- one"));
         assert!(!before.contains("- two"));
 
@@ -721,9 +897,9 @@ mod tests {
         // same len (impossible here — we're growing — but the sleep
         // is the principled defense).
         std::thread::sleep(std::time::Duration::from_millis(1100));
-        append(tmp.path(), "- two").unwrap();
+        append_in(config.path(), tmp.path(), "- two").unwrap();
 
-        let after = load(tmp.path()).unwrap();
+        let after = load_in(tmp.path(), Some(config.path())).unwrap();
         assert!(
             after.contains("- two"),
             "post-append load must surface the new entry; got: {after:?}"
@@ -744,13 +920,13 @@ mod tests {
         let path = tmp.path().join("CLAUDE.md");
         std::fs::write(&path, "short").unwrap();
 
-        let before = load(tmp.path()).unwrap();
+        let before = load_in(tmp.path(), None).unwrap();
         assert!(before.contains("short"));
 
         // Overwrite with a larger payload. Even on coarse-mtime
         // filesystems the len delta forces a cache refresh.
         std::fs::write(&path, "this is much longer content than before").unwrap();
-        let after = load(tmp.path()).unwrap();
+        let after = load_in(tmp.path(), None).unwrap();
         assert!(
             after.contains("much longer"),
             "len-delta must trigger a refresh; got: {after:?}"
@@ -770,8 +946,8 @@ mod tests {
         std::fs::write(proj_a.path().join("CLAUDE.md"), "alpha-content").unwrap();
         std::fs::write(proj_b.path().join("CLAUDE.md"), "beta-content").unwrap();
 
-        let a = load(proj_a.path()).unwrap();
-        let b = load(proj_b.path()).unwrap();
+        let a = load_in(proj_a.path(), None).unwrap();
+        let b = load_in(proj_b.path(), None).unwrap();
 
         assert!(a.contains("alpha-content"));
         assert!(!a.contains("beta-content"));
@@ -780,8 +956,8 @@ mod tests {
 
         // Both paths are now cached independently. Toggle-load to
         // confirm neither cache entry was clobbered by the other.
-        assert_eq!(load(proj_a.path()).unwrap(), a);
-        assert_eq!(load(proj_b.path()).unwrap(), b);
+        assert_eq!(load_in(proj_a.path(), None).unwrap(), a);
+        assert_eq!(load_in(proj_b.path(), None).unwrap(), b);
     }
 
     /// Concurrent loads on the same project: the cache must serve
@@ -805,7 +981,7 @@ mod tests {
                 let pr = project_root.clone();
                 std::thread::spawn(move || {
                     for _ in 0..10 {
-                        let c = load(&pr).unwrap();
+                        let c = load_in(&pr, None).unwrap();
                         assert!(c.contains("shared-by-many"));
                     }
                 })
