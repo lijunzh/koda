@@ -6,7 +6,7 @@ Memory files persist facts and preferences across sessions.
 `CLAUDE.md` and `AGENTS.md` for compatibility). Sent with every request
 for that project.
 
-**Global memory** — `~/.config/koda/memory.md`. Sent with every request
+**Global memory** — `~/.config/koda/memory.md` (`$XDG_CONFIG_HOME/koda/memory.md` when that's set). Sent with every request
 across all projects.
 
 Memory opens the first user message, not the system prompt, as in Claude

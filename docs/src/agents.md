@@ -1,7 +1,8 @@
 # Custom agents
 
 Place JSON files in `.koda/agents/` (project-local) or
-`~/.config/koda/agents/` (global):
+`~/.config/koda/agents/` (global; `$XDG_CONFIG_HOME/koda/agents/` when that's
+set):
 
 ```json
 {

@@ -700,13 +700,10 @@ impl KodaConfig {
         anyhow::bail!("No agents directory on disk (built-in agents are still available)")
     }
 
-    /// Return the user-level agents directory path (`~/.config/koda/agents/`).
+    /// Return the user-level agents directory path (`<config>/agents/`,
+    /// `~/.config/koda/agents/` unless `XDG_CONFIG_HOME` moves it).
     fn user_agents_dir() -> Result<PathBuf> {
-        let home = std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("."));
-        Ok(home.join(".config").join("koda").join("agents"))
+        Ok(crate::db::config_dir()?.join("agents"))
     }
 }
 
