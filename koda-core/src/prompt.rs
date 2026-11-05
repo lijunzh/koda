@@ -113,7 +113,7 @@ pub fn build_system_prompt(
     // `tools::agent::discover_all_agents` (built-in → user → project),
     // not just a single directory. Earlier code here read only one
     // directory (the per-config `agents_dir`), which silently hid
-    // every built-in agent (`explore`, `plan`, `verify`, `task`)
+    // every built-in agent (`explore`, `task`)
     // from the model. The model would then see
     // `Note: No sub-agents are configured. Do not use the InvokeAgent
     // tool.` and decline to dispatch even when the user explicitly
@@ -297,8 +297,8 @@ pub fn render_mcp_instructions_section(instructions: &[(String, String)]) -> Str
 /// `/agents` slash command and `ListAgents` tool show. That function
 /// implements the 3-tier resolution:
 ///
-/// 1. **Built-in agents** (lowest priority) — `explore`, `plan`,
-///    `verify`, `task`. Always available, ship with koda.
+/// 1. **Built-in agents** (lowest priority) — `explore` and `task`.
+///    Always available, ship with koda.
 /// 2. **User agents** at `~/.config/koda/agents/` — override built-ins.
 /// 3. **Project agents** at `<project_root>/agents/` — override
 ///    user agents.
@@ -585,7 +585,7 @@ mod tests {
 
     /// Direct regression for the sub-agent discovery bug: with no
     /// user-installed and no project-local agents, the built-in
-    /// agents (`explore`, `plan`, `verify`, `task`) MUST still appear
+    /// agents (`explore`, `task`) MUST still appear
     /// in the prompt's `## Available Sub-Agents` section.
     ///
     /// Pre-fix, the prompt builder called a private `list_available_agents`

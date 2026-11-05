@@ -134,7 +134,7 @@ pub struct ChildTaskSnapshot {
     /// Monotonic id assigned at `reserve()` time. Stable for the
     /// lifetime of the task; reused across snapshots.
     pub task_id: u32,
-    /// Configured agent name (`explore`, `verify`, ...).
+    /// Configured agent name (`explore`, `task`, ...).
     pub agent_name: String,
     /// The prompt the parent delegated. Surfaced verbatim by
     /// `/agents -v`; truncation is the renderer's job.

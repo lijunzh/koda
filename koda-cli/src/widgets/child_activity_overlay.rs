@@ -53,7 +53,7 @@ use ratatui::{
 /// Maximum number of activity rows rendered. Overflow collapses to
 /// `+ N more` on the hint row.
 ///
-/// Capped at 5 because bg fan-out of 4-5 agents is a normal pattern for `explore` / `verify` / `lint`
+/// Capped at 5 because bg fan-out of 4-5 agents is a normal pattern for `explore` / `task` / `lint`
 /// wave spawning, and collapsing too aggressively defeats the point of
 /// the at-a-glance surface.
 pub const MAX_VISIBLE: usize = 5;

@@ -199,8 +199,8 @@ The engine communicates through `EngineEvent` (output) and `EngineCommand`
   the provider. Fallback: the `model_context.rs` lookup table.
 - **Request retry:** four retries with backoff (1/2/4/8s) for 429, 5xx and network errors, or the server's `Retry-After` up to five minutes. Errors are classified once, in `providers/error.rs`.
 - **Stream retry:** five retries of a reply cut off partway, unless the provider rejected the request.
-- **Built-in agents:** `default`, plus the `explore`, `plan`, `verify` and `task`
-  sub-agents in `koda-core/agents/`. User and project agent configs override them.
+- **Built-in agents:** `default`, plus the `explore` and `task` sub-agents in
+  `koda-core/agents/`, and `fork`. User and project agent configs override them.
 
 ### Key types
 

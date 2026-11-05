@@ -76,7 +76,7 @@ EXECUTION MODEL
 WHEN TO USE InvokeAgent
 
 - The task requires exploring many files or running many searches that would pollute your context
-- A specialist persona adds value (`explore` for search, `plan` for architecture, `verify` for testing)
+- A specialist persona adds value (`explore` for search)
 - You want isolated tool restrictions (e.g., a read-only sub-agent for analysis)
 
 AGENT SELECTION
@@ -118,9 +118,8 @@ KEY RULES
                         "type": "string",
                         "description": "REQUIRED. Name of the sub-agent to dispatch to. \
                             Pick a specialist from the 'Available Sub-Agents' list in your system \
-                            prompt \u{2014} commonly `explore` (read-only search/analysis), `plan` \
-                            (architecture / step-by-step design), `task` (general-purpose worker, \
-                            full write access), `verify` (adversarial review). Use `fork` to \
+                            prompt \u{2014} commonly `explore` (read-only search/analysis) or \
+                            `task` (general-purpose worker, full write access). Use `fork` to \
                             inherit the full parent conversation context.\n\n\
                             **#1232 \u{00a7}5**: this field is required \u{2014} there is no default. \
                             Pre-fix the field silently defaulted to `task`, so every InvokeAgent \
@@ -180,7 +179,7 @@ pub fn discover_all_agents(project_root: &Path) -> Vec<AgentInfo> {
         }
         // **#1232 §5 (drive-by)**: prefer the explicit `description`
         // field over the heuristic `extract_description(system_prompt)`.
-        // The four built-in JSONs (`explore`, `plan`, `task`, `verify`)
+        // The built-in JSONs (`explore`, `task`)
         // all carry rich, model-facing one-liners in their
         // `description` fields, but pre-fix this branch ignored them
         // and showed the heuristic's first-sentence guess instead
@@ -649,16 +648,12 @@ mod tests {
             .iter()
             .filter(|(_, _, src)| src == "built-in")
             .collect();
-        assert_eq!(
-            builtins.len(),
-            4,
-            "Expected task/explore/plan/verify built-ins"
-        );
+        assert_eq!(builtins.len(), 2, "Expected task/explore built-ins");
         let names: Vec<&str> = result.iter().map(|(n, _, _)| n.as_str()).collect();
         assert!(names.contains(&"task"));
         assert!(names.contains(&"explore"));
-        assert!(names.contains(&"plan"));
-        assert!(names.contains(&"verify"));
+        assert!(!names.contains(&"plan"));
+        assert!(!names.contains(&"verify"));
         // Default is always excluded from listing
         assert!(!names.contains(&"default"), "Should exclude default agent");
     }
@@ -687,16 +682,12 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let agents = discover_all_agents(dir.path());
         let builtins: Vec<_> = agents.iter().filter(|a| a.source == "built-in").collect();
-        assert_eq!(
-            builtins.len(),
-            4,
-            "Expected task/explore/plan/verify built-ins"
-        );
+        assert_eq!(builtins.len(), 2, "Expected task/explore built-ins");
         let names: Vec<&str> = builtins.iter().map(|a| a.name.as_str()).collect();
         assert!(names.contains(&"task"));
         assert!(names.contains(&"explore"));
-        assert!(names.contains(&"plan"));
-        assert!(names.contains(&"verify"));
+        assert!(!names.contains(&"plan"));
+        assert!(!names.contains(&"verify"));
     }
 
     /// Pin the contract that `task` is THE general-purpose sub-agent.
@@ -772,8 +763,6 @@ mod tests {
         assert!(result.contains("[built-in]"));
         assert!(result.contains("task"));
         assert!(result.contains("explore"));
-        assert!(result.contains("plan"));
-        assert!(result.contains("verify"));
     }
 
     #[test]
