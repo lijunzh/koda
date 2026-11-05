@@ -109,9 +109,9 @@ usage, and a banner if the previous turn was interrupted mid-inference.
 ## `/memory [save]`
 
 ```text
-/memory        ← show the paths to project and global memory files
-/memory add <text>      ← append to the project memory file
-/memory global <text>   ← append to the global memory file
+/memory        ← show the instruction file and where Koda's notes are
+/memory add <text>      ← add to Koda's notes for this project
+/memory global <text>   ← add to Koda's global notes
 ```
 
 See [Memory](./memory.md) for the full memory system.

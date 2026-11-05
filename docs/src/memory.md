@@ -25,7 +25,10 @@ are sent after the instruction files.
 **Older names.** A project `MEMORY.md` and a global `~/.config/koda/memory.md`
 are still read where nothing newer exists, with a warning to rename them to
 `AGENTS.md`. Notes Koda wrote into a project file before this stay there as
-part of that file; move them if you'd rather they were private.
+part of that file; move them if you'd rather they were private. The
+instruction files, then the notes, share the 16,000-character cap below, so
+when the files are long the notes are what gets cut; `MemoryRead` still
+returns everything.
 
 Memory opens the first user message, not the system prompt, as in Claude
 Code and Codex. The model is told it is the project's instructions and tips,

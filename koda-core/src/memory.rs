@@ -87,6 +87,21 @@ struct CachedEntry {
 /// koda session: maybe one project memory + the global file).
 static MEMORY_CACHE: OnceLock<Mutex<HashMap<PathBuf, CachedEntry>>> = OnceLock::new();
 
+/// Legacy files already warned about, so a warning is logged once per
+/// process, not on every agent and sub-agent start.
+static WARNED_LEGACY: OnceLock<Mutex<std::collections::HashSet<PathBuf>>> = OnceLock::new();
+
+/// Log `message` the first time `path` is seen.
+fn warn_once(path: &Path, message: &str) {
+    let mut seen = WARNED_LEGACY
+        .get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    if seen.insert(path.to_path_buf()) {
+        tracing::warn!("{}: {message}", path.display());
+    }
+}
+
 fn cache() -> &'static Mutex<HashMap<PathBuf, CachedEntry>> {
     MEMORY_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -337,9 +352,10 @@ fn global_instruction_file(config: &Path) -> Option<PathBuf> {
     }
     let legacy = config.join(LEGACY_GLOBAL_FILE);
     legacy.is_file().then(|| {
-        tracing::warn!(
-            "{} is deprecated: rename it to AGENTS.md in the same folder",
-            legacy.display()
+        warn_once(
+            &legacy,
+            "the global memory.md is deprecated: rename it to AGENTS.md if it holds \
+             instructions, or move it to memories/MEMORY.md if it holds Koda's notes",
         );
         legacy
     })
@@ -379,9 +395,11 @@ fn folder_instruction_file(folder: &Path) -> Option<PathBuf> {
     }
     let legacy = folder.join(LEGACY_PROJECT_FILE);
     legacy.is_file().then(|| {
-        tracing::warn!(
-            "{} as project instructions is deprecated: rename it to AGENTS.md",
-            legacy.display()
+        warn_once(
+            &legacy,
+            "a project MEMORY.md is deprecated: rename it to AGENTS.md if it holds \
+             instructions, or move it out of the project (see /memory) if it holds \
+             Koda's notes",
         );
         legacy
     })
