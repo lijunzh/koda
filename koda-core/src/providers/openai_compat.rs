@@ -136,20 +136,23 @@ impl std::fmt::Debug for OpenAiCompatProvider {
 impl OpenAiCompatProvider {
     /// Create a new OpenAI-compatible provider with the given base URL and optional API key.
     pub fn new(base_url: &str, api_key: Option<String>) -> Self {
+        Self::with_http_client(base_url, api_key, super::build_http_client(Some(base_url)))
+    }
+
+    /// [`Self::new`] with the HTTP client to use, such as a local server's
+    /// ([`super::build_local_http_client`]).
+    pub fn with_http_client(
+        base_url: &str,
+        api_key: Option<String>,
+        client: reqwest::Client,
+    ) -> Self {
         Self {
-            client: super::build_http_client(Some(base_url)),
+            client,
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
             reasoning_plain: Arc::new(AtomicBool::new(false)),
             default_max_tokens: None,
         }
-    }
-
-    /// Use `client` for every request, such as one with a local server's
-    /// timeouts ([`super::build_local_http_client`]).
-    pub fn with_client(mut self, client: reqwest::Client) -> Self {
-        self.client = client;
-        self
     }
 
     /// Send `cap` as the reply cap when the settings have none.

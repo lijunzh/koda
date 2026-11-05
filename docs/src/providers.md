@@ -99,7 +99,7 @@ All providers use a shared HTTP client with the following timeout defaults:
 | Setting | Default | Env override | Description |
 |---------|---------|--------------|-------------|
 | Connect timeout | 30 s | `KODA_CONNECT_TIMEOUT_SECS` | Time allowed to establish the TCP/TLS connection |
-| Read timeout | 300 s (5 min); 1,800 s (30 min) for a local server | `KODA_READ_TIMEOUT_SECS` | Time allowed between bytes from the server (per-byte, not total) |
+| Read timeout | 300 s (5 min); 1,800 s (30 min) for a provider with no API key | `KODA_READ_TIMEOUT_SECS` | Time allowed between bytes from the server (per-byte, not total); `0` turns it off |
 
 The read timeout is **per-byte, not total**. A long streaming response is
 fine as long as bytes keep arriving — the timer resets on each chunk.
@@ -116,10 +116,10 @@ but a stalled connection (server hung after last byte) will fail fast.
   partway through generation. (Note: koda also auto-retries transient
   network errors, with up to five attempts and exponential backoff; see
   `providers/error.rs`.)
-- **Local provider (LM Studio, Ollama, vLLM, llama.cpp)?** The default is 30
-  minutes, because a local server sends nothing until it has read the whole
-  prompt, and a 150K-token prompt can take a local model more than five
-  minutes. A server that has died refuses the connection at once, so the long
+- **Provider with no API key (LM Studio, Ollama, vLLM, llama.cpp, or a
+  self-hosted server)?** The default is 30 minutes, because such a server
+  sends nothing until it has read the whole prompt, and a 150K-token prompt
+  can take a local model more than five minutes. A server that has died refuses the connection at once, so the long
   wait only covers one that is alive but stuck. Set `KODA_READ_TIMEOUT_SECS`
   lower if you'd rather fail fast.
 

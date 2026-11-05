@@ -271,7 +271,8 @@ pub fn build_http_client_builder(
 /// The read timeout's default: the longest the server may go silent.
 pub const READ_TIMEOUT_SECS: u64 = 300;
 
-/// The read timeout's default for a local server.
+/// The read timeout's default for a server with no API key: a local one
+/// (LM Studio, Ollama, vLLM, llama.cpp) or self-hosted.
 ///
 /// A local server sends nothing until it has read the whole prompt, and a
 /// long one on a local model takes minutes. On 2026-11-05 Qwen3.8-27B in LM
@@ -283,7 +284,7 @@ pub const READ_TIMEOUT_SECS: u64 = 300;
 /// server that is alive but stuck, which Ctrl-C ends.
 pub const LOCAL_READ_TIMEOUT_SECS: u64 = 1800;
 
-/// [`build_http_client`] for a local server: the same client, with
+/// [`build_http_client`] for a server with no API key: the same client, with
 /// [`LOCAL_READ_TIMEOUT_SECS`] as the read timeout's default.
 pub fn build_local_http_client(base_url: &str) -> reqwest::Client {
     client_builder(
@@ -295,9 +296,18 @@ pub fn build_local_http_client(base_url: &str) -> reqwest::Client {
     .unwrap_or_else(|_| reqwest::Client::new())
 }
 
-/// The read timeout: `KODA_READ_TIMEOUT_SECS` if set, else `default_secs`.
+/// The read timeout, in seconds: `KODA_READ_TIMEOUT_SECS` if it's a number,
+/// else `default_secs`. `0` turns the timeout off, as it does in Codex and
+/// qwen-code.
 fn read_timeout_secs(default_secs: u64) -> u64 {
-    crate::runtime_env::get("KODA_READ_TIMEOUT_SECS")
+    read_timeout_from(
+        crate::runtime_env::get("KODA_READ_TIMEOUT_SECS").as_deref(),
+        default_secs,
+    )
+}
+
+fn read_timeout_from(setting: Option<&str>, default_secs: u64) -> u64 {
+    setting
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(default_secs)
 }
@@ -324,9 +334,10 @@ fn client_builder(
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(30);
     let read_timeout = read_timeout_secs(default_read_secs);
-    builder = builder
-        .connect_timeout(std::time::Duration::from_secs(connect_timeout))
-        .read_timeout(std::time::Duration::from_secs(read_timeout));
+    builder = builder.connect_timeout(std::time::Duration::from_secs(connect_timeout));
+    if read_timeout > 0 {
+        builder = builder.read_timeout(std::time::Duration::from_secs(read_timeout));
+    }
 
     let proxy_url = crate::runtime_env::get("HTTPS_PROXY")
         .or_else(|| crate::runtime_env::get("HTTP_PROXY"))
@@ -503,13 +514,19 @@ pub fn create_provider(config: &KodaConfig) -> Box<dyn LlmProvider + Send + Sync
         #[cfg(any(test, feature = "test-support"))]
         ProviderType::Mock => Box::new(mock::MockProvider::from_env()),
         _ => {
-            let provider = openai_compat::OpenAiCompatProvider::new(&config.base_url, api_key);
+            let url = &config.base_url;
             Box::new(if config.provider_type.requires_api_key() {
-                provider
+                openai_compat::OpenAiCompatProvider::new(url, api_key)
             } else {
-                provider
-                    .with_default_max_tokens(openai_compat::LOCAL_REPLY_TOKEN_CAP)
-                    .with_client(build_local_http_client(&config.base_url))
+                // A server with no key is a local one (LM Studio, Ollama,
+                // vLLM, llama.cpp) or self-hosted: slow to start answering,
+                // and it reports no reply cap.
+                openai_compat::OpenAiCompatProvider::with_http_client(
+                    url,
+                    api_key,
+                    build_local_http_client(url),
+                )
+                .with_default_max_tokens(openai_compat::LOCAL_REPLY_TOKEN_CAP)
             })
         }
     }
@@ -520,17 +537,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_local_server_gets_the_long_read_timeout_unless_the_env_sets_one() {
-        // Only this test touches KODA_READ_TIMEOUT_SECS.
-        crate::runtime_env::mask("KODA_READ_TIMEOUT_SECS");
-        assert_eq!(read_timeout_secs(READ_TIMEOUT_SECS), 300);
-        assert_eq!(read_timeout_secs(LOCAL_READ_TIMEOUT_SECS), 1800);
-        crate::runtime_env::set("KODA_READ_TIMEOUT_SECS", "45");
-        assert_eq!(read_timeout_secs(LOCAL_READ_TIMEOUT_SECS), 45);
-        crate::runtime_env::set("KODA_READ_TIMEOUT_SECS", "soon");
-        assert_eq!(read_timeout_secs(LOCAL_READ_TIMEOUT_SECS), 1800);
-        crate::runtime_env::remove("KODA_READ_TIMEOUT_SECS");
-        crate::runtime_env::unmask("KODA_READ_TIMEOUT_SECS");
+    fn the_read_timeout_default_depends_on_the_server_unless_the_env_sets_one() {
+        assert_eq!(read_timeout_from(None, READ_TIMEOUT_SECS), 300);
+        assert_eq!(read_timeout_from(None, LOCAL_READ_TIMEOUT_SECS), 1800);
+        assert_eq!(read_timeout_from(Some("45"), LOCAL_READ_TIMEOUT_SECS), 45);
+        assert_eq!(
+            read_timeout_from(Some("soon"), LOCAL_READ_TIMEOUT_SECS),
+            1800
+        );
+        // 0 turns the timeout off; client_builder skips it.
+        assert_eq!(read_timeout_from(Some("0"), READ_TIMEOUT_SECS), 0);
     }
 
     // ── is_localhost_url ────────────────────────────────────────────────
