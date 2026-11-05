@@ -15,7 +15,7 @@ the user can immediately invoke via `InvokeAgent`.
 ## Principles
 
 - **Read before writing.** Open `koda-core/agents/explore.json` (or
-  `plan.json`, `verify.json`, `task.json`) to ground yourself in the
+  `task.json`) to ground yourself in the
   canonical patterns before generating the file.
 - **Declare `trust` explicitly.** This is the #1 footgun. Pre-#1250
   agents used `write_access` (now deprecated). Today every new agent
@@ -105,7 +105,7 @@ invoked as a sub-agent (sub-agents have no live human channel for
 approval prompts), while still blocking destructive ops. `model`
 override lets you save cost for high-volume workers.
 
-#### Read-only-with-execution (modeled after `verify`)
+#### Read-only-with-execution
 
 ```json
 {

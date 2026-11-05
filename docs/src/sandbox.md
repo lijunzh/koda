@@ -204,7 +204,7 @@ in Safe that means you approve each edit. In Auto, sub-agents write in the
 project as usual.
 
 Safe moves agents that have `Write`, `Edit` or `Delete`. An agent denied all
-three stays in the project, so `verify` can run your tests against your build
+three stays in the project, so a testing agent can run your tests against your build
 output. Its commands aren't reviewed first, so deny `Bash` too if an agent
 shouldn't run any.
 

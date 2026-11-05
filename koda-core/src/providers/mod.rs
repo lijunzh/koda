@@ -218,7 +218,8 @@ fn is_localhost_url(url: &str) -> bool {
 /// - Supports separate PROXY_USER / PROXY_PASS env vars
 /// - Bypasses proxy for localhost (LM Studio)
 /// - Applies a connect timeout (default 30s, env: `KODA_CONNECT_TIMEOUT_SECS`)
-///   and a read timeout (default 300s = 5 min, env: `KODA_READ_TIMEOUT_SECS`).
+///   and a read timeout (default 300s = 5 min, env: `KODA_READ_TIMEOUT_SECS`;
+///   [`build_local_http_client`] defaults it to [`LOCAL_READ_TIMEOUT_SECS`]).
 ///   We deliberately avoid the total-request `.timeout()` because it would
 ///   kill long-running SSE streams during slow tool/agent turns.
 ///
@@ -264,6 +265,58 @@ pub fn build_http_client_builder(
     base_url: Option<&str>,
     redirect_policy: reqwest::redirect::Policy,
 ) -> reqwest::ClientBuilder {
+    client_builder(base_url, redirect_policy, READ_TIMEOUT_SECS)
+}
+
+/// The read timeout's default: the longest the server may go silent.
+pub const READ_TIMEOUT_SECS: u64 = 300;
+
+/// The read timeout's default for a server with no API key: a local one
+/// (LM Studio, Ollama, vLLM, llama.cpp) or self-hosted.
+///
+/// A local server sends nothing until it has read the whole prompt, and a
+/// long one on a local model takes minutes. On 2026-11-05 Qwen3.8-27B in LM
+/// Studio took over five minutes to start answering a 150K-token prompt
+/// that had to be read from scratch after a sub-agent's requests: four
+/// attempts in a row hit the 300-second default, and each retry started the
+/// reading over, so a two-hour eval run lost half an hour. A server that has
+/// died refuses the connection at once, so a long wait here costs only a
+/// server that is alive but stuck, which Ctrl-C ends.
+pub const LOCAL_READ_TIMEOUT_SECS: u64 = 1800;
+
+/// [`build_http_client`] for a server with no API key: the same client, with
+/// [`LOCAL_READ_TIMEOUT_SECS`] as the read timeout's default.
+pub fn build_local_http_client(base_url: &str) -> reqwest::Client {
+    client_builder(
+        Some(base_url),
+        reqwest::redirect::Policy::default(),
+        LOCAL_READ_TIMEOUT_SECS,
+    )
+    .build()
+    .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// The read timeout, in seconds: `KODA_READ_TIMEOUT_SECS` if it's a number,
+/// else `default_secs`. `0` turns the timeout off, as it does in Codex and
+/// qwen-code.
+fn read_timeout_secs(default_secs: u64) -> u64 {
+    read_timeout_from(
+        crate::runtime_env::get("KODA_READ_TIMEOUT_SECS").as_deref(),
+        default_secs,
+    )
+}
+
+fn read_timeout_from(setting: Option<&str>, default_secs: u64) -> u64 {
+    setting
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(default_secs)
+}
+
+fn client_builder(
+    base_url: Option<&str>,
+    redirect_policy: reqwest::redirect::Policy,
+    default_read_secs: u64,
+) -> reqwest::ClientBuilder {
     let mut builder = reqwest::Client::builder().redirect(redirect_policy);
 
     // ── Timeouts ──────────────────────────────────────────────────────────
@@ -280,12 +333,11 @@ pub fn build_http_client_builder(
     let connect_timeout = crate::runtime_env::get("KODA_CONNECT_TIMEOUT_SECS")
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(30);
-    let read_timeout = crate::runtime_env::get("KODA_READ_TIMEOUT_SECS")
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(300);
-    builder = builder
-        .connect_timeout(std::time::Duration::from_secs(connect_timeout))
-        .read_timeout(std::time::Duration::from_secs(read_timeout));
+    let read_timeout = read_timeout_secs(default_read_secs);
+    builder = builder.connect_timeout(std::time::Duration::from_secs(connect_timeout));
+    if read_timeout > 0 {
+        builder = builder.read_timeout(std::time::Duration::from_secs(read_timeout));
+    }
 
     let proxy_url = crate::runtime_env::get("HTTPS_PROXY")
         .or_else(|| crate::runtime_env::get("HTTP_PROXY"))
@@ -462,11 +514,19 @@ pub fn create_provider(config: &KodaConfig) -> Box<dyn LlmProvider + Send + Sync
         #[cfg(any(test, feature = "test-support"))]
         ProviderType::Mock => Box::new(mock::MockProvider::from_env()),
         _ => {
-            let provider = openai_compat::OpenAiCompatProvider::new(&config.base_url, api_key);
+            let url = &config.base_url;
             Box::new(if config.provider_type.requires_api_key() {
-                provider
+                openai_compat::OpenAiCompatProvider::new(url, api_key)
             } else {
-                provider.with_default_max_tokens(openai_compat::LOCAL_REPLY_TOKEN_CAP)
+                // A server with no key is a local one (LM Studio, Ollama,
+                // vLLM, llama.cpp) or self-hosted: slow to start answering,
+                // and it reports no reply cap.
+                openai_compat::OpenAiCompatProvider::with_http_client(
+                    url,
+                    api_key,
+                    build_local_http_client(url),
+                )
+                .with_default_max_tokens(openai_compat::LOCAL_REPLY_TOKEN_CAP)
             })
         }
     }
@@ -475,6 +535,19 @@ pub fn create_provider(config: &KodaConfig) -> Box<dyn LlmProvider + Send + Sync
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_read_timeout_default_depends_on_the_server_unless_the_env_sets_one() {
+        assert_eq!(read_timeout_from(None, READ_TIMEOUT_SECS), 300);
+        assert_eq!(read_timeout_from(None, LOCAL_READ_TIMEOUT_SECS), 1800);
+        assert_eq!(read_timeout_from(Some("45"), LOCAL_READ_TIMEOUT_SECS), 45);
+        assert_eq!(
+            read_timeout_from(Some("soon"), LOCAL_READ_TIMEOUT_SECS),
+            1800
+        );
+        // 0 turns the timeout off; client_builder skips it.
+        assert_eq!(read_timeout_from(Some("0"), READ_TIMEOUT_SECS), 0);
+    }
 
     // ── is_localhost_url ────────────────────────────────────────────────
 

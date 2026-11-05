@@ -73,11 +73,11 @@ prompt needed because there's no UI for the sub-agent to prompt into.
 ### Read-only with execution escape valve (Safe trust + denied writes)
 
 For agents that need to run tests / inspect runtime state but should
-never modify code (e.g. the built-in `verify` agent):
+never modify code:
 
 ```json
 {
-  "name": "verify",
+  "name": "tester",
   "system_prompt": "You verify behavior by running tests. Never edit source.",
   "trust": "safe",
   "disallowed_tools": ["Write", "Edit", "Delete"]
@@ -162,5 +162,3 @@ also get an [isolated copy of the project](./sandbox.md#workspace-providers).
 | `default` | safe   | General-purpose coding assistant — the master agent shape                                                              |
 | `task`    | safe   | Generic write-capable sub-agent for `InvokeAgent` dispatch                                                             |
 | `explore` | plan   | Read-only investigation sub-agent — code review, dependency tracing, audit trails                                      |
-| `plan`    | plan   | Read-only planning sub-agent — proposes changes without making them                                                    |
-| `verify`  | safe   | Execution-only sub-agent — runs tests/scripts but `Write`/`Edit`/`Delete` are denied as a behavioral floor             |

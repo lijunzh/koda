@@ -15,9 +15,6 @@
 //! | `default` | Main interactive agent | All |
 //! | `task` | General-purpose delegated worker | All (write access) |
 //! | `explore` | Read-only code search | Read, Grep, Glob, List |
-//! | `guide` | Documentation assistant | WebFetch, WebSearch |
-//! | `plan` | Architecture planning | Read-only |
-//! | `verify` | Code review and verification | Read-only |
 
 use anyhow::{Context, Result};
 
@@ -606,8 +603,6 @@ impl KodaConfig {
         ("default", include_str!("../agents/default.json")),
         ("task", include_str!("../agents/task.json")),
         ("explore", include_str!("../agents/explore.json")),
-        ("plan", include_str!("../agents/plan.json")),
-        ("verify", include_str!("../agents/verify.json")),
     ];
 
     /// Load the raw `AgentConfig` for an agent without resolving it into a
@@ -1512,7 +1507,7 @@ mod tests {
         // Built-in agents must not hardcode a model or provider so that
         // sub-agent dispatch can inherit these from the parent session.
         let tmp = tempfile::TempDir::new().unwrap();
-        for name in ["explore", "plan", "verify", "task"] {
+        for name in ["explore", "task"] {
             let raw = KodaConfig::load_agent_json(tmp.path(), name)
                 .unwrap_or_else(|e| panic!("load_agent_json({name}) failed: {e}"));
             assert!(
@@ -1674,7 +1669,7 @@ mod tests {
     //   * `"trust": "plan"` parses to `TrustMode::Plan`
     //   * Absent field defaults to `TrustMode::Safe` (back-compat)
     //   * Unknown string falls back to `TrustMode::Safe` (forgiveness)
-    //   * Built-in `explore` and `plan` declare `"plan"` (the whole
+    //   * Built-in `explore` declares `"plan"` (the whole
     //     reason this field exists)
 
     /// Helper: write an agent JSON to a temp dir and load it.
@@ -1806,22 +1801,6 @@ mod tests {
             crate::trust::TrustMode::Plan,
             "explore.json must declare `\"trust\": \"plan\"` so the agent gets \
              kernel-enforced read-only via the sandbox"
-        );
-    }
-
-    #[test]
-    fn builtin_plan_agent_declares_trust_plan() {
-        // Same pin as `builtin_explore_agent_declares_trust_plan` but
-        // for the `plan` built-in agent. Both built-in read-only
-        // agents share the same trust-mode story; both need their
-        // own regression-protection test so a one-file edit can't
-        // silently regress one without the other.
-        let tmp = tempfile::TempDir::new().unwrap();
-        let cfg = KodaConfig::load(tmp.path(), "plan").expect("load plan failed");
-        assert_eq!(
-            cfg.trust,
-            crate::trust::TrustMode::Plan,
-            "plan.json must declare `\"trust\": \"plan\"`"
         );
     }
 
