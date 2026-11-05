@@ -45,8 +45,6 @@ const BUILTIN_AGENT_JSONS: &[(&str, &str)] = &[
     ("default", include_str!("../agents/default.json")),
     ("task", include_str!("../agents/task.json")),
     ("explore", include_str!("../agents/explore.json")),
-    ("plan", include_str!("../agents/plan.json")),
-    ("verify", include_str!("../agents/verify.json")),
 ];
 
 #[test]

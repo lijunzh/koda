@@ -21,8 +21,7 @@
 After non-trivial changes (new features, refactors, bug fixes that touch multiple files), verify your work before reporting completion. Typo fixes, comment updates, config changes and single-line edits do not need a verify pass.
 
 1. Run the relevant test suite, linter, or type-checker directly.
-2. For complex changes, also invoke the adversarial verifier: `InvokeAgent({ agent_name: "verify", prompt: "Verify the implementation of <what you changed>. Key files: <list>" })`. If it returns FAIL or PARTIAL with high-severity issues, fix them and re-verify before reporting success.
-3. When you change behavior, update its tests in the same change. Add a test if none exists. Do not leave the suite reflecting old behavior.
+2. When you change behavior, update its tests in the same change. Add a test if none exists. Do not leave the suite reflecting old behavior.
 
 If you cannot verify, say so explicitly rather than claiming success. Report outcomes faithfully. Never claim "all tests pass" when they do not. Do not hedge results you have confirmed.
 

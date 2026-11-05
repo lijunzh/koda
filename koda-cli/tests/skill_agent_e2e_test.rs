@@ -9,16 +9,16 @@
 //! - `koda-docs` appears in `ListSkills` output.
 //! - `ActivateSkill { skill_name: "koda-docs" }` returns manual content.
 //!
-//! **Built-in sub-agents** (explore / plan / verify / task):
+//! **Built-in sub-agents** (explore / task):
 //! - `InvokeAgent { agent_name: X }` is dispatched and the agent runs.
 //! - The `SubAgentStart` event (prints the agent name to stderr) is emitted.
-//! - `ListAgents` exposes all four built-in agents.
+//! - `ListAgents` exposes the built-in agents.
 //!
 //! ## Mock provider behaviour
 //!
 //! Each `create_provider()` call returns a fresh `MockProvider::from_env()`,
 //! so sub-agents receive an independent copy of `KODA_MOCK_RESPONSES`.
-//! `explore`, `plan`, and `verify` all have `InvokeAgent` in their
+//! `explore` has `InvokeAgent` in its
 //! `disallowed_tools`, so if the mock tries to call it inside those agents
 //! the tool dispatch returns an error and the loop advances to the next
 //! scripted response.
@@ -168,7 +168,7 @@ fn unknown_skill_returns_not_found_gracefully() {
 //   Main agent turn 1  → consumes InvokeAgent response → dispatches sub-agent X.
 //   Sub-agent X        → gets a fresh copy of the same mock list; its first
 //                        response tries InvokeAgent, which is disallowed for
-//                        explore/plan/verify, so the tool dispatch returns an
+//                        explore, so the tool dispatch returns an
 //                        error; the agent then consumes the "final text"
 //                        response and finishes.
 //   Main agent turn 2  → consumes "final text" → session completes.
@@ -204,38 +204,6 @@ fn explore_sub_agent_is_dispatched_when_invoked() {
     assert!(
         clean.contains("InvokeAgent"),
         "expected InvokeAgent tool call in stderr.\nstderr: {clean}"
-    );
-}
-
-#[test]
-fn plan_sub_agent_is_dispatched_when_invoked() {
-    let responses = invoke_agent_responses("plan", "design a caching layer");
-    let (stdout, stderr, success) = run_mock("plan a new feature", &responses);
-    assert!(success, "process failed.\nstderr: {stderr}");
-
-    let json = extract_json(&stdout);
-    assert_eq!(json["success"], true);
-
-    let clean = strip_ansi(&stderr);
-    assert!(
-        clean.contains("plan"),
-        "expected SubAgentStart for 'plan' in stderr.\nstderr: {clean}"
-    );
-}
-
-#[test]
-fn verify_sub_agent_is_dispatched_when_invoked() {
-    let responses = invoke_agent_responses("verify", "check the auth module");
-    let (stdout, stderr, success) = run_mock("verify my changes", &responses);
-    assert!(success, "process failed.\nstderr: {stderr}");
-
-    let json = extract_json(&stdout);
-    assert_eq!(json["success"], true);
-
-    let clean = strip_ansi(&stderr);
-    assert!(
-        clean.contains("verify"),
-        "expected SubAgentStart for 'verify' in stderr.\nstderr: {clean}"
     );
 }
 
@@ -280,7 +248,7 @@ fn task_sub_agent_is_dispatched_when_invoked() {
 
 // ── ListAgents ───────────────────────────────────────────────────────────────
 
-/// ListAgents must expose all four built-in sub-agents.
+/// ListAgents must expose the built-in sub-agents.
 /// `guide` must NOT appear — it was deleted and replaced by the koda-docs skill.
 #[test]
 fn list_agents_shows_all_builtin_sub_agents() {
@@ -296,7 +264,7 @@ fn list_agents_shows_all_builtin_sub_agents() {
 
     let clean = strip_ansi(&stderr);
 
-    for agent in ["explore", "plan", "verify", "task"] {
+    for agent in ["explore", "task"] {
         assert!(
             clean.contains(agent),
             "expected built-in agent '{agent}' in ListAgents output.\nstderr: {clean}"

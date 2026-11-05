@@ -912,8 +912,8 @@ pub(crate) fn execute_sub_agent<'a>(
             // **#1246**: `cfg.trust` here is the agent's **declared**
             // mode, sourced from the optional `"trust"` field in agent
             // JSON (defaults to `Safe` for back-compat with pre-#1246
-            // agent files). Built-in `explore` and `plan` agents
-            // declare `"trust": "plan"` so they get kernel-enforced
+            // agent files). The built-in `explore` agent
+            // declares `"trust": "plan"` so it gets kernel-enforced
             // read-only via the sandbox — strictly stronger than the
             // soft `disallowed_tools` gate (which a creative model
             // could try to bash around via `cat > foo`).
@@ -1788,8 +1788,8 @@ fn edits_files(allowed: &[String], disallowed: &[String]) -> bool {
 ///
 /// `trust` is the sub-agent's own, and in Plan it can't change anything. An agent
 /// that asks for a worktree gets one whatever its tools, since Bash can write too.
-/// Safe only moves agents with file tools: `verify` runs commands in the project
-/// and is denied the rest, and a worktree has no build output to test against.
+/// Safe only moves agents with file tools: one that only runs commands stays in
+/// the project, since a worktree has no build output to test against.
 fn needs_worktree(
     trust: TrustMode,
     edits_files: bool,
@@ -2451,8 +2451,8 @@ mod parse_agent_name_required_tests {
     use std::path::Path;
 
     /// Tests use `Path::new(".")` for the project root. Discovery
-    /// will return only built-in agents (`explore`, `plan`, `task`,
-    /// `verify`) plus any in `<cwd>/agents/` if it exists. The
+    /// will return only built-in agents (`explore`, `task`) plus any
+    /// in `<cwd>/agents/` if it exists. The
     /// hint-suffix assertions only check for built-in names that
     /// must always be present.
     fn root() -> &'static Path {
@@ -2541,8 +2541,8 @@ mod parse_agent_name_required_tests {
     #[test]
     fn hint_lists_builtins_and_fork() {
         let hint = available_agents_hint(root());
-        // The four built-in agents must always be present.
-        for name in ["explore", "plan", "task", "verify", "fork"] {
+        // The built-in agents must always be present.
+        for name in ["explore", "task", "fork"] {
             assert!(hint.contains(name), "hint must list `{name}`: {hint}");
         }
         // Names are sorted + deduplicated; `fork` should appear exactly once
