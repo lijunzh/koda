@@ -199,8 +199,9 @@ pub fn build_system_prompt(
     // Memory paths
     prompt.push_str(
         "\n## Memory\n\n\
-         Project: `MEMORY.md` (also reads `CLAUDE.md`, `AGENTS.md`) | \
-         Global: `~/.config/koda/memory.md`\n",
+         Instructions: `AGENTS.md` in each folder from the git root down (`CLAUDE.md` \
+         where a folder has none), plus a global `AGENTS.md` in Koda's config directory. \
+         `MemoryWrite` saves notes outside the project.\n",
     );
 
     prompt

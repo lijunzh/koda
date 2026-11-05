@@ -44,11 +44,11 @@ fn global_memory_is_written_under_xdg_config_home() {
     let (stderr, ok) = run(home.path(), xdg.path(), project.path(), &responses);
     assert!(ok, "koda failed:\n{stderr}");
 
-    let written = std::fs::read_to_string(xdg.path().join("koda/memory.md"))
+    let written = std::fs::read_to_string(xdg.path().join("koda/memories/MEMORY.md"))
         .unwrap_or_else(|e| panic!("no global memory under XDG_CONFIG_HOME: {e}\n{stderr}"));
     assert!(written.contains("prefers tabs"), "{written}");
     assert!(
-        !home.path().join(".config/koda/memory.md").exists(),
+        !home.path().join(".config/koda").exists(),
         "global memory was written under HOME"
     );
 }

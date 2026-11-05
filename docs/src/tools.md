@@ -18,7 +18,7 @@ prompt. See [Trust modes](./approval.md) for the canonical matrix.
 | `WebFetch` | Read-only | Fetch a URL and return its text content |
 | `WebSearch` | Read-only | Search the web via DuckDuckGo |
 | `MemoryRead` | Read-only | Read from project or global memory |
-| `MemoryWrite` | Mutating | Append a fact to a memory file |
+| `MemoryWrite` | Mutating | Save a fact to Koda's notes, outside the project |
 | `TodoWrite` | Read-only | Update the session task list (Koda-owned state, no FS impact) |
 | `RecallContext` | Read-only | Search session history for past context |
 | `ListSkills` | Read-only | List available skills |

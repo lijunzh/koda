@@ -351,7 +351,7 @@ pub(crate) fn handle_memory(
                 tui_output::warn_msg(buffer, "Usage: /memory global <text>".into());
             } else {
                 match koda_core::memory::append_global(entry) {
-                    Ok(()) => tui_output::ok_msg(buffer, "Saved to global memory".into()),
+                    Ok(()) => tui_output::ok_msg(buffer, "Saved to Koda's global notes".into()),
                     Err(e) => tui_output::err_msg(buffer, format!("Error: {e}")),
                 }
             }
@@ -363,43 +363,54 @@ pub(crate) fn handle_memory(
             } else {
                 match koda_core::memory::append(project_root, entry) {
                     Ok(()) => {
-                        tui_output::ok_msg(buffer, "Saved to project memory (MEMORY.md)".into())
+                        tui_output::ok_msg(buffer, "Saved to Koda's notes for this project".into())
                     }
                     Err(e) => tui_output::err_msg(buffer, format!("Error: {e}")),
                 }
             }
         }
         _ => {
-            let active = koda_core::memory::active_project_file(project_root);
+            let path_or = |p: anyhow::Result<std::path::PathBuf>| {
+                p.map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| "(no config directory)".into())
+            };
             tui_output::blank(buffer);
             tui_output::emit_line(buffer, Line::styled("  \u{1f43b} Memory", BOLD));
             tui_output::blank(buffer);
-            match active {
+            match koda_core::memory::active_project_file(project_root) {
                 Some(f) => tui_output::emit_line(
                     buffer,
-                    Line::from(vec![Span::raw("  Project: "), Span::styled(f, CYAN)]),
+                    Line::from(vec![Span::raw("  Instructions: "), Span::styled(f, CYAN)]),
                 ),
                 None => tui_output::dim_msg(
                     buffer,
-                    "Project: (none \u{2014} will create MEMORY.md on first write)".into(),
+                    "Instructions: (none \u{2014} add an AGENTS.md to the project)".into(),
                 ),
             }
-            tui_output::emit_line(
-                buffer,
-                Line::from(vec![
-                    Span::raw("  Global:  "),
-                    Span::styled("~/.config/koda/memory.md", CYAN),
-                ]),
-            );
+            for (label, path) in [
+                (
+                    "  Notes:        ",
+                    path_or(koda_core::memory::project_notes_path(project_root)),
+                ),
+                (
+                    "  Global notes: ",
+                    path_or(koda_core::memory::global_notes_path()),
+                ),
+            ] {
+                tui_output::emit_line(
+                    buffer,
+                    Line::from(vec![Span::raw(label), Span::styled(path, CYAN)]),
+                );
+            }
             tui_output::blank(buffer);
             tui_output::dim_msg(buffer, "Commands:".into());
             tui_output::dim_msg(
                 buffer,
-                "  /memory add <text>      Save to project MEMORY.md".into(),
+                "  /memory add <text>      Save to Koda's notes for this project".into(),
             );
             tui_output::dim_msg(
                 buffer,
-                "  /memory global <text>   Save to global memory".into(),
+                "  /memory global <text>   Save to Koda's global notes".into(),
             );
             tui_output::blank(buffer);
             tui_output::dim_msg(

@@ -20,7 +20,7 @@
 //!
 //! - Summary of all prior conversation and decisions
 //! - Progress tracking entries (survive compaction via DB metadata)
-//! - Memory facts (injected from `MEMORY.md`, not from conversation)
+//! - Memory facts (injected from `AGENTS.md` and Koda's notes, not from conversation)
 //! - File ownership state (tracked in SQLite, not in messages)
 //!
 //! Pure logic, zero UI dependencies. Returns structured results

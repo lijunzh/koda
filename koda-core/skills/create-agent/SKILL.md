@@ -147,7 +147,7 @@ longer auto-blocks Write/Edit on its own.
 **Memory:**
 
 - `skip_memory` — default `false`. Set `true` for read-only agents to
-  avoid injecting MEMORY.md into the system prompt (saves tokens).
+  avoid sending the project's instruction files (saves tokens).
 
 **Model overrides (optional — omit to inherit main agent settings):**
 
