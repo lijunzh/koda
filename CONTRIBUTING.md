@@ -1,6 +1,6 @@
 # Contributing to Koda
 
-[CLAUDE.md](CLAUDE.md) has project structure, conventions, build commands and
+[AGENTS.md](AGENTS.md) has project structure, conventions, build commands and
 documentation rules. [docs/src/development.md](docs/src/development.md) has the
 full workspace tree, the release checklist, and how CI works.
 

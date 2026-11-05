@@ -1,6 +1,6 @@
 # Development reference
 
-Reference for working on Koda itself. [`CLAUDE.md`](https://github.com/lijunzh/koda/blob/main/CLAUDE.md)
+Reference for working on Koda itself. [`AGENTS.md`](https://github.com/lijunzh/koda/blob/main/AGENTS.md)
 holds what an agent needs on every turn; this page holds what it needs only for
 a particular job: the full workspace tree, the release and new-capability
 checklists, and how CI, the security audit and coverage work.
@@ -306,7 +306,7 @@ For capabilities that ship in the koda workspace (same release cycle):
 8. Write integration tests in `tests/mcp_integration_test.rs`
 9. Update `release.yml`: version verify, build, package, publish, Homebrew
 10. Sync version with the workspace
-11. Update `CLAUDE.md` and this page
+11. Update `AGENTS.md` and this page
 
 ## Toolchain
 

@@ -532,7 +532,7 @@ The prompt, with project memory, is the largest fixed cost per model call, on a 
 - **Instructions are `AGENTS.md`; Koda's own notes live outside the project.** Codex reads `AGENTS.md`, one per folder from the git root down (`AGENTS.override.md` first), and Claude Code reads `AGENTS.md` where a folder has no `CLAUDE.md`. Koda does the same with the names swapped: `AGENTS.md` first, `CLAUDE.md` as the fallback, one file per folder. One file per folder matters to the eval harness, which writes the same instructions under both names. What the agent writes for itself never goes in the repo: Codex keeps it in `~/.codex/memories`, Claude Code under `~/.claude/projects/<project>/memory/`, Qwen Code outside the repo unless a team tier is switched on. Koda uses Codex's layout, `<config>/memories/<project>/MEMORY.md`. Before, `MemoryWrite` added sections to the project's `CLAUDE.md` or `AGENTS.md`, a file the whole team and every other agent read. A Codex-style background pipeline that extracts notes from past sessions is a separate design, not built.
 - **The quick reference is for the REPL.** Runs with no REPL pay nothing for it. Neither peer lists its commands; `/help` and the `koda-docs` skill answer the rare question.
 - **No rule without a gap.** Peer rules the evals showed no need for stayed out: "implement, don't describe" (the control passes 13 of 13), "don't commit unless asked" (no commits in 594 runs), "don't paste files back" (none on Haiku).
-- **`CLAUDE.md` is prompt too.** It holds what an agent needs on every turn. The rest is in `docs/src/development.md`.
+- **`AGENTS.md` is prompt too.** It holds what an agent needs on every turn. The rest is in `docs/src/development.md`.
 
 ### Progress Tracking: Model-Owned, History-Persisted, Engine-Surfaced (P3-corollary)
 
@@ -1036,13 +1036,14 @@ This means:
 
 ## Interaction
 
-### No `.koda.md` — Use `CLAUDE.md` (P1, P2)
+### No `.koda.md` — Use `AGENTS.md` (P1, P2)
 
 Koda will NOT introduce a `.koda.md` project rules file. User-authored
-project instructions go in `CLAUDE.md`.
+project instructions go in `AGENTS.md`, the file Codex, Qwen Code and Claude
+Code also read.
 
-Koda already reads `CLAUDE.md` via the `memory.rs` fallback chain
-(`MEMORY.md` → `CLAUDE.md` → `AGENTS.md`). Adding `.koda.md` would:
+Koda reads `AGENTS.md` in each folder from the git root down, with
+`CLAUDE.md` as the fallback (`memory.rs`). Adding `.koda.md` would:
 - Create a redundant magic filename with confusing priority semantics
 - Force users to maintain two files with overlapping content
 - Violate DRY at the ecosystem level — one file should serve both tools
