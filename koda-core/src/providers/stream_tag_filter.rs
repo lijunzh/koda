@@ -6,7 +6,11 @@
 //! at the **provider layer**:
 //!
 //! - **Thinking tags** (`<think>`, `<thinking>`, `<reasoning>`, `<reflection>`)
-//!   → converted to `ThinkingDelta` chunks
+//!   → converted to `ThinkingDelta` chunks, but only where a model puts its
+//!   reasoning: a block at the very start of the reply, or a lone close tag
+//!   whose open tag was in the prompt. Anywhere else, and in any reply whose
+//!   server sends reasoning in its own field, they are text: an answer that
+//!   mentions `<think>` must not vanish into reasoning.
 //! - **Tool call tags** (`<tool_call>`, `<function_call>`, `<tool_use>`)
 //!   → suppressed with a warning (model lacks native function calling)
 //! - **Special tokens** (`<|im_start|>`, `<|endoftext|>`, `<|eot_id|>`, etc.)
@@ -124,23 +128,47 @@ enum EarliestMatch {
     /// An open tag was found: emit text before it, transition to InBlock.
     OpenTag { pos: usize, pair_idx: usize },
     /// A stale close tag was found: emit text before it, skip the tag.
-    StaleClose { pos: usize, close_len: usize },
+    StaleClose {
+        pos: usize,
+        close_len: usize,
+        thinking: bool,
+    },
     /// A special token was found: emit text before it, skip the token.
     SpecialToken { pos: usize, token_len: usize },
     /// Nothing found.
     None,
 }
 
+/// Which thinking tags still count as reasoning, rather than as text.
+#[derive(Debug, Clone, Copy)]
+struct ThinkTags {
+    /// An open tag starts reasoning: nothing but whitespace before it.
+    open: bool,
+    /// A lone close tag ends reasoning whose open tag was in the prompt.
+    stale_close: bool,
+}
+
 /// Scan `buffer` for the earliest open tag, stale close tag, or special token.
-fn find_earliest_match(buffer: &str) -> EarliestMatch {
+///
+/// Also says whether a thinking open tag in `buffer` is text (it comes after
+/// other text) and precedes any stale close tag: after one, the model is
+/// writing about the tags, so a later close tag is text too.
+fn find_earliest_match(buffer: &str, think: ThinkTags) -> (EarliestMatch, bool) {
     let mut best_pos = usize::MAX;
     let mut best = EarliestMatch::None;
+    let mut literal_open = usize::MAX;
+    let mut stale_think = usize::MAX;
 
     // Check open tags
     for (i, pair) in TAG_PAIRS.iter().enumerate() {
-        if let Some(pos) = buffer.find(pair.open)
-            && pos < best_pos
-        {
+        let Some(pos) = buffer.find(pair.open) else {
+            continue;
+        };
+        if pair.action == TagAction::Thinking && !(think.open && buffer[..pos].trim().is_empty()) {
+            literal_open = literal_open.min(pos);
+            continue;
+        }
+        if pos < best_pos {
             best_pos = pos;
             best = EarliestMatch::OpenTag { pos, pair_idx: i };
         }
@@ -148,13 +176,24 @@ fn find_earliest_match(buffer: &str) -> EarliestMatch {
 
     // Check stale close tags (only if they appear before any open tag)
     for pair in TAG_PAIRS {
+        if pair.action == TagAction::Thinking && !think.stale_close {
+            continue;
+        }
+        if pair.action == TagAction::Thinking
+            && let Some(pos) = buffer.find(pair.close)
+            && pos < literal_open
+        {
+            stale_think = stale_think.min(pos);
+        }
         if let Some(pos) = buffer.find(pair.close)
             && pos < best_pos
+            && (pair.action != TagAction::Thinking || pos < literal_open)
         {
             best_pos = pos;
             best = EarliestMatch::StaleClose {
                 pos,
                 close_len: pair.close.len(),
+                thinking: pair.action == TagAction::Thinking,
             };
         }
     }
@@ -172,7 +211,7 @@ fn find_earliest_match(buffer: &str) -> EarliestMatch {
         }
     }
 
-    best
+    (best, literal_open < stale_think)
 }
 
 // ── Filter state ─────────────────────────────────────────────
@@ -198,6 +237,8 @@ pub struct StreamTagFilter {
     state: FilterState,
     /// Only warn about suppressed tool calls once per stream.
     warned_suppressed: bool,
+    /// Which thinking tags still count as reasoning.
+    think: ThinkTags,
 }
 
 impl StreamTagFilter {
@@ -207,7 +248,30 @@ impl StreamTagFilter {
             buffer: String::new(),
             state: FilterState::Normal,
             warned_suppressed: false,
+            think: ThinkTags {
+                open: true,
+                stale_close: true,
+            },
         }
+    }
+
+    /// The server sends this reply's reasoning in its own field, so thinking
+    /// tags in the text are the model writing about them.
+    pub fn saw_native_reasoning(&mut self) {
+        self.think.open = false;
+        self.think.stale_close = false;
+    }
+
+    /// Queue `text` for output; once it holds more than whitespace, a
+    /// thinking open tag is no longer at the reply's start.
+    fn emit_text(&mut self, output: &mut Vec<StreamChunk>, text: String) {
+        if text.is_empty() {
+            return;
+        }
+        if !text.trim().is_empty() {
+            self.think.open = false;
+        }
+        output.push(StreamChunk::TextDelta(text));
     }
 
     /// Process a stream chunk. Returns zero or more output chunks.
@@ -256,6 +320,11 @@ impl StreamTagFilter {
                         let content = self.buffer[..end_pos].to_string();
                         self.buffer = self.buffer[end_pos + close_tag.len()..].to_string();
                         self.state = FilterState::Normal;
+                        if action == TagAction::Thinking {
+                            // A reply reasons once, at its start.
+                            self.think.open = false;
+                            self.think.stale_close = false;
+                        }
 
                         match action {
                             TagAction::Thinking if !content.is_empty() => {
@@ -287,7 +356,11 @@ impl StreamTagFilter {
                     }
                 }
                 FilterState::Normal => {
-                    match find_earliest_match(&self.buffer) {
+                    let (found, literal_open_first) = find_earliest_match(&self.buffer, self.think);
+                    if literal_open_first {
+                        self.think.stale_close = false;
+                    }
+                    match found {
                         EarliestMatch::OpenTag { pos, pair_idx } => {
                             let pair = &TAG_PAIRS[pair_idx];
                             let before = self.buffer[..pos].to_string();
@@ -296,25 +369,27 @@ impl StreamTagFilter {
                                 close_tag: pair.close,
                                 action: pair.action,
                             };
-                            if !before.is_empty() {
-                                output.push(StreamChunk::TextDelta(before));
-                            }
+                            self.emit_text(&mut output, before);
                             continue;
                         }
-                        EarliestMatch::StaleClose { pos, close_len } => {
+                        EarliestMatch::StaleClose {
+                            pos,
+                            close_len,
+                            thinking,
+                        } => {
                             let before = self.buffer[..pos].to_string();
                             self.buffer = self.buffer[pos + close_len..].to_string();
-                            if !before.is_empty() {
-                                output.push(StreamChunk::TextDelta(before));
+                            if thinking {
+                                self.think.open = false;
+                                self.think.stale_close = false;
                             }
+                            self.emit_text(&mut output, before);
                             continue;
                         }
                         EarliestMatch::SpecialToken { pos, token_len } => {
                             let before = self.buffer[..pos].to_string();
                             self.buffer = self.buffer[pos + token_len..].to_string();
-                            if !before.is_empty() {
-                                output.push(StreamChunk::TextDelta(before));
-                            }
+                            self.emit_text(&mut output, before);
                             continue;
                         }
                         EarliestMatch::None => {
@@ -327,7 +402,7 @@ impl StreamTagFilter {
                             if safe_len > 0 {
                                 let safe = self.buffer[..safe_len].to_string();
                                 self.buffer = self.buffer[safe_len..].to_string();
-                                output.push(StreamChunk::TextDelta(safe));
+                                self.emit_text(&mut output, safe);
                             }
                             break;
                         }
@@ -442,10 +517,70 @@ mod tests {
     }
 
     #[test]
-    fn multiple_think_blocks() {
-        let all = run_filter(&["intro<think>thought1</think>middle<think>thought2</think>end"]);
-        assert_eq!(collect_thinking(&all), "thought1thought2");
-        assert_eq!(collect_text(&all), "intromiddleend");
+    fn think_block_after_text_is_text() {
+        // A reply reasons at its start; a tag after other text is the model
+        // writing about tags, and hiding it would hide the answer.
+        let all = run_filter(&["intro<think>thought1</think>middle"]);
+        assert!(collect_thinking(&all).is_empty());
+        assert_eq!(collect_text(&all), "intro<think>thought1</think>middle");
+    }
+
+    #[test]
+    fn second_think_block_is_text() {
+        let all = run_filter(&["<think>thought1</think>middle<think>thought2</think>end"]);
+        assert_eq!(collect_thinking(&all), "thought1");
+        assert_eq!(collect_text(&all), "middle<think>thought2</think>end");
+    }
+
+    #[test]
+    fn whitespace_before_think_block() {
+        let all = run_filter(&["\n\n<think>reasoning</think>answer"]);
+        assert_eq!(collect_thinking(&all), "reasoning");
+        assert_eq!(collect_text(&all), "\n\nanswer");
+    }
+
+    #[test]
+    fn answer_mentioning_think_tags_is_kept() {
+        // The think-tag-multibyte eval: the model explains the filter's own tags.
+        // (A lone close tag before any open tag can't be told from reasoning
+        // whose open tag was in the prompt, so without native reasoning it is
+        // stripped once; see `only_the_first_stale_close_is_stripped`.)
+        let answer = "A partial \"<think>\" across chunks is held back, so \
+                      `find(\"</think>\")` sees the whole tag \u{2014} no slicing inside \u{1F43B}.";
+        let all = run_filter(&["Fixed. ", answer]);
+        assert!(collect_thinking(&all).is_empty());
+        assert_eq!(collect_text(&all), format!("Fixed. {answer}"));
+    }
+
+    #[test]
+    fn think_tag_mid_answer_across_chunks() {
+        let all = run_filter(&["The tag <thi", "nk> opens a block, </thi", "nk> ends it."]);
+        assert!(collect_thinking(&all).is_empty());
+        assert_eq!(
+            collect_text(&all),
+            "The tag <think> opens a block, </think> ends it."
+        );
+    }
+
+    #[test]
+    fn native_reasoning_turns_think_tags_into_text() {
+        let mut filter = StreamTagFilter::new();
+        filter.saw_native_reasoning();
+        let mut all = filter.process(StreamChunk::TextDelta(
+            "<think>x</think> and </think>".into(),
+        ));
+        all.extend(filter.flush());
+        assert!(collect_thinking(&all).is_empty());
+        assert_eq!(collect_text(&all), "<think>x</think> and </think>");
+    }
+
+    #[test]
+    fn native_reasoning_keeps_other_filtering() {
+        let mut filter = StreamTagFilter::new();
+        filter.saw_native_reasoning();
+        let mut all = filter.process(StreamChunk::TextDelta("Done!<|im_end|>".into()));
+        all.extend(filter.flush());
+        assert_eq!(collect_text(&all), "Done!");
     }
 
     // ── Stale close tag tests (issue #191) ───────────────────
@@ -464,10 +599,30 @@ mod tests {
     }
 
     #[test]
-    fn stale_close_then_new_think_block() {
+    fn stale_close_then_think_tags_are_text() {
+        // Reasoning ended at the stale close; later tags are text.
         let all = run_filter(&["</think>prefix<think>reasoning</think>answer"]);
-        assert_eq!(collect_text(&all), "prefixanswer");
-        assert_eq!(collect_thinking(&all), "reasoning");
+        assert_eq!(collect_text(&all), "prefix<think>reasoning</think>answer");
+        assert!(collect_thinking(&all).is_empty());
+    }
+
+    #[test]
+    fn only_the_first_stale_close_is_stripped() {
+        let all = run_filter(&["reasoning</think>answer mentions </think> too"]);
+        assert_eq!(collect_text(&all), "reasoninganswer mentions </think> too");
+    }
+
+    #[test]
+    fn stale_close_after_a_special_token_still_stripped() {
+        let all = run_filter(&["<|im_start|>reasoning</think>answer about <think>"]);
+        assert_eq!(collect_text(&all), "reasoninganswer about <think>");
+        assert!(collect_thinking(&all).is_empty());
+    }
+
+    #[test]
+    fn close_tag_after_a_literal_open_tag_is_text() {
+        let all = run_filter(&["Write <think> and then </think>."]);
+        assert_eq!(collect_text(&all), "Write <think> and then </think>.");
     }
 
     #[test]
@@ -616,8 +771,8 @@ mod tests {
 
     #[test]
     fn empty_blocks_produce_no_chunks() {
-        let all = run_filter(&["before<think></think>after"]);
-        assert_eq!(collect_text(&all), "beforeafter");
+        let all = run_filter(&["<think></think>after"]);
+        assert_eq!(collect_text(&all), "after");
         assert!(collect_thinking(&all).is_empty());
     }
 
