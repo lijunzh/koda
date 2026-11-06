@@ -328,7 +328,7 @@ use super::stream_collector::ChunkParser;
 ///
 /// Handles the OpenAI streaming format with `choices[].delta` incremental fields,
 /// reasoning content (`reasoning_content` or `reasoning`), and `<think>` tag filtering for models
-/// that wrap reasoning in XML tags.
+/// that wrap reasoning in XML tags (off once the server sends reasoning in its own field).
 pub(crate) struct OpenAiChunkParser {
     tool_calls: Vec<(String, String, String)>, // (id, name, args)
     usage: TokenUsage,
@@ -439,6 +439,7 @@ impl ChunkParser for OpenAiChunkParser {
                 if let Some(flag) = &self.reasoning_plain {
                     flag.store(field == ReasoningField::Reasoning, Ordering::Relaxed);
                 }
+                self.think_filter.saw_native_reasoning();
                 chunks.push(StreamChunk::ThinkingDelta(reasoning.to_string()));
             }
 
@@ -1258,6 +1259,30 @@ mod tests {
             r#"{"choices":[{"delta":{"reasoning_content":"hmm"},"finish_reason":null}]}"#,
         );
         assert!(matches!(&chunks[..], [StreamChunk::ThinkingDelta(t)] if t == "hmm"));
+    }
+
+    #[test]
+    fn think_tags_in_content_stay_text_after_native_reasoning() {
+        // LM Studio sends reasoning in `reasoning_content`, so `<think>` in the
+        // answer is the model writing about tags, not more reasoning.
+        let mut parser = OpenAiChunkParser::new();
+        let mut chunks = parse_chunks(
+            &mut parser,
+            r#"{"choices":[{"delta":{"reasoning_content":"hmm"},"finish_reason":null}]}"#,
+        );
+        chunks.extend(parse_chunks(
+            &mut parser,
+            r#"{"choices":[{"delta":{"content":"<think>x</think> is the tag pair"},"finish_reason":"stop"}]}"#,
+        ));
+        chunks.extend(parser.finish());
+        let text: String = chunks
+            .iter()
+            .filter_map(|c| match c {
+                StreamChunk::TextDelta(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, "<think>x</think> is the tag pair");
     }
 
     #[test]
