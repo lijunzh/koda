@@ -53,8 +53,8 @@ If the turn ends without delivering your text, because you pressed `Esc`, chose
 to stop at the iteration limit, or the turn failed, the text returns to the
 input box. Press `Enter` to send it as a new prompt.
 
-**Slash commands (`/cancel`, `/compact`, `/model`, …) are not accepted
-mid-inference** (#1211/#1222). Type `/cancel agent:1` while the model is
+**Slash commands (`/compact`, `/model`, …) are not accepted
+mid-inference** (#1211/#1222). Type `/compact` while the model is
 thinking and you'll see a transient "slash commands disabled during
 inference — press `Esc` first" hint instead of the text being silently
 steered to the model. Press `Esc` to interrupt, then run the slash.

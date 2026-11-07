@@ -18,10 +18,10 @@
 //!
 //! ## Cancellation
 //!
-//! Each entry holds a `child_token()` of the turn's cancel token. The
-//! sub-agent's loop watches that child, so cancelling the turn stops it,
-//! and so does [`crate::child_agent::ChildAgentRegistry::cancel`] on one
-//! entry (`/cancel agent:N`).
+//! A sub-agent's loop runs on the turn's cancel token, so Esc and Ctrl+C
+//! stop it with the turn. Each entry also holds a `child_token()` of that
+//! token, which [`crate::child_agent::ChildAgentRegistry::cancel`] fires so
+//! the overlay can mark the row as cancelling at once.
 //!
 //! ## Thread safety
 //!
@@ -214,10 +214,8 @@ impl ChildTaskSnapshot {
 struct ChildAgentEntry {
     agent_name: String,
     prompt: String,
-    /// Per-task cancel, a `child_token()` of the turn's token. The
-    /// sub-agent's loop watches it, so firing it (through
-    /// [`ChildAgentRegistry::cancel`]) stops that sub-agent on its
-    /// next loop iteration.
+    /// Per-task cancel, a `child_token()` of the turn's token, fired by
+    /// [`ChildAgentRegistry::cancel`].
     cancel: CancellationToken,
     /// Live status channel — the dispatch path writes; the registry
     /// reads at snapshot time. See [`AgentStatus`] for the lifecycle.
@@ -395,7 +393,6 @@ impl ChildStatusEmitter {
 pub struct FgRegistrationGuard {
     registry: Arc<ChildAgentRegistry>,
     task_id: u32,
-    cancel: CancellationToken,
 }
 
 impl FgRegistrationGuard {
@@ -404,14 +401,6 @@ impl FgRegistrationGuard {
     /// emitter and the guard refer to the same entry.
     pub fn task_id(&self) -> u32 {
         self.task_id
-    }
-
-    /// This sub-agent's cancel token: a `child_token()` of the token
-    /// passed at registration, so it fires when the turn is cancelled
-    /// and when [`ChildAgentRegistry::cancel`] names this entry. The
-    /// dispatch path runs the sub-agent's loop on this token.
-    pub fn cancel_token(&self) -> &CancellationToken {
-        &self.cancel
     }
 }
 
@@ -509,10 +498,7 @@ impl ChildAgentRegistry {
     ///   (`Pending` → `Running { iter }` → terminal) and
     ///   `.send_activity(...)` to fan out tool/info events.
     /// * `guard` — a [`FgRegistrationGuard`] that removes the entry
-    ///   when dropped and carries the sub-agent's cancel token, a
-    ///   `child_token()` of `parent_cancel`. Hold it for the duration
-    ///   of the sub-agent call and run the sub-agent's loop on
-    ///   [`FgRegistrationGuard::cancel_token`].
+    ///   when dropped. Hold it for the duration of the sub-agent call.
     pub fn register_fg_with_emitter(
         self: &Arc<Self>,
         agent_name: &str,
@@ -522,12 +508,11 @@ impl ChildAgentRegistry {
     ) -> (ChildStatusEmitter, FgRegistrationGuard) {
         let (status_tx, status_rx) = watch::channel(AgentStatus::Pending);
         let cancel = parent_cancel.child_token();
-        let task_id = self.insert(agent_name, prompt, cancel.clone(), status_rx, spawner);
+        let task_id = self.insert(agent_name, prompt, cancel, status_rx, spawner);
         let emitter = ChildStatusEmitter::new(task_id, spawner, false, status_tx, self.clone());
         let guard = FgRegistrationGuard {
             registry: self.clone(),
             task_id,
-            cancel,
         };
         (emitter, guard)
     }
@@ -682,9 +667,8 @@ mod tests {
     //
     // Status channel + per-task cancel + snapshot.
 
-    /// `cancel(task_id)` must fire that task's cancel token: the hook
-    /// `/cancel agent:N` calls. Verifies a known id returns true *and*
-    /// the underlying token actually fires.
+    /// `cancel(task_id)` must fire that task's cancel token. Verifies a
+    /// known id returns true *and* the underlying token actually fires.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_known_task_fires_token() {
         let reg = ChildAgentRegistry::new();
@@ -700,8 +684,7 @@ mod tests {
         );
     }
 
-    /// `cancel` on an unknown id must return false instead of
-    /// panicking. The slash command surfaces this as "no such task".
+    /// `cancel` on an unknown id must return false instead of panicking.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_unknown_task_returns_false() {
         let reg = ChildAgentRegistry::new();
@@ -1090,34 +1073,6 @@ mod tests {
             reg.snapshot().len(),
             0,
             "guard's Drop impl must remove the registry entry on scope exit"
-        );
-    }
-
-    /// The guard's token is a child of the parent's: cancelling the
-    /// turn stops the sub-agent, and so does `cancel(task_id)`.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn fg_cancel_token_observes_parent_and_per_task_cancel() {
-        let reg = Arc::new(ChildAgentRegistry::new());
-
-        let parent = CancellationToken::new();
-        let (_e1, guard1) = reg.register_fg_with_emitter("explore", "a", &parent, None);
-        assert!(!guard1.cancel_token().is_cancelled(), "precondition");
-        parent.cancel();
-        assert!(
-            guard1.cancel_token().is_cancelled(),
-            "the sub-agent's token must observe the parent cancel"
-        );
-
-        let parent = CancellationToken::new();
-        let (_e2, guard2) = reg.register_fg_with_emitter("task", "b", &parent, None);
-        assert!(reg.cancel(guard2.task_id()));
-        assert!(
-            guard2.cancel_token().is_cancelled(),
-            "cancel(task_id) must fire the token the sub-agent's loop runs on"
-        );
-        assert!(
-            !parent.is_cancelled(),
-            "a per-task cancel must not cancel the turn"
         );
     }
 

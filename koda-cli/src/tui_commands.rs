@@ -188,34 +188,6 @@ pub async fn handle_slash_command(
             SlashAction::Continue
         }
 
-        // #1210 deleted the legacy `/agents` interactive panel; live
-        // bg-agent + bg-process state now flows through the always-on
-        // `widgets::child_activity_overlay` rendered above the status bar.
-        // The model-facing `ListBackgroundTasks` tool keeps the same
-        // dump shape for in-context introspection — `/agents` was the
-        // user-facing surface for the same data and is redundant.
-        "/cancel" => {
-            // Accepts: `agent:N`, `process:N`, or bare numeric (→ agent, back-compat).
-            // Empty / whitespace-only / unparseable → None so the handler
-            // can render a Usage: line instead of silently doing nothing.
-            let parsed = arg.and_then(|s| {
-                let s = s.trim();
-                if s.is_empty() {
-                    None
-                } else {
-                    koda_core::tools::task_id::parse_task_id(s).ok()
-                }
-            });
-            crate::tui_bg_tasks::handle_cancel_background_task(
-                buffer,
-                &session.bg_agents,
-                &agent.tools.bg_registry,
-                child_activity,
-                parsed,
-            );
-            SlashAction::Continue
-        }
-
         "/sessions" => {
             match arg {
                 Some(sub) if sub.starts_with("delete ") => {

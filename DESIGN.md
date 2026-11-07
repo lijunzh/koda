@@ -643,8 +643,9 @@ calls to potentially different providers.
 > reserve/attach/drain API were deleted on 2026-11-06; `ChildAgentRegistry` now
 > only tracks the sub-agent running inside the current turn, for the TUI's
 > activity overlay and the `ChildTaskUpdate` / `ChildAgentActivity` events.
-> `/cancel` stays for background shell processes (`/cancel process:N`) and the
-> running sub-agent (`agent:N`, whose loop runs on its own child token).
+> `/cancel` was removed the same day: it only ran at idle, when no sub-agent
+> exists, so `agent:N` never reached one, and stopping a single background
+> shell process is a request to the model. Esc and Ctrl+C cancel everything.
 >
 > **Delegation is opt-in (2026-11-06).** The prompt and the `InvokeAgent`
 > description tell the model to delegate only when the user, a skill or the

@@ -1,142 +1,20 @@
-//! `/agents` and `/cancel <id>` slash commands — runtime view of
-//! **all** background tasks (sub-agents *and* shell processes).
+//! Cancel-all for background work, used by Esc and Ctrl+C.
 //!
-//! ## Overview
+//! Background work is the sub-agent running inside the current turn
+//! ([`koda_core::child_agent::ChildAgentRegistry`]) and background
+//! shell processes ([`koda_core::tools::bg_process::BgRegistry`],
+//! spawned via `Bash { background: true }`, which outlive the turn).
+//! Both show in the activity overlay above the status bar, and
+//! [`cancel_all_bg_work`] stops all of them at once.
 //!
-//! `/agents` lists every currently-tracked background task — both
-//! sub-agents from [`koda_core::child_agent::ChildAgentRegistry`]
-//! (every `InvokeAgent` dispatch post-#1163) and background
-//! shell processes from [`koda_core::tools::bg_process::BgRegistry`]
-//! (spawned via `Bash { background: true }`). They share a single
-//! table because from the user's perspective they're the same
-//! concept: "stuff Koda kicked off in the background that I'd like
-//! to see, wait on, or cancel."
-//!
-//! `/cancel <id>` accepts the same prefixed forms as the LLM-facing
-//! `CancelTask` tool ([`parse_task_id`]):
-//!
-//! - `agent:N` — fire a bg sub-agent's cancel token
-//! - `process:N` — SIGTERM a bg shell process
-//! - `N` (bare numeric) — back-compat with the original #1042 UX,
-//!   treated as `agent:N`
-//!
-//! Together they close #996: "the model launched background work
-//! and I have no way to see what it's doing or stop it."
-//!
-//! ## Why one renderer instead of two slash commands
-//!
-//! We considered `/agents` + `/processes`, but Codex / Gemini / Claude
-//! Code all converge on a single "background work" surface. Splitting
-//! by spawn mechanism would push the user to remember which command
-//! launched which task — exactly the friction the unified view fixes.
-//! The `TYPE` column distinguishes the two when it matters (e.g.
-//! "did `cargo test` finish?" vs "is the explore agent done?").
-//!
-//! Foreground sub-agents (the synchronous `/agent <name>` switch in
-//! [`crate::tui_wizards::handle_list_agents`]) don't appear here —
-//! they block the conversation and are visible inline.
-//!
-//! ## Display
-//!
-//! Status icons follow Codex's `multi_agents::status_summary_spans`
-//! palette so users coming from that ecosystem find them familiar:
-//!
-//! | Status      | Glyph | Color      |
-//! |-------------|-------|------------|
-//! | `Pending`   | `◐`   | cyan       |
-//! | `Running`   | `▶`   | cyan bold  |
-//! | `Cancelled` | `⊗`   | dim        |
-//! | `Completed` | `✓`   | green      |
-//! | `Errored`   | `✗`   | red        |
-//! | `Killed`    | `⊗`   | dim        |  (process-only)
-//! | `Exited(c)` | `✓/✗` | green/red  |  (process-only; ✗ when c≠0)
-//!
-//! ## Out of scope (deferred)
-//!
-//! - The "completed lingers 30s" UX polish — deferred to a polish
-//!   PR. Drained results still inject into the conversation, so the
-//!   user isn't missing info, just visual confirmation.
-//! - Status-bar pill — Layer 3 / PR #1044.
-//! - Per-iter `iter` updates — Layer 4 / PR #1058 (landed).
-//!
-//! [`parse_task_id`]: koda_core::tools::task_id::parse_task_id
+//! There is no command to stop one entry. `/cancel <id>` did that
+//! until 2026-11-06; it only ran at idle, when no sub-agent exists, so
+//! its `agent:N` form could never reach one, and stopping a single
+//! background process is a request to the model ("stop the dev
+//! server"), which knows the PID it started.
 
 use crate::scroll_buffer::ScrollBuffer;
 use crate::tui_output;
-use koda_core::tools::task_id::TaskId;
-
-/// Render `/cancel <id>`. Routes to the right registry based on the
-/// parsed [`TaskId`]:
-///
-/// - [`TaskId::Agent`] → [`ChildAgentRegistry::cancel`]
-/// - [`TaskId::Process`] → [`BgRegistry::kill`] (sends SIGTERM)
-///
-/// Both registries' cancel paths are idempotent (PR #1041's
-/// `cancel_is_idempotent_while_pending` for agents; SIGTERM-on-already-
-/// dead is a no-op for processes), so re-issuing on a still-running
-/// cancelled task is harmless.
-///
-/// `task_id == None` means the user typed `/cancel` with no arg or
-/// an arg that didn't parse — we report the usage error here rather
-/// than at the parser layer (see `ReplAction::CancelBackgroundTask`'s
-/// docstring for the rationale).
-///
-/// [`ChildAgentRegistry::cancel`]: koda_core::child_agent::ChildAgentRegistry::cancel
-/// [`BgRegistry::kill`]: koda_core::tools::bg_process::BgRegistry::kill
-pub(crate) fn handle_cancel_background_task(
-    buffer: &mut ScrollBuffer,
-    bg_agents: &koda_core::child_agent::ChildAgentRegistry,
-    bg_processes: &koda_core::tools::bg_process::BgRegistry,
-    child_activity: &mut crate::child_activity::ChildActivityTracker,
-    task_id: Option<TaskId>,
-) {
-    let Some(id) = task_id else {
-        tui_output::warn_msg(
-            buffer,
-            "Usage: /cancel <agent:id|process:id>  (ids are visible in the live bg-activity overlay)".into(),
-        );
-        return;
-    };
-
-    match id {
-        TaskId::Agent(n) => {
-            if bg_agents.cancel(n) {
-                // Flip the overlay icon to red immediately so the user
-                // sees their cancel landed (#1210). The registry status
-                // doesn't transition to Cancelled until the inference
-                // loop next checks the token — could be a few hundred
-                // ms — and that lag without feedback feels broken.
-                child_activity.mark_cancelling(n);
-                tui_output::ok_msg(
-                    buffer,
-                    format!("Cancellation requested for agent:{n}. Result will inject shortly."),
-                );
-            } else {
-                tui_output::warn_msg(
-                    buffer,
-                    format!(
-                        "No background sub-agent with id agent:{n}. Check the bg-activity overlay for active task ids."
-                    ),
-                );
-            }
-        }
-        TaskId::Process(n) => {
-            if bg_processes.kill(n) {
-                tui_output::ok_msg(
-                    buffer,
-                    format!("SIGTERM sent to process:{n}. It should exit shortly."),
-                );
-            } else {
-                tui_output::warn_msg(
-                    buffer,
-                    format!(
-                        "No background process with id process:{n}. Check the bg-activity overlay for active task ids."
-                    ),
-                );
-            }
-        }
-    }
-}
 
 /// Cancel every active background agent and SIGTERM every running
 /// background process. Used by the global Ctrl+C path so users have
@@ -260,24 +138,19 @@ mod tests {
     }
 
     /// Register a sub-agent entry the way the dispatch path does and
-    /// keep it alive for the test. Returns `(task_id, emitter,
-    /// cancel_observer, guard)`: drive the status through the emitter,
-    /// watch the token to see a cancel land, and hold the guard so the
-    /// entry stays registered.
+    /// keep it alive for the test. Returns `(emitter, guard)`: drive
+    /// the status through the emitter, and hold the guard so the entry
+    /// stays registered.
     fn register_entry(
         reg: &Arc<ChildAgentRegistry>,
         agent_name: &str,
         prompt: &str,
     ) -> (
-        u32,
         ChildStatusEmitter,
-        CancellationToken,
         koda_core::child_agent::FgRegistrationGuard,
     ) {
         let parent = CancellationToken::new();
-        let (emitter, guard) = reg.register_fg_with_emitter(agent_name, prompt, &parent, None);
-        let observer = guard.cancel_token().clone();
-        (guard.task_id(), emitter, observer, guard)
+        reg.register_fg_with_emitter(agent_name, prompt, &parent, None)
     }
 
     /// Spawn a real child process for tests that need a live PID in
@@ -296,133 +169,6 @@ mod tests {
         let pid = child.id().expect("sleep should have a pid before exit");
         reg.insert(pid, "sleep 60".to_string(), child, None);
         pid
-    }
-
-    // ── handle_cancel_background_task ──────────────────────────────────────────────
-
-    /// Happy path for an agent: known `agent:N` → cancel fires,
-    /// success message surfaces, and the underlying token observed
-    /// the cancel.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn cancel_known_agent_id_reports_success_and_fires_token() {
-        let mut buf = ScrollBuffer::new(64);
-        let reg = Arc::new(ChildAgentRegistry::new());
-        let procs = BgRegistry::new();
-        let (task_id, _emitter, observer, _guard) = register_entry(&reg, "explore", "x");
-
-        handle_cancel_background_task(
-            &mut buf,
-            &reg,
-            &procs,
-            &mut crate::child_activity::ChildActivityTracker::default(),
-            Some(TaskId::Agent(task_id)),
-        );
-
-        let text = buffer_text(&buf);
-        assert!(
-            text.contains(&format!("agent:{task_id}")),
-            "success message should mention the prefixed id, got: {text}"
-        );
-        assert!(
-            observer.is_cancelled(),
-            "the cancel token should have been fired"
-        );
-    }
-
-    /// Happy path for a process: known `process:N` → SIGTERM fires
-    /// and the registry transitions the entry into `Killed`. The
-    /// child eventually exits but we don't wait on it here — the
-    /// reaper handles that.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn cancel_known_process_id_kills_and_reports_success() {
-        let mut buf = ScrollBuffer::new(64);
-        let reg = Arc::new(ChildAgentRegistry::new());
-        let procs = BgRegistry::new();
-        let pid = spawn_sleep_in_registry(&procs);
-
-        handle_cancel_background_task(
-            &mut buf,
-            &reg,
-            &procs,
-            &mut crate::child_activity::ChildActivityTracker::default(),
-            Some(TaskId::Process(pid)),
-        );
-
-        let text = buffer_text(&buf);
-        assert!(
-            text.contains(&format!("process:{pid}")),
-            "success message should mention the prefixed id, got: {text}"
-        );
-        assert!(
-            text.to_lowercase().contains("sigterm") || text.to_lowercase().contains("exit"),
-            "expected SIGTERM acknowledgement, got: {text}"
-        );
-    }
-
-    /// Unknown agent id → warn, don't crash. The user should learn
-    /// the correct id (or that the task already finished) without us
-    /// throwing or silently no-oping.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn cancel_unknown_agent_id_reports_helpful_error() {
-        let mut buf = ScrollBuffer::new(64);
-        let reg = Arc::new(ChildAgentRegistry::new());
-        let procs = BgRegistry::new();
-        handle_cancel_background_task(
-            &mut buf,
-            &reg,
-            &procs,
-            &mut crate::child_activity::ChildActivityTracker::default(),
-            Some(TaskId::Agent(999)),
-        );
-        let text = buffer_text(&buf);
-        assert!(
-            text.contains("agent:999") && text.contains("bg-activity overlay"),
-            "warn should name the missing prefixed id and point to the bg-activity overlay, got: {text}"
-        );
-    }
-
-    /// Unknown process id → warn, don't crash. Same shape as the
-    /// agent equivalent so users get a consistent error story.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn cancel_unknown_process_id_reports_helpful_error() {
-        let mut buf = ScrollBuffer::new(64);
-        let reg = Arc::new(ChildAgentRegistry::new());
-        let procs = BgRegistry::new();
-        handle_cancel_background_task(
-            &mut buf,
-            &reg,
-            &procs,
-            &mut crate::child_activity::ChildActivityTracker::default(),
-            Some(TaskId::Process(999_999)),
-        );
-        let text = buffer_text(&buf);
-        assert!(
-            text.contains("process:999999") && text.contains("bg-activity overlay"),
-            "warn should name the missing prefixed id and point to the bg-activity overlay, got: {text}"
-        );
-    }
-
-    /// `None` id (user typed `/cancel` with no arg or unparseable
-    /// arg) renders Usage — not a panic, and not a misleading "task
-    /// 0 not found." The Usage line must mention both prefix forms
-    /// so the user learns the new syntax.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn cancel_none_id_renders_usage_with_both_prefixes() {
-        let mut buf = ScrollBuffer::new(64);
-        let reg = Arc::new(ChildAgentRegistry::new());
-        let procs = BgRegistry::new();
-        handle_cancel_background_task(
-            &mut buf,
-            &reg,
-            &procs,
-            &mut crate::child_activity::ChildActivityTracker::default(),
-            None,
-        );
-        let text = buffer_text(&buf);
-        assert!(
-            text.contains("Usage:") && text.contains("agent:") && text.contains("process:"),
-            "None id should render a Usage: line with both prefixes, got: {text}"
-        );
     }
 
     // ── cancel_all_bg_work / active_bg_count (#1200) ─────────────────
@@ -449,8 +195,7 @@ mod tests {
         );
     }
 
-    /// Multiple running agents are all cancelled in one call and
-    /// each entry's cancel token observes the cascade.
+    /// Multiple running agents are all cancelled in one call.
     /// This is the in-process equivalent of "user hit Ctrl+C and
     /// every bg agent should die".
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -459,8 +204,8 @@ mod tests {
         let reg = Arc::new(ChildAgentRegistry::new());
         let procs = BgRegistry::new();
 
-        let (_id1, status1, observer1, _g1) = register_entry(&reg, "explore", "prompt 1");
-        let (_id2, status2, observer2, _g2) = register_entry(&reg, "task", "prompt 2");
+        let (status1, _g1) = register_entry(&reg, "explore", "prompt 1");
+        let (status2, _g2) = register_entry(&reg, "task", "prompt 2");
         // Bring them out of Pending so they show up as Running in
         // the snapshot filter.
         status1.send(AgentStatus::Running { iter: 1 });
@@ -473,8 +218,6 @@ mod tests {
             &mut crate::child_activity::ChildActivityTracker::default(),
         );
         assert_eq!((a, p), (2, 0));
-        assert!(observer1.is_cancelled(), "agent 1 should observe cascade");
-        assert!(observer2.is_cancelled(), "agent 2 should observe cascade");
         let text = buffer_text(&buf);
         assert!(
             text.contains("Cancelled") && text.contains("2 agent(s)"),
@@ -492,7 +235,7 @@ mod tests {
         let reg = Arc::new(ChildAgentRegistry::new());
         let procs = BgRegistry::new();
 
-        let (_id, status, observer, _guard) = register_entry(&reg, "explore", "hi");
+        let (status, _guard) = register_entry(&reg, "explore", "hi");
         status.send(AgentStatus::Running { iter: 1 });
         let _pid = spawn_sleep_in_registry(&procs);
 
@@ -503,7 +246,6 @@ mod tests {
             &mut crate::child_activity::ChildActivityTracker::default(),
         );
         assert_eq!((a, p), (1, 1));
-        assert!(observer.is_cancelled());
         let text = buffer_text(&buf);
         assert!(
             text.contains("1 agent(s)") && text.contains("1 process(es)"),
@@ -520,7 +262,7 @@ mod tests {
         let reg = Arc::new(ChildAgentRegistry::new());
         let procs = BgRegistry::new();
 
-        let (_id, status, observer, _guard) = register_entry(&reg, "explore", "hi");
+        let (status, _guard) = register_entry(&reg, "explore", "hi");
         // Drive to Completed terminal state.
         status.send(AgentStatus::Completed {
             summary: "done".to_string(),
@@ -533,10 +275,6 @@ mod tests {
             &mut crate::child_activity::ChildActivityTracker::default(),
         );
         assert_eq!((a, p), (0, 0));
-        assert!(
-            !observer.is_cancelled(),
-            "completed entries must not have their cancel token fired"
-        );
         assert!(buffer_text(&buf).is_empty());
     }
 
@@ -550,9 +288,9 @@ mod tests {
         let procs = BgRegistry::new();
         assert_eq!(active_bg_count(&reg, &procs), 0);
 
-        let (_id1, s1, _obs1, _g1) = register_entry(&reg, "a", "p1");
+        let (s1, _g1) = register_entry(&reg, "a", "p1");
         s1.send(AgentStatus::Running { iter: 1 });
-        let (_id2, s2, _obs2, _g2) = register_entry(&reg, "b", "p2");
+        let (s2, _g2) = register_entry(&reg, "b", "p2");
         s2.send(AgentStatus::Completed {
             summary: "x".to_string(),
         });

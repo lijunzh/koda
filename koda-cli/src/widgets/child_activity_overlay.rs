@@ -7,7 +7,7 @@
 //!   🤖 explore   (12s)  · Read src/auth.rs
 //!   🤖 verify    ( 4s)  · Bash cargo test --lib
 //!   🐚 process:42 ( 8s) · cargo build --release
-//!   + 2 more  ·  Esc cancel all  ·  /cancel <id>
+//!   + 2 more  ·  Esc cancel all
 //! ```
 //!
 //! ## Why this widget exists
@@ -31,13 +31,11 @@
 //!
 //! ## What this widget does NOT do
 //!
-//! - Does NOT navigate / select / cancel rows. Cancel UX is split:
-//!   `/cancel <id>` (idle) and Esc (cancel-all during inference).
-//!   #1210's "Design Z" rationale: no reference (claude_code, codex,
-//!   gemini-cli) ships an interactive selective-cancel UI, so a
-//!   passive overlay paired with the existing slash + Esc paths
-//!   covers the field-standard surface area without rebuilding the
-//!   `/agents` modal panel that #1210 deletes.
+//! - Does NOT navigate / select / cancel rows. Esc and Ctrl+C cancel
+//!   everything shown; to stop one background process, ask the model.
+//!   `/cancel <id>` used to do that and was removed on 2026-11-06: it
+//!   only ran at idle, when no sub-agent exists, so its `agent:N` form
+//!   could never reach one.
 //! - Does NOT auto-refresh — caller drives a redraw on each
 //!   `ChildAgentActivity` / `ChildTaskUpdate` event (already wired via
 //!   `frame_requester`).
@@ -208,7 +206,7 @@ impl Widget for ChildActivityOverlay<'_> {
             ));
         }
         spans.push(Span::styled(
-            "Esc cancel all  \u{b7}  /cancel <id>",
+            "Esc cancel all",
             Style::default().fg(Color::Rgb(80, 80, 80)),
         ));
         Line::from(spans).render(Rect::new(area.x, hint_y, area.width, 1), buf);
@@ -348,10 +346,6 @@ mod tests {
         assert!(
             hint.contains("Esc cancel all"),
             "hint row should always show Esc keybinding: {hint:?}"
-        );
-        assert!(
-            hint.contains("/cancel"),
-            "hint row should reference /cancel: {hint:?}"
         );
     }
 

@@ -33,8 +33,7 @@
 //! `WaitForMail`. All five are gone: sub-agents are synchronous (#1366).
 //! The underlying registries (`ChildAgentRegistry`, `BgRegistry`) are
 //! still used by the TUI overlay — only the LLM-facing tool wrappers
-//! went away. See `tools::task_id` for the surviving
-//! `parse_task_id` helper used by TUI slash commands.
+//! went away.
 //!
 //! ## Safety model
 //!
@@ -99,11 +98,6 @@ pub mod cargo;
 /// Owns built-in definitions + the MCP manager slot. `ToolRegistry`
 /// composes one of these and delegates the read-only methods.
 pub mod catalog;
-/// Background-task ID parser shared between the TUI's `/cancel <id>`
-/// slash command and the underlying `ChildAgentRegistry` / `BgRegistry`.
-/// Pre-#1325 Phase 5b this module was `bg_task_tools` and housed the
-/// retired `ListBackgroundTasks` / `CancelTask` / `WaitTask` LLM tools.
-pub mod task_id;
 pub use catalog::ToolCatalog;
 /// `Tool` trait + `ToolExecCtx` (#1265 item 5, PR-3/N). The seam for
 /// the per-tool migration that follows in PR-4..PR-N. Each migrated

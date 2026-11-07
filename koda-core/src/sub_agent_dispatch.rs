@@ -280,13 +280,8 @@ pub(crate) fn execute_sub_agent<'a>(
         // The cache-hit early-return above intentionally skips this: a
         // cache hit returns in microseconds, far below the overlay's
         // render cadence.
-        //
-        // The sub-agent's loop runs on the guard's token, a child of
-        // the turn's `cancel`: cancelling the turn still stops it, and
-        // so does `/cancel agent:N` on this entry alone.
-        let (fg_emitter, fg_guard) =
+        let (fg_emitter, _fg_guard) =
             bg_agents.register_fg_with_emitter(agent_name, prompt, &cancel, parent_spawner);
-        let cancel = fg_guard.cancel_token().clone();
         // Push `Pending` immediately so the overlay row appears
         // before the LLM call. Sending it explicitly (rather than
         // relying on the channel's initial value) means every
@@ -315,7 +310,7 @@ pub(crate) fn execute_sub_agent<'a>(
         // many `?`-bubbled errors; instrumenting each is fragile and
         // refactoring the inference body into an inner async fn just
         // to capture a Result was ruled out as scope creep. Instead
-        // we lean on the `fg_guard`'s `Drop` impl, which removes
+        // we lean on the `_fg_guard`'s `Drop` impl, which removes
         // the entry from the registry at the instant the function
         // returns. The overlay's `build_rows` prunes activity for
         // missing task ids on the very next frame — visually

@@ -369,8 +369,7 @@ impl TuiContext {
 
         // (#1191's interactive `/agents` panel was removed in #1210 —
         // live bg-task surface migrated to the always-on activity
-        // overlay above the status bar; cancellation now goes through
-        // `/cancel <id>` (idle) or Esc cancel-all (during inference).)
+        // overlay above the status bar; Esc and Ctrl+C cancel all of it.)
 
         // Purge confirmation: only y/n/Esc are meaningful.
         if let MenuContent::PurgeConfirm { min_age_days, .. } = &self.menu {

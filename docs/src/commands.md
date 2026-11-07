@@ -135,47 +135,24 @@ koda --agent testgen
 
 ## `/agents`
 
-Removed in #1210. The flat-text `/agents` dump (and its short-lived
-interactive replacement from #1191) was superseded by the always-on
-**bg-activity overlay** rendered just above the status bar. The
-overlay shows every running background sub-agent and shell process
-in real time — id, name, the last tool call each one fired, and
-elapsed age — with no slash-command needed.
+Removed in #1210. The **activity overlay** just above the status bar
+shows, in real time, the sub-agent running in the current turn and
+every background shell process: name, the last tool call each one
+fired, and elapsed age.
 
 ```text
-  🤖 agent:1  explore    Read('src/lib.rs')         2m
-  🤖 agent:2  verify     Bash('cargo test')         45s
-  ⚙️ process:5821  cargo test --workspace          1m
-  + 2 more
+  🤖 explore   (12s)  · Read src/lib.rs
+  🐚 process:5821 (1m) · cargo test --workspace
+  + 2 more  ·  Esc cancel all
 ```
 
-## `/cancel <id>`
+## `/cancel`
 
-Requests cancellation of a background task by id (visible in the
-bg-activity overlay above the status bar). Accepts three forms:
-
-- `agent:N` — fires the per-task `CancellationToken`, which the
-  inference loop checks between iterations. A cancelled sub-agent
-  may run for one more iteration before noticing. The result still
-  injects on the next user turn (with status `Cancelled` instead
-  of `Completed`), so you don't lose any partial work the agent
-  already did.
-- `process:N` — sends SIGTERM to the shell process. The reaper
-  transitions the entry to `Killed` immediately and to
-  `Exited` once the OS confirms the process is gone.
-- `N` (bare numeric) — back-compat with the original single-
-  registry `/cancel` UX; treated as `agent:N`.
-
-```text
-/cancel agent:1       ← cancel background sub-agent #1
-/cancel process:5821  ← SIGTERM background shell process pid 5821
-/cancel 1             ← back-compat: same as `/cancel agent:1`
-```
-
-Idempotent: re-running `/cancel agent:1` on an already-cancelled
-task is a no-op; `/cancel process:N` on an already-dead pid is also
-a no-op (the kernel just rejects the SIGTERM). Unknown ids report a
-helpful error rather than silently no-oping.
+Removed on 2026-11-06. It only ran while Koda was idle, when no
+sub-agent exists, so `/cancel agent:N` could never reach one. Press
+`Esc` or `Ctrl+C` to stop everything running, including background
+shell processes. To stop just one background process, ask: "stop the
+dev server".
 
 ## `/expand [<n>]`
 

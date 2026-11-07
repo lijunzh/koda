@@ -253,8 +253,8 @@ impl BgRegistry {
     ///
     /// Status flips to `Killed` immediately; the reaper will surface
     /// the eventual `Exited { code }` once the child is reaped by the
-    /// kernel. **Unscoped** — TUI `/cancel` contract; LLM goes through
-    /// [`Self::kill_as_caller`].
+    /// kernel. **Unscoped** — the TUI's cancel-all uses it; scoped
+    /// callers go through [`Self::kill_as_caller`].
     pub fn kill(&self, pid: u32) -> bool {
         let mut guard = self.inner.lock().unwrap();
         let Some(entry) = guard.get_mut(&pid) else {

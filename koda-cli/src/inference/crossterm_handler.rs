@@ -295,7 +295,7 @@ async fn handle_inference_key_inline(
             let text = textarea.text().to_string();
             if !text.trim().is_empty() {
                 // #1211: reject slash-command attempts before they
-                // silently steer. `/cancel`, `/clear` etc. only run
+                // silently steer. `/compact`, `/clear` etc. only run
                 // through `dispatch_command` at idle; during inference
                 // the queue-as-text path would inject them as raw user
                 // input. Surface a visible warning so the user can
@@ -414,10 +414,10 @@ pub(super) fn close_dialog(
 
 /// Detect a slash-command attempt typed during inference (#1211).
 ///
-/// Slash commands (`/cancel`, `/clear`, `/model`, …) are routed through
+/// Slash commands (`/compact`, `/clear`, `/model`, …) are routed through
 /// `dispatch_command` only at idle. During inference the Enter handler
 /// would otherwise silently queue the text as a steer message — the
-/// model would receive raw `/cancel agent:1` as user input and the
+/// model would receive raw `/compact` as user input and the
 /// command would never actually run. Trim leading whitespace so a
 /// stray space doesn't mask the slash; trailing content is irrelevant
 /// (a real word starting with `/` like a path `/etc/hosts` is still
@@ -456,16 +456,16 @@ mod slash_guard_tests {
 
     #[test]
     fn bare_slash_command_is_detected() {
-        assert!(is_slash_command_attempt("/cancel"));
+        assert!(is_slash_command_attempt("/compact"));
         assert!(is_slash_command_attempt("/clear"));
         assert!(is_slash_command_attempt("/model"));
     }
 
     #[test]
     fn slash_command_with_args_is_detected() {
-        // The canonical post-#1213 victim: `/cancel <id>` typed during
-        // a WaitTask. Without the guard this becomes a steer message.
-        assert!(is_slash_command_attempt("/cancel agent:1"));
+        // The canonical victim: a slash command with an argument typed
+        // during inference. Without the guard this becomes a steer message.
+        assert!(is_slash_command_attempt("/model claude-haiku"));
         assert!(is_slash_command_attempt("/model gpt-4o"));
     }
 
@@ -475,7 +475,7 @@ mod slash_guard_tests {
         // a slash command than a real intent to steer with leading
         // whitespace. Trim before classifying so the guard isn't
         // trivially defeated.
-        assert!(is_slash_command_attempt(" /cancel"));
+        assert!(is_slash_command_attempt(" /compact"));
         assert!(is_slash_command_attempt("  /clear"));
         assert!(is_slash_command_attempt("\t/model gpt-4o"));
     }
