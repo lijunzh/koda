@@ -202,7 +202,7 @@ impl ForwardingChildSink {
     /// Wrap a `BufferingSink` and forward live activity through the
     /// emitter. The emitter is cheap to clone (two `Arc`s and a
     /// `watch::Sender`); pass a clone and keep the original for the
-    /// terminal-status sends in `run_bg_agent`.
+    /// status sends.
     pub fn new(inner: BufferingSink, emitter: crate::child_agent::ChildStatusEmitter) -> Self {
         Self { inner, emitter }
     }

@@ -639,8 +639,21 @@ calls to potentially different providers.
 > `AgentPath` machinery under them were deleted, because after #1366 no
 > sub-agent could send mail and the only valid recipient was the sender. The
 > text is kept as the decision record, not as a description of the current
-> behavior. What remains of the background machinery is the TUI overlay and the
-> `/agents` / `/cancel` commands, and a dispatch branch that nothing reaches.
+> behavior. The unreachable dispatch branch, `run_bg_agent` and the registry's
+> reserve/attach/drain API were deleted on 2026-11-06; `ChildAgentRegistry` now
+> only tracks the sub-agent running inside the current turn, for the TUI's
+> activity overlay and the `ChildTaskUpdate` / `ChildAgentActivity` events.
+> `/cancel` was removed the same day: it only ran at idle, when no sub-agent
+> exists, so `agent:N` never reached one, and stopping a single background
+> shell process is a request to the model. Esc and Ctrl+C cancel everything.
+>
+> **Delegation is opt-in (2026-11-06).** The prompt and the `InvokeAgent`
+> description tell the model to delegate only when the user, a skill or the
+> project's instructions ask for it, as Codex does and as Claude Code does on its
+> Pro plan. In Koda's evals, local-model runs that delegated on their own passed
+> 47% and hit the time limit in 50%, against 72% and 13% for runs that didn't;
+> Haiku delegated in 3 of 559 runs. The tool and the `explore`, `task` and `fork`
+> agents stay.
 
 **#1163 (Lean A)**: every `InvokeAgent` call spawns a background
 task and returns its `task_id` immediately. There is no foreground /

@@ -43,11 +43,6 @@ use ratatui::text::Line;
 pub const SLASH_COMMANDS: &[(&str, &str, Option<&str>)] = &[
     ("/agent", "Switch to a sub-agent", Some("<name>")),
     (
-        "/cancel",
-        "Cancel a background task by id (agent:N or process:N — visible in the bg-activity overlay)",
-        Some("<id>"),
-    ),
-    (
         "/compact",
         "Summarize conversation to reclaim context",
         None,

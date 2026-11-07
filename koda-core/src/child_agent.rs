@@ -1,36 +1,32 @@
-//! Background sub-agent registry.
+//! Live registry of the sub-agents running inside the current turn.
 //!
-//! Tracks sub-agents spawned via `InvokeAgent`. Post-#1163 (Lean A)
-//! every `InvokeAgent` dispatch is a background spawn — the foreground
-//! / blocking variant (and its `background:bool` parameter) was
-//! deleted to match Codex's `spawn_agent` shape and Claude Code's
-//! `TaskCreate` shape. The inference loop drains completed results
-//! and injects them as user-role messages so the model sees them on
-//! the next iteration.
+//! Sub-agents run synchronously (#1366): `InvokeAgent` blocks until the
+//! sub-agent returns and hands its answer back as the tool result. While
+//! one runs, `sub_agent_dispatch` registers it here so clients can show
+//! what it is doing: the TUI's activity overlay reads
+//! [`crate::child_agent::ChildAgentRegistry::snapshot`], and every status
+//! change or tool call inside the sub-agent reaches the engine sink as an
+//! `EngineEvent::ChildTaskUpdate` / `ChildAgentActivity` through the
+//! [`crate::child_agent::ChildStatusEmitter`]. The entry is removed when
+//! the sub-agent returns ([`crate::child_agent::FgRegistrationGuard`]).
 //!
-//! ## Lifecycle
+//! The background-spawn path this registry was built for (a `tokio::spawn`
+//! per `InvokeAgent`, results drained and injected as user messages) was
+//! unreachable after #1366 and has been deleted; the `is_background` flag
+//! stays on snapshots and wire events, always `false`, so the wire format
+//! is unchanged.
 //!
-//! 1. **Spawn**: every `InvokeAgent` call creates a tokio task and
-//!    returns its `task_id` immediately (no blocking variant)
-//! 2. **Track**: the task handle + metadata are stored in `ChildAgentRegistry`
-//! 3. **Poll**: before each inference call, the loop calls `drain_completed()`
-//! 4. **Inject**: completed results are appended as user messages
-//! 5. **Cleanup**: on registry drop, all pending task handles are aborted —
-//!    no orphan futures, no leaked worktrees. (Phase 1 of #1022, B3.)
+//! ## Cancellation
 //!
-//! ## Cancellation cascade
-//!
-//! Bg-agent tasks receive a `CancellationToken` derived from the parent's
-//! token via `child_token()` (wired in `crate::sub_agent_dispatch`). When
-//! the parent is cancelled, every bg child sees it; when the registry
-//! drops without cancellation, [`tokio_util::task::AbortOnDropHandle`]
-//! still aborts the futures so we never leak. Both paths are covered.
-//! (Phase 1 of #1022, B2+B3.)
+//! A sub-agent's loop runs on the turn's cancel token, so Esc and Ctrl+C
+//! stop it with the turn. Each entry also holds a `child_token()` of that
+//! token, which [`crate::child_agent::ChildAgentRegistry::cancel`] fires so
+//! the overlay can mark the row as cancelling at once.
 //!
 //! ## Thread safety
 //!
-//! The registry is wrapped in `Arc<Mutex<>>` and shared between the main
-//! inference loop and the background task spawner.
+//! The registry is wrapped in `Arc` and shared between the inference loop,
+//! the dispatch path and the client's event forwarder.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -43,17 +39,16 @@ use std::time::{Duration, Instant};
 //      a panic in one critical section bricking every subsequent
 //      drain would be a particularly bad failure mode.
 //   2. **Faster on contention** — no atomic check for poison flag,
-//      no `Result` allocation. The contention is real: `drain_completed`
-//      runs on every loop iteration.
+//      no `Result` allocation. The contention is real: the TUI
+//      snapshots the registry on every frame while a sub-agent runs.
 //   3. **Cleaner API** — `.lock()` returns a guard directly, no
 //      `.unwrap()` boilerplate at every call site.
 // We deliberately keep this *sync* (not `tokio::sync::Mutex`) because
 // the critical sections are short HashMap ops with no awaits inside.
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
-use tokio_util::task::AbortOnDropHandle;
 
 use crate::engine::EngineEvent;
 
@@ -131,46 +126,26 @@ pub enum AgentStatus {
 #[non_exhaustive]
 #[must_use = "a snapshot is only useful if you read its fields"]
 pub struct ChildTaskSnapshot {
-    /// Monotonic id assigned at `reserve()` time. Stable for the
+    /// Monotonic id assigned at registration. Stable for the
     /// lifetime of the task; reused across snapshots.
     pub task_id: u32,
     /// Configured agent name (`explore`, `task`, ...).
     pub agent_name: String,
-    /// The prompt the parent delegated. Surfaced verbatim by
-    /// `/agents -v`; truncation is the renderer's job.
+    /// The prompt the parent delegated, verbatim; truncation is the
+    /// renderer's job.
     pub prompt: String,
-    /// Wall-clock duration since the task was attached. Computed at
+    /// Wall-clock duration since the task was registered. Computed at
     /// snapshot time, so successive snapshots of the same task
     /// report different ages.
     pub age: Duration,
     /// Latest value from the task's `watch::Receiver<AgentStatus>`.
     pub status: AgentStatus,
-    /// `true` if this entry represents a background sub-agent
-    /// (auto-drains its result on a future iteration), `false` for
-    /// foreground sub-agents (parent awaits inline).
-    ///
-    /// **PR-A0.5 of #1232**: added when the registry was generalized
-    /// from bg-only to host both fg and bg child agents. Today every
-    /// constructor still passes `true`; PR-A wires up the fg path
-    /// that registers entries with `false`.
-    ///
-    /// Consumers that want a bg-only view (e.g. the `/agents`
-    /// overlay's "truly backgrounded" filter) should check this
-    /// field rather than assuming presence in the registry implies
-    /// background.
+    /// Always `false`: every sub-agent runs inside the turn that
+    /// called it. Kept so snapshots and the `ChildTaskUpdate` wire
+    /// event keep their shape from the background-spawn era.
     pub is_background: bool,
-    /// Sub-agent task that spawned this bg-agent. `None` = top-level
+    /// Sub-agent invocation that started this one. `None` = top-level
     /// (the user's main conversation).
-    ///
-    /// **#996 Layer 2 / Model D**: tracked so that when a sub-agent
-    /// exits, [`ChildAgentRegistry::cancel_for_spawner`] can fire the
-    /// cancel token on every bg-agent it left behind. Mirrors
-    /// Claude Code's `agentId` field on `LocalShellTaskState`
-    /// (`prevents 10-day fake-logs.sh zombies`).
-    ///
-    /// We don't use this for permission scoping — any caller with a
-    /// `task_id` can manage any task. Spawner is *only* a cleanup
-    /// hook (matching Claude Code's flat-permissions design).
     pub spawner: Option<u32>,
 }
 
@@ -235,103 +210,29 @@ impl ChildTaskSnapshot {
     }
 }
 
-/// Payload sent over the bg-agent oneshot.
-///
-/// Pre-#1022-B9 this was just `String` (the model's final output).
-/// Now also carries the trace lines collected by
-/// [`crate::engine::sink::BufferingSink`] so the inference loop
-/// can surface them to the user when injecting the result.
-///
-/// The `Result<BgPayload, BgPayload>` shape preserves the prior
-/// success/failure discrimination: `Ok` means `execute_sub_agent`
-/// returned text, `Err` means it returned an error (the trace is
-/// useful in *both* cases — the bg agent may have done several
-/// steps before erroring).
-pub type BgPayload = (String, Vec<String>);
-
-/// A completed background agent result.
-///
-/// `#[non_exhaustive]`: future fields (e.g. token usage, latency, model
-/// version) can be added without a breaking change. Constructed only
-/// inside `koda-core`; external callers only read fields.
-///
-/// `#[must_use]`: an agent result that's never inspected is dead work.
-#[derive(Debug)]
-#[non_exhaustive]
-#[must_use = "the whole point of running a bg agent is to inspect its result"]
-pub struct BgAgentResult {
-    /// The agent name that produced this result.
-    pub agent_name: String,
-    /// The original prompt that was delegated.
-    pub prompt: String,
-    /// The agent's output (or error message).
-    pub output: String,
-    /// Whether the agent succeeded.
-    pub success: bool,
-    /// **#1022 B9**: narrative trace lines captured by
-    /// [`crate::engine::sink::BufferingSink`] inside the bg agent.
-    /// Pre-fix this was implicitly always empty (bg agents ran with
-    /// `NullSink`). Now populated with one line per significant
-    /// event (tool start, info, auto-rejected approval) so the user
-    /// can see what the bg agent did at result-injection time.
-    /// Empty for the cancelled / panicked case (`output` carries the
-    /// failure detail in those paths).
-    pub events: Vec<String>,
-    /// **#1108 P2a**: the `tool_call_id` of the parent's `InvokeAgent`
-    /// call that started this bg agent. `Some` for normal spawns,
-    /// `None` only for tests that bypass the dispatch path. Used by
-    /// the inference loop's drain handler to persist `events` to
-    /// `session_events` with this id as `parent_tool_call_id`, so
-    /// the transcript renderer can fold the trace under the parent's
-    /// `InvokeAgent` tool result.
-    pub parent_tool_call_id: Option<String>,
-}
-
-/// Handle returned when a background agent is spawned.
-///
-/// Holds the task's [`tokio_util::task::AbortOnDropHandle`] so the
-/// future is aborted if the registry is dropped before the task
-/// completes (B3 of #1022). Also holds the per-task
-/// [`CancellationToken`] so future per-task cancel commands
-/// (`/cancel <id>` — see #996) have a hook to fire.
+/// One running sub-agent.
 struct ChildAgentEntry {
     agent_name: String,
     prompt: String,
-    rx: oneshot::Receiver<Result<BgPayload, BgPayload>>,
-    /// Per-task cancel — derived as a `child_token()` of the parent
-    /// session's token at spawn time. Firing this token (via
-    /// [`ChildAgentRegistry::cancel`] for #996, or via the registry-drop
-    /// path) causes the in-flight bg agent to observe `is_cancelled()`
-    /// on its next loop iteration.
+    /// Per-task cancel, a `child_token()` of the turn's token, fired by
+    /// [`ChildAgentRegistry::cancel`].
     cancel: CancellationToken,
-    /// Live status channel — the spawned future writes; the registry
+    /// Live status channel — the dispatch path writes; the registry
     /// reads at snapshot time. See [`AgentStatus`] for the lifecycle.
     status_rx: watch::Receiver<AgentStatus>,
-    /// When the task was attached. Used to compute `age` in snapshots.
+    /// When the sub-agent was registered. Used to compute `age` in snapshots.
     started_at: Instant,
-    /// Sub-agent task that spawned this bg-agent. `None` = top-level.
-    /// **#996 Layer 2 / Model D** — see [`ChildTaskSnapshot::spawner`].
+    /// Sub-agent invocation that started this one. `None` = top-level.
     spawner: Option<u32>,
-    /// `true` for background agents, `false` for foreground. Surfaced
-    /// via the snapshot's `is_background` field. PR-A0.5 of #1232.
+    /// Always `false` now; kept so snapshots and wire events keep their shape.
     is_background: bool,
-    /// **#1108 P2a**: parent's `InvokeAgent` tool_call_id. Stored at
-    /// reserve time, surfaced via [`BgAgentResult::parent_tool_call_id`]
-    /// at drain time. `None` only for legacy `attach()`-based tests.
-    parent_tool_call_id: Option<String>,
-    /// Aborts the spawned task on drop. The bg path uses
-    /// `tokio::spawn` on the multi-thread runtime (#1022 B5):
-    /// `execute_sub_agent` returns an explicitly `Send`-bounded
-    /// future, so abort works promptly at any await point. The
-    /// cancel-token cascade is still the primary stop signal
-    /// (so the bg task can run any cleanup it owns).
-    _handle: AbortOnDropHandle<()>,
 }
 
-/// Registry of running background sub-agents.
+/// Registry of the sub-agents running inside the current turn.
 ///
-/// Shared via `Arc` between the inference loop (which drains results)
-/// and the tool dispatch (which spawns agents).
+/// Shared via `Arc` between the inference loop, the dispatch path
+/// (which registers each sub-agent for the duration of its run) and
+/// the client's event forwarder.
 pub struct ChildAgentRegistry {
     pending: Mutex<HashMap<u32, ChildAgentEntry>>,
     next_id: Mutex<u32>,
@@ -369,19 +270,17 @@ pub struct ChildAgentRegistry {
     event_rx: Mutex<Option<mpsc::UnboundedReceiver<EngineEvent>>>,
 }
 
-/// Fan-out helper for bg-agent status transitions.
+/// Fan-out helper for a sub-agent's status transitions.
 ///
-/// Bundles the per-task `watch::Sender<AgentStatus>` (read by
-/// `/agents` and the status-bar pill via the registry's snapshot
-/// API) with a back-reference to the registry's event queue (drained
-/// by the inference loop and forwarded to the engine sink — which is
-/// what closes the #1076 boundary leak).
+/// Bundles the per-task `watch::Sender<AgentStatus>` (read by the
+/// TUI overlay through the registry's snapshot API) with a
+/// back-reference to the registry's event queue (forwarded to the
+/// engine sink, so TUI and headless clients see the same events).
 ///
-/// `Clone` is intentional so Layer 4 (`#1058`, live `iter` heartbeat)
-/// can hold its own copy inside `execute_sub_agent` while
-/// `run_bg_agent` keeps another for the entry / terminal transitions.
-/// Both clones share the same `watch::Sender` and `Arc<registry>`,
-/// so every `.send()` reaches both fan-out targets.
+/// `Clone` is intentional: the dispatch path holds one copy for
+/// status sends and wraps the sub-agent's sink with another for
+/// activity events. Both share the same `watch::Sender` and
+/// `Arc<registry>`, so every `.send()` reaches both fan-out targets.
 #[derive(Clone)]
 pub struct ChildStatusEmitter {
     task_id: u32,
@@ -392,13 +291,8 @@ pub struct ChildStatusEmitter {
 }
 
 impl ChildStatusEmitter {
-    /// Construct from the parts handed back by [`ChildAgentRegistry::reserve`].
-    ///
-    /// The registry `Arc` is held for the lifetime of the bg agent,
-    /// which is fine: the inference loop already keeps an `Arc` on
-    /// the same registry, and registry drop is what aborts every
-    /// in-flight bg task (B3 of #1022) — so an emitter outliving its
-    /// registry is impossible by construction.
+    /// Construct an emitter for one registry entry. Production code
+    /// gets one from [`ChildAgentRegistry::register_fg_with_emitter`].
     pub fn new(
         task_id: u32,
         spawner: Option<u32>,
@@ -441,16 +335,15 @@ impl ChildStatusEmitter {
             });
     }
 
-    /// Forward a live activity event from inside the bg agent up to
+    /// Forward a live activity event from inside the sub-agent up to
     /// the parent's sink.
     ///
-    /// **#1201 B**: paired with [`crate::engine::sink::ForwardingChildSink`],
-    /// which decorates the bg agent's `BufferingSink` and calls this
-    /// method whenever an interesting child event happens (tool
-    /// start/end, info line). The event lands on the same registry
-    /// queue as `ChildTaskUpdate`, so the inference loop's existing
-    /// drain in [`crate::inference`] forwards it to whatever sink
-    /// is active (TUI / headless) without further plumbing.
+    /// Paired with [`crate::engine::sink::FgForwardingSink`], which
+    /// wraps the parent's sink for the duration of the sub-agent call
+    /// and calls this method whenever an interesting child event
+    /// happens (tool start/end, info line). The event lands on the
+    /// same registry queue as `ChildTaskUpdate`, so it reaches
+    /// whatever sink is active (TUI / headless) without further plumbing.
     ///
     /// Cheap: a single mutex acquisition + `VecDeque::push_back`,
     /// the same cost as [`Self::send`]. The activity feed runs at
@@ -486,76 +379,17 @@ impl ChildStatusEmitter {
     }
 }
 
-/// Reservation slot returned by [`ChildAgentRegistry::reserve`].
-///
-/// The two-phase pattern (`reserve` → spawn → `attach`) lets the
-/// dispatcher hand the oneshot sender into the spawned future
-/// *before* the future exists, so the spawned closure can `move` it
-/// without referencing the registry. The `cancel` token is a
-/// `child_token()` of the parent's cancel — fires either when the
-/// parent fires (cascade) or when this slot is individually cancelled
-/// (future per-task `/cancel <id>` UX, #996).
-pub struct ChildAgentReservation {
-    /// Monotonically-assigned task ID. Surfaces in user-facing
-    /// messages (`Background agent 'foo' started (agent:7)`) and
-    /// keys the per-task `/cancel <id>` UX (#996).
-    pub task_id: u32,
-    /// Sender half of the result oneshot. Move into the spawned
-    /// future so it can deliver `Ok(output)` / `Err(message)`.
-    pub tx: oneshot::Sender<Result<BgPayload, BgPayload>>,
-    /// Receiver half. Move back into the registry via [`ChildAgentRegistry::attach`]
-    /// so `drain_completed()` can poll it.
-    pub rx: oneshot::Receiver<Result<BgPayload, BgPayload>>,
-    /// Per-task cancel token. Cloned for the spawned future
-    /// (`bg_cancel`) and re-stored on the registry entry
-    /// (`entry_cancel`); both halves observe parent cancellation
-    /// because this is a `child_token()` of the parent.
-    pub cancel: CancellationToken,
-    /// Status sender — move into the spawned future. The future is
-    /// the sole writer; it transitions through
-    /// [`AgentStatus::Pending`] → `Running` → terminal.
-    pub status_tx: watch::Sender<AgentStatus>,
-    /// Status receiver — hand back to the registry via [`ChildAgentRegistry::attach`]
-    /// so `snapshot()` and `/agents` can read the current state without
-    /// touching the spawn site.
-    pub status_rx: watch::Receiver<AgentStatus>,
-    /// Sub-agent task id of the spawner, or `None` for the top-level
-    /// loop. Carried verbatim to [`ChildAgentRegistry::attach`] so the
-    /// entry knows who spawned it (Model D cleanup-on-exit).
-    pub spawner: Option<u32>,
-    /// `true` if this reservation is for a background sub-agent
-    /// (auto-drains its result on a future iteration), `false` for
-    /// foreground sub-agents (parent awaits inline).
-    ///
-    /// **PR-A0.5 of #1232**: added when the registry was generalized
-    /// from bg-only to host both fg and bg child agents. The flag is
-    /// carried into [`ChildAgentRegistry::attach`] so the registry
-    /// entry's snapshots and the [`EngineEvent::ChildTaskUpdate`]
-    /// events emitted by [`ChildStatusEmitter::send`] both reflect
-    /// the same source-of-truth value.
-    pub is_background: bool,
-}
-
 /// RAII handle returned from [`ChildAgentRegistry::register_fg_with_emitter`].
 ///
-/// **PR-A of #1232 §1**: foreground sub-agents are owned by the
-/// inline call that's awaiting them — there's no oneshot drain to
-/// hook into for cleanup. Instead the parent holds this guard for
-/// the duration of the await; on drop the registry entry is removed
-/// so the `/agents` overlay stops showing the row.
+/// The parent holds this guard for the duration of the sub-agent
+/// call; on drop the registry entry is removed so the TUI overlay
+/// stops showing the row. RAII covers every exit: a normal return,
+/// a `?`-bubbled error and a panic. Without it an error path would
+/// leak the entry, which the overlay would render as a phantom
+/// "running" row.
 ///
-/// Drop semantics:
-/// * Successful return — guard dropped at scope exit, entry pulled.
-/// * `?`-bubbled error — guard dropped during stack unwind, entry
-///   pulled. Without RAII this path leaks the registry slot, which
-///   the overlay would then render as a phantom "running" row.
-/// * Panic — same as `?`. Mirrors `AbortOnDropHandle`'s drop-safety
-///   story for the bg path.
-///
-/// The guard intentionally does *not* cancel the child token — fg
-/// sub-agents return through the inline await, so the cancel-token
-/// cascade isn't needed for cleanup. Cancellation comes from the
-/// usual Ctrl-C path on the parent's loop.
+/// The guard does *not* cancel the child token on drop: the sub-agent
+/// has already returned by then.
 pub struct FgRegistrationGuard {
     registry: Arc<ChildAgentRegistry>,
     task_id: u32,
@@ -572,9 +406,6 @@ impl FgRegistrationGuard {
 
 impl Drop for FgRegistrationGuard {
     fn drop(&mut self) {
-        // Best-effort removal. If the registry was already drained
-        // (shouldn't happen for fg — `drain_completed` skips us),
-        // the `remove` is a no-op.
         self.registry.pending.lock().remove(&self.task_id);
     }
 }
@@ -660,167 +491,24 @@ impl ChildAgentRegistry {
         out
     }
 
-    /// Reserve a task ID and produce a oneshot sender + child cancel
-    /// token for the spawn site to consume. Call [`Self::attach`] with
-    /// the resulting `JoinHandle` to complete registration.
-    ///
-    /// `spawner` records who is reserving this slot. `None` means
-    /// the top-level inference loop; `Some(invocation_id)` means a
-    /// sub-agent invocation. Used by [`Self::cancel_for_spawner`] to
-    /// reap children when a sub-agent exits (Model E cleanup-on-exit)
-    /// and by [`Self::snapshot_for_caller`] to scope LLM-tool views.
-    ///
-    /// The two-phase shape (`reserve` → spawn → `attach`) exists
-    /// because `tokio::spawn` produces the `JoinHandle` *after* the
-    /// future is built, but the future needs to own the `tx` to deliver
-    /// its result. Reservation gives us `tx` early; attach binds the
-    /// handle once it exists.
-    pub fn reserve(
-        &self,
-        parent_cancel: &CancellationToken,
-        spawner: Option<u32>,
-        is_background: bool,
-    ) -> ChildAgentReservation {
-        let (tx, rx) = oneshot::channel();
-        let (status_tx, status_rx) = watch::channel(AgentStatus::Pending);
-        let mut id = self.next_id.lock();
-        let task_id = *id;
-        *id += 1;
-        ChildAgentReservation {
-            task_id,
-            tx,
-            rx,
-            cancel: parent_cancel.child_token(),
-            status_tx,
-            status_rx,
-            spawner,
-            is_background,
-        }
-    }
-
-    /// Bind a spawned task's metadata to a previously [`reserve`]d slot.
-    ///
-    /// `rx` must be the receiver paired with the `tx` handed out by
-    /// `reserve`. Holding `handle` as `AbortOnDropHandle` ensures the
-    /// task is aborted on registry drop (B3 of #1022). `status_rx`
-    /// is the read half of the watch channel whose write half
-    /// (`status_tx`) was moved into the spawned future.
-    ///
-    /// [`reserve`]: Self::reserve
-    //
-    // 9 args trips `clippy::too_many_arguments` (limit 7). Each one
-    // is load-bearing: id + name + prompt are display metadata;
-    // rx/cancel/status_rx are the three channels we own; spawner is
-    // the cleanup-routing key (Model E); handle is the
-    // AbortOnDropHandle. Bundling into a struct just to satisfy
-    // a heuristic would add a one-use type for no readability win
-    // — "practicality beats purity".
-    #[allow(clippy::too_many_arguments)]
-    pub fn attach(
-        &self,
-        reservation_id: u32,
-        agent_name: &str,
-        prompt: &str,
-        rx: oneshot::Receiver<Result<BgPayload, BgPayload>>,
-        cancel: CancellationToken,
-        status_rx: watch::Receiver<AgentStatus>,
-        spawner: Option<u32>,
-        is_background: bool,
-        parent_tool_call_id: Option<String>,
-        handle: tokio::task::JoinHandle<()>,
-    ) {
-        self.pending.lock().insert(
-            reservation_id,
-            ChildAgentEntry {
-                agent_name: agent_name.to_string(),
-                prompt: prompt.to_string(),
-                rx,
-                cancel,
-                status_rx,
-                started_at: Instant::now(),
-                spawner,
-                is_background,
-                parent_tool_call_id,
-                _handle: AbortOnDropHandle::new(handle),
-            },
-        );
-    }
-
-    /// Register a **foreground** sub-agent and hand back the live
-    /// signal lines for it.
-    ///
-    /// **PR-A of #1232 §1**: the bg path uses `reserve` + `attach`,
-    /// which provisions a oneshot result channel and an
-    /// `AbortOnDropHandle` so the inference loop can drain results
-    /// asynchronously. Foreground sub-agents don't need any of that
-    /// — the parent is *already blocked* awaiting the inline call,
-    /// so the result returns through the normal function return path.
-    /// What the parent *does* need is the registry membership so the
-    /// `/agents` overlay can render an activity row, plus an emitter
-    /// so child events fan out to the same `ChildAgentActivity`
-    /// stream that bg uses.
+    /// Register a running sub-agent and hand back its live signal lines.
     ///
     /// Returns `(emitter, guard)`:
     /// * `emitter` — use `.send(...)` to push status transitions
     ///   (`Pending` → `Running { iter }` → terminal) and
-    ///   `.send_activity(...)` to fan out tool/info events. The
-    ///   emitter's `is_background` is wired to `false` so every
-    ///   `ChildTaskUpdate`/`ChildAgentActivity` event the fg path
-    ///   emits is correctly tagged.
+    ///   `.send_activity(...)` to fan out tool/info events.
     /// * `guard` — a [`FgRegistrationGuard`] that removes the entry
-    ///   from the registry when dropped. Hold it for the duration of
-    ///   the inline sub-agent call. RAII over manual unregister so a
-    ///   panic / `?`-bubble doesn't leak the entry. (Mirrors
-    ///   `AbortOnDropHandle`'s drop-safety story for the bg path.)
-    ///
-    /// The entry is inserted with a noop oneshot sender that never
-    /// fires + a noop spawn handle. `drain_completed` skips fg
-    /// entries unconditionally (see its doc), so neither the dummy
-    /// rx nor the dummy handle ever surface to a consumer.
+    ///   when dropped. Hold it for the duration of the sub-agent call.
     pub fn register_fg_with_emitter(
         self: &Arc<Self>,
         agent_name: &str,
         prompt: &str,
         parent_cancel: &CancellationToken,
         spawner: Option<u32>,
-        parent_tool_call_id: Option<String>,
     ) -> (ChildStatusEmitter, FgRegistrationGuard) {
-        let (_dummy_tx, dummy_rx) = oneshot::channel::<Result<BgPayload, BgPayload>>();
-        // Leak the sender into the entry's environment via a parked
-        // task so `try_recv` always returns `Empty`, not `Closed`.
-        // We can't actually keep `_dummy_tx` alive that way without a
-        // task — simpler: just drop it here, accept that try_recv
-        // would return `Closed`, and rely on `drain_completed`'s
-        // `is_background` early-skip (the whole reason that skip
-        // exists). Belt + suspenders against a future refactor that
-        // accidentally drops the skip.
-        drop(_dummy_tx);
-
         let (status_tx, status_rx) = watch::channel(AgentStatus::Pending);
         let cancel = parent_cancel.child_token();
-        let task_id = {
-            let mut id = self.next_id.lock();
-            let next = *id;
-            *id += 1;
-            next
-        };
-        let noop = tokio::spawn(async {});
-        self.pending.lock().insert(
-            task_id,
-            ChildAgentEntry {
-                agent_name: agent_name.to_string(),
-                prompt: prompt.to_string(),
-                rx: dummy_rx,
-                cancel,
-                status_rx,
-                started_at: Instant::now(),
-                spawner,
-                is_background: false,
-                parent_tool_call_id,
-                _handle: AbortOnDropHandle::new(noop),
-            },
-        );
-
+        let task_id = self.insert(agent_name, prompt, cancel, status_rx, spawner);
         let emitter = ChildStatusEmitter::new(task_id, spawner, false, status_tx, self.clone());
         let guard = FgRegistrationGuard {
             registry: self.clone(),
@@ -829,147 +517,55 @@ impl ChildAgentRegistry {
         (emitter, guard)
     }
 
-    /// Convenience for tests: register a synthetic entry without a
-    /// real spawned task. The provided `tx` can be used to fire the
-    /// result manually. The handle is a noop spawned task that
-    /// returns immediately, so `_handle` has something to abort.
-    #[cfg(test)]
-    pub fn register_test(
+    fn insert(
         &self,
         agent_name: &str,
         prompt: &str,
-    ) -> (u32, oneshot::Sender<Result<BgPayload, BgPayload>>) {
-        let (id, tx, _status_tx, _cancel) =
-            self.register_test_with_status(agent_name, prompt, None);
-        (id, tx)
+        cancel: CancellationToken,
+        status_rx: watch::Receiver<AgentStatus>,
+        spawner: Option<u32>,
+    ) -> u32 {
+        let task_id = {
+            let mut id = self.next_id.lock();
+            let next = *id;
+            *id += 1;
+            next
+        };
+        self.pending.lock().insert(
+            task_id,
+            ChildAgentEntry {
+                agent_name: agent_name.to_string(),
+                prompt: prompt.to_string(),
+                cancel,
+                status_rx,
+                started_at: Instant::now(),
+                spawner,
+                is_background: false,
+            },
+        );
+        task_id
     }
 
-    /// Test-only sibling of [`register_test`] that returns the status
-    /// sender so a test can manually drive transitions without
-    /// needing a real spawned `run_bg_agent`. The cancel token also
-    /// comes back so cancel-cascade tests can verify the channel.
-    ///
-    /// `spawner` is recorded on the entry so scope-filtering /
-    /// kill-on-exit tests can exercise both the top-level (`None`)
-    /// and sub-agent (`Some(id)`) paths.
+    /// Test-only: register an entry and return its id.
+    #[cfg(test)]
+    pub fn register_test(&self, agent_name: &str, prompt: &str) -> u32 {
+        self.register_test_with_status(agent_name, prompt, None).0
+    }
+
+    /// Test-only sibling of [`register_test`] that also returns the
+    /// status sender, so a test can drive transitions by hand, and
+    /// the entry's cancel token, so a test can watch it fire.
     #[cfg(test)]
     pub fn register_test_with_status(
         &self,
         agent_name: &str,
         prompt: &str,
         spawner: Option<u32>,
-    ) -> (
-        u32,
-        oneshot::Sender<Result<BgPayload, BgPayload>>,
-        watch::Sender<AgentStatus>,
-        CancellationToken,
-    ) {
-        let (tx, rx) = oneshot::channel();
+    ) -> (u32, watch::Sender<AgentStatus>, CancellationToken) {
         let (status_tx, status_rx) = watch::channel(AgentStatus::Pending);
-        let mut id = self.next_id.lock();
-        let task_id = *id;
-        *id += 1;
-        drop(id);
         let cancel = CancellationToken::new();
-        let cancel_observer = cancel.clone();
-        let noop = tokio::spawn(async {});
-        self.pending.lock().insert(
-            task_id,
-            ChildAgentEntry {
-                agent_name: agent_name.to_string(),
-                prompt: prompt.to_string(),
-                rx,
-                cancel,
-                status_rx,
-                started_at: Instant::now(),
-                spawner,
-                // Test-only entries default to bg-true (legacy behavior).
-                // PR-A0.5 of #1232.
-                is_background: true,
-                parent_tool_call_id: None,
-                _handle: AbortOnDropHandle::new(noop),
-            },
-        );
-        (task_id, tx, status_tx, cancel_observer)
-    }
-
-    /// Drain all completed background agents. Non-blocking — only takes
-    /// entries whose oneshot has already resolved.
-    ///
-    /// **PR-A of #1232 §1**: foreground entries (`is_background == false`)
-    /// are skipped. The fg dispatch path returns the sub-agent's output
-    /// inline through its own `await`, so injecting a duplicate result
-    /// via the bg drain channel would corrupt the parent's transcript.
-    /// Defense-in-depth: today the fg registration path doesn't even
-    /// hold a sender that can fire, so the `try_recv` would only ever
-    /// return `Empty` or `Closed` — but `Closed` would manufacture a
-    /// fake "cancelled" `BgAgentResult` (see the `Closed` arm below),
-    /// which the inference loop would then inject into the parent. The
-    /// `is_background` skip here makes that whole class of bug
-    /// impossible by construction rather than relying on the fg path's
-    /// discipline to never close its sender.
-    pub fn drain_completed(&self) -> Vec<BgAgentResult> {
-        let mut guard = self.pending.lock();
-        let mut completed = Vec::new();
-        let mut done_ids = Vec::new();
-
-        for (id, entry) in guard.iter_mut() {
-            if !entry.is_background {
-                // PR-A of #1232 §1: see fn-level doc.
-                continue;
-            }
-            match entry.rx.try_recv() {
-                Ok(Ok((output, events))) => {
-                    done_ids.push(*id);
-                    completed.push(BgAgentResult {
-                        agent_name: entry.agent_name.clone(),
-                        prompt: entry.prompt.clone(),
-                        output,
-                        success: true,
-                        events,
-                        parent_tool_call_id: entry.parent_tool_call_id.clone(),
-                    });
-                }
-                Ok(Err((err, events))) => {
-                    done_ids.push(*id);
-                    completed.push(BgAgentResult {
-                        agent_name: entry.agent_name.clone(),
-                        prompt: entry.prompt.clone(),
-                        output: err,
-                        success: false,
-                        events,
-                        parent_tool_call_id: entry.parent_tool_call_id.clone(),
-                    });
-                }
-                Err(oneshot::error::TryRecvError::Empty) => {
-                    // Still running
-                }
-                Err(oneshot::error::TryRecvError::Closed) => {
-                    // Sender dropped without sending — task panicked or was cancelled.
-                    // No events available (the buffering sink died with the task).
-                    done_ids.push(*id);
-                    completed.push(BgAgentResult {
-                        agent_name: entry.agent_name.clone(),
-                        prompt: entry.prompt.clone(),
-                        output: "[background agent task was cancelled]".to_string(),
-                        success: false,
-                        events: Vec::new(),
-                        parent_tool_call_id: entry.parent_tool_call_id.clone(),
-                    });
-                }
-            }
-        }
-
-        for id in done_ids {
-            guard.remove(&id);
-        }
-
-        completed
-    }
-
-    /// How many background agents are still running.
-    pub fn pending_count(&self) -> usize {
-        self.pending.lock().len()
+        let task_id = self.insert(agent_name, prompt, cancel.clone(), status_rx, spawner);
+        (task_id, status_tx, cancel)
     }
 
     // ── Layer 0 of #996: per-task cancel + snapshot ───────────────────────────────
@@ -982,10 +578,8 @@ impl ChildAgentRegistry {
     /// the same id is safe — [`CancellationToken::cancel`] is itself
     /// idempotent.
     ///
-    /// The entry stays in `pending` until the spawned future actually
-    /// observes the token and finishes. `drain_completed()` then
-    /// reaps it via the closed-sender path (or the future's terminal
-    /// `tx.send` if it noticed and shut down cleanly).
+    /// The entry stays in `pending` until the sub-agent's loop
+    /// observes the token and returns, which drops its guard.
     pub fn cancel(&self, task_id: u32) -> bool {
         let guard = self.pending.lock();
         match guard.get(&task_id) {
@@ -997,17 +591,12 @@ impl ChildAgentRegistry {
         }
     }
 
-    /// Snapshot every pending task's metadata for `/agents` and the
-    /// `ListBackgroundTasks` LLM tool.
+    /// Snapshot every running sub-agent's metadata for the TUI overlay.
     ///
     /// `age` is computed against `Instant::now()` at call time, so two
     /// snapshots of the same task report different ages. Status is read
     /// from each entry's `watch::Receiver` (no blocking, no waiting).
     /// Sorted by ascending `task_id` so the output is stable across calls.
-    ///
-    /// **Unscoped**: returns every task regardless of spawner. Used by
-    /// the TUI `/agents` command (humans want the global view) and as
-    /// the engine of [`Self::snapshot_for_caller`] (which filters).
     pub fn snapshot(&self) -> Vec<ChildTaskSnapshot> {
         let guard = self.pending.lock();
         let now = Instant::now();
@@ -1027,108 +616,34 @@ impl ChildAgentRegistry {
         out
     }
 
-    /// Scoped snapshot for the `ListBackgroundTasks` LLM tool.
-    ///
-    /// **Model E scoping**: a caller only sees tasks whose `spawner`
-    /// matches its own `caller_spawner`. Top-level callers pass `None`
-    /// and see only top-level-spawned tasks; sub-agent callers pass
-    /// `Some(invocation_id)` and see only their own.
-    ///
-    /// Strict equality — a sub-agent does NOT see sibling sub-agents'
-    /// tasks, and the top-level does NOT see sub-agents' tasks via the
-    /// LLM (the TUI's `/agents` command remains the global view).
-    pub fn snapshot_for_caller(&self, caller_spawner: Option<u32>) -> Vec<ChildTaskSnapshot> {
-        self.snapshot()
-            .into_iter()
-            .filter(|s| s.spawner == caller_spawner)
-            .collect()
-    }
-
     /// Clone the status receiver for a task so callers can await
     /// [`watch::Receiver::changed`] without holding the lock.
     ///
-    /// Returns `None` if the task has already been drained from the registry.
-    /// Primarily used by tests to observe live iteration-counter updates
+    /// Returns `None` if the entry is gone. Primarily used by tests to observe live iteration-counter updates
     /// without polling `snapshot()` in a tight loop.
     pub fn subscribe(&self, task_id: u32) -> Option<watch::Receiver<AgentStatus>> {
         let guard = self.pending.lock();
         guard.get(&task_id).map(|e| e.status_rx.clone())
     }
-
-    // ── Layer 2 of #996 ───────────────────────────────────────────────
-    //
-    // Scoped cancel + cleanup-on-exit + WaitTask machinery.
-    // The unscoped [`Self::cancel`] above stays for the TUI (humans get
-    // the global view); LLM tools route through [`Self::cancel_as_caller`]
-    // so a sub-agent can't reach across into a sibling's task.
-
-    /// Scoped per-task cancel for the `CancelTask` LLM tool.
-    ///
-    /// **Model E permission rule** — `caller_spawner` must equal the
-    /// task's `spawner`, with `None == None` (top-level can cancel
-    /// top-level tasks; sub-agent invocation N can cancel only its
-    /// own tasks). Returns [`CancelOutcome::Forbidden`] otherwise.
-    ///
-    /// The unscoped [`Self::cancel`] is the TUI's contract — humans
-    /// at the keyboard implicitly have full authority. This method is
-    /// the LLM's contract.
-    pub fn cancel_as_caller(&self, task_id: u32, caller_spawner: Option<u32>) -> CancelOutcome {
-        let guard = self.pending.lock();
-        match guard.get(&task_id) {
-            None => CancelOutcome::NotFound,
-            Some(entry) if entry.spawner != caller_spawner => CancelOutcome::Forbidden,
-            Some(entry) => {
-                entry.cancel.cancel();
-                CancelOutcome::Cancelled
-            }
-        }
-    }
-
-    /// Fire the cancel token on every task whose `spawner` matches.
-    ///
-    /// Called from the sub-agent dispatch path when an invocation
-    /// exits (Model E cleanup-on-exit). Returns the number of tasks
-    /// signalled, purely for tracing — the actual reaping happens
-    /// later via [`Self::drain_completed`] once the futures observe
-    /// their cancel tokens and finish.
-    ///
-    /// Idempotent: re-calling on the same `spawner` after all tasks
-    /// have been reaped returns `0`.
-    pub fn cancel_for_spawner(&self, spawner: u32) -> usize {
-        let guard = self.pending.lock();
-        let mut count = 0;
-        for entry in guard.values() {
-            if entry.spawner == Some(spawner) {
-                entry.cancel.cancel();
-                count += 1;
-            }
-        }
-        count
-    }
 }
 
-/// Outcome of [`ChildAgentRegistry::cancel_as_caller`].
+/// Outcome of a scoped cancel, used by
+/// [`crate::tools::bg_process::BgRegistry::kill_as_caller`].
 ///
-/// Mirrors HTTP-ish status codes so the LLM-tool layer can produce
-/// useful error messages without inspecting registry internals.
-///
-/// `#[must_use]`: silently dropping the outcome of a cancel call is
-/// always a bug — the dispatch layer translates each variant into a
-/// distinct LLM-tool response payload.
+/// Mirrors HTTP-ish status codes so a caller can produce useful
+/// error messages without inspecting registry internals.
 ///
 /// Note: deliberately NOT `#[non_exhaustive]`. The `koda-cli` rendering
 /// layer matches every variant exhaustively, and the compiler-driven
 /// missed-variant warning we get from that is a feature, not a wart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[must_use = "every CancelOutcome maps to a distinct dispatch-layer response"]
+#[must_use = "every CancelOutcome maps to a distinct response"]
 pub enum CancelOutcome {
     /// Task existed, caller owned it, cancel token fired.
     Cancelled,
-    /// No task with that id (already drained, never registered, or
-    /// completed and reaped).
+    /// No task with that id (never registered, or already gone).
     NotFound,
-    /// Task exists but caller's `spawner` doesn't match. The LLM
-    /// surface translates this into a permission-style error.
+    /// Task exists but caller's `spawner` doesn't match.
     Forbidden,
 }
 
@@ -1138,33 +653,7 @@ impl Default for ChildAgentRegistry {
     }
 }
 
-impl Drop for ChildAgentRegistry {
-    /// Abort every still-pending bg task on registry drop.
-    ///
-    /// `AbortOnDropHandle::drop` does the work — this impl exists
-    /// only to make the lifecycle explicit and to give a single
-    /// place to add telemetry later.
-    fn drop(&mut self) {
-        // **#1022 B16**: simplified post-parking_lot. The pre-fix
-        // version had to handle `PoisonError` (via
-        // `match get_mut() { Ok | Err(into_inner()) }`) because a
-        // panic-while-held would poison `std::sync::Mutex`.
-        // `parking_lot::Mutex` doesn't poison, so the cleanup path
-        // is now the obvious one: take the map, log if non-empty,
-        // let `AbortOnDropHandle::drop` do the actual abort work.
-        let map = std::mem::take(&mut *self.pending.lock());
-        if !map.is_empty() {
-            tracing::debug!(
-                count = map.len(),
-                "ChildAgentRegistry dropped with pending tasks; aborting"
-            );
-        }
-        // Map drops here → each entry's `AbortOnDropHandle` aborts
-        // its task. No orphans. No leaked worktrees.
-    }
-}
-
-/// Wrap in Arc for sharing between inference loop and tool dispatch.
+/// Wrap in Arc for sharing between the inference loop, dispatch and the client.
 pub fn new_shared() -> Arc<ChildAgentRegistry> {
     Arc::new(ChildAgentRegistry::new())
 }
@@ -1172,283 +661,18 @@ pub fn new_shared() -> Arc<ChildAgentRegistry> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn register_and_complete() {
-        let reg = ChildAgentRegistry::new();
-        let (task_id, tx) = reg.register_test("explore", "find all tests");
-        assert_eq!(task_id, 1);
-        assert_eq!(reg.pending_count(), 1);
-
-        // Not yet complete
-        assert!(reg.drain_completed().is_empty());
-
-        // Complete it
-        tx.send(Ok(("found 42 tests".to_string(), Vec::new())))
-            .unwrap();
-        let results = reg.drain_completed();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].agent_name, "explore");
-        assert_eq!(results[0].output, "found 42 tests");
-        assert!(results[0].success);
-        assert_eq!(reg.pending_count(), 0);
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn drain_only_completed() {
-        let reg = ChildAgentRegistry::new();
-        let (_id1, tx1) = reg.register_test("task", "build");
-        let (_id2, _tx2) = reg.register_test("explore", "search");
-
-        tx1.send(Ok(("done".to_string(), Vec::new()))).unwrap();
-
-        let results = reg.drain_completed();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].agent_name, "task");
-        assert_eq!(reg.pending_count(), 1); // explore still pending
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn dropped_sender_reports_cancelled() {
-        let reg = ChildAgentRegistry::new();
-        let (_id, tx) = reg.register_test("task", "build");
-        drop(tx); // simulate task panic/cancel
-
-        let results = reg.drain_completed();
-        assert_eq!(results.len(), 1);
-        assert!(!results[0].success);
-        assert!(results[0].output.contains("cancelled"));
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn error_result() {
-        let reg = ChildAgentRegistry::new();
-        let (_id, tx) = reg.register_test("verify", "check");
-        tx.send(Err(("test failures".to_string(), Vec::new())))
-            .unwrap();
-
-        let results = reg.drain_completed();
-        assert_eq!(results.len(), 1);
-        assert!(!results[0].success);
-        assert_eq!(results[0].output, "test failures");
-    }
-
-    /// #1022 B9 regression: the narrative trace captured by
-    /// `BufferingSink` inside the bg agent must propagate through
-    /// the oneshot → registry → `BgAgentResult.events`. Pre-fix
-    /// this field didn't exist; bg agents ran with `NullSink` and
-    /// the user only saw spawn + completion lines. The fix is
-    /// useless if the trace gets dropped at any of the three hops,
-    /// so this test pins the round-trip end-to-end.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn events_propagate_through_drain_for_success() {
-        let reg = ChildAgentRegistry::new();
-        let (_id, tx) = reg.register_test("explore", "map repo");
-        let trace = vec![
-            "  \u{1f527} Read".to_string(),
-            "  \u{1f527} Grep".to_string(),
-            "  \u{26a1} cache hit".to_string(),
-        ];
-        tx.send(Ok(("map result".to_string(), trace.clone())))
-            .unwrap();
-
-        let results = reg.drain_completed();
-        assert_eq!(results.len(), 1);
-        assert!(results[0].success);
-        assert_eq!(
-            results[0].events, trace,
-            "trace lost between sender and BgAgentResult"
-        );
-    }
-
-    /// #1022 B9 regression: trace must propagate even when the bg
-    /// agent failed. The trace is *most* useful in the failure case
-    /// — "the agent tried Read, Bash, Edit, then errored" is the
-    /// kind of breadcrumb that turns a black-box failure into a
-    /// debuggable one.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn events_propagate_through_drain_for_failure() {
-        let reg = ChildAgentRegistry::new();
-        let (_id, tx) = reg.register_test("build", "compile");
-        let trace = vec![
-            "  \u{1f527} Bash".to_string(),
-            "  \u{2398} approval auto-rejected for Delete (no user channel)".to_string(),
-        ];
-        tx.send(Err(("compile failed".to_string(), trace.clone())))
-            .unwrap();
-
-        let results = reg.drain_completed();
-        assert_eq!(results.len(), 1);
-        assert!(!results[0].success);
-        assert_eq!(results[0].events, trace);
-    }
-
-    /// #1022 B9 corollary: cancelled / panicked tasks have *no*
-    /// trace available (the buffering sink died with the task), and
-    /// that's an explicitly-empty Vec rather than uninitialized.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn cancelled_task_has_empty_event_trace() {
-        let reg = ChildAgentRegistry::new();
-        let (_id, tx) = reg.register_test("flaky", "x");
-        drop(tx); // simulate panic / abort
-        let results = reg.drain_completed();
-        assert_eq!(results.len(), 1);
-        assert!(!results[0].success);
-        assert!(
-            results[0].events.is_empty(),
-            "cancel path must yield empty trace"
-        );
-    }
-
-    /// Phase 1 of #1022, B3 regression test: dropping the registry
-    /// must abort still-running spawned tasks. Without
-    /// `AbortOnDropHandle` (or an explicit `JoinHandle::abort` in
-    /// `Drop`), the spawned future would keep running after the
-    /// registry — and any worktrees / API tokens / writes it owns —
-    /// were dropped. That's the leak we're fixing.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn registry_drop_aborts_pending_tasks() {
-        let reg = ChildAgentRegistry::new();
-        let parent = CancellationToken::new();
-        let reservation = reg.reserve(&parent, None, true);
-        let task_id = reservation.task_id;
-        let cancel_for_task = reservation.cancel.clone();
-        let tx = reservation.tx;
-        let rx = reservation.rx;
-        let cancel_for_entry = reservation.cancel;
-        let status_rx = reservation.status_rx;
-
-        // Use a flag the task sets only if it ever finishes a full
-        // sleep. If abort works, the flag stays false even though
-        // we wait long enough for a non-aborted task to finish.
-        let ran_to_completion = Arc::new(AtomicBool::new(false));
-        let flag = ran_to_completion.clone();
-
-        // Deterministic abort signal (#1312): a drop guard inside
-        // the spawned task fires `aborted_tx` whenever the task
-        // unwinds — cooperative completion, parent cancel, or hard
-        // abort. The receiver lets the test wait for *the actual
-        // abort* instead of guessing a settle time.
-        //
-        // Why a drop guard (and not just a `tx.send()` after the
-        // `select!`): `JoinHandle::abort()` does **not** run the
-        // task's normal continuation — it polls the future, sees
-        // it cancelled, and drops it. Code after the await never
-        // runs. The drop guard fires from within the task's
-        // destructor, which DOES run on abort. This is the only
-        // shape that detects abort vs. completion.
-        struct AbortSignal(Option<oneshot::Sender<()>>);
-        impl Drop for AbortSignal {
-            fn drop(&mut self) {
-                if let Some(tx) = self.0.take() {
-                    let _ = tx.send(());
-                }
-            }
-        }
-        let (aborted_tx, aborted_rx) = oneshot::channel::<()>();
-        let abort_signal = AbortSignal(Some(aborted_tx));
-
-        let handle = tokio::spawn(async move {
-            // Move the guard into the task so its Drop fires when
-            // the task unwinds (whether via normal completion,
-            // cooperative cancel, or JoinHandle::abort()).
-            let _abort_signal = abort_signal;
-            // Either the cancel token fires (parent cascade) or we
-            // get aborted (drop cascade). The slow sleep just gives
-            // the test time to drop the registry before we'd
-            // naturally finish.
-            tokio::select! {
-                _ = cancel_for_task.cancelled() => {}
-                _ = tokio::time::sleep(Duration::from_secs(60)) => {
-                    flag.store(true, Ordering::SeqCst);
-                }
-            }
-            let _ = tx.send(Ok(("done".to_string(), Vec::new())));
-        });
-        reg.attach(
-            task_id,
-            "explore",
-            "long task",
-            rx,
-            cancel_for_entry,
-            status_rx,
-            None,
-            true,
-            None,
-            handle,
-        );
-
-        // No "give the task a tick to start" sleep needed: `attach`
-        // calls `self.pending.lock().insert(...)` synchronously, so
-        // `pending_count` is incremented by the time `attach` returns.
-        // (Pre-#1312 this was a 20ms blind sleep based on the (false)
-        // assumption that the spawned task had to start before the
-        // count moved.)
-        assert_eq!(reg.pending_count(), 1);
-
-        // Drop the registry — this must abort the spawned task.
-        drop(reg);
-
-        // Deterministic readiness (#1312 was: blind `sleep(100ms)`).
-        // Wait for the AbortSignal drop guard to fire. If abort
-        // landed, the guard runs from the task's destructor and
-        // resolves `aborted_rx` immediately. If abort did NOT land,
-        // the receiver hangs (because the task is still running its
-        // 60s sleep and the guard hasn't dropped) and the timeout
-        // bails with a loud message — a real regression signal, not
-        // a flake.
-        tokio::time::timeout(Duration::from_secs(2), aborted_rx)
-            .await
-            .expect(
-                "AbortOnDropHandle did not abort the spawned task within 2s of \
-                 dropping the registry — task destructor never ran",
-            )
-            .expect("AbortSignal sender dropped without sending; task body panicked?");
-        assert!(
-            !ran_to_completion.load(Ordering::SeqCst),
-            "task slept to completion — AbortOnDropHandle did not abort it"
-        );
-    }
-
-    /// Phase 1 of #1022, B2 regression test: cancelling the parent
-    /// token must cascade to bg-agent child tokens handed out by
-    /// `reserve`.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn parent_cancel_cascades_to_reserved_child() {
-        let reg = ChildAgentRegistry::new();
-        let parent = CancellationToken::new();
-        let r1 = reg.reserve(&parent, None, true);
-        let r2 = reg.reserve(&parent, None, true);
-
-        assert!(!r1.cancel.is_cancelled());
-        assert!(!r2.cancel.is_cancelled());
-
-        parent.cancel();
-
-        assert!(
-            r1.cancel.is_cancelled(),
-            "child 1 token should observe parent cancel"
-        );
-        assert!(
-            r2.cancel.is_cancelled(),
-            "child 2 token should observe parent cancel"
-        );
-    }
 
     // ── Layer 0 of #996 ──────────────────────────────────────────────────────
     //
     // Status channel + per-task cancel + snapshot.
 
-    /// `cancel(task_id)` must fire that task's cancel token.
-    /// This is the hook the future `/cancel <id>` slash command and
-    /// `CancelAgent` LLM tool will call. Verifies a known id returns
-    /// true *and* the underlying token actually fires.
+    /// `cancel(task_id)` must fire that task's cancel token. Verifies a
+    /// known id returns true *and* the underlying token actually fires.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_known_task_fires_token() {
         let reg = ChildAgentRegistry::new();
-        let (task_id, _tx, _status_tx, observer) =
+        let (task_id, _status_tx, observer) =
             reg.register_test_with_status("explore", "map repo", None);
 
         assert!(!observer.is_cancelled(), "precondition");
@@ -1460,9 +684,7 @@ mod tests {
         );
     }
 
-    /// `cancel` on an unknown / already-drained id must return false
-    /// instead of panicking. The slash command and LLM tool will
-    /// surface this to the user as "no such task".
+    /// `cancel` on an unknown id must return false instead of panicking.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_unknown_task_returns_false() {
         let reg = ChildAgentRegistry::new();
@@ -1475,12 +697,11 @@ mod tests {
     /// `cancel` is idempotent — calling twice on the same id is safe
     /// (the underlying [`CancellationToken::cancel`] is itself
     /// idempotent). Both calls return true while the entry is still
-    /// in `pending`; a third call after drain returns false.
+    /// in `pending`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_is_idempotent_while_pending() {
         let reg = ChildAgentRegistry::new();
-        let (task_id, _tx, _status_tx, _observer) =
-            reg.register_test_with_status("explore", "x", None);
+        let (task_id, _status_tx, _observer) = reg.register_test_with_status("explore", "x", None);
 
         assert!(reg.cancel(task_id));
         assert!(
@@ -1495,13 +716,13 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn snapshot_lists_pending_tasks_in_id_order() {
         let reg = ChildAgentRegistry::new();
-        let (id_a, _tx_a) = reg.register_test("explore", "map");
-        let (id_b, _tx_b) = reg.register_test("verify", "check");
+        let id_a = reg.register_test("explore", "map");
+        let id_b = reg.register_test("verify", "check");
 
         let snap = reg.snapshot();
         assert_eq!(snap.len(), 2);
         // Ordering is by ascending task_id, regardless of HashMap
-        // iteration order — this is the contract `/agents` relies on.
+        // iteration order — this is the contract the overlay relies on.
         assert_eq!(snap[0].task_id, id_a);
         assert_eq!(snap[0].agent_name, "explore");
         assert_eq!(snap[0].prompt, "map");
@@ -1514,13 +735,12 @@ mod tests {
     /// `snapshot()` reads the live status channel — a `status_tx.send`
     /// must be observable on the very next snapshot, with no polling
     /// or yielding required (`watch::Receiver::borrow` is sync).
-    /// This is the contract that lets the status-bar pill (Layer 3)
-    /// and live `/agents -v` (Layer 1) reflect transitions immediately.
+    /// This is the contract that lets the overlay reflect transitions
+    /// immediately.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn snapshot_reflects_status_writes() {
         let reg = ChildAgentRegistry::new();
-        let (task_id, _tx, status_tx, _cancel) =
-            reg.register_test_with_status("explore", "map", None);
+        let (task_id, status_tx, _cancel) = reg.register_test_with_status("explore", "map", None);
 
         // Default is Pending.
         assert_eq!(reg.snapshot()[0].status, AgentStatus::Pending);
@@ -1554,7 +774,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn snapshot_age_is_monotonic() {
         let reg = ChildAgentRegistry::new();
-        let (_id, _tx) = reg.register_test("explore", "x");
+        let _id = reg.register_test("explore", "x");
 
         let age1 = reg.snapshot()[0].age;
         tokio::time::sleep(Duration::from_millis(15)).await;
@@ -1566,114 +786,11 @@ mod tests {
     }
 
     /// `snapshot()` on an empty registry returns an empty Vec, not a
-    /// panic and not None. `/agents` will use this to render "No
-    /// background agents."
+    /// panic and not None.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn snapshot_empty_registry_is_empty_vec() {
         let reg = ChildAgentRegistry::new();
         assert!(reg.snapshot().is_empty());
-    }
-
-    /// Once a task is drained (completed and removed from `pending`),
-    /// it disappears from `snapshot()` immediately. This pins the
-    /// contract that `/agents` reflects the *currently-pending* set,
-    /// not historical tasks. The Layer 1 "recently-completed lingers
-    /// 30 s" UX is implemented at the *display* layer, not here.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn snapshot_drops_drained_tasks() {
-        let reg = ChildAgentRegistry::new();
-        let (_id, tx) = reg.register_test("explore", "x");
-        assert_eq!(reg.snapshot().len(), 1);
-
-        tx.send(Ok(("done".to_string(), Vec::new()))).unwrap();
-        let _ = reg.drain_completed();
-
-        assert!(
-            reg.snapshot().is_empty(),
-            "drained tasks must not appear in snapshots"
-        );
-    }
-
-    // ── Layer 2 of #996: scoped APIs + WaitOutcome ────────────────────────
-
-    /// `snapshot_for_caller(None)` returns only top-level tasks;
-    /// `snapshot_for_caller(Some(N))` returns only N's tasks. Cross-spawner
-    /// visibility is exactly zero — the Model E isolation guarantee.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn snapshot_for_caller_filters_by_spawner() {
-        let reg = ChildAgentRegistry::new();
-        let (top_id, _tx, _, _) = reg.register_test_with_status("a", "top", None);
-        let (sub_a_id, _tx, _, _) = reg.register_test_with_status("b", "sub-a", Some(7));
-        let (_sub_b_id, _tx, _, _) = reg.register_test_with_status("c", "sub-b", Some(9));
-
-        let top = reg.snapshot_for_caller(None);
-        assert_eq!(top.len(), 1);
-        assert_eq!(top[0].task_id, top_id);
-
-        let sub_a = reg.snapshot_for_caller(Some(7));
-        assert_eq!(sub_a.len(), 1);
-        assert_eq!(sub_a[0].task_id, sub_a_id);
-
-        // Sub-agent 7 sees nothing of sub-agent 9's, of top-level's, etc.
-        assert!(reg.snapshot_for_caller(Some(42)).is_empty());
-    }
-
-    /// `cancel_as_caller` enforces the Model E permission rule.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn cancel_as_caller_returns_forbidden_for_other_spawner() {
-        let reg = ChildAgentRegistry::new();
-        let (id, _tx, _, observer) = reg.register_test_with_status("x", "y", Some(7));
-
-        // Wrong caller — not the top-level (None != Some(7)) and not a peer.
-        assert_eq!(
-            reg.cancel_as_caller(id, None),
-            CancelOutcome::Forbidden,
-            "top-level must not be able to cancel sub-agent's task"
-        );
-        assert_eq!(
-            reg.cancel_as_caller(id, Some(99)),
-            CancelOutcome::Forbidden,
-            "sibling sub-agent must not be able to cancel"
-        );
-        assert!(
-            !observer.is_cancelled(),
-            "forbidden calls must NOT fire the cancel token"
-        );
-
-        // Correct caller — the original spawner.
-        assert_eq!(reg.cancel_as_caller(id, Some(7)), CancelOutcome::Cancelled);
-        assert!(observer.is_cancelled());
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn cancel_as_caller_returns_not_found_for_unknown_id() {
-        let reg = ChildAgentRegistry::new();
-        assert_eq!(reg.cancel_as_caller(999, None), CancelOutcome::NotFound);
-    }
-
-    /// `cancel_for_spawner` cleans up exactly one sub-agent's children
-    /// and leaves siblings + top-level alone. The cleanup-on-exit hook.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn cancel_for_spawner_kills_only_matching_children() {
-        let reg = ChildAgentRegistry::new();
-        let (_top, _, _, top_obs) = reg.register_test_with_status("top", "t", None);
-        let (_a1, _, _, a1_obs) = reg.register_test_with_status("a1", "x", Some(7));
-        let (_a2, _, _, a2_obs) = reg.register_test_with_status("a2", "y", Some(7));
-        let (_b, _, _, b_obs) = reg.register_test_with_status("b", "z", Some(9));
-
-        let count = reg.cancel_for_spawner(7);
-        assert_eq!(count, 2, "both of spawner 7's children must be signalled");
-
-        assert!(a1_obs.is_cancelled());
-        assert!(a2_obs.is_cancelled());
-        assert!(!top_obs.is_cancelled(), "top-level must be untouched");
-        assert!(!b_obs.is_cancelled(), "sibling spawner's task untouched");
-
-        // Idempotent — calling again after entries are still alive
-        // re-fires the (already-cancelled, no-op) tokens.
-        assert_eq!(reg.cancel_for_spawner(7), 2);
-        // Calling for an unknown spawner returns 0.
-        assert_eq!(reg.cancel_for_spawner(99), 0);
     }
 
     // ── #1076: ChildStatusEmitter → sink fan-out ───────────────────────────────
@@ -1922,13 +1039,8 @@ mod tests {
         let reg = Arc::new(ChildAgentRegistry::new());
         let parent = CancellationToken::new();
 
-        let (_emitter, _guard) = reg.register_fg_with_emitter(
-            "explore",
-            "audit the storage layer",
-            &parent,
-            Some(7),
-            Some("call_42".into()),
-        );
+        let (_emitter, _guard) =
+            reg.register_fg_with_emitter("explore", "audit the storage layer", &parent, Some(7));
 
         let snap = reg.snapshot();
         assert_eq!(snap.len(), 1, "fg registration must add exactly one entry");
@@ -1953,7 +1065,7 @@ mod tests {
 
         {
             let (_emitter, _guard) =
-                reg.register_fg_with_emitter("explore", "do thing", &parent, None, None);
+                reg.register_fg_with_emitter("explore", "do thing", &parent, None);
             assert_eq!(reg.snapshot().len(), 1, "entry present while guard alive");
         }
 
@@ -1961,55 +1073,6 @@ mod tests {
             reg.snapshot().len(),
             0,
             "guard's Drop impl must remove the registry entry on scope exit"
-        );
-    }
-
-    /// `drain_completed` must skip foreground entries unconditionally.
-    /// Defense-in-depth: today the fg path doesn't fire its (dropped)
-    /// oneshot sender, so try_recv would yield `Closed` and the
-    /// `Closed` arm would manufacture a fake "cancelled"
-    /// `BgAgentResult` — which the inference loop would then inject
-    /// as a duplicate of the result the parent already returned
-    /// inline. The `is_background` skip prevents that whole bug class
-    /// by construction.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn drain_completed_skips_foreground_entries() {
-        let reg = Arc::new(ChildAgentRegistry::new());
-        let parent = CancellationToken::new();
-
-        let (_emitter, _guard) =
-            reg.register_fg_with_emitter("explore", "prompt", &parent, None, None);
-
-        let drained = reg.drain_completed();
-        assert!(
-            drained.is_empty(),
-            "fg entries must never be drained as bg results; got {drained:?}"
-        );
-        assert_eq!(
-            reg.snapshot().len(),
-            1,
-            "drain must not pop fg entries either"
-        );
-    }
-
-    /// A bg entry whose oneshot sender has been dropped DOES get
-    /// drained (yielding the synthetic "cancelled" result). This is
-    /// the existing behavior the fg-skip is defending against.
-    /// Pinning it so a future refactor that changes the bg semantics
-    /// can't silently regress the fg case.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn drain_completed_still_synthesizes_cancelled_for_bg_with_closed_rx() {
-        let reg = Arc::new(ChildAgentRegistry::new());
-        let (_id, tx) = reg.register_test("explore", "prompt");
-        // Drop the sender to simulate a panicked/cancelled bg task.
-        drop(tx);
-
-        let drained = reg.drain_completed();
-        assert_eq!(drained.len(), 1, "bg with closed rx still drains");
-        assert!(!drained[0].success, "closed-rx drain marks failure");
-        assert!(
-            drained[0].output.contains("cancelled"),
-            "closed-rx synthetic result mentions cancellation"
         );
     }
 
@@ -2023,8 +1086,7 @@ mod tests {
         let reg = Arc::new(ChildAgentRegistry::new());
         let parent = CancellationToken::new();
 
-        let (emitter, _guard) =
-            reg.register_fg_with_emitter("explore", "prompt", &parent, None, None);
+        let (emitter, _guard) = reg.register_fg_with_emitter("explore", "prompt", &parent, None);
         emitter.send_activity(crate::engine::event::ChildAgentActivityKind::ToolStart {
             tool_name: "Read".into(),
             summary: "Read foo.rs".into(),

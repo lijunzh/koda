@@ -262,14 +262,6 @@ pub(crate) async fn execute_one_tool(
     } = *tx.turn;
     let caller_spawner = tx.caller_spawner;
     let _session_id = session_id; // mirror the existing `_session_id` arg name
-    // Pre-#1325 Phase 5b this dispatch had a leading branch for
-    // `ListBackgroundTasks` / `CancelTask` / `WaitTask` that called
-    // `bg_task_tools::execute` directly (Layer 2 of #996 — those
-    // tools needed the `Arc<ChildAgentRegistry>` and the caller's
-    // spawner identity, neither held by `ToolRegistry`). Phase 5b
-    // retired the LLM-facing trio, so the special branch is gone
-    // too. The registries themselves are still alive — the TUI
-    // overlay reads them.
     let (result, success, full_output) = if tc.function_name == "InvokeAgent" {
         // Sub-agents inherit the parent's approval mode.
         //
@@ -309,37 +301,10 @@ pub(crate) async fn execute_one_tool(
             // Phase 5 PR-4 of #934: hand the parent's effective policy
             // to the child so `compose()` can stack restrictions.
             &policy,
-            // Layer 4 of #996 + #1076: sync sub-agents are not tracked
-            // in the bg-agent registry. Pass `None` to skip the per-
-            // iteration emit — the FG path at sub_agent_dispatch.rs
-            // documents this as deliberate. Live activity flows
-            // through `ChildAgentActivity` events on the parent's
-            // `EngineSink` instead.
-            None,
             // #1108 P2a: pass the InvokeAgent tool_call_id so the
             // narrative trace rows are folded under the parent's
             // `InvokeAgent` tool result in the persisted transcript.
             Some(&tc.id),
-            // **#1366 phase 1**: sub-agents are now synchronous
-            // delegations. `inline_only=true` selects the FG path that
-            // drives the sub-agent's inference loop inline and returns
-            // its final output as the tool result — no more bg-spawn-
-            // and-poll round-trip via task_id + WaitForMail.
-            //
-            // Architectural rationale: the LLM API caps throughput,
-            // not concurrency, so async dispatch buys little while
-            // costing a lot of surface area (mailbox / WaitForMail /
-            // pill / overlay; the mailbox and its tools are gone now).
-            // Sub-agents' real value is context
-            // isolation + tool restriction + specialization, all of
-            // which work fine with sync delegation.
-            //
-            // Pre-#1366 this was `false` (bg-spawn) and `true` was
-            // reserved for `run_bg_agent`'s recursion guard. With
-            // bg-spawn dead from the public surface, `true` IS the
-            // public path. The now-unreachable bg branch and the
-            // activity-pill UI are still to be deleted.
-            true,
         );
         match Box::pin(fut).await {
             Ok(output) => (output, true, None),
@@ -404,12 +369,7 @@ pub(crate) async fn execute_one_tool(
             &mut dummy_rx,
             Some(read_cache),
             &policy,
-            None,
             Some(&remapped_tc.id),
-            // **#1366 phase 1**: SpawnAgent is the codex-v2 surface
-            // alias for InvokeAgent; both paths share the sync swap.
-            // See InvokeAgent branch above for the full rationale.
-            true,
         );
         match Box::pin(fut).await {
             Ok(output) => (output, true, None),

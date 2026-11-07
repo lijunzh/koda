@@ -24,20 +24,16 @@
 //! `background:bool` flag was removed in #1163 (Lean A); #1366
 //! removed the bg-spawn dispatch path itself in favor of sync
 //! delegation, matching Codex's ExecCell semantics and Gemini-CLI's
-//! `SubagentGroupDisplay` model. The retired async surface
-//! (`WaitForMail` / mailbox, now deleted; activity pill / overlay,
-//! still to go) belonged to the old dispatch model.
+//! `SubagentGroupDisplay` model.
 //!
-//! ## When to use sub-agents
+//! ## Delegation is opt-in (2026-11-06)
 //!
-//! - Complex multi-step tasks (keeps parent context clean)
-//! - Independent parallel work (launch multiple agents at once)
-//! - Research that generates lots of noise (grep results, file contents)
-//!
-//! ## When NOT to use sub-agents
-//!
-//! - Simple file reads or 2–3 grep queries (overhead > benefit)
-//! - Tasks requiring user interaction (sub-agents can't ask questions)
+//! The model delegates only when the user, a skill or the project's
+//! instructions ask for it, as Codex does and as Claude Code does on
+//! its Pro plan. Left to its own judgement, a local model that
+//! delegated passed 47% of its eval runs and hit the time limit in
+//! 50%, against 72% and 13% for runs that didn't; Haiku delegated in
+//! 3 of 559 runs. The tool stays, the prompt stops recommending it.
 
 use crate::providers::ToolDefinition;
 use serde_json::json;
@@ -75,22 +71,21 @@ EXECUTION MODEL
 
 WHEN TO USE InvokeAgent
 
-- The task requires exploring many files or running many searches that would pollute your context
-- A specialist persona adds value (`explore` for search)
-- You want isolated tool restrictions (e.g., a read-only sub-agent for analysis)
+- Only when the user, a skill or the project's instructions ask you to delegate \
+  or name one of the available agents. Delegation is opt-in: left to yourself, do \
+  the work directly, however many files it touches.
 
 AGENT SELECTION
 
-- For read-only exploration / search / analysis, prefer `explore` (faster, cheaper, no isolated workspace)
+- For read-only exploration / search / analysis, use `explore` (faster, cheaper, no isolated workspace)
 - For implementation that needs file writes, use `task` (general-purpose worker)
 - Sub-agents write in the project, so give each one files no other is touching, and don't edit those files yourself until it returns
 - In Safe mode its work lands on a branch instead, and its result names the branch
 
 WHEN NOT TO USE InvokeAgent
 
-- A single Read, Grep, or Glob would answer the question (overhead > benefit)
+- Nobody asked for a sub-agent
 - The task requires real-time back-and-forth with the user (sub-agents have no way to ask questions; AskUser is filtered from their tool set)
-- You've already loaded the relevant context (just do the work yourself)
 
 KEY RULES
 
@@ -108,7 +103,7 @@ KEY RULES
 - Always write a clear, self-contained prompt \u{2014} the sub-agent hasn't seen \
   your conversation. Include specific file paths, function names, and success criteria.
 - `agent_name` is REQUIRED. Pick a specialist from the 'Available Sub-Agents' \
-  list in your system prompt (typically: explore, plan, task, verify). Use \
+  list in your system prompt (typically: explore, task). Use \
   `fork` to inherit the full parent context."
                 .to_string(),
             parameters: json!({

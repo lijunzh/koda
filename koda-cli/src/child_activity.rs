@@ -116,7 +116,7 @@ impl ChildActivityTracker {
     }
 
     /// Mark a task as cancelling. Called when the user fires
-    /// `/cancel agent:N` or Esc-cancel-all (#1200). The icon flips
+    /// Esc / Ctrl+C cancel-all (#1200). The icon flips
     /// red until the registry snapshot transitions the task to a
     /// terminal status (at which point it falls off the overlay
     /// entirely).

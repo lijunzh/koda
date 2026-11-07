@@ -197,7 +197,7 @@ impl BgRegistry {
     }
 
     /// Scoped snapshot for the `ListBackgroundTasks` LLM tool. Same
-    /// Model E rule as [`crate::child_agent::ChildAgentRegistry::snapshot_for_caller`]:
+    /// Model E rule as the retired `ChildAgentRegistry::snapshot_for_caller`:
     /// strict spawner equality, `None == None`.
     pub fn snapshot_for_caller(&self, caller_spawner: Option<u32>) -> Vec<BgProcessSnapshot> {
         self.snapshot()
@@ -253,8 +253,8 @@ impl BgRegistry {
     ///
     /// Status flips to `Killed` immediately; the reaper will surface
     /// the eventual `Exited { code }` once the child is reaped by the
-    /// kernel. **Unscoped** — TUI `/cancel` contract; LLM goes through
-    /// [`Self::kill_as_caller`].
+    /// kernel. **Unscoped** — the TUI's cancel-all uses it; scoped
+    /// callers go through [`Self::kill_as_caller`].
     pub fn kill(&self, pid: u32) -> bool {
         let mut guard = self.inner.lock().unwrap();
         let Some(entry) = guard.get_mut(&pid) else {
@@ -270,7 +270,7 @@ impl BgRegistry {
     }
 
     /// Scoped kill for the `CancelTask` LLM tool. Same Model E rule
-    /// as [`crate::child_agent::ChildAgentRegistry::cancel_as_caller`].
+    /// as the retired `ChildAgentRegistry::cancel_as_caller`.
     pub fn kill_as_caller(&self, pid: u32, caller_spawner: Option<u32>) -> CancelOutcome {
         let mut guard = self.inner.lock().unwrap();
         let Some(entry) = guard.get_mut(&pid) else {
