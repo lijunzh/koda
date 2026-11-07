@@ -1,21 +1,19 @@
 //! Sub-agent invocation and lifecycle management.
 //!
 //! Extracted from `tool_dispatch.rs` — handles `InvokeAgent` execution,
-//! background agent spawning, worktree provisioning, and sub-agent caching.
+//! worktree provisioning, and sub-agent caching.
 //! Each sub-agent gets its own session, provider, and (optionally) worktree
 //! for isolation. Results are cached by `(agent_name, prompt_hash)`.
 
 use crate::approval_flow::{CommandInbox, request_approval};
 use crate::config::AgentIsolation;
-use crate::config::KodaConfig;
-use crate::db::{Database, Role};
+use crate::db::Role;
 use crate::engine::{ApprovalDecision, EngineCommand, EngineEvent};
 use crate::memory;
 use crate::persistence::Persistence;
 use crate::preview;
 use crate::prompt::build_system_prompt;
 use crate::providers::ChatMessage;
-use crate::sub_agent_cache::SubAgentCache;
 use crate::tool_dispatch::execute_one_tool;
 use crate::tools::{self, ToolRegistry};
 use crate::trust::{self, ToolApproval, TrustMode, derive_child_trust};
@@ -77,286 +75,6 @@ const GRACE_TURN_BRIDGE: &str = "[Turn budget reached.]";
 /// Allocate a fresh invocation id. See [`NEXT_INVOCATION_ID`].
 pub(crate) fn next_invocation_id() -> u32 {
     NEXT_INVOCATION_ID.fetch_add(1, Ordering::Relaxed)
-}
-
-/// RAII cleanup hook for #996 Phase E.
-///
-/// On drop, cancels every bg-agent registry entry tagged with this
-/// sub-agent's invocation id. That covers the way a sub-agent can
-/// exit and leave orphans:
-///
-///   1. **Error return** (`Err(...)` from any `?` inside the loop) —
-///      e.g. provider failure, persistence failure, `?`-propagated
-///      cancellation.
-///   2. **`LoopDetector` hard stop** — model ignored feedback after
-///      consecutive identical tool calls; surfaced via the inference
-///      helpers, not as a marker string here.
-///
-/// On the cancel-token path we'd reap anyway via the parent's cascade,
-/// but the spawner-scoped cancel is cheap and idempotent so we just
-/// always run it. `cancel_for_spawner` is `O(n)` over the registry,
-/// which is fine for the < 100-entry registries we expect.
-///
-/// Background shell processes (`Bash{background:true}`) are *not*
-/// covered here — each sub-agent constructs its own `ToolRegistry`
-/// with its own `BgRegistry`, which `Drop`-SIGTERMs everything when
-/// the registry goes out of scope. That handles shell orphans for
-/// free; this struct only needs to deal with the *shared*
-/// `ChildAgentRegistry`.
-struct InvocationCleanup<'a> {
-    bg: &'a std::sync::Arc<crate::child_agent::ChildAgentRegistry>,
-    invocation_id: u32,
-}
-
-impl Drop for InvocationCleanup<'_> {
-    fn drop(&mut self) {
-        let cancelled = self.bg.cancel_for_spawner(self.invocation_id);
-        if cancelled > 0 {
-            tracing::debug!(
-                spawner = self.invocation_id,
-                cancelled,
-                "execute_sub_agent exit: cancelled orphaned bg agents",
-            );
-        }
-    }
-}
-
-/// Run a sub-agent in the background. Owns all data (no borrows).
-///
-/// **Phase 2 of #1022 (B5 complete):** uses the multi-thread runtime
-/// via `tokio::spawn`. This requires `execute_sub_agent`'s future to
-/// be `Send`, which we enforce explicitly via the `+ Send` bound on
-/// its return type — see the function's signature for the bound and
-/// `koda-sandbox/src/ipc.rs` for the matching `Send` bounds on the
-/// generic IPC helpers that previously hid a non-Send transitive.
-#[allow(clippy::too_many_arguments)]
-async fn run_bg_agent(
-    project_root: std::path::PathBuf,
-    parent_config: KodaConfig,
-    db: Database,
-    arguments: String,
-    sub_agent_cache: SubAgentCache,
-    parent_session: String,
-    tx: tokio::sync::oneshot::Sender<
-        Result<crate::child_agent::BgPayload, crate::child_agent::BgPayload>,
-    >,
-    // B2 of #1022: parent's cancel token, threaded as a `child_token()`
-    // so a Ctrl-C in the parent loop cancels the bg agent.
-    cancel: CancellationToken,
-    // B1 of #1022: parent's trust mode — used both as the approval
-    // mode for tool calls inside the bg agent and (via the recursive
-    // `execute_sub_agent` call) as the clamp ceiling for the
-    // sub-agent's own declared trust.
-    parent_trust: TrustMode,
-    // B4 of #1022: parent's effective sandbox policy at spawn time.
-    // The recursive `execute_sub_agent` composes the child policy
-    // onto this so the bg agent inherits any parent narrowing.
-    parent_sandbox_policy: koda_sandbox::SandboxPolicy,
-    // Layer 0 of #996 + #1076: status fan-out helper. Drives the
-    // per-task `watch::Sender<AgentStatus>` (read by `/agents` and
-    // the status-bar pill via `snapshot()`) AND queues an
-    // `EngineEvent::ChildTaskUpdate` on the registry so the inference
-    // loop can forward it to the active `EngineSink`. Pre-#1076 this
-    // was a raw `watch::Sender` and only the TUI (which polled the
-    // registry directly) saw transitions; now every client surface
-    // (TUI / headless) gets the same event stream.
-    //
-    // `send` failures on the underlying watch are silently absorbed
-    // by the emitter — the only way that fails is if the registry
-    // entry was reaped, in which case the queued `ChildTaskUpdate` is
-    // harmless extra signal that clients can ignore.
-    emitter: crate::child_agent::ChildStatusEmitter,
-    // #1344 follow-up: the parent's `InvokeAgent` tool_call_id, used
-    // to wrap the bg agent's sink stack with `PersistingSink` so each
-    // tool call / info event is persisted to `session_events` AS IT
-    // HAPPENS, with `parent_tool_call_id = Some(this)`. Pre-fix the
-    // narrative trace was only persisted at COMPLETION time as a
-    // batch dump from `BufferingSink::take_lines`, so the user got
-    // no mid-flight visibility — a bg agent that ran for 2+ minutes
-    // (see #1344 repro) showed up as a black box. Live persistence
-    // means `conversation.md` and the resumed-history TUI can fold
-    // the activity in real-time. `None` for foreground sub-agents
-    // (their events flow inline through the parent's sink, no
-    // correlation needed).
-    parent_tool_call_id: Option<String>,
-) {
-    // Layer 0 placeholder: immediately flip Pending → Running so `/agents`
-    // shows the agent as active before the first LLM call. The loop inside
-    // `execute_sub_agent` updates this to `iter: 1..=20` as it progresses
-    // (Layer 4, #1058). `iter: 0` is intentional here — it signals
-    // "started, first iteration pending".
-    emitter.send(crate::child_agent::AgentStatus::Running { iter: 0 });
-
-    let (_, mut cmd_rx) = mpsc::channel(1);
-    // #1022 B9: bg agents used to run with `NullSink`, so every
-    // event inside them was silently dropped — the user only saw
-    // the spawn line and the eventual completion line. Now we use
-    // `BufferingSink` to capture a narrative trace (tool calls,
-    // info, auto-rejected approvals) that ships back over the
-    // result oneshot and gets surfaced to the user at
-    // result-injection time. See `engine::sink::BufferingSink` for
-    // the capture rules.
-    //
-    // #1201 B: wrap the buffering sink in a `ForwardingChildSink` so
-    // every interesting event is *also* forwarded live as a
-    // `ChildAgentActivity` to the parent's sink (via the registry's
-    // status-event queue, drained by the inference loop). Pre-this
-    // wrapper a 30-second tool inside a bg agent looked identical
-    // to a 30-second hang — only the post-completion drain showed
-    // what happened.
-    let buffering_sink = crate::engine::sink::ForwardingChildSink::new(
-        crate::engine::sink::BufferingSink::new(),
-        emitter.clone(),
-    );
-    // #1344 follow-up: wrap the buffering+forwarding stack with
-    // `PersistingSink(parent_tool_call_id=Some(...))` so each
-    // `Info` / `ToolCallStart` event lands in `session_events`
-    // AS IT HAPPENS (not at completion-time batch dump). The
-    // PersistingSink infrastructure has existed since #1108 P1b
-    // but was never wired for sub-agents — the doc on
-    // `PersistingSink::new` literally says "Sub-agent (P2a): wrap
-    // the BufferingSink with parent_tool_call_id = Some(invoke_agent_call_id)"
-    // and yet the inline path used `BufferingSink` bare. Fixing
-    // that here. Foreground sub-agents (no `parent_tool_call_id`)
-    // pass the bare BufferingSink — same as before.
-    //
-    // Lifetime shape: `buffering_sink` outlives `persisting_sink`
-    // because we call `take_lines()` on it after the recursive
-    // execute_sub_agent returns. `persisting_sink` borrows it for
-    // the duration of the call. `sink_for_turn` selects which one
-    // the TurnContext sees — the wrapper if we have a tool_call_id
-    // to correlate against, the bare buffer otherwise.
-    let persisting_sink = parent_tool_call_id.as_deref().map(|call_id| {
-        crate::engine::sink::PersistingSink::new(
-            &buffering_sink as &dyn crate::engine::sink::EngineSink,
-            std::sync::Arc::new(db.clone()) as std::sync::Arc<dyn crate::persistence::Persistence>,
-            parent_session.clone(),
-            Some(call_id.to_string()),
-        )
-    });
-    let sink_for_turn: &dyn crate::engine::sink::EngineSink = match &persisting_sink {
-        Some(p) => p,
-        None => &buffering_sink,
-    };
-    let nested_bg = crate::child_agent::new_shared();
-
-    // **#1163 (Lean A)**: pre-#1163 we had to inject
-    // `sync_args["background"] = false` here so the recursive
-    // `execute_sub_agent` call ran the loop inline instead of
-    // re-spawning. The `background` field is gone from the schema
-    // now (and from `parse_background_required`, also deleted), so
-    // the recursion is steered by the `inline_only: true` argument
-    // below. The arguments string passes through unchanged.
-    let sync_arguments = arguments.clone();
-
-    // We need to inspect `cancel` *after* the call to decide between
-    // Cancelled and Errored when `execute_sub_agent` returns Err —
-    // a cancelled future typically surfaces as an error from inside
-    // the loop, but the user-visible state should be "Cancelled",
-    // not "Errored". Clone before the move.
-    let cancel_for_status = cancel.clone();
-
-    // #1265 item 4 PR-3: bg agents own their args (`'static` for
-    // `tokio::spawn`), so we have to construct the parent's dispatch
-    // context locally from owned borrows. The `tools` field is a
-    // throwaway empty registry — `execute_sub_agent` ignores the
-    // parent's tools for tool *execution* (sub-agents build their
-    // own from `sub_config.allowed_tools`).
-    let placeholder_tools =
-        crate::tools::ToolRegistry::new(project_root.clone(), parent_config.max_context_tokens);
-    let bg_turn = crate::turn_context::TurnContext::new(
-        &project_root,
-        &parent_config,
-        &db,
-        &parent_session,
-        sink_for_turn,
-        cancel,
-        &sub_agent_cache,
-        &nested_bg,
-        parent_trust,
-        &placeholder_tools,
-    );
-    // Phase E of #996: the bg agent has no in-process parent in
-    // the spawner sense — its `nested_bg` registry is fresh, and
-    // any bg work it spawns gets tagged with the bg agent's *own*
-    // invocation id (allocated inside the recursive call). The
-    // parent's cascade-cancel covers cross-registry teardown.
-    let bg_tx = crate::turn_context::ToolExecutionContext::new(&bg_turn, None);
-
-    let result = execute_sub_agent(
-        bg_tx,
-        &sync_arguments,
-        &mut cmd_rx,
-        None,
-        &parent_sandbox_policy,
-        // Layer 4 of #996 + #1076: forward the status emitter so the
-        // loop can push live `Running { iter }` updates that fan out
-        // to BOTH the watch channel (for `/agents` snapshots) and
-        // the registry's event queue (for the inference-loop → sink
-        // path that headless / TUI all read from). Cloned so
-        // the terminal sends below still have access after
-        // `execute_sub_agent` returns.
-        Some(emitter.clone()),
-        // #1108 P2a: nested bg-agent spawns inside this bg agent
-        // have no parent `InvokeAgent` tool call in our session
-        // (their parent is the bg agent itself, whose tool calls
-        // live in the sub-session). Pass `None` — their trace will
-        // be visible only via the bg agent's own surfaced output.
-        None,
-        // **#1163 (Lean A)**: `inline_only=true` is the recursion
-        // guard. We're already inside `tokio::spawn(run_bg_agent(...))`,
-        // so `execute_sub_agent`'s bg-spawn block must NOT fire again
-        // — otherwise every InvokeAgent would spawn an infinite chain
-        // of bg tasks. The inline path runs the actual inference loop
-        // and writes its result back via the oneshot `tx`.
-        true,
-    )
-    .await;
-
-    // Drain the buffered trace exactly once. The events ship back
-    // alongside the output (for the success case) or alongside the
-    // error message (for the failure case) so the user can see
-    // *what the bg agent attempted* even when it failed.
-    let events = buffering_sink.take_lines();
-
-    // Set terminal status *before* sending the result oneshot so a
-    // racing `snapshot()` between the `tx.send` and the entry being
-    // drained sees the terminal state, not stale `Running`.
-    match &result {
-        Ok(output) => {
-            emitter.send(crate::child_agent::AgentStatus::Completed {
-                // `summary` is currently the full output — truncation
-                // is the display layer's job (Codex pattern: see
-                // `COLLAB_AGENT_RESPONSE_PREVIEW_GRAPHEMES`).
-                summary: output.clone(),
-            });
-        }
-        Err(e) => {
-            // Cancellation typically reaches us as an error from
-            // somewhere deep in the loop. Disambiguate by checking
-            // the token: if it fired, the user-visible reason is
-            // "Cancelled", not the inner error string.
-            let status = if cancel_for_status.is_cancelled() {
-                crate::child_agent::AgentStatus::Cancelled
-            } else {
-                crate::child_agent::AgentStatus::Errored {
-                    error: e.to_string(),
-                }
-            };
-            emitter.send(status);
-        }
-    }
-
-    let _ = match result {
-        Ok(output) => tx.send(Ok((output, events))),
-        // **#1232 §4**: `{:#}` walks the full anyhow context chain so the
-        // bg-agent's narrative trace records the underlying cause, not
-        // just the topmost `.context(...)` label. See the matching
-        // comment in `tool_dispatch.rs`'s foreground branch — same fix,
-        // same reasoning. Pre-fix the bg path collapsed multi-layer
-        // errors to one line of useless top-level text.
-        Err(e) => tx.send(Err((format!("Error: {e:#}"), events))),
-    };
 }
 
 /// Parse the **required** `agent_name` field out of an `InvokeAgent`
@@ -462,13 +180,6 @@ fn available_agents_hint(project_root: &std::path::Path) -> String {
 /// is intentionally unused — sub-agents construct their own
 /// `sub_tools` registry from `sub_config.allowed_tools`.
 #[tracing::instrument(skip_all, fields(agent_name, cached = false))]
-// 8 args: 7 ambient (tx, arguments, cmd_rx, cache, sandbox, registry,
-// session) + 1 private `inline_only` recursion guard added in #1163
-// (Lean A) so `run_bg_agent` can drive the inference loop body without
-// re-entering the spawn path. Bundling into a struct would just push
-// the count from "function args" to "struct fields" without making
-// any caller's life easier.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_sub_agent<'a>(
     parent_tx: ToolExecutionContext<'a>,
     arguments: &'a str,
@@ -480,35 +191,11 @@ pub(crate) fn execute_sub_agent<'a>(
     // the per-field rules. Pass `&SandboxPolicy::strict_default()`
     // when there is no meaningful parent (top-level invocation).
     parent_sandbox_policy: &'a koda_sandbox::SandboxPolicy,
-    // Layer 4 of #996 + #1076: live iteration heartbeat.  Pass the
-    // bg-agent's `ChildStatusEmitter` so each loop iteration can push
-    // `Running { iter }` to BOTH the registry's per-task watch
-    // channel (`/agents`, status-bar pill) AND the engine event
-    // queue (`EngineSink` → TUI / headless).  Foreground
-    // sub-agents pass `None` — they have no status channel because
-    // they're not tracked in the registry at all.
-    emitter: Option<crate::child_agent::ChildStatusEmitter>,
-    // **#1108 P2a**: parent's `InvokeAgent` tool_call_id. Recorded on
-    // the bg-agent reservation so the inference loop's drain handler
-    // can persist the bg agent's narrative trace to `session_events`
-    // with this id as `parent_tool_call_id`. The transcript renderer
-    // folds those rows under the parent's `InvokeAgent` tool result.
-    // `None` for foreground sub-agents (their events flow inline
-    // through the parent's `EngineSink` and don't need correlation).
+    // **#1108 P2a**: parent's `InvokeAgent` tool_call_id. The
+    // sub-agent's events are persisted to `session_events` with this
+    // id as `parent_tool_call_id`, so the transcript renderer folds
+    // them under the parent's `InvokeAgent` tool result.
     parent_tool_call_id: Option<&'a str>,
-    // **#1163 (Lean A)**: internal-only marker. `false` is the public
-    // dispatch shape — spawn the agent in the background and return
-    // immediately with a task_id. `true` is the recursion-guard path
-    // used by `run_bg_agent` when it needs to actually drive the
-    // inference loop inside the spawned task; that path skips the
-    // bg-spawn block and runs the loop inline.
-    //
-    // Pre-#1163 the public `background:bool` parameter on the
-    // InvokeAgent tool served both roles: model-facing choice AND
-    // recursion guard for `run_bg_agent`. #1163 deleted the model-
-    // facing flag (sub-agents always spawn-and-return), so this
-    // parameter is now strictly an internal implementation detail.
-    inline_only: bool,
 ) -> impl std::future::Future<Output = Result<String>> + Send + 'a {
     async move {
         // #1265 item 4 PR-3: rebind context fields to the same names
@@ -557,19 +244,11 @@ pub(crate) fn execute_sub_agent<'a>(
             .ok_or_else(|| anyhow::anyhow!("Missing 'prompt'"))?;
         let is_fork = agent_name == "fork";
 
-        // **#1163 (Lean A)**: emit `SubAgentStart` here — BEFORE the
-        // bg-spawn early-return — so the parent's sink observes the
-        // dispatch synchronously. Pre-#1163 this fired only on the
-        // (now-deleted) inline foreground path, and the bg path leaked
-        // through with just an `Info { "\u{1f680} ... launched in
-        // background" }` line. headless clients (and the
-        // e2e tests in `e2e_agent_test.rs`) rely on `SubAgentStart`
-        // as the canonical "a sub-agent was just dispatched" signal,
-        // independent of whether dispatch resolves inline (cache hit)
-        // or by spawn. The `inline_only` recursion-guard path is the
-        // only place this could double-emit, but that path's `sink`
-        // is a `BufferingSink` inside `run_bg_agent`, so the duplicate
-        // is silently captured and never reaches a user surface.
+        // Emit `SubAgentStart` before the cache lookup, so the parent's
+        // sink observes the dispatch whether it resolves from the cache
+        // or runs the loop. headless clients (and the e2e tests in
+        // `e2e_agent_test.rs`) rely on it as the canonical "a sub-agent
+        // was just dispatched" signal.
         sink.emit_from(
             parent_tool_call_id,
             EngineEvent::SubAgentStart {
@@ -577,17 +256,10 @@ pub(crate) fn execute_sub_agent<'a>(
             },
         );
 
-        // **#1163 (Lean A)**: cache lookup MUST happen before the
-        // bg-spawn block, not after. Pre-#1163 it lived in the (then
-        // foreground-only) inline path, which meant a cache hit on a
-        // background dispatch still spawned a `tokio::spawn` task,
-        // ate a registry slot, and only short-circuited *inside* the
-        // spawned task (where the cache-hit Info event vanished into
-        // the BufferingSink). Hoisting it here means cache hits emit
-        // their Info on the parent's real sink AND skip the spawn
-        // entirely — the test fixture in `test_sub_agent_cache_hit_skips_llm`
-        // directly asserts both behaviours. Cheap to retry idempotent
-        // tasks; no provider hit, no worktree, no registry churn.
+        // Cache lookup before anything else: a hit emits its Info on the
+        // parent's sink and skips the registry, the worktree and the
+        // provider call (`test_sub_agent_cache_hit_skips_llm` asserts
+        // both).
         if let Some(cached) = sub_agent_cache.get(agent_name, prompt) {
             sink.emit_from(
                 parent_tool_call_id,
@@ -598,176 +270,27 @@ pub(crate) fn execute_sub_agent<'a>(
             tracing::Span::current().record("cached", true);
             return Ok(cached);
         }
-        // **#1163 (Lean A)**: every InvokeAgent dispatch spawns a
-        // background task and returns its task_id immediately. The only
-        // skip-spawn path is the `inline_only` recursion guard used by
-        // `run_bg_agent` to drive the inference loop inside the spawned
-        // task itself.
+        // Register the sub-agent in the shared `ChildAgentRegistry` so
+        // the TUI overlay can render its row (#1232: a sub-agent that
+        // ran for 1009 s with no progress signal). The guard is held
+        // until this function returns, on success, a `?`-bubbled error
+        // or a panic, and its `Drop` removes the entry; without RAII an
+        // error path would leave a phantom "running" row.
         //
-        // Phase 1 of #1022 fixes B1–B4 here:
-        //  * **B1 trust:** the recursive `execute_sub_agent` call below
-        //    receives `mode` (the parent's trust mode) instead of
-        //    hard-coded `TrustMode::Auto`. The clamp inside that call
-        //    then guarantees the bg agent can only narrow, never widen.
-        //  * **B2 cancellation:** the bg task receives a `child_token()`
-        //    of the parent's `cancel`. Ctrl-C in the parent loop now
-        //    cascades into every in-flight bg agent.
-        //  * **B3 lifecycle:** the spawned `JoinHandle` is held by the
-        //    registry as an `AbortOnDropHandle`, so a registry drop
-        //    aborts the task and releases its worktree.
-        //  * **B4 sandbox:** `parent_sandbox_policy.clone()` is captured
-        //    at spawn time, so the recursive call composes the bg
-        //    agent's policy onto the parent's effective policy instead
-        //    of regressing to `strict_default()`.
-        //  * **B5 (Phase 2):** the bg agent now runs on the multi-thread
-        //    runtime via `tokio::spawn`. We enforced `Send` on
-        //    `execute_sub_agent`'s future by switching its signature to
-        //    `fn(...) -> impl Future<Output = ...> + Send + 'a`, which
-        //    forces the compiler to *prove* Send (vs. silently degrading
-        //    when an `async fn` happens to capture a non-Send temporary).
-        //    The transitive offender was `koda-sandbox::ipc::{read,write}_message`
-        //    — those generic helpers had no `Send` bound on `R`/`W`/`T`,
-        //    so MutexGuards held across their awaits weren't Send. Bounds
-        //    have been added there as well.
-        if !inline_only {
-            // Phase E of #996: tag the bg-sub-agent task with the
-            // **parent's** spawner identity. The parent (not the bg
-            // sub-agent itself) owns the right to wait/cancel its
-            // bg children via WaitTask/CancelTask. The bg sub-agent's
-            // own invocation id (`my_invocation_id` allocated above)
-            // is unused on this code path — it would matter if the
-            // bg sub-agent itself were to be cancelled-on-parent-exit,
-            // but the registry's parent->bg cancel-token cascade
-            // already handles that case.
-            // PR-A0.5 of #1232: pass `is_background: true` here —
-            // this dispatch path is the bg-only spawn site (the
-            // `tokio::spawn` + auto-drain mechanism). PR-A wires a
-            // separate fg registration path that passes `false`.
-            let reservation = bg_agents.reserve(&cancel, parent_spawner, true);
-            let task_id = reservation.task_id;
-            let bg_cancel = reservation.cancel.clone();
-            let bg_tx = reservation.tx;
-            let bg_rx = reservation.rx;
-            let entry_cancel = reservation.cancel;
-            // Layer 0 of #996 + #1076: bundle the watch sender, the
-            // task id, the spawner id, and an `Arc` on the registry
-            // into a `ChildStatusEmitter`.  The emitter fans out every
-            // `.send(...)` to BOTH the per-task watch channel (read
-            // by `snapshot()` / `/agents`) AND the registry's event
-            // queue (drained by the inference loop and forwarded to
-            // the active `EngineSink`).  This is what closes the
-            // engine/UI boundary leak: the TUI no longer needs to
-            // poll the registry directly to render live status, and
-            // headless gain visibility for free.
-            let emitter = crate::child_agent::ChildStatusEmitter::new(
-                task_id,
-                parent_spawner,
-                // PR-A0.5 of #1232: bg path — emitter tags every
-                // `ChildTaskUpdate` with `is_background: true`.
-                true,
-                reservation.status_tx,
-                bg_agents.clone(),
-            );
-            let entry_status_rx = reservation.status_rx;
-
-            let project_root_owned = project_root.to_path_buf();
-            let parent_config_owned = parent_config.clone();
-            let agent_name_owned = agent_name.to_string();
-            let prompt_owned = prompt.to_string();
-            let arguments_owned = arguments.to_string();
-            let sub_agent_cache_owned = sub_agent_cache.clone();
-            let parent_session_owned = parent_session_id.to_string();
-            let bg_db = db.clone();
-            let bg_policy = parent_sandbox_policy.clone();
-            let bg_trust = mode;
-
-            sink.emit(EngineEvent::Info {
-                message: format!(
-                    "  \u{1f680} {agent_name} launched in background (task {task_id})"
-                ),
-            });
-
-            let handle = tokio::spawn(run_bg_agent(
-                project_root_owned,
-                parent_config_owned,
-                bg_db,
-                arguments_owned,
-                sub_agent_cache_owned,
-                parent_session_owned,
-                bg_tx,
-                bg_cancel,
-                bg_trust,
-                bg_policy,
-                emitter,
-                parent_tool_call_id.map(str::to_string),
-            ));
-
-            bg_agents.attach(
-                task_id,
-                &agent_name_owned,
-                &prompt_owned,
-                bg_rx,
-                entry_cancel,
-                entry_status_rx,
-                parent_spawner,
-                // PR-A0.5 of #1232: bg path — stamp the entry as
-                // background so snapshots and the `/agents` overlay
-                // can keep filtering bg-only when they want.
-                true,
-                parent_tool_call_id.map(str::to_string),
-                handle,
-            );
-
-            return Ok(format!(
-                "Background agent '{agent_name_owned}' started (agent:{task_id}). \
-             Results will be injected when complete."
-            ));
-        }
-
-        // From this point on, any bg work this invocation spawns is
-        // tagged with `my_invocation_id`. Install the RAII cleanup
-        // guard *now*, after the bg-spawn early-return — a bg-spawn
-        // path's child is intentionally meant to outlive us; the
-        // guard would (correctly!) reap it as an orphan, which is
-        // exactly the behaviour we want to AVOID for the bg branch.
-        let _cleanup = InvocationCleanup {
-            bg: bg_agents,
-            invocation_id: my_invocation_id,
-        };
-        // PR-A of #1232 §1: register the foreground sub-agent in the
-        // shared `ChildAgentRegistry` so the `/agents` overlay can
-        // render its row alongside any concurrent bg sub-agents.
-        // Pre-PR-A foreground sub-agents emitted nested
-        // `execute_one_tool` spans visible in tracing logs but had
-        // ZERO presence in the live overlay — the user-visible
-        // "sub-agent ran for 1009s with no progress signal"
-        // complaint that opened #1232.
+        // The cache-hit early-return above intentionally skips this: a
+        // cache hit returns in microseconds, far below the overlay's
+        // render cadence.
         //
-        // The guard is held until function return (success, `?`-error,
-        // or panic), at which point its `Drop` impl removes the entry.
-        // RAII is critical: every error path below uses `?` to bubble,
-        // so manual unregister would leak the registry slot on the
-        // first failure (and the overlay would render a phantom row
-        // forever).
-        //
-        // The cache-hit early-return above intentionally skips this
-        // — a cache hit returns synchronously in microseconds, far
-        // below the overlay's render cadence, so registering would
-        // just flash a row that immediately disappears.
-        let (fg_emitter, _fg_guard) = bg_agents.register_fg_with_emitter(
-            agent_name,
-            prompt,
-            &cancel,
-            parent_spawner,
-            parent_tool_call_id.map(str::to_string),
-        );
+        // The sub-agent's loop runs on the guard's token, a child of
+        // the turn's `cancel`: cancelling the turn still stops it, and
+        // so does `/cancel agent:N` on this entry alone.
+        let (fg_emitter, fg_guard) =
+            bg_agents.register_fg_with_emitter(agent_name, prompt, &cancel, parent_spawner);
+        let cancel = fg_guard.cancel_token().clone();
         // Push `Pending` immediately so the overlay row appears
-        // before the LLM call — same shape as bg's `reserve()` +
-        // initial `Pending` from the `watch::channel`. Sending it
-        // explicitly (rather than relying on the channel's initial
-        // value) keeps the bg/fg event streams symmetric for any
-        // downstream consumer that reads the queue rather than the
-        // watch.
+        // before the LLM call. Sending it explicitly (rather than
+        // relying on the channel's initial value) means every
+        // consumer that reads the event queue sees the transition.
         fg_emitter.send(crate::child_agent::AgentStatus::Pending);
         // Wrap the parent's sink so tool/info events fan out to the
         // overlay's `ChildAgentActivity` stream in addition to the
@@ -783,12 +306,8 @@ pub(crate) fn execute_sub_agent<'a>(
         let sink: &dyn crate::engine::EngineSink = &fg_sink;
         // Now that the registry entry exists, transition to
         // `Running { iter: 0 }` so the overlay shows the agent as
-        // active rather than queued. The inference loop below
-        // doesn't currently push per-iteration `Running` heartbeats
-        // for fg (bg gets them via the registered emitter inside
-        // `run_bg_agent`) — a follow-up could add iter ticks here,
-        // but the `last activity` line driven by `ToolCallStart`
-        // events already gives the user a moving signal.
+        // active rather than queued; the loop below pushes
+        // `Running { iter }` on every iteration.
         fg_emitter.send(crate::child_agent::AgentStatus::Running { iter: 0 });
         // Note on terminal status: we deliberately do NOT emit a
         // `Completed`/`Errored` `ChildTaskUpdate` on return. Reason:
@@ -796,18 +315,13 @@ pub(crate) fn execute_sub_agent<'a>(
         // many `?`-bubbled errors; instrumenting each is fragile and
         // refactoring the inference body into an inner async fn just
         // to capture a Result was ruled out as scope creep. Instead
-        // we lean on the `_fg_guard`'s `Drop` impl, which removes
+        // we lean on the `fg_guard`'s `Drop` impl, which removes
         // the entry from the registry at the instant the function
         // returns. The overlay's `build_rows` prunes activity for
         // missing task ids on the very next frame — visually
         // identical to receiving a terminal event. headless
         // clients that subscribe to the raw `ChildTaskUpdate`
-        // stream will see the event flow simply stop for that
-        // task_id, which mirrors how a bg drain looks to them once
-        // the registry entry is gone. Documented as a known
-        // asymmetry in the PR body; can be tightened in a follow-up
-        // if downstream consumers grow a hard dependency on the
-        // terminal tag.
+        // stream see the event flow simply stop for that task_id.
 
         // Fork inherits parent config; named agents load their own persona
         // but fall back to the parent's provider and model for anything not
@@ -1271,17 +785,10 @@ pub(crate) fn execute_sub_agent<'a>(
                 // cancellation, or context exhaustion. Per DESIGN.md P3:
                 // "Let the model drive [...] don't scaffold around weakness."
                 //
-                // Layer 4 of #996 + #1076: push the live iteration counter
-                // so `/agents`, the status-bar pill, AND headless /
-                // TUI clients all reflect real progress instead of the
-                // Layer-0 placeholder `iter: 0` that `run_bg_agent` sends
-                // on entry.  Fan-out failures inside the emitter are
-                // silently absorbed for the same reason as the terminal
-                // sends: if the receiver is gone, the user can't see the
-                // update and we don't want noise.
-                if let Some(ref e) = emitter {
-                    e.send(crate::child_agent::AgentStatus::Running { iter });
-                }
+                // Push the live iteration counter so the TUI overlay and
+                // headless clients reflect real progress instead of the
+                // `iter: 0` placeholder sent on entry.
+                fg_emitter.send(crate::child_agent::AgentStatus::Running { iter });
                 // Respect parent cancellation (#286)
                 if cancel.is_cancelled() {
                     // Release workspace on cancellation.
@@ -2325,115 +1832,6 @@ mod b21_tests {
         assert!(
             !m.contains('\n'),
             "marker must be single-line for clean tool-result formatting; got:\n{m}"
-        );
-    }
-}
-
-/// Phase E of #996 — RAII cleanup hook tests.
-///
-/// `InvocationCleanup`'s job: when a sub-agent invocation exits
-/// (success, iteration cap, or error), **fire the cancel token** on
-/// every bg-agent registry entry tagged with that invocation's
-/// spawner id. The actual reaping (removal from `pending`) happens
-/// later — either when the bg future observes its cancel token and
-/// returns, then gets `drain_completed`'d, or when the registry's
-/// own Drop impl aborts the JoinHandle. Either way, the guard's job
-/// is just signalling.
-///
-/// Two contracts to pin:
-///
-///   1. **Drop fires cancel on matching entries.** Entries tagged with
-///      `Some(my_invocation_id)` must observe their cancel token fire
-///      after the guard drops.
-///   2. **Drop leaves non-matching entries alone.** Entries tagged with
-///      a *different* spawner id (sibling sub-agent, top-level, etc.)
-///      must NOT observe their cancel token fire.
-///
-/// We test the guard in isolation rather than driving a full
-/// `execute_sub_agent` because the function is too large to set up
-/// in a unit test. The guard's behaviour is the single load-bearing
-/// piece; everything else is plumbing the compiler already verified.
-#[cfg(test)]
-mod invocation_cleanup_tests {
-    use super::InvocationCleanup;
-    use crate::child_agent::ChildAgentRegistry;
-    use std::sync::Arc;
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn drop_cancels_entries_tagged_with_matching_spawner() {
-        let reg = Arc::new(ChildAgentRegistry::new());
-        // Tag two bg entries with our invocation id. The 4th tuple
-        // element is a clone of the entry's cancel token — we use it
-        // as an observer to detect the guard firing the cancel.
-        let (_id_a, _tx_a, _status_tx_a, cancel_a) =
-            reg.register_test_with_status("scout", "a", Some(7));
-        let (_id_b, _tx_b, _status_tx_b, cancel_b) =
-            reg.register_test_with_status("scout", "b", Some(7));
-        assert!(
-            !cancel_a.is_cancelled() && !cancel_b.is_cancelled(),
-            "setup"
-        );
-
-        drop(InvocationCleanup {
-            bg: &reg,
-            invocation_id: 7,
-        });
-
-        assert!(
-            cancel_a.is_cancelled(),
-            "entry A's cancel token must fire when guard drops"
-        );
-        assert!(
-            cancel_b.is_cancelled(),
-            "entry B's cancel token must fire when guard drops"
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn drop_leaves_entries_with_different_spawner_alone() {
-        let reg = Arc::new(ChildAgentRegistry::new());
-        // Mix: one tagged with our id, one with a sibling's, one with None.
-        let (_id_mine, _tx_m, _status_tx_m, cancel_mine) =
-            reg.register_test_with_status("a", "mine", Some(7));
-        let (_id_sib, _tx_s, _status_tx_s, cancel_sibling) =
-            reg.register_test_with_status("a", "sibling", Some(8));
-        let (_id_top, _tx_t, _status_tx_t, cancel_toplevel) =
-            reg.register_test_with_status("a", "toplevel", None);
-
-        drop(InvocationCleanup {
-            bg: &reg,
-            invocation_id: 7,
-        });
-
-        assert!(
-            cancel_mine.is_cancelled(),
-            "my own (spawner=7) entry must be cancelled"
-        );
-        assert!(
-            !cancel_sibling.is_cancelled(),
-            "sibling sub-agent's (spawner=8) entry must NOT be cancelled"
-        );
-        assert!(
-            !cancel_toplevel.is_cancelled(),
-            "top-level (spawner=None) entry must NOT be cancelled"
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn drop_with_no_matching_entries_is_noop() {
-        let reg = Arc::new(ChildAgentRegistry::new());
-        let (_id, _tx, _status_tx, cancel) = reg.register_test_with_status("a", "x", Some(99));
-
-        // Cleanup for an invocation that never spawned anything —
-        // common case: a sub-agent that did nothing bg-related.
-        drop(InvocationCleanup {
-            bg: &reg,
-            invocation_id: 7,
-        });
-
-        assert!(
-            !cancel.is_cancelled(),
-            "unrelated entry's cancel token must not fire"
         );
     }
 }

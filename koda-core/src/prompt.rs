@@ -122,7 +122,9 @@ pub fn build_system_prompt(
     if !available_agents.is_empty() {
         prompt.push_str("\n\n## Available Sub-Agents\n\n");
         prompt.push_str(
-            "Use `InvokeAgent` when the task matches an agent's description below. \
+            "Delegation is opt-in. Call `InvokeAgent` only when the user, a skill or the \
+             project's instructions ask you to delegate or name one of these agents. \
+             Otherwise do the work yourself, however many files it touches. \
              Do NOT invent agent names that are not listed here.\n\n",
         );
         for (name, desc) in &available_agents {
@@ -133,16 +135,11 @@ pub fn build_system_prompt(
             }
         }
         prompt.push_str(
-            "\nWhen to use sub-agents:\n\
-             - Complex multi-step tasks where you want to keep your context clean\n\
-             - Independent parallel work (launch multiple agents in one response)\n\
-             - Research that would fill your context with noise (file contents, grep results)\n\
-             \n\
-             When NOT to use sub-agents:\n\
-             - Simple file reads, 2\u{2013}3 grep queries or single-file edits (overhead > direct execution)\n\
-             - Tasks that need user interaction (sub-agents can\u{2019}t ask questions)\n\
-             \n\
-             Sub-agent results are NOT visible to the user — always summarize key findings.\n",
+            "\nWhen you are asked to delegate:\n\
+             - Write a self-contained prompt: the sub-agent has not seen this conversation\n\
+             - Several `InvokeAgent` calls in one message run in parallel\n\
+             - Sub-agents can\u{2019}t ask the user questions; keep those parts yourself\n\
+             - Sub-agent results are NOT visible to the user — summarize key findings\n",
         );
     } else {
         prompt.push_str(

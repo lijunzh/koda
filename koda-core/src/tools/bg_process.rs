@@ -197,7 +197,7 @@ impl BgRegistry {
     }
 
     /// Scoped snapshot for the `ListBackgroundTasks` LLM tool. Same
-    /// Model E rule as [`crate::child_agent::ChildAgentRegistry::snapshot_for_caller`]:
+    /// Model E rule as the retired `ChildAgentRegistry::snapshot_for_caller`:
     /// strict spawner equality, `None == None`.
     pub fn snapshot_for_caller(&self, caller_spawner: Option<u32>) -> Vec<BgProcessSnapshot> {
         self.snapshot()
@@ -270,7 +270,7 @@ impl BgRegistry {
     }
 
     /// Scoped kill for the `CancelTask` LLM tool. Same Model E rule
-    /// as [`crate::child_agent::ChildAgentRegistry::cancel_as_caller`].
+    /// as the retired `ChildAgentRegistry::cancel_as_caller`.
     pub fn kill_as_caller(&self, pid: u32, caller_spawner: Option<u32>) -> CancelOutcome {
         let mut guard = self.inner.lock().unwrap();
         let Some(entry) = guard.get_mut(&pid) else {

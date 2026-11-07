@@ -48,10 +48,7 @@
 //!   one and read its fields.
 //! - **PR-2**: migrate `tool_dispatch.rs` (6 functions, 6 allows).
 //! - **PR-3**: migrate `sub_agent_dispatch::execute_sub_agent`
-//!   (1 function, 1 allow). The owned-args `run_bg_agent` stays
-//!   explicit because tokio-spawn requires `'static`.
-//! - **Out of scope**: `ChildAgentRegistry::attach` — author has
-//!   explicitly opted out (per-call data, not context).
+//!   (1 function, 1 allow).
 
 use std::path::Path;
 use std::sync::Arc;

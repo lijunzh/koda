@@ -135,9 +135,8 @@ pub enum EngineEvent {
     /// A child sub-agent's status changed.
     ///
     /// Emitted on every transition through [`crate::child_agent::AgentStatus`]
-    /// (`Pending` → `Running { iter }` → terminal). Drained from the
-    /// registry's status queue inside the inference loop alongside
-    /// [`crate::child_agent::ChildAgentRegistry::drain_completed`], so any sink
+    /// (`Pending` → `Running { iter }` → terminal). Forwarded from the
+    /// registry's status queue to the active sink, so any client
     /// (CLI / TUI / headless) sees the same event stream without
     /// having to poll the registry directly.
     ///

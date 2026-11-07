@@ -239,9 +239,9 @@ pub(crate) fn active_bg_count(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use koda_core::child_agent::{AgentStatus, BgPayload, ChildAgentRegistry};
+    use koda_core::child_agent::{AgentStatus, ChildAgentRegistry, ChildStatusEmitter};
     use koda_core::tools::bg_process::BgRegistry;
-    use tokio::sync::{oneshot, watch};
+    use std::sync::Arc;
     use tokio_util::sync::CancellationToken;
 
     /// Concatenate every line in the buffer into one searchable
@@ -259,49 +259,25 @@ mod tests {
             .join("\n")
     }
 
-    /// Build a registered bg-agent entry using only `ChildAgentRegistry`'s
-    /// **public** API. We can't use the in-crate `register_test*`
-    /// helpers because they're `#[cfg(test)]`-gated to `koda-core`
-    /// itself — those gates make them invisible to other crates'
-    /// test builds.
-    ///
-    /// Returns `(task_id, result_sender, status_sender, cancel_observer)`
-    /// so tests can drive the entry through any state. The
-    /// `JoinHandle` we attach is a noop spawn — enough to satisfy
-    /// `AbortOnDropHandle` without burning a tokio worker on real work.
+    /// Register a sub-agent entry the way the dispatch path does and
+    /// keep it alive for the test. Returns `(task_id, emitter,
+    /// cancel_observer, guard)`: drive the status through the emitter,
+    /// watch the token to see a cancel land, and hold the guard so the
+    /// entry stays registered.
     fn register_entry(
-        reg: &ChildAgentRegistry,
+        reg: &Arc<ChildAgentRegistry>,
         agent_name: &str,
         prompt: &str,
     ) -> (
         u32,
-        oneshot::Sender<Result<BgPayload, BgPayload>>,
-        watch::Sender<AgentStatus>,
+        ChildStatusEmitter,
         CancellationToken,
+        koda_core::child_agent::FgRegistrationGuard,
     ) {
         let parent = CancellationToken::new();
-        // Phase A1 of #996 added a `spawner: Option<u32>` to both
-        // reserve() and attach(). The TUI test harness only ever
-        // exercises the top-level path, so `None` is the right value.
-        let r = reg.reserve(&parent, None, true);
-        let task_id = r.task_id;
-        let tx = r.tx;
-        let status_tx = r.status_tx;
-        let observer = r.cancel.clone();
-        let noop = tokio::spawn(async {});
-        reg.attach(
-            task_id,
-            agent_name,
-            prompt,
-            r.rx,
-            r.cancel,
-            r.status_rx,
-            None,
-            true,
-            None,
-            noop,
-        );
-        (task_id, tx, status_tx, observer)
+        let (emitter, guard) = reg.register_fg_with_emitter(agent_name, prompt, &parent, None);
+        let observer = guard.cancel_token().clone();
+        (guard.task_id(), emitter, observer, guard)
     }
 
     /// Spawn a real child process for tests that need a live PID in
@@ -330,9 +306,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_known_agent_id_reports_success_and_fires_token() {
         let mut buf = ScrollBuffer::new(64);
-        let reg = ChildAgentRegistry::new();
+        let reg = Arc::new(ChildAgentRegistry::new());
         let procs = BgRegistry::new();
-        let (task_id, _tx, _status_tx, observer) = register_entry(&reg, "explore", "x");
+        let (task_id, _emitter, observer, _guard) = register_entry(&reg, "explore", "x");
 
         handle_cancel_background_task(
             &mut buf,
@@ -360,7 +336,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_known_process_id_kills_and_reports_success() {
         let mut buf = ScrollBuffer::new(64);
-        let reg = ChildAgentRegistry::new();
+        let reg = Arc::new(ChildAgentRegistry::new());
         let procs = BgRegistry::new();
         let pid = spawn_sleep_in_registry(&procs);
 
@@ -389,7 +365,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_unknown_agent_id_reports_helpful_error() {
         let mut buf = ScrollBuffer::new(64);
-        let reg = ChildAgentRegistry::new();
+        let reg = Arc::new(ChildAgentRegistry::new());
         let procs = BgRegistry::new();
         handle_cancel_background_task(
             &mut buf,
@@ -410,7 +386,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_unknown_process_id_reports_helpful_error() {
         let mut buf = ScrollBuffer::new(64);
-        let reg = ChildAgentRegistry::new();
+        let reg = Arc::new(ChildAgentRegistry::new());
         let procs = BgRegistry::new();
         handle_cancel_background_task(
             &mut buf,
@@ -433,7 +409,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_none_id_renders_usage_with_both_prefixes() {
         let mut buf = ScrollBuffer::new(64);
-        let reg = ChildAgentRegistry::new();
+        let reg = Arc::new(ChildAgentRegistry::new());
         let procs = BgRegistry::new();
         handle_cancel_background_task(
             &mut buf,
@@ -458,7 +434,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_all_bg_work_empty_is_silent() {
         let mut buf = ScrollBuffer::new(64);
-        let reg = ChildAgentRegistry::new();
+        let reg = Arc::new(ChildAgentRegistry::new());
         let procs = BgRegistry::new();
         let (a, p) = cancel_all_bg_work(
             &mut buf,
@@ -474,21 +450,21 @@ mod tests {
     }
 
     /// Multiple running agents are all cancelled in one call and
-    /// each `ChildAgentReservation::cancel` token observes the cascade.
+    /// each entry's cancel token observes the cascade.
     /// This is the in-process equivalent of "user hit Ctrl+C and
     /// every bg agent should die".
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_all_bg_work_cancels_every_running_agent() {
         let mut buf = ScrollBuffer::new(64);
-        let reg = ChildAgentRegistry::new();
+        let reg = Arc::new(ChildAgentRegistry::new());
         let procs = BgRegistry::new();
 
-        let (_id1, _tx1, status1, observer1) = register_entry(&reg, "explore", "prompt 1");
-        let (_id2, _tx2, status2, observer2) = register_entry(&reg, "task", "prompt 2");
+        let (_id1, status1, observer1, _g1) = register_entry(&reg, "explore", "prompt 1");
+        let (_id2, status2, observer2, _g2) = register_entry(&reg, "task", "prompt 2");
         // Bring them out of Pending so they show up as Running in
         // the snapshot filter.
-        status1.send(AgentStatus::Running { iter: 1 }).unwrap();
-        status2.send(AgentStatus::Running { iter: 1 }).unwrap();
+        status1.send(AgentStatus::Running { iter: 1 });
+        status2.send(AgentStatus::Running { iter: 1 });
 
         let (a, p) = cancel_all_bg_work(
             &mut buf,
@@ -513,11 +489,11 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_all_bg_work_handles_agents_and_processes() {
         let mut buf = ScrollBuffer::new(64);
-        let reg = ChildAgentRegistry::new();
+        let reg = Arc::new(ChildAgentRegistry::new());
         let procs = BgRegistry::new();
 
-        let (_id, _tx, status, observer) = register_entry(&reg, "explore", "hi");
-        status.send(AgentStatus::Running { iter: 1 }).unwrap();
+        let (_id, status, observer, _guard) = register_entry(&reg, "explore", "hi");
+        status.send(AgentStatus::Running { iter: 1 });
         let _pid = spawn_sleep_in_registry(&procs);
 
         let (a, p) = cancel_all_bg_work(
@@ -541,18 +517,14 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_all_bg_work_skips_completed_entries() {
         let mut buf = ScrollBuffer::new(64);
-        let reg = ChildAgentRegistry::new();
+        let reg = Arc::new(ChildAgentRegistry::new());
         let procs = BgRegistry::new();
 
-        let (_id, tx, status, observer) = register_entry(&reg, "explore", "hi");
+        let (_id, status, observer, _guard) = register_entry(&reg, "explore", "hi");
         // Drive to Completed terminal state.
-        status
-            .send(AgentStatus::Completed {
-                summary: "done".to_string(),
-            })
-            .unwrap();
-        // Send a result so the entry looks fully resolved.
-        let _ = tx.send(Ok(("done".to_string(), vec![])));
+        status.send(AgentStatus::Completed {
+            summary: "done".to_string(),
+        });
 
         let (a, p) = cancel_all_bg_work(
             &mut buf,
@@ -574,18 +546,16 @@ mod tests {
     /// entries (same filter as `cancel_all_bg_work`).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn active_bg_count_excludes_completed() {
-        let reg = ChildAgentRegistry::new();
+        let reg = Arc::new(ChildAgentRegistry::new());
         let procs = BgRegistry::new();
         assert_eq!(active_bg_count(&reg, &procs), 0);
 
-        let (_id1, _tx1, s1, _obs1) = register_entry(&reg, "a", "p1");
-        s1.send(AgentStatus::Running { iter: 1 }).unwrap();
-        let (_id2, tx2, s2, _obs2) = register_entry(&reg, "b", "p2");
+        let (_id1, s1, _obs1, _g1) = register_entry(&reg, "a", "p1");
+        s1.send(AgentStatus::Running { iter: 1 });
+        let (_id2, s2, _obs2, _g2) = register_entry(&reg, "b", "p2");
         s2.send(AgentStatus::Completed {
             summary: "x".to_string(),
-        })
-        .unwrap();
-        let _ = tx2.send(Ok(("x".to_string(), vec![])));
+        });
 
         assert_eq!(
             active_bg_count(&reg, &procs),
