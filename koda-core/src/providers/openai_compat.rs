@@ -269,6 +269,16 @@ struct UsageResponse {
     completion_tokens: Option<i64>,
     #[serde(default)]
     completion_tokens_details: Option<CompletionTokensDetails>,
+    #[serde(default)]
+    prompt_tokens_details: Option<PromptTokensDetails>,
+}
+
+/// `cached_tokens` is the part of `prompt_tokens` the server served from its
+/// prompt cache: OpenAI's field, which llama-server sends too.
+#[derive(Deserialize, Default)]
+struct PromptTokensDetails {
+    #[serde(default)]
+    cached_tokens: Option<i64>,
 }
 
 #[derive(Deserialize, Default)]
@@ -932,11 +942,18 @@ fn llama_cpp_n_ctx(props: &serde_json::Value) -> Option<usize> {
         .map(|n| n as usize)
 }
 
-/// Convert OpenAI usage response to our TokenUsage, extracting reasoning_tokens.
+/// Convert OpenAI usage response to our TokenUsage, extracting reasoning and
+/// cached tokens. `prompt_tokens` keeps the cached part, as Gemini's does, so
+/// `cache_read_tokens` is a share of it, not an addition.
 fn usage_from_response(u: &UsageResponse) -> TokenUsage {
     TokenUsage {
         prompt_tokens: u.prompt_tokens.unwrap_or(0),
         completion_tokens: u.completion_tokens.unwrap_or(0),
+        cache_read_tokens: u
+            .prompt_tokens_details
+            .as_ref()
+            .and_then(|d| d.cached_tokens)
+            .unwrap_or(0),
         thinking_tokens: u
             .completion_tokens_details
             .as_ref()
@@ -1249,6 +1266,26 @@ mod tests {
         ]);
         assert_eq!(usage.stop_reason, "stop");
         assert_eq!((usage.prompt_tokens, usage.completion_tokens), (7, 3));
+    }
+
+    #[test]
+    fn cached_prompt_tokens_become_cache_reads() {
+        let usage = final_usage(&[
+            r#"{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1200,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":1100}}}"#,
+        ]);
+        assert_eq!(
+            usage.prompt_tokens, 1200,
+            "the prompt count keeps its cached part"
+        );
+        assert_eq!(usage.cache_read_tokens, 1100);
+    }
+
+    #[test]
+    fn usage_without_prompt_details_reads_no_cache() {
+        let usage = final_usage(&[
+            r#"{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":3,"prompt_tokens_details":null}}"#,
+        ]);
+        assert_eq!(usage.cache_read_tokens, 0);
     }
 
     #[test]
