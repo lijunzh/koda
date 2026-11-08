@@ -379,6 +379,47 @@ fn timeout_message(timeout_secs: u64, asked: Option<u64>, command: &str) -> Stri
     }
 }
 
+/// Lines past the capture cap each stream still keeps from its end: a long
+/// command's last lines are the ones that say how it went (a test run's
+/// result, the error that stopped a build).
+const CAPTURE_TAIL_LINES: usize = 100;
+/// Bytes those tail lines may hold, per stream.
+const CAPTURE_TAIL_BYTES: usize = MAX_COLLECT_BYTES / 10;
+
+/// The last lines of a stream past the capture cap, kept in a rolling window.
+#[derive(Default)]
+struct Tail {
+    lines: std::collections::VecDeque<String>,
+    bytes: usize,
+    dropped: usize,
+}
+
+impl Tail {
+    fn keep(&mut self, line: String) {
+        self.bytes += line.len();
+        self.lines.push_back(line);
+        while self.lines.len() > CAPTURE_TAIL_LINES || self.bytes > CAPTURE_TAIL_BYTES {
+            if let Some(old) = self.lines.pop_front() {
+                self.bytes -= old.len();
+                self.dropped += 1;
+            }
+        }
+    }
+
+    /// Append to `lines` what was kept: a marker for the lines dropped from
+    /// the middle, then the tail. Returns how many were dropped.
+    fn finish(self, lines: &mut Vec<String>) -> usize {
+        if self.dropped > 0 {
+            lines.push(format!(
+                "[\u{2026} {} lines not kept \u{2026}]",
+                self.dropped
+            ));
+        }
+        lines.extend(self.lines);
+        self.dropped
+    }
+}
+
 /// Read stdout and stderr concurrently, collecting lines and optionally streaming them.
 ///
 /// Lines are always streamed to the TUI sink (if present), but collection into
@@ -386,9 +427,10 @@ fn timeout_message(timeout_secs: u64, asked: Option<u64>, command: &str) -> Stri
 ///   - `max_lines` — total stdout + stderr lines collected
 ///   - `MAX_COLLECT_BYTES` — total bytes collected (OOM protection)
 ///
-/// Once either cap is hit, new lines are still streamed to the TUI but dropped
-/// from the Vecs, and counted in `uncaptured` so the summary can say so. This keeps the TUI responsive while bounding memory
-/// for pathological commands.
+/// Past either cap, each stream keeps its last [`CAPTURE_TAIL_LINES`] in a
+/// rolling window, appended after a marker once the command ends, so the end
+/// of a long output isn't lost along with its middle. The lines that fall
+/// out of the window are counted in `uncaptured` so the summary can say so.
 async fn read_streams(
     stdout: tokio::process::ChildStdout,
     stderr: tokio::process::ChildStderr,
@@ -405,6 +447,8 @@ async fn read_streams(
     let mut stderr_done = false;
     let mut collected_bytes: usize = 0;
     let mut collected_lines: usize = 0;
+    let mut stdout_tail = Tail::default();
+    let mut stderr_tail = Tail::default();
 
     while !stdout_done || !stderr_done {
         tokio::select! {
@@ -425,7 +469,7 @@ async fn read_streams(
                             collected_lines += 1;
                             stdout_lines.push(l);
                         } else {
-                            *uncaptured += 1;
+                            stdout_tail.keep(l);
                         }
                     }
                     None => stdout_done = true,
@@ -448,7 +492,7 @@ async fn read_streams(
                             collected_lines += 1;
                             stderr_lines.push(l);
                         } else {
-                            *uncaptured += 1;
+                            stderr_tail.keep(l);
                         }
                     }
                     None => stderr_done = true,
@@ -456,6 +500,7 @@ async fn read_streams(
             }
         }
     }
+    *uncaptured += stdout_tail.finish(stdout_lines) + stderr_tail.finish(stderr_lines);
     Ok(())
 }
 
@@ -741,12 +786,12 @@ fn format_summary(
     let stdout_budget = SUMMARY_MAX_BYTES - stderr_budget;
 
     if uncaptured > 0 {
-        // The collection cap (`OutputCaps::shell_output_lines`) stopped capture, so
-        // what follows is the start of the output, not all of it.
+        // The collection cap (`OutputCaps::shell_output_lines`) stopped capture:
+        // what follows is the start of the output and its last lines, with a
+        // `[… N lines not kept …]` marker where the middle was.
         out.push_str(&format!(
-            "\nWarning: truncated output: capture stopped after {} lines and {uncaptured} \
-             further lines were not kept",
-            stdout_lines.len() + stderr_lines.len(),
+            "\nWarning: truncated output: {uncaptured} lines from the middle were not \
+             kept; the start and the last lines are below"
         ));
     }
     if truncated {
@@ -1562,13 +1607,60 @@ mod tests {
         assert!(summary.len() < SUMMARY_MAX_BYTES + 800, "{}", summary.len());
     }
 
+    /// Past the capture cap the end of the output is kept too: a long test
+    /// run's result line was what the model never saw.
+    #[tokio::test]
+    async fn a_long_output_keeps_its_last_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = run_shell_command(
+            tmp.path(),
+            &serde_json::json!({"command": "seq 1 5000; echo 'test result: FAILED. 1 failed' >&2"}),
+            50,
+            &bg(),
+            None,
+            &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let s = &out.summary;
+        assert!(s.contains("\n1\n2\n"), "the start: {s}");
+        assert!(s.contains("\n5000"), "the last line: {s}");
+        assert!(s.contains("test result: FAILED"), "stderr's end: {s}");
+        assert!(s.contains("lines not kept \u{2026}]"), "the marker: {s}");
+        assert!(s.contains("lines from the middle were not kept"), "{s}");
+        assert!(!s.contains("\n2500\n"), "the middle is dropped: {s}");
+    }
+
+    #[test]
+    fn a_tail_keeps_a_rolling_window_of_the_last_lines() {
+        let mut tail = Tail::default();
+        for i in 0..250 {
+            tail.keep(format!("l{i}"));
+        }
+        let mut lines = vec!["head".to_string()];
+        assert_eq!(tail.finish(&mut lines), 150);
+        assert_eq!(lines[1], "[\u{2026} 150 lines not kept \u{2026}]");
+        assert_eq!(lines[2], "l150");
+        assert_eq!(lines.last().unwrap(), "l249");
+        assert_eq!(lines.len(), 2 + CAPTURE_TAIL_LINES);
+        // Under the window: kept whole, no marker.
+        let mut tail = Tail::default();
+        tail.keep("only".into());
+        let mut lines = Vec::new();
+        assert_eq!(tail.finish(&mut lines), 0);
+        assert_eq!(lines, vec!["only"]);
+    }
+
     #[test]
     fn test_format_summary_says_when_capture_stopped_early() {
         // Few enough lines to fit the budget, but the collection cap dropped
         // 99,744 more: the model must not read this as the whole output.
         let summary = format_summary(0, &numbered_lines(256), &[], 99_744);
-        assert!(summary.contains("capture stopped after 256 lines"));
-        assert!(summary.contains("99744 further lines were not kept"));
+        assert!(summary.contains("99744 lines from the middle were not kept"));
         assert!(summary.contains("stdout: 256 lines"));
         assert!(summary.contains("narrow the command"));
         // Nothing dropped, nothing cut: no warning at all.
@@ -1693,11 +1785,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn collection_stops_at_max_lines() {
+    async fn collection_keeps_the_first_lines_and_the_last_past_the_cap() {
         let tmp = tempfile::tempdir().unwrap();
-        // Generate 50 lines of output but cap collection at 10.
+        // 500 lines, collection capped at 10: the first 10, a marker for the
+        // 390 in the middle, and the last 100.
         let args = serde_json::json!({
-            "command": "seq 1 50"
+            "command": "seq 1 500"
         });
         let result = run_shell_command(
             tmp.path(),
@@ -1713,16 +1806,19 @@ mod tests {
         )
         .await
         .unwrap();
-        // Summary should reflect that we only collected 10 lines.
+        // 10 + the marker + 100.
         assert!(
-            result.summary.contains("stdout: 10 lines"),
-            "Expected 10 collected lines, got: {}",
+            result.summary.contains("stdout: 111 lines"),
+            "{}",
             result.summary
         );
-        // Full output should NOT contain lines beyond the cap.
         let full = result.full_output.unwrap();
-        assert!(full.contains("1"), "Should contain first line");
-        assert!(!full.contains("\n50\n"), "Should NOT contain line 50");
+        assert!(
+            full.contains("\n10\n[\u{2026} 390 lines not kept \u{2026}]\n401\n"),
+            "{full}"
+        );
+        assert!(full.ends_with("\n500"), "{full}");
+        assert!(!full.contains("\n200\n"), "the middle isn't kept: {full}");
     }
 
     /// A timeout cut to the ceiling says so; one within it doesn't.
