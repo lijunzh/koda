@@ -246,7 +246,7 @@ pub async fn run_shell_command(
     // A `kill` of background processes this caller started is Koda's to do:
     // the sandbox can't signal a process an earlier Bash call started.
     if !outside_sandbox
-        && let Some(kill) = plain_kill(command)
+        && let Some(kill) = kill_command(command)
         && let Some(done) = signal_own_background(bg, &kill, caller_spawner)
     {
         return Ok(done);
@@ -696,6 +696,89 @@ pub(crate) fn plain_kill(command: &str) -> Option<PlainKill> {
     })
 }
 
+/// A [`PlainKill`] with the `&& echo …` / `|| echo …` tails models put on a
+/// check, `kill -0 PID && echo alive`, so Koda can run that too: the echo
+/// prints the way the shell would print it after the kill.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct KillCommand {
+    pub(crate) kill: PlainKill,
+    /// Printed when the kill succeeds (`&& echo …`).
+    pub(crate) on_success: Option<String>,
+    /// Printed when it fails (`|| echo …`).
+    pub(crate) on_failure: Option<String>,
+}
+
+/// Split `command` at `&&` and `||` outside quotes, keeping each operator.
+fn split_and_or(command: &str) -> Vec<(Option<&'static str>, &str)> {
+    let bytes = command.as_bytes();
+    let (mut parts, mut start, mut quote, mut op) = (Vec::new(), 0, None, None);
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if c == b'\'' || c == b'"' => quote = Some(c),
+            None if i + 1 < bytes.len()
+                && (&bytes[i..i + 2] == b"&&" || &bytes[i..i + 2] == b"||") =>
+            {
+                parts.push((op, &command[start..i]));
+                op = Some(if c == b'&' { "&&" } else { "||" });
+                start = i + 2;
+                i += 1;
+            }
+            None => {}
+        }
+        i += 1;
+    }
+    parts.push((op, &command[start..]));
+    parts
+}
+
+/// The literal text of `echo TEXT`, quoted or not, when nothing in it would
+/// make the shell do more than print it.
+fn literal_echo(command: &str) -> Option<String> {
+    let text = command.trim().strip_prefix("echo")?;
+    if !text.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let text = text.trim();
+    let quoted = |q: char| {
+        text.strip_prefix(q)
+            .and_then(|t| t.strip_suffix(q))
+            .filter(|inner| !inner.contains(q))
+    };
+    let inner = quoted('\'')
+        .or_else(|| quoted('"').filter(|t| !t.contains(['$', '`', '\\'])))
+        .or_else(|| {
+            text.chars()
+                .all(|c| c.is_ascii_alphanumeric() || " _.,:/-=+".contains(c))
+                .then_some(text)
+        })?;
+    Some(inner.to_string())
+}
+
+pub(crate) fn kill_command(command: &str) -> Option<KillCommand> {
+    let mut parts = split_and_or(command).into_iter();
+    let (_, first) = parts.next()?;
+    let mut found = KillCommand {
+        kill: plain_kill(first.trim())?,
+        on_success: None,
+        on_failure: None,
+    };
+    for (op, part) in parts {
+        let text = literal_echo(part)?;
+        let slot = match op {
+            Some("&&") => &mut found.on_success,
+            _ => &mut found.on_failure,
+        };
+        if slot.replace(text).is_some() {
+            return None;
+        }
+    }
+    Some(found)
+}
+
 /// Whether this Bash call only checks or stops background processes the
 /// caller started, which [`run_shell_command`] then does itself. The
 /// dispatchers use it to approve such a call in Auto even though `kill`
@@ -709,10 +792,10 @@ pub(crate) fn signals_only_own_background(
     if wants_outside_sandbox(args) || args["background"].as_bool().unwrap_or(false) {
         return false;
     }
-    let Some(kill) = args["command"].as_str().and_then(plain_kill) else {
+    let Some(found) = args["command"].as_str().and_then(kill_command) else {
         return false;
     };
-    let (PlainKill::Check(pids) | PlainKill::Stop(pids)) = &kill;
+    let (PlainKill::Check(pids) | PlainKill::Stop(pids)) = &found.kill;
     let own = bg.snapshot_for_caller(caller_spawner);
     pids.iter().all(|pid| own.iter().any(|s| s.pid == *pid))
 }
@@ -722,10 +805,11 @@ pub(crate) fn signals_only_own_background(
 /// command runs as written.
 fn signal_own_background(
     bg: &BgRegistry,
-    kill: &PlainKill,
+    found: &KillCommand,
     caller_spawner: Option<u32>,
 ) -> Option<ShellOutput> {
     use crate::tools::bg_process::BgProcessStatus;
+    let kill = &found.kill;
     let (PlainKill::Check(pids) | PlainKill::Stop(pids)) = kill;
     let own = bg.snapshot_for_caller(caller_spawner);
     let entries = pids
@@ -762,7 +846,17 @@ fn signal_own_background(
     }
     // `kill -0` fails when a process is gone; stopping one that already
     // ended isn't a failure.
-    let success = all_running || matches!(kill, PlainKill::Stop(_));
+    let killed = all_running || matches!(kill, PlainKill::Stop(_));
+    // Then the echo the shell would run, and the status it would end with.
+    let echo = if killed {
+        &found.on_success
+    } else {
+        &found.on_failure
+    };
+    if let Some(text) = echo {
+        lines.push(text.clone());
+    }
+    let success = killed || found.on_failure.is_some();
     Some(ShellOutput {
         summary: format_summary(i32::from(!success), &lines, &[], 0),
         full_output: None,
@@ -2235,6 +2329,63 @@ mod tests {
         let d = &definitions()[0].description;
         assert!(d.contains("ps can't run in the sandbox"), "{d}");
         assert!(d.contains("pgrep -fl"), "{d}");
+    }
+
+    #[test]
+    fn a_kill_check_may_carry_literal_echoes() {
+        let k = kill_command(r#"kill -0 28992 && echo "alive""#).unwrap();
+        assert_eq!(k.kill, PlainKill::Check(vec![28992]));
+        assert_eq!(k.on_success.as_deref(), Some("alive"));
+        assert_eq!(k.on_failure, None);
+        let k = kill_command("kill -0 7 && echo 'up' || echo gone now").unwrap();
+        assert_eq!(k.on_success.as_deref(), Some("up"));
+        assert_eq!(k.on_failure.as_deref(), Some("gone now"));
+        assert_eq!(kill_command("kill 7").unwrap().on_success, None);
+        // `&&` inside the echo's quotes doesn't split it.
+        let k = kill_command("kill -0 7 && echo 'a && b'").unwrap();
+        assert_eq!(k.on_success.as_deref(), Some("a && b"));
+        // Anything that would make the shell do more runs as written.
+        for not_ours in [
+            "kill -0 7 && echo $HOME",
+            r#"kill -0 7 && echo "$PID""#,
+            "kill -0 7 && echo `id`",
+            "kill -0 7 && rm -rf x",
+            "kill -0 7 && echo a && echo b",
+            "kill -0 7; echo done",
+            "kill -0 7 && echo a | tee log",
+            "echo hi && kill 7",
+        ] {
+            assert_eq!(kill_command(not_ours), None, "{not_ours}");
+        }
+    }
+
+    /// The check models write, `kill -0 PID && echo alive`, is Koda's to run
+    /// too: it asked in Auto as a destructive `kill`, and the sandbox refused
+    /// the signal.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn koda_runs_a_chained_check_on_its_own_background_process() {
+        let registry = BgRegistry::new();
+        let pid = start_in_background(&registry, "sleep 60").await;
+        let check = format!(r#"kill -0 {pid} && echo "alive" || echo "gone""#);
+        let args = serde_json::json!({"command": check});
+        assert!(signals_only_own_background(&args, &registry, None));
+        let up = bash(&registry, &check).await;
+        assert!(up.success, "{}", up.summary);
+        assert!(up.summary.contains("is running"), "{}", up.summary);
+        assert!(up.summary.contains("\nalive"), "{}", up.summary);
+        assert!(!up.summary.contains("gone"), "{}", up.summary);
+
+        registry.kill(pid);
+        let down = bash(&registry, &check).await;
+        assert!(
+            down.success,
+            "the || echo makes it succeed: {}",
+            down.summary
+        );
+        assert!(down.summary.contains("gone"), "{}", down.summary);
+        let bare = bash(&registry, &format!("kill -0 {pid} && echo alive")).await;
+        assert!(!bare.success, "{}", bare.summary);
+        assert!(!bare.summary.contains("\nalive"), "{}", bare.summary);
     }
 
     #[test]

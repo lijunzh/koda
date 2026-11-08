@@ -284,7 +284,7 @@ pub(crate) async fn run() -> Result<()> {
             .with_trust(parse_top_level_trust_mode(&cli.mode));
         check_typed_reasoning(typed.0.as_deref(), typed.1, &config)?;
         let session_id = match cli.session {
-            Some(id) => id,
+            Some(id) => db.resolve_session_id(&id).await?,
             None => db.create_session(&config.agent_name, &project_root).await?,
         };
         let exit_code = headless::run_headless(
@@ -329,8 +329,10 @@ pub(crate) async fn run() -> Result<()> {
     // Initialize database is already done above
 
     // Load or create session
+    // A mistyped id (once, a llama-server pid) used to run a session that
+    // didn't exist: nothing could be saved, and the model got no messages.
     let session_id = match cli.session {
-        Some(id) => id,
+        Some(id) => db.resolve_session_id(&id).await?,
         None => db.create_session(&config.agent_name, &project_root).await?,
     };
 
