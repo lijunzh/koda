@@ -15,9 +15,9 @@ use ratatui::text::{Line, Span};
 // Re-export semantic styles so existing imports keep working. New call
 // sites should reach for `crate::theme::*` directly.
 pub use crate::theme::{
-    BOLD, CONTENT_READ as READ_CONTENT, CONTENT_WRITE as WRITE_CONTENT, DIM, STATUS_ERROR as RED,
-    STATUS_INFO as CYAN, STATUS_SUCCESS as GREEN, STATUS_WARNING as YELLOW, TOOL_PREFIX,
-    WARM_ACCENT, WARM_INFO, WARM_MUTED, WARM_TITLE,
+    BOLD, CONTENT_READ as READ_CONTENT, DIM, STATUS_ERROR as RED, STATUS_INFO as CYAN,
+    STATUS_SUCCESS as GREEN, STATUS_WARNING as YELLOW, TOOL_PREFIX, WARM_ACCENT, WARM_INFO,
+    WARM_MUTED, WARM_TITLE,
 };
 // Aliases for legacy ad-hoc names — prefer the semantic ones above.
 pub use crate::theme::{ACCENT_AMBER as AMBER, ACCENT_MAGENTA as MAGENTA};

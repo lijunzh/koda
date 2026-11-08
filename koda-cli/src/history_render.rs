@@ -8,16 +8,14 @@
 use std::collections::HashMap;
 
 use koda_core::persistence::{Message, Role, SessionEvent};
-use koda_core::tools::{ToolCatalog, ToolEffect};
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
 
-use crate::tui_output::{BOLD, DIM, READ_CONTENT, TOOL_PREFIX, WRITE_CONTENT};
-
-/// Maximum lines of tool output to show inline in history replay.
-const TOOL_OUTPUT_PREVIEW_LINES: usize = 3;
+use crate::scroll_buffer::Fold;
+use crate::tui_output::{BOLD, DIM, READ_CONTENT, TOOL_PREFIX};
+use crate::tui_render::tool_output_view;
 
 /// Convert a slice of historical messages into styled `Line`s.
 ///
@@ -27,8 +25,15 @@ const TOOL_OUTPUT_PREVIEW_LINES: usize = 3;
 /// `InvokeAgent` tool call so resumed transcripts and debug bundles
 /// can show what each sub-agent did. Kept as a thin wrapper so the
 /// existing test suite (and any external callers) doesn't churn.
+#[cfg(test)]
 pub fn render_history_messages(messages: &[Message]) -> Vec<Line<'static>> {
     render_history(messages, &[])
+}
+
+/// A resumed session's lines for the TUI, each tagged with the view it
+/// belongs to, so Ctrl+O unfolds old tool output as it does live output.
+pub fn render_history_folded(messages: &[Message]) -> Vec<(Line<'static>, Fold)> {
+    render_history_tagged(messages, &[])
 }
 
 /// Convert historical messages **plus** persisted sub-agent events
@@ -56,6 +61,32 @@ pub fn render_history_messages(messages: &[Message]) -> Vec<Line<'static>> {
 /// read-only tools (Read, Grep, List…) render their content in a readable
 /// light color; mutating tools (Bash, Write, Edit…) stay dim.
 pub fn render_history(messages: &[Message], events: &[SessionEvent]) -> Vec<Line<'static>> {
+    // The folded view, as the TUI first shows it: what a debug bundle and the
+    // tests read.
+    render_history_tagged(messages, events)
+        .into_iter()
+        .filter(|(_, fold)| *fold != Fold::Full)
+        .map(|(line, _)| line)
+        .collect()
+}
+
+/// History lines, each with the view it belongs to ([`Fold`]).
+struct Out(Vec<(Line<'static>, Fold)>);
+
+impl Out {
+    fn push(&mut self, line: Line<'static>) {
+        self.0.push((line, Fold::Always));
+    }
+
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+fn render_history_tagged(
+    messages: &[Message],
+    events: &[SessionEvent],
+) -> Vec<(Line<'static>, Fold)> {
     // Index sub-agent events by their parent InvokeAgent tool_call_id
     // so we can fold them in O(1) when we hit the matching tool
     // result during the message walk. Empty when no sub-agents ran
@@ -78,7 +109,7 @@ pub fn render_history(messages: &[Message], events: &[SessionEvent]) -> Vec<Line
         }
     }
 
-    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut lines = Out(Vec::new());
 
     // tool_call_id → tool_name mapping for result correlation, populated
     // **incrementally during the render walk below** rather than via a
@@ -94,7 +125,9 @@ pub fn render_history(messages: &[Message], events: &[SessionEvent]) -> Vec<Line
     // sees the rolling map state **as of that point in the transcript**,
     // which always reflects the most-recent prior Assistant tool_calls
     // block — i.e. the call that actually produced this result.
-    let mut tool_id_to_name: HashMap<String, String> = HashMap::new();
+    // The call's name and arguments: the arguments give Read its file type
+    // for highlighting and Grep its pattern.
+    let mut tool_calls_by_id: HashMap<String, (String, String)> = HashMap::new();
 
     for msg in messages {
         match msg.role {
@@ -112,20 +145,22 @@ pub fn render_history(messages: &[Message], events: &[SessionEvent]) -> Vec<Line
                         if let (Some(id), Some(name)) =
                             (call["id"].as_str(), tool_call_field(&call, "name"))
                         {
-                            tool_id_to_name.insert(id.to_string(), name.to_string());
+                            let args = tool_call_field(&call, "arguments").unwrap_or("");
+                            tool_calls_by_id
+                                .insert(id.to_string(), (name.to_string(), args.to_string()));
                         }
                     }
                 }
                 render_assistant_message(&mut lines, msg);
             }
             Role::Tool => {
-                let tool_name = msg
+                let call = msg
                     .tool_call_id
                     .as_deref()
-                    .and_then(|id| tool_id_to_name.get(id))
-                    .map(|s| s.as_str())
-                    .unwrap_or("");
-                render_tool_result(&mut lines, msg, tool_name);
+                    .and_then(|id| tool_calls_by_id.get(id));
+                let tool_name = call.map(|(name, _)| name.as_str()).unwrap_or("");
+                let args = call.map(|(_, args)| args.as_str()).unwrap_or("");
+                render_tool_result(&mut lines, msg, tool_name, args);
 
                 // #1344 issue A: fold persisted sub-agent events under
                 // the parent's `InvokeAgent` tool result. Pre-this the
@@ -159,11 +194,11 @@ pub fn render_history(messages: &[Message], events: &[SessionEvent]) -> Vec<Line
         lines.push(Line::default());
     }
 
-    lines
+    lines.0
 }
 
 /// Render a user message: `  ❯ message text`
-fn render_user_message(lines: &mut Vec<Line<'static>>, msg: &Message) {
+fn render_user_message(lines: &mut Out, msg: &Message) {
     lines.push(Line::default());
     if let Some(ref content) = msg.content {
         // Show first line with prompt indicator, rest indented
@@ -189,7 +224,7 @@ fn render_user_message(lines: &mut Vec<Line<'static>>, msg: &Message) {
 }
 
 /// Render an assistant response: separator + text + any tool call headers.
-fn render_assistant_message(lines: &mut Vec<Line<'static>>, msg: &Message) {
+fn render_assistant_message(lines: &mut Out, msg: &Message) {
     // An empty reply is kept for its usage only; there's nothing to show.
     if msg.content.as_deref().is_none_or(|c| c.trim().is_empty())
         && msg.tool_calls.is_none()
@@ -243,7 +278,7 @@ fn render_assistant_message(lines: &mut Vec<Line<'static>>, msg: &Message) {
 /// [`crate::tool_header::build_header_line_from_str`] so live render
 /// and history replay produce identical span sequences for the same
 /// `(name, args)` input.
-fn render_tool_call_headers(lines: &mut Vec<Line<'static>>, tc_json: &str) {
+fn render_tool_call_headers(lines: &mut Out, tc_json: &str) {
     // Tool calls are persisted as `serde_json::to_string(&Vec<ToolCall>)`
     // — see `koda_core::providers::ToolCall`. The struct serializes flat:
     // `{"id":"…","function_name":"…","arguments":"…"}`. Pre-#1340 this
@@ -289,52 +324,41 @@ fn tool_call_field<'a>(call: &'a serde_json::Value, field: &str) -> Option<&'a s
     })
 }
 
-/// Render a tool result message (abbreviated).
-///
-/// Content style is determined by the tool type:
-/// - Read-only tools (Read, Grep, List, Glob…) → `READ_CONTENT` (legible light gray)
-/// - Mutating tools (Bash, Write, Edit…)        → `WRITE_CONTENT` (dim, less important)
-fn render_tool_result(lines: &mut Vec<Line<'static>>, msg: &Message, tool_name: &str) {
+/// Render a tool result as the live TUI does ([`tool_output_view`]): a read
+/// as its summary line, other output folded at its first lines, the rest
+/// in the full view.
+fn render_tool_result(lines: &mut Out, msg: &Message, tool_name: &str, args: &str) {
     let content = msg.content.as_deref().unwrap_or("");
-
-    let total_lines = content.lines().count();
-
-    let content_style =
-        match ToolCatalog::default_static().classify_call(tool_name, &serde_json::Value::Null) {
-            ToolEffect::ReadOnly => READ_CONTENT,
-            _ => WRITE_CONTENT,
-        };
-
-    if total_lines == 0 {
+    if content.trim().is_empty() {
         lines.push(Line::from(vec![
             Span::styled("  \u{2514} ", TOOL_PREFIX),
             Span::styled("(empty)", DIM),
         ]));
         return;
     }
+    let file_ext = crate::tui_render::extract_file_extension(args);
+    let grep_pattern = (tool_name == "Grep")
+        .then(|| serde_json::from_str::<serde_json::Value>(args).ok())
+        .flatten()
+        .and_then(|v| v["pattern"].as_str().map(str::to_string));
+    lines.0.extend(tool_output_view(
+        tool_name,
+        content,
+        looks_failed(content),
+        file_ext.as_deref(),
+        grep_pattern.as_deref(),
+    ));
+}
 
-    if total_lines <= TOOL_OUTPUT_PREVIEW_LINES {
-        // Short output — show in full
-        for line in content.lines() {
-            lines.push(Line::from(vec![
-                Span::styled("  \u{2502} ", TOOL_PREFIX),
-                Span::styled(line.to_string(), content_style),
-            ]));
-        }
-    } else {
-        // Long output — show preview + count
-        for line in content.lines().take(TOOL_OUTPUT_PREVIEW_LINES) {
-            lines.push(Line::from(vec![
-                Span::styled("  \u{2502} ", TOOL_PREFIX),
-                Span::styled(line.to_string(), content_style),
-            ]));
-        }
-        let hidden = total_lines - TOOL_OUTPUT_PREVIEW_LINES;
-        lines.push(Line::from(vec![
-            Span::styled("  \u{2514} ", TOOL_PREFIX),
-            Span::styled(format!("... {hidden} more line(s)"), DIM),
-        ]));
-    }
+/// Whether a stored result reads as a failure, the only record of the
+/// outcome a resumed session has: a tool error, or a command that exited
+/// non-zero (`Exit code: 1 | …`).
+fn looks_failed(content: &str) -> bool {
+    content.starts_with("Error")
+        || content
+            .strip_prefix("Exit code: ")
+            .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit() && c != '-').next())
+            .is_some_and(|code| code != "0")
 }
 
 /// Render persisted sub-agent activity events as an indented block
@@ -359,7 +383,7 @@ fn render_tool_result(lines: &mut Vec<Line<'static>>, msg: &Message, tool_name: 
 /// agent name from the spawn arguments. The activity block itself is
 /// the visual win — distinguishing parent from sub-agent work —
 /// and that doesn't depend on knowing the name.
-fn render_sub_agent_activity(lines: &mut Vec<Line<'static>>, events: &[&SessionEvent]) {
+fn render_sub_agent_activity(lines: &mut Out, events: &[&SessionEvent]) {
     // Opening frame.
     lines.push(Line::from(vec![
         Span::styled("  \u{2502} ", TOOL_PREFIX),
@@ -474,8 +498,53 @@ mod tests {
             .flat_map(|l| l.spans.iter())
             .map(|s| s.content.as_ref())
             .collect();
-        assert!(all_text.contains("line 0"));
-        assert!(all_text.contains("more line"));
+        // Folded as the live view folds it: the first five lines, then a
+        // marker for the rest.
+        assert!(all_text.contains("line 4"));
+        assert!(!all_text.contains("line 5"), "{all_text}");
+        assert!(all_text.contains("+15 lines"), "{all_text}");
+    }
+
+    /// A resumed session folds a read the way the live view does, and keeps
+    /// the content for Ctrl+O.
+    #[test]
+    fn a_resumed_read_shows_its_summary_and_keeps_the_content() {
+        let call = Message {
+            tool_calls: Some(
+                r#"[{"id":"r1","function_name":"Read","arguments":"{\"file_path\":\"src/lib.rs\"}"}]"#
+                    .into(),
+            ),
+            ..msg(Role::Assistant, "")
+        };
+        let result = Message {
+            tool_call_id: Some("r1".into()),
+            ..msg(
+                Role::Tool,
+                "     1\tfn a() {}\n     2\tfn b() {}\n     3\tfn c() {}",
+            )
+        };
+        let tagged = render_history_folded(&[call, result]);
+        let text = |want: Fold| -> String {
+            tagged
+                .iter()
+                .filter(|(_, f)| *f != want)
+                .flat_map(|(l, _)| l.spans.iter().map(|s| s.content.to_string()))
+                .collect()
+        };
+        let folded = text(Fold::Full);
+        assert!(folded.contains("3 lines"), "{folded}");
+        assert!(!folded.contains("fn b"), "{folded}");
+        let full = text(Fold::Folded);
+        assert!(full.contains("fn b"), "{full}");
+        assert!(!full.contains("3 lines"), "{full}");
+    }
+
+    #[test]
+    fn a_stored_result_reads_as_failed_by_its_exit_code() {
+        assert!(looks_failed("Exit code: 1 | stdout: 0 lines"));
+        assert!(looks_failed("Error: missing 'command'"));
+        assert!(!looks_failed("Exit code: 0 | stdout: 3 lines"));
+        assert!(!looks_failed("     1\tfn a() {}"));
     }
 
     #[test]

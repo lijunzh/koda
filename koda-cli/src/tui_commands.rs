@@ -170,16 +170,13 @@ pub async fn handle_slash_command(
         }
 
         "/verbose" => {
-            renderer.verbose = match arg {
+            // The same switch as Ctrl+O: tool output in full, or folded.
+            let full = match arg {
                 Some("on") => true,
                 Some("off") => false,
-                _ => !renderer.verbose,
+                _ => !buffer.is_full(),
             };
-            let state = if renderer.verbose { "on" } else { "off" };
-            tui_output::emit_line(
-                buffer,
-                Line::styled(format!("  Verbose tool output: {state}"), CYAN),
-            );
+            buffer.set_full(full);
             SlashAction::Continue
         }
 

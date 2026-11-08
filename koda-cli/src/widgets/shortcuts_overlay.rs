@@ -105,6 +105,10 @@ const SHORTCUTS: &[ShortcutItem] = &[
         verb: "reverse history search",
     },
     ShortcutItem {
+        key: "ctrl+o",
+        verb: "tool output in full",
+    },
+    ShortcutItem {
         key: "pgup/pgdn",
         verb: "scroll history",
     },

@@ -219,6 +219,12 @@ impl TuiContext {
                 // Ctrl+R: reverse history search (closes any open menu first)
                 self.open_history_search();
             }
+            (KeyCode::Char('o'), m) if m.contains(KeyModifiers::CONTROL) => {
+                // Ctrl+O: tool output in full, or folded again, as in
+                // Claude Code. Works mid-turn too: it's only a redraw.
+                let full = !self.scroll_buffer.is_full();
+                self.scroll_buffer.set_full(full);
+            }
             // `?` on an empty composer toggles the keybinding overlay
             // (#1194 / #1195). When the composer has any text, the `_`
             // arm below routes the `?` through the normal plain-char
@@ -463,8 +469,7 @@ impl TuiContext {
                     if sel.anchor != sel.cursor {
                         let lines: Vec<Line<'_>> =
                             self.scroll_buffer.all_lines().cloned().collect();
-                        let gutter_ws: Vec<u16> =
-                            self.scroll_buffer.gutter_widths().iter().copied().collect();
+                        let gutter_ws: Vec<u16> = self.scroll_buffer.gutter_widths().collect();
                         let (all_rows, all_gutters) =
                             crate::mouse_select::build_all_visual_rows(&lines, &gutter_ws, w);
                         let text = crate::mouse_select::extract_selected_text(

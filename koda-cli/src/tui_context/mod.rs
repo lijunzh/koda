@@ -491,7 +491,7 @@ impl TuiContext {
                         tool_calls,
                         total_tokens,
                     );
-                    let lines = crate::history_render::render_history_messages(&msgs);
+                    let lines = crate::history_render::render_history_folded(&msgs);
                     (lines, oldest_id, interrupted, banner)
                 }
                 _ => (Vec::new(), None, None, Vec::new()),
@@ -511,7 +511,7 @@ impl TuiContext {
                 let mut buf = ScrollBuffer::new(2500);
                 buf.push_lines(startup_lines);
                 if !history_lines.is_empty() {
-                    buf.push_lines(history_lines);
+                    buf.push_folded_lines(history_lines);
                 }
                 if let Some(id) = oldest_msg_id {
                     buf.set_oldest_message_id(id);

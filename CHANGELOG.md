@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Tool output is folded, and `Ctrl+O` shows it all.** A file Koda read used to fill the screen in the same colour as its reply, so the reply was hard to find. A read now shows as one line, such as `└ 123 lines` or `└ lines 40–80 of 1,340`. Other output shows its first five lines and `… +N lines (ctrl+o to show all)`, plus the last five when the call failed, where 50 lines came through whole before. Edits and writes still show their diff. `Ctrl+O` switches to the full view and back, at once and mid-turn too, for everything already on screen, a resumed session included, as Claude Code's does. `/verbose` is the same switch. Output takes its tool's colour on every path, so a command's output no longer changes colour depending on whether it streamed. Codex, Claude Code and Qwen Code don't show read content at all and fold the rest at three to five lines.
+
 ### Fixed
 
 - **A sandboxed command can reach a dev server Koda started.** The sandbox let commands out only through Koda's proxy, so after `python3 -m http.server 8765` in the background, `curl localhost:8765` failed with "Operation not permitted" and every request needed approval to run outside the sandbox. On macOS a command may now connect to the `localhost` ports a background command's process group listens on, found with `lsof` before each Bash call; every other local port stays closed. Background commands now run in their own process group, so stopping one stops what it started too (`npm run dev` and its server). Linux is unchanged: each command has its own network namespace there.
