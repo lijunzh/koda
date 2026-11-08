@@ -275,3 +275,29 @@ fn test_cli_refuses_effort_a_claude_model_does_not_take() {
     let stderr = String::from_utf8_lossy(&budget.stderr);
     assert!(stderr.contains("takes no --thinking-budget"), "{stderr}");
 }
+
+/// `--resume` with an id no session has stops at startup. It used to run a
+/// session that didn't exist: the prompt couldn't be saved, and the model
+/// was sent no messages (Anthropic answered 400, which read like a key
+/// problem). Nothing listens on the base URL, so a model call would fail
+/// differently.
+#[test]
+fn resume_with_an_unknown_id_stops_before_running() {
+    let home = tempfile::tempdir().unwrap();
+    let output = Command::new(koda_bin())
+        .args(["--resume", "28545", "-p", "hi"])
+        .args([
+            "--provider",
+            "lmstudio",
+            "--base-url",
+            "http://127.0.0.1:9/v1",
+        ])
+        .args(["--model", "stub-model"])
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path().join(".config"))
+        .output()
+        .expect("failed to run koda");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("no session matches '28545'"), "{stderr}");
+}

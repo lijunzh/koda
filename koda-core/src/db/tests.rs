@@ -2334,3 +2334,28 @@ async fn ctx_cache_delete_session_invalidates_only_target() {
     // s2 still works.
     assert_eq!(db.load_context(&s2).await.unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn resume_ids_resolve_whole_or_by_a_unique_prefix() {
+    let (db, _tmp) = setup().await;
+    let root = std::path::Path::new("/tmp/p");
+    let a = db.create_session("default", root).await.unwrap();
+    let b = db.create_session("default", root).await.unwrap();
+    assert_eq!(db.resolve_session_id(&a).await.unwrap(), a);
+    assert_eq!(db.resolve_session_id(&format!("  {a} ")).await.unwrap(), a);
+    // A prefix only one id starts with. UUIDs differ within a few characters.
+    let short = (1..a.len())
+        .map(|n| &a[..n])
+        .find(|p| !b.starts_with(p))
+        .unwrap();
+    assert_eq!(db.resolve_session_id(short).await.unwrap(), a);
+    // A pid or a typo isn't a session: say so instead of running without one.
+    let err = db
+        .resolve_session_id("28545")
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("no session matches '28545'"), "{err}");
+    assert!(db.resolve_session_id("").await.is_err());
+    assert!(db.resolve_session_id("%").await.is_err());
+}
