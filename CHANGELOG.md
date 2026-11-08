@@ -20,6 +20,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Known gaps
 
 - Gemini works, with known limits: it compacts early, and in eval runs it read code without ever editing it. See #1473, which asks for help.
+- A sandboxed Bash command can't connect to a server on localhost, such as a dev server Koda started: the sandbox lets commands out only through Koda's egress proxy. The model can ask to run the request outside the sandbox, and you approve each one.
+- `--model` takes a full model id, not an alias: `koda --model claude-haiku` gets a 404 from the API, while `--model claude-haiku-5-5` works, and `/model` resolves the alias.
 
 ### Added
 
