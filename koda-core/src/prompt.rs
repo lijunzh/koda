@@ -24,10 +24,12 @@ use std::path::Path;
 use crate::skills::SkillRegistry;
 
 /// Most characters of memory a request carries, global and project
-/// together: about 4K tokens, an eighth of a 32K window. Memory is paid on
-/// every model call, and Codex (32 KiB) and Code Puppy (10,000 characters)
-/// both cap theirs. The full text stays on disk and `MemoryRead` returns it.
-const MEMORY_MAX_CHARS: usize = 16_000;
+/// together: about 8K tokens. Memory is paid on every model call, so it is
+/// capped, at Codex's 32 KiB (`project_doc_max_bytes`); Claude Code has no
+/// hard cap. At 16,000 a 28K `AGENTS.md` lost its last six sections, Git
+/// rules included, where both peers would send it whole. The full text stays
+/// on disk and `MemoryRead` returns it.
+const MEMORY_MAX_CHARS: usize = 32_768;
 
 /// Runtime environment context injected into the system prompt.
 pub struct EnvironmentInfo<'a> {
@@ -379,6 +381,14 @@ mod tests {
     #[test]
     fn test_memory_under_the_cap_is_untouched() {
         let memory = "x".repeat(MEMORY_MAX_CHARS);
+        assert_eq!(cap_memory(&memory), memory);
+    }
+
+    #[test]
+    fn test_memory_the_size_codex_sends_whole_is_untouched() {
+        // A 28K AGENTS.md lost its last six sections at the old 16,000 cap;
+        // Codex sends up to 32 KiB of it.
+        let memory = "x".repeat(32 * 1024);
         assert_eq!(cap_memory(&memory), memory);
     }
 
