@@ -87,7 +87,17 @@ pub fn definitions() -> Vec<ToolDefinition> {
             Set background=true for long-running processes (dev servers, watchers) \
             — returns immediately with the PID and a log file holding the output. \
             Run a command whose result you need, such as tests, in the foreground \
-            with a longer timeout instead."
+            with a longer timeout instead. \
+            Commands run in a sandbox: they write only inside the project, /tmp and \
+            cache folders, can't read ~/.ssh or other credential folders, and reach \
+            the network only through a proxy that allows GitHub and the main package \
+            registries over HTTP(S). ssh, git over SSH, other hosts and the local \
+            network are unreachable. When a command the user needs fails because of \
+            the sandbox (\"Operation not permitted\", or no connection to a host the \
+            proxy doesn't allow, such as a git push over SSH), run it again at once \
+            with outside_sandbox=true and a reason; the user is asked to approve that \
+            one command. Don't ask in a message first, and don't use it for anything \
+            the sandbox allows."
             .to_string(),
         parameters: json!({
             "type": "object",
@@ -105,6 +115,18 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "description": "Run in background and return immediately with PID (default: false). \
                         Use for dev servers, file watchers, and other long-running processes. \
                         Its stdout and stderr go to a log file named in the result."
+                },
+                "outside_sandbox": {
+                    "type": "boolean",
+                    "description": "Run this one command outside the sandbox (default: false). \
+                        The user must approve it, every time and in every mode. Only for a \
+                        command the user needs that the sandbox blocks."
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "With outside_sandbox: what the command does and why it needs \
+                        to leave the sandbox, shown to the user when they approve it, e.g. \
+                        \"Push the commit to origin over SSH, which the sandbox blocks\"."
                 }
             },
             "required": ["command"]
@@ -153,9 +175,10 @@ pub async fn run_shell_command(
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Missing 'command' argument"))?;
     let background = args["background"].as_bool().unwrap_or(false);
+    let outside_sandbox = wants_outside_sandbox(args);
 
     tracing::info!(
-        "Running shell command (background={background}): [{} chars]",
+        "Running shell command (background={background}, outside_sandbox={outside_sandbox}): [{} chars]",
         command.len()
     );
 
@@ -166,8 +189,14 @@ pub async fn run_shell_command(
             bg,
             trust,
             policy,
-            proxy_port,
-            socks5_port,
+            if outside_sandbox {
+                Egress::Unsandboxed
+            } else {
+                Egress::Sandboxed {
+                    proxy_port,
+                    socks5_port,
+                }
+            },
             caller_spawner,
         )?;
         if args.get("timeout").is_some_and(|t| !t.is_null()) {
@@ -202,13 +231,19 @@ pub async fn run_shell_command(
     // sub-agent dispatch; defaults to `strict_default()` for the main
     // agent). PR-3 will start populating the policy with non-default
     // values via [`crate::sandbox::policy_for_agent`].
-    let mut cmd = crate::sandbox::build(
+    let mut cmd = command_for(
         command,
         project_root,
         trust,
         policy,
-        proxy_port,
-        socks5_port,
+        if outside_sandbox {
+            Egress::Unsandboxed
+        } else {
+            Egress::Sandboxed {
+                proxy_port,
+                socks5_port,
+            }
+        },
     )?;
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -260,7 +295,11 @@ pub async fn run_shell_command(
             // into structured violations and append a CC-style block.
             // Always-on (informational only — doesn't change exit codes or
             // change which lines we already collected).
-            annotate_violations(exit_code, command, &mut stderr_lines);
+            // A command run outside the sandbox can't hit a sandbox denial;
+            // an "Operation not permitted" there is the OS's own.
+            if !outside_sandbox {
+                annotate_violations(exit_code, command, &mut stderr_lines);
+            }
 
             let summary = format_summary(exit_code, &stdout_lines, &stderr_lines, uncaptured);
             // Phase 5 PR-8 of #934: thread the policy-supplied output cap
@@ -410,6 +449,55 @@ fn background_log() -> Result<(std::path::PathBuf, std::fs::File)> {
     Ok((path, file))
 }
 
+/// Whether a Bash call asks to run outside the sandbox. The user approves
+/// each such call: [`BashTool::classify`] makes it `Destructive`, which asks
+/// in every mode and is refused where no one can answer (sub-agents, Plan,
+/// headless).
+pub(crate) fn wants_outside_sandbox(args: &Value) -> bool {
+    args.get("outside_sandbox")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// Where a command's network traffic may go.
+#[derive(Clone, Copy)]
+enum Egress {
+    /// The kernel sandbox, with the session's egress proxies when it has them.
+    Sandboxed {
+        proxy_port: Option<u16>,
+        socks5_port: Option<u16>,
+    },
+    /// No sandbox and no proxy: a call the user approved with `outside_sandbox`.
+    Unsandboxed,
+}
+
+fn command_for(
+    command: &str,
+    project_root: &Path,
+    trust: &crate::trust::TrustMode,
+    policy: &koda_sandbox::SandboxPolicy,
+    egress: Egress,
+) -> Result<tokio::process::Command> {
+    match egress {
+        Egress::Sandboxed {
+            proxy_port,
+            socks5_port,
+        } => crate::sandbox::build(
+            command,
+            project_root,
+            trust,
+            policy,
+            proxy_port,
+            socks5_port,
+        ),
+        Egress::Unsandboxed => Ok(crate::sandbox::build_unsandboxed(
+            command,
+            project_root,
+            policy,
+        )),
+    }
+}
+
 /// Spawn a command in the background and register it.
 ///
 /// Returns immediately with PID, log file and instructions. Sync because
@@ -421,8 +509,7 @@ fn spawn_background(
     bg: &BgRegistry,
     trust: &crate::trust::TrustMode,
     policy: &koda_sandbox::SandboxPolicy,
-    proxy_port: Option<u16>,
-    socks5_port: Option<u16>,
+    egress: Egress,
     caller_spawner: Option<u32>,
 ) -> Result<String> {
     // Spawn via sandbox wrapper (enforced for all trust modes).
@@ -434,19 +521,12 @@ fn spawn_background(
     let stderr_log = log
         .try_clone()
         .map_err(|e| anyhow::anyhow!("Failed to share {}: {e}", log_path.display()))?;
-    let child = crate::sandbox::build(
-        command,
-        project_root,
-        trust,
-        policy,
-        proxy_port,
-        socks5_port,
-    )?
-    .stdin(std::process::Stdio::null())
-    .stdout(log)
-    .stderr(stderr_log)
-    .spawn()
-    .map_err(|e| anyhow::anyhow!("Failed to spawn background command: {e}"))?;
+    let child = command_for(command, project_root, trust, policy, egress)?
+        .stdin(std::process::Stdio::null())
+        .stdout(log)
+        .stderr(stderr_log)
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to spawn background command: {e}"))?;
 
     let pid = child
         .id()
@@ -726,8 +806,16 @@ pub(crate) fn annotate_violations(exit_code: i32, command: &str, stderr_lines: &
         for line in block.lines() {
             stderr_lines.push(line.to_string());
         }
+        stderr_lines.push(OUTSIDE_SANDBOX_HINT.to_string());
     }
 }
+
+/// Follows a sandbox denial, so the model knows the way out and that the
+/// user decides, rather than guessing at the cause (it once took a blocked
+/// `nc` to mean the user was off their home network).
+const OUTSIDE_SANDBOX_HINT: &str = "Koda's sandbox blocked this command. If the user \
+     needs it, run it again with outside_sandbox=true and a reason; they'll be asked \
+     to approve it.";
 
 // =============================================================
 // Tool trait implementation (#1265 item 5, PR-6/N).
@@ -769,6 +857,12 @@ impl Tool for BashTool {
     /// the args are malformed (defensive: better to over-gate than
     /// to under-gate when we can't read the command).
     fn classify(&self, args: &serde_json::Value) -> ToolEffect {
+        // Leaving the sandbox needs the user's yes whatever the command
+        // does: `Destructive` asks in Auto too, and is refused where no one
+        // can answer.
+        if wants_outside_sandbox(args) {
+            return ToolEffect::Destructive;
+        }
         match args.get("command").and_then(|v| v.as_str()) {
             Some(cmd) => crate::bash_safety::classify_bash_command(cmd),
             None => ToolEffect::Destructive,
@@ -1661,12 +1755,80 @@ mod tests {
     }
 
     #[test]
+    fn a_sandbox_denial_points_to_outside_sandbox() {
+        let mut stderr =
+            vec!["ssh: connect to host 192.168.10.50 port 2222: Operation not permitted".into()];
+        annotate_violations(128, "git push", &mut stderr);
+        assert!(
+            stderr.iter().any(|l| l.contains("deny network-outbound")),
+            "{stderr:?}"
+        );
+        assert_eq!(
+            stderr.last().map(String::as_str),
+            Some(OUTSIDE_SANDBOX_HINT)
+        );
+    }
+
+    #[test]
     fn annotate_violations_noop_when_no_denial_markers() {
         // Failed command (exit_code != 0) but stderr doesn't look like
         // a sandbox denial → no annotation. E.g. `cargo build` failure.
         let mut stderr = vec!["error[E0277]: trait bound not satisfied".into()];
         annotate_violations(101, "cargo build", &mut stderr);
         assert_eq!(stderr.len(), 1, "no annotation expected: {stderr:?}");
+    }
+
+    /// An approved `outside_sandbox` call runs without the sandbox's proxy,
+    /// so it reaches what the user's own shell would, with the environment
+    /// still scrubbed; the same command in the sandbox gets the proxy
+    /// variables.
+    #[tokio::test]
+    async fn outside_sandbox_runs_without_the_proxy() {
+        use serde_json::json;
+        let project = tempfile::tempdir().unwrap();
+        let run = |outside: bool| {
+            let project = project.path().to_path_buf();
+            async move {
+                run_shell_command(
+                    &project,
+                    &json!({
+                        "command": "echo \"proxy=[$HTTPS_PROXY][$ALL_PROXY] env=[$CARGO_MANIFEST_DIR]\"",
+                        "outside_sandbox": outside,
+                    }),
+                    500,
+                    &bg(),
+                    None,
+                    &crate::trust::TrustMode::Safe,
+                    &koda_sandbox::SandboxPolicy::strict_default(),
+                    Some(31415),
+                    Some(31416),
+                    None,
+                )
+                .await
+                .unwrap()
+                .summary
+            }
+        };
+        let outside = run(true).await;
+        assert!(outside.contains("proxy=[][]"), "{outside}");
+        // The environment scrub still applies outside the sandbox: cargo
+        // sets this for the test process, and it isn't on the allowlist.
+        assert!(outside.contains("env=[]"), "{outside}");
+        let inside = run(false).await;
+        assert!(inside.contains("127.0.0.1:31415"), "{inside}");
+    }
+
+    #[test]
+    fn classify_outside_sandbox_is_destructive() {
+        let tool = BashTool;
+        assert_eq!(
+            tool.classify(&serde_json::json!({"command": "ls", "outside_sandbox": true})),
+            ToolEffect::Destructive
+        );
+        assert_eq!(
+            tool.classify(&serde_json::json!({"command": "ls", "outside_sandbox": false})),
+            ToolEffect::ReadOnly
+        );
     }
 
     /// Phase 1 acceptance criterion of #934: a real sandboxed bash command

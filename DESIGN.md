@@ -1204,6 +1204,24 @@ user-facing mental-model doc).
 - **Kernel-level sandboxing** — always active. macOS uses `sandbox-exec`
   (seatbelt); Linux uses `bwrap` (bubblewrap). Credential directories
   are always protected.
+- **One command can leave the sandbox, with the user's yes.** Inside it,
+  Bash reaches the network only through the egress proxy's allowlist
+  (GitHub and the main package registries over HTTP(S)), so `git push`
+  over SSH, other hosts and the local network fail, and `~/.ssh` can't be
+  read. Before 2026-11-08 the model wasn't told, and had no way out: in a
+  test of the 0.6.0 candidate, Flash-Next took a blocked connection to the
+  user's git server to mean they were off their home network, and never
+  pushed. Bash now says what the sandbox allows, and takes
+  `outside_sandbox: true` with a `reason`. `BashTool::classify` makes such a
+  call `Destructive` whatever the command, so the existing matrix gives the
+  right answer with no new rule: Safe and Auto ask, showing the reason;
+  Plan, sub-agents and headless refuse. It runs with no kernel profile and
+  no proxy, keeping the environment scrub and resource limits, plus
+  `SSH_AUTH_SOCK` for keys held by an agent. A sandbox denial in the output
+  points to it. This is the peers' shape: Codex's `require_escalated` with a
+  `justification`, Claude Code's `dangerouslyDisableSandbox`, each approved
+  by the user. Unlike them there is no setting to pre-approve commands; each
+  call asks.
 - **A Bash command is ReadOnly only when proven** (`bash_safety.rs`).
   ReadOnly auto-approves in every mode, so it fails closed: the command
   must be plain words and quoted strings joined only by `&&`, `||`, `;` and
@@ -1230,7 +1248,7 @@ user-facing mental-model doc).
 1. Destructive detection in shell commands is heuristic — complex syntax can
    hide a destructive command (it still needs approval as LocalMutation in
    Safe mode, but Auto mode approves it)
-2. Network is unrestricted in all modes (required for `cargo fetch`, `npm install`)
+2. Inside the sandbox the network is the proxy's allowlist, which covers `cargo fetch` and `npm install`; anything else needs an approved `outside_sandbox` call, which runs with the user's full network
 3. If the sandbox backend is unavailable (e.g. no bwrap on Linux), `Auto`
    refuses to start or resume; `Safe`/`Plan` may still run with warnings and
    human approval floors

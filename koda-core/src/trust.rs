@@ -1157,6 +1157,42 @@ mod tests {
         );
     }
 
+    /// Leaving the sandbox needs the user's yes whatever the command does:
+    /// asked in Safe and Auto, refused in Plan and in sub-agents, where no
+    /// one can answer.
+    #[test]
+    fn test_bash_outside_sandbox_always_needs_the_user() {
+        let args = serde_json::json!({
+            "command": "git ls-remote origin",
+            "outside_sandbox": true,
+            "reason": "List the remote's branches over SSH",
+        });
+        for mode in [TrustMode::Safe, TrustMode::Auto] {
+            assert_eq!(
+                check_tool("Bash", &args, mode, None),
+                ToolApproval::NeedsConfirmation,
+                "{mode:?}"
+            );
+        }
+        assert_eq!(
+            check_tool("Bash", &args, TrustMode::Plan, None),
+            ToolApproval::Blocked
+        );
+        for mode in [TrustMode::Safe, TrustMode::Auto] {
+            assert_eq!(
+                check_tool_for_sub_agent("Bash", &args, mode, None),
+                ToolApproval::Blocked,
+                "{mode:?}"
+            );
+        }
+        // The same command in the sandbox is read-only and runs freely.
+        let sandboxed = serde_json::json!({"command": "git ls-remote origin"});
+        assert_eq!(
+            check_tool("Bash", &sandboxed, TrustMode::Auto, None),
+            ToolApproval::AutoApprove
+        );
+    }
+
     #[test]
     fn test_safe_bash_read_only_auto_approved() {
         let args = serde_json::json!({"command": "git status"});

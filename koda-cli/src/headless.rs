@@ -319,9 +319,20 @@ impl HeadlessSink {
                 id,
                 effect,
                 tool_name,
+                detail,
                 ..
             } => {
-                let decision = if *effect == koda_core::tools::ToolEffect::Destructive {
+                let decision = if *effect == koda_core::tools::ToolEffect::Destructive
+                    && detail.starts_with(koda_core::tools::OUTSIDE_SANDBOX_TAG)
+                {
+                    ApprovalDecision::RejectAuto {
+                        reason: format!(
+                            "running '{tool_name}' outside the sandbox auto-rejected (headless \
+                             mode has no human to approve it). Do without it, or tell the \
+                             operator which command to run themselves."
+                        ),
+                    }
+                } else if *effect == koda_core::tools::ToolEffect::Destructive {
                     // #1022 B15: use `RejectAuto` so the model can
                     // distinguish a structural headless-policy block
                     // from a real human "no". Pre-fix it saw `"User
