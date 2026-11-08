@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **A message that can't be saved isn't sent.** If saving your message failed, the TUI only logged it and started the turn, which reads the conversation back from the database, so the model was sent nothing and the API's error read like a key problem. It now says the message couldn't be saved and puts it back in the input box.
 - **`--resume` with an unknown id stops at startup.** Koda ran a session that didn't exist: nothing typed could be saved, and the model was sent no messages, which Anthropic answers with a 400 that reads like a key problem. A mistyped id, or one copied from the wrong line, now stops Koda with "no session matches", and a unique prefix of an id (the short ids `/sessions` shows) resumes that session.
 - **A chained check on a background process doesn't ask.** Models check a server they started with `kill -0 PID && echo alive`; Koda handled only a bare `kill -0 PID`, so the chained form ran as a destructive `kill`, asked in Auto, and was refused by the sandbox. Koda now runs it too, with `&& echo` and `|| echo` of literal text printed as the shell would.
 - **Bash tells the model to find processes with `pgrep`.** On macOS `ps` can't run in the sandbox (macOS won't run a setuid program under `sandbox-exec`), so a model checking on a process got "Operation not permitted". The Bash description now says so on macOS; `pgrep -fl` works.
