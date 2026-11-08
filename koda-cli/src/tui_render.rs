@@ -464,6 +464,49 @@ fn read_summary(output: &str) -> Option<String> {
     })
 }
 
+/// Split a `Read` line, `{n:>6}\t{content}`, into its number and content.
+fn split_numbered(line: &str) -> Option<(usize, &str)> {
+    let (number, content) = line.split_once('\t')?;
+    Some((number.trim_start().parse().ok()?, content))
+}
+
+/// A read's content for the full view, laid out as Qwen Code, Claude Code and
+/// Codex lay out numbered code: the number right-aligned to the widest one
+/// and dim, two spaces, then the content highlighted on its own. Handing the
+/// highlighter the whole `     1\t# Title` line hid the `#` a markdown
+/// heading needs at the start, and a tab draws as nothing, so the number ran
+/// into the text. Tabs in the content become four spaces. A line that isn't
+/// numbered, the tool's own note when it stopped early, stays dim.
+fn numbered_read_lines(
+    output: &str,
+    mut highlighter: Option<&mut crate::highlight::CodeHighlighter>,
+    body: Style,
+) -> Vec<Line<'static>> {
+    let width = output
+        .lines()
+        .filter_map(|l| split_numbered(l).map(|(n, _)| n.to_string().len()))
+        .max()
+        .unwrap_or(1);
+    output
+        .lines()
+        .map(|line| {
+            let mut spans = vec![Span::styled("  \u{2502} ", DIM)];
+            match split_numbered(line) {
+                Some((number, content)) => {
+                    spans.push(Span::styled(format!("{number:>width$}  "), DIM));
+                    let content = content.replace('\t', "    ");
+                    match highlighter.as_deref_mut() {
+                        Some(h) => spans.extend(h.highlight_spans(&content)),
+                        None => spans.push(Span::styled(content, body)),
+                    }
+                }
+                None => spans.push(Span::styled(line.to_string(), DIM)),
+            }
+            Line::from(spans)
+        })
+        .collect()
+}
+
 /// A finished tool result as the TUI shows it, each line tagged with the
 /// view it belongs to. The live renderer pushes these into the buffer and
 /// `history_render` returns them for a resumed session, so both look alike
@@ -507,6 +550,24 @@ pub(crate) fn tool_output_view(
         None
     };
     let body = theme::content_style_for(name, false);
+
+    if name == "Read"
+        && let Some(summary) = read_summary(output)
+    {
+        let mut lines = vec![(
+            Line::from(vec![
+                Span::styled("  \u{2514} ", TOOL_PREFIX),
+                Span::styled(summary, DIM),
+            ]),
+            Fold::Folded,
+        )];
+        lines.extend(
+            numbered_read_lines(output, highlighter.as_mut(), body)
+                .into_iter()
+                .map(|l| (l, Fold::Full)),
+        );
+        return lines;
+    }
 
     let mut render_line = |line: &str| -> Line<'static> {
         if name == "Grep" {
@@ -566,20 +627,6 @@ pub(crate) fn tool_output_view(
                 lines
             }
         };
-    }
-
-    if name == "Read"
-        && let Some(summary) = read_summary(output)
-    {
-        let mut lines = vec![(
-            Line::from(vec![
-                Span::styled("  \u{2514} ", TOOL_PREFIX),
-                Span::styled(summary, DIM),
-            ]),
-            Fold::Folded,
-        )];
-        lines.extend(output.lines().map(|l| (render_line(l), Fold::Full)));
-        return lines;
     }
 
     let rendered: Vec<Line<'static>> = output.lines().map(&mut render_line).collect();
@@ -652,6 +699,45 @@ mod tests {
         let full = view_text(&view, Fold::Folded);
         assert_eq!(full.len(), 3);
         assert!(full[1].contains("fn b"), "{full:?}");
+    }
+
+    /// The full view lays a read out as peers lay out code: numbers
+    /// right-aligned in their own dim column, two spaces, then the content,
+    /// highlighted on its own so a markdown heading is seen as one.
+    #[test]
+    fn a_read_shows_numbers_in_a_column_and_highlights_the_content() {
+        let out = "     9\t# Title\n    10\tplain words\n    11\t\tindented\n\n... [Showing lines 9-11 of 40. Continue with start_line=12.]";
+        let view = tool_output_view("Read", out, false, Some("md"), None);
+        let full: Vec<&Line<'static>> = view
+            .iter()
+            .filter(|(_, f)| *f == Fold::Full)
+            .map(|(l, _)| l)
+            .collect();
+        let text =
+            |l: &Line<'_>| -> String { l.spans.iter().map(|s| s.content.as_ref()).collect() };
+        assert_eq!(text(full[0]), "  \u{2502}  9  # Title");
+        assert_eq!(text(full[1]), "  \u{2502} 10  plain words");
+        assert_eq!(text(full[2]), "  \u{2502} 11      indented");
+        // The number has a span of its own, dim.
+        assert_eq!(full[0].spans[1].content, " 9  ");
+        assert_eq!(full[0].spans[1].style, DIM);
+        // The heading is highlighted as one: not the colour of plain text.
+        if theme::syntax_highlight_enabled() {
+            let heading = full[0].spans[2].style.fg;
+            let plain = full[1].spans[2].style.fg;
+            assert!(
+                heading.is_some() && heading != plain,
+                "{heading:?} vs {plain:?}"
+            );
+        }
+        // The tool's note isn't numbered: dim, as it is.
+        let note = full.last().unwrap();
+        assert!(
+            text(note).contains("[Showing lines 9-11 of 40"),
+            "{}",
+            text(note)
+        );
+        assert_eq!(note.spans[1].style, DIM);
     }
 
     #[test]
