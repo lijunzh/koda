@@ -88,6 +88,15 @@ const LOCALHOST: (&str, &str, &str) = if cfg!(target_os = "macos") {
     ("", "", "localhost")
 };
 
+/// macOS won't run a setuid program under `sandbox-exec`, and `ps` is one, so
+/// it fails with "Operation not permitted"; `pgrep` works. Linux's sandbox
+/// runs `ps`.
+const FIND_PROCESSES: &str = if cfg!(target_os = "macos") {
+    " ps can't run in the sandbox; find processes with pgrep -fl <pattern>."
+} else {
+    ""
+};
+
 /// Return tool definitions for the LLM.
 pub fn definitions() -> Vec<ToolDefinition> {
     vec![ToolDefinition {
@@ -108,7 +117,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
             cache folders, can't read ~/.ssh or other credential folders, and reach \
             the network only through a proxy that allows GitHub and the main package \
             registries over HTTP(S){own_ports}. ssh, git over SSH, other hosts, the local \
-            network and {other_localhost} are unreachable. When a command the user \
+            network and {other_localhost} are unreachable.{find_processes} When a command the user \
             needs fails because of \
             the sandbox (\"Operation not permitted\", or no connection to a host the \
             proxy doesn't allow, such as a git push over SSH), run it again at once \
@@ -118,6 +127,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
             bg_localhost = LOCALHOST.0,
             own_ports = LOCALHOST.1,
             other_localhost = LOCALHOST.2,
+            find_processes = FIND_PROCESSES,
         ),
         parameters: json!({
             "type": "object",
@@ -2217,6 +2227,14 @@ mod tests {
             );
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_description_says_to_find_processes_with_pgrep() {
+        let d = &definitions()[0].description;
+        assert!(d.contains("ps can't run in the sandbox"), "{d}");
+        assert!(d.contains("pgrep -fl"), "{d}");
     }
 
     #[test]
