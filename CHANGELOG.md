@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-08
+
 ### Breaking
 
 - **`koda_core::prompt::build_system_prompt` no longer takes memory.** Pass memory to `InferenceContext::project_memory` instead, or wrap it with `prompt::project_memory_context`.
@@ -18,6 +20,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Known gaps
 
 - Gemini works, with known limits: it compacts early, and in eval runs it read code without ever editing it. See #1473, which asks for help.
+- A sandboxed Bash command can't connect to a server on localhost, such as a dev server Koda started: the sandbox lets commands out only through Koda's egress proxy. The model can ask to run the request outside the sandbox, and you approve each one.
+- `--model` takes a full model id, not an alias: `koda --model claude-haiku` gets a 404 from the API, while `--model claude-haiku-5-5` works, and `/model` resolves the alias.
 
 ### Added
 
@@ -51,7 +55,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **`Esc` at a dialog stops the turn.** At an approval, a question or the feedback prompt it used to answer the dialog and let the model carry on. To do that now, press `n` to reject, `f` to say why, or `Enter` with no answer to skip a question.
 - **Edit takes `old_str` and `new_str` directly, one change per call.** Its `replacements` list is gone. Haiku, Sonnet and Laguna often sent that list as a broken string, which failed 32%, 29% and 41% of their Edit calls in saved runs. Several Edits to one file run in order, so one response can still make several changes, though they no longer apply as a single all-or-nothing step. A call in the old shape is refused with a message saying what to send.
 - **The Anthropic provider caches the conversation, not only the system prompt and tools.** The last content block of the last message now carries a cache breakpoint, so the next request reads the conversation so far from the prompt cache instead of paying full input price for it. The request uses three of Anthropic's four breakpoints. Compaction rewrites the history and costs one cache miss each time.
-- **The system prompt is smaller.** Rules that appeared twice now appear once, and headless runs, ACP and sub-agents no longer carry a TUI quick reference they can't use. `CLAUDE.md` went from 29K to 10K characters, with the rest in the development reference.
+- **The system prompt is smaller.** Rules that appeared twice now appear once, and headless runs and sub-agents no longer carry a TUI quick reference they can't use. Koda's own `AGENTS.md` (`CLAUDE.md` at the time) went from 29K to 10K characters, with the rest in the development reference.
 - **Memory is capped at 32,768 characters a request,** as Codex caps `AGENTS.md` at 32 KiB. Past that it is cut with a note telling the model to use `MemoryRead`, which still returns everything, and to ask you to trim the file.
 - **Memory files are no longer called "learned facts".** The prompt treats them as the project's instructions and tips; where they go and how they rank is under "Project memory moved out of the system prompt", below.
 - **The prompt tells the model not to re-read a file just to check an edit.** On Haiku such reads were 9% of Read output in eval runs.
@@ -96,7 +100,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **A command can't outlive its timeout by closing its output.** Bash and Cargo timed only the reading of output, so a command that closed stdout and stderr could hold a turn for as long as it ran.
 - **Glob respects `.gitignore`, as its description says.** Ignored files no longer take up result slots, and `.git` is skipped. To search an ignored directory, name it in the pattern or `file_path`.
 - **Several changes to one file in one response all land.** In Auto mode, two auto-approved calls to the same file ran at the same time, so each could read the original and one change was silently lost while both reported success. Such a batch now runs one call at a time, in the order the model gave.
-- **A cancelled turn always closes.** Something that doesn't listen for the cancel, like a running Bash command, could hold a turn past it, and on SIGINT headless gave up after five seconds and reported `success: true` with no `turn_end`. A turn that hasn't stopped five seconds after its cancel is now dropped inside the engine, so it still sends `turn_summary` and `turn_end`, keeps what it used and commits its undo snapshots. `run_summary` says `success: false` and the run exits 1. The TUI and ACP get the same limit, and the TUI shows the failed turn.
+- **A cancelled turn always closes.** Something that doesn't listen for the cancel, like a running Bash command, could hold a turn past it, and on SIGINT headless gave up after five seconds and reported `success: true` with no `turn_end`. A turn that hasn't stopped five seconds after its cancel is now dropped inside the engine, so it still sends `turn_summary` and `turn_end`, keeps what it used. `run_summary` says `success: false` and the run exits 1. The TUI gets the same limit and shows the failed turn.
 - **A sub-agent's Bash works in a Linux git worktree.** Its sandbox policy made `.git/hooks` and `.git/config` read-only, but in a worktree `.git` is a file, so those paths don't exist and `bwrap` couldn't start. Every Bash call from a write-capable sub-agent failed.
 - **A sub-agent in a worktree can't write the git metadata Koda later trusts.** The main repo's config and hooks are shared with a worktree, and a repo under `/tmp`, `/var/tmp` or a cache directory is writable in the sandbox. A sub-agent could change them, and Koda then ran git there outside the sandbox when it released the workspace. Policy now also denies writes to the `.git` pointer, the shared config and hooks, and the worktree's own `commondir`, `gitdir` and `config.worktree`. That last file is created empty first, since a new worktree has none and git would read one a sub-agent added.
 - **Koda's git commands in a sub-agent's workspace run no hooks or fsmonitor.** They run outside the sandbox on a tree the sub-agent wrote, and a relative `core.hooksPath`, like this repo's `.githooks`, finds hooks inside it. `--no-verify` doesn't stop `prepare-commit-msg` or `post-commit`. As a result, a project's hooks, `post-checkout` included, no longer run in a sub-agent's worktree.
