@@ -152,7 +152,8 @@ Removed on 2026-11-06. It only ran while Koda was idle, when no
 sub-agent exists, so `/cancel agent:N` could never reach one. Press
 `Esc` or `Ctrl+C` to stop everything running, including background
 shell processes. To stop just one background process, ask: "stop the
-dev server".
+dev server". Koda stops a background process it started itself, without
+asking in Auto mode.
 
 ## `/expand [<n>]`
 

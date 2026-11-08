@@ -1085,12 +1085,25 @@ pub(crate) fn execute_sub_agent<'a>(
                         // here. `check_tool_for_sub_agent` resolves it per the
                         // safe-side rule: mutating ops auto-approve (the agent
                         // was invoked to do work), destructive ops block.
-                        let approval = trust::check_tool_for_sub_agent(
+                        let mut approval = trust::check_tool_for_sub_agent(
                             &tc.function_name,
                             &parsed_args,
                             mode,
                             Some(effective_root_ref),
                         );
+                        // A sub-agent may stop the background processes it
+                        // started; `kill` alone would be blocked as destructive.
+                        if approval == ToolApproval::Blocked
+                            && mode != crate::trust::TrustMode::Plan
+                            && tc.function_name == "Bash"
+                            && crate::tools::shell::signals_only_own_background(
+                                &parsed_args,
+                                &tools.bg_registry,
+                                sub_tx.caller_spawner,
+                            )
+                        {
+                            approval = ToolApproval::AutoApprove;
+                        }
 
                         match approval {
                             ToolApproval::AutoApprove => {

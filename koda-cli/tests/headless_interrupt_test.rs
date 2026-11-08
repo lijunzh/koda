@@ -363,37 +363,43 @@ async fn a_sub_agent_whose_model_fails_releases_its_workspace() {
     assert_work_is_on_a_branch(&project, "work.txt");
 }
 
-/// Nothing delivers the cancel to the top-level agent's Bash call, so this is
-/// the limit at work.
+/// The cancel drops the running Bash call, and with it the command's process
+/// group, so the turn ends at once as a clean cancel instead of waiting out
+/// the limit and reporting a failure. (`until_abandoned`'s own test covers
+/// the limit, for a call that can't be dropped.)
 #[tokio::test(flavor = "multi_thread")]
-async fn a_turn_that_ignores_sigint_still_closes() {
+async fn sigint_stops_a_running_command_at_once() {
     let project = Project::new();
     let server = FakeLlmServer::spawn().await;
     server
         .mount_fn("POST", r".*/chat/completions$", |_| {
-            stream_call("Bash", json!({"command": "touch started; sleep 60"}))
+            // 67 s: no other test sleeps that long, so pgrep finds only this.
+            stream_call("Bash", json!({"command": "touch started; sleep 67"}))
         })
         .await;
     let child = project.koda(&server);
     project.wait_for("started").await;
 
     let run = interrupt(child).await;
-    assert!(run.took >= CANCEL_GRACE, "stopped early: {:?}", run.took);
-    assert_eq!(run.one("turn_end")["reason"]["kind"], "cancelled");
+    assert_clean_cancel(&run);
 
     // What finished before the signal still counts.
     let usage = &run.one("turn_summary")["usage"];
     assert_eq!(usage["api_calls"], 1, "{usage}");
     assert_eq!(usage["prompt_tokens"], 100, "{usage}");
 
-    let summary = run.summary();
-    assert_eq!(summary["success"], false, "{summary}");
-    assert_eq!(summary["turn_end"]["kind"], "cancelled", "{summary}");
-    assert!(summary["error"].is_string(), "{summary}");
-    assert_eq!(run.output.status.code(), Some(1), "{}", run.stdout);
-
+    // The command died with the call; it didn't run on unwatched.
+    let left = std::process::Command::new("pgrep")
+        .args(["-f", "sleep 67"])
+        .output()
+        .unwrap();
+    assert!(
+        left.stdout.is_empty(),
+        "still running: {}",
+        String::from_utf8_lossy(&left.stdout)
+    );
     let log = read_log(&project.home());
-    assert!(log.contains(r#"outcome="abandoned""#), "{log}");
+    assert!(!log.contains(r#"outcome="abandoned""#), "{log}");
 }
 
 async fn chat_requests(server: &FakeLlmServer) -> usize {

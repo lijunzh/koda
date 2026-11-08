@@ -461,7 +461,10 @@ pub(crate) async fn execute_tools_parallel(
             validate_then_execute_one_tool(tc, tx)
         })
         .collect();
-    let results = futures_util::future::join_all(futures).await;
+    let names = tool_calls.iter().map(|tc| tc.function_name.as_str());
+    let Some(results) = join_unless_cancelled(names, futures, &ctx.cancel).await else {
+        return record_stopped_calls(tool_calls, ctx).await;
+    };
 
     // Emit banner + result together so each tool's output is visually grouped
     for (i, (tc_id, result, success, full_output)) in results.into_iter().enumerate() {
@@ -521,7 +524,10 @@ pub(crate) async fn execute_tools_split_batch(
                 validate_then_execute_one_tool(tc, tx)
             })
             .collect();
-        let results = futures_util::future::join_all(futures).await;
+        let names = parallel.iter().map(|tc| tc.function_name.as_str());
+        let Some(results) = join_unless_cancelled(names, futures, &ctx.cancel).await else {
+            return record_stopped_calls(tool_calls, ctx).await;
+        };
 
         for (j, (tc_id, result, success, full_output)) in results.into_iter().enumerate() {
             ctx.sink.emit(EngineEvent::ToolCallStart {
@@ -653,13 +659,26 @@ pub(crate) async fn execute_tools_sequential(
         }
 
         // Check approval for this tool call (with file ownership awareness, #465)
-        let approval = trust::check_tool_with_tracker(
+        let mut approval = trust::check_tool_with_tracker(
             &tc.function_name,
             &parsed_args,
             mode,
             Some(project_root),
             Some(file_tracker),
         );
+        // Stopping a background process Koda started is a local mutation,
+        // not the destructive `kill` it reads as: Auto doesn't ask.
+        if mode == TrustMode::Auto
+            && approval == ToolApproval::NeedsConfirmation
+            && tc.function_name == "Bash"
+            && tools::shell::signals_only_own_background(
+                &parsed_args,
+                &tools.bg_registry,
+                tx.caller_spawner,
+            )
+        {
+            approval = ToolApproval::AutoApprove;
+        }
 
         match approval {
             ToolApproval::AutoApprove => {
@@ -755,7 +774,17 @@ pub(crate) async fn execute_tools_sequential(
             }
         }
 
-        let (_, result, success, full_output) = execute_one_tool(tc, tx).await;
+        let (_, result, success, full_output) = if stops_on_cancel(&tc.function_name) {
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => {
+                    return record_stopped_calls(&tool_calls[i..], ctx).await;
+                }
+                outcome = execute_one_tool(tc, tx) => outcome,
+            }
+        } else {
+            execute_one_tool(tc, tx).await
+        };
         record_tool_result(
             tc,
             &result,
@@ -767,6 +796,38 @@ pub(crate) async fn execute_tools_sequential(
         .await?;
     }
     Ok(())
+}
+
+/// Wait for a parallel batch. When every call in it is one a cancel may
+/// drop ([`stops_on_cancel`]), a cancel drops the batch and returns `None`;
+/// a batch with an edit or a sub-agent in it runs to the end.
+async fn join_unless_cancelled<'n, F: std::future::Future>(
+    mut names: impl Iterator<Item = &'n str>,
+    futures: Vec<F>,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Option<Vec<F::Output>> {
+    let all = futures_util::future::join_all(futures);
+    if !names.all(stops_on_cancel) {
+        return Some(all.await);
+    }
+    tokio::select! {
+        biased;
+        () = cancel.cancelled() => None,
+        results = all => Some(results),
+    }
+}
+
+/// Tools a cancel may drop mid-call: they only read, or run a command whose
+/// whole process group dies with the call (Bash and Cargo hold a
+/// `ProcessGroup`). Without this a running command held the turn until the
+/// engine gave up on it after `CANCEL_GRACE` and reported the turn as failed.
+/// File edits and sub-agents are left to finish: an edit is quick, and
+/// dropping one halfway could leave a file half written.
+fn stops_on_cancel(tool: &str) -> bool {
+    matches!(
+        tool,
+        "Bash" | "Cargo" | "WebFetch" | "WebSearch" | "Grep" | "Glob" | "List" | "Read"
+    )
 }
 
 #[cfg(test)]

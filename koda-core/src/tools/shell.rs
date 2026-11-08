@@ -212,6 +212,15 @@ pub async fn run_shell_command(
         });
     }
 
+    // A `kill` of background processes this caller started is Koda's to do:
+    // the sandbox can't signal a process an earlier Bash call started.
+    if !outside_sandbox
+        && let Some(kill) = plain_kill(command)
+        && let Some(done) = signal_own_background(bg, &kill, caller_spawner)
+    {
+        return Ok(done);
+    }
+
     // Phase 5 PR-3 of #934: timeout precedence is
     //   1. explicit `timeout` arg (model-supplied per-call)
     //   2. `policy.limits.wall_time_secs` (per-agent default)
@@ -540,9 +549,132 @@ fn spawn_background(
          Output:  {log} (stdout and stderr; read it with Read, or Bash{{command: \"tail -50 {log}\"}})\n\
          Still running?  Bash{{command: \"kill -0 {pid}\"}}\n\
          To stop:  Bash{{command: \"kill {pid}\"}}\n\
-         To force: Bash{{command: \"kill -9 {pid}\"}}\n\
+         Send either on its own, not chained with other commands, and Koda \
+         checks or stops the process itself.\n\
          Note: process will be stopped automatically when the session ends."
     ))
+}
+
+/// A command that does nothing but signal processes: `kill PID…`, with an
+/// optional signal (`-9`, `-TERM`, `-s KILL`), or `kill -0 PID…`, which only
+/// checks that they're running. These are the commands the background message
+/// suggests; anything more (a chain, a pipe, a variable) isn't one.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PlainKill {
+    /// `kill -0`: are they running?
+    Check(Vec<u32>),
+    /// Any other signal: stop them.
+    Stop(Vec<u32>),
+}
+
+pub(crate) fn plain_kill(command: &str) -> Option<PlainKill> {
+    let mut words: Vec<&str> = command.split_whitespace().collect();
+    if words.first() != Some(&"kill") {
+        return None;
+    }
+    words.remove(0);
+    let mut check = false;
+    match words.first().copied() {
+        Some("-s" | "-n") => {
+            check = *words.get(1)? == "0";
+            words.drain(..2);
+        }
+        Some(flag) if flag.starts_with('-') => {
+            let signal = &flag[1..];
+            if signal.is_empty() || !signal.chars().all(|c| c.is_ascii_alphanumeric()) {
+                return None;
+            }
+            check = signal == "0";
+            words.remove(0);
+        }
+        _ => {}
+    }
+    if words.is_empty() {
+        return None;
+    }
+    let pids = words
+        .iter()
+        .map(|w| w.parse::<u32>().ok().filter(|pid| *pid > 0))
+        .collect::<Option<Vec<_>>>()?;
+    Some(if check {
+        PlainKill::Check(pids)
+    } else {
+        PlainKill::Stop(pids)
+    })
+}
+
+/// Whether this Bash call only checks or stops background processes the
+/// caller started, which [`run_shell_command`] then does itself. The
+/// dispatchers use it to approve such a call in Auto even though `kill`
+/// classifies as destructive: the process is Koda's, like a file Koda
+/// created (#465).
+pub(crate) fn signals_only_own_background(
+    args: &Value,
+    bg: &BgRegistry,
+    caller_spawner: Option<u32>,
+) -> bool {
+    if wants_outside_sandbox(args) || args["background"].as_bool().unwrap_or(false) {
+        return false;
+    }
+    let Some(kill) = args["command"].as_str().and_then(plain_kill) else {
+        return false;
+    };
+    let (PlainKill::Check(pids) | PlainKill::Stop(pids)) = &kill;
+    let own = bg.snapshot_for_caller(caller_spawner);
+    pids.iter().all(|pid| own.iter().any(|s| s.pid == *pid))
+}
+
+/// Check or stop background processes through the registry, when every PID
+/// is one the caller started. `None` means at least one isn't, and the
+/// command runs as written.
+fn signal_own_background(
+    bg: &BgRegistry,
+    kill: &PlainKill,
+    caller_spawner: Option<u32>,
+) -> Option<ShellOutput> {
+    use crate::tools::bg_process::BgProcessStatus;
+    let (PlainKill::Check(pids) | PlainKill::Stop(pids)) = kill;
+    let own = bg.snapshot_for_caller(caller_spawner);
+    let entries = pids
+        .iter()
+        .map(|pid| own.iter().find(|s| s.pid == *pid))
+        .collect::<Option<Vec<_>>>()?;
+    let mut lines = Vec::new();
+    let mut all_running = true;
+    for entry in entries {
+        let (pid, command) = (entry.pid, &entry.command);
+        let gone = match entry.status {
+            BgProcessStatus::Running => None,
+            BgProcessStatus::Exited { code: Some(code) } => {
+                Some(format!("exited with code {code}"))
+            }
+            BgProcessStatus::Exited { code: None } => Some("exited".to_string()),
+            BgProcessStatus::Killed => Some("stopped".to_string()),
+        };
+        match (kill, gone) {
+            (PlainKill::Check(_), None) => lines.push(format!("{pid} is running: {command}")),
+            (PlainKill::Check(_), Some(how)) => {
+                all_running = false;
+                lines.push(format!("{pid} is not running ({how}): {command}"));
+            }
+            (PlainKill::Stop(_), None) => {
+                // The snapshot was this caller's, so the kill is allowed.
+                let _ = bg.kill_as_caller(pid, caller_spawner);
+                lines.push(format!("Stopped background process {pid}: {command}"));
+            }
+            (PlainKill::Stop(_), Some(how)) => {
+                lines.push(format!("{pid} had already {how}: {command}"));
+            }
+        }
+    }
+    // `kill -0` fails when a process is gone; stopping one that already
+    // ended isn't a failure.
+    let success = all_running || matches!(kill, PlainKill::Stop(_));
+    Some(ShellOutput {
+        summary: format_summary(i32::from(!success), &lines, &[], 0),
+        full_output: None,
+        success,
+    })
 }
 
 /// Build a compact summary for the model's context window.
@@ -1816,6 +1948,130 @@ mod tests {
         assert!(outside.contains("env=[]"), "{outside}");
         let inside = run(false).await;
         assert!(inside.contains("127.0.0.1:31415"), "{inside}");
+    }
+
+    #[test]
+    fn plain_kill_reads_only_a_bare_kill_of_pids() {
+        use PlainKill::{Check, Stop};
+        assert_eq!(plain_kill("kill 42"), Some(Stop(vec![42])));
+        assert_eq!(plain_kill("  kill -9 42 43 "), Some(Stop(vec![42, 43])));
+        assert_eq!(plain_kill("kill -TERM 42"), Some(Stop(vec![42])));
+        assert_eq!(plain_kill("kill -s KILL 42"), Some(Stop(vec![42])));
+        assert_eq!(plain_kill("kill -0 42"), Some(Check(vec![42])));
+        assert_eq!(plain_kill("kill -s 0 42"), Some(Check(vec![42])));
+        // Anything more is an ordinary command.
+        for not_plain in [
+            "kill",
+            "kill -9",
+            "kill -l",
+            "kill 0",
+            "kill -- 42",
+            "kill %1",
+            "kill $PID",
+            "kill 42; rm -rf /",
+            "kill 42 && echo gone",
+            "kill 42 | tee log",
+            "pkill python",
+            "sudo kill 42",
+        ] {
+            assert_eq!(plain_kill(not_plain), None, "{not_plain}");
+        }
+    }
+
+    async fn start_in_background(registry: &BgRegistry, command: &str) -> u32 {
+        let args = serde_json::json!({"command": command, "background": true});
+        run_shell_command(
+            tempfile::tempdir().unwrap().path(),
+            &args,
+            256,
+            registry,
+            None,
+            &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        registry.snapshot().last().unwrap().pid
+    }
+
+    async fn bash(registry: &BgRegistry, command: &str) -> ShellOutput {
+        run_shell_command(
+            tempfile::tempdir().unwrap().path(),
+            &serde_json::json!({"command": command}),
+            256,
+            registry,
+            None,
+            &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+    }
+
+    /// The sandbox can't signal a process an earlier Bash call started, so
+    /// `kill PID` of Koda's own background process used to fail and need a
+    /// run outside the sandbox. Koda now checks and stops it itself.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn koda_checks_and_stops_its_own_background_process() {
+        use crate::tools::bg_process::BgProcessStatus;
+        let registry = BgRegistry::new();
+        let pid = start_in_background(&registry, "sleep 60").await;
+
+        let args = serde_json::json!({"command": format!("kill {pid}")});
+        assert!(signals_only_own_background(&args, &registry, None));
+        assert!(!signals_only_own_background(&args, &registry, Some(7)));
+
+        let check = bash(&registry, &format!("kill -0 {pid}")).await;
+        assert!(check.success, "{}", check.summary);
+        assert!(
+            check.summary.contains("is running: sleep 60"),
+            "{}",
+            check.summary
+        );
+
+        let stop = bash(&registry, &format!("kill {pid}")).await;
+        assert!(stop.success, "{}", stop.summary);
+        assert!(
+            stop.summary
+                .contains(&format!("Stopped background process {pid}: sleep 60")),
+            "{}",
+            stop.summary
+        );
+        assert_ne!(registry.snapshot()[0].status, BgProcessStatus::Running);
+
+        let again = bash(&registry, &format!("kill -0 {pid}")).await;
+        assert!(!again.success, "{}", again.summary);
+        assert!(
+            again.summary.contains("is not running"),
+            "{}",
+            again.summary
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_kill_that_names_another_process_runs_as_written() {
+        let registry = BgRegistry::new();
+        let pid = start_in_background(&registry, "sleep 60").await;
+        // One PID isn't Koda's, so the whole command is left to the shell.
+        let args = serde_json::json!({"command": format!("kill {pid} 999999")});
+        assert!(!signals_only_own_background(&args, &registry, None));
+        let ran = bash(&registry, &format!("kill {pid} 999999")).await;
+        assert!(
+            !ran.summary.contains("Stopped background process"),
+            "{}",
+            ran.summary
+        );
+        // Leaving the sandbox is never Koda's to do on the model's behalf.
+        let outside =
+            serde_json::json!({"command": format!("kill {pid}"), "outside_sandbox": true});
+        assert!(!signals_only_own_background(&outside, &registry, None));
+        registry.kill(pid);
     }
 
     #[test]

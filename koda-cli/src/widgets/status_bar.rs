@@ -53,7 +53,7 @@ pub struct StatusBar<'a> {
 /// Stats from the most recent inference turn.
 #[derive(Debug, Clone, Default)]
 pub struct TurnStats {
-    /// Input tokens billed for this turn.
+    /// Input tokens for this turn, the cached ones included.
     pub tokens_in: i64,
     /// Output tokens generated this turn.
     pub tokens_out: i64,
@@ -315,7 +315,8 @@ impl Widget for StatusBar<'_> {
             );
             // Cache hit indicator — only shown when nonzero (costs nothing).
             if stats.cache_read > 0 && stats.tokens_in > 0 {
-                let pct = (stats.cache_read * 100) / stats.tokens_in;
+                // `tokens_in` counts the cached tokens too, so this is a share.
+                let pct = ((stats.cache_read * 100) / stats.tokens_in).min(100);
                 stat_str = format!(
                     " ↑{} ↓{} 🗄{pct}% · {} · {:.0} t/s ",
                     stats.tokens_in, stats.tokens_out, time, stats.rate
