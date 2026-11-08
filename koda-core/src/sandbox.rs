@@ -256,6 +256,26 @@ pub fn build(
     Ok(cmd)
 }
 
+/// Build a `tokio::process::Command` that runs `sh -c "{command}"` outside
+/// the sandbox: no kernel profile and no proxy variables, so it reaches
+/// whatever the user's own shell would, such as a git server over SSH or a
+/// host on the local network. Only for a Bash call the user approved with
+/// `outside_sandbox` (see `tools::shell`). The policy's resource limits
+/// still apply, and so does the environment scrub (#1228), so API keys and
+/// tokens still don't reach the command. `SSH_AUTH_SOCK` is added back: the
+/// commonest reason to leave the sandbox is git over SSH, and keys held by
+/// an agent need it.
+pub fn build_unsandboxed(command: &str, project_root: &Path, policy: &SandboxPolicy) -> Command {
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c").arg(command).current_dir(project_root);
+    koda_sandbox::env::scrub(&mut cmd, command);
+    if let Some(sock) = std::env::var_os("SSH_AUTH_SOCK") {
+        cmd.env("SSH_AUTH_SOCK", sock);
+    }
+    koda_sandbox::rlimits::apply_to_command(&mut cmd, &policy.limits);
+    cmd
+}
+
 /// Construct the [`SandboxPolicy`] that should govern a given agent's
 /// tool invocations.
 ///

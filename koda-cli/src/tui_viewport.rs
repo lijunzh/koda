@@ -61,6 +61,7 @@ pub(crate) fn draw_viewport(
     // Determine menu height (only when active)
     let menu_height = match menu {
         MenuContent::None => 0u16,
+        MenuContent::Approval { detail, .. } if outside_sandbox_request(detail).is_some() => 3,
         MenuContent::Approval { .. }
         | MenuContent::LoopCap { .. }
         | MenuContent::PurgeConfirm { .. } => 2,
@@ -401,8 +402,33 @@ fn render_menu(frame: &mut ratatui::Frame, menu: &MenuContent, menu_area: ratatu
         MenuContent::Approval {
             tool_name, detail, ..
         } => {
-            let lines = vec![
-                Line::from(vec![
+            // A request to leave the sandbox gets the warning and the
+            // model's reason on lines of their own, so neither is cut off
+            // behind a long command.
+            let mut lines = match outside_sandbox_request(detail) {
+                Some((command, reason)) => vec![
+                    Line::from(vec![
+                        Span::styled("  ", Style::default()),
+                        Span::styled(
+                            tool_name.clone(),
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            "  \u{26a0} outside the sandbox  ",
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(command.to_string(), Style::default().fg(Color::DarkGray)),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("  why: ", Style::default().fg(Color::Yellow)),
+                        Span::styled(reason.to_string(), Style::default().fg(Color::DarkGray)),
+                    ]),
+                ],
+                None => vec![Line::from(vec![
                     Span::styled("  ", Style::default()),
                     Span::styled(
                         tool_name.clone(),
@@ -411,20 +437,20 @@ fn render_menu(frame: &mut ratatui::Frame, menu: &MenuContent, menu_area: ratatu
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(format!("  {detail}"), Style::default().fg(Color::DarkGray)),
-                ]),
-                Line::from(vec![
-                    Span::styled("  [y]", Style::default().fg(Color::Green)),
-                    Span::styled(" approve  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("[n]", Style::default().fg(Color::Red)),
-                    Span::styled(" reject  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("[f]", Style::default().fg(Color::Yellow)),
-                    Span::styled(" feedback  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("[a]", Style::default().fg(Color::Rgb(124, 111, 100))),
-                    Span::styled(" always  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("[esc]", Style::default().fg(Color::Rgb(124, 111, 100))),
-                    Span::styled(" stop", Style::default().fg(Color::DarkGray)),
-                ]),
-            ];
+                ])],
+            };
+            lines.push(Line::from(vec![
+                Span::styled("  [y]", Style::default().fg(Color::Green)),
+                Span::styled(" approve  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("[n]", Style::default().fg(Color::Red)),
+                Span::styled(" reject  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("[f]", Style::default().fg(Color::Yellow)),
+                Span::styled(" feedback  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("[a]", Style::default().fg(Color::Rgb(124, 111, 100))),
+                Span::styled(" always  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("[esc]", Style::default().fg(Color::Rgb(124, 111, 100))),
+                Span::styled(" stop", Style::default().fg(Color::DarkGray)),
+            ]));
             frame.render_widget(Paragraph::new(lines), menu_area);
         }
         MenuContent::LoopCap { .. } => {
@@ -579,6 +605,19 @@ fn build_ask_user_hint(options: &[String]) -> String {
 /// exactly.
 ///
 /// Regression coverage for #1024.
+/// Split an approval detail that asks to run outside the sandbox into the
+/// command and the model's reason (see `koda_core::tools::describe_action`).
+fn outside_sandbox_request(detail: &str) -> Option<(&str, &str)> {
+    let rest = detail
+        .strip_prefix(koda_core::tools::OUTSIDE_SANDBOX_TAG)?
+        .trim_start();
+    // The first dash: a reason often has dashes of its own, a command rarely.
+    Some(
+        rest.split_once(" \u{2014} ")
+            .unwrap_or((rest, "no reason given")),
+    )
+}
+
 fn ask_user_menu_height(
     question: &str,
     options: &[String],
@@ -1005,7 +1044,18 @@ mod panic_hook_tests {
 
 #[cfg(test)]
 mod ask_user_height_tests {
-    use super::ask_user_menu_height;
+    use super::{ask_user_menu_height, outside_sandbox_request};
+
+    #[test]
+    fn an_outside_sandbox_request_splits_into_command_and_reason() {
+        assert_eq!(
+            outside_sandbox_request(
+                "[outside the sandbox] git push \u{2014} Push it \u{2014} SSH is blocked"
+            ),
+            Some(("git push", "Push it \u{2014} SSH is blocked"))
+        );
+        assert_eq!(outside_sandbox_request("rm -rf target"), None);
+    }
 
     /// Short question fits on one line → 2 rows total (question + hint).
     /// Same as the legacy hardcoded value, so existing layouts don't shift.

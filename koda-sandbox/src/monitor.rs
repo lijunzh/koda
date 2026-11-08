@@ -101,6 +101,12 @@ fn infer_kind_from_line(line: &str) -> ViolationKind {
     if lower.contains("read-only file system") {
         return ViolationKind::FileWrite;
     }
+    // `ssh: connect to host h port 22: Operation not permitted`,
+    // `nc: connectx to h port 22 (tcp) failed: Operation not permitted`:
+    // the seatbelt profile refused an outbound connection.
+    if lower.contains("connect to host") || lower.contains("connectx to") {
+        return ViolationKind::NetworkOutbound;
+    }
     let write_markers = [
         "touch",
         "mkdir",
@@ -135,6 +141,15 @@ fn infer_kind_from_line(line: &str) -> ViolationKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refused_ssh_connection_is_a_network_violation() {
+        let stderr = "ssh: connect to host 192.168.10.50 port 2222: Operation not permitted\n\
+                      nc: connectx to 192.168.10.50 port 2222 (tcp) failed: Operation not permitted\n";
+        let v = parse_stderr(stderr, Some("git push"));
+        assert_eq!(v.len(), 2);
+        assert!(v.iter().all(|v| v.kind == ViolationKind::NetworkOutbound));
+    }
 
     #[test]
     fn touch_denial_classified_as_write() {

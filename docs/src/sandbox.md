@@ -175,6 +175,31 @@ line (paste-friendly for bug reports). The TUI status bar also
 surfaces the current state next to the trust badge
 (🛡 sandboxed / ⚠ unsandboxed).
 
+## When a command needs to leave the sandbox
+
+Bash commands reach the network only through Koda's proxy, which lets
+through GitHub and the main package registries over HTTP(S). Everything
+else is unreachable from inside the sandbox: `ssh`, `git` over SSH, other
+hosts, and servers on your local network. The sandbox also can't read
+`~/.ssh`, so ssh couldn't use your keys even with a route.
+
+When a command you need fails because of that, such as `git push` to an SSH
+remote, the model asks to run that one command outside the sandbox: a Bash
+call with `outside_sandbox: true` and a `reason`. Koda shows the command and
+the reason and waits for you, in Auto as in Safe:
+
+```text
+  Bash  ⚠ outside the sandbox  git push origin main
+  why: Push the commit to origin over SSH, which the sandbox blocks
+  [y] approve  [n] reject  [f] feedback  [a] always  [esc] stop
+```
+
+The command then runs as it would in your own shell, with no sandbox and no
+proxy. Each such call asks again; `a` doesn't change that. Sub-agents and
+headless runs have no one to ask, so they're refused. Codex
+(`require_escalated`) and Claude Code (`dangerouslyDisableSandbox`) do the
+same.
+
 ## Where sub-agents write
 
 The **sandbox backend** (above) restricts what a sub-agent's commands can

@@ -45,6 +45,13 @@ The master agent — i.e. you talking to Koda directly — uses this matrix:
 | `RemoteAction`           | ❌ deny   | ⏸ confirm   | ✅ auto     |
 | `Destructive` (Delete, `rm -rf`, force-push, …) | ❌ deny | ⏸ confirm | ⏸ confirm |
 | Outside-project write    | ❌ deny   | ⏸ confirm   | ⏸ confirm   |
+| Bash outside the sandbox | ❌ deny   | ⏸ confirm   | ⏸ confirm   |
+
+**Bash outside the sandbox** is a Bash call with `outside_sandbox: true`,
+which the model makes when the sandbox blocks a command you need, such as a
+`git push` over SSH. It counts as `Destructive` whatever the command does, so
+you approve each one, in Auto too, and the prompt shows the model's reason.
+See [Sandbox](./sandbox.md#when-a-command-needs-to-leave-the-sandbox).
 
 **Why `Auto × Destructive` confirms** (changed in #1251): the user
 said YOLO for normal work, not for `rm -rf`. Destructive ops by

@@ -11,7 +11,7 @@ prompt. See [Trust modes](./approval.md) for the canonical matrix.
 | `Write` | Mutating | Create or overwrite a file |
 | `Edit` | Mutating | Targeted text replacement within a file |
 | `Delete` | Destructive | Delete a file or directory |
-| `Bash` | Varies | Run a shell command |
+| `Bash` | Varies | Run a shell command in the sandbox; with `outside_sandbox` and a `reason`, run one command outside it once you approve |
 | `Cargo` | Mutating | `cargo check`, `clippy`, `test` or `build` from the project root, with one line per compiler diagnostic and, for `test`, the failing tests with panic locations |
 | `Grep` | Read-only | Search file contents with a regex: matching files (the default), matching lines with optional context, or counts; filter by glob or file type; results in pages |
 | `Glob` | Read-only | List files matching a glob pattern |

@@ -56,6 +56,12 @@ a sandboxed process with credential protection. No opt-out.
 - **Writes** restricted to project dir + `/tmp` + cache dirs
 - **Credential dirs** blocked: `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, …
 - **Agent files** protected: `.koda/agents/` and `.koda/skills/` are read-only
+- **Network** only through Koda's proxy: GitHub and the main package
+  registries over HTTP(S). SSH, other hosts and the local network are blocked.
+
+When the sandbox blocks a command you need, such as `git push` over SSH, the
+model asks to run that one command outside it, with a reason. You approve
+each one, in Auto too; sub-agents and headless runs are refused.
 
 macOS uses `sandbox-exec` (seatbelt); Linux uses `bwrap` (bubblewrap).
 Sub-agents inherit the parent's trust mode via `TrustMode::clamp()` and

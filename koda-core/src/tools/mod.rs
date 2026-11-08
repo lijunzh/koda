@@ -1494,6 +1494,10 @@ mod tests {
 
 // ── Tool action descriptions ──────────────────────────────────
 
+/// Opens the approval detail of a Bash call that asks to run outside the
+/// sandbox, so clients can tell it from an ordinary destructive command.
+pub const OUTSIDE_SANDBOX_TAG: &str = "[outside the sandbox]";
+
 /// Generate a human-readable description of a tool action for approval prompts.
 pub fn describe_action(tool_name: &str, args: &serde_json::Value) -> String {
     match tool_name {
@@ -1507,10 +1511,21 @@ pub fn describe_action(tool_name: &str, args: &serde_json::Value) -> String {
                 .get("background")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            if bg {
+            let cmd = if bg {
                 format!("[bg] {cmd}")
             } else {
                 cmd.to_string()
+            };
+            if shell::wants_outside_sandbox(args) {
+                let reason = args
+                    .get("reason")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|r| !r.is_empty())
+                    .unwrap_or("no reason given");
+                format!("{OUTSIDE_SANDBOX_TAG} {cmd} \u{2014} {reason}")
+            } else {
+                cmd
             }
         }
         "Cargo" => cargo::describe(args),
@@ -1610,6 +1625,26 @@ mod describe_action_tests {
         assert_eq!(desc, "cargo test -p koda-core parse");
         // Malformed args still read as a cargo call, not "Execute: Cargo".
         assert_eq!(describe_action("Cargo", &json!({})), "cargo ?");
+    }
+
+    #[test]
+    fn describe_action_names_an_outside_sandbox_request_and_its_reason() {
+        let desc = describe_action(
+            "Bash",
+            &json!({"command": "git push", "outside_sandbox": true, "reason": "Push over SSH"}),
+        );
+        assert_eq!(
+            desc,
+            "[outside the sandbox] git push \u{2014} Push over SSH"
+        );
+        let desc = describe_action(
+            "Bash",
+            &json!({"command": "git push", "outside_sandbox": true}),
+        );
+        assert_eq!(
+            desc,
+            "[outside the sandbox] git push \u{2014} no reason given"
+        );
     }
 
     #[test]
