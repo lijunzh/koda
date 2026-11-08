@@ -232,7 +232,9 @@ impl TuiContext {
             // prompts. Mirrors codex's `FooterMode::ShortcutOverlay`
             // toggle and claude-code's `?` handling in
             // `PromptInputFooterLeftSide`.
-            (KeyCode::Char('?'), KeyModifiers::NONE) if self.textarea.text().is_empty() => {
+            (KeyCode::Char('?'), KeyModifiers::NONE)
+                if composer_is_empty(&self.textarea, &self.paste_burst) =>
+            {
                 self.menu = MenuContent::ShortcutsOverlay;
             }
             // Scroll keys
@@ -644,6 +646,18 @@ impl TuiContext {
 
 // ── Module-level helpers ───────────────────────────────────
 
+/// Whether the composer holds no text at all. A paste that's still arriving
+/// counts: the burst detector moves what was typed out of the textarea into
+/// its own buffer, so mid-paste the textarea alone reads as empty. Taking
+/// that for empty made a pasted `?` open the shortcuts overlay, which then
+/// swallowed the next key, so "is it ok? yes" arrived as "is it okyes".
+fn composer_is_empty(
+    textarea: &crate::composer::textarea::TextArea,
+    burst: &crate::composer::paste_burst::PasteBurst,
+) -> bool {
+    textarea.text().is_empty() && !burst.is_active()
+}
+
 /// Returns true when `key` is a plain insertable character (no Ctrl/Alt
 /// modifiers, just `KeyCode::Char(_)` with at most Shift held). The
 /// paste-burst detector only owns this slice of the keyspace; everything
@@ -694,6 +708,20 @@ mod tests {
     // (composer extraction, which moved the history-nav tests out of
     // this module — carrying the `use super::*` with them).
     use super::*;
+
+    #[test]
+    fn a_paste_still_arriving_counts_as_text() {
+        use crate::composer::paste_burst::PasteBurst;
+        use crate::composer::textarea::TextArea;
+        let textarea = TextArea::new();
+        let mut burst = PasteBurst::default();
+        assert!(composer_is_empty(&textarea, &burst));
+        // Mid-paste: the typed text sits in the detector's buffer and the
+        // textarea is empty, so a `?` now is part of the paste.
+        burst.begin_with_retro_grabbed("is it ok".into(), std::time::Instant::now());
+        assert!(textarea.text().is_empty());
+        assert!(!composer_is_empty(&textarea, &burst));
+    }
 
     // ── History DB persistence ───────────────────────────────────
     //
