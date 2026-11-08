@@ -180,8 +180,19 @@ surfaces the current state next to the trust badge
 Bash commands reach the network only through Koda's proxy, which lets
 through GitHub and the main package registries over HTTP(S). Everything
 else is unreachable from inside the sandbox: `ssh`, `git` over SSH, other
-hosts, and servers on your local network. The sandbox also can't read
-`~/.ssh`, so ssh couldn't use your keys even with a route.
+hosts, servers on your local network, and servers on `localhost`. The
+sandbox also can't read `~/.ssh`, so ssh couldn't use your keys even with a
+route.
+
+One exception on macOS: a command can connect to a `localhost` port that a
+server Koda started with `background: true` is listening on, so "start the
+dev server, then curl it" works without leaving the sandbox. Koda reads
+those ports from the background command's process group before each Bash
+call (with `lsof`). Every other local port stays closed, including servers
+you started yourself and databases. Codex and Claude Code block loopback
+the same way unless their `allow_local_binding` setting is on, which opens
+every local port instead. On Linux each command runs in its own network
+namespace, so a later command can't reach a background server at all.
 
 When a command you need fails because of that, such as `git push` to an SSH
 remote, the model asks to run that one command outside the sandbox: a Bash

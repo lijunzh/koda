@@ -48,7 +48,7 @@ pub fn build_command(
     project_root: &Path,
     policy: &SandboxPolicy,
 ) -> Result<Command> {
-    build_command_inner(command, project_root, policy, None)
+    build_command_inner(command, project_root, policy, None, &[])
 }
 
 /// Build a sandboxed `sandbox-exec` command with proxied egress.
@@ -78,11 +78,37 @@ pub fn build_command_with_proxy(
     allow_local_binding: bool,
     weaker_macos_isolation: bool,
 ) -> Result<Command> {
+    build_command_with_proxy_and_loopback(
+        command,
+        project_root,
+        policy,
+        proxy_port,
+        allow_local_binding,
+        weaker_macos_isolation,
+        &[],
+    )
+}
+
+/// [`build_command_with_proxy`], plus direct connections to `loopback_ports`
+/// on localhost: the ports servers the caller started are listening on, so
+/// a command can reach a dev server without leaving the sandbox. Every other
+/// loopback port stays closed, as it is in Codex and Claude Code unless their
+/// `allow_local_binding` is turned on.
+pub fn build_command_with_proxy_and_loopback(
+    command: &str,
+    project_root: &Path,
+    policy: &SandboxPolicy,
+    proxy_port: u16,
+    allow_local_binding: bool,
+    weaker_macos_isolation: bool,
+    loopback_ports: &[u16],
+) -> Result<Command> {
     build_command_inner(
         command,
         project_root,
         policy,
         Some((proxy_port, allow_local_binding, weaker_macos_isolation)),
+        loopback_ports,
     )
 }
 
@@ -91,6 +117,7 @@ fn build_command_inner(
     project_root: &Path,
     policy: &SandboxPolicy,
     proxy: Option<(u16, bool, bool)>,
+    loopback_ports: &[u16],
 ) -> Result<Command> {
     let canonical = project_root
         .canonicalize()
@@ -111,11 +138,20 @@ fn build_command_inner(
     // realistic policy and runs once per cache miss — negligible
     // next to the build cost it amortizes.
     let tmpdir = resolve_tmpdir(&home);
+    // Only the proxied profile restricts loopback; the open one allows it all.
+    let mut loopback_ports = if proxy.is_some() {
+        loopback_ports.to_vec()
+    } else {
+        Vec::new()
+    };
+    loopback_ports.sort_unstable();
+    loopback_ports.dedup();
     let key = crate::seatbelt_cache::ProfileKey {
         canonical_root: canonical.clone(),
         home: home.clone(),
         tmpdir,
         proxy,
+        loopback_ports,
         policy: policy.clone(),
     };
 
@@ -136,12 +172,13 @@ fn build_command_inner(
         // Gemini CLI's seatbeltArgsBuilder.ts.
         let mut profile = match k.proxy {
             Some((port, allow_local_binding, weaker_macos_isolation)) => {
-                build_proxied_profile_string(
+                build_proxied_profile_string_with_loopback(
                     &root,
                     home,
                     port,
                     allow_local_binding,
                     weaker_macos_isolation,
+                    &k.loopback_ports,
                 )
             }
             None => build_profile_string(&root, home),
@@ -411,8 +448,37 @@ pub fn build_proxied_profile_string(
     allow_local_binding: bool,
     weaker_macos_isolation: bool,
 ) -> String {
-    let net = network_proxied_rules(proxy_port, allow_local_binding, weaker_macos_isolation);
+    build_proxied_profile_string_with_loopback(
+        root,
+        home,
+        proxy_port,
+        allow_local_binding,
+        weaker_macos_isolation,
+        &[],
+    )
+}
+
+/// [`build_proxied_profile_string`] with [`loopback_port_rules`] added.
+pub fn build_proxied_profile_string_with_loopback(
+    root: &str,
+    home: &str,
+    proxy_port: u16,
+    allow_local_binding: bool,
+    weaker_macos_isolation: bool,
+    loopback_ports: &[u16],
+) -> String {
+    let mut net = network_proxied_rules(proxy_port, allow_local_binding, weaker_macos_isolation);
+    net.push_str(&loopback_port_rules(loopback_ports));
     build_profile_string_with_network(root, home, &net)
+}
+
+/// Outbound TCP to each of `ports` on localhost (127.0.0.1 and ::1). The
+/// host must be spelled `localhost`; see [`network_proxied_rules`].
+pub fn loopback_port_rules(ports: &[u16]) -> String {
+    ports
+        .iter()
+        .map(|port| format!("(allow network-outbound (remote tcp \"localhost:{port}\"))\n"))
+        .collect()
 }
 
 /// Generate seatbelt deny-write rules for protected project subdirectories.
@@ -1011,6 +1077,23 @@ mod tests {
             !p.contains("(allow network*)\n"),
             "proxied profile must not include the open-network allow\nprofile:\n{p}"
         );
+    }
+
+    #[test]
+    fn loopback_ports_open_just_those_ports() {
+        let p = build_proxied_profile_string_with_loopback(
+            "/work",
+            "/Users/x",
+            8877,
+            false,
+            false,
+            &[3000, 5173],
+        );
+        assert!(p.contains(r#"(allow network-outbound (remote tcp "localhost:3000"))"#));
+        assert!(p.contains(r#"(allow network-outbound (remote tcp "localhost:5173"))"#));
+        assert!(!p.contains(r#"(remote tcp "localhost:*")"#), "{p}");
+        let none = build_proxied_profile_string("/work", "/Users/x", 8877, false, false);
+        assert!(!none.contains("localhost:3000"));
     }
 
     #[test]

@@ -119,6 +119,15 @@ pub struct SandboxTransformRequest<'a> {
     /// callers that haven't migrated, and as the regression-guard
     /// fallback.
     pub proxy_port: Option<u16>,
+
+    /// Loopback TCP ports the command may connect to directly, besides the
+    /// proxy: the ports servers the caller started are listening on, so a
+    /// command can reach a dev server it started earlier. Empty for none.
+    ///
+    /// Seatbelt only, and only with `proxy_port` (the open baseline allows
+    /// all network). bwrap gives each command its own network namespace,
+    /// whose loopback isn't the host's, so it ignores this.
+    pub loopback_ports: &'a [u16],
 }
 
 /// Output of [`SandboxRuntime::transform`].
@@ -194,13 +203,14 @@ impl SandboxRuntime for SeatbeltRuntime {
         // off by default and only set by callers that need Go-style
         // out-of-process TLS validation to work inside the sandbox.
         let command = match req.proxy_port {
-            Some(port) => seatbelt::build_command_with_proxy(
+            Some(port) => seatbelt::build_command_with_proxy_and_loopback(
                 req.command,
                 req.project_root,
                 req.policy,
                 port,
                 req.policy.net.allow_local_binding,
                 req.policy.net.weaker_macos_isolation,
+                req.loopback_ports,
             )?,
             None => seatbelt::build_command(req.command, req.project_root, req.policy)?,
         };
@@ -444,6 +454,7 @@ mod tests {
             project_root: Path::new("/tmp"),
             policy: &policy,
             proxy_port: None,
+            loopback_ports: &[],
         };
         let runtime = UnsandboxedRuntime;
         let result = runtime.transform(req).unwrap();
@@ -482,6 +493,7 @@ mod tests {
                 project_root: Path::new("/tmp"),
                 policy: &policy,
                 proxy_port: Some(8080),
+                loopback_ports: &[],
             })
             .unwrap();
         let without = UnsandboxedRuntime
@@ -490,6 +502,7 @@ mod tests {
                 project_root: Path::new("/tmp"),
                 policy: &policy,
                 proxy_port: None,
+                loopback_ports: &[],
             })
             .unwrap();
         // Both should be `sh -c true` — no proxy-related divergence in
@@ -517,6 +530,7 @@ mod tests {
             project_root: Path::new("/tmp"),
             policy: &policy,
             proxy_port: Some(54321),
+            loopback_ports: &[],
         };
         let cmd = SeatbeltRuntime.transform(req).unwrap().command;
         let profile = cmd
@@ -552,6 +566,7 @@ mod tests {
             project_root: Path::new("/tmp"),
             policy: &policy,
             proxy_port: None,
+            loopback_ports: &[],
         };
         let cmd = SeatbeltRuntime.transform(req).unwrap().command;
         let profile = cmd
@@ -586,6 +601,7 @@ mod tests {
             project_root: Path::new("/tmp"),
             policy: &policy,
             proxy_port: Some(54321),
+            loopback_ports: &[],
         };
         // Construct without spawning. We don't assert anything about the
         // arg vector — bwrap simply doesn't touch the network namespace

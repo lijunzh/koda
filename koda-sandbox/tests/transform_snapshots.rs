@@ -30,6 +30,7 @@ fn unsandboxed_runtime_snapshot() {
         project_root: Path::new("/tmp/snapshot-project"),
         policy: &policy,
         proxy_port: None,
+        loopback_ports: &[],
     };
     let result = UnsandboxedRuntime.transform(req).unwrap();
     let (program, args, cwd) = deconstruct(result.command.as_std());
@@ -54,6 +55,7 @@ fn seatbelt_runtime_command_snapshot() {
         project_root: dir.path(),
         policy: &policy,
         proxy_port: None,
+        loopback_ports: &[],
     };
     let result = SeatbeltRuntime.transform(req).unwrap();
     let (program, args, _cwd) = deconstruct(result.command.as_std());
@@ -85,6 +87,7 @@ fn seatbelt_profile_contains_required_rules() {
         project_root: dir.path(),
         policy: &policy,
         proxy_port: None,
+        loopback_ports: &[],
     };
     let result = SeatbeltRuntime.transform(req).unwrap();
     let args: Vec<String> = result
@@ -135,6 +138,7 @@ fn bwrap_runtime_command_snapshot() {
         project_root: dir.path(),
         policy: &policy,
         proxy_port: None,
+        loopback_ports: &[],
     };
     let result = BwrapRuntime.transform(req).unwrap();
     let (program, args, _cwd) = deconstruct(result.command.as_std());
@@ -171,6 +175,7 @@ fn bwrap_command_starts_with_ro_bind_root() {
         project_root: dir.path(),
         policy: &policy,
         proxy_port: None,
+        loopback_ports: &[],
     };
     let result = BwrapRuntime.transform(req).unwrap();
     let args: Vec<String> = result

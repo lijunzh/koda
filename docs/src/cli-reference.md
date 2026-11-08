@@ -8,7 +8,7 @@
 | `<PROMPT>` (positional) | | Same as `-p` — `koda "fix the bug"` works |
 | `-a`, `--agent <NAME>` | | Agent definition to use (JSON in `agents/`, default: `default`) |
 | `-s`, `--resume <ID>` | | Resume a previous session by its full ID. `/sessions resume` in the TUI takes a prefix. |
-| `--model <NAME>` | `KODA_MODEL` | Exact model ID (e.g. `claude-sonnet-5-5`). Aliases work only in `/model`. |
+| `--model <NAME>` | `KODA_MODEL` | Model ID (e.g. `claude-sonnet-5-5`) or alias (e.g. `claude-sonnet`); an alias also picks its provider. |
 | `--provider <NAME>` | `KODA_PROVIDER` | LLM provider (`anthropic`, `gemini`, `openai`, `ollama`, …) |
 | `--base-url <URL>` | `KODA_BASE_URL` | Override the provider's API base URL |
 | `--max-tokens <N>` | | Maximum output tokens |

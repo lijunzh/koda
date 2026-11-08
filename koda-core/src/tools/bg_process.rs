@@ -265,7 +265,7 @@ impl BgRegistry {
             return false;
         };
         if entry.status == BgProcessStatus::Running {
-            if let Err(e) = entry.child.start_kill() {
+            if let Err(e) = kill_command(&mut entry.child) {
                 tracing::warn!("BgRegistry::kill: failed to SIGTERM PID {pid}: {e}");
             }
             entry.status = BgProcessStatus::Killed;
@@ -284,7 +284,7 @@ impl BgRegistry {
             return CancelOutcome::Forbidden;
         }
         if entry.status == BgProcessStatus::Running {
-            if let Err(e) = entry.child.start_kill() {
+            if let Err(e) = kill_command(&mut entry.child) {
                 tracing::warn!("BgRegistry::kill_as_caller: SIGTERM PID {pid}: {e}");
             }
             entry.status = BgProcessStatus::Killed;
@@ -373,7 +373,7 @@ impl BgRegistry {
                 continue;
             }
             if entry.status == BgProcessStatus::Running {
-                if let Err(e) = entry.child.start_kill() {
+                if let Err(e) = kill_command(&mut entry.child) {
                     tracing::warn!(
                         "BgRegistry::kill_for_spawner: SIGTERM PID {}: {e}",
                         entry.child.id().unwrap_or(0)
@@ -385,6 +385,67 @@ impl BgRegistry {
         }
         count
     }
+}
+
+/// SIGKILL a background command and whatever it started. `spawn_background`
+/// makes each command a process-group leader, so its group holds the
+/// command's children too (`npm run dev` and the server it runs). A child
+/// that doesn't lead a group has no group of that id, and only it dies.
+fn kill_command(child: &mut Child) -> std::io::Result<()> {
+    koda_sandbox::process_group::ProcessGroup::of(child).kill();
+    child.start_kill()
+}
+
+impl BgRegistry {
+    /// Loopback TCP ports the running background commands listen on, their
+    /// children's included, so a sandboxed command may connect to a server
+    /// Koda started (`koda_sandbox::seatbelt::loopback_port_rules`). Empty
+    /// off macOS, where the sandbox gives each command its own network.
+    pub async fn listening_ports(&self) -> Vec<u16> {
+        if !cfg!(target_os = "macos") {
+            return Vec::new();
+        }
+        let groups: Vec<String> = self
+            .snapshot()
+            .into_iter()
+            .filter(|s| s.status == BgProcessStatus::Running)
+            .map(|s| s.pid.to_string())
+            .collect();
+        if groups.is_empty() {
+            return Vec::new();
+        }
+        let lsof = tokio::process::Command::new("lsof")
+            .args(["-nP", "-a", "-g", &groups.join(",")])
+            .args(["-iTCP", "-sTCP:LISTEN", "-Fn"])
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .output();
+        match tokio::time::timeout(Duration::from_secs(2), lsof).await {
+            Ok(Ok(out)) => parse_lsof_ports(&String::from_utf8_lossy(&out.stdout)),
+            Ok(Err(e)) => {
+                tracing::warn!("BgRegistry::listening_ports: lsof failed: {e}");
+                Vec::new()
+            }
+            Err(_) => {
+                tracing::warn!("BgRegistry::listening_ports: lsof took over 2s");
+                Vec::new()
+            }
+        }
+    }
+}
+
+/// Ports from `lsof -Fn` output: lines like `n*:8766`, `n127.0.0.1:3000` or
+/// `n[::1]:5173`, between the `p` (process) and `f` (file) lines.
+fn parse_lsof_ports(out: &str) -> Vec<u16> {
+    let mut ports: Vec<u16> = out
+        .lines()
+        .filter_map(|line| line.strip_prefix('n'))
+        .filter_map(|addr| addr.rsplit_once(':')?.1.parse().ok())
+        .collect();
+    ports.sort_unstable();
+    ports.dedup();
+    ports
 }
 
 impl Default for BgRegistry {
@@ -402,7 +463,7 @@ impl Drop for BgRegistry {
             if entry.status != BgProcessStatus::Running {
                 continue;
             }
-            if let Err(e) = entry.child.start_kill() {
+            if let Err(e) = kill_command(&mut entry.child) {
                 tracing::warn!("BgRegistry drop: failed to kill PID {pid}: {e}");
             } else {
                 tracing::debug!("BgRegistry drop: sent SIGTERM to PID {pid}");
@@ -474,6 +535,18 @@ mod tests {
 
         // Sibling sees nothing of peer's.
         assert!(reg.snapshot_for_caller(Some(42)).is_empty());
+    }
+
+    #[test]
+    fn lsof_ports_come_from_the_name_lines() {
+        let out = "p4242\nf3\nn*:8766\nf4\nn127.0.0.1:3000\nf5\nn[::1]:5173\nf6\nn*:8766\n";
+        assert_eq!(parse_lsof_ports(out), vec![3000, 5173, 8766]);
+        assert!(parse_lsof_ports("").is_empty());
+    }
+
+    #[tokio::test]
+    async fn no_background_command_means_no_ports_and_no_lsof() {
+        assert!(BgRegistry::new().listening_ports().await.is_empty());
     }
 
     /// The TUI's background panel reads `snapshot` and nothing else, so a

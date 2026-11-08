@@ -89,6 +89,10 @@ pub struct ProfileKey {
     /// to that signature must be reflected here or stale entries leak.
     pub proxy: Option<(u16, bool, bool)>,
 
+    /// Loopback ports the proxied profile lets the command connect to,
+    /// sorted and deduplicated. Empty for the open-network profile.
+    pub loopback_ports: Vec<u16>,
+
     /// The full policy. `Hash` is derived so adding a policy field
     /// automatically invalidates relevant cache entries on the next
     /// process start (still no rebuild within a single process — but
@@ -190,6 +194,7 @@ mod tests {
             home: "/Users/test".into(),
             tmpdir: None,
             proxy: None,
+            loopback_ports: Vec::new(),
             policy: SandboxPolicy::default(),
         }
     }
