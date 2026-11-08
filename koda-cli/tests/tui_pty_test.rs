@@ -24,6 +24,11 @@ const PASTE_SETTLE: Duration = Duration::from_millis(400);
 
 const ESC: &str = "\x1b";
 const CTRL_C: &str = "\x03";
+const CTRL_O: &str = "\x0f";
+
+/// The pty's size, which the screen model must match.
+const ROWS: u16 = 40;
+const COLS: u16 = 120;
 
 /// The engine's warning when a turn stops.
 const INTERRUPTED: &str = "Interrupted";
@@ -125,6 +130,60 @@ impl Tui {
         panic!("koda never showed {text:?}");
     }
 
+    /// What the terminal shows now. ratatui redraws only the cells that
+    /// changed, so whether something is on screen, or gone from it, can only
+    /// be read from a terminal model fed the whole output.
+    fn screen(&self) -> String {
+        let size = |n| std::num::NonZero::new(n).unwrap();
+        let mut parser = vt100::Parser::new(size(ROWS), size(COLS), 0);
+        parser.process(&self.output.lock().unwrap());
+        parser.screen().contents()
+    }
+
+    /// Wait until the screen shows `text`.
+    fn wait_for_screen(&self, text: &str) {
+        self.wait_for_screen_that(|screen| screen.contains(text), &format!("show {text:?}"));
+    }
+
+    /// Wait until the screen no longer shows `text`.
+    fn wait_for_screen_without(&self, text: &str) {
+        self.wait_for_screen_that(|screen| !screen.contains(text), &format!("drop {text:?}"));
+    }
+
+    fn wait_for_screen_that(&self, ready: impl Fn(&str) -> bool, what: &str) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let screen = self.screen();
+            if ready(&screen) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the screen didn't {what}:\n{screen}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Send `text` in one write, as a terminal delivers a paste.
+    fn paste(&mut self, text: &str) {
+        self.input.write_all(text.as_bytes()).unwrap();
+        std::thread::sleep(PASTE_SETTLE);
+    }
+
+    /// Answer every approval the TUI asks for with `y` until `done` holds.
+    fn approve_until(&mut self, done: impl Fn() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !done() {
+            assert!(Instant::now() < deadline, "timed out:\n{}", self.screen());
+            if self.screen().contains("[y] approve") {
+                self.type_text("y");
+            } else {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+
     /// Type `text`, then give the composer time to take it as typing.
     fn type_text(&mut self, text: &str) {
         self.input.write_all(text.as_bytes()).unwrap();
@@ -167,8 +226,8 @@ impl Drop for Tui {
 fn open_pty() -> (RawFd, RawFd) {
     let (mut master, mut slave) = (0, 0);
     let mut size = libc::winsize {
-        ws_row: 40,
-        ws_col: 120,
+        ws_row: ROWS,
+        ws_col: COLS,
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
@@ -502,4 +561,165 @@ async fn a_stop_hands_steering_text_back() {
     tui.type_text("\r");
     let sent = wait_for_model_call(&server, 2).await;
     assert!(sent.contains("steering text"), "{sent}");
+}
+
+/// Whether a process whose command line matches `pattern` is running.
+fn running(pattern: &str) -> bool {
+    Command::new("pgrep")
+        .args(["-f", pattern])
+        .output()
+        .is_ok_and(|o| !o.stdout.is_empty())
+}
+
+/// Esc stops a running command at once. It used to wait out the engine's
+/// 5-second grace and report "Turn failed".
+#[tokio::test(flavor = "multi_thread")]
+async fn esc_stops_a_running_command_at_once() {
+    // 31 s: no other test sleeps that long, so pgrep finds only this one.
+    let server = scripted_model(vec![tool_calls(&[(
+        "Bash",
+        json!({"command": "sleep 31"}),
+    )])])
+    .await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.submit("run it");
+    tui.approve_until(|| running("sleep 31"));
+    let pressed = Instant::now();
+    tui.stop_turn(ESC);
+
+    assert!(
+        pressed.elapsed() < Duration::from_secs(3),
+        "took {:?}",
+        pressed.elapsed()
+    );
+    assert!(
+        !tui.screen().contains("did not stop within"),
+        "{}",
+        tui.screen()
+    );
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while running("sleep 31") {
+        assert!(Instant::now() < deadline, "the command outlived the stop");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// A read shows as one summary line; Ctrl+O shows its content and folds it
+/// again. Before, a read filled the screen in the reply's colour.
+#[tokio::test(flavor = "multi_thread")]
+async fn ctrl_o_unfolds_a_read_and_folds_it_again() {
+    let server = scripted_model(vec![tool_calls(&[(
+        "Read",
+        json!({"file_path": "notes.md"}),
+    )])])
+    .await;
+    let home = home();
+    std::fs::write(
+        home.path().join("notes.md"),
+        "alpha line\nbeta line\ngamma line\n",
+    )
+    .unwrap();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.submit("read the notes");
+    tui.wait_for_screen("All done.");
+    tui.wait_for_screen("3 lines");
+    assert!(!tui.screen().contains("beta line"), "{}", tui.screen());
+
+    tui.type_text(CTRL_O);
+    tui.wait_for_screen("beta line");
+    // The full view lines the number up apart from the text.
+    assert!(tui.screen().contains("2  beta line"), "{}", tui.screen());
+    assert!(!tui.screen().contains("3 lines"), "{}", tui.screen());
+
+    tui.type_text(CTRL_O);
+    tui.wait_for_screen_without("beta line");
+    tui.wait_for_screen("3 lines");
+}
+
+/// A pasted `?` reaches the model. Mid-paste it used to open the shortcuts
+/// overlay, which then swallowed the next key.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pasted_question_mark_reaches_the_model() {
+    let server = scripted_model(vec![]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.paste("is it ok? yes, and why? because");
+    tui.type_text("\r");
+
+    let sent = wait_for_model_call(&server, 1).await;
+    assert!(sent.contains("is it ok? yes, and why? because"), "{sent}");
+}
+
+/// Koda stops a background process it started. The sandbox refused the
+/// model's `kill`, so stopping one needed a run outside the sandbox.
+#[tokio::test(flavor = "multi_thread")]
+async fn koda_stops_the_background_process_it_started() {
+    let server = FakeLlmServer::spawn().await;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let next = Arc::clone(&calls);
+    server
+        .mount_fn("POST", r".*/chat/completions$", move |request| {
+            match next.fetch_add(1, Ordering::SeqCst) {
+                // 32 s: no other test sleeps that long.
+                0 => tool_calls(&[("Bash", json!({"command": "sleep 32", "background": true}))]),
+                1 => {
+                    let body = String::from_utf8_lossy(&request.body);
+                    let pid = body
+                        .split("PID:")
+                        .nth(1)
+                        .and_then(|rest| {
+                            rest.split(|c: char| !c.is_ascii_digit() && c != ' ').next()
+                        })
+                        .map(str::trim)
+                        .unwrap_or("0")
+                        .to_string();
+                    tool_calls(&[("Bash", json!({"command": format!("kill {pid}")}))])
+                }
+                _ => final_text(),
+            }
+        })
+        .await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.submit("start the server, then stop it");
+    // Start, stop, then the final reply.
+    tui.approve_until(|| calls.load(Ordering::SeqCst) >= 3);
+    let sent = wait_for_model_call(&server, 3).await;
+    assert!(sent.contains("Stopped background process"), "{sent}");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while running("sleep 32") {
+        assert!(
+            Instant::now() < deadline,
+            "the background process is still running"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// A request to run outside the sandbox says so, with the model's reason,
+/// and `n` refuses it.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_outside_sandbox_request_shows_its_warning_and_reason() {
+    let server = scripted_model(vec![tool_calls(&[(
+        "Bash",
+        json!({"command": "echo hi", "outside_sandbox": true, "reason": "Testing the prompt"}),
+    )])])
+    .await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.submit("go");
+    tui.wait_for_screen("[y] approve");
+    let screen = tui.screen();
+    assert!(screen.contains("outside the sandbox"), "{screen}");
+    assert!(screen.contains("why: Testing the prompt"), "{screen}");
+    tui.type_text("n");
+
+    let sent = wait_for_model_call(&server, 2).await;
+    assert!(sent.contains("User rejected this action."), "{sent}");
 }
