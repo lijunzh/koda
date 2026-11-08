@@ -157,8 +157,8 @@ asking in Auto mode.
 
 ## `/expand [<n>]`
 
-Shows the full, untruncated output of a recent tool call. Useful when Koda
-collapsed a long `cargo build` or `grep` result during streaming.
+Shows the full output of one recent tool call again at the bottom. To see
+every tool call's output in place, press `Ctrl+O` instead.
 
 ```text
 /expand      ← show full output of the most recent tool call
@@ -265,13 +265,17 @@ the events that led up to them.
 
 ## `/verbose [on|off]`
 
-Toggles verbose tool output. By default Koda collapses long outputs
-during streaming. Verbose mode shows every line in real time.
+Switches tool output between folded and full, the same as `Ctrl+O`. Koda
+folds tool output by default: a file read shows as one line (`└ 123
+lines`), and other output as its first five lines and a `… +N lines`
+marker, plus the last five when the call failed. Edits and writes show
+their diff. The full view shows every line, for past output as well as new,
+in a resumed session too.
 
 ```text
-/verbose      ← toggle
-/verbose on   ← enable explicitly
-/verbose off  ← disable explicitly
+/verbose      ← switch
+/verbose on   ← full view
+/verbose off  ← folded view
 ```
 
 ## `/vim`

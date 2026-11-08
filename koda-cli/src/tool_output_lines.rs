@@ -10,18 +10,17 @@
 //! while this module owns *how* each tool's output looks. New tools
 //! that need bespoke line rendering should add their helper here.
 
-use crate::scroll_buffer::ScrollBuffer;
 use crate::theme;
-use crate::tui_output::{self, DIM};
+use crate::tui_output::DIM;
 use ratatui::text::{Line, Span};
 
-/// Render a single `List` entry with directory/file coloring.
+/// A single `List` entry with directory/file coloring.
 ///
 /// `List` output format: `d path/to/dir` (directory) or `  path/to/file`
 /// (file). Directories show in bold; files inherit the extension-bucket
 /// color from [`theme::style_for_extension`] so the same `.rs` file looks
 /// the same here, in `Glob`, and (eventually) in any future file picker.
-pub(crate) fn render_list_line(buffer: &mut ScrollBuffer, line: &str) {
+pub(crate) fn list_line(line: &str) -> Line<'static> {
     let is_dir = line.starts_with("d ");
     let path_str = if is_dir {
         &line[2..]
@@ -36,24 +35,21 @@ pub(crate) fn render_list_line(buffer: &mut ScrollBuffer, line: &str) {
     };
 
     let prefix = if is_dir { "\u{1f4c1} " } else { "   " };
-    tui_output::emit_line(
-        buffer,
-        Line::from(vec![
-            Span::styled("  \u{2502} ", DIM),
-            Span::raw(prefix),
-            Span::styled(path_str.to_string(), style),
-        ]),
-    );
+    Line::from(vec![
+        Span::styled("  \u{2502} ", DIM),
+        Span::raw(prefix),
+        Span::styled(path_str.to_string(), style),
+    ])
 }
 
-/// Render a single `Glob` result line with extension-based coloring.
+/// A single `Glob` result line with extension-based coloring.
 ///
 /// `Glob` output is structured as a header (`N files matched:`), then
 /// bare relative paths, optionally capped by `[Capped at N results]`.
 /// The header / cap lines render dim; paths inherit extension colors
 /// from [`theme::style_for_extension`] so a `Glob` and a `List` of the
 /// same directory paint files identically.
-pub(crate) fn render_glob_line(buffer: &mut ScrollBuffer, line: &str) {
+pub(crate) fn glob_line(line: &str) -> Line<'static> {
     let trimmed = line.trim();
     // Headers and meta lines: dim them out so the file paths pop.
     let is_meta = trimmed.is_empty()
@@ -61,28 +57,21 @@ pub(crate) fn render_glob_line(buffer: &mut ScrollBuffer, line: &str) {
         || trimmed.starts_with("No files matched")
         || trimmed.starts_with("[Capped");
     if is_meta {
-        tui_output::emit_line(
-            buffer,
-            Line::from(vec![
-                Span::styled("  \u{2502} ", DIM),
-                Span::styled(line.to_string(), DIM),
-            ]),
-        );
-        return;
+        return Line::from(vec![
+            Span::styled("  \u{2502} ", DIM),
+            Span::styled(line.to_string(), DIM),
+        ]);
     }
 
     let style = theme::style_for_extension(path_extension(trimmed));
-    tui_output::emit_line(
-        buffer,
-        Line::from(vec![
-            Span::styled("  \u{2502} ", DIM),
-            Span::raw("   "),
-            Span::styled(trimmed.to_string(), style),
-        ]),
-    );
+    Line::from(vec![
+        Span::styled("  \u{2502} ", DIM),
+        Span::raw("   "),
+        Span::styled(trimmed.to_string(), style),
+    ])
 }
 
-/// Render a single `Grep` result line with the file path highlighted.
+/// A single `Grep` result line with the file path highlighted.
 ///
 /// `Grep` output format: `file_path:line_number:content`. The file path
 /// renders in cyan, the line number in yellow, and — when the search
@@ -91,7 +80,7 @@ pub(crate) fn render_glob_line(buffer: &mut ScrollBuffer, line: &str) {
 /// honored; an invalid regex is treated as a literal substring search
 /// to keep highlighting graceful even when the user passes an unusual
 /// pattern.
-pub(crate) fn render_grep_line(buffer: &mut ScrollBuffer, line: &str, pattern: Option<&str>) {
+pub(crate) fn grep_line(line: &str, pattern: Option<&str>) -> Line<'static> {
     let parsed = line.split_once(':').and_then(|(file, rest)| {
         rest.split_once(':')
             .map(|(lineno, content)| (file.to_string(), lineno.to_string(), content.to_string()))
@@ -101,14 +90,10 @@ pub(crate) fn render_grep_line(buffer: &mut ScrollBuffer, line: &str, pattern: O
         Some(t) => t,
         None => {
             // Unrecognized format — just dim the prefix and pass through.
-            tui_output::emit_line(
-                buffer,
-                Line::from(vec![
-                    Span::styled("  \u{2502} ", DIM),
-                    Span::raw(line.to_string()),
-                ]),
-            );
-            return;
+            return Line::from(vec![
+                Span::styled("  \u{2502} ", DIM),
+                Span::raw(line.to_string()),
+            ]);
         }
     };
 
@@ -119,7 +104,7 @@ pub(crate) fn render_grep_line(buffer: &mut ScrollBuffer, line: &str, pattern: O
     spans.push(Span::styled(lineno, theme::LINENO));
     spans.push(Span::styled(":", DIM));
     extend_with_match_highlights(&mut spans, &content, pattern);
-    tui_output::emit_line(buffer, Line::from(spans));
+    Line::from(spans)
 }
 
 /// Append spans for `content`, highlighting every substring matching `pattern`.
@@ -200,6 +185,19 @@ fn path_extension(path: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scroll_buffer::ScrollBuffer;
+
+    fn render_list_line(buf: &mut ScrollBuffer, line: &str) {
+        buf.push(list_line(line));
+    }
+
+    fn render_glob_line(buf: &mut ScrollBuffer, line: &str) {
+        buf.push(glob_line(line));
+    }
+
+    fn render_grep_line(buf: &mut ScrollBuffer, line: &str, pattern: Option<&str>) {
+        buf.push(grep_line(line, pattern));
+    }
 
     fn match_hits<'a>(spans: &'a [Span<'static>]) -> Vec<&'a str> {
         spans

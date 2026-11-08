@@ -10,18 +10,49 @@
 use ratatui::text::Line;
 use std::collections::VecDeque;
 
-/// Maximum lines held in the render cache.
-/// Enough for ~50 pages of scroll-up at 50 lines/page.
-const MAX_CACHE_LINES: usize = 2500;
+/// Maximum lines held in the render cache, folded-away lines included.
+/// A full read keeps its content here for the full view, so this is set
+/// for a session's worth of those, not just ~50 pages of what's shown.
+const MAX_CACHE_LINES: usize = 10_000;
+
+/// Which view a line belongs to.
+///
+/// Tool output is shown folded by default: a read as one summary line, other
+/// output as its first lines and a "… +N lines" marker. The full view
+/// (Ctrl+O) shows every line instead. Both live in the buffer at once, each
+/// line tagged, so switching is a redraw, not a re-render.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Fold {
+    /// Shown in both views: everything that isn't folded tool output.
+    #[default]
+    Always,
+    /// Folded view only: a summary or a "… +N lines" marker.
+    Folded,
+    /// Full view only: the lines folding hides.
+    Full,
+}
+
+/// One rendered line and how to show it.
+struct Entry {
+    line: Line<'static>,
+    /// Columns to skip during NoSelect copy. 0 = no gutter (normal text).
+    gutter: u16,
+    fold: Fold,
+}
 
 /// Scrollable buffer of rendered `Line`s with sticky-bottom auto-scroll.
 pub struct ScrollBuffer {
     /// The rendered lines (ring buffer).
-    lines: VecDeque<Line<'static>>,
+    entries: VecDeque<Entry>,
 
-    /// Per-line gutter width (columns to skip during NoSelect copy).
-    /// 0 = no gutter (normal text). Parallel with `lines`.
-    gutter_widths: VecDeque<u16>,
+    /// Sequence number of `entries[0]`: each pushed line gets the next one,
+    /// so a caller can find lines it pushed earlier after older ones were
+    /// evicted ([`Self::next_seq`], [`Self::fold_since`]).
+    first_seq: u64,
+
+    /// The full view is on: [`Fold::Full`] lines are shown instead of
+    /// [`Fold::Folded`] ones.
+    full: bool,
 
     /// Scroll offset: number of lines scrolled UP from the bottom.
     /// 0 = viewing the bottom (latest content).
@@ -47,12 +78,34 @@ impl ScrollBuffer {
     pub fn new(capacity: usize) -> Self {
         let cap = capacity.min(4096);
         Self {
-            lines: VecDeque::with_capacity(cap),
-            gutter_widths: VecDeque::with_capacity(cap),
+            entries: VecDeque::with_capacity(cap),
+            first_seq: 0,
+            full: false,
             scroll_offset: 0,
             sticky_bottom: true,
             oldest_message_id: None,
             cached_term_width: 80,
+        }
+    }
+
+    fn shows(&self, fold: Fold) -> bool {
+        match fold {
+            Fold::Always => true,
+            Fold::Folded => !self.full,
+            Fold::Full => self.full,
+        }
+    }
+
+    fn visible(&self) -> impl Iterator<Item = &Entry> {
+        self.entries.iter().filter(|e| self.shows(e.fold))
+    }
+
+    fn push_entry(&mut self, entry: Entry) {
+        self.entries.push_back(entry);
+        self.enforce_capacity();
+        // If sticky, keep scroll at bottom
+        if self.sticky_bottom {
+            self.scroll_offset = 0;
         }
     }
 
@@ -62,20 +115,41 @@ impl ScrollBuffer {
     /// content. If the buffer exceeds the max cache size, the oldest
     /// lines are evicted from the front.
     pub fn push(&mut self, line: Line<'static>) {
-        self.lines.push_back(line);
-        self.gutter_widths.push_back(0);
-        self.enforce_capacity();
+        self.push_folded(line, Fold::Always);
+    }
 
-        // If sticky, keep scroll at bottom
-        if self.sticky_bottom {
-            self.scroll_offset = 0;
-        }
+    /// Append a line that only one of the two views shows.
+    pub fn push_folded(&mut self, line: Line<'static>, fold: Fold) {
+        self.push_entry(Entry {
+            line,
+            gutter: 0,
+            fold,
+        });
     }
 
     /// Append a line with a gutter width (for NoSelect diff lines).
     pub fn push_with_gutter(&mut self, line: Line<'static>, gutter_width: u16) {
-        self.lines.push_back(line);
-        self.gutter_widths.push_back(gutter_width);
+        self.push_entry(Entry {
+            line,
+            gutter: gutter_width,
+            fold: Fold::Always,
+        });
+    }
+
+    /// Append multiple lines at once.
+    pub fn push_lines(&mut self, lines: impl IntoIterator<Item = Line<'static>>) {
+        self.push_folded_lines(lines.into_iter().map(|l| (l, Fold::Always)));
+    }
+
+    /// Append lines, each with the view it belongs to.
+    pub fn push_folded_lines(&mut self, lines: impl IntoIterator<Item = (Line<'static>, Fold)>) {
+        for (line, fold) in lines {
+            self.entries.push_back(Entry {
+                line,
+                gutter: 0,
+                fold,
+            });
+        }
         self.enforce_capacity();
 
         if self.sticky_bottom {
@@ -83,16 +157,57 @@ impl ScrollBuffer {
         }
     }
 
-    /// Append multiple lines at once.
-    pub fn push_lines(&mut self, lines: impl IntoIterator<Item = Line<'static>>) {
-        for line in lines {
-            self.lines.push_back(line);
-            self.gutter_widths.push_back(0);
-        }
-        self.enforce_capacity();
+    /// Sequence number the next pushed line will get.
+    pub fn next_seq(&self) -> u64 {
+        self.first_seq + self.entries.len() as u64
+    }
 
+    /// Fold the lines pushed since `start` (a [`Self::next_seq`] value) the
+    /// way finished tool output is folded: keep the first `head` and last
+    /// `tail` in both views, and show the rest only in the full view, with
+    /// `marker(hidden)` in their place in the folded one. For output that
+    /// streamed in line by line before anyone knew how long it would be.
+    /// Does nothing when no more than one line would be hidden.
+    pub fn fold_since(
+        &mut self,
+        start: u64,
+        head: usize,
+        tail: usize,
+        marker: impl FnOnce(usize) -> Line<'static>,
+    ) {
+        let from = start.saturating_sub(self.first_seq) as usize;
+        let count = self.entries.len().saturating_sub(from);
+        if count <= head + tail + 1 {
+            return;
+        }
+        let hidden = count - head - tail;
+        for entry in self.entries.range_mut(from + head..from + head + hidden) {
+            entry.fold = Fold::Full;
+        }
+        self.entries.insert(
+            from + head,
+            Entry {
+                line: marker(hidden),
+                gutter: 0,
+                fold: Fold::Folded,
+            },
+        );
         if self.sticky_bottom {
             self.scroll_offset = 0;
+        }
+    }
+
+    /// Whether the full view is on.
+    pub fn is_full(&self) -> bool {
+        self.full
+    }
+
+    /// Switch between the folded and the full view. The view goes to the
+    /// bottom: what was on screen may have moved by any amount.
+    pub fn set_full(&mut self, full: bool) {
+        if self.full != full {
+            self.full = full;
+            self.scroll_to_bottom();
         }
     }
 
@@ -138,7 +253,7 @@ impl ScrollBuffer {
     /// Jump to the top of the buffer.
     pub fn scroll_to_top(&mut self, term_width: usize, viewport_height: usize) {
         self.cached_term_width = term_width;
-        if !self.lines.is_empty() {
+        if !self.entries.is_empty() {
             let total = self.total_visual_lines(term_width);
             self.scroll_offset = total.saturating_sub(viewport_height);
             self.sticky_bottom = false;
@@ -149,7 +264,7 @@ impl ScrollBuffer {
     /// buffer. Used to trigger loading older messages from the DB.
     #[allow(dead_code)] // wired when virtual scroll pagination lands
     pub fn at_top(&self, term_width: usize, viewport_height: usize) -> bool {
-        if self.lines.is_empty() {
+        if self.entries.is_empty() {
             return false;
         }
         let total = self.total_visual_lines(term_width);
@@ -157,27 +272,27 @@ impl ScrollBuffer {
         self.scroll_offset >= max_offset && max_offset > 0
     }
 
-    /// Return all lines in the buffer.
+    /// Return the lines the current view shows.
     ///
     /// Used by `render_history()` which passes everything to
     /// `Paragraph::wrap().scroll()` — ratatui handles the visual
     /// line math for word-wrapped content.
     pub fn all_lines(&self) -> impl Iterator<Item = &Line<'static>> {
-        self.lines.iter()
+        self.visible().map(|e| &e.line)
     }
 
     /// Return the per-line gutter widths (parallel with `all_lines()`).
     ///
     /// Used by mouse selection to skip gutter columns during copy.
-    pub fn gutter_widths(&self) -> &VecDeque<u16> {
-        &self.gutter_widths
+    pub fn gutter_widths(&self) -> impl Iterator<Item = u16> + '_ {
+        self.visible().map(|e| e.gutter)
     }
 
     /// Compute the total number of visual (wrapped) lines at a given
     /// terminal width. Used for scrollbar state and offset clamping.
     pub fn total_visual_lines(&self, term_width: usize) -> usize {
         let w = term_width.max(1);
-        self.lines.iter().map(|l| visual_height(l, w)).sum()
+        self.visible().map(|e| visual_height(&e.line, w)).sum()
     }
 
     /// Compute the Paragraph scroll-from-top offset for the current
@@ -194,15 +309,15 @@ impl ScrollBuffer {
         (from_top.min(u16::MAX as usize) as u16, 0)
     }
 
-    /// Total number of lines in the buffer.
+    /// Total number of lines in the buffer, both views' included.
     pub fn len(&self) -> usize {
-        self.lines.len()
+        self.entries.len()
     }
 
     /// Whether the buffer is empty.
     #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
-        self.lines.is_empty()
+        self.entries.is_empty()
     }
 
     /// Current scroll offset (lines from bottom).
@@ -229,8 +344,8 @@ impl ScrollBuffer {
     /// Clear all lines and reset scroll state.
     #[allow(dead_code)]
     pub fn clear(&mut self) {
-        self.lines.clear();
-        self.gutter_widths.clear();
+        self.first_seq += self.entries.len() as u64;
+        self.entries.clear();
         self.scroll_offset = 0;
         self.sticky_bottom = true;
     }
@@ -239,17 +354,18 @@ impl ScrollBuffer {
     ///
     /// Adjusts `scroll_offset` by the evicted line's visual height
     /// (not a flat 1) to prevent scroll position drift when wrapped
-    /// lines are evicted (#528).
+    /// lines are evicted (#528). A line the current view hides takes up
+    /// no rows, so it moves nothing.
     fn enforce_capacity(&mut self) {
         let w = self.cached_term_width.max(1);
-        while self.lines.len() > MAX_CACHE_LINES {
-            if let Some(evicted) = self.lines.pop_front()
-                && self.scroll_offset > 0
-            {
-                let vis = visual_height(&evicted, w);
-                self.scroll_offset = self.scroll_offset.saturating_sub(vis);
+        while self.entries.len() > MAX_CACHE_LINES {
+            if let Some(evicted) = self.entries.pop_front() {
+                self.first_seq += 1;
+                if self.scroll_offset > 0 && self.shows(evicted.fold) {
+                    let vis = visual_height(&evicted.line, w);
+                    self.scroll_offset = self.scroll_offset.saturating_sub(vis);
+                }
             }
-            self.gutter_widths.pop_front();
         }
     }
 
@@ -262,9 +378,13 @@ impl ScrollBuffer {
         let lines: Vec<_> = lines.into_iter().collect();
         let count = lines.len();
         for line in lines.into_iter().rev() {
-            self.lines.push_front(line);
-            self.gutter_widths.push_front(0);
+            self.entries.push_front(Entry {
+                line,
+                gutter: 0,
+                fold: Fold::Always,
+            });
         }
+        self.first_seq = self.first_seq.saturating_sub(count as u64);
         // Adjust scroll offset to keep the viewport stable
         // (content shifted down by `count` logical lines)
         self.scroll_offset += count;
@@ -312,6 +432,73 @@ mod tests {
             .take(height)
             .map(line_text)
             .collect()
+    }
+
+    #[test]
+    fn the_full_view_swaps_folded_lines_for_full_ones() {
+        let mut buf = ScrollBuffer::new(100);
+        buf.push(make_line("header"));
+        buf.push_folded(make_line("summary"), Fold::Folded);
+        buf.push_folded(make_line("detail"), Fold::Full);
+        buf.push(make_line("after"));
+        assert_eq!(visible_text(&buf, H), vec!["header", "summary", "after"]);
+        buf.set_full(true);
+        assert_eq!(visible_text(&buf, H), vec!["header", "detail", "after"]);
+        assert_eq!(buf.gutter_widths().count(), 3);
+        assert_eq!(buf.len(), 4);
+    }
+
+    #[test]
+    fn fold_since_folds_the_lines_pushed_after_a_point() {
+        let mut buf = ScrollBuffer::new(100);
+        buf.push(make_line("before"));
+        let start = buf.next_seq();
+        for i in 1..=10 {
+            buf.push(make_line(&format!("l{i}")));
+        }
+        buf.fold_since(start, 2, 1, |n| make_line(&format!("+{n}")));
+        assert_eq!(
+            visible_text(&buf, H),
+            vec!["before", "l1", "l2", "+7", "l10"]
+        );
+        buf.set_full(true);
+        assert_eq!(visible_text(&buf, H).len(), 11);
+
+        // Too few lines to be worth a marker: left alone.
+        let mut buf = ScrollBuffer::new(100);
+        let start = buf.next_seq();
+        for i in 1..=3 {
+            buf.push(make_line(&format!("l{i}")));
+        }
+        buf.fold_since(start, 2, 0, |n| make_line(&format!("+{n}")));
+        assert_eq!(visible_text(&buf, H), vec!["l1", "l2", "l3"]);
+    }
+
+    #[test]
+    fn switching_views_returns_to_the_bottom() {
+        let mut buf = ScrollBuffer::new(100);
+        for i in 0..100 {
+            buf.push(make_line(&format!("line {i}")));
+        }
+        buf.scroll_up(30, W, H);
+        assert!(!buf.is_sticky());
+        buf.set_full(true);
+        assert!(buf.is_sticky());
+        assert_eq!(buf.offset(), 0);
+    }
+
+    #[test]
+    fn evicting_a_hidden_line_moves_nothing_on_screen() {
+        let mut buf = ScrollBuffer::new(100);
+        buf.push_folded(make_line("hidden"), Fold::Full);
+        for i in 0..(MAX_CACHE_LINES - 1) {
+            buf.push(make_line(&format!("line {i}")));
+        }
+        buf.scroll_up(10, W, H);
+        let before = buf.offset();
+        buf.push(make_line("one more"));
+        assert_eq!(buf.offset(), before);
+        assert_eq!(buf.len(), MAX_CACHE_LINES);
     }
 
     #[test]

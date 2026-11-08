@@ -77,7 +77,7 @@ pub const SLASH_COMMANDS: &[(&str, &str, Option<&str>)] = &[
     ),
     ("/sessions", "List/resume/delete sessions", None),
     ("/skills", "List available skills (search with query)", None),
-    ("/verbose", "Toggle full tool output", None),
+    ("/verbose", "Tool output in full or folded (Ctrl+O)", None),
     ("/vim", "Toggle vim-mode editing in the input", None),
 ];
 

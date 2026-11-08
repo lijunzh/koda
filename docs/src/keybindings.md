@@ -10,6 +10,7 @@
 | `Shift+Tab` | Cycle trust mode (Safe ↔ Auto) |
 | `↑ / ↓` | Cycle through input history |
 | `Ctrl+R` | Reverse history search |
+| `Ctrl+O` | Tool output in full, or folded again (works mid-turn) |
 
 ## Navigation
 

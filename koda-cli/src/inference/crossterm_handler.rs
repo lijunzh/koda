@@ -359,6 +359,11 @@ async fn handle_inference_key_inline(
                 child_activity,
             );
         }
+        (KeyCode::Char('o'), m) if m.contains(KeyModifiers::CONTROL) => {
+            // Ctrl+O: tool output in full, or folded again, as at idle.
+            let full = !scroll_buffer.is_full();
+            scroll_buffer.set_full(full);
+        }
         (KeyCode::BackTab, _) => {
             // Sandbox-aware cycle (#860 hard refusal). Keep the user
             // in the current mode and surface a visible warning if

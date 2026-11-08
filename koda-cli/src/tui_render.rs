@@ -36,6 +36,7 @@
 //! [`koda_core::truncate`]-based collapsing. Every output line is shown.
 
 use crate::ansi_parse::parse_ansi_spans;
+use crate::scroll_buffer::Fold;
 use crate::scroll_buffer::ScrollBuffer;
 use crate::theme;
 use crate::tui_output::{self, CYAN, DIM, MAGENTA, RED, TOOL_PREFIX, YELLOW};
@@ -51,8 +52,6 @@ use std::collections::HashMap;
 pub struct TuiRenderer {
     /// Recent tool outputs for `/expand` replay.
     pub tool_history: crate::tool_history::ToolOutputHistory,
-    /// When true, tool output is never collapsed.
-    pub verbose: bool,
     /// Last turn stats for status bar display.
     pub last_turn_stats: Option<TurnStats>,
     /// Current model name displayed in the status bar.
@@ -72,9 +71,10 @@ pub struct TuiRenderer {
     /// Pending tool call args: maps tool_call_id → (tool_name, args_json).
     /// Used to extract file paths for syntax highlighting Read/Grep results.
     pending_tool_args: HashMap<String, (String, String)>,
-    /// Tool IDs that emitted streaming output lines.
-    /// Used to avoid re-rendering the full output in ToolCallResult.
-    streaming_tool_ids: std::collections::HashSet<String>,
+    /// Tool calls that streamed output lines, with where in the buffer the
+    /// first one went. The finished result isn't rendered again; the
+    /// streamed lines are folded in place ([`ScrollBuffer::fold_since`]).
+    stream_starts: HashMap<String, u64>,
 }
 
 impl Default for TuiRenderer {
@@ -87,7 +87,6 @@ impl TuiRenderer {
     pub fn new() -> Self {
         Self {
             tool_history: crate::tool_history::ToolOutputHistory::new(),
-            verbose: false,
             last_turn_stats: None,
             model: String::new(),
             text_buf: String::new(),
@@ -97,7 +96,7 @@ impl TuiRenderer {
             response_started: false,
             md: crate::md_render::MarkdownRenderer::new(),
             pending_tool_args: HashMap::new(),
-            streaming_tool_ids: std::collections::HashSet::new(),
+            stream_starts: HashMap::new(),
         }
     }
 
@@ -186,7 +185,9 @@ impl TuiRenderer {
                 line,
                 is_stderr,
             } => {
-                self.streaming_tool_ids.insert(id.clone());
+                self.stream_starts
+                    .entry(id.clone())
+                    .or_insert_with(|| buffer.next_seq());
                 // Pull the body color from the central theme module so
                 // read-only output stays legible (#804) and stderr is
                 // always red regardless of which tool produced it.
@@ -210,11 +211,16 @@ impl TuiRenderer {
                 );
             }
             EngineEvent::ToolCallResult {
-                id, name, output, ..
+                id,
+                name,
+                output,
+                outcome,
             } => {
+                let failed = outcome == koda_core::engine::event::ToolOutcome::Error;
                 // If we streamed output lines, skip rendering the full result
-                // (the user already saw it in real-time). Just show exit code.
-                let streamed = self.streaming_tool_ids.remove(&id);
+                // (the user already saw it in real-time): fold what streamed,
+                // as finished output is, and show the exit code.
+                let stream_start = self.stream_starts.remove(&id);
                 let pending = self.pending_tool_args.remove(&id);
                 let file_ext = pending
                     .as_ref()
@@ -232,8 +238,9 @@ impl TuiRenderer {
                 };
 
                 self.tool_history.push(&name, &output);
-                if streamed {
-                    // Already streamed line-by-line — just show exit code summary.
+                if let Some(start) = stream_start {
+                    let tail = if failed { FOLD_TAIL } else { 0 };
+                    buffer.fold_since(start, FOLD_HEAD, tail, fold_marker);
                     let exit_line = output.lines().next().unwrap_or("");
                     tui_output::emit_line(
                         buffer,
@@ -256,14 +263,13 @@ impl TuiRenderer {
                             ]),
                         );
                     } else {
-                        render_tool_output(
-                            buffer,
+                        buffer.push_folded_lines(tool_output_view(
                             &name,
                             &output,
-                            self.verbose,
+                            failed,
                             file_ext.as_deref(),
                             grep_pattern.as_deref(),
-                        );
+                        ));
                     }
                 }
                 self.preview_shown = false;
@@ -403,7 +409,7 @@ impl TuiRenderer {
 /// for that call — fixed in this PR after we discovered the previous
 /// implementation only checked `path`, silently disabling highlighting
 /// for every Read call (since koda's Read tool advertises `file_path`).
-fn extract_file_extension(args_json: &str) -> Option<String> {
+pub(crate) fn extract_file_extension(args_json: &str) -> Option<String> {
     let args: serde_json::Value = serde_json::from_str(args_json).ok()?;
     let path = args
         .get("file_path")
@@ -413,18 +419,77 @@ fn extract_file_extension(args_json: &str) -> Option<String> {
     Some(ext.to_string())
 }
 
-fn render_tool_output(
-    buffer: &mut ScrollBuffer,
+/// Lines of finished tool output a fold keeps at the top, in both views.
+const FOLD_HEAD: usize = 5;
+/// Lines a fold keeps at the bottom of a failed command's output, whose last
+/// lines usually say what went wrong.
+const FOLD_TAIL: usize = 5;
+
+/// The line that stands in, in the folded view, for the lines it hides.
+pub(crate) fn fold_marker(hidden: usize) -> Line<'static> {
+    let noun = if hidden == 1 { "line" } else { "lines" };
+    Line::from(vec![
+        Span::styled("  \u{2502} ", TOOL_PREFIX),
+        Span::styled(
+            format!("\u{2026} +{hidden} {noun} (ctrl+o to show all)"),
+            DIM,
+        ),
+    ])
+}
+
+/// What a `Read` result says about itself: its numbered lines run from
+/// `first` to `last`, of `total` when the tool stopped early.
+fn read_summary(output: &str) -> Option<String> {
+    let numbers: Vec<usize> = output
+        .lines()
+        .filter_map(|l| l.split_once('\t')?.0.trim().parse().ok())
+        .collect();
+    let (&first, &last) = (numbers.first()?, numbers.last()?);
+    let total = output.lines().find_map(|l| {
+        let rest = l.split_once("[Showing lines ")?.1;
+        rest.split_once(" of ")?
+            .1
+            .split_once('.')?
+            .0
+            .parse::<usize>()
+            .ok()
+    });
+    Some(match total {
+        Some(total) => format!("lines {first}\u{2013}{last} of {total}"),
+        None if first == 1 => {
+            let n = numbers.len();
+            format!("{n} {}", if n == 1 { "line" } else { "lines" })
+        }
+        None => format!("lines {first}\u{2013}{last}"),
+    })
+}
+
+/// A finished tool result as the TUI shows it, each line tagged with the
+/// view it belongs to. The live renderer pushes these into the buffer and
+/// `history_render` returns them for a resumed session, so both look alike
+/// and Ctrl+O switches both.
+///
+/// - **Read:** one dim summary line (`└ 123 lines`, `└ lines 40–80 of
+///   1,340`); the highlighted content is in the full view only. Most reads
+///   aren't worth reading, and they were what made the reply hard to find.
+/// - **Edit, Write, Delete:** the diff, not folded, as before.
+/// - **Everything else:** the first [`FOLD_HEAD`] lines and, when the call
+///   failed, the last [`FOLD_TAIL`], with a [`fold_marker`] for the rest.
+///
+/// Bodies take their effect's colour ([`theme::content_style_for`]) on top
+/// of any ANSI colour of their own, so a command's output looks the same
+/// whether it streamed or not.
+pub(crate) fn tool_output_view(
     name: &str,
     output: &str,
-    verbose: bool,
+    failed: bool,
     file_ext: Option<&str>,
     grep_pattern: Option<&str>,
-) {
+) -> Vec<(Line<'static>, Fold)> {
     use koda_core::truncate::{Truncated, truncate_for_display};
 
     if output.is_empty() {
-        return;
+        return Vec::new();
     }
 
     // Collapse consecutive blank lines (3+ → 1) to reduce visual noise,
@@ -441,90 +506,101 @@ fn render_tool_output(
     } else {
         None
     };
+    let body = theme::content_style_for(name, false);
 
-    let render_line = |buffer: &mut ScrollBuffer,
-                       line: &str,
-                       hl: &mut Option<crate::highlight::CodeHighlighter>| {
+    let mut render_line = |line: &str| -> Line<'static> {
         if name == "Grep" {
-            crate::tool_output_lines::render_grep_line(buffer, line, grep_pattern);
+            crate::tool_output_lines::grep_line(line, grep_pattern)
         } else if name == "List" {
-            crate::tool_output_lines::render_list_line(buffer, line);
+            crate::tool_output_lines::list_line(line)
         } else if name == "Glob" {
-            crate::tool_output_lines::render_glob_line(buffer, line);
-        } else if let Some(h) = hl.as_mut() {
+            crate::tool_output_lines::glob_line(line)
+        } else if let Some(h) = highlighter.as_mut() {
             let mut spans = vec![Span::styled("  \u{2502} ", DIM)];
             spans.extend(h.highlight_spans(line));
-            tui_output::emit_line(buffer, Line::from(spans));
+            Line::from(spans)
         } else if is_diff_tool && line.starts_with('+') {
-            tui_output::emit_line(
-                buffer,
-                Line::from(vec![
-                    Span::styled("  \u{2502} ", DIM),
-                    Span::styled(line.to_string(), Style::default().fg(Color::Green)),
-                ]),
-            );
+            Line::from(vec![
+                Span::styled("  \u{2502} ", DIM),
+                Span::styled(line.to_string(), Style::default().fg(Color::Green)),
+            ])
         } else if is_diff_tool && line.starts_with('-') {
-            tui_output::emit_line(
-                buffer,
-                Line::from(vec![
-                    Span::styled("  \u{2502} ", DIM),
-                    Span::styled(line.to_string(), Style::default().fg(Color::Red)),
-                ]),
-            );
+            Line::from(vec![
+                Span::styled("  \u{2502} ", DIM),
+                Span::styled(line.to_string(), Style::default().fg(Color::Red)),
+            ])
         } else if is_diff_tool && line.starts_with('@') {
-            tui_output::emit_line(
-                buffer,
-                Line::from(vec![
-                    Span::styled("  \u{2502} ", DIM),
-                    Span::styled(line.to_string(), Style::default().fg(Color::Cyan)),
-                ]),
-            );
+            Line::from(vec![
+                Span::styled("  \u{2502} ", DIM),
+                Span::styled(line.to_string(), Style::default().fg(Color::Cyan)),
+            ])
         } else {
             // Parse ANSI escape codes into native ratatui Spans.
             // Colored output from tools (cargo, git, pytest, etc.)
             // renders with proper styles instead of raw escape codes.
-            let content_spans = parse_ansi_spans(line);
             let mut spans = vec![Span::styled("  \u{2502} ", DIM)];
-            spans.extend(content_spans);
-            tui_output::emit_line(buffer, Line::from(spans));
+            spans.extend(parse_ansi_spans(line).into_iter().map(|mut span| {
+                span.style = body.patch(span.style);
+                span
+            }));
+            Line::from(spans)
         }
     };
 
-    if verbose {
-        // Show everything in verbose mode
-        for line in output.lines() {
-            render_line(buffer, line, &mut highlighter);
-        }
-        return;
-    }
-
-    match truncate_for_display(output) {
-        Truncated::Full(_) => {
-            for line in output.lines() {
-                render_line(buffer, line, &mut highlighter);
-            }
-        }
-        Truncated::Split {
-            head,
-            tail,
-            hidden,
-            total,
-        } => {
-            for line in &head {
-                render_line(buffer, line, &mut highlighter);
-            }
-            tui_output::emit_line(
-                buffer,
-                Line::from(vec![Span::styled(
+    if is_diff_tool {
+        let always = |line| (line, Fold::Always);
+        return match truncate_for_display(output) {
+            Truncated::Full(_) => output.lines().map(|l| always(render_line(l))).collect(),
+            Truncated::Split {
+                head,
+                tail,
+                hidden,
+                total,
+            } => {
+                let mut lines: Vec<_> = head.iter().map(|l| always(render_line(l))).collect();
+                lines.push(always(Line::from(vec![Span::styled(
                     koda_core::truncate::separator(hidden, total),
                     DIM,
-                )]),
-            );
-            for line in &tail {
-                render_line(buffer, line, &mut highlighter);
+                )])));
+                lines.extend(tail.iter().map(|l| always(render_line(l))));
+                lines
             }
-        }
+        };
     }
+
+    if name == "Read"
+        && let Some(summary) = read_summary(output)
+    {
+        let mut lines = vec![(
+            Line::from(vec![
+                Span::styled("  \u{2514} ", TOOL_PREFIX),
+                Span::styled(summary, DIM),
+            ]),
+            Fold::Folded,
+        )];
+        lines.extend(output.lines().map(|l| (render_line(l), Fold::Full)));
+        return lines;
+    }
+
+    let rendered: Vec<Line<'static>> = output.lines().map(&mut render_line).collect();
+    let tail = if failed { FOLD_TAIL } else { 0 };
+    if rendered.len() <= FOLD_HEAD + tail + 1 {
+        return rendered.into_iter().map(|l| (l, Fold::Always)).collect();
+    }
+    let hidden = rendered.len() - FOLD_HEAD - tail;
+    let mut lines = Vec::with_capacity(rendered.len() + 1);
+    for (i, line) in rendered.into_iter().enumerate() {
+        if i == FOLD_HEAD {
+            lines.push((fold_marker(hidden), Fold::Folded));
+        }
+        let fold = if i < FOLD_HEAD || i >= FOLD_HEAD + hidden {
+            Fold::Always
+        } else {
+            Fold::Full
+        };
+        lines.push((line, fold));
+    }
+    lines
 }
 
 /// Collapse runs of consecutive blank lines down to at most 1.
@@ -560,6 +636,132 @@ mod tests {
 
     // ── helpers ──────────────────────────────────────────────────────────────
 
+    fn view_text(view: &[(Line<'static>, Fold)], hide: Fold) -> Vec<String> {
+        view.iter()
+            .filter(|(_, f)| *f != hide)
+            .map(|(l, _)| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn a_read_folds_to_its_summary() {
+        let out = "     1\tfn a() {}\n     2\tfn b() {}\n     3\tfn c() {}";
+        let view = tool_output_view("Read", out, false, Some("rs"), None);
+        let folded = view_text(&view, Fold::Full);
+        assert_eq!(folded, vec!["  \u{2514} 3 lines"]);
+        let full = view_text(&view, Fold::Folded);
+        assert_eq!(full.len(), 3);
+        assert!(full[1].contains("fn b"), "{full:?}");
+    }
+
+    #[test]
+    fn a_read_summary_names_a_range_and_a_cut() {
+        assert_eq!(
+            read_summary("    40\ta\n    41\tb").as_deref(),
+            Some("lines 40\u{2013}41")
+        );
+        let cut =
+            "     1\ta\n     2\tb\n\n... [Showing lines 1-2 of 1340. Continue with start_line=3.]";
+        assert_eq!(
+            read_summary(cut).as_deref(),
+            Some("lines 1\u{2013}2 of 1340")
+        );
+        assert_eq!(read_summary("     1\tonly").as_deref(), Some("1 line"));
+        // Not numbered (an empty file, an error): shown as it is.
+        assert_eq!(read_summary("(empty file)"), None);
+        let view = tool_output_view("Read", "(empty file)", false, Some("rs"), None);
+        assert_eq!(
+            view_text(&view, Fold::Full),
+            vec!["  \u{2502} (empty file)"]
+        );
+    }
+
+    #[test]
+    fn long_output_folds_after_its_first_lines() {
+        let out: String = (1..=20).map(|i| format!("out {i}\n")).collect();
+        let view = tool_output_view("Bash", &out, false, None, None);
+        let folded = view_text(&view, Fold::Full);
+        assert_eq!(folded.len(), 6, "{folded:?}");
+        assert!(folded[4].ends_with("out 5"));
+        assert!(folded[5].contains("+15 lines (ctrl+o to show all)"));
+        assert_eq!(view_text(&view, Fold::Folded).len(), 20);
+
+        // A failure keeps its last lines too: they say what went wrong.
+        let failed = view_text(
+            &tool_output_view("Bash", &out, true, None, None),
+            Fold::Full,
+        );
+        assert_eq!(failed.len(), 11, "{failed:?}");
+        assert!(failed[5].contains("+10 lines"));
+        assert!(failed[10].ends_with("out 20"));
+
+        // Six lines fold nothing away worth a marker.
+        let short: String = (1..=6).map(|i| format!("out {i}\n")).collect();
+        let view = tool_output_view("Bash", &short, false, None, None);
+        assert!(view.iter().all(|(_, f)| *f == Fold::Always));
+    }
+
+    #[test]
+    fn output_takes_its_effect_colour() {
+        let view = tool_output_view("WebFetch", "plain text", false, None, None);
+        let body = &view[0].0.spans[1];
+        assert_eq!(
+            body.style.fg,
+            theme::content_style_for("WebFetch", false).fg
+        );
+        // An ANSI colour of its own still wins.
+        let view = tool_output_view("Bash", "\x1b[31mred\x1b[0m", false, None, None);
+        assert_eq!(view[0].0.spans[1].style.fg, Some(Color::Red));
+    }
+
+    /// Streamed output can't be folded as it arrives, so it's folded in place
+    /// when the command ends.
+    #[test]
+    fn streamed_output_folds_when_the_command_ends() {
+        let mut renderer = TuiRenderer::new();
+        let mut buffer = ScrollBuffer::new(256);
+        renderer.render_to_buffer(
+            EngineEvent::ToolCallStart {
+                id: "b1".into(),
+                name: "Bash".into(),
+                args: json!({ "command": "seq 20" }),
+                is_sub_agent: false,
+            },
+            &mut buffer,
+        );
+        for i in 1..=20 {
+            renderer.render_to_buffer(
+                EngineEvent::ToolOutputLine {
+                    id: "b1".into(),
+                    line: format!("{i}"),
+                    is_stderr: false,
+                },
+                &mut buffer,
+            );
+        }
+        renderer.render_to_buffer(
+            EngineEvent::ToolCallResult {
+                id: "b1".into(),
+                name: "Bash".into(),
+                output: "Exit code: 0 | stdout: 20 lines".into(),
+                outcome: koda_core::engine::ToolOutcome::Success,
+            },
+            &mut buffer,
+        );
+        let text = |b: &ScrollBuffer| -> Vec<String> {
+            b.all_lines()
+                .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+                .collect()
+        };
+        let folded = text(&buffer);
+        // Header, 5 lines, the marker, the exit line.
+        assert_eq!(folded.len(), 8, "{folded:?}");
+        assert!(folded[6].contains("+15 lines"), "{folded:?}");
+        assert!(folded[7].contains("Exit code: 0"), "{folded:?}");
+        buffer.set_full(true);
+        assert_eq!(text(&buffer).len(), 22);
+    }
+
     /// Drive `TuiRenderer` with a complete Read tool call and return all
     /// buffer lines for inspection.
     fn render_read(file_path: &str, content: &str) -> Vec<ratatui::text::Line<'static>> {
@@ -583,6 +785,9 @@ mod tests {
             },
             &mut buffer,
         );
+        // The content is in the full view; a numbered read's folded view is
+        // just its summary.
+        buffer.set_full(true);
         buffer.all_lines().cloned().collect()
     }
 
