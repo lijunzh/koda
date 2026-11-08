@@ -365,7 +365,7 @@ pub enum EngineEvent {
 
     /// Inference completion footer with timing and token stats.
     Footer {
-        /// Input tokens used.
+        /// Input tokens used, the cached ones included, for every provider.
         prompt_tokens: i64,
         /// Output tokens generated.
         completion_tokens: i64,

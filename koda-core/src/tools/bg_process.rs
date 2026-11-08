@@ -180,6 +180,10 @@ impl BgRegistry {
     /// the TUI (humans get the global view) and as the engine of
     /// [`Self::snapshot_for_caller`].
     pub fn snapshot(&self) -> Vec<BgProcessSnapshot> {
+        // Reap first, so a process that exited or was killed from outside
+        // Koda stops showing as running. The TUI draws its background panel
+        // from this every frame, and nothing else reaps on that path.
+        self.reap();
         let guard = self.inner.lock().unwrap();
         let now = Instant::now();
         let mut out: Vec<_> = guard
@@ -470,6 +474,24 @@ mod tests {
 
         // Sibling sees nothing of peer's.
         assert!(reg.snapshot_for_caller(Some(42)).is_empty());
+    }
+
+    /// The TUI's background panel reads `snapshot` and nothing else, so a
+    /// process killed outside Koda must drop off it without a separate reap.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn snapshot_sees_an_exited_child_without_a_separate_reap() {
+        let reg = BgRegistry::new();
+        let (pid, child) = spawn_true_child();
+        reg.insert(pid, "true".into(), child, None);
+        let mut seen = false;
+        for _ in 0..50 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            if reg.snapshot()[0].status != BgProcessStatus::Running {
+                seen = true;
+                break;
+            }
+        }
+        assert!(seen, "snapshot kept showing an exited child as running");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

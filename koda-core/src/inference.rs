@@ -1608,7 +1608,10 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
         let char_count = stream_result.char_count;
 
         // Every reply is billed, including the ones retried below.
-        total_prompt_tokens += usage.prompt_tokens;
+        // The whole input, cached tokens included: Anthropic's `prompt_tokens`
+        // leaves out what the cache served, so the TUI's cache share
+        // (`cache_read / prompt`) came out in the hundreds of thousands.
+        total_prompt_tokens += provider.context_tokens(&usage);
         total_completion_tokens += usage.completion_tokens;
         total_cache_read_tokens += usage.cache_read_tokens;
         total_thinking_tokens += usage.thinking_tokens;
