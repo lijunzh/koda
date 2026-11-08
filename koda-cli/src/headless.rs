@@ -605,6 +605,11 @@ impl HeadlessSink {
 }
 
 impl EngineSink for HeadlessSink {
+    fn can_ask(&self) -> bool {
+        // `respond` answers every approval itself; nobody is there.
+        false
+    }
+
     fn emit(&self, event: EngineEvent) {
         self.handle(None, event);
     }

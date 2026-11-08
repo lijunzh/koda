@@ -207,7 +207,8 @@ the reason and waits for you, in Auto as in Safe:
 
 The command then runs as it would in your own shell, with no sandbox and no
 proxy. Each such call asks again; `a` doesn't change that. Sub-agents and
-headless runs have no one to ask, so they're refused. Codex
+headless runs have no one to ask, so they're refused, and after a denial
+they're told the command can't leave the sandbox in that run. Codex
 (`require_escalated`) and Claude Code (`dangerouslyDisableSandbox`) do the
 same.
 

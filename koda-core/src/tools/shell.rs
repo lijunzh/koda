@@ -327,9 +327,16 @@ pub async fn run_shell_command(
             // Always-on (informational only — doesn't change exit codes or
             // change which lines we already collected).
             // A command run outside the sandbox can't hit a sandbox denial;
-            // an "Operation not permitted" there is the OS's own.
-            if !outside_sandbox {
-                annotate_violations(exit_code, command, &mut stderr_lines);
+            // an "Operation not permitted" there is the OS's own. Nor can one
+            // run where no sandbox backend exists (Safe mode falls back to
+            // running unsandboxed).
+            if !outside_sandbox && crate::sandbox::is_available() {
+                // A sub-agent, or a run whose client answers approvals itself
+                // (headless), is refused anything outside the sandbox. With
+                // no sink to ask (tests), keep the usual hint.
+                let approvable =
+                    caller_spawner.is_none() && sink.is_none_or(|(sink, _)| sink.can_ask());
+                annotate_violations(exit_code, command, &mut stderr_lines, approvable);
             }
 
             let summary = format_summary(exit_code, &stdout_lines, &stderr_lines, uncaptured);
@@ -950,7 +957,16 @@ fn format_full_output(
 /// formatters carry it through unchanged. Violations are also recorded
 /// in the process-wide [`koda_sandbox::global_store`] for `/sandbox
 /// status` to surface later.
-pub(crate) fn annotate_violations(exit_code: i32, command: &str, stderr_lines: &mut Vec<String>) {
+///
+/// `approvable` says whether someone can approve a run outside the sandbox:
+/// the hint after the block offers that way out only then, so a sub-agent or
+/// a headless run isn't sent toward a call it will be refused.
+pub(crate) fn annotate_violations(
+    exit_code: i32,
+    command: &str,
+    stderr_lines: &mut Vec<String>,
+    approvable: bool,
+) {
     if exit_code == 0 {
         return;
     }
@@ -969,7 +985,14 @@ pub(crate) fn annotate_violations(exit_code: i32, command: &str, stderr_lines: &
         for line in block.lines() {
             stderr_lines.push(line.to_string());
         }
-        stderr_lines.push(OUTSIDE_SANDBOX_HINT.to_string());
+        stderr_lines.push(
+            if approvable {
+                OUTSIDE_SANDBOX_HINT
+            } else {
+                NO_WAY_OUT_HINT
+            }
+            .to_string(),
+        );
     }
 }
 
@@ -977,8 +1000,14 @@ pub(crate) fn annotate_violations(exit_code: i32, command: &str, stderr_lines: &
 /// user decides, rather than guessing at the cause (it once took a blocked
 /// `nc` to mean the user was off their home network).
 const OUTSIDE_SANDBOX_HINT: &str = "Koda's sandbox blocked this command. If the user \
-     needs it, run it again with outside_sandbox=true and a reason; they'll be asked \
-     to approve it.";
+     needs it, run it again with Bash, outside_sandbox=true and a reason; they'll be \
+     asked to approve it.";
+
+/// [`OUTSIDE_SANDBOX_HINT`] where no one can approve: a sub-agent, or a
+/// headless run.
+const NO_WAY_OUT_HINT: &str = "Koda's sandbox blocked this command, and this run can't \
+     leave the sandbox: no one is here to approve it. Do without it, or say which \
+     command the user should run themselves.";
 
 // =============================================================
 // Tool trait implementation (#1265 item 5, PR-6/N).
@@ -1892,7 +1921,7 @@ mod tests {
         // Otherwise `find / 2>/dev/null` would be falsely annotated every
         // time it hits an unreadable subdir.
         let mut stderr = vec!["touch: /etc/x: Permission denied".into()];
-        annotate_violations(0, "find /", &mut stderr);
+        annotate_violations(0, "find /", &mut stderr, true);
         assert_eq!(stderr.len(), 1, "no extra lines should be appended");
         assert!(!stderr.iter().any(|l| l.contains("<sandbox_violations>")));
     }
@@ -1900,7 +1929,7 @@ mod tests {
     #[test]
     fn annotate_violations_appends_block_on_real_denial() {
         let mut stderr = vec!["touch: /etc/passwd: Operation not permitted".into()];
-        annotate_violations(1, "touch /etc/passwd", &mut stderr);
+        annotate_violations(1, "touch /etc/passwd", &mut stderr, true);
         assert!(
             stderr.iter().any(|l| l == "<sandbox_violations>"),
             "open tag must be appended: {stderr:?}"
@@ -1921,7 +1950,11 @@ mod tests {
     fn a_sandbox_denial_points_to_outside_sandbox() {
         let mut stderr =
             vec!["ssh: connect to host 192.168.10.50 port 2222: Operation not permitted".into()];
-        annotate_violations(128, "git push", &mut stderr);
+        annotate_violations(128, "git push", &mut stderr.clone(), true);
+        let mut nobody = stderr.clone();
+        annotate_violations(128, "git push", &mut nobody, false);
+        assert_eq!(nobody.last().map(String::as_str), Some(NO_WAY_OUT_HINT));
+        annotate_violations(128, "git push", &mut stderr, true);
         assert!(
             stderr.iter().any(|l| l.contains("deny network-outbound")),
             "{stderr:?}"
@@ -1937,7 +1970,7 @@ mod tests {
         // Failed command (exit_code != 0) but stderr doesn't look like
         // a sandbox denial → no annotation. E.g. `cargo build` failure.
         let mut stderr = vec!["error[E0277]: trait bound not satisfied".into()];
-        annotate_violations(101, "cargo build", &mut stderr);
+        annotate_violations(101, "cargo build", &mut stderr, true);
         assert_eq!(stderr.len(), 1, "no annotation expected: {stderr:?}");
     }
 
@@ -2234,6 +2267,61 @@ mod tests {
     /// process spawn, stream capture, kernel denial, stderr parse,
     /// `<sandbox_violations>` annotation. This is the proof-of-life test
     /// for the whole Phase 1 stack.
+    /// A sandbox denial points to `outside_sandbox` only where someone can
+    /// approve it: not for a headless run, whose client answers approvals
+    /// itself, and not for a sub-agent.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn the_way_out_is_offered_only_where_someone_can_approve_it() {
+        use crate::engine::EngineSink;
+        struct Nobody;
+        impl EngineSink for Nobody {
+            fn emit(&self, _: EngineEvent) {}
+            fn can_ask(&self) -> bool {
+                false
+            }
+        }
+        struct Someone;
+        impl EngineSink for Someone {
+            fn emit(&self, _: EngineEvent) {}
+        }
+        let home = std::env::var("HOME").unwrap_or_default();
+        let ssh = format!("{home}/.ssh");
+        if !crate::sandbox::is_available() || !std::path::Path::new(&ssh).exists() {
+            eprintln!("skip: needs the seatbelt backend and ~/.ssh");
+            return;
+        }
+        let project = tempfile::tempdir().unwrap();
+        let run = |sink: &'static dyn EngineSink, caller: Option<u32>| {
+            let project = project.path().to_path_buf();
+            let ssh = ssh.clone();
+            async move {
+                let out = run_shell_command(
+                    &project,
+                    &serde_json::json!({"command": format!("touch {ssh}/koda_hint_canary")}),
+                    500,
+                    &bg(),
+                    Some((sink, "c1")),
+                    &crate::trust::TrustMode::Safe,
+                    &koda_sandbox::SandboxPolicy::strict_default(),
+                    None,
+                    None,
+                    caller,
+                )
+                .await
+                .unwrap();
+                out.full_output.unwrap_or(out.summary)
+            }
+        };
+        let tui = run(&Someone, None).await;
+        assert!(tui.contains(OUTSIDE_SANDBOX_HINT), "{tui}");
+        let headless = run(&Nobody, None).await;
+        assert!(headless.contains(NO_WAY_OUT_HINT), "{headless}");
+        assert!(!headless.contains("outside_sandbox=true"), "{headless}");
+        let sub_agent = run(&Someone, Some(7)).await;
+        assert!(sub_agent.contains(NO_WAY_OUT_HINT), "{sub_agent}");
+    }
+
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn run_shell_command_annotates_ssh_write_denial() {

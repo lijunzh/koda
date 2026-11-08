@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **The sandbox's way out is offered only where someone can take it.** After a sandbox denial Bash told every model to run the command again outside the sandbox, but sub-agents and headless runs are always refused that. They're now told the command can't leave the sandbox in this run and to do without it or say what the user should run. And with no sandbox backend at all (Safe mode on a system without one), a permission error is no longer reported as a sandbox denial.
 - **A sandboxed command can reach a dev server Koda started.** The sandbox let commands out only through Koda's proxy, so after `python3 -m http.server 8765` in the background, `curl localhost:8765` failed with "Operation not permitted" and every request needed approval to run outside the sandbox. On macOS a command may now connect to the `localhost` ports a background command's process group listens on, found with `lsof` before each Bash call; every other local port stays closed. Background commands now run in their own process group, so stopping one stops what it started too (`npm run dev` and its server). Linux is unchanged: each command has its own network namespace there.
 - **`--model` and `KODA_MODEL` take aliases.** `koda --model claude-haiku` sent `claude-haiku` to the API and got a 404. An alias now resolves as it does in `/model`, the Claude ones to the newest model in their line, and picks its provider too, unless `--provider` or `--base-url` names another.
 

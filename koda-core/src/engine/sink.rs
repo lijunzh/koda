@@ -26,6 +26,14 @@ pub trait EngineSink: Send + Sync {
         self.emit(event);
     }
 
+    /// Whether a person is there to answer an approval request. Headless
+    /// runs answer their own and refuse anything outside the sandbox, so a
+    /// tool shouldn't point the model at a way out it can't take. A sink that
+    /// wraps another must forward this.
+    fn can_ask(&self) -> bool {
+        true
+    }
+
     /// [`Self::emit_child`] when a parent is known, otherwise [`Self::emit`].
     fn emit_from(&self, parent_id: Option<&str>, event: EngineEvent) {
         match parent_id {
@@ -218,6 +226,11 @@ impl ForwardingChildSink {
 }
 
 impl EngineSink for ForwardingChildSink {
+    fn can_ask(&self) -> bool {
+        // A background child has no one to ask.
+        false
+    }
+
     fn emit(&self, event: EngineEvent) {
         // Forward the *live* signal first while we still own the
         // event by reference. Dropping a delta on the floor here
@@ -313,6 +326,10 @@ impl<'a> FgForwardingSink<'a> {
 }
 
 impl EngineSink for FgForwardingSink<'_> {
+    fn can_ask(&self) -> bool {
+        self.inner.can_ask()
+    }
+
     fn emit(&self, event: EngineEvent) {
         // Same fan-out shape as `ForwardingChildSink::emit` — keep
         // the two arms in sync. Diverged behavior here would mean
@@ -399,6 +416,10 @@ impl<'a> TurnMeter<'a> {
 }
 
 impl EngineSink for TurnMeter<'_> {
+    fn can_ask(&self) -> bool {
+        self.inner.can_ask()
+    }
+
     fn emit(&self, event: EngineEvent) {
         if let Some(event) = self.count(event) {
             self.inner.emit(event);
@@ -624,6 +645,10 @@ pub(crate) fn classify_for_persist(
 }
 
 impl EngineSink for PersistingSink<'_> {
+    fn can_ask(&self) -> bool {
+        self.inner.can_ask()
+    }
+
     fn emit(&self, event: EngineEvent) {
         // The routing decision is a pure function (see
         // [`classify_for_persist`]); `emit` only wires it to the
@@ -805,6 +830,23 @@ impl EngineSink for TestSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct NobodySink;
+    impl EngineSink for NobodySink {
+        fn emit(&self, _event: EngineEvent) {}
+        fn can_ask(&self) -> bool {
+            false
+        }
+    }
+
+    /// Bash reads `can_ask` through the turn's wrappers, so each must pass
+    /// it on, or a headless run would look like one with someone to ask.
+    #[test]
+    fn wrapping_sinks_pass_on_whether_anyone_can_ask() {
+        assert!(NullSink.can_ask());
+        assert!(!TurnMeter::new(&NobodySink).can_ask());
+        assert!(TurnMeter::new(&NullSink).can_ask());
+    }
 
     #[test]
     fn test_sink_collects_events() {
