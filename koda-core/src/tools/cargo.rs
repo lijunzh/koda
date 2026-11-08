@@ -1089,6 +1089,11 @@ async fn run_cargo_with_env(
     let command = parsed.command_line();
     tracing::info!("Running {command}");
     let start = Instant::now();
+    // As for Bash: offer a run outside the sandbox only to someone who can
+    // approve it, and only when a sandbox backend ran the command.
+    // The dispatcher streams only Bash, so Cargo usually has no sink: that
+    // means unknown, and keeps the usual hint.
+    let approvable = sink.is_none_or(|(sink, _)| sink.can_ask());
 
     let mut cmd = crate::sandbox::build(
         &command,
@@ -1132,7 +1137,14 @@ async fn run_cargo_with_env(
         Ok(Ok(status)) => {
             group.release();
             let exit_code = status.code().unwrap_or(-1);
-            crate::tools::shell::annotate_violations(exit_code, &command, &mut collected.stderr);
+            if crate::sandbox::is_available() {
+                crate::tools::shell::annotate_violations(
+                    exit_code,
+                    &command,
+                    &mut collected.stderr,
+                    approvable,
+                );
+            }
             let report = Report::new(
                 parsed,
                 exit_code,
