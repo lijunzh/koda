@@ -458,6 +458,20 @@ impl KodaConfig {
         self
     }
 
+    /// Run `alias`'s model on its provider, as choosing it in `/model` does.
+    /// The provider's default endpoint replaces the loaded one unless that
+    /// already belongs to the provider, as with `--provider`.
+    pub fn with_alias(mut self, alias: &crate::model_alias::ResolvedAlias) -> Self {
+        if ProviderType::from_url_or_name(&self.base_url, None) != alias.provider {
+            self.base_url = alias.provider.default_base_url().to_string();
+        }
+        self.provider_type = alias.provider;
+        self.model = alias.model_id.clone();
+        self.model_settings.model = alias.model_id.clone();
+        self.recalculate_model_derived();
+        self
+    }
+
     /// Apply model-specific setting overrides from CLI.
     pub fn with_model_overrides(
         mut self,
@@ -1029,6 +1043,25 @@ mod tests {
     }
 
     // ── Override logic ────────────────────────────────────────
+
+    #[test]
+    fn with_alias_moves_to_the_alias_provider_and_its_endpoint() {
+        let alias = crate::model_alias::resolve_with("gemini-flash", None).unwrap();
+        let config = KodaConfig::default_for_testing(ProviderType::OpenAI).with_alias(&alias);
+        assert_eq!(config.provider_type, ProviderType::Gemini);
+        assert_eq!(config.base_url, ProviderType::Gemini.default_base_url());
+        assert_eq!(config.model, alias.model_id);
+        assert_eq!(config.model_settings.model, alias.model_id);
+
+        // A custom endpoint for the same provider stays.
+        let mut custom = KodaConfig::default_for_testing(ProviderType::Gemini);
+        custom.base_url = "https://generativelanguage.googleapis.com/proxy".into();
+        let config = custom.with_alias(&alias);
+        assert_eq!(
+            config.base_url,
+            "https://generativelanguage.googleapis.com/proxy"
+        );
+    }
 
     #[test]
     fn test_with_overrides_model() {

@@ -187,7 +187,7 @@ pub(crate) async fn run() -> Result<()> {
         return Ok(());
     }
 
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
 
     if matches!(cli.command, Some(Command::Server { .. })) {
         eprintln!("{SERVER_REMOVED}");
@@ -243,12 +243,32 @@ pub(crate) async fn run() -> Result<()> {
         tracing::warn!("Failed to load keystore: {e}");
     }
 
+    // `--model claude-haiku` names an alias, as `/model` lists them. Taken
+    // after the keystore so a Claude alias can ask for the newest id.
+    let alias = match cli.model.as_deref() {
+        Some(name) => {
+            koda_core::model_alias::resolve_for_flag(
+                name,
+                cli.provider.as_deref(),
+                cli.base_url.as_deref(),
+            )
+            .await
+        }
+        None => None,
+    };
+    if alias.is_some() {
+        cli.model = None;
+    }
+    let with_alias = |config: koda_core::config::KodaConfig| match &alias {
+        Some(a) => config.with_alias(a),
+        None => config,
+    };
+
     // Headless mode: skip onboarding, banner, version check
     if let Some(prompt) = headless_prompt {
         let config = koda_core::config::KodaConfig::load(&project_root, &cli.agent)?;
         let typed = (cli.reasoning_effort.clone(), cli.thinking_budget);
-        let config = config
-            .with_overrides(cli.base_url, cli.model, cli.provider)
+        let config = with_alias(config.with_overrides(cli.base_url, cli.model, cli.provider))
             .with_model_overrides(
                 cli.max_tokens,
                 cli.temperature,
@@ -285,15 +305,15 @@ pub(crate) async fn run() -> Result<()> {
 
     // Load configuration. The TUI also restores the last-used provider from
     // the DB, but only for the fields these flags leave unset.
+    // An alias picks the provider as well as the model.
     let overrides = tui_context::ProviderOverrides {
-        provider: cli.provider.is_some(),
+        provider: cli.provider.is_some() || alias.is_some(),
         base_url: cli.base_url.is_some(),
-        model: cli.model.is_some(),
+        model: cli.model.is_some() || alias.is_some(),
     };
     let config = koda_core::config::KodaConfig::load(&project_root, &cli.agent)?;
     let typed = (cli.reasoning_effort.clone(), cli.thinking_budget);
-    let config = config
-        .with_overrides(cli.base_url, cli.model, cli.provider)
+    let config = with_alias(config.with_overrides(cli.base_url, cli.model, cli.provider))
         .with_model_overrides(
             cli.max_tokens,
             cli.temperature,

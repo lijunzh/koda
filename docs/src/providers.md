@@ -69,8 +69,11 @@ koda --base-url http://127.0.0.1:8080/v1
 ## Model aliases
 
 Aliases let you switch models without memorising exact IDs. They're shown
-in the `/model` picker and accepted by `/model`. `--model` and `KODA_MODEL` take
-an exact ID.
+in the `/model` picker and accepted by `/model`, `--model` and `KODA_MODEL`.
+On the command line an alias also picks its provider, unless `--provider` or
+`--base-url` names a different one; then the name goes to that provider as
+given. A Claude alias resolves to the newest model in its line, as `/model`
+does.
 
 | Alias | Provider | Exact model ID |
 |-------|----------|----------------|

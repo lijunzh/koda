@@ -17,7 +17,8 @@
 //!
 //! - `/model` picker shows aliases (user-facing)
 //! - [`ensure_live_claude_ids`](crate::model_alias::ensure_live_claude_ids) before showing or resolving a Claude
-//!   alias (the TUI does this; headless mode never resolves aliases)
+//!   alias (the TUI does this; `--model` does it through
+//!   [`resolve_for_flag`](crate::model_alias::resolve_for_flag), headless too)
 //! - `resolve("claude-sonnet")` → `Some(ResolvedAlias { model_id, provider })`
 //! - `resolve("local")` → `Some(ResolvedAlias { model_id: "auto-detect", provider: LMStudio })`
 
@@ -256,6 +257,39 @@ pub fn resolve_with(name: &str, live: Option<&ClaudeLineIds>) -> Option<Resolved
         .map(|a| a.resolved(live))
 }
 
+/// Resolve `--model` (or `KODA_MODEL`) when it names an alias, as `/model`
+/// lists them, so `koda --model claude-haiku` runs the newest Haiku rather
+/// than sending `claude-haiku` to the API. A Claude alias asks the Models
+/// API first, once per process ([`ensure_live_claude_ids`]); without a key
+/// or an answer the pinned id stands.
+///
+/// `None`, leaving the name as given, for a model id, for `local` (only the
+/// TUI's picker can choose a local model), and when `--provider` or
+/// `--base-url` points at another provider than the alias's: the alias
+/// means nothing there.
+pub async fn resolve_for_flag(
+    name: &str,
+    provider: Option<&str>,
+    base_url: Option<&str>,
+) -> Option<ResolvedAlias> {
+    let pinned = resolve_with(name, None)?;
+    if pinned.needs_auto_detect() {
+        return None;
+    }
+    let chosen = match (provider, base_url) {
+        (Some(p), _) => Some(ProviderType::from_url_or_name("", Some(p))),
+        (None, Some(url)) => Some(ProviderType::from_url_or_name(url, None)),
+        (None, None) => None,
+    };
+    if chosen.is_some_and(|p| p != pinned.provider) {
+        return None;
+    }
+    if follows_models_api(name) {
+        ensure_live_claude_ids().await;
+    }
+    resolve(name)
+}
+
 /// True if `name` is a Claude alias that follows the Models API, so
 /// resolving it needs [`ensure_live_claude_ids`] first.
 pub fn follows_models_api(name: &str) -> bool {
@@ -325,6 +359,52 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // Gemini aliases, so no test here asks the Models API, even with a key set.
+    #[tokio::test]
+    async fn the_model_flag_resolves_an_alias_to_its_id_and_provider() {
+        let r = resolve_for_flag("gemini-flash", None, None).await.unwrap();
+        assert_eq!(r.provider, ProviderType::Gemini);
+        assert_ne!(r.model_id, "gemini-flash");
+        // Saying the alias's own provider, by name or by endpoint, is fine.
+        assert!(
+            resolve_for_flag("gemini-flash", Some("gemini"), None)
+                .await
+                .is_some()
+        );
+        let url = ProviderType::Gemini.default_base_url();
+        assert!(
+            resolve_for_flag("gemini-flash", None, Some(url))
+                .await
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_model_flag_leaves_ids_local_and_other_providers_alone() {
+        assert!(
+            resolve_for_flag("claude-haiku-5-5", None, None)
+                .await
+                .is_none()
+        );
+        assert!(
+            resolve_for_flag("gemini-2.5-flash", None, None)
+                .await
+                .is_none()
+        );
+        assert!(resolve_for_flag("local", None, None).await.is_none());
+        assert!(
+            resolve_for_flag("gemini-flash", Some("openrouter"), None)
+                .await
+                .is_none()
+        );
+        let elsewhere = Some("http://localhost:8080/v1");
+        assert!(
+            resolve_for_flag("gemini-flash", None, elsewhere)
+                .await
+                .is_none()
+        );
+    }
 
     fn live(pairs: &[(ClaudeLine, &str)]) -> ClaudeLineIds {
         pairs

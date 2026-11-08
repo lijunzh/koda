@@ -73,11 +73,27 @@ pub struct ShellOutput {
     pub success: bool,
 }
 
+/// What the Bash description says about localhost, which differs by
+/// platform. On macOS a command may connect to the ports Koda's own
+/// background servers listen on (`BgRegistry::listening_ports`); bwrap gives
+/// every command its own network namespace, so on Linux no command reaches
+/// another's server.
+const LOCALHOST: (&str, &str, &str) = if cfg!(target_os = "macos") {
+    (
+        "; start a server this way, not with &, so later commands can connect to it on localhost",
+        ", plus the localhost ports of servers started with background=true",
+        "other localhost ports",
+    )
+} else {
+    ("", "", "localhost")
+};
+
 /// Return tool definitions for the LLM.
 pub fn definitions() -> Vec<ToolDefinition> {
     vec![ToolDefinition {
         name: "Bash".to_string(),
-        description: "Execute a shell command. Use ONLY for builds, tests, git, \
+        description: format!(
+            "Execute a shell command. Use ONLY for builds, tests, git, \
             and commands without a dedicated tool. Never use for file ops \
             (use Read/Write/Edit/Grep/List instead). Suppress verbose output: \
             pipe to tail, use --quiet, avoid -v flags. \
@@ -85,20 +101,24 @@ pub fn definitions() -> Vec<ToolDefinition> {
             a marker in the middle naming the omitted lines; narrow the command \
             (grep, sed -n 'A,Bp') to see them. \
             Set background=true for long-running processes (dev servers, watchers) \
-            — returns immediately with the PID and a log file holding the output. \
+            — returns immediately with the PID and a log file holding the output{bg_localhost}. \
             Run a command whose result you need, such as tests, in the foreground \
             with a longer timeout instead. \
             Commands run in a sandbox: they write only inside the project, /tmp and \
             cache folders, can't read ~/.ssh or other credential folders, and reach \
             the network only through a proxy that allows GitHub and the main package \
-            registries over HTTP(S). ssh, git over SSH, other hosts and the local \
-            network are unreachable. When a command the user needs fails because of \
+            registries over HTTP(S){own_ports}. ssh, git over SSH, other hosts, the local \
+            network and {other_localhost} are unreachable. When a command the user \
+            needs fails because of \
             the sandbox (\"Operation not permitted\", or no connection to a host the \
             proxy doesn't allow, such as a git push over SSH), run it again at once \
             with outside_sandbox=true and a reason; the user is asked to approve that \
             one command. Don't ask in a message first, and don't use it for anything \
-            the sandbox allows."
-            .to_string(),
+            the sandbox allows.",
+            bg_localhost = LOCALHOST.0,
+            own_ports = LOCALHOST.1,
+            other_localhost = LOCALHOST.2,
+        ),
         parameters: json!({
             "type": "object",
             "properties": {
@@ -195,6 +215,7 @@ pub async fn run_shell_command(
                 Egress::Sandboxed {
                     proxy_port,
                     socks5_port,
+                    loopback_ports: bg.listening_ports().await,
                 }
             },
             caller_spawner,
@@ -251,6 +272,7 @@ pub async fn run_shell_command(
             Egress::Sandboxed {
                 proxy_port,
                 socks5_port,
+                loopback_ports: bg.listening_ports().await,
             }
         },
     )?;
@@ -469,12 +491,15 @@ pub(crate) fn wants_outside_sandbox(args: &Value) -> bool {
 }
 
 /// Where a command's network traffic may go.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Egress {
     /// The kernel sandbox, with the session's egress proxies when it has them.
     Sandboxed {
         proxy_port: Option<u16>,
         socks5_port: Option<u16>,
+        /// Loopback ports of Koda's own background servers, which the
+        /// command may connect to directly (macOS).
+        loopback_ports: Vec<u16>,
     },
     /// No sandbox and no proxy: a call the user approved with `outside_sandbox`.
     Unsandboxed,
@@ -491,13 +516,15 @@ fn command_for(
         Egress::Sandboxed {
             proxy_port,
             socks5_port,
-        } => crate::sandbox::build(
+            loopback_ports,
+        } => crate::sandbox::build_with_loopback(
             command,
             project_root,
             trust,
             policy,
             proxy_port,
             socks5_port,
+            &loopback_ports,
         ),
         Egress::Unsandboxed => Ok(crate::sandbox::build_unsandboxed(
             command,
@@ -530,10 +557,14 @@ fn spawn_background(
     let stderr_log = log
         .try_clone()
         .map_err(|e| anyhow::anyhow!("Failed to share {}: {e}", log_path.display()))?;
-    let child = command_for(command, project_root, trust, policy, egress)?
-        .stdin(std::process::Stdio::null())
+    let mut cmd = command_for(command, project_root, trust, policy, egress)?;
+    cmd.stdin(std::process::Stdio::null())
         .stdout(log)
-        .stderr(stderr_log)
+        .stderr(stderr_log);
+    // Its own group, so the registry can find the ports its children listen
+    // on and stop them with it (`npm run dev` and the server it starts).
+    process_group::isolate(&mut cmd);
+    let child = cmd
         .spawn()
         .map_err(|e| anyhow::anyhow!("Failed to spawn background command: {e}"))?;
 
@@ -1948,6 +1979,115 @@ mod tests {
         assert!(outside.contains("env=[]"), "{outside}");
         let inside = run(false).await;
         assert!(inside.contains("127.0.0.1:31415"), "{inside}");
+    }
+
+    /// Run `command` the way the model would, with a proxy port set so the
+    /// proxied profile (the one that restricts loopback) is in force.
+    async fn proxied(registry: &BgRegistry, command: &str, background: bool) -> ShellOutput {
+        // Outlives the call: a background server keeps working in it.
+        static PROJECT: std::sync::LazyLock<tempfile::TempDir> =
+            std::sync::LazyLock::new(|| tempfile::tempdir().unwrap());
+        run_shell_command(
+            PROJECT.path(),
+            &serde_json::json!({"command": command, "background": background}),
+            256,
+            registry,
+            None,
+            &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
+            Some(9),
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+    }
+
+    /// A dev server Koda starts in the background is reachable from a later
+    /// sandboxed command; a server Koda didn't start, on another localhost
+    /// port, still isn't. Before, both were refused.
+    #[cfg(target_os = "macos")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_sandboxed_command_reaches_only_koda_s_own_background_server() {
+        if !crate::sandbox::is_available()
+            || std::process::Command::new("python3")
+                .arg("--version")
+                .output()
+                .is_err()
+        {
+            eprintln!("skip: needs the seatbelt backend and python3");
+            return;
+        }
+        let registry = BgRegistry::new();
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let theirs = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let their_port = theirs.local_addr().unwrap().port();
+
+        let server = format!("python3 -m http.server {port} --bind 127.0.0.1");
+        proxied(&registry, &server, true).await;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while !registry.listening_ports().await.contains(&port) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "server never listened"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert!(!registry.listening_ports().await.contains(&their_port));
+
+        let reach = |port: u16| {
+            format!(
+                "curl -s --noproxy '*' -o /dev/null -w 'code=%{{http_code}}' http://127.0.0.1:{port}/"
+            )
+        };
+        let own = proxied(&registry, &reach(port), false).await;
+        assert!(own.summary.contains("code=200"), "{}", own.summary);
+        let other = proxied(&registry, &reach(their_port), false).await;
+        assert!(other.summary.contains("code=000"), "{}", other.summary);
+
+        let pid = registry.snapshot()[0].pid;
+        registry.kill(pid);
+    }
+
+    /// A background command leads its own process group, so stopping it
+    /// stops what it started too, not just the shell.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stopping_a_background_command_stops_its_children() {
+        let registry = BgRegistry::new();
+        // 71 and 72 s: no other test sleeps that long, so pgrep finds only these.
+        proxied(&registry, "sleep 71 & sleep 72; wait", true).await;
+        let alive = || {
+            std::process::Command::new("pgrep")
+                .args(["-f", "sleep 7[12]"])
+                .output()
+                .map(|o| !o.stdout.is_empty())
+                .unwrap_or(false)
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !alive() {
+            assert!(std::time::Instant::now() < deadline, "never started");
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let pid = registry.snapshot()[0].pid;
+        let stop = bash(&registry, &format!("kill {pid}")).await;
+        assert!(
+            stop.summary.contains("Stopped background process"),
+            "{}",
+            stop.summary
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while alive() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a child outlived the stop"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
     }
 
     #[test]
