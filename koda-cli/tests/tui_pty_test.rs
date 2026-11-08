@@ -54,6 +54,12 @@ impl Tui {
 
     /// Start `koda` in `home` against the model at `base_url`.
     fn start_with_model(home: &Path, base_url: &str) -> Self {
+        Self::start_with_args(home, base_url, &[], IDLE_HINT)
+    }
+
+    /// [`Self::start_with_model`] with `extra` arguments, waiting until the
+    /// output shows `ready`.
+    fn start_with_args(home: &Path, base_url: &str, extra: &[&str], ready: &str) -> Self {
         let (master, slave) = open_pty();
         let mut command = Command::new(env!("CARGO_BIN_EXE_koda"));
         command
@@ -62,6 +68,7 @@ impl Tui {
             .args(["--model", "stub-model"])
             .args(["--max-context-tokens", "64000"])
             .args(["--mode", "safe"])
+            .args(extra)
             .arg("--project-root")
             .arg(home)
             .env("HOME", home)
@@ -103,8 +110,26 @@ impl Tui {
             input,
             output,
         };
-        tui.wait_for_output(IDLE_HINT);
+        tui.wait_for_output(ready);
         tui
+    }
+
+    /// Everything the TUI has written, escape codes stripped.
+    fn output_text(&self) -> String {
+        let bytes = self.output.lock().unwrap().clone();
+        let text = String::from_utf8_lossy(&bytes);
+        // The resume hint is printed after the TUI leaves its screen.
+        let mut plain = String::new();
+        let mut in_escape = false;
+        for c in text.chars() {
+            match (in_escape, c) {
+                (false, '\x1b') => in_escape = true,
+                (true, c) if c.is_ascii_alphabetic() || c == '~' => in_escape = false,
+                (true, _) => {}
+                (false, c) => plain.push(c),
+            }
+        }
+        plain
     }
 
     fn wait_for_output(&self, text: &str) {
@@ -722,4 +747,119 @@ async fn an_outside_sandbox_request_shows_its_warning_and_reason() {
 
     let sent = wait_for_model_call(&server, 2).await;
     assert!(sent.contains("User rejected this action."), "{sent}");
+}
+
+/// Quit with Ctrl+D and return the session id Koda prints for `--resume`.
+fn quit_and_read_session_id(tui: &mut Tui) -> String {
+    tui.type_text("\x04");
+    assert!(tui.exits(), "koda stayed up after Ctrl+D");
+    let text = tui.output_text();
+    text.split("koda --resume ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .map(str::to_string)
+        .unwrap_or_else(|| panic!("no resume hint in:\n{text}"))
+}
+
+/// A resumed session shows the earlier conversation, folded as it was live,
+/// and the model gets that history with the next prompt.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resumed_session_shows_and_keeps_its_history() {
+    let server = scripted_model(vec![tool_calls(&[(
+        "Read",
+        json!({"file_path": "notes.md"}),
+    )])])
+    .await;
+    let home = home();
+    std::fs::write(
+        home.path().join("notes.md"),
+        "alpha line\nbeta line\ngamma line\n",
+    )
+    .unwrap();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    tui.submit("read the notes");
+    tui.wait_for_screen("All done.");
+    let session = quit_and_read_session_id(&mut tui);
+
+    let mut tui = Tui::start_with_args(
+        home.path(),
+        &server.url(),
+        &["--resume", &session],
+        IDLE_HINT,
+    );
+    tui.wait_for_screen("session resumed");
+    let screen = tui.screen();
+    assert!(screen.contains("read the notes"), "{screen}");
+    assert!(
+        screen.contains("3 lines"),
+        "the read isn't folded:\n{screen}"
+    );
+    assert!(!screen.contains("beta line"), "{screen}");
+    tui.type_text(CTRL_O);
+    tui.wait_for_screen("beta line");
+    tui.type_text(CTRL_O);
+    tui.wait_for_screen_without("beta line");
+
+    tui.submit("and now?");
+    let sent = wait_for_model_call(&server, 3).await;
+    assert!(
+        sent.contains("read the notes"),
+        "the model lost the history: {sent}"
+    );
+    assert!(
+        sent.contains("beta line"),
+        "the model lost the read: {sent}"
+    );
+    assert!(sent.contains("and now?"), "{sent}");
+}
+
+/// `/model` switches the model mid-session: the next request asks for it.
+#[tokio::test(flavor = "multi_thread")]
+async fn model_switches_the_model_for_the_next_turn() {
+    let server = scripted_model(vec![]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.submit("first");
+    let sent = wait_for_model_call(&server, 1).await;
+    assert!(sent.contains(r#""model":"stub-model""#), "{sent}");
+    tui.wait_for_screen("All done.");
+
+    // Esc would close the slash popup but also clear the line, so Enter goes
+    // straight to the typed command.
+    tui.type_text("/model stub-two");
+    tui.type_text("\r");
+    tui.wait_for_screen("stub-two");
+
+    tui.submit("second");
+    let sent = wait_for_model_call(&server, 2).await;
+    assert!(sent.contains(r#""model":"stub-two""#), "{sent}");
+    assert!(sent.contains("second"), "{sent}");
+}
+
+/// The first run greets the user and opens the provider picker, and a prompt
+/// still gets its answer once the picker is closed. The next start isn't a
+/// first run.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_first_run_greets_and_still_answers() {
+    let server = scripted_model(vec![]).await;
+    // No `.config/koda`: Koda has never run here.
+    let home = tempfile::tempdir().unwrap();
+    let mut tui = Tui::start_with_args(home.path(), &server.url(), &[], "Welcome to Koda");
+    tui.wait_for_screen("Choose your LLM provider");
+    tui.type_text(ESC);
+    tui.wait_for_screen_without("Choose your LLM provider");
+
+    tui.submit("hello");
+    let sent = wait_for_model_call(&server, 1).await;
+    assert!(sent.contains("hello"), "{sent}");
+    tui.wait_for_screen("All done.");
+    let _ = quit_and_read_session_id(&mut tui);
+
+    let tui = Tui::start_with_model(home.path(), &server.url());
+    assert!(
+        !tui.screen().contains("Welcome to Koda"),
+        "{}",
+        tui.screen()
+    );
 }

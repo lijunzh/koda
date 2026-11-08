@@ -209,6 +209,11 @@ pub(crate) async fn run() -> Result<()> {
     // A 'latest' symlink is updated to point to it so users can always
     // tail the current session without knowing the filename:
     //   tail -f ~/.config/koda/logs/latest
+    // A first run is one with no config directory yet. Ask before anything
+    // below creates it: the log directory and the database both live there,
+    // so asking after them (as Koda did since #693) never found a first run
+    // and onboarding never opened.
+    let first_run = onboarding::is_first_run();
     let log_dir = koda_core::db::config_dir()?.join("logs");
     std::fs::create_dir_all(&log_dir)?;
     prune_old_logs(&log_dir, 50);
@@ -299,9 +304,6 @@ pub(crate) async fn run() -> Result<()> {
 
     // Interactive mode: full REPL experience
     let version_check = koda_core::version::spawn_version_check();
-
-    // Detect first run (onboarding happens inside the TUI now)
-    let first_run = onboarding::is_first_run();
 
     // Load configuration. The TUI also restores the last-used provider from
     // the DB, but only for the fields these flags leave unset.
