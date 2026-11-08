@@ -26,14 +26,14 @@ are sent after the instruction files.
 are still read where nothing newer exists, with a warning to rename them to
 `AGENTS.md`. Notes Koda wrote into a project file before this stay there as
 part of that file; move them if you'd rather they were private. The
-instruction files, then the notes, share the 16,000-character cap below, so
+instruction files, then the notes, share the 32,768-character cap below, so
 when the files are long the notes are what gets cut; `MemoryRead` still
 returns everything.
 
 Memory opens the first user message, not the system prompt, as in Claude
 Code and Codex. The model is told it is the project's instructions and tips,
 ranked above Koda's built-in guidance and below what you ask for. A request
-carries at most 16,000 characters of memory, global and
+carries at most 32,768 characters of memory, global and
 project together, because every model call pays for it. Past that it is cut
 with a note telling the model to use `MemoryRead` for the rest and to ask you
 to trim the file. Keep rarely needed detail in other files.
