@@ -19,6 +19,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **Bash keeps the end of a long output.** Capture stopped at the output cap, so a long `cargo test`'s result line, or the error that ended a build, never reached the model; the summary only said lines were missing. Past the cap each stream now also keeps its last 100 lines, after a `[… N lines not kept …]` marker where the middle was.
 - **`--model` and `KODA_MODEL` take aliases.** `koda --model claude-haiku` sent `claude-haiku` to the API and got a 404. An alias now resolves as it does in `/model`, the Claude ones to the newest model in their line, and picks its provider too, unless `--provider` or `--base-url` names another.
 - **The sandbox's way out is offered only where someone can take it.** After a sandbox denial Bash told every model to run the command again outside the sandbox, but sub-agents and headless runs are always refused that. They're now told the command can't leave the sandbox in this run and to do without it or say what the user should run. And with no sandbox backend at all (Safe mode on a system without one), a permission error is no longer reported as a sandbox denial.
+- **The provider picker uses the address Koda is running with.** Choosing the current provider in `/provider` listed models from, and switched to, that provider's default port, not the server given with `--base-url` or saved earlier.
+- **A key or address typed into a wizard is taken with one Enter.** Entering an API key in `/provider`, `/key` or first-run onboarding needed Enter twice: the box naming the wizard took the first one and dropped the answer. The prompt's hint also said "Type a message..."; it now says to paste or type the value.
 
 ## [0.6.0] - 2026-11-08
 

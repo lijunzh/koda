@@ -863,3 +863,48 @@ async fn the_first_run_greets_and_still_answers() {
         tui.screen()
     );
 }
+
+/// A key typed into a wizard is taken with one Enter. The wizard's trail
+/// box took the first Enter and dropped the key, so it needed two.
+#[test]
+fn a_wizard_takes_its_answer_with_one_enter() {
+    let home = home();
+    let mut tui = Tui::start(home.path());
+
+    // `/key` asks for a key without switching provider, so nothing calls an API.
+    tui.type_text("/key");
+    tui.type_text("\r");
+    tui.wait_for_screen("API key");
+    tui.type_text("\r");
+    tui.wait_for_screen("API key for");
+    tui.wait_for_screen("Paste or type it");
+    tui.paste("sk-test-not-a-real-key");
+    tui.type_text("\r");
+    tui.wait_for_screen("set to sk-t");
+}
+
+/// The provider picker lists, and switches to, the address Koda is running
+/// with. It used the provider's default port, not the one given.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_provider_picker_uses_the_running_address() {
+    let server = scripted_model(vec![]).await;
+    let models = json!({"object": "list", "data": [
+        {"id": "stub-picked", "object": "model", "type": "llm", "state": "loaded"}
+    ]});
+    server.mount_ok("GET", r".*/models$", models).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.type_text("/provider");
+    tui.type_text("\r");
+    tui.wait_for_screen("Select a provider");
+    // LM Studio, the provider in use, comes first.
+    tui.type_text("\r");
+    tui.wait_for_screen("stub-picked");
+    tui.type_text("\r");
+    tui.wait_for_screen("Model set to: stub-picked");
+
+    tui.submit("hi");
+    let sent = wait_for_model_call(&server, 1).await;
+    assert!(sent.contains(r#""model":"stub-picked""#), "{sent}");
+}

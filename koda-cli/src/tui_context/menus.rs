@@ -194,9 +194,21 @@ impl TuiContext {
         }
     }
 
+    /// Where to reach `ptype`: the address Koda is running with when that's
+    /// the provider in use (`--base-url`, or one saved earlier), else the
+    /// provider's default. Always taking the default listed and switched to
+    /// the default port's server, not the one the user pointed Koda at.
+    fn base_url_for(&self, ptype: koda_core::config::ProviderType) -> String {
+        if ptype == self.config.provider_type {
+            self.config.base_url.clone()
+        } else {
+            ptype.default_base_url().to_string()
+        }
+    }
+
     /// List all models from a specific provider (power-user path).
     async fn open_provider_model_list(&mut self, ptype: koda_core::config::ProviderType) {
-        let base_url = ptype.default_base_url().to_string();
+        let base_url = self.base_url_for(ptype);
 
         // Temporarily create a provider to list its models
         let temp_config = {
@@ -405,6 +417,13 @@ impl TuiContext {
         }
 
         match key.code {
+            // The wizard trail only shows which wizard is asking: Enter
+            // answers the input box under it. Taking Enter here closed the
+            // trail and dropped the answer, so a pasted API key needed a
+            // second Enter.
+            KeyCode::Enter if matches!(self.menu, MenuContent::WizardTrail(_)) => {
+                return None;
+            }
             KeyCode::Enter => {
                 self.handle_menu_select().await;
                 return Some(true);
@@ -602,8 +621,8 @@ impl TuiContext {
                 if let Some(item) = dd.selected_item() {
                     let model_id = item.model_id.clone();
                     let ptype = *ptype;
-                    self.apply_provider(ptype, ptype.default_base_url().to_string())
-                        .await;
+                    let base_url = self.base_url_for(ptype);
+                    self.apply_provider(ptype, base_url).await;
                     self.config.model = model_id.clone();
                     self.config.model_settings.model = model_id.clone();
                     self.config.recalculate_model_derived();
