@@ -184,8 +184,12 @@ pub(crate) fn draw_viewport(
     // textarea has no equivalent of ratatui-textarea's
     // `set_placeholder_text`.
     if textarea.is_empty() {
-        let placeholder =
-            Paragraph::new("Type a message...").style(Style::default().fg(Color::DarkGray));
+        // A wizard asks for a value (a key, an address), not a message.
+        let hint = match prompt_mode {
+            PromptMode::WizardInput { .. } => "Paste or type it, then Enter (Esc cancels)",
+            PromptMode::Chat => "Type a message...",
+        };
+        let placeholder = Paragraph::new(hint).style(Style::default().fg(Color::DarkGray));
         frame.render_widget(placeholder, text_area);
         // Still position the cursor so the caret sits on the placeholder.
     }
