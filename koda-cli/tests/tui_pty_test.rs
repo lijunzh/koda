@@ -908,3 +908,34 @@ async fn the_provider_picker_uses_the_running_address() {
     let sent = wait_for_model_call(&server, 1).await;
     assert!(sent.contains(r#""model":"stub-picked""#), "{sent}");
 }
+
+/// A message that can't be saved isn't sent. The turn reads the conversation
+/// back from the database, so an unsaved message went out as a request with
+/// no messages, which the API rejected with an error that read like a key
+/// problem. Deleting the session under the running TUI makes the save fail
+/// the way a mistyped `--resume` id once did.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_message_that_cant_be_saved_isnt_sent() {
+    use koda_core::persistence::Persistence;
+    let server = scripted_model(vec![]).await;
+    let home = home();
+    // Koda stores the project root canonicalized (/var is /private/var on macOS).
+    let tui_project = std::fs::canonicalize(home.path()).unwrap();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    let db = koda_core::db::Database::open(&home.path().join(".config/koda/db/koda.db"))
+        .await
+        .unwrap();
+    let sessions = db.list_sessions(10, &tui_project).await.unwrap();
+    assert_eq!(sessions.len(), 1, "one running session");
+    assert!(db.delete_session(&sessions[0].id).await.unwrap());
+
+    tui.submit("this one can't be saved");
+    tui.wait_for_screen("Couldn't save your message, so it wasn't sent");
+    // The text is back in the box to send again.
+    tui.wait_for_screen("this one can't be saved");
+    assert!(
+        model_calls(&server).await.is_empty(),
+        "the model was called"
+    );
+}

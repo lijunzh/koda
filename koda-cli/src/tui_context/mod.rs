@@ -927,6 +927,10 @@ impl TuiContext {
             user_message = format!("{user_message}\n\n{pasted}");
         }
 
+        // The turn reads the conversation back from the database, so a message
+        // that wasn't saved would be sent as nothing: once, a request with no
+        // messages, which the API rejected with an error that read like a key
+        // problem. Say what failed and give the text back instead.
         if let Err(e) = self
             .session
             .db
@@ -941,6 +945,13 @@ impl TuiContext {
             .await
         {
             tracing::warn!("Failed to persist user message: {e}");
+            crate::tui_output::err_msg(
+                &mut self.scroll_buffer,
+                format!("Couldn't save your message, so it wasn't sent: {e:#}"),
+            );
+            self.textarea.set_text_clearing_elements(input);
+            self.paste_blocks = std::mem::take(&mut processed.paste_blocks);
+            return CommandOutcome::Handled;
         }
 
         // Auto-set session title from first user message (#590)
