@@ -119,4 +119,8 @@ serial_test = "4"
 # crate. Worth keeping consistent with codex's testing style as we
 # port more of their composer tests in PR 2 / PR 3.
 pretty_assertions = "1"
+# What a pty test's screen shows, parsed from the escape codes the TUI writes:
+# ratatui redraws only changed cells, so the raw byte stream can't say what
+# is on screen now.
+vt100 = "0.18"
 
