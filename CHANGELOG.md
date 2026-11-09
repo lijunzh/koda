@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Compaction writes its summary at low reasoning effort.** The summary call used the session's own effort, so at `xhigh` a local model spent minutes reasoning before it wrote a word. On Qwen3.8-Flash-Next a real summary took 200 s at `xhigh` and 96 s at `low`, and in an eval run with a small window compaction had been 55-65% of the time. Only the summary call changes; a session that sends no effort still sends none.
+
 ### Fixed
 
 - **Grep with a `!` glob searches the other files.** `"glob": "!NOTES.md"` is how rg leaves a file out, but in Koda it matched nothing at all, so the search came back empty. Found in a long Haiku session, which then had to search again.
