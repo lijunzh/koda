@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Grep with a `!` glob searches the other files.** `"glob": "!NOTES.md"` is how rg leaves a file out, but in Koda it matched nothing at all, so the search came back empty. Found in a long Haiku session, which then had to search again.
+
 ## [0.6.1] - 2026-11-09
 
 ### Security
