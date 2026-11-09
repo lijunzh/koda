@@ -74,7 +74,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 },
                 "glob": {
                     "type": "string",
-                    "description": "Only search files matching this glob, as rg --glob takes it (e.g. '*.rs', '*.{ts,tsx}', 'src/**/*.py')"
+                    "description": "Only search files matching this glob, as rg --glob takes it (e.g. '*.rs', '*.{ts,tsx}', 'src/**/*.py'; '!*.md' leaves those files out)"
                 },
                 "type": {
                     "type": "string",
@@ -163,9 +163,11 @@ impl PathFilter {
     }
 
     fn allows(&self, path: &Path) -> bool {
+        // As rg reads an override: a path no glob names is excluded only when
+        // some glob selects files, so a lone `!*.md` keeps everything else.
         self.glob
             .as_ref()
-            .is_none_or(|g| g.matched(path, false).is_whitelist())
+            .is_none_or(|g| !g.matched(path, false).is_ignore())
             && self
                 .types
                 .as_ref()
@@ -813,6 +815,19 @@ mod tests {
             none.starts_with("No matches found for 'needle' in files matching *.py"),
             "{none}"
         );
+        // A `!` glob excludes, as in `rg --glob '!…'`: everything else is searched.
+        let not_md = run(tmp.path(), json!({ "pattern": "needle", "glob": "!*.md" })).await;
+        assert_eq!(
+            only(&not_md),
+            ["src/main.rs", "src/ui/view.ts", "src/ui/view.tsx"],
+            "{not_md}"
+        );
+        let not_src = run(
+            tmp.path(),
+            json!({ "pattern": "needle", "glob": "!src/**" }),
+        )
+        .await;
+        assert_eq!(only(&not_src), ["notes.md"], "{not_src}");
     }
 
     #[tokio::test]
