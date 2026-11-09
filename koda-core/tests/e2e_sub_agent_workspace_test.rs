@@ -207,6 +207,8 @@ async fn an_edit_only_agent_gets_a_worktree_in_safe() {
     init_repo(&env.root);
     write_agent_denying(&env, None, &["Write"]);
     let sub_responses = serde_json::json!([
+        // Edit needs a Read of the file first.
+        { "tool": "Read", "args": { "file_path": "README.md" } },
         {
             "tool": "Edit",
             "args": { "file_path": "README.md", "old_str": "hello", "new_str": "edited" }

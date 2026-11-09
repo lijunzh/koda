@@ -62,7 +62,7 @@ pub async fn validate_tool_call(
 ) -> Option<String> {
     match tool_name {
         "Edit" => validate_edit(args, project_root, read_cache, last_writer, last_bash).await,
-        "Write" => validate_write(args, project_root).await,
+        "Write" => validate_write(args, project_root, read_cache).await,
         "Delete" => validate_delete(args, project_root).await,
         "Bash" => validate_bash(args),
         _ => None,
@@ -188,6 +188,14 @@ async fn validate_edit(
         }
     };
 
+    // An edit needs a Read of the file first (any of it), or a write of
+    // Koda's own: search hits don't show what surrounds them.
+    if let Some(cache) = read_cache
+        && !super::file_tools::has_seen(cache, &resolved)
+    {
+        return Some(super::file_tools::not_read_message(path_str));
+    }
+
     // Stale-file detection: reject the edit if the file changed on disk since
     // the model last read it.  Only fires when a full-read cache entry exists.
     //
@@ -261,8 +269,13 @@ async fn validate_edit(
     None
 }
 
-/// Write: catch overwrite-without-flag before approval.
-async fn validate_write(args: &serde_json::Value, project_root: &Path) -> Option<String> {
+/// Write: catch overwrite-without-flag, and overwriting a file the model
+/// hasn't read, before approval.
+async fn validate_write(
+    args: &serde_json::Value,
+    project_root: &Path,
+    read_cache: Option<&super::FileReadCache>,
+) -> Option<String> {
     let path_str = args["file_path"]
         .as_str()
         .or_else(|| args["path"].as_str())
@@ -287,6 +300,12 @@ async fn validate_write(args: &serde_json::Value, project_root: &Path) -> Option
              or use Edit for targeted changes.",
             path_str
         ));
+    }
+    if resolved.exists()
+        && let Some(cache) = read_cache
+        && !super::file_tools::has_seen(cache, &resolved)
+    {
+        return Some(super::file_tools::not_read_message(path_str));
     }
 
     None
@@ -582,14 +601,14 @@ mod tests {
     async fn write_new_file_valid() {
         let dir = setup();
         let args = json!({"path": "brand_new.txt", "content": "hello"});
-        assert!(validate_write(&args, dir.path()).await.is_none());
+        assert!(validate_write(&args, dir.path(), None).await.is_none());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_existing_without_overwrite() {
         let dir = setup();
         let args = json!({"path": "hello.txt", "content": "replaced"});
-        let err = validate_write(&args, dir.path()).await.unwrap();
+        let err = validate_write(&args, dir.path(), None).await.unwrap();
         assert!(err.contains("already exists"), "{err}");
         assert!(err.contains("overwrite=true"), "{err}");
     }
@@ -598,14 +617,14 @@ mod tests {
     async fn write_existing_with_overwrite() {
         let dir = setup();
         let args = json!({"path": "hello.txt", "content": "replaced", "overwrite": true});
-        assert!(validate_write(&args, dir.path()).await.is_none());
+        assert!(validate_write(&args, dir.path(), None).await.is_none());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_missing_content() {
         let dir = setup();
         let args = json!({"path": "foo.txt"});
-        let err = validate_write(&args, dir.path()).await.unwrap();
+        let err = validate_write(&args, dir.path(), None).await.unwrap();
         assert!(err.contains("content"), "{err}");
     }
 
@@ -661,7 +680,7 @@ mod tests {
     async fn write_accepts_file_path_param() {
         let dir = setup();
         let args = json!({"file_path": "brand_new.txt", "content": "hello"});
-        assert!(validate_write(&args, dir.path()).await.is_none());
+        assert!(validate_write(&args, dir.path(), None).await.is_none());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -742,20 +761,88 @@ mod tests {
         );
     }
 
+    fn cache_with(keys: &[String]) -> super::super::FileReadCache {
+        let cache = super::super::FileReadCache::default();
+        for key in keys {
+            cache
+                .lock()
+                .unwrap()
+                .insert(key.clone(), (0, SystemTime::now(), String::new()));
+        }
+        cache
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn edit_no_cache_entry_no_stale_warning() {
-        // File was never read via Read tool — empty cache, no stale warning.
+    async fn edit_of_a_file_never_read_is_refused() {
+        // Seen only in search hits: what surrounds them is unknown.
         let dir = setup();
-        let empty_cache = super::super::FileReadCache::default();
         let args = json!({
             "path": "hello.txt",
             "old_str": "line two", "new_str": "LINE TWO"
         });
+        let err = validate_edit(&args, dir.path(), Some(&cache_with(&[])), None, None)
+            .await
+            .unwrap();
+        assert!(err.contains("hasn't been read yet"), "{err}");
+        assert!(err.contains("hello.txt"), "{err}");
+        // Another file's read doesn't count, even one whose name starts the same.
+        let other = format!("{}:None:None", dir.path().join("hello.txt.bak").display());
         assert!(
-            validate_edit(&args, dir.path(), Some(&empty_cache), None, None)
+            validate_edit(&args, dir.path(), Some(&cache_with(&[other])), None, None)
+                .await
+                .is_some()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn edit_after_a_ranged_read_or_an_own_write_is_allowed() {
+        let dir = setup();
+        let file = dir.path().join("hello.txt");
+        let args = json!({
+            "path": "hello.txt",
+            "old_str": "line two", "new_str": "LINE TWO"
+        });
+        for key in [
+            format!("{}:Some(2):Some(1)", file.display()),
+            format!("{}:Some(2):None", file.display()),
+            format!("{}:written", file.display()),
+        ] {
+            assert!(
+                validate_edit(
+                    &args,
+                    dir.path(),
+                    Some(&cache_with(std::slice::from_ref(&key))),
+                    None,
+                    None
+                )
                 .await
                 .is_none(),
-            "no cache entry should not trigger stale warning"
+                "{key}"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn overwriting_a_file_never_read_is_refused() {
+        let dir = setup();
+        let file = dir.path().join("hello.txt");
+        let args = json!({"path": "hello.txt", "content": "new", "overwrite": true});
+        let err = validate_write(&args, dir.path(), Some(&cache_with(&[])))
+            .await
+            .unwrap();
+        assert!(err.contains("hasn't been read yet"), "{err}");
+        let read = format!("{}:None:None", file.display());
+        assert!(
+            validate_write(&args, dir.path(), Some(&cache_with(&[read])))
+                .await
+                .is_none()
+        );
+        // A new file needs no read.
+        let new = json!({"path": "fresh.txt", "content": "x"});
+        assert!(
+            validate_write(&new, dir.path(), Some(&cache_with(&[])))
+                .await
+                .is_none()
         );
     }
 
