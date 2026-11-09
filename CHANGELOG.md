@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [0.6.1] - 2026-11-09
 
+### Security
+
+- **rmcp 3.9.0** (RUSTSEC-2026-0462). Before it, the MCP HTTP client read a server's JSON or error response into memory with no limit, so a malicious MCP server could exhaust memory with a response that never ends and stop Koda. Responses are now capped at 16 MiB, and error bodies at 64 KiB.
+
 ### Changed
 
 - **Tool output is folded, and `Ctrl+O` shows it all.** A file Koda read filled the screen in the same colour as its reply, so the reply was hard to find. A read now shows as one line, such as `└ 123 lines` or `└ lines 40–80 of 1,340`. Other output shows its first five lines and `… +N lines (ctrl+o to show all)`, plus the last five when the call failed; before, up to 50 lines came through whole. Edits and writes still show their diff. `Ctrl+O` switches everything on screen to the full view and back, at once and mid-turn too, in a resumed session as well; `/verbose` is the same switch. In the full view a read's line numbers stand in a dim, right-aligned column, and the content is highlighted on its own, markdown included. Output also takes its tool's colour whether or not it streamed. Codex, Claude Code and Qwen Code show no read content and fold the rest at three to five lines.
