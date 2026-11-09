@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Changed
 
 - **Tool output is folded, and `Ctrl+O` shows it all.** A file Koda read filled the screen in the same colour as its reply, so the reply was hard to find. A read now shows as one line, such as `└ 123 lines` or `└ lines 40–80 of 1,340`. Other output shows its first five lines and `… +N lines (ctrl+o to show all)`, plus the last five when the call failed; before, up to 50 lines came through whole. Edits and writes still show their diff. `Ctrl+O` switches everything on screen to the full view and back, at once and mid-turn too, in a resumed session as well; `/verbose` is the same switch. In the full view a read's line numbers stand in a dim, right-aligned column, and the content is highlighted on its own, markdown included. Output also takes its tool's colour whether or not it streamed. Codex, Claude Code and Qwen Code show no read content and fold the rest at three to five lines.
+- **Edit, and a Write that replaces a file, need a Read of it first.** Koda let a model edit a file it had only seen in search results, so the model didn't see what surrounded the lines it changed. In a measured run of an Obsidian vault task, Haiku in Koda changed link examples inside a code block that way in two runs of three; Claude Code, whose Edit has the same rule, didn't. Any Read counts, whole or a line range, and so does a file Koda wrote itself. A refused edit says to read the file first.
 
 ### Fixed
 

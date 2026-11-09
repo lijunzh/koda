@@ -139,6 +139,11 @@ async fn test_edit_tool_replacement_e2e() {
     env.insert_user_message("change the port").await;
 
     let provider = MockProvider::new(vec![
+        // Edit needs a Read of the file first.
+        MockResponse::tool_call(
+            "Read",
+            serde_json::json!({ "path": target.to_string_lossy() }),
+        ),
         MockResponse::tool_call(
             "Edit",
             serde_json::json!({
@@ -313,6 +318,11 @@ async fn test_edit_introduces_syntax_error_has_no_ast_warning() {
     env.insert_user_message("break the file").await;
 
     let provider = MockProvider::new(vec![
+        // Edit needs a Read of the file first.
+        MockResponse::tool_call(
+            "Read",
+            serde_json::json!({ "path": target.to_string_lossy() }),
+        ),
         MockResponse::tool_call(
             "Edit",
             serde_json::json!({
@@ -487,6 +497,8 @@ async fn test_edit_validation_old_str_not_found() {
     env.insert_user_message("fix the greeting").await;
 
     let provider = MockProvider::new(vec![
+        // Edit needs a Read of the file first.
+        MockResponse::tool_call("Read", serde_json::json!({ "path": "greet.txt" })),
         MockResponse::tool_call(
             "Edit",
             serde_json::json!({
@@ -501,13 +513,15 @@ async fn test_edit_validation_old_str_not_found() {
     let output = events
         .iter()
         .find_map(|e| {
-            if let EngineEvent::ToolCallResult { output, .. } = e {
+            if let EngineEvent::ToolCallResult { output, name, .. } = e
+                && name == "Edit"
+            {
                 Some(output.clone())
             } else {
                 None
             }
         })
-        .expect("expected tool result");
+        .expect("expected Edit tool result");
 
     assert!(
         output.contains("not found"),
@@ -555,7 +569,8 @@ async fn test_edit_validation_file_not_found() {
 
 // ── Several Edits to one file in one response ──────────────────
 
-/// Two Edits to `order.txt`, sent in one response, then a closing reply.
+/// A Read of `order.txt` (Edit needs one first), two Edits to it sent in one
+/// response, then a closing reply.
 fn two_edits(first: (&str, &str), second: (&str, &str)) -> MockProvider {
     let edit = |id: &str, (old_str, new_str): (&str, &str)| koda_core::providers::ToolCall {
         id: id.into(),
@@ -569,6 +584,7 @@ fn two_edits(first: (&str, &str), second: (&str, &str)) -> MockProvider {
         thought_signature: None,
     };
     MockProvider::new(vec![
+        MockResponse::tool_call("Read", serde_json::json!({ "file_path": "order.txt" })),
         MockResponse::ToolCalls(vec![edit("e1", first), edit("e2", second)]),
         MockResponse::Text("Done.".into()),
     ])

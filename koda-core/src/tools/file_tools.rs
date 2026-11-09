@@ -65,8 +65,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "Write".to_string(),
             description: "Create a new file or overwrite an existing one. \
-                Set overwrite=true to replace an existing file. \
-                For targeted edits to existing files, prefer Edit instead."
+                Set overwrite=true to replace an existing file, which needs a Read \
+                of it first. For targeted edits to existing files, prefer Edit instead."
                 .to_string(),
             parameters: json!({
                 "type": "object",
@@ -91,7 +91,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
             name: "Edit".to_string(),
             description: "Targeted find-and-replace in an existing file. \
                 Matches exact 'old_str' and replaces it with 'new_str'. \
-                ALWAYS Read the file first to get exact text. \
+                Read the file first, whole or the lines you change: Edit refuses a \
+                file you haven't read, and search results don't count. \
                 Keep each diff small — target only the minimal snippet you want changed. \
                 Make one Edit call per change; calls to one file run in order. \
                 Never paste an entire file inside old_str."
@@ -341,6 +342,45 @@ pub(crate) fn content_is_known(
             .get(key)
             .is_some_and(|(_, _, cached)| !cached.is_empty() && *cached == hash)
     })
+}
+
+/// Whether the model has seen any of `resolved`: a `Read` of it, whole or a
+/// line range, or a `Write`/`Edit` Koda made to it.
+///
+/// `Edit` and an overwriting `Write` require this, as Claude Code's do. A model
+/// that edits from search hits alone hasn't seen what surrounds them: on the
+/// vault task in koda-evals, Haiku in Koda changed link examples inside a code
+/// block it had only met in `Grep` output, in two runs of three.
+pub(crate) fn has_seen(cache: &super::FileReadCache, resolved: &Path) -> bool {
+    let prefix = format!("{}:", resolved.display());
+    let guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+    guard.keys().any(|key| {
+        key.strip_prefix(&prefix)
+            .is_some_and(|tail| tail == "written" || is_read_range(tail))
+    })
+}
+
+/// A read key's tail: `start:count`, each `None` or `Some(n)` (see
+/// `read_file`). Checking the shape keeps `a.md` from matching `a.md:b.md`.
+fn is_read_range(tail: &str) -> bool {
+    let part = |p: &str| {
+        p == "None"
+            || p.strip_prefix("Some(")
+                .and_then(|r| r.strip_suffix(')'))
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    };
+    tail.split_once(':')
+        .is_some_and(|(a, b)| part(a) && part(b))
+}
+
+/// What `Edit` and an overwriting `Write` say about a file the model hasn't
+/// read.
+pub(crate) fn not_read_message(path: &str) -> String {
+    format!(
+        "File '{path}' hasn't been read yet. Read it first, the whole file or at least \
+         the lines you're changing, so the change starts from what's in it now: a \
+         search result shows the matching lines, not what's around them."
+    )
 }
 
 /// Write content to a file, creating parent directories as needed.

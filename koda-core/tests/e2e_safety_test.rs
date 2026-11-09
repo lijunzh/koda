@@ -337,6 +337,8 @@ async fn edit_fuzzy_matches_trailing_whitespace() {
 
     // Model sends old_str without trailing whitespace.
     let provider = MockProvider::new(vec![
+        // Edit needs a Read of the file first.
+        MockResponse::tool_call("Read", serde_json::json!({ "file_path": "whitespace.txt" })),
         MockResponse::tool_call(
             "Edit",
             serde_json::json!({
