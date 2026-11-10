@@ -480,7 +480,7 @@ thresholds and have different costs:
 | Layer | Trigger | Cost | Mechanism |
 |---|---|---|---|
 | **Microcompact** (`microcompact.rs`) | Time gap since last assistant msg > 5min, AND old tool results exist | Zero LLM tokens — SQL `UPDATE` only | Replaces stale tool result bodies with `[Old tool result content cleared]` stub. Reversible by `RecallContext`. |
-| **Full compact** (`compact.rs`) | Context usage ≥ 85% (auto), or `/compact` (manual) | One LLM call on the session's model | Summarizes everything but the newest 30% into a single synthesis message; archives originals in DB. Stored as a `system` row and sent as the first user message, as Codex carries its summary. |
+| **Full compact** (`compact.rs`) | Context usage ≥ 85% (auto), or `/compact` (manual) | One LLM call on the session's model | Summarizes everything but the newest 30% into a single synthesis message; archives originals in DB. The summarizer sees user and assistant messages whole, as Codex does, and each tool result's first 2,000 characters. Stored as a `system` row and sent as the first user message, as Codex carries its summary. |
 
 Both are inspired by Claude Code's identically-named layers. We adopt the
 two-layer approach because:
