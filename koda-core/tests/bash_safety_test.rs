@@ -425,6 +425,9 @@ fn test_dollar_paren_substitution_is_classified_by_its_contents() {
         "for i in $(seq 1 20); do if grep -q listening /tmp/koda-bg/1.log 2>/dev/null; then break; fi; sleep 1; done; cat /tmp/koda-bg/1.log",
         "for i in $(seq 1 10); do r=$(curl -s -m 2 http://127.0.0.1:61306/health); if [ -n \"$r\" ]; then echo \"$r\"; break; fi; sleep 1; done",
         "until curl -s localhost:8000/health; do sleep 1; done",
+        // An assignment from a substitution only assigns (Haiku, 2026-11-10).
+        "for i in $(seq 1 20); do\n  out=$(curl -s -m 2 http://127.0.0.1:51563/health) && [ -n \"$out\" ] && break\n  sleep 1\ndone\necho \"$out\"",
+        "pid=$(cat server.pid)",
     ] {
         assert_eq!(
             classify_bash_command(cmd),

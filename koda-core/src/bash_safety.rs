@@ -515,8 +515,21 @@ fn runs_substitution(outer: &str) -> bool {
             .split_whitespace()
             .next()
             .unwrap_or("");
+        // `out=$(curl …)` with no command after it only assigns.
+        if is_assignment(head) {
+            return false;
+        }
         let name = head.rsplit('/').next().unwrap_or(head);
         head.contains(SUBSTITUTION) || RUNS_ITS_INPUT.contains(&name)
+    })
+}
+
+/// Whether `word` is a variable assignment, `NAME=value`.
+fn is_assignment(word: &str) -> bool {
+    word.split_once('=').is_some_and(|(name, _)| {
+        !name.is_empty()
+            && !name.starts_with(|c: char| c.is_ascii_digit())
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
     })
 }
 
