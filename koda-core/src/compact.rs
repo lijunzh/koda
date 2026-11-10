@@ -27,7 +27,7 @@
 //! for the caller (TUI or headless) to render however it likes.
 //!
 //! Compaction uses the session's model at `low` reasoning effort (see
-//! [`summary_effort`]): summarizing is a simple task that doesn't need the
+//! `summary_effort`): summarizing is a simple task that doesn't need the
 //! session's deeper reasoning, and on a local model the reasoning is most of
 //! the wait.
 
