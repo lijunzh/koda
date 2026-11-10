@@ -851,11 +851,13 @@ fn owner_of(
     own: &[crate::tools::bg_process::BgProcessSnapshot],
 ) -> Option<&crate::tools::bg_process::BgProcessSnapshot> {
     use crate::tools::bg_process::BgProcessStatus;
-    own.iter().find(|s| s.pid == pid).or_else(|| {
-        let group = koda_sandbox::process_group::group_of(pid)?;
-        own.iter()
-            .find(|s| s.pid == group && s.status == BgProcessStatus::Running)
-    })
+    own.iter()
+        .find(|s| s.pid == pid || s.members.contains(&pid))
+        .or_else(|| {
+            let group = koda_sandbox::process_group::group_of(pid)?;
+            own.iter()
+                .find(|s| s.pid == group && s.status == BgProcessStatus::Running)
+        })
 }
 
 /// Whether this Bash call only checks or stops background processes the
@@ -902,12 +904,33 @@ pub(crate) fn own_kill_in_longer_command(
     }
     let own = bg.snapshot_for_caller(caller_spawner);
     let mut pids: Vec<u32> = Vec::new();
+    // `PID=$(cat app.pid)` (or `PID=123`) earlier in the command, for `kill $PID`.
+    let mut vars: Vec<(String, String)> = Vec::new();
     for segment in command.split(['\n', ';', '|', '&']) {
         let segment = segment.trim().trim_start_matches(['(', '{', '!']).trim();
+        if let Some((name, value)) = segment.split_once('=')
+            && !name.is_empty()
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && let Some(value) = resolve_pid_files(value.trim_matches('"'))
+            && value.parse::<u32>().is_ok()
+        {
+            vars.push((name.to_string(), value));
+            continue;
+        }
         if !segment.starts_with("kill ") {
             continue;
         }
-        let segment = resolve_pid_files(segment)?;
+        let mut segment = resolve_pid_files(segment)?;
+        for (name, value) in &vars {
+            for form in [
+                format!("\"${{{name}}}\""),
+                format!("\"${name}\""),
+                format!("${{{name}}}"),
+                format!("${name}"),
+            ] {
+                segment = segment.replace(&form, value);
+            }
+        }
         let (PlainKill::Check(found) | PlainKill::Stop(found)) =
             plain_kill(segment.split("2>").next().unwrap_or(&segment).trim())?;
         if !found.iter().all(|pid| owner_of(*pid, &own).is_some()) {
@@ -984,6 +1007,9 @@ fn signal_own_background(
         .iter()
         .map(|pid| owner_of(*pid, &own).map(|entry| (*pid, entry)))
         .collect::<Option<Vec<_>>>()?;
+    for (pid, entry) in &entries {
+        bg.note_member(entry.pid, *pid);
+    }
     let mut lines = Vec::new();
     let mut all_running = true;
     for (pid, entry) in entries {
@@ -1835,8 +1861,47 @@ mod tests {
         assert_eq!(hint("PID=1; kill $PID; echo".into()), None);
         // No kill at all.
         assert_eq!(hint("echo hi; ls".into()), None);
+        // A variable read from the PID file earlier in the command (Haiku,
+        // 2026-11-10).
+        let with_var = format!(
+            "PID=$(cat {}); kill $PID; sleep 1; kill -0 \"$PID\" && echo up || echo down",
+            pidfile.display()
+        );
+        assert!(hint(with_var.clone()).is_some(), "{with_var}");
 
-        registry.kill(started_group(&registry));
+        // Stopped through Koda, the PID stays known: a check chained after the
+        // stop still gets the hint, and the plain check says it's gone.
+        let stop = run_with(
+            tmp.path(),
+            &registry,
+            serde_json::json!({ "command": format!("kill {pid}") }),
+        )
+        .await;
+        assert!(
+            stop.summary.contains("Stopped background process"),
+            "{}",
+            stop.summary
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(!koda_sandbox::process_group::process_alive(pid));
+        assert!(
+            hint(format!(
+                "kill -0 {pid} && echo up || echo down; curl -s localhost:1"
+            ))
+            .is_some()
+        );
+        let check = run_with(
+            tmp.path(),
+            &registry,
+            serde_json::json!({ "command": format!("kill -0 {pid}") }),
+        )
+        .await;
+        assert!(
+            check.summary.contains(&format!("{pid} is not running")),
+            "{}",
+            check.summary
+        );
+        let _ = started_group;
     }
 
     /// The one entry in `registry`: the group a test's call left running.
