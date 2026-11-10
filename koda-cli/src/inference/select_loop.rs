@@ -132,6 +132,10 @@ impl TuiContext {
         let bg_agents_for_status = self.session.bg_agents.clone();
         let agent_for_status = self.agent.clone();
 
+        // Ctrl+D asked to quit: the turn was told to stop, and Koda exits
+        // once it has.
+        let mut quit_requested = false;
+
         // Run the inference turn as a pinned future
         {
             let turn = self.session.run_turn(
@@ -286,7 +290,7 @@ impl TuiContext {
                         }
                     }
                     SelectArm::Crossterm(ev) => {
-                        super::crossterm_handler::handle_crossterm_event_inline(
+                        quit_requested |= super::crossterm_handler::handle_crossterm_event_inline(
                             ev,
                             &session_cancel,
                             cmd_tx,
@@ -391,6 +395,9 @@ impl TuiContext {
 
         // Post-turn cleanup
         self.post_turn_cleanup(ui_rx, cmd_rx).await;
+        if quit_requested {
+            self.should_quit = true;
+        }
         Ok(())
     }
 }

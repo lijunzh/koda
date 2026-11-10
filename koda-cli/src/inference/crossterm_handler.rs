@@ -35,7 +35,8 @@ use tokio::sync::mpsc;
 /// Route a crossterm event during inference (field-level borrows).
 ///
 /// Extracted from the inline `tokio::select!` arm so the select body
-/// stays small and readable.
+/// stays small and readable. Returns true when the user asked to quit: the
+/// turn has been told to stop, and Koda exits once it has.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_crossterm_event_inline(
     ev: Event,
@@ -56,7 +57,7 @@ pub(super) async fn handle_crossterm_event_inline(
     bg_agents: &koda_core::child_agent::ChildAgentRegistry,
     bg_processes: &koda_core::tools::bg_process::BgRegistry,
     child_activity: &mut crate::child_activity::ChildActivityTracker,
-) {
+) -> bool {
     use crossterm::event::MouseEventKind;
     match ev {
         Event::Resize(_, _) => {
@@ -88,7 +89,7 @@ pub(super) async fn handle_crossterm_event_inline(
             }
         }
         Event::Key(key) => {
-            handle_inference_key_inline(
+            return handle_inference_key_inline(
                 key,
                 session_cancel,
                 cmd_tx,
@@ -110,9 +111,11 @@ pub(super) async fn handle_crossterm_event_inline(
         }
         _ => {}
     }
+    false
 }
 
-/// Handle a key event during inference (field-level borrows).
+/// Handle a key event during inference (field-level borrows). Returns true
+/// when the key asks Koda to quit.
 #[allow(clippy::too_many_arguments)]
 async fn handle_inference_key_inline(
     key: crossterm::event::KeyEvent,
@@ -131,7 +134,7 @@ async fn handle_inference_key_inline(
     bg_agents: &koda_core::child_agent::ChildAgentRegistry,
     bg_processes: &koda_core::tools::bg_process::BgRegistry,
     child_activity: &mut crate::child_activity::ChildActivityTracker,
-) {
+) -> bool {
     // Vim insert-mode Escape (PR 3 of #1178). Same rationale as in
     // `tui_context::events::handle_key`: route bare Esc to the textarea
     // for the INSERT → NORMAL transition before the inference-loop's
@@ -140,7 +143,7 @@ async fn handle_inference_key_inline(
     // know whether vim is enabled.
     if textarea.should_handle_vim_insert_escape(key) {
         textarea.input(key);
-        return;
+        return false;
     }
 
     // Esc and Ctrl+C stop the turn from any dialog, so they close it and fall
@@ -203,7 +206,7 @@ async fn handle_inference_key_inline(
                 })
                 .await;
         }
-        return;
+        return false;
     }
 
     // Loop cap hotkeys
@@ -224,7 +227,7 @@ async fn handle_inference_key_inline(
                 .send(EngineCommand::LoopDecision { id, action: a })
                 .await;
         }
-        return;
+        return false;
     }
 
     // AskUser: freeform text input during inference.
@@ -251,7 +254,7 @@ async fn handle_inference_key_inline(
                 textarea.input(key);
             }
         }
-        return;
+        return false;
     }
 
     // Feedback text input during inference
@@ -280,7 +283,7 @@ async fn handle_inference_key_inline(
                 textarea.input(key);
             }
         }
-        return;
+        return false;
     }
 
     // General keys during inference
@@ -309,7 +312,7 @@ async fn handle_inference_key_inline(
                          Press Esc to interrupt, then run the command at idle."
                             .into(),
                     );
-                    return;
+                    return false;
                 }
                 textarea.set_text_clearing_elements("");
                 history.push(text.clone());
@@ -345,6 +348,15 @@ async fn handle_inference_key_inline(
                 bg_processes,
                 child_activity,
             );
+        }
+        (KeyCode::Char('d'), m)
+            if m.contains(KeyModifiers::CONTROL) && textarea.text().trim().is_empty() =>
+        {
+            // Ctrl+D on an empty composer quits, mid-turn as at idle, as in
+            // Codex. The turn stops first, the way Esc stops it, so it is
+            // saved before Koda exits. With text it deletes forward, below.
+            session_cancel.interrupt();
+            return true;
         }
         (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
             // Same cascade as Esc — during inference both keys are
@@ -389,6 +401,7 @@ async fn handle_inference_key_inline(
             textarea.input(key);
         }
     }
+    false
 }
 
 /// Close whatever dialog is open, along with its text box.

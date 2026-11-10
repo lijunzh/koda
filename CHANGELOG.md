@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Ctrl+D quits during a turn too, as in Codex.** On an empty input it quit only at idle; while a turn ran, the key went to the input box and did nothing, including in the moment after the answer is on screen but before the turn has ended. It now stops the turn the way `Esc` does, then quits, so the session is saved and the resume hint prints. With text in the input box it still deletes forward, and with an approval or question open it does nothing.
+
 ## [0.6.2] - 2026-11-10
 
 ### Changed

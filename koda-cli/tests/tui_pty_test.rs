@@ -29,6 +29,7 @@ const PASTE_SETTLE: Duration = Duration::from_millis(400);
 const ESC: &str = "\x1b";
 const CTRL_C: &str = "\x03";
 const CTRL_O: &str = "\x0f";
+const CTRL_D: &str = "\x04";
 
 /// The pty's size, which the screen model must match.
 const ROWS: u16 = 40;
@@ -759,8 +760,13 @@ async fn an_outside_sandbox_request_shows_its_warning_and_reason() {
 /// deletes nothing. So it waits for the turn to end, not just its last words.
 fn quit_and_read_session_id(tui: &mut Tui) -> String {
     tui.wait_for_screen_without(BUSY_PROMPT);
-    tui.type_text("\x04");
+    tui.type_text(CTRL_D);
     assert!(tui.exits(), "koda stayed up after Ctrl+D");
+    resume_hint_session_id(tui)
+}
+
+/// The session id in the resume hint Koda printed as it quit.
+fn resume_hint_session_id(tui: &Tui) -> String {
     let text = tui.output_text();
     text.split("koda --resume ")
         .nth(1)
@@ -819,6 +825,41 @@ async fn a_resumed_session_shows_and_keeps_its_history() {
         "the model lost the read: {sent}"
     );
     assert!(sent.contains("and now?"), "{sent}");
+}
+
+/// Ctrl+D on an empty composer quits during a turn too, as in Codex. It
+/// used to go to the composer and do nothing. The turn stops first, so its
+/// command ends and the session can be resumed.
+#[tokio::test(flavor = "multi_thread")]
+async fn ctrl_d_quits_during_a_turn() {
+    // 33 s: no other test sleeps that long, so pgrep finds only this one.
+    let server = scripted_model(vec![tool_calls(&[(
+        "Bash",
+        json!({"command": "sleep 33"}),
+    )])])
+    .await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.submit("run it");
+    tui.approve_until(|| running("sleep 33"));
+    tui.type_text(CTRL_D);
+    assert!(tui.exits(), "koda stayed up after Ctrl+D during a turn");
+    let session = resume_hint_session_id(&tui);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while running("sleep 33") {
+        assert!(Instant::now() < deadline, "the command outlived the quit");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let tui = Tui::start_with_args(
+        home.path(),
+        &server.url(),
+        &["--resume", &session],
+        IDLE_HINT,
+    );
+    tui.wait_for_screen("session resumed");
+    assert!(tui.screen().contains("run it"), "{}", tui.screen());
 }
 
 /// `/model` switches the model mid-session: the next request asks for it.
