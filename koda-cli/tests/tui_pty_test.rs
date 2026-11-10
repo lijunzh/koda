@@ -19,6 +19,10 @@ use std::time::{Duration, Instant};
 /// Text the composer shows when it is empty and the TUI is idle.
 const IDLE_HINT: &str = "Type a message";
 
+/// The prompt while a turn runs. It is drawn until the turn loop is done,
+/// which can be after the turn's last words are on screen.
+const BUSY_PROMPT: &str = "\u{23f3}>";
+
 /// How long the composer waits before it stops treating fast typing as a paste.
 const PASTE_SETTLE: Duration = Duration::from_millis(400);
 
@@ -750,7 +754,11 @@ async fn an_outside_sandbox_request_shows_its_warning_and_reason() {
 }
 
 /// Quit with Ctrl+D and return the session id Koda prints for `--resume`.
+///
+/// Ctrl+D quits only at idle: during a turn it goes to the composer, where it
+/// deletes nothing. So it waits for the turn to end, not just its last words.
 fn quit_and_read_session_id(tui: &mut Tui) -> String {
+    tui.wait_for_screen_without(BUSY_PROMPT);
     tui.type_text("\x04");
     assert!(tui.exits(), "koda stayed up after Ctrl+D");
     let text = tui.output_text();
