@@ -4,6 +4,13 @@
 //! listed, waited on, killed, and cleaned up (SIGTERM) when the session ends
 //! or the spawning sub-agent exits (Model E, see #996).
 //!
+//! An entry is a process group, as an exec session is in Codex: the command
+//! Koda started leads it, and whatever that command started with `&` is in
+//! it too. The entry is `Running` while anything in the group is alive, so a
+//! `server & echo $!` whose shell exits at once is still Koda's, ports and
+//! all. A foreground call that leaves processes behind hands its group over
+//! with [`BgRegistry::adopt`].
+//!
 //! ## Usage
 //!
 //! ```text
@@ -117,8 +124,11 @@ struct BgEntry {
     /// The original shell command string.
     command: String,
     /// The spawned child process handle (used for `start_kill` on
-    /// kill-paths and `try_wait` on reap).
-    child: Child,
+    /// kill-paths and `try_wait` on reap). `None` for a group taken over
+    /// from a foreground call, whose leader that call already reaped.
+    child: Option<Child>,
+    /// The leader's exit code, once it has exited; the group may outlive it.
+    leader_code: Option<i32>,
     /// When the entry was inserted. Drives `age` in snapshots.
     started_at: Instant,
     /// Current status. Only [`BgRegistry::reap`] and the kill-paths
@@ -150,13 +160,33 @@ impl BgRegistry {
             pid,
             BgEntry {
                 command,
-                child,
+                child: Some(child),
+                leader_code: None,
                 started_at: Instant::now(),
                 status: BgProcessStatus::Running,
                 spawner,
             },
         );
         pid
+    }
+
+    /// Take over the process group a foreground call left running: its
+    /// leader (the call's shell) has exited and been reaped, but processes it
+    /// started with `&` are still in the group. Keyed by the group's id, the
+    /// leader's PID, like every entry.
+    pub fn adopt(&self, group: u32, command: String, spawner: Option<u32>) -> u32 {
+        self.inner.lock().unwrap().insert(
+            group,
+            BgEntry {
+                command,
+                child: None,
+                leader_code: None,
+                started_at: Instant::now(),
+                status: BgProcessStatus::Running,
+                spawner,
+            },
+        );
+        group
     }
 
     /// Return a snapshot of running PIDs + commands for display.
@@ -229,24 +259,27 @@ impl BgRegistry {
     /// `snapshot()` (the TUI does so via the slash command path).
     pub fn reap(&self) {
         let mut guard = self.inner.lock().unwrap();
-        for entry in guard.values_mut() {
+        for (group, entry) in guard.iter_mut() {
             if entry.status != BgProcessStatus::Running {
                 continue;
             }
-            match entry.child.try_wait() {
-                Ok(Some(exit)) => {
-                    entry.status = BgProcessStatus::Exited { code: exit.code() };
+            if let Some(child) = entry.child.as_mut()
+                && entry.leader_code.is_none()
+            {
+                match child.try_wait() {
+                    Ok(Some(exit)) => entry.leader_code = Some(exit.code().unwrap_or(-1)),
+                    Ok(None) => continue, // the leader is still running
+                    Err(e) => {
+                        // try_wait can fail if the OS lost track (rare).
+                        tracing::warn!("BgRegistry reap try_wait failed for PID {group}: {e}");
+                        entry.leader_code = Some(-1);
+                    }
                 }
-                Ok(None) => { /* still running */ }
-                Err(e) => {
-                    // try_wait can fail if the OS lost track (rare).
-                    // Log + treat as terminal so we don't spin.
-                    tracing::warn!(
-                        "BgRegistry reap try_wait failed for PID {}: {e}",
-                        entry.child.id().unwrap_or(0)
-                    );
-                    entry.status = BgProcessStatus::Exited { code: None };
-                }
+            }
+            // The leader is gone; the group lives on while anything in it does.
+            if !koda_sandbox::process_group::group_alive(*group) {
+                let code = entry.leader_code.filter(|c| *c >= 0);
+                entry.status = BgProcessStatus::Exited { code };
             }
         }
     }
@@ -265,7 +298,7 @@ impl BgRegistry {
             return false;
         };
         if entry.status == BgProcessStatus::Running {
-            if let Err(e) = kill_command(&mut entry.child) {
+            if let Err(e) = kill_command(pid, entry.child.as_mut()) {
                 tracing::warn!("BgRegistry::kill: failed to SIGTERM PID {pid}: {e}");
             }
             entry.status = BgProcessStatus::Killed;
@@ -284,7 +317,7 @@ impl BgRegistry {
             return CancelOutcome::Forbidden;
         }
         if entry.status == BgProcessStatus::Running {
-            if let Err(e) = kill_command(&mut entry.child) {
+            if let Err(e) = kill_command(pid, entry.child.as_mut()) {
                 tracing::warn!("BgRegistry::kill_as_caller: SIGTERM PID {pid}: {e}");
             }
             entry.status = BgProcessStatus::Killed;
@@ -368,16 +401,13 @@ impl BgRegistry {
     pub fn kill_for_spawner(&self, spawner: u32) -> usize {
         let mut guard = self.inner.lock().unwrap();
         let mut count = 0;
-        for entry in guard.values_mut() {
+        for (group, entry) in guard.iter_mut() {
             if entry.spawner != Some(spawner) {
                 continue;
             }
             if entry.status == BgProcessStatus::Running {
-                if let Err(e) = kill_command(&mut entry.child) {
-                    tracing::warn!(
-                        "BgRegistry::kill_for_spawner: SIGTERM PID {}: {e}",
-                        entry.child.id().unwrap_or(0)
-                    );
+                if let Err(e) = kill_command(*group, entry.child.as_mut()) {
+                    tracing::warn!("BgRegistry::kill_for_spawner: SIGTERM PID {group}: {e}");
                 }
                 entry.status = BgProcessStatus::Killed;
                 count += 1;
@@ -391,9 +421,19 @@ impl BgRegistry {
 /// makes each command a process-group leader, so its group holds the
 /// command's children too (`npm run dev` and the server it runs). A child
 /// that doesn't lead a group has no group of that id, and only it dies.
-fn kill_command(child: &mut Child) -> std::io::Result<()> {
-    koda_sandbox::process_group::ProcessGroup::of(child).kill();
-    child.start_kill()
+fn kill_command(group: u32, child: Option<&mut Child>) -> std::io::Result<()> {
+    koda_sandbox::process_group::kill_group(group);
+    match child {
+        // Already exited is fine: the group was the point.
+        Some(child) => child.start_kill().or_else(|e| {
+            if e.kind() == std::io::ErrorKind::InvalidInput {
+                Ok(())
+            } else {
+                Err(e)
+            }
+        }),
+        None => Ok(()),
+    }
 }
 
 impl BgRegistry {
@@ -463,7 +503,7 @@ impl Drop for BgRegistry {
             if entry.status != BgProcessStatus::Running {
                 continue;
             }
-            if let Err(e) = kill_command(&mut entry.child) {
+            if let Err(e) = kill_command(*pid, entry.child.as_mut()) {
                 tracing::warn!("BgRegistry drop: failed to kill PID {pid}: {e}");
             } else {
                 tracing::debug!("BgRegistry drop: sent SIGTERM to PID {pid}");

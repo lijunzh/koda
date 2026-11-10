@@ -777,6 +777,26 @@ stayed; only the model-facing tools went away.
   meta-tool slot now belongs to `WaitForMail` / `SendMessage` /
   `SpawnAgent` from #1325 Phases 3 and 5a.
 
+**A background process is a process group** (2026-11, following Codex,
+whose exec sessions own their group and close it with the session). Each
+Bash command leads its own group. A `BgRegistry` entry stays running while
+anything in its group lives, not only the process Koda started, so
+`server & echo $!` run with `background: true` stays Koda's after its shell
+exits. A foreground call ends when its shell does, after a 1 s grace for
+output still in the pipes, and hands any group it leaves running to the
+registry (`BgRegistry::adopt`), saying so in its result. `kill PID` and
+`kill -0 PID` count as Koda's own for any PID in such a group: a check
+looks at that process, and a stop ends the group. On macOS the sandbox
+opens the group's listening ports. Every group stops when the session
+ends. Before, Koda tracked only the process it launched. A server started
+with `&` was nobody's, its port stayed closed and stopping it asked, and a
+call whose job held the output pipe hung until its timeout. Haiku starts
+dev servers that way in about half of the eval runs that need one, and the
+Bash description saying not to didn't change that. Claude Code tolerates
+`&` and stops detached processes a few minutes after the reply. Qwen Code
+refuses `&` inside a background call. Gemini CLI records `jobs -p` in an
+exit trap.
+
 **Spawner scoping** (Layer 2). Each bg-task entry carries an
 `Option<u32>` spawner id — the sub-agent invocation id of whoever
 kicked it off, or `None` for the top-level inference loop. The LLM
