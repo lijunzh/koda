@@ -679,6 +679,20 @@ pub(crate) async fn execute_tools_sequential(
         {
             approval = ToolApproval::AutoApprove;
         }
+        // A `kill` of Koda's own processes inside a longer command can't work
+        // in the sandbox, approved or not: say how instead of asking.
+        if approval != ToolApproval::AutoApprove
+            && mode != TrustMode::Plan
+            && tc.function_name == "Bash"
+            && let Some(hint) = tools::shell::own_kill_in_longer_command(
+                &parsed_args,
+                &tools.bg_registry,
+                tx.caller_spawner,
+            )
+        {
+            record_tool_result(tc, &hint, false, None, ctx, file_tracker).await?;
+            continue;
+        }
 
         match approval {
             ToolApproval::AutoApprove => {

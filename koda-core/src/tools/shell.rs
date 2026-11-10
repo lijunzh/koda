@@ -843,6 +843,23 @@ pub(crate) fn kill_command(command: &str) -> Option<KillCommand> {
     Some(found)
 }
 
+/// The caller's background entry `pid` belongs to: one it leads, or a running
+/// one whose process group `pid` is in (the server a `server & echo $!`
+/// started, whose shell has exited).
+fn owner_of(
+    pid: u32,
+    own: &[crate::tools::bg_process::BgProcessSnapshot],
+) -> Option<&crate::tools::bg_process::BgProcessSnapshot> {
+    use crate::tools::bg_process::BgProcessStatus;
+    own.iter()
+        .find(|s| s.pid == pid || s.members.contains(&pid))
+        .or_else(|| {
+            let group = koda_sandbox::process_group::group_of(pid)?;
+            own.iter()
+                .find(|s| s.pid == group && s.status == BgProcessStatus::Running)
+        })
+}
+
 /// Whether this Bash call only checks or stops background processes the
 /// caller started, which [`run_shell_command`] then does itself. The
 /// dispatchers use it to approve such a call in Auto even though `kill`
@@ -861,7 +878,114 @@ pub(crate) fn signals_only_own_background(
     };
     let (PlainKill::Check(pids) | PlainKill::Stop(pids)) = &found.kill;
     let own = bg.snapshot_for_caller(caller_spawner);
-    pids.iter().all(|pid| own.iter().any(|s| s.pid == *pid))
+    pids.iter().all(|pid| owner_of(*pid, &own).is_some())
+}
+
+/// For a Bash call that isn't a plain `kill` but does `kill` (or `kill -0`)
+/// only Koda's own background processes among other commands, the message
+/// that sends the model to Koda's way: the sandbox can't signal a process an
+/// earlier call started, so run as written the kill fails even if approved.
+/// PIDs may be written out or read from a file (`kill $(cat app.pid)`).
+/// `None` when there's no such kill, or one names a PID that isn't Koda's.
+///
+/// Codex stops a running command through its harness too (Ctrl-C to the exec
+/// session), and a shell `kill` there meets the sandbox like any command.
+pub(crate) fn own_kill_in_longer_command(
+    args: &Value,
+    bg: &BgRegistry,
+    caller_spawner: Option<u32>,
+) -> Option<String> {
+    if wants_outside_sandbox(args) || args["background"].as_bool().unwrap_or(false) {
+        return None;
+    }
+    let command = args["command"].as_str()?;
+    if kill_command(command).is_some() {
+        return None; // a plain kill: Koda runs it
+    }
+    let own = bg.snapshot_for_caller(caller_spawner);
+    let mut pids: Vec<u32> = Vec::new();
+    // `PID=$(cat app.pid)` (or `PID=123`) earlier in the command, for `kill $PID`.
+    let mut vars: Vec<(String, String)> = Vec::new();
+    for segment in command.split(['\n', ';', '|', '&']) {
+        let segment = segment.trim().trim_start_matches(['(', '{', '!']).trim();
+        if let Some((name, value)) = segment.split_once('=')
+            && !name.is_empty()
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && let Some(value) = resolve_pid_files(value.trim_matches('"'))
+            && value.parse::<u32>().is_ok()
+        {
+            vars.push((name.to_string(), value));
+            continue;
+        }
+        if !segment.starts_with("kill ") {
+            continue;
+        }
+        let mut segment = resolve_pid_files(segment)?;
+        for (name, value) in &vars {
+            for form in [
+                format!("\"${{{name}}}\""),
+                format!("\"${name}\""),
+                format!("${{{name}}}"),
+                format!("${name}"),
+            ] {
+                segment = segment.replace(&form, value);
+            }
+        }
+        let (PlainKill::Check(found) | PlainKill::Stop(found)) =
+            plain_kill(segment.split("2>").next().unwrap_or(&segment).trim())?;
+        if !found.iter().all(|pid| owner_of(*pid, &own).is_some()) {
+            return None;
+        }
+        pids.extend(found);
+    }
+    if pids.is_empty() {
+        return None;
+    }
+    pids.sort_unstable();
+    pids.dedup();
+    let list = pids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some(format!(
+        "Not run: {list} {is} Koda's background {process}, and the sandbox can't signal \
+         {it} from inside a longer command. Send the kill on its own and Koda does it \
+         without asking: Bash{{command: \"kill {list}\"}} to stop, or \
+         Bash{{command: \"kill -0 {list}\"}} to check. Run the rest of the command \
+         separately.",
+        is = if pids.len() == 1 { "is" } else { "are" },
+        process = if pids.len() == 1 {
+            "process"
+        } else {
+            "processes"
+        },
+        it = if pids.len() == 1 { "it" } else { "them" },
+    ))
+}
+
+/// `kill $(cat FILE)` and `` kill `cat FILE` `` with the PID read from FILE,
+/// as the shell would; the segment unchanged when there's no such read, and
+/// `None` when the file can't be read.
+fn resolve_pid_files(segment: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut rest = segment;
+    loop {
+        let (start, open, close) = match (rest.find("$(cat "), rest.find("`cat ")) {
+            (Some(a), Some(b)) if b < a => (b, "`cat ", "`"),
+            (Some(a), _) => (a, "$(cat ", ")"),
+            (None, Some(b)) => (b, "`cat ", "`"),
+            (None, None) => break,
+        };
+        out.push_str(&rest[..start]);
+        let after = &rest[start + open.len()..];
+        let end = after.find(close)?;
+        let path = after[..end].trim().trim_matches(['"', '\'']);
+        out.push_str(std::fs::read_to_string(path).ok()?.trim());
+        rest = &after[end + close.len()..];
+    }
+    out.push_str(rest);
+    Some(out)
 }
 
 /// Check or stop background processes through the registry, when every PID
@@ -881,17 +1005,11 @@ fn signal_own_background(
     // started, whose shell has exited.
     let entries = pids
         .iter()
-        .map(|pid| {
-            own.iter()
-                .find(|s| s.pid == *pid)
-                .or_else(|| {
-                    let group = koda_sandbox::process_group::group_of(*pid)?;
-                    own.iter()
-                        .find(|s| s.pid == group && s.status == BgProcessStatus::Running)
-                })
-                .map(|entry| (*pid, entry))
-        })
+        .map(|pid| owner_of(*pid, &own).map(|entry| (*pid, entry)))
         .collect::<Option<Vec<_>>>()?;
+    for (pid, entry) in &entries {
+        bg.note_member(entry.pid, *pid);
+    }
     let mut lines = Vec::new();
     let mut all_running = true;
     for (pid, entry) in entries {
@@ -1696,6 +1814,99 @@ mod tests {
         );
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         assert!(!koda_sandbox::process_group::process_alive(pid));
+    }
+
+    /// A `kill` of Koda's own process inside a longer command gets the hint;
+    /// a plain kill, a PID that isn't Koda's, or a PID Koda can't read don't.
+    #[tokio::test]
+    async fn a_chained_kill_of_koda_s_process_gets_the_hint() {
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = BgRegistry::new();
+        let started = run_with(
+            tmp.path(),
+            &registry,
+            serde_json::json!({ "command": "sleep 30 > /dev/null 2>&1 & echo $!" }),
+        )
+        .await;
+        let pid = first_pid(&started);
+        let pidfile = tmp.path().join("app.pid");
+        std::fs::write(&pidfile, format!("{pid}\n")).unwrap();
+        let hint = |command: String| {
+            own_kill_in_longer_command(&serde_json::json!({ "command": command }), &registry, None)
+        };
+
+        for command in [
+            format!("kill {pid}; sleep 1; kill -0 {pid} && echo up || echo down"),
+            format!("kill -0 {pid} 2>/dev/null && echo alive; cat log.txt"),
+            format!("kill $(cat {}); sleep 1; echo done", pidfile.display()),
+            format!(
+                "curl -s localhost:1/health; kill `cat {}`",
+                pidfile.display()
+            ),
+        ] {
+            let text = hint(command.clone()).unwrap_or_else(|| panic!("no hint for {command}"));
+            assert!(
+                text.starts_with(&format!("Not run: {pid} is Koda's")),
+                "{text}"
+            );
+            assert!(text.contains(&format!("kill {pid}")), "{text}");
+        }
+        // A plain kill is Koda's to run, not to explain.
+        assert_eq!(hint(format!("kill {pid}")), None);
+        // A PID that isn't Koda's, alone or beside one that is.
+        assert_eq!(hint("kill 1; echo done".into()), None);
+        assert_eq!(hint(format!("kill {pid} 1; echo done")), None);
+        // A PID file that can't be read, or a variable: nothing to go on.
+        assert_eq!(hint("kill $(cat /nonexistent/app.pid); echo".into()), None);
+        assert_eq!(hint("PID=1; kill $PID; echo".into()), None);
+        // No kill at all.
+        assert_eq!(hint("echo hi; ls".into()), None);
+        // A variable read from the PID file earlier in the command (Haiku,
+        // 2026-11-10).
+        let with_var = format!(
+            "PID=$(cat {}); kill $PID; sleep 1; kill -0 \"$PID\" && echo up || echo down",
+            pidfile.display()
+        );
+        assert!(hint(with_var.clone()).is_some(), "{with_var}");
+
+        // Stopped through Koda, the PID stays known: a check chained after the
+        // stop still gets the hint, and the plain check says it's gone.
+        let stop = run_with(
+            tmp.path(),
+            &registry,
+            serde_json::json!({ "command": format!("kill {pid}") }),
+        )
+        .await;
+        assert!(
+            stop.summary.contains("Stopped background process"),
+            "{}",
+            stop.summary
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(!koda_sandbox::process_group::process_alive(pid));
+        assert!(
+            hint(format!(
+                "kill -0 {pid} && echo up || echo down; curl -s localhost:1"
+            ))
+            .is_some()
+        );
+        let check = run_with(
+            tmp.path(),
+            &registry,
+            serde_json::json!({ "command": format!("kill -0 {pid}") }),
+        )
+        .await;
+        assert!(
+            check.summary.contains(&format!("{pid} is not running")),
+            "{}",
+            check.summary
+        );
+        let _ = started_group;
+    }
+
+    /// The one entry in `registry`: the group a test's call left running.
+    fn started_group(registry: &BgRegistry) -> u32 {
+        registry.snapshot()[0].pid
     }
 
     /// A pipeline whose upstream dies a moment after the shell isn't "left

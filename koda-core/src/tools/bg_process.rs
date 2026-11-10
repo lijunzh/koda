@@ -117,6 +117,9 @@ pub struct BgProcessSnapshot {
     /// top-level inference loop. Drives [`BgRegistry::kill_for_spawner`]
     /// (Model E cleanup-on-exit) and the LLM scope-filter.
     pub spawner: Option<u32>,
+    /// Other PIDs seen in this entry's group (a server its shell started with
+    /// `&`), so a check after the group is gone still knows them as Koda's.
+    pub members: Vec<u32>,
 }
 
 /// Metadata stored alongside the child handle.
@@ -136,6 +139,8 @@ struct BgEntry {
     status: BgProcessStatus,
     /// Sub-agent that spawned this process. `None` = top-level.
     spawner: Option<u32>,
+    /// PIDs other than the leader seen in the group ([`BgRegistry::note_member`]).
+    members: Vec<u32>,
 }
 
 /// Registry of running background processes, scoped to one session.
@@ -165,6 +170,7 @@ impl BgRegistry {
                 started_at: Instant::now(),
                 status: BgProcessStatus::Running,
                 spawner,
+                members: Vec::new(),
             },
         );
         pid
@@ -184,9 +190,21 @@ impl BgRegistry {
                 started_at: Instant::now(),
                 status: BgProcessStatus::Running,
                 spawner,
+                members: Vec::new(),
             },
         );
         group
+    }
+
+    /// Remember that `pid` is in the group of the entry `group`, so it's still
+    /// known as Koda's once the group is gone (`kill -0 PID` after a stop).
+    pub fn note_member(&self, group: u32, pid: u32) {
+        if let Some(entry) = self.inner.lock().unwrap().get_mut(&group)
+            && pid != group
+            && !entry.members.contains(&pid)
+        {
+            entry.members.push(pid);
+        }
     }
 
     /// Return a snapshot of running PIDs + commands for display.
@@ -224,6 +242,7 @@ impl BgRegistry {
                 age: now.saturating_duration_since(e.started_at),
                 status: e.status,
                 spawner: e.spawner,
+                members: e.members.clone(),
             })
             .collect();
         out.sort_by_key(|s| s.pid);
@@ -387,6 +406,7 @@ impl BgRegistry {
                     age: now.saturating_duration_since(entry.started_at),
                     status: entry.status,
                     spawner: entry.spawner,
+                    members: entry.members.clone(),
                 });
             }
 

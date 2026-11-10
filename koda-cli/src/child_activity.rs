@@ -326,6 +326,7 @@ mod tests {
             age: Duration::from_secs(age_secs),
             status: BgProcessStatus::Running,
             spawner: None,
+            members: Vec::new(),
         }
     }
 

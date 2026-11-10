@@ -1105,6 +1105,22 @@ pub(crate) fn execute_sub_agent<'a>(
                             approval = ToolApproval::AutoApprove;
                         }
 
+                        // A `kill` of the agent's own processes inside a longer
+                        // command can't work in the sandbox: say how instead.
+                        let own_kill_hint = (approval != ToolApproval::AutoApprove
+                            && mode != crate::trust::TrustMode::Plan
+                            && tc.function_name == "Bash")
+                            .then(|| {
+                                crate::tools::shell::own_kill_in_longer_command(
+                                    &parsed_args,
+                                    &tools.bg_registry,
+                                    sub_tx.caller_spawner,
+                                )
+                            })
+                            .flatten();
+                        if let Some(hint) = own_kill_hint {
+                            hint
+                        } else {
                         match approval {
                             ToolApproval::AutoApprove => {
                                 // #1022 B6 + B7: route through `execute_one_tool`
@@ -1209,6 +1225,7 @@ pub(crate) fn execute_sub_agent<'a>(
                                     }
                                 }
                             }
+                        }
                         }
                     };
 
