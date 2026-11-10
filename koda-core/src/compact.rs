@@ -6,7 +6,7 @@
 //! ## How it works
 //!
 //! 1. **Trigger**: user types `/compact`, or auto-compact fires at ~80% context usage
-//! 2. **Summarization**: a cheap model (Standard tier) generates a summary of old messages
+//! 2. **Summarization**: the session's model writes a summary of old messages, at low effort
 //! 3. **Replacement**: old messages are archived in the DB, replaced by the summary
 //! 4. **Result**: context usage drops, conversation continues with full history awareness
 //!
@@ -26,9 +26,10 @@
 //! Pure logic, zero UI dependencies. Returns structured results
 //! for the caller (TUI or headless) to render however it likes.
 //!
-//! Compaction uses a cheap model (Standard tier) when available,
-//! falling back to the main model. Summarization is a simple task
-//! that doesn't need frontier-class reasoning.
+//! Compaction uses the session's model at `low` reasoning effort (see
+//! `summary_effort`): summarizing is a simple task that doesn't need the
+//! session's deeper reasoning, and on a local model the reasoning is most of
+//! the wait.
 
 use crate::config::ModelSettings;
 use crate::db::{Database, Role};
@@ -38,6 +39,32 @@ use anyhow::Result;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::sync::RwLock;
+
+/// The reasoning effort a summary call carries: `low` wherever the session
+/// sends an effort, nothing where it sends none.
+///
+/// Measured 2026-11-09 on Qwen3.8-Flash-Next (llama-server) with a real
+/// compaction prompt: 96 s and 3.5K output tokens at `low` against 200 s and
+/// 7.7K at `xhigh`. In a 32K-window eval run compaction had taken 55-65% of
+/// the run's time. The session's effort stays as it is for every other call.
+///
+/// - A level from [`crate::model_effort::LEVELS`] becomes `low`, its lowest.
+/// - Another value the session chose for its server (`minimal`, `none`) is
+///   kept: it already asks for less, and `low` might not exist there.
+/// - No choice: on Anthropic a model in the effort table gets `low` (Koda
+///   would otherwise send its default); elsewhere nothing is sent, since a
+///   server or model without reasoning may reject the field.
+pub(crate) fn summary_effort(provider: &str, model: &str, chosen: Option<&str>) -> Option<String> {
+    const SUMMARY: &str = "low";
+    match chosen {
+        Some(level) if crate::model_effort::LEVELS.contains(&level) => Some(SUMMARY.into()),
+        Some(other) => Some(other.into()),
+        None if provider == "anthropic" && crate::model_effort::lookup(model).is_some() => {
+            Some(SUMMARY.into())
+        }
+        None => None,
+    }
+}
 
 /// Minimum number of recent messages to keep verbatim during compaction.
 pub const COMPACT_PRESERVE_COUNT: usize = 4;
@@ -238,8 +265,8 @@ pub async fn compact_session_with_provider(
     // Debug only, like the stored summary: this is conversation text.
     tracing::debug!("Compaction prompt:\n{summary_prompt}");
     let messages = vec![ChatMessage::text("user", &summary_prompt)];
-    // Same model and the session's own reasoning settings: Claude Code and
-    // Codex both summarize that way. Only the output cap and temperature differ.
+    // Same model and settings as the session, as Claude Code and Codex
+    // summarize, except the output cap, the temperature and the effort.
     let mut cap = first_cap;
     let mut attempts = 0u32;
     let mut usage = crate::providers::TokenUsage::default();
@@ -248,6 +275,11 @@ pub async fn compact_session_with_provider(
         let compact_settings = ModelSettings {
             max_tokens: Some(cap as u32),
             temperature: Some(0.3),
+            reasoning_effort: summary_effort(
+                provider.provider_name(),
+                &model_settings.model,
+                model_settings.reasoning_effort.as_deref(),
+            ),
             ..model_settings.clone()
         };
         let call_started = std::time::Instant::now();
@@ -905,6 +937,37 @@ fn clipped_chars(history: &[crate::db::Message]) -> usize {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_summary_is_written_at_low_effort_but_never_gains_one() {
+        // A chosen level drops to low, on any provider.
+        assert_eq!(
+            summary_effort("openai-compat", "flashnext", Some("xhigh")).as_deref(),
+            Some("low")
+        );
+        assert_eq!(
+            summary_effort("anthropic", "claude-haiku-5-5", Some("high")).as_deref(),
+            Some("low")
+        );
+        assert_eq!(
+            summary_effort("openai-compat", "gpt-x", Some("low")).as_deref(),
+            Some("low")
+        );
+        // A server's own lower value stays.
+        assert_eq!(
+            summary_effort("openai-compat", "gpt-x", Some("minimal")).as_deref(),
+            Some("minimal")
+        );
+        // No choice: Claude models in the table get low instead of their default.
+        assert_eq!(
+            summary_effort("anthropic", "claude-haiku-5-5", None).as_deref(),
+            Some("low")
+        );
+        // Elsewhere nothing is added.
+        assert_eq!(summary_effort("anthropic", "claude-haiku-4-5", None), None);
+        assert_eq!(summary_effort("openai-compat", "flashnext", None), None);
+        assert_eq!(summary_effort("gemini", "gemini-x", None), None);
+    }
     use super::*;
     use crate::db::Message;
 
