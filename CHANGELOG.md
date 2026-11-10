@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **A command with `$(…)` asks only when what it runs is destructive.** Any command substitution, backtick or `<(…)` made a Bash command destructive, so in Auto mode a wait loop like `for i in $(seq 1 20); do grep -q ready log && break; sleep 1; done` needed approval, and a headless run refused it. The command inside a substitution is now classified like any other: `echo $(rm -rf /)` still asks, and so does a substitution whose output runs as a command or goes to a shell (`$(curl …)`, `bash <(curl …)`, `sh -c "$(…)"`). One that isn't closed still asks too.
 - **Grep with a `!` glob searches the other files.** `"glob": "!NOTES.md"` is how rg leaves a file out, but in Koda it matched nothing at all, so the search came back empty. Found in a long Haiku session, which then had to search again.
 
 ## [0.6.1] - 2026-11-09
