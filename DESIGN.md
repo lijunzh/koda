@@ -1238,6 +1238,16 @@ user-facing mental-model doc).
   scanner instead of a tree-sitter parse. Destructive detection is
   separate and keeps looking everywhere: it splits on newlines and `&` too,
   and checks heredoc bodies.
+- **A substitution is judged by what it runs** (`bash_safety.rs`). The
+  command inside a `$(…)`, backticks or `<(…)` / `>(…)` is classified on its
+  own, and a destructive one makes the whole command destructive. So does a
+  substitution whose output runs as a command, in the command position or
+  handed to a shell or interpreter (`bash <(curl …)`, `sh -c "$(…)"`), and
+  one that isn't closed. Otherwise the command is at most LocalMutation.
+  Until 2026-11 every substitution was destructive, so in Auto an ordinary
+  wait loop (`for i in $(seq 1 20); do …; sleep 1; done`) asked, and a
+  headless run refused it. An eval task that polls a dev server failed 3 of
+  3 that way.
 - **Sandboxed shell env scrub** (#1228) — every `bash -c` tool call runs
   with a fixed env allowlist (locale, identity, `PATH`, tmpdir, proxy
   URLs + per-tool extras like `CARGO_HOME` for `cargo`). Secrets like
