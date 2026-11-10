@@ -797,6 +797,18 @@ Bash description saying not to didn't change that. Claude Code tolerates
 refuses `&` inside a background call. Gemini CLI records `jobs -p` in an
 exit trap.
 
+**Koda signals its own processes; a shell `kill` doesn't** (2026-11, as in
+Codex, where a model stops a session with Ctrl-C through `write_stdin` and
+Codex sends the signal). Each Bash call is its own sandbox, and a sandbox
+can't signal a process an earlier one started: even seatbelt's
+`(allow signal (target same-sandbox))` doesn't reach across `sandbox-exec`
+runs (probed 2026-11-10). So a plain `kill PID` / `kill -0 PID` of an owned
+process is Koda's to carry out, and a `kill` of one inside a longer command
+(`kill PID; sleep 1; kill -0 PID …`) gets an immediate answer telling the
+model to send it on its own, instead of a prompt that couldn't help. Koda
+doesn't signal from inside a longer command, which would need a channel
+from the sandbox back to Koda; none of the peers has one.
+
 **Spawner scoping** (Layer 2). Each bg-task entry carries an
 `Option<u32>` spawner id — the sub-agent invocation id of whoever
 kicked it off, or `None` for the top-level inference loop. The LLM
