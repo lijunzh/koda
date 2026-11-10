@@ -14,6 +14,13 @@
 //!
 //! A command that leaves the group on purpose (`setsid`, `set -m`) isn't
 //! reached.
+//!
+//! ## A group outlives its leader
+//!
+//! A shell that runs `server &` and exits leaves the server in its group. As
+//! in Codex, whose exec sessions own their process group, Koda treats the
+//! group as the command's while anything in it is alive ([`group_alive`]),
+//! and any process in it as the command's ([`group_of`]).
 
 use tokio::process::{Child, Command};
 
@@ -57,6 +64,12 @@ impl ProcessGroup {
     pub fn release(&mut self) {
         self.leader = None;
     }
+
+    /// Hand the group over without killing it: the leader's id, for a caller
+    /// that takes the group on (a registry of background commands).
+    pub fn take(&mut self) -> Option<u32> {
+        self.leader.take()
+    }
 }
 
 impl Drop for ProcessGroup {
@@ -65,8 +78,48 @@ impl Drop for ProcessGroup {
     }
 }
 
+/// Whether any process is left in the group `leader` led, the leader itself
+/// included. A leader that has exited but not been reaped still counts, so
+/// reap it first.
 #[cfg(unix)]
-fn kill_group(leader: u32) {
+pub fn group_alive(leader: u32) -> bool {
+    // SAFETY: signal 0 only checks that the group exists and may be signalled.
+    unsafe { libc::killpg(leader as libc::pid_t, 0) == 0 }
+}
+
+#[cfg(not(unix))]
+pub fn group_alive(_leader: u32) -> bool {
+    false
+}
+
+/// The process group `pid` is in, if it's alive.
+#[cfg(unix)]
+pub fn group_of(pid: u32) -> Option<u32> {
+    // SAFETY: plain integer in and out; fails with -1 for a gone process.
+    let pgid = unsafe { libc::getpgid(pid as libc::pid_t) };
+    (pgid > 0).then_some(pgid as u32)
+}
+
+#[cfg(not(unix))]
+pub fn group_of(_pid: u32) -> Option<u32> {
+    None
+}
+
+/// Whether the process `pid` is alive.
+#[cfg(unix)]
+pub fn process_alive(pid: u32) -> bool {
+    // SAFETY: signal 0 only checks that the process exists.
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+}
+
+#[cfg(not(unix))]
+pub fn process_alive(_pid: u32) -> bool {
+    false
+}
+
+/// SIGKILL every process in the group `leader` led. Harmless when it's gone.
+#[cfg(unix)]
+pub fn kill_group(leader: u32) {
     // SAFETY: `killpg` takes plain integers and touches no memory. It fails
     // harmlessly when the group is already gone.
     unsafe {
@@ -75,4 +128,4 @@ fn kill_group(leader: u32) {
 }
 
 #[cfg(not(unix))]
-fn kill_group(_leader: u32) {}
+pub fn kill_group(_leader: u32) {}

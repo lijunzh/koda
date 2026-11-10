@@ -80,8 +80,8 @@ pub struct ShellOutput {
 /// another's server.
 const LOCALHOST: (&str, &str, &str) = if cfg!(target_os = "macos") {
     (
-        "; start a server this way, not with &, so later commands can connect to it on localhost",
-        ", plus the localhost ports of servers started with background=true",
+        "; start a server this way so later commands can connect to it on localhost",
+        ", plus the localhost ports of servers Koda runs in the background",
         "other localhost ports",
     )
 } else {
@@ -309,8 +309,11 @@ pub async fn run_shell_command(
     // once max_lines or MAX_COLLECT_BYTES is reached (OOM protection).
     let sink_info = sink.map(|(s, id)| (s, id.to_string()));
     // One deadline for both: a command can close its output and keep running.
+    // The call ends when the shell does, not when its pipes close: a process
+    // it started with `&` may hold them open for as long as it runs (Codex
+    // likewise returns from a command that's still going).
     let result = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), async {
-        read_streams(
+        let reading = read_streams(
             stdout,
             stderr,
             &mut stdout_lines,
@@ -318,16 +321,38 @@ pub async fn run_shell_command(
             max_lines,
             &mut uncaptured,
             &sink_info,
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!("Stream read error: {e}"))?;
-        child.wait().await.map_err(|e| anyhow::anyhow!("wait: {e}"))
+        );
+        tokio::pin!(reading);
+        tokio::select! {
+            read = &mut reading => {
+                read.map_err(|e| anyhow::anyhow!("Stream read error: {e}"))?;
+                child.wait().await.map_err(|e| anyhow::anyhow!("wait: {e}"))
+            }
+            status = child.wait() => {
+                let status = status.map_err(|e| anyhow::anyhow!("wait: {e}"))?;
+                // Output still in the pipes arrives within the grace; past it,
+                // whatever holds them open is left running.
+                if let Ok(read) = tokio::time::timeout(PIPE_GRACE, &mut reading).await {
+                    read.map_err(|e| anyhow::anyhow!("Stream read error: {e}"))?;
+                }
+                Ok(status)
+            }
+        }
     })
     .await;
 
     match result {
         Ok(Ok(status)) => {
-            group.release();
+            // Processes the command left running in its group are Koda's now,
+            // as in Codex: checked and stopped by Koda, reachable through the
+            // sandbox, stopped when the session ends.
+            let left_running = match group.take() {
+                Some(leader) if still_running_after(leader, EXIT_GRACE).await => Some(leader),
+                _ => None,
+            };
+            if let Some(leader) = left_running {
+                bg.adopt(leader, command.to_string(), caller_spawner);
+            }
             let exit_code = status.code().unwrap_or(-1);
 
             // Phase 1 of #934: surface kernel-sandbox denials to the model.
@@ -349,7 +374,10 @@ pub async fn run_shell_command(
                 annotate_violations(exit_code, command, &mut stderr_lines, approvable);
             }
 
-            let summary = format_summary(exit_code, &stdout_lines, &stderr_lines, uncaptured);
+            let mut summary = format_summary(exit_code, &stdout_lines, &stderr_lines, uncaptured);
+            if let Some(leader) = left_running {
+                summary.push_str(&left_running_note(leader));
+            }
             // Phase 5 PR-8 of #934: thread the policy-supplied output cap
             // into format_full_output. `None` keeps the historical 2 MB
             // default so today's behavior is byte-identical until a
@@ -380,6 +408,42 @@ pub async fn run_shell_command(
             })
         }
     }
+}
+
+/// How long a foreground call keeps reading after its shell has exited: output
+/// still in the pipes comes within it, and whatever holds them open past it
+/// was left running.
+const PIPE_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// How long a group may take to empty after its shell exits before what's
+/// left counts as left running: in `yes | head -1`, `yes` dies of SIGPIPE a
+/// moment after the shell is done.
+const EXIT_GRACE: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// Whether anything in the group `leader` led is still alive after `grace`,
+/// checked every 50 ms so a group that empties sooner ends the wait.
+async fn still_running_after(leader: u32, grace: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + grace;
+    loop {
+        if !koda_sandbox::process_group::group_alive(leader) {
+            return false;
+        }
+        if std::time::Instant::now() >= deadline {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+/// What a foreground call says about the processes it left running.
+fn left_running_note(group: u32) -> String {
+    format!(
+        "\n\nThe command left processes running (process group {group}). Koda now \
+         tracks them as a background process: check one with Bash{{command: \"kill -0 PID\"}} \
+         and stop it with Bash{{command: \"kill PID\"}}, using any PID it started, and they \
+         stop when the session ends. Next time, start long-running commands with \
+         background=true."
+    )
 }
 
 /// What a foreground command that ran out of time reports. A `timeout` over
@@ -812,15 +876,30 @@ fn signal_own_background(
     let kill = &found.kill;
     let (PlainKill::Check(pids) | PlainKill::Stop(pids)) = kill;
     let own = bg.snapshot_for_caller(caller_spawner);
+    // A PID is this caller's when it leads one of its groups, or is in a
+    // group of its that's still running: the server a `server & echo $!`
+    // started, whose shell has exited.
     let entries = pids
         .iter()
-        .map(|pid| own.iter().find(|s| s.pid == *pid))
+        .map(|pid| {
+            own.iter()
+                .find(|s| s.pid == *pid)
+                .or_else(|| {
+                    let group = koda_sandbox::process_group::group_of(*pid)?;
+                    own.iter()
+                        .find(|s| s.pid == group && s.status == BgProcessStatus::Running)
+                })
+                .map(|entry| (*pid, entry))
+        })
         .collect::<Option<Vec<_>>>()?;
     let mut lines = Vec::new();
     let mut all_running = true;
-    for entry in entries {
-        let (pid, command) = (entry.pid, &entry.command);
+    for (pid, entry) in entries {
+        let command = &entry.command;
+        // A member's own state for a check; the group's for its leader.
+        let member_gone = pid != entry.pid && !koda_sandbox::process_group::process_alive(pid);
         let gone = match entry.status {
+            BgProcessStatus::Running if member_gone => Some("exited".to_string()),
             BgProcessStatus::Running => None,
             BgProcessStatus::Exited { code: Some(code) } => {
                 Some(format!("exited with code {code}"))
@@ -835,8 +914,9 @@ fn signal_own_background(
                 lines.push(format!("{pid} is not running ({how}): {command}"));
             }
             (PlainKill::Stop(_), None) => {
-                // The snapshot was this caller's, so the kill is allowed.
-                let _ = bg.kill_as_caller(pid, caller_spawner);
+                // The snapshot was this caller's, so the kill is allowed. It
+                // stops the whole group, as closing a Codex exec session does.
+                let _ = bg.kill_as_caller(entry.pid, caller_spawner);
                 lines.push(format!("Stopped background process {pid}: {command}"));
             }
             (PlainKill::Stop(_), Some(how)) => {
@@ -1246,7 +1326,7 @@ impl Tool for BashTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::bg_process::BgRegistry;
+    use crate::tools::bg_process::{BgProcessStatus, BgRegistry};
 
     fn bg() -> BgRegistry {
         BgRegistry::new()
@@ -1437,16 +1517,206 @@ mod tests {
         assert!(result.summary.contains("timed out"), "{}", result.summary);
     }
 
+    /// Run `args` against `registry`, the session's background registry.
+    async fn run_with(
+        dir: &std::path::Path,
+        registry: &BgRegistry,
+        args: serde_json::Value,
+    ) -> ShellOutput {
+        run_shell_command(
+            dir,
+            &args,
+            256,
+            registry,
+            None,
+            &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+    }
+
+    /// The first number in a call's output: the PID an `echo $!` printed.
+    fn first_pid(out: &ShellOutput) -> u32 {
+        let text = out
+            .full_output
+            .clone()
+            .unwrap_or_else(|| out.summary.clone());
+        text.split(|c: char| !c.is_ascii_digit())
+            .filter_map(|w| w.parse().ok())
+            .find(|n: &u32| *n > 1)
+            .unwrap_or_else(|| panic!("no PID in {text}"))
+    }
+
+    /// What a finished command left running is Koda's, as in Codex: it keeps
+    /// running, the result says so, and it shows as a background process.
     #[tokio::test]
-    async fn a_finished_command_leaves_its_background_jobs_running() {
+    async fn a_finished_command_hands_its_background_jobs_to_koda() {
         let tmp = tempfile::tempdir().unwrap();
+        let registry = BgRegistry::new();
         let command = "(sleep 1; touch survived) > /dev/null 2>&1 &";
-        let args = serde_json::json!({ "command": command });
-        let result = run_in(tmp.path(), &args).await.unwrap();
+        let result = run_with(
+            tmp.path(),
+            &registry,
+            serde_json::json!({ "command": command }),
+        )
+        .await;
         assert!(result.success, "{}", result.summary);
+        assert!(
+            result.summary.contains("left processes running"),
+            "{}",
+            result.summary
+        );
+        let snap = registry.snapshot();
+        assert_eq!(snap.len(), 1, "{snap:?}");
+        assert_eq!(snap[0].status, BgProcessStatus::Running);
 
         tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
         assert!(tmp.path().join("survived").exists());
+        // Once nothing in the group is left, the entry has exited.
+        assert!(matches!(
+            registry.snapshot()[0].status,
+            BgProcessStatus::Exited { .. }
+        ));
+    }
+
+    /// Koda's background processes stop with the session, taken-over ones too.
+    #[tokio::test]
+    async fn left_running_jobs_stop_when_the_session_ends() {
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = BgRegistry::new();
+        let command = "(sleep 1; touch too_late) > /dev/null 2>&1 &";
+        run_with(
+            tmp.path(),
+            &registry,
+            serde_json::json!({ "command": command }),
+        )
+        .await;
+        drop(registry);
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        assert!(!tmp.path().join("too_late").exists());
+    }
+
+    /// A job that keeps the call's output pipe open doesn't hold the call
+    /// until its timeout: the call ends when its shell does. `kill -0` and
+    /// `kill` then work on the job's own PID, without asking.
+    #[tokio::test]
+    async fn a_job_holding_the_pipe_doesnt_hold_the_call() {
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = BgRegistry::new();
+        let started = std::time::Instant::now();
+        let result = run_with(
+            tmp.path(),
+            &registry,
+            serde_json::json!({ "command": "sleep 30 & echo $!", "timeout": 20 }),
+        )
+        .await;
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(result.success, "{}", result.summary);
+        let pid = first_pid(&result);
+
+        let check = run_with(
+            tmp.path(),
+            &registry,
+            serde_json::json!({ "command": format!("kill -0 {pid}") }),
+        )
+        .await;
+        assert!(
+            check.summary.contains(&format!("{pid} is running")),
+            "{}",
+            check.summary
+        );
+        let stop = run_with(
+            tmp.path(),
+            &registry,
+            serde_json::json!({ "command": format!("kill {pid}") }),
+        )
+        .await;
+        assert!(
+            stop.summary.contains("Stopped background process"),
+            "{}",
+            stop.summary
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(!koda_sandbox::process_group::process_alive(pid));
+    }
+
+    /// `server & echo $!` run with background=true: the shell Koda started
+    /// exits at once, but the server is in its group, so the entry stays
+    /// running and the server's PID is Koda's to check.
+    #[tokio::test]
+    async fn a_background_shell_that_exits_keeps_its_jobs_koda_s() {
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = BgRegistry::new();
+        let log = tmp.path().join("pid");
+        let command = format!("sleep 30 > /dev/null 2>&1 & echo $! > {}", log.display());
+        run_with(
+            tmp.path(),
+            &registry,
+            serde_json::json!({ "command": command, "background": true }),
+        )
+        .await;
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let pid: u32 = std::fs::read_to_string(&log)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let snap = registry.snapshot();
+        assert_eq!(snap[0].status, BgProcessStatus::Running, "{snap:?}");
+
+        let check = run_with(
+            tmp.path(),
+            &registry,
+            serde_json::json!({ "command": format!("kill -0 {pid}") }),
+        )
+        .await;
+        assert!(
+            check.summary.contains(&format!("{pid} is running")),
+            "{}",
+            check.summary
+        );
+        let stop = run_with(
+            tmp.path(),
+            &registry,
+            serde_json::json!({ "command": format!("kill {pid}") }),
+        )
+        .await;
+        assert!(
+            stop.summary.contains("Stopped background process"),
+            "{}",
+            stop.summary
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(!koda_sandbox::process_group::process_alive(pid));
+    }
+
+    /// A pipeline whose upstream dies a moment after the shell isn't "left
+    /// running".
+    #[tokio::test]
+    async fn a_pipeline_that_finishes_leaves_nothing_behind() {
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = BgRegistry::new();
+        let result = run_with(
+            tmp.path(),
+            &registry,
+            serde_json::json!({ "command": "yes | head -1" }),
+        )
+        .await;
+        assert!(result.success, "{}", result.summary);
+        assert!(
+            !result.summary.contains("left processes running"),
+            "{}",
+            result.summary
+        );
+        assert!(registry.snapshot().is_empty());
     }
 
     #[tokio::test]
