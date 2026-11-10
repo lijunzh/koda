@@ -10,6 +10,12 @@
 //!    the sandbox can't signal the process from inside a longer command;
 //! 2. a plain `kill PID` of the server, which isn't the group's leader, is
 //!    Koda's own and runs without asking.
+//!
+//! macOS only: on Linux the sandbox gives each command its own PID namespace
+//! (`bwrap --unshare-pid`), so `echo $!` prints a PID from inside it (CI saw
+//! 4), not the host PID Koda tracks, and a sandboxed command can't reach a
+//! Koda-started server's port either.
+#![cfg(target_os = "macos")]
 
 use koda_test_utils::network::{FakeLlmServer, ResponseTemplate};
 use serde_json::{Value, json};
