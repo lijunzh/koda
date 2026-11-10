@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-11-10
+
 ### Changed
 
 - **Compaction writes its summary at low reasoning effort.** The summary call used the session's own effort, so at `xhigh` a local model spent minutes reasoning before it wrote a word. On Qwen3.8-Flash-Next a real summary took 200 s at `xhigh` and 96 s at `low`, and in an eval run with a small window compaction had been 55-65% of the time. Only the summary call changes; a session that sends no effort still sends none.
