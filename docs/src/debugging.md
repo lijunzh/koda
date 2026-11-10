@@ -155,7 +155,7 @@ One line per compaction that changed the history. Written in
 | `rows_summarized`, `rows_kept`, `rows_archived` | Rows replaced, rows kept verbatim, rows marked `compacted_at` |
 | `conversation_chars`, `prompt_chars` | Text to summarize, and the prompt built from it |
 | `truncated` | The oldest messages were dropped to fit the summary call |
-| `clipped_chars` | Characters the summarizer didn't see: each message outside a summary is cut to 2,000 characters and its tool calls to 500 |
+| `clipped_chars` | Characters the summarizer didn't see: each tool result is cut to 2,000 characters and each message's tool calls to 500; user and assistant messages and an earlier summary go whole |
 | `attempts` | Calls made. A summary that was cut off is retried once with more room. |
 | `reply_chars`, `stop_reason` | The last reply |
 | `summary_chars` | The stored text, including the user's carried messages |

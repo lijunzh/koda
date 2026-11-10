@@ -132,8 +132,9 @@ const MAX_CARRIED_CHARS: usize = 4_000;
 /// Maximum number of head-truncation retries when history is too large.
 const MAX_TRUNCATION_RETRIES: usize = 3;
 
-/// Characters of a message the summarizer sees.
-const MAX_SUMMARIZED_CONTENT_CHARS: usize = 2000;
+/// Characters of a tool result the summarizer sees. User and assistant
+/// messages, and an earlier summary, it sees whole.
+const MAX_SUMMARIZED_TOOL_RESULT_CHARS: usize = 2000;
 
 /// Characters of a message's tool calls the summarizer sees.
 const MAX_SUMMARIZED_TOOL_CALL_CHARS: usize = 500;
@@ -887,11 +888,13 @@ fn truncate_until_fits(history: &[crate::db::Message], available_tokens: usize) 
 
 /// Format conversation history into a single string for the summarizer.
 ///
-/// Per-message content is truncated to 2000 chars (individual tool outputs
-/// can be huge but add little summarization value beyond a preview). An earlier
-/// summary stays whole: it is already short, and it replaces rows that are gone.
-/// No total cap — the capacity check in `compact_session_with_provider`
-/// guarantees the result fits in the model's context window.
+/// A tool result is cut to 2,000 characters: it can be huge, and a preview
+/// is enough to summarize it. The conversation's own words stay whole, as
+/// Codex sends them: what the user asked, what the model answered, and an
+/// earlier summary. A later question about an earlier answer needs the whole
+/// answer in the summary, and a clipped one lost it. No total cap — the
+/// capacity check in `compact_session_with_provider` drops the oldest
+/// messages until the result fits the model's context window.
 fn build_conversation_text(history: &[crate::db::Message]) -> String {
     let mut text = String::new();
     for msg in history {
@@ -915,8 +918,8 @@ fn build_conversation_text(history: &[crate::db::Message]) -> String {
 /// How much of a message's content the summarizer sees.
 fn content_limit(msg: &crate::db::Message) -> usize {
     match msg.role {
-        Role::System => usize::MAX,
-        _ => MAX_SUMMARIZED_CONTENT_CHARS,
+        Role::Tool => MAX_SUMMARIZED_TOOL_RESULT_CHARS,
+        Role::System | Role::User | Role::Assistant => usize::MAX,
     }
 }
 
@@ -1027,12 +1030,28 @@ mod tests {
     }
 
     #[test]
-    fn test_truncates_long_content_per_message() {
+    fn test_truncates_long_tool_results() {
         let long = "x".repeat(3000);
-        let msgs = vec![make_msg("user", Some(&long), None)];
+        let msgs = vec![make_msg("tool", Some(&long), None)];
         let text = build_conversation_text(&msgs);
-        // Each msg content capped at 2000 chars
+        // A tool result is capped at 2000 chars
         assert!(text.len() < 2100);
+    }
+
+    #[test]
+    fn the_summarizer_sees_whole_answers_and_requests() {
+        // A long answer whose last point is what a later question asks
+        // about: clipped at 2,000 characters, it never reached the summary.
+        let answer = format!("{}3. v0.2.18, the egress proxy", "x".repeat(4_000));
+        let request = format!("{}and the last instruction", "y".repeat(3_000));
+        let msgs = vec![
+            make_msg("user", Some(&request), None),
+            make_msg("assistant", Some(&answer), None),
+        ];
+        let text = build_conversation_text(&msgs);
+        assert!(text.contains("and the last instruction"));
+        assert!(text.contains("3. v0.2.18, the egress proxy"));
+        assert_eq!(clipped_chars(&msgs), 0);
     }
 
     #[test]
@@ -1040,10 +1059,11 @@ mod tests {
         let long = "x".repeat(2_300);
         let calls = "y".repeat(600);
         let msgs = vec![
-            make_msg("user", Some(&long), None),
+            make_msg("tool", Some(&long), None),
             make_msg("assistant", None, Some(&calls)),
             make_msg("system", Some(&long), None),
-            make_msg("user", Some("short"), None),
+            make_msg("user", Some(&long), None),
+            make_msg("tool", Some("short"), None),
         ];
         assert_eq!(clipped_chars(&msgs), 300 + 100);
     }
@@ -1067,7 +1087,7 @@ mod tests {
         let mut content = "a".repeat(1999);
         content.push('\u{1f43b}'); // bear emoji (4 bytes)
         content.push_str("after");
-        let msgs = vec![make_msg("user", Some(&content), None)];
+        let msgs = vec![make_msg("tool", Some(&content), None)];
         let text = build_conversation_text(&msgs);
         // Should not panic on char boundary
         assert!(text.contains("\u{1f43b}") || !text.contains("after"));
