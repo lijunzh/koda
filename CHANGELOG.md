@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-11-11
+
+### Security
+
+- **rustix 1.1.6** (RUSTSEC-2026-0486). Its xattr functions marked unwritten bytes as initialized when given a zero-length buffer. It comes in through `crossterm` and `tempfile`, neither of which calls them, so Koda wasn't exposed; the audit gate needs the patched version.
+
 ### Changed
 
 - **In Auto, only a forced `rm` asks among file changes, as in Codex.** Auto asked for any `rm` or `rmdir`, `chmod`, `chown`, `kill`, `sed -i`, `find -delete` or `-exec`, `eval` and an interpreter's `-c`, so a model's cleanup of its own temp file or a `python3 -c` port probe stopped for approval, and a headless run refused it. These now run inside the sandbox, which keeps them in the project. A forced `rm` (`-f`, `-rf`, `--force`) still asks, now also behind `env`, `nohup` or `xargs` and inside `sh -c`, `eval` or `find -exec`; so do `git reset --hard`, `git clean -f`, `git push --force`, publishing, `gh` merges, deletes, `auth` and `api`, `sudo`, disk tools and reboots. Safe mode still asks for every change. A `find -exec … \;` is now read correctly: the escaped `;` used to make the classifier give up.
