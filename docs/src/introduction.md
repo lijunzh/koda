@@ -24,6 +24,7 @@ koda
 
 First run triggers onboarding: Koda looks for a running local model
 (LM Studio, Ollama) and falls back to prompting for a cloud API key.
+A first run that names a provider with `--provider` skips it.
 
 ## What's next
 

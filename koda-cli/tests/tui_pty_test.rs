@@ -65,15 +65,21 @@ impl Tui {
     /// [`Self::start_with_model`] with `extra` arguments, waiting until the
     /// output shows `ready`.
     fn start_with_args(home: &Path, base_url: &str, extra: &[&str], ready: &str) -> Self {
+        let mut args = vec!["--provider", "lmstudio"];
+        args.extend(extra);
+        Self::start_with_flags(home, base_url, &args, ready)
+    }
+
+    /// [`Self::start_with_args`] with no `--provider` unless `flags` has one.
+    fn start_with_flags(home: &Path, base_url: &str, flags: &[&str], ready: &str) -> Self {
         let (master, slave) = open_pty();
         let mut command = Command::new(env!("CARGO_BIN_EXE_koda"));
         command
-            .args(["--provider", "lmstudio"])
             .args(["--base-url", base_url])
             .args(["--model", "stub-model"])
             .args(["--max-context-tokens", "64000"])
             .args(["--mode", "safe"])
-            .args(extra)
+            .args(flags)
             .arg("--project-root")
             .arg(home)
             .env("HOME", home)
@@ -894,7 +900,8 @@ async fn the_first_run_greets_and_still_answers() {
     let server = scripted_model(vec![]).await;
     // No `.config/koda`: Koda has never run here.
     let home = tempfile::tempdir().unwrap();
-    let mut tui = Tui::start_with_args(home.path(), &server.url(), &[], "Welcome to Koda");
+    // No `--provider`: the first run asks which one.
+    let mut tui = Tui::start_with_flags(home.path(), &server.url(), &[], "Welcome to Koda");
     tui.wait_for_screen("Choose your LLM provider");
     tui.type_text(ESC);
     tui.wait_for_screen_without("Choose your LLM provider");
@@ -911,6 +918,25 @@ async fn the_first_run_greets_and_still_answers() {
         "{}",
         tui.screen()
     );
+}
+
+/// A first run that names its provider on the command line goes straight to
+/// the composer, as Codex skips the screens a start doesn't need: the picker
+/// would only ask again what `--provider` said.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_first_run_with_a_provider_flag_skips_the_picker() {
+    let server = scripted_model(vec![]).await;
+    // No `.config/koda`: Koda has never run here.
+    let home = tempfile::tempdir().unwrap();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    let screen = tui.screen();
+    assert!(!screen.contains("Welcome to Koda"), "{screen}");
+    assert!(!screen.contains("Choose your LLM provider"), "{screen}");
+
+    tui.submit("hello");
+    let sent = wait_for_model_call(&server, 1).await;
+    assert!(sent.contains("hello"), "{sent}");
+    tui.wait_for_screen("All done.");
 }
 
 /// A key typed into a wizard is taken with one Enter. The wizard's trail
