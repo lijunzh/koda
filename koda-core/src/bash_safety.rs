@@ -38,6 +38,8 @@
 //! sandboxing is tracked separately in DESIGN.md.
 
 use crate::tools::ToolEffect;
+use regex::Regex;
+use std::sync::LazyLock;
 
 // ── Read-only allowlist ───────────────────────────────────────────────────────
 
@@ -430,9 +432,67 @@ const RAW_DANGER_PATTERNS: &[&str] = &[
     "| sh", // pipe to shell interpreter
     "| bash", "| zsh",
     "> /dev/", // device writes (allowed /dev/null redirects are stripped first)
-    "(){",     // fork bomb
-    "() {",
 ];
+
+/// A function definition at the start of a segment: `f() {`, `f ( ) {`,
+/// `function f {`, `function f() {`. The segment is classified by the
+/// command after it, as Codex classifies the commands in a function body.
+static FUNCTION_HEADER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?:function\s+[^\s(){};&|]+\s*(?:\(\s*\))?|[^\s(){};&|]+\s*\(\s*\))\s*\{?")
+        .expect("valid regex")
+});
+
+/// A function definition anywhere: its name is group 1 or 2, and the match
+/// ends at the `{` that opens its body.
+static FUNCTION_DEFINITION: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?:^|[\s;&|(){}])(?:function\s+([^\s(){};&|]+)\s*(?:\(\s*\))?|([^\s(){};&|]+)\s*\(\s*\))\s*\{",
+    )
+    .expect("valid regex")
+});
+
+/// `segment` without a leading function header: `f() { cargo test` →
+/// `cargo test`.
+fn strip_function_header(segment: &str) -> &str {
+    FUNCTION_HEADER
+        .find(segment)
+        .map_or(segment, |m| segment[m.end()..].trim_start())
+}
+
+/// Whether `unquoted` defines a function that calls itself, the shape of a
+/// fork bomb (`:(){ :|:& };:`). Defining a function is otherwise harmless:
+/// what it runs is classified like any other command. Codex has no such
+/// check and leaves runaway processes to its sandbox; Koda's sandbox limits
+/// CPU, memory and open files but not the number of processes.
+fn defines_recursive_function(unquoted: &str) -> bool {
+    FUNCTION_DEFINITION.captures_iter(unquoted).any(|cap| {
+        let Some(name) = cap.get(1).or_else(|| cap.get(2)) else {
+            return false;
+        };
+        let body_start = cap.get(0).map_or(0, |m| m.end());
+        let mut depth = 1usize;
+        let mut end = unquoted.len();
+        for (i, c) in unquoted[body_start..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = body_start + i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        // Called, not just named: the first word of a command in the body,
+        // so `build() { cargo build; }` doesn't count.
+        unquoted[body_start..end]
+            .split(|c: char| "\n;&|(){}".contains(c))
+            .filter_map(|command| command.split_whitespace().next())
+            .any(|word| word.trim_start_matches('!') == name.as_str())
+    })
+}
 
 // ── Main classifier ───────────────────────────────────────────────────────────
 
@@ -498,6 +558,9 @@ pub fn classify_bash_command(command: &str) -> ToolEffect {
         if unquoted.contains(pat) {
             return ToolEffect::Destructive;
         }
+    }
+    if defines_recursive_function(&unquoted) {
+        return ToolEffect::Destructive;
     }
 
     // Phase 2 — per-segment token-level classification.
@@ -694,6 +757,17 @@ fn split_substitutions(command: &str) -> Option<(String, Vec<String>)> {
                 i = end + 1;
                 continue;
             }
+            // `$((…))` is arithmetic: the shell evaluates it and runs only
+            // the substitutions inside it, as Codex's parse sees it.
+            '$' if arithmetic_close(&chars, i).is_some() => {
+                let close = arithmetic_close(&chars, i)?;
+                let body: String = chars[i + 3..close - 1].iter().collect();
+                let (_, body_inner) = split_substitutions(&body)?;
+                inner.extend(body_inner);
+                outer.push('0');
+                i = close + 1;
+                continue;
+            }
             '$' | '<' | '>' if chars.get(i + 1) == Some(&'(') && (c == '$' || !in_double) => {
                 let close = matching_paren(&chars, i + 1)?;
                 inner.push(chars[i + 2..close].iter().collect());
@@ -707,6 +781,16 @@ fn split_substitutions(command: &str) -> Option<(String, Vec<String>)> {
         i += 1;
     }
     Some((outer, inner))
+}
+
+/// For a `$((` at `start`, the index of the last `)` of its `))`; `None`
+/// when it isn't arithmetic, as in `$( (cd a && ls) )`.
+fn arithmetic_close(chars: &[char], start: usize) -> Option<usize> {
+    if chars.get(start + 1) != Some(&'(') || chars.get(start + 2) != Some(&'(') {
+        return None;
+    }
+    let close = matching_paren(chars, start + 1)?;
+    (matching_paren(chars, start + 2)? + 1 == close).then_some(close)
 }
 
 /// Index of the `)` closing the `(` at `open`, past nested parentheses and
@@ -746,7 +830,11 @@ fn runs_substitution(outer: &str) -> bool {
             return false;
         }
         let seg = strip_env_vars(seg.trim());
-        let head = seg
+        // `(( $(wc -l < f) > 3 ))` evaluates the number; it doesn't run it.
+        if seg.starts_with("((") {
+            return false;
+        }
+        let head = strip_function_header(&seg)
             .trim_start_matches(['(', '{', ' ', '\t', '!'])
             .split_whitespace()
             .next()
@@ -897,7 +985,9 @@ fn classify_segment(segment: &str) -> ToolEffect {
     // (#972). E.g. `(rm -rf /)` should classify the same as `rm -rf /`.
     // Conservative: only strips outermost layer; nested cases like `((rm))`
     // still work because the leading `(` chars are all stripped together.
-    let mut seg = seg.trim().trim_start_matches(['(', '{']).trim();
+    let mut seg = strip_function_header(seg.trim())
+        .trim_start_matches(['(', '{'])
+        .trim();
     // An escaped `\;` ends `find -exec`; only a bare one closes a group.
     while let Some(rest) = seg.strip_suffix([')', '}', ';']) {
         if rest.ends_with('\\') {

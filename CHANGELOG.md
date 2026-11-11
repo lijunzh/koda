@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **Timing arithmetic and helper functions no longer ask in Auto.** `echo $(( $(date +%s) - start ))` was read as running the output of a substitution, and any shell function (`run() { cargo test; }; run`) matched the fork-bomb pattern, so both asked for approval and a headless run refused them. As in Codex, arithmetic is judged by the substitutions inside it and a function by the commands in its body. A function that calls itself, the shape of a fork bomb, still asks.
 - **A heredoc no longer asks in Auto because of the code in it.** Writing a file with `cat > a.rs <<'EOF'` asked for approval, and a headless run refused it, whenever the body held code like `fn main() {` or text like `| sh`: the classifier matched the whole command against its fork-bomb and pipe-to-shell patterns. As in Codex, a heredoc body is now data. What it can still trigger: a shell running it (`bash <<EOF`), a `$(…)` or backtick in an unquoted body, and a destructive command in a body with no terminator, which may be a misread `<<`. In recorded eval sessions this removes about two-thirds of the prompts Auto made.
 
 ## [0.6.3] - 2026-11-11
