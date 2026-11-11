@@ -285,6 +285,12 @@ live variants are gated by `KODA_TEST_LMSTUDIO=1` and never run in CI.
 
 ## Release checklist
 
+- **First, update the dependencies:** `cargo update`, then the full test suite,
+  in a PR of its own. Do it before the release check, so the check measures
+  the dependencies that ship. Dependabot updates the crates Koda depends on
+  directly, not the ones those pull in, which otherwise drift until an
+  advisory fails the audit on release day (`rustix` in 0.6.3).
+- Run the release check on that commit, and release the commit it checked.
 - Move CHANGELOG.md `[Unreleased]` to a versioned section.
 - Bump the version in the three published crates (koda-sandbox, koda-core,
   koda-cli; release.yml checks all three) and in the path-dependency `version =`
