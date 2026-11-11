@@ -1850,7 +1850,7 @@ dependencies = [
 
 [[package]]
 name = "koda-cli"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "ansi-to-tui",
  "anyhow",
@@ -1886,7 +1886,7 @@ dependencies = [
 
 [[package]]
 name = "koda-core"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1921,7 +1921,7 @@ dependencies = [
 
 [[package]]
 name = "koda-sandbox"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "anyhow",
  "async-trait",
