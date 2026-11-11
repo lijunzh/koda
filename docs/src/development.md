@@ -283,6 +283,46 @@ live variants are gated by `KODA_TEST_LMSTUDIO=1` and never run in CI.
 - `tests/headless_interrupt_test.rs` — SIGINT during a model call: the run still reports its turn end and summary
 - `tests/stop_reason_log_test.rs` — the `model call` line keeps the stop reason when usage follows the finish chunk
 
+## Testing on Linux locally
+
+CI runs every test on Linux too, and it stays the source of truth. A local
+Linux machine is for the cases where waiting on CI is slow or blind: a change to
+the `bwrap` sandbox, PTY handling, process groups or a `cfg(target_os)` gate,
+or a failure that shows up only on Linux CI. Don't make it a step for every
+change.
+
+On a Mac, a lightweight VM with its own kernel works; a Docker container doesn't,
+because its default seccomp profile blocks the unprivileged user namespaces
+`bwrap` needs. With [OrbStack](https://orbstack.dev) (`brew install --cask
+orbstack`; [Lima](https://lima-vm.io) is an open-source alternative), create an
+Ubuntu machine on the same release as CI's `ubuntu-latest` (26.04 as of
+2026-11), then install the build tools and Rust inside it:
+
+```bash
+orb create ubuntu:resolute ubuntu
+orb -m ubuntu sudo apt-get update
+orb -m ubuntu sudo apt-get install -y build-essential pkg-config git bubblewrap
+orb -m ubuntu bash -c 'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal'
+```
+
+rustup installs the toolchain in `rust-toolchain.toml` on first use. OrbStack's
+kernel already allows unprivileged user namespaces, so the `sysctl` lines in
+`ci.yml` aren't needed. The machine sees your Mac's files at the same paths,
+and `orb` keeps the current directory, so run it from the checkout you're
+working in. Keep the build directory on the machine's own disk (faster, and
+Linux builds don't mix with macOS ones):
+
+```bash
+orb -m ubuntu bash -lc 'CARGO_TARGET_DIR=$HOME/target/koda cargo test --workspace --features koda-core/test-support'
+```
+
+Pass `-j 4` when local model evals are running, so the build doesn't push their
+tasks past their time limits. On an Apple Silicon Mac the machine is arm64 while
+CI's runner is x86_64; that has not mattered so far. The first run takes about
+five minutes at `-j 4`; later runs build only what changed. To check the
+security-boundary tests ran rather than being skipped, look for each name in
+`ci.yml`'s `required_tests` lists on a `test … ok` line.
+
 ## Release checklist
 
 - **First, update the dependencies:** `cargo update`, then the full test suite,
