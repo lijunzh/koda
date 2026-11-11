@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **`s` at an approval prompt: yes for the rest of the session.** For a local change inside the project, `s` approves and stops asking for the same Bash command or the same file (Edit, Write) until the session ends. As in Codex, the allow is held in memory only and never written to a config file, so Koda behaves the same on every machine and a new session asks again. Destructive actions, leaving the sandbox, remote actions and anything outside the project still ask every time. In recorded eval sessions run in Safe mode, this would have removed about 40% of the prompts. The `a` key, which switches to Auto, is now labelled `auto` instead of `always`.
+
 ### Removed
 
 - **The `Delete` tool.** Models delete files with `rm` through Bash, as in Codex, Claude Code and the other peers, none of which has a delete tool. Two ways to delete meant two approval rules: since 0.6.3 a plain `rm a` runs in the sandbox in Auto while `Delete` of the same file asked, and in recorded eval runs it became Auto's most frequent prompt. A forced `rm` (`-f`, `-rf`) still asks. With it go the file tracker that let Koda delete files it had created without asking, and its `owned_files` table, which the first start drops from the database, and the system prompt's "`Delete` not `rm`". An agent config that still lists `Delete` loads as before; the name is ignored.

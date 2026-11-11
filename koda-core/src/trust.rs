@@ -653,22 +653,10 @@ fn check_tool_inner(
 
     // Hardcoded floor: writes outside project root always need confirmation (#218).
     // For sub-agents, this becomes Blocked via the resolution at the bottom.
-    if let Some(root) = project_root {
-        if is_outside_project(tool_name, args, root) {
-            return resolve_confirmation(effect, is_sub_agent);
-        }
-        // Bash path lint: check for cd/path escapes
-        if tool_name == "Bash" {
-            let command = args
-                .get("command")
-                .or(args.get("cmd"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let lint = crate::bash_path_lint::lint_bash_paths(command, root);
-            if lint.has_warnings() {
-                return resolve_confirmation(effect, is_sub_agent);
-            }
-        }
+    if let Some(root) = project_root
+        && reaches_outside_project(tool_name, args, root)
+    {
+        return resolve_confirmation(effect, is_sub_agent);
     }
 
     // Apply the ToolEffect × TrustMode × Context matrix
@@ -782,36 +770,9 @@ fn resolve_tool_effect_inner(
 ///
 /// Temp directories (`/tmp`, `$TMPDIR`) are explicitly allowed (#560).
 fn is_outside_project(tool_name: &str, args: &serde_json::Value, project_root: &Path) -> bool {
-    let path_arg = match tool_name {
-        "Write" | "Edit" => args
-            .get("path")
-            .or(args.get("file_path"))
-            .and_then(|v| v.as_str()),
-        _ => None,
-    };
-    match path_arg {
-        Some(p) => {
-            let requested = Path::new(p);
-            let abs_path = if requested.is_absolute() {
-                requested.to_path_buf()
-            } else {
-                project_root.join(requested)
-            };
-            // Canonicalize for symlink resolution (macOS /var → /private/var).
-            // For new files, canonicalize the parent dir and append the filename.
-            let resolved = abs_path.canonicalize().unwrap_or_else(|_| {
-                if let Some(parent) = abs_path.parent()
-                    && let Ok(canon_parent) = parent.canonicalize()
-                    && let Some(name) = abs_path.file_name()
-                {
-                    return canon_parent.join(name);
-                }
-                abs_path.clean()
-            });
-            let canon_root = project_root
-                .canonicalize()
-                .unwrap_or_else(|_| project_root.to_path_buf());
-            let outside = !resolved.starts_with(&canon_root);
+    match file_tool_target(tool_name, args, project_root) {
+        Some(resolved) => {
+            let outside = !resolved.starts_with(resolve_through_links(project_root));
             // Allow temp directories (#560)
             if outside && crate::bash_path_lint::is_safe_external_path(&resolved) {
                 return false;
@@ -820,6 +781,122 @@ fn is_outside_project(tool_name: &str, args: &serde_json::Value, project_root: &
         }
         None => false,
     }
+}
+
+/// The file a Write or Edit targets, resolved with [`resolve_through_links`].
+fn file_tool_target(
+    tool_name: &str,
+    args: &serde_json::Value,
+    project_root: &Path,
+) -> Option<std::path::PathBuf> {
+    if !matches!(tool_name, "Write" | "Edit") {
+        return None;
+    }
+    let requested = Path::new(
+        args.get("path")
+            .or(args.get("file_path"))
+            .and_then(|v| v.as_str())?,
+    );
+    Some(resolve_through_links(&project_root.join(requested)))
+}
+
+/// `path` with its deepest existing ancestor canonicalized (symlinks, macOS
+/// /var → /private/var) and the rest appended, so a path resolves the same
+/// before and after the file or its directories are created.
+fn resolve_through_links(path: &Path) -> std::path::PathBuf {
+    let clean = path.clean();
+    let mut base = clean.as_path();
+    let mut rest = Vec::new();
+    loop {
+        if let Ok(canon) = base.canonicalize() {
+            return rest.iter().rev().fold(canon, |path, part| path.join(part));
+        }
+        match (base.file_name(), base.parent()) {
+            (Some(name), Some(parent)) => {
+                rest.push(name);
+                base = parent;
+            }
+            _ => return clean,
+        }
+    }
+}
+
+/// Whether a call trips the outside-project floor: a file tool aimed outside
+/// the project, or a Bash command whose paths or `cd` leave it.
+fn reaches_outside_project(tool_name: &str, args: &serde_json::Value, project_root: &Path) -> bool {
+    if is_outside_project(tool_name, args, project_root) {
+        return true;
+    }
+    if tool_name == "Bash" {
+        let command = args
+            .get("command")
+            .or(args.get("cmd"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        return crate::bash_path_lint::lint_bash_paths(command, project_root).has_warnings();
+    }
+    false
+}
+
+// ── Allow for this session ────────────────────────────────
+
+/// What the user allowed "for this session" at an approval prompt.
+///
+/// Codex's model, not Claude Code's: an allow is held in memory for one
+/// session and never written to config or the database, so Koda behaves the
+/// same on every machine and a new session asks again. It doesn't add a
+/// second gating mechanism beside [`TrustMode`]; it only remembers a yes the
+/// mode asked for.
+#[derive(Debug, Default)]
+pub struct SessionAllows(std::sync::Mutex<std::collections::HashSet<String>>);
+
+impl SessionAllows {
+    /// Whether `key` (from [`session_allow_key`]) was allowed.
+    pub fn contains(&self, key: &str) -> bool {
+        self.0.lock().is_ok_and(|keys| keys.contains(key))
+    }
+
+    /// Allow `key` for the rest of the session.
+    pub fn insert(&self, key: String) {
+        if let Ok(mut keys) = self.0.lock() {
+            keys.insert(key);
+        }
+    }
+}
+
+/// The key a call can be allowed for the session under, or `None` when it
+/// has to ask every time.
+///
+/// Only a [`ToolEffect::LocalMutation`] inside the project qualifies.
+/// Destructive calls (including leaving the sandbox), remote actions and
+/// anything that trips the outside-project floor keep asking.
+///
+/// The key is what the user saw and said yes to, as in Codex:
+/// - **Bash:** the exact command (and whether it runs in the background).
+/// - **Edit, Write:** the file, so later edits to it don't ask.
+/// - **Anything else:** the exact arguments.
+pub fn session_allow_key(
+    tool_name: &str,
+    args: &serde_json::Value,
+    effect: ToolEffect,
+    project_root: &Path,
+) -> Option<String> {
+    if effect != ToolEffect::LocalMutation || reaches_outside_project(tool_name, args, project_root)
+    {
+        return None;
+    }
+    let subject = match tool_name {
+        "Bash" => {
+            let command = args.get("command").and_then(|v| v.as_str())?.trim();
+            let background = args["background"].as_bool().unwrap_or(false);
+            format!("{background}\0{command}")
+        }
+        "Edit" | "Write" => file_tool_target(tool_name, args, project_root)?
+            .to_string_lossy()
+            .into_owned(),
+        _ => args.to_string(),
+    };
+    Some(format!("{tool_name}\0{subject}"))
 }
 
 // ── Re-exports for backward compatibility ─────────────────
@@ -1761,5 +1838,97 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── Allow for this session ──
+
+    fn key(tool: &str, args: serde_json::Value, root: &Path) -> Option<String> {
+        let effect = resolve_tool_effect(tool, &args);
+        session_allow_key(tool, &args, effect, root)
+    }
+
+    #[test]
+    fn test_session_allow_is_only_for_local_changes_in_the_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let bash = |command: &str| key("Bash", serde_json::json!({ "command": command }), root);
+
+        assert!(bash("cargo fmt").is_some());
+        // Destructive, outside the sandbox, outside the project: never.
+        assert_eq!(bash("rm -rf target"), None);
+        let unsandboxed = serde_json::json!({
+            "command": "cargo fmt", "outside_sandbox": true, "reason": "x",
+        });
+        assert_eq!(key("Bash", unsandboxed, root), None);
+        assert_eq!(bash("cd ~ && touch a"), None);
+        assert_eq!(
+            key(
+                "Edit",
+                serde_json::json!({"file_path": "/etc/hosts", "old_string": "a", "new_string": "b"}),
+                root
+            ),
+            None
+        );
+        // Read-only calls don't ask; remote actions (MCP tools) always do.
+        assert_eq!(bash("ls"), None);
+        let args = serde_json::json!({"issue": 1});
+        assert_eq!(
+            session_allow_key("tracker__close", &args, ToolEffect::RemoteAction, root),
+            None
+        );
+    }
+
+    #[test]
+    fn test_session_allow_key_is_the_command_or_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let bash = |args: serde_json::Value| key("Bash", args, root).unwrap();
+
+        assert_eq!(
+            bash(serde_json::json!({"command": "cargo fmt", "timeout": 30})),
+            bash(serde_json::json!({"command": " cargo fmt "})),
+        );
+        assert_ne!(
+            bash(serde_json::json!({"command": "cargo fmt"})),
+            bash(serde_json::json!({"command": "cargo fmt --all"})),
+        );
+        assert_ne!(
+            bash(serde_json::json!({"command": "cargo fmt"})),
+            bash(serde_json::json!({"command": "cargo fmt", "background": true})),
+        );
+
+        let edit = |path: &str, new: &str| {
+            let args = serde_json::json!({"file_path": path, "old_string": "a", "new_string": new});
+            key("Edit", args, root).unwrap()
+        };
+        assert_eq!(edit("src/a.rs", "b"), edit("src/a.rs", "c"));
+        assert_ne!(edit("src/a.rs", "b"), edit("src/b.rs", "b"));
+        let write = key(
+            "Write",
+            serde_json::json!({"file_path": "src/a.rs", "content": "x"}),
+            root,
+        );
+        assert_ne!(write.unwrap(), edit("src/a.rs", "b"));
+    }
+
+    /// A file that didn't exist when it was allowed has the same key once it
+    /// does: macOS temp dirs are reached through the /var → /private/var link.
+    #[test]
+    fn test_session_allow_key_survives_the_file_being_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let args = serde_json::json!({"file_path": "new/a.txt", "content": "x"});
+        let before = key("Write", args.clone(), root).unwrap();
+        std::fs::create_dir_all(root.join("new")).unwrap();
+        std::fs::write(root.join("new/a.txt"), "x").unwrap();
+        assert_eq!(key("Write", args, root).unwrap(), before);
+    }
+
+    #[test]
+    fn test_session_allows_remember_keys() {
+        let allows = SessionAllows::default();
+        assert!(!allows.contains("Bash\0false\0cargo fmt"));
+        allows.insert("Bash\0false\0cargo fmt".to_string());
+        assert!(allows.contains("Bash\0false\0cargo fmt"));
     }
 }

@@ -345,6 +345,7 @@ async fn sub_agent_approval_request_persists_as_auto_reject_marker() {
         detail: "rm -f important.txt".into(),
         preview: None,
         effect: ToolEffect::Destructive,
+        allow_for_session: false,
     });
 
     let events = wait_for_events(&db, &session_id, 1).await;

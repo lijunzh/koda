@@ -132,7 +132,7 @@ struct Cli {
     /// Trust mode: auto (default) or safe.
     /// "auto" auto-approves mutating actions; the kernel sandbox
     /// contains them. Destructive ops (rm -rf, git reset --hard,
-    /// git push --force, Delete) and outside-project writes still
+    /// git push --force) and outside-project writes still
     /// confirm. Auto requires the kernel sandbox; on unsandboxed
     /// platforms koda refuses to start with an actionable error
     /// (use --mode safe or install the platform sandbox backend).

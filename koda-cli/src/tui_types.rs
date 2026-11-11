@@ -73,11 +73,13 @@ pub enum MenuContent {
     /// Wizard trail — completed steps shown dimmed during a multi-step flow.
     WizardTrail(Vec<(String, String)>),
     /// Approval hotkey bar — shown during inference when the engine requests
-    /// a tool approval (`y`/`n`/`a`/`f`).
+    /// a tool approval (`y`/`s`/`n`/`f`/`a`).
     Approval {
         id: String,
         tool_name: String,
         detail: String,
+        /// Whether `s` (yes for the rest of the session) is offered.
+        allow_for_session: bool,
     },
     /// AskUser input bar — the model is asking a clarifying question.
     AskUser {

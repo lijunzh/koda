@@ -203,11 +203,11 @@ the reason and waits for you, in Auto as in Safe:
 ```text
   Bash  ⚠ outside the sandbox  git push origin main
   why: Push the commit to origin over SSH, which the sandbox blocks
-  [y] approve  [n] reject  [f] feedback  [a] always  [esc] stop
+  [y] approve  [n] reject  [f] feedback  [a] auto  [esc] stop
 ```
 
 The command then runs as it would in your own shell, with no sandbox and no
-proxy. Each such call asks again; `a` doesn't change that. Sub-agents and
+proxy. Each such call asks again; `a` and `s` don't change that. Sub-agents and
 headless runs have no one to ask, so they're refused, and after a denial
 they're told the command can't leave the sandbox in that run. Codex
 (`require_escalated`) and Claude Code (`dangerouslyDisableSandbox`) do the

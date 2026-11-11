@@ -127,7 +127,9 @@ pub(crate) async fn handle_ask_user(
 
 /// Emit an `ApprovalRequest` and wait for the user's decision.
 ///
+/// `allow_for_session` says whether the user may answer "for this session".
 /// Returns `None` if the session was interrupted or cancelled.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn request_approval(
     sink: &dyn crate::engine::EngineSink,
     cmd_rx: &mut CommandInbox<'_>,
@@ -136,6 +138,7 @@ pub(crate) async fn request_approval(
     detail: &str,
     preview: Option<crate::preview::DiffPreview>,
     effect: crate::tools::ToolEffect,
+    allow_for_session: bool,
 ) -> Option<ApprovalDecision> {
     let approval_id = uuid::Uuid::new_v4().to_string();
     sink.emit(EngineEvent::ApprovalRequest {
@@ -144,6 +147,7 @@ pub(crate) async fn request_approval(
         detail: detail.to_string(),
         preview,
         effect,
+        allow_for_session,
     });
 
     loop {
@@ -459,6 +463,7 @@ mod tests {
                 "overwrite main.rs",
                 None,
                 ToolEffect::LocalMutation,
+                false,
             )
             .await
         });
@@ -502,6 +507,7 @@ mod tests {
                 "rm -rf .",
                 None,
                 ToolEffect::Destructive,
+                false,
             )
             .await
         });
@@ -545,6 +551,7 @@ mod tests {
                 "replace line 42",
                 None,
                 ToolEffect::LocalMutation,
+                false,
             )
             .await
         });
@@ -584,6 +591,7 @@ mod tests {
                 "detail",
                 None,
                 ToolEffect::LocalMutation,
+                false,
             )
             .await
         });
@@ -637,6 +645,7 @@ mod tests {
                 "detail",
                 None,
                 ToolEffect::Destructive,
+                false,
             )
             .await
         });
@@ -671,6 +680,7 @@ mod tests {
                 "detail",
                 None,
                 ToolEffect::LocalMutation,
+                false,
             )
             .await
         });
@@ -704,6 +714,7 @@ mod tests {
                 "detail",
                 None,
                 ToolEffect::LocalMutation,
+                false,
             )
             .await
         });

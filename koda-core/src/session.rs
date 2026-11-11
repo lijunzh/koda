@@ -239,6 +239,9 @@ pub struct KodaSession {
     /// Cross-turn doesn't change that contract; it just extends the
     /// window in which a still-fresh entry can be reused.
     pub sub_agent_cache: SubAgentCache,
+    /// What the user allowed "for this session" at approval prompts. In
+    /// memory only: a new session, or a restart, asks again.
+    pub session_allows: crate::trust::SessionAllows,
 
     /// Long-lived task that drains [`Self::bg_agents`]'s status
     /// channel and forwards every event to the user-attached
@@ -372,6 +375,7 @@ impl KodaSession {
             bg_agents,
             git_snapshot: crate::git::GitSnapshot::default(),
             sub_agent_cache: SubAgentCache::new(),
+            session_allows: Default::default(),
             // No forwarder yet; clients (the TUI) call
             // `attach_event_sink` to spawn it. Headless paths leave
             // it `None` and rely on the legacy synchronous drain.
@@ -569,6 +573,7 @@ impl KodaSession {
             git_snapshot: &self.git_snapshot,
             bg_agents: &self.bg_agents,
             sub_agent_cache: &self.sub_agent_cache,
+            session_allows: &self.session_allows,
         })
         .await;
 

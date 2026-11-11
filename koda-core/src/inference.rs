@@ -895,7 +895,9 @@ pub struct InferenceContext<'a> {
     /// Owned by [`crate::session::KodaSession`], so what a turn doesn't use
     /// survives it, even if the turn is dropped.
     pub queued_steers: &'a mut Vec<String>,
-    /// File lifecycle tracker for ownership-aware approval (#465).
+    /// What the user allowed for the rest of the session at a prompt.
+    /// Owned by [`crate::session::KodaSession`].
+    pub session_allows: &'a crate::trust::SessionAllows,
     /// Background sub-agent registry (#1022 B12). Owned by [`crate::session::KodaSession`]
     /// so bg agents survive across turns; this is just a borrow into
     /// the loop. Drained at the top of every iteration to inject
@@ -1057,6 +1059,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
         cancel,
         cmd_rx,
         queued_steers,
+        session_allows,
         bg_agents,
         sub_agent_cache,
     } = ctx;
@@ -1090,6 +1093,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
         bg_agents,
         mode,
         tools,
+        session_allows,
     );
     // Phase E of #996: top-level inference has no spawner identity —
     // bg-task tools see the global scope. Sub-agents construct their

@@ -354,12 +354,15 @@ pub fn project(event: EngineEvent) -> Option<WireEvent> {
         },
         EngineEvent::SubAgentStart { agent_name } => WireEvent::SubAgentStart { agent_name },
         EngineEvent::TodoUpdate { items, diff } => WireEvent::TodoUpdate { items, diff },
+        // `allow_for_session` stays out: the wire is output only, and no
+        // wire client can answer "for this session".
         EngineEvent::ApprovalRequest {
             id,
             tool_name,
             detail,
             preview,
             effect,
+            allow_for_session: _,
         } => WireEvent::ApprovalRequest {
             id,
             tool_name,
