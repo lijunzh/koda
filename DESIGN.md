@@ -1283,8 +1283,19 @@ user-facing mental-model doc).
   and `ls & rm -rf /` passed as ReadOnly. The rule is Codex's
   (`try_parse_word_only_commands_sequence`), done with a quote-aware
   scanner instead of a tree-sitter parse. Destructive detection is
-  separate and keeps looking everywhere: it splits on newlines and `&` too,
-  and checks heredoc bodies.
+  separate and keeps looking everywhere: it splits on newlines and `&` too.
+- **A heredoc body is data, as in Codex** (`bash_safety.rs`,
+  `classify_heredocs`). The shell hands the body to a command; it doesn't
+  run it. So the command is classified without its bodies, and code in one
+  (`fn main() {` written with `cat > a.rs <<'EOF'`) no longer matches the
+  fork-bomb pattern `() {`. In recorded eval sessions that pattern made
+  about two-thirds of Auto's prompts. Codex parses with tree-sitter and
+  finds commands only in the substitutions of an unquoted body; so does
+  Koda. Two additions, because Koda's lexer is not a parser and Auto has no
+  other gate: a body fed to a shell (`bash <<EOF`, `ssh host <<EOF`) is
+  classified as a script, which Codex misses; and a body whose terminator
+  never comes may be a misread `<<`, so a destructive command in it still
+  counts. `<<` inside `((…))` is a shift, not a heredoc.
 - **A substitution is judged by what it runs** (`bash_safety.rs`). The
   command inside a `$(…)`, backticks or `<(…)` / `>(…)` is classified on its
   own, and a destructive one makes the whole command destructive. So does a

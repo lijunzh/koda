@@ -597,13 +597,68 @@ fn test_heredoc_body_is_data() {
         classify_bash_command("cat > notes.txt <<EOF\nhello\nEOF"),
         ToolEffect::LocalMutation
     );
-    assert_eq!(
-        classify_bash_command("cat <<EOF\nhello\ngit push --force\nEOF"),
-        ToolEffect::Destructive
-    );
     // Commands after the terminator are classified.
     assert_eq!(
         classify_bash_command("cat <<EOF\nhello\nEOF\nrm -rf /"),
         ToolEffect::Destructive
     );
+}
+
+/// As in Codex, a heredoc body is data: what it says is written or read,
+/// not run. Code in it used to match the fork-bomb pattern `() {`, which
+/// made about two-thirds of Auto's prompts in recorded eval sessions.
+#[test]
+fn test_heredoc_body_written_to_a_file_is_not_destructive() {
+    for cmd in [
+        "cat > a.rs <<'EOF'\nfn main() {}\nEOF",
+        "cat > a.rs <<EOF\nfn main() { println!(\"hi\"); }\nEOF",
+        "cat >> lib.rs <<'EOF'\n#[test]\nfn t() {\n    assert!(f());\n}\nEOF\ncargo test",
+        "cat > t.rs <<'EOF'\nfn f<'a>(x: &'a str) -> &'a str { x }\nEOF",
+        "python3 - <<'EOF'\nprint(\"x | sh\")\nEOF",
+        "python3 <<'PY'\nimport os\ndef f(): pass\nPY",
+        "cat > run.sh <<'EOF'\nrm -rf build\ngit push --force\nEOF",
+        "cat <<EOF\nhello\ngit push --force\nEOF",
+        "cat <<'EOF'\n$(rm -rf /)\n`rm -f a`\nEOF",
+        "cat <<\\EOF\n$(rm -rf /)\nEOF",
+        "cat > a.md <<EOF\nRun \\`cargo test\\` and \\$(date).\nEOF",
+        "cat <<-'EOF'\n\tfn main() {}\n\tEOF",
+        // No terminator: a model forgot it, and the code is still data.
+        "apply_patch <<'EOF'\n*** Begin Patch\n+    if s.is_empty() { None } else { Some(s) }\n*** End Patch",
+    ] {
+        assert_eq!(
+            classify_bash_command(cmd),
+            ToolEffect::LocalMutation,
+            "{cmd:?}"
+        );
+    }
+}
+
+/// What a heredoc still can't hide: a shell running it, a substitution in an
+/// unquoted body, commands after the terminator, and a `<<` that may be
+/// misread (no terminator, or a shift in arithmetic).
+#[test]
+fn test_heredoc_cannot_hide_a_destructive_command() {
+    for cmd in [
+        "bash <<'EOF'\nrm -rf build\nEOF",
+        "sh -s <<EOF\nrm -f a\nEOF",
+        "env X=1 bash <<'EOF'\ngit reset --hard\nEOF",
+        "/bin/zsh <<'EOF'\ncargo publish\nEOF",
+        "ssh host <<'EOF'\nrm -rf /srv\nEOF",
+        "cat <<'EOF' | bash\nrm -f a\nEOF",
+        "cat <<EOF\n$(rm -rf /)\nEOF",
+        "cat > a <<EOF\nx `rm -f a` y\nEOF",
+        "cat <<EOF\n$(echo hi\nEOF",
+        "cat > a <<'EOF'\nfn main() {}\nEOF\nrm -rf b",
+        "cat <<'A' <<'B'\na\nA\nb\nB\nrm -rf /",
+        "x=$(cat <<EOF\n$(rm -rf /)\nEOF\n)",
+        "cat <<EOF\nrm -rf /",
+        "(( x << 2 ))\nrm -rf /\n2",
+        "echo $(( 1 << 2 ))\nrm -rf /\n2",
+    ] {
+        assert_eq!(
+            classify_bash_command(cmd),
+            ToolEffect::Destructive,
+            "{cmd:?}"
+        );
+    }
 }

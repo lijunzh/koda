@@ -439,6 +439,8 @@ const RAW_DANGER_PATTERNS: &[&str] = &[
 /// Classify a bash command by its side-effect severity.
 ///
 /// Returns the *most dangerous* effect found across all pipeline/chain segments:
+/// 0. Heredoc bodies are taken out and classified on their own terms (see
+///    `classify_heredocs`): data, unless a shell runs them.
 /// 1. Raw structural patterns on quote-stripped string → Destructive
 /// 2. Per-segment shlex tokenisation vs `DANGER_CHECKS` → Destructive.
 ///    Segments are split on `|`, `;`, `&&`, `||`, a single `&` and newlines,
@@ -466,6 +468,9 @@ pub fn classify_bash_command(command: &str) -> ToolEffect {
     let trimmed = command.trim();
     if trimmed.is_empty() {
         return ToolEffect::ReadOnly;
+    }
+    if let Some(effect) = classify_heredocs(trimmed) {
+        return effect;
     }
 
     // Phase 0 — substitutions. Each `$(…)`, backtick and `<(…)`/`>(…)` is
@@ -498,17 +503,8 @@ pub fn classify_bash_command(command: &str) -> ToolEffect {
     // Phase 2 — per-segment token-level classification.
     // We must check ALL segments before short-circuiting on LocalMutation
     // because a later segment may be Destructive.
-    let (segments, heredoc_bodies) = split_segments_and_heredocs(trimmed);
+    let segments = split_command_segments(trimmed);
     let mut worst = ToolEffect::ReadOnly;
-
-    // A heredoc body is data, so it can't make a command a mutation, but a
-    // destructive command in one still counts: `<<` can be misread (e.g.
-    // `(( x << 2 ))`), and the cost of a false alarm is one confirmation.
-    for body in &heredoc_bodies {
-        if classify_bash_command(body) == ToolEffect::Destructive {
-            return ToolEffect::Destructive;
-        }
-    }
 
     for seg in &segments {
         let effect = classify_segment(seg);
@@ -527,6 +523,114 @@ pub fn classify_bash_command(command: &str) -> ToolEffect {
     }
 
     worst
+}
+
+/// Phase −1 of [`classify_bash_command`]: a command with heredoc bodies is
+/// classified with the bodies taken out, and each body on its own terms.
+/// `None` when there is no body.
+///
+/// As in Codex, a body is data the shell hands to a command, not commands,
+/// so `fn main() {` written with `cat > a.rs <<'EOF'` is not a fork bomb.
+/// Codex parses with tree-sitter and finds the commands only in a
+/// substitution of an unquoted body; so does this. Two additions, because
+/// this lexer is not a parser and Auto has no other gate:
+/// - a body fed to a shell (`bash <<EOF`) is a script, classified as one;
+/// - a body whose terminator never comes may be a misread `<<`, so a
+///   destructive command in it still counts.
+fn classify_heredocs(command: &str) -> Option<ToolEffect> {
+    let (_, heredocs) = lex_with_heredocs(command);
+    if heredocs.iter().all(|h| h.body.is_empty()) {
+        return None;
+    }
+    let mut rest = String::with_capacity(command.len());
+    let mut at = 0;
+    for h in &heredocs {
+        rest.push_str(&command[at..h.body.start]);
+        at = h.body.end;
+    }
+    rest.push_str(&command[at..]);
+
+    let to_shell = feeds_a_shell(&rest);
+    for h in &heredocs {
+        let body = &command[h.body.clone()];
+        let destructive = if to_shell {
+            classify_bash_command(body) == ToolEffect::Destructive
+        } else if !h.terminated {
+            // Its commands, not its text: a model that forgets the
+            // terminator still wrote code, and `is_empty() {` in it is no
+            // fork bomb (seen in recorded eval runs).
+            split_command_segments(body)
+                .iter()
+                .any(|seg| classify_segment(seg) == ToolEffect::Destructive)
+        } else if h.quoted {
+            false
+        } else {
+            match heredoc_substitutions(body) {
+                Some(subs) => subs
+                    .iter()
+                    .any(|s| classify_bash_command(s) == ToolEffect::Destructive),
+                None => true, // not closed, so it can't be taken apart
+            }
+        };
+        if destructive {
+            return Some(ToolEffect::Destructive);
+        }
+    }
+    // The terminators stay in `rest`, so its bodies are empty and this
+    // doesn't come back here. A heredoc is never read-only.
+    Some(match classify_bash_command(&rest) {
+        ToolEffect::ReadOnly => ToolEffect::LocalMutation,
+        effect => effect,
+    })
+}
+
+/// Commands that run a heredoc as a script.
+const RUNS_A_HEREDOC: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "fish", "ssh"];
+
+/// Whether a segment of `command` with a `<<` hands its heredoc to a shell:
+/// `bash <<EOF`, `env X=1 sh -s <<EOF`. One that can't be tokenised counts.
+fn feeds_a_shell(command: &str) -> bool {
+    split_command_segments(command)
+        .into_iter()
+        .filter(|seg| seg.contains("<<"))
+        .any(|seg| {
+            let seg = strip_env_vars(seg.trim());
+            let seg = seg.trim_start_matches(['(', '{', ' ', '\t', '!']);
+            let Some(tokens) = shlex::split(seg) else {
+                return true;
+            };
+            unwrap_wrappers(&tokens).first().is_some_and(|head| {
+                RUNS_A_HEREDOC.contains(&head.rsplit('/').next().unwrap_or(head))
+            })
+        })
+}
+
+/// The commands in the substitutions of an unquoted heredoc body: `$(…)`
+/// and backticks run there, while quotes are plain characters. `None` when
+/// one isn't closed.
+fn heredoc_substitutions(body: &str) -> Option<Vec<String>> {
+    let chars: Vec<char> = body.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '\\' => i += 1,
+            '`' => {
+                let end =
+                    (i + 1..chars.len()).find(|&j| chars[j] == '`' && chars[j - 1] != '\\')?;
+                out.push(chars[i + 1..end].iter().collect());
+                i = end;
+            }
+            '$' if chars.get(i + 1) == Some(&'(') => {
+                let close = matching_paren(&chars, i + 1)?;
+                out.push(chars[i + 2..close].iter().collect());
+                i = close;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    Some(out)
 }
 
 /// The word a substitution is replaced by before the rest of the command is
@@ -884,14 +988,36 @@ const WORD_BREAKS: &str = ";|&()<> \t\r\n";
 /// A sketch of POSIX shell tokenising, not a parser: enough to find the
 /// operators that separate commands. Unterminated quotes run to the end.
 fn lex(command: &str) -> Vec<(usize, char, Lex)> {
+    lex_with_heredocs(command).0
+}
+
+/// A heredoc found by [`lex_with_heredocs`].
+#[derive(Debug)]
+struct Heredoc {
+    /// Byte range of the body, without the terminator line.
+    body: std::ops::Range<usize>,
+    /// The delimiter was quoted (`<<'EOF'`, `<<"EOF"`, `<<\EOF`), so the
+    /// shell expands nothing in the body.
+    quoted: bool,
+    /// The terminator line was found. A body that runs to the end of the
+    /// command may be a `<<` misread.
+    terminated: bool,
+}
+
+/// [`lex`], plus each heredoc's body.
+fn lex_with_heredocs(command: &str) -> (Vec<(usize, char, Lex)>, Vec<Heredoc>) {
     let chars: Vec<(usize, char)> = command.char_indices().collect();
     let mut out: Vec<(usize, char, Lex)> = Vec::with_capacity(chars.len());
+    let mut heredocs = Vec::new();
     let mut in_sq = false;
     // In `$'...'` (ANSI-C quoting) a backslash escapes, `\'` included.
     let mut in_ansi_c = false;
     let mut in_dq = false;
-    // Heredocs opened on the current line, as (delimiter, strip leading tabs).
-    let mut pending_heredocs: Vec<(String, bool)> = Vec::new();
+    // Inside `((…))` or `$((…))`, where `<<` is a shift, not a heredoc.
+    let mut arithmetic = 0usize;
+    // Heredocs opened on the current line: (delimiter, strip leading tabs,
+    // quoted).
+    let mut pending_heredocs: Vec<(String, bool, bool)> = Vec::new();
     let mut i = 0;
 
     while i < chars.len() {
@@ -954,8 +1080,21 @@ fn lex(command: &str) -> Vec<(usize, char, Lex)> {
                 }
                 continue;
             }
-            // `<<` (heredoc), but not `<<<` (herestring).
-            '<' if chars.get(i + 1).is_some_and(|&(_, n)| n == '<')
+            '(' if chars.get(i + 1).is_some_and(|&(_, n)| n == '(') => {
+                arithmetic += 1;
+                out.extend(chars[i..i + 2].iter().map(|&(b, c)| (b, c, Lex::Code)));
+                i += 2;
+                continue;
+            }
+            ')' if arithmetic > 0 && chars.get(i + 1).is_some_and(|&(_, n)| n == ')') => {
+                arithmetic -= 1;
+                out.extend(chars[i..i + 2].iter().map(|&(b, c)| (b, c, Lex::Code)));
+                i += 2;
+                continue;
+            }
+            // `<<` (heredoc), but not `<<<` (herestring) or a shift.
+            '<' if arithmetic == 0
+                && chars.get(i + 1).is_some_and(|&(_, n)| n == '<')
                 && chars.get(i + 2).is_none_or(|&(_, n)| n != '<') =>
             {
                 if let Some(heredoc) = heredoc_delimiter(&chars[i + 2..]) {
@@ -978,7 +1117,13 @@ fn lex(command: &str) -> Vec<(usize, char, Lex)> {
                 i += 1;
                 // The bodies follow in order, each ending at a line that is
                 // exactly its delimiter (or at the end of the command).
-                for (delimiter, strip_tabs) in pending_heredocs.drain(..) {
+                for (delimiter, strip_tabs, quoted) in pending_heredocs.drain(..) {
+                    let at = |k: usize| chars.get(k).map_or(command.len(), |&(b, _)| b);
+                    let mut heredoc = Heredoc {
+                        body: at(i)..command.len(),
+                        quoted,
+                        terminated: false,
+                    };
                     while i < chars.len() {
                         let line_start = i;
                         while i < chars.len() && chars[i].1 != '\n' {
@@ -998,9 +1143,12 @@ fn lex(command: &str) -> Vec<(usize, char, Lex)> {
                             line
                         };
                         if line == delimiter {
+                            heredoc.body.end = at(line_start);
+                            heredoc.terminated = true;
                             break;
                         }
                     }
+                    heredocs.push(heredoc);
                 }
                 continue;
             }
@@ -1009,28 +1157,35 @@ fn lex(command: &str) -> Vec<(usize, char, Lex)> {
         out.push((b, c, Lex::Code));
         i += 1;
     }
-    out
+    (out, heredocs)
 }
 
 /// Parse the delimiter word after `<<`: `EOF`, `-EOF`, `'EOF'`, `"EOF"`,
-/// `\EOF`. Returns `(delimiter, strip leading tabs)`.
-fn heredoc_delimiter(rest: &[(usize, char)]) -> Option<(String, bool)> {
+/// `\EOF`. Returns `(delimiter, strip leading tabs, quoted)`.
+fn heredoc_delimiter(rest: &[(usize, char)]) -> Option<(String, bool, bool)> {
     let mut chars = rest.iter().map(|&(_, c)| c).peekable();
     let strip_tabs = chars.next_if_eq(&'-').is_some();
     while chars.next_if(|c| *c == ' ' || *c == '\t').is_some() {}
     let mut word = String::new();
     let mut quote: Option<char> = None;
+    let mut quoted = false;
     while let Some(c) = chars.next() {
         match quote {
             Some(q) if c == q => quote = None,
             Some(_) => word.push(c),
-            None if c == '\'' || c == '"' => quote = Some(c),
-            None if c == '\\' => word.extend(chars.next()),
+            None if c == '\'' || c == '"' => {
+                quote = Some(c);
+                quoted = true;
+            }
+            None if c == '\\' => {
+                word.extend(chars.next());
+                quoted = true;
+            }
             None if c.is_whitespace() || WORD_BREAKS.contains(c) => break,
             None => word.push(c),
         }
     }
-    (!word.is_empty()).then_some((word, strip_tabs))
+    (!word.is_empty()).then_some((word, strip_tabs, quoted))
 }
 
 /// Split a command into segments on `|`, `&&`, `||`, `;`, a single `&` and
@@ -1110,7 +1265,8 @@ fn split_segments_and_heredocs(command: &str) -> (Vec<&str>, Vec<&str>) {
 /// Used before `RAW_DANGER_PATTERNS` matching to suppress false positives
 /// from quoted arguments (e.g. `grep "cargo publish" .`). Backslash-escaped
 /// characters are blanked too; comments and heredoc bodies are kept, so a
-/// pattern in them still counts.
+/// pattern in them still counts. ([`classify_bash_command`] takes heredoc
+/// bodies out before it gets here.)
 pub fn strip_quoted_strings(s: &str) -> String {
     lex(s)
         .into_iter()
