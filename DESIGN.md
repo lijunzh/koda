@@ -787,8 +787,12 @@ output still in the pipes, and hands any group it leaves running to the
 registry (`BgRegistry::adopt`), saying so in its result. `kill PID` and
 `kill -0 PID` count as Koda's own for any PID in such a group: a check
 looks at that process, and a stop ends the group. On macOS the sandbox
-opens the group's listening ports. Every group stops when the session
-ends. Before, Koda tracked only the process it launched. A server started
+opens the group's listening ports. On Linux it can't: there a server is
+reached through its background command's sandbox, which serves the
+command's network namespace on a Unix socket (`bwrap_loopback.rs`), and a
+foreground call's sandbox stops serving when the call ends. So on Linux
+only a server started with `background: true` is reachable. Every group
+stops when the session ends. Before, Koda tracked only the process it launched. A server started
 with `&` was nobody's, its port stayed closed and stopping it asked, and a
 call whose job held the output pipe hung until its timeout. Haiku starts
 dev servers that way in about half of the eval runs that need one, and the

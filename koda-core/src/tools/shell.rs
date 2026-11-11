@@ -73,12 +73,10 @@ pub struct ShellOutput {
     pub success: bool,
 }
 
-/// What the Bash description says about localhost, which differs by
-/// platform. On macOS a command may connect to the ports Koda's own
-/// background servers listen on (`BgRegistry::listening_ports`); bwrap gives
-/// every command its own network namespace, so on Linux no command reaches
-/// another's server.
-const LOCALHOST: (&str, &str, &str) = if cfg!(target_os = "macos") {
+/// What the Bash description says about localhost. With a kernel sandbox a
+/// command may reach the servers Koda's own background commands run
+/// (`BgRegistry::loopback`) and no other localhost port.
+const LOCALHOST: (&str, &str, &str) = if cfg!(any(target_os = "macos", target_os = "linux")) {
     (
         "; start a server this way so later commands can connect to it on localhost",
         ", plus the localhost ports of servers Koda runs in the background",
@@ -222,10 +220,14 @@ pub async fn run_shell_command(
             if outside_sandbox {
                 Egress::Unsandboxed
             } else {
+                let loopback = koda_sandbox::Loopback {
+                    serve: loopback_socket(proxy_port),
+                    ..bg.loopback().await
+                };
                 Egress::Sandboxed {
                     proxy_port,
                     socks5_port,
-                    loopback_ports: bg.listening_ports().await,
+                    loopback,
                 }
             },
             caller_spawner,
@@ -282,7 +284,7 @@ pub async fn run_shell_command(
             Egress::Sandboxed {
                 proxy_port,
                 socks5_port,
-                loopback_ports: bg.listening_ports().await,
+                loopback: bg.loopback().await,
             }
         },
     )?;
@@ -623,12 +625,26 @@ enum Egress {
     Sandboxed {
         proxy_port: Option<u16>,
         socks5_port: Option<u16>,
-        /// Loopback ports of Koda's own background servers, which the
-        /// command may connect to directly (macOS).
-        loopback_ports: Vec<u16>,
+        /// Koda's own background servers, which the command may reach.
+        loopback: koda_sandbox::Loopback,
     },
     /// No sandbox and no proxy: a call the user approved with `outside_sandbox`.
     Unsandboxed,
+}
+
+/// The socket a background command serves its network namespace on, so later
+/// commands can reach the servers it starts. bwrap with the egress proxy
+/// only: that's when each command gets its own namespace.
+fn loopback_socket(proxy_port: Option<u16>) -> Option<std::path::PathBuf> {
+    if cfg!(not(target_os = "linux")) || proxy_port.is_none() {
+        return None;
+    }
+    #[cfg(target_os = "linux")]
+    return koda_sandbox::bwrap_loopback::new_socket_path()
+        .inspect_err(|e| tracing::warn!("no loopback socket for a background command: {e}"))
+        .ok();
+    #[cfg(not(target_os = "linux"))]
+    None
 }
 
 fn command_for(
@@ -642,7 +658,7 @@ fn command_for(
         Egress::Sandboxed {
             proxy_port,
             socks5_port,
-            loopback_ports,
+            loopback,
         } => crate::sandbox::build_with_loopback(
             command,
             project_root,
@@ -650,7 +666,7 @@ fn command_for(
             policy,
             proxy_port,
             socks5_port,
-            &loopback_ports,
+            &loopback,
         ),
         Egress::Unsandboxed => Ok(crate::sandbox::build_unsandboxed(
             command,
@@ -680,6 +696,10 @@ fn spawn_background(
     // Phase 5 PR-2 of #934: policy threaded in from the registry
     // (see comment on `run_shell_command` above for the threading rationale).
     let (log_path, log) = background_log()?;
+    let serve = match &egress {
+        Egress::Sandboxed { loopback, .. } => loopback.serve.clone(),
+        Egress::Unsandboxed => None,
+    };
     let stderr_log = log
         .try_clone()
         .map_err(|e| anyhow::anyhow!("Failed to share {}: {e}", log_path.display()))?;
@@ -699,6 +719,9 @@ fn spawn_background(
         .ok_or_else(|| anyhow::anyhow!("Spawned process has no PID (already exited)"))?;
 
     bg.insert(pid, command.to_string(), child, caller_spawner);
+    if let Some(socket) = serve {
+        bg.set_loopback_socket(pid, socket);
+    }
 
     let log = log_path.display();
     Ok(format!(
