@@ -596,9 +596,12 @@ mod tests {
     #[test]
     fn bwrap_runtime_accepts_proxy_port_without_error() {
         let policy = SandboxPolicy::strict_default();
+        // Not `/tmp` itself: the bwrap builder pre-creates `.git/` and
+        // `.koda/` folders in the project root.
+        let project = tempfile::tempdir().unwrap();
         let req = SandboxTransformRequest {
             command: "true",
-            project_root: Path::new("/tmp"),
+            project_root: project.path(),
             policy: &policy,
             proxy_port: Some(54321),
             loopback_ports: &[],
