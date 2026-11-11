@@ -286,7 +286,7 @@ impl Tool for WebSearchTool {
     }
     async fn execute(&self, _ctx: &ToolExecCtx<'_>, args: &serde_json::Value) -> ToolResult {
         let r = web_search(args).await;
-        crate::tools::wrap_result(r)
+        crate::tools::wrap_result(r.map(|results| crate::untrusted::wrap("WebSearch", &results)))
     }
 }
 

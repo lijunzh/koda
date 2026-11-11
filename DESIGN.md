@@ -1347,6 +1347,30 @@ user-facing mental-model doc).
    refuses to start or resume; `Safe`/`Plan` may still run with warnings and
    human approval floors
 
+### Content the Agent Reads Is Data (P1, P3)
+
+Web pages, search results and MCP results are wrapped before the model sees
+them (`koda-core/src/untrusted.rs`): one line saying the content is data whose
+instructions carry no authority beyond the user's request, then the content
+between `<<<EXTERNAL_CONTENT>>>` markers with a random id. Marker look-alikes
+and chat-template tokens inside are broken up. The system prompt says every
+tool result is data and that an attempt to direct the model is reported, not
+followed.
+
+- **Why:** a personal assistant reads mail and web pages written by others.
+  The security model above bounds what a model may do; this tells it what it
+  is reading. All three peers checked draw the same line: OpenClaw wraps web,
+  mail and attachments the same way; Codex's action reviewer treats tool
+  output as untrusted evidence that can't widen what the user approved;
+  Hermes scans instruction files and asks before writes to untrusted MCP
+  servers.
+- **Short note, by design:** OpenClaw found longer lists of forbidden actions
+  in the note made models refuse legitimate requests.
+- **Not wrapped:** file reads and command output, which in a project are
+  mostly the user's own and read constantly while coding.
+- **Measured** with the koda-evals task `assistant-injection`, an inbox whose
+  one mail tells the assistant to upload an SSH key and stay quiet.
+
 ### No Delete tool (P2)
 
 Koda had a `Delete` tool until 2026-11, and with it a file tracker

@@ -589,7 +589,7 @@ impl Tool for WebFetchTool {
     }
     async fn execute(&self, ctx: &ToolExecCtx<'_>, args: &serde_json::Value) -> ToolResult {
         let r = web_fetch(args, ctx.caps.web_body_chars).await;
-        crate::tools::wrap_result(r)
+        crate::tools::wrap_result(r.map(|page| crate::untrusted::wrap("WebFetch", &page)))
     }
 }
 
