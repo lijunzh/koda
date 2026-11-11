@@ -21,7 +21,7 @@
 //! | Tool                       | Detail format                                       |
 //! |----------------------------|-----------------------------------------------------|
 //! | `Bash`                     | `cmd` syntax-highlighted as bash (single-line)      |
-//! | `Read`/`Write`/`Edit`/`Delete` | `file_path` in [`theme::PATH`] (cyan)            |
+//! | `Read`/`Write`/`Edit`      | `file_path` in [`theme::PATH`] (cyan)               |
 //! | `Grep`                     | `"<pattern>"` in [`theme::MATCH_HIT`] + ` in ` + `file_path` |
 //! | `Glob`                     | `pattern` in [`theme::PATH`] (+ ` in ` + `file_path` if set)  |
 //! | `List`                     | `file_path` in [`theme::PATH`]                      |
@@ -202,12 +202,6 @@ mod tests {
         assert_eq!(span_texts(&spans), vec!["x.txt"]);
     }
 
-    #[test]
-    fn delete_with_no_path_returns_empty() {
-        let spans = detail_spans("Delete", &json!({}));
-        assert!(spans.is_empty());
-    }
-
     // ── grep_detail ──────────────────────────────────────────────────
 
     #[test]
@@ -367,7 +361,6 @@ mod tests {
             ("Read", json!({"file_path": "main.rs"}), "main.rs"),
             ("Write", json!({"file_path": "out.rs"}), "out.rs"),
             ("Edit", json!({"file_path": "x.rs"}), "x.rs"),
-            ("Delete", json!({"file_path": "y.rs"}), "y.rs"),
         ];
         for (name, args, expected_path) in cases {
             let concat: String = detail_spans(name, args)

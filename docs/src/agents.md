@@ -48,7 +48,7 @@ For agents that should only investigate, never modify state:
 ```
 
 `trust: "plan"` makes the kernel sandbox enforce read-only at the
-syscall level — strictly stronger than soft-denying `Write`/`Edit`/`Delete`
+syscall level — strictly stronger than soft-denying `Write`/`Edit`
 in `disallowed_tools`. (Soft-denying still works as a behavioral floor
 for tools the matrix can't gate, like `InvokeAgent` or `AskUser`.)
 
@@ -67,7 +67,7 @@ The default shape for agents that need to make changes:
 
 In Safe trust, the [sub-agent matrix](./approval.md#sub-agent-matrix-context-sensitive-resolution)
 auto-approves mutating ops (Write/Edit/MemoryWrite) and blocks
-destructive ops (`rm -rf`, `git reset --hard`, `Delete`). No human
+destructive ops (`rm -rf`, `git reset --hard`). No human
 prompt needed because there's no UI for the sub-agent to prompt into.
 
 ### Read-only with execution escape valve (Safe trust + denied writes)
@@ -80,7 +80,7 @@ never modify code:
   "name": "tester",
   "system_prompt": "You verify behavior by running tests. Never edit source.",
   "trust": "safe",
-  "disallowed_tools": ["Write", "Edit", "Delete"]
+  "disallowed_tools": ["Write", "Edit"]
 }
 ```
 
@@ -101,7 +101,7 @@ The legacy `write_access: bool` field is deprecated. The mapping:
 
 Pre-existing JSONs without `trust` still work via a back-compat
 default-deny: `write_access: false` (or absent) injects
-`Write`/`Edit`/`Delete` into `disallowed_tools` at load. Adding `trust`
+`Write`/`Edit` into `disallowed_tools` at load. Adding `trust`
 explicitly **skips** the legacy default-deny so an explicit
 `trust: "safe"` declaration works cleanly without surprise denials.
 

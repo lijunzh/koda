@@ -8,10 +8,7 @@
 //! - Gutter metadata for NoSelect copy support
 
 use crate::highlight;
-use koda_core::preview::{
-    DeleteDirPreview, DeleteFilePreview, DiffLine, DiffPreview, DiffTag, UnifiedDiffPreview,
-    WriteNewPreview,
-};
+use koda_core::preview::{DiffLine, DiffPreview, DiffTag, UnifiedDiffPreview, WriteNewPreview};
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -38,13 +35,8 @@ pub fn render_lines(preview: &DiffPreview) -> Vec<Line<'static>> {
     match preview {
         DiffPreview::UnifiedDiff(diff) => render_unified_diff(diff),
         DiffPreview::WriteNew(w) => render_write_new(w),
-        DiffPreview::DeleteFile(d) => render_delete_file(d),
-        DiffPreview::DeleteDir(d) => render_delete_dir(d),
         DiffPreview::FileNotYetExists => {
             vec![Line::styled("(file does not exist yet)", DIM)]
-        }
-        DiffPreview::PathNotFound => {
-            vec![Line::styled("(path does not exist)", DIM)]
         }
     }
 }
@@ -197,29 +189,6 @@ fn render_write_new(w: &WriteNewPreview) -> Vec<Line<'static>> {
     lines
 }
 
-// ── Delete ────────────────────────────────────────────────────
-
-fn render_delete_file(d: &DeleteFilePreview) -> Vec<Line<'static>> {
-    vec![Line::styled(
-        format!("Removing {} lines ({} bytes)", d.line_count, d.byte_count),
-        Style::default().bg(LINE_RED_BG),
-    )]
-}
-
-fn render_delete_dir(d: &DeleteDirPreview) -> Vec<Line<'static>> {
-    if d.recursive {
-        vec![Line::styled(
-            "Removing directory and all contents",
-            Style::default().bg(LINE_RED_BG),
-        )]
-    } else {
-        vec![Line::styled(
-            "Removing empty directory",
-            Style::default().bg(LINE_RED_BG),
-        )]
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,52 +323,6 @@ mod tests {
     }
 
     #[test]
-    fn test_delete_file_shows_line_and_byte_count() {
-        let preview = DiffPreview::DeleteFile(DeleteFilePreview {
-            line_count: 42,
-            byte_count: 1024,
-        });
-        let lines = render_lines(&preview);
-        let text: Vec<String> = lines
-            .iter()
-            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
-            .collect();
-        let full = text.join(" ");
-        assert!(full.contains("42"), "should mention line count: {full}");
-        assert!(full.contains("1024"), "should mention byte count: {full}");
-    }
-
-    #[test]
-    fn test_delete_dir_recursive_message() {
-        let preview = DiffPreview::DeleteDir(DeleteDirPreview { recursive: true });
-        let lines = render_lines(&preview);
-        let text: Vec<String> = lines
-            .iter()
-            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
-            .collect();
-        let full = text.join(" ");
-        assert!(
-            full.contains("all contents") || full.contains("recursive"),
-            "recursive delete should mention all contents: {full}"
-        );
-    }
-
-    #[test]
-    fn test_delete_dir_non_recursive_message() {
-        let preview = DiffPreview::DeleteDir(DeleteDirPreview { recursive: false });
-        let lines = render_lines(&preview);
-        let text: Vec<String> = lines
-            .iter()
-            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
-            .collect();
-        let full = text.join(" ");
-        assert!(
-            full.contains("empty"),
-            "non-recursive should mention empty directory: {full}"
-        );
-    }
-
-    #[test]
     fn test_unified_diff_truncated_flag() {
         // When truncated=true the render should include some truncation indicator.
         let preview = DiffPreview::UnifiedDiff(UnifiedDiffPreview {
@@ -448,20 +371,6 @@ mod tests {
         assert!(
             text.iter().any(|t| t.contains("not exist")),
             "FileNotYetExists should say the file does not exist: {text:?}"
-        );
-    }
-
-    #[test]
-    fn test_path_not_found_variant() {
-        let preview = DiffPreview::PathNotFound;
-        let lines = render_lines(&preview);
-        let text: Vec<String> = lines
-            .iter()
-            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
-            .collect();
-        assert!(
-            text.iter().any(|t| t.contains("not exist")),
-            "PathNotFound should say path does not exist: {text:?}"
         );
     }
 }

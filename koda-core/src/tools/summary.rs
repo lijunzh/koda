@@ -60,7 +60,7 @@ pub struct ToolCallSummary {
 
 /// Per-tool display payload — one variant per shape, not per tool.
 ///
-/// `Read`/`Write`/`Edit`/`Delete` all share `Path` because they all
+/// `Read`/`Write`/`Edit` all share `Path` because they all
 /// display "one file path." `Grep` gets its own variant because it
 /// has both a pattern and a directory. Variants are added only when
 /// a tool's display shape genuinely differs; otherwise we reuse.
@@ -72,7 +72,7 @@ pub enum ToolCallKind {
         /// didn't carry a recognized command/cmd key.
         command: String,
     },
-    /// `Read` / `Write` / `Edit` / `Delete` — a single file path.
+    /// `Read` / `Write` / `Edit` — a single file path.
     /// Empty string means the args didn't carry a recognized key.
     Path {
         /// The file path the operation targets.
@@ -126,7 +126,7 @@ impl ToolCallSummary {
     ///
     /// | Tool                        | Path keys                              | Pattern keys                  |
     /// |-----------------------------|----------------------------------------|-------------------------------|
-    /// | `Read`/`Write`/`Edit`/`Delete` | `file_path`, `path`                 | —                             |
+    /// | `Read`/`Write`/`Edit`        | `file_path`, `path`                    | —                             |
     /// | `Grep`                      | `file_path`, `path`, `directory`       | `search_string`, `pattern`    |
     /// | `Glob`                      | `file_path`, `path`, `directory`       | `pattern`                     |
     /// | `List`                      | `file_path`, `path`, `directory`       | —                             |
@@ -143,7 +143,7 @@ impl ToolCallSummary {
             "Cargo" => ToolCallKind::Bash {
                 command: super::cargo::describe(args),
             },
-            "Read" | "Write" | "Edit" | "Delete" => ToolCallKind::Path {
+            "Read" | "Write" | "Edit" => ToolCallKind::Path {
                 path: first_string(args, &["file_path", "path"]).unwrap_or_default(),
             },
             "Grep" => ToolCallKind::Grep {
@@ -232,11 +232,11 @@ mod tests {
         );
     }
 
-    // ── Path family (Read/Write/Edit/Delete) ──────────────────────────
+    // ── Path family (Read/Write/Edit) ──────────────────────────
 
     #[test]
-    fn read_write_edit_delete_share_path_shape() {
-        for name in ["Read", "Write", "Edit", "Delete"] {
+    fn read_write_edit_share_path_shape() {
+        for name in ["Read", "Write", "Edit"] {
             let s = ToolCallSummary::from_call(name, &json!({ "file_path": "src/foo.rs" }));
             assert_eq!(
                 s.kind,

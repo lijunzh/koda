@@ -25,8 +25,8 @@
 //!
 //! ## Top-level (interactive) decision matrix
 //!
-//! Used by [`check_tool()`](crate::trust::check_tool) / [`check_tool_with_tracker()`](crate::trust::check_tool_with_tracker) when a human
-//! is at the keyboard.
+//! Used by [`check_tool()`](crate::trust::check_tool) when a human is at
+//! the keyboard.
 //!
 //! | Behavior | Plan | Safe | Auto |
 //! |---|---|---|---|
@@ -38,15 +38,14 @@
 //!
 //! **`Auto × Destructive` confirms, not auto-approves** (#1251). The
 //! user said YOLO for normal work, not for `rm -rf` / `git reset --hard`
-//! / `git push --force` / `Delete`. Destructive ops by definition
+//! / `git push --force`. Destructive ops by definition
 //! can't be undone by the sandbox alone (deleting a tracked file is
 //! "legal" inside the project root), so Auto keeps the prompt as a
 //! deliberate speed-bump.
 //!
 //! ## Sub-agent (no-human-channel) decision matrix
 //!
-//! Used by [`check_tool_for_sub_agent()`](crate::trust::check_tool_for_sub_agent) /
-//! [`check_tool_for_sub_agent_with_tracker()`](crate::trust::check_tool_for_sub_agent_with_tracker) when an agent dispatched
+//! Used by [`check_tool_for_sub_agent()`](crate::trust::check_tool_for_sub_agent) when an agent dispatched
 //! via `InvokeAgent` is making the call. Sub-agents have no live
 //! human approval channel by design (#1022 B10), so the matrix
 //! resolves what the top-level matrix would treat as `⚠️ confirm`
@@ -80,9 +79,6 @@
 //!   sandbox backend isn't installed, Auto downgrades mutating and
 //!   destructive ops to NeedsConfirmation so you never lose both
 //!   the sandbox and the prompt.
-//! - **Koda-owned file Delete** (#465) — deleting a file Koda created
-//!   in this session auto-approves (net-zero effect: Koda created it,
-//!   Koda removes it). See [`check_tool_with_tracker()`](crate::trust::check_tool_with_tracker).
 //!
 //! ## Child trust derivation
 //!
@@ -103,12 +99,11 @@
 //! for destructive ops because the sandbox can't undo them. Plan
 //! denies all writes outright and is enforced at the syscall level
 //! (kernel-level read-only sandbox), strictly stronger than soft
-//! denylisting `Write`/`Edit`/`Delete` in `disallowed_tools`.
+//! denylisting `Write`/`Edit` in `disallowed_tools`.
 //! Credential dirs are always blocked regardless of mode.
 
 // `classify_bash_command` no longer imported here — `BashTool::classify`
 // owns Bash's per-call effect resolution (#1265 PR-9 cleanup).
-use crate::file_tracker::FileTracker;
 use crate::tools::ToolEffect;
 use path_clean::PathClean;
 use std::path::Path;
@@ -537,8 +532,7 @@ pub fn cycle_trust(shared: &SharedTrustMode) -> TrustMode {
 
 /// What the trust system decides for a given tool call.
 ///
-/// Returned by [`check_tool`], [`check_tool_with_tracker`],
-/// [`check_tool_for_sub_agent`], and [`check_tool_for_sub_agent_with_tracker`].
+/// Returned by [`check_tool`] and [`check_tool_for_sub_agent`].
 /// The engine dispatch loop maps each variant to a concrete action:
 ///
 /// - [`AutoApprove`](Self::AutoApprove) — dispatch the tool immediately.
@@ -577,7 +571,7 @@ pub enum ToolApproval {
 /// | Destructive    | ❌ block | ⚠️ confirm     | ⚠️ confirm     |
 ///
 /// `Auto × Destructive` confirms (changed in #1251 — was auto pre-#1251).
-/// The sandbox can't undo a `Delete` or `git reset --hard` on a tracked
+/// The sandbox can't undo an `rm -rf` or `git reset --hard` on a tracked
 /// file inside the project root, so Auto keeps the prompt as a
 /// deliberate speed-bump for ops that would otherwise be irreversible.
 ///
@@ -586,7 +580,6 @@ pub enum ToolApproval {
 /// Additional hardcoded floors:
 /// - Writes outside project root → NeedsConfirmation (even in Auto) (#218)
 /// - Bash path escapes → NeedsConfirmation
-/// - Delete of Koda-owned file → AutoApprove (#465 — see [`check_tool_with_tracker`])
 /// - Sandbox backend unavailable → Auto downgrades mutating/destructive
 ///   ops to NeedsConfirmation (#860)
 pub fn check_tool(
@@ -595,22 +588,7 @@ pub fn check_tool(
     mode: TrustMode,
     project_root: Option<&Path>,
 ) -> ToolApproval {
-    check_tool_inner(tool_name, args, mode, project_root, None, false)
-}
-
-/// Like [`check_tool`] but with an optional file tracker for ownership checks.
-///
-/// When a `FileTracker` is provided and the tool is `Delete` targeting a file
-/// that Koda created in this session, the destructive classification is
-/// downgraded to auto-approve (net-zero effect: Koda created it, Koda removes it).
-pub fn check_tool_with_tracker(
-    tool_name: &str,
-    args: &serde_json::Value,
-    mode: TrustMode,
-    project_root: Option<&Path>,
-    file_tracker: Option<&FileTracker>,
-) -> ToolApproval {
-    check_tool_inner(tool_name, args, mode, project_root, file_tracker, false)
+    check_tool_inner(tool_name, args, mode, project_root, false)
 }
 
 /// Like [`check_tool`] but for sub-agent contexts (no human at the keyboard).
@@ -636,7 +614,7 @@ pub fn check_tool_with_tracker(
 ///   no human to confirm `rm -rf /`, refuse on safety grounds.
 ///
 /// This resolves the #1249 dead-channel discovery: today, sub-agents at Safe
-/// trust auto-reject every Write/Edit/Delete with *"requires user confirmation
+/// trust auto-reject every Write/Edit with *"requires user confirmation
 /// but this sub-agent has no channel to the user."* After this change, `task`
 /// and `default` sub-agents become functional writers.
 pub fn check_tool_for_sub_agent(
@@ -645,23 +623,10 @@ pub fn check_tool_for_sub_agent(
     mode: TrustMode,
     project_root: Option<&Path>,
 ) -> ToolApproval {
-    check_tool_inner(tool_name, args, mode, project_root, None, true)
+    check_tool_inner(tool_name, args, mode, project_root, true)
 }
 
-/// Like [`check_tool_for_sub_agent`] but with an optional file tracker for
-/// ownership checks (Delete of Koda-owned files auto-approves regardless of mode).
-pub fn check_tool_for_sub_agent_with_tracker(
-    tool_name: &str,
-    args: &serde_json::Value,
-    mode: TrustMode,
-    project_root: Option<&Path>,
-    file_tracker: Option<&FileTracker>,
-) -> ToolApproval {
-    check_tool_inner(tool_name, args, mode, project_root, file_tracker, true)
-}
-
-/// Shared implementation for [`check_tool`], [`check_tool_with_tracker`],
-/// [`check_tool_for_sub_agent`], and [`check_tool_for_sub_agent_with_tracker`].
+/// Shared implementation for [`check_tool`] and [`check_tool_for_sub_agent`].
 ///
 /// The `is_sub_agent` flag controls how `NeedsConfirmation` decisions get
 /// resolved when no human is in the loop:
@@ -672,7 +637,6 @@ fn check_tool_inner(
     args: &serde_json::Value,
     mode: TrustMode,
     project_root: Option<&Path>,
-    file_tracker: Option<&FileTracker>,
     is_sub_agent: bool,
 ) -> ToolApproval {
     let effect = resolve_tool_effect(tool_name, args);
@@ -705,16 +669,6 @@ fn check_tool_inner(
                 return resolve_confirmation(effect, is_sub_agent);
             }
         }
-    }
-
-    // File lifecycle: Koda-owned files bypass destructive gate (#465)
-    if tool_name == "Delete"
-        && let Some(tracker) = file_tracker
-        && let Some(root) = project_root
-        && let Some(abs_path) = crate::file_tracker::resolve_file_path_from_args(args, root)
-        && tracker.is_owned(&abs_path)
-    {
-        return ToolApproval::AutoApprove;
     }
 
     // Apply the ToolEffect × TrustMode × Context matrix
@@ -829,7 +783,7 @@ fn resolve_tool_effect_inner(
 /// Temp directories (`/tmp`, `$TMPDIR`) are explicitly allowed (#560).
 fn is_outside_project(tool_name: &str, args: &serde_json::Value, project_root: &Path) -> bool {
     let path_arg = match tool_name {
-        "Write" | "Edit" | "Delete" => args
+        "Write" | "Edit" => args
             .get("path")
             .or(args.get("file_path"))
             .and_then(|v| v.as_str()),
@@ -1078,7 +1032,7 @@ mod tests {
 
     #[test]
     fn test_plan_blocks_all_writes() {
-        for tool in ["Write", "Edit", "Delete", "MemoryWrite"] {
+        for tool in ["Write", "Edit", "MemoryWrite"] {
             assert_eq!(
                 check_tool(tool, &serde_json::json!({}), TrustMode::Plan, None),
                 ToolApproval::Blocked,
@@ -1089,7 +1043,7 @@ mod tests {
 
     #[test]
     fn test_safe_confirms_writes() {
-        for tool in ["Write", "Edit", "Delete", "MemoryWrite"] {
+        for tool in ["Write", "Edit", "MemoryWrite"] {
             assert_eq!(
                 check_tool(tool, &serde_json::json!({}), TrustMode::Safe, None),
                 ToolApproval::NeedsConfirmation,
@@ -1132,7 +1086,12 @@ mod tests {
         // (`rm -rf`, `git reset --hard`, `git push --force`, ...) deserve a
         // second look regardless of trust mode.
         assert_eq!(
-            check_tool("Delete", &serde_json::json!({}), TrustMode::Auto, None),
+            check_tool(
+                "Bash",
+                &serde_json::json!({"command": "rm -rf build"}),
+                TrustMode::Auto,
+                None
+            ),
             ToolApproval::NeedsConfirmation,
         );
     }
@@ -1429,74 +1388,6 @@ mod tests {
         );
     }
 
-    // ── File lifecycle (#465) tests ──
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_delete_owned_file_auto_approved() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let db = crate::db::Database::open(&dir.path().join("test.db"))
-            .await
-            .unwrap();
-        let mut tracker = FileTracker::new("test-sess", db).await;
-        let root = Path::new("/home/user/project");
-        let owned_path = root.join("temp_output.md");
-        tracker.track_created(owned_path).await;
-
-        let args = serde_json::json!({"path": "temp_output.md"});
-        assert_eq!(
-            check_tool_with_tracker("Delete", &args, TrustMode::Auto, Some(root), Some(&tracker),),
-            ToolApproval::AutoApprove,
-            "Delete of Koda-owned file should auto-approve"
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_delete_unowned_file_needs_confirmation_in_safe() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let db = crate::db::Database::open(&dir.path().join("test.db"))
-            .await
-            .unwrap();
-        let tracker = FileTracker::new("test-sess", db).await;
-        let root = Path::new("/home/user/project");
-
-        let args = serde_json::json!({"path": "user_file.rs"});
-        assert_eq!(
-            check_tool_with_tracker("Delete", &args, TrustMode::Safe, Some(root), Some(&tracker),),
-            ToolApproval::NeedsConfirmation,
-            "Delete of unowned file should need confirmation in Safe mode"
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_delete_owned_file_safe_mode_auto_approved() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let db = crate::db::Database::open(&dir.path().join("test.db"))
-            .await
-            .unwrap();
-        let mut tracker = FileTracker::new("test-sess", db).await;
-        let root = Path::new("/home/user/project");
-        let owned_path = root.join("scratch.txt");
-        tracker.track_created(owned_path).await;
-
-        let args = serde_json::json!({"path": "scratch.txt"});
-        assert_eq!(
-            check_tool_with_tracker("Delete", &args, TrustMode::Safe, Some(root), Some(&tracker),),
-            ToolApproval::AutoApprove,
-            "Delete of Koda-owned file should auto-approve even in Safe mode"
-        );
-    }
-
-    #[test]
-    fn test_no_tracker_safe_mode_delete_needs_confirmation() {
-        let root = Path::new("/home/user/project");
-        let args = serde_json::json!({"path": "some_file.rs"});
-        assert_eq!(
-            check_tool_with_tracker("Delete", &args, TrustMode::Safe, Some(root), None),
-            ToolApproval::NeedsConfirmation,
-            "Without tracker, Delete should need confirmation in Safe"
-        );
-    }
-
     // ── #1244: Plan is sub-agent-only for the top-level session ────────────────
     //
     // The bug-review session that opened #1232 surfaced that a user
@@ -1693,13 +1584,13 @@ mod tests {
     //   - destructive ops → Blocked (refuse without consent)
     //
     // Critical bug fix: pre-#1250, `task` and `default` sub-agents at Safe
-    // trust auto-rejected every Write/Edit/Delete. After #1250 they work.
+    // trust auto-rejected every Write/Edit. After #1250 they work.
     // ─────────────────────────────────────────────────────────────────
 
     /// Sub-agent at Plan: same as top-level Plan. Read auto, everything else block.
     #[test]
     fn sub_agent_plan_blocks_writes() {
-        for tool in ["Write", "Edit", "Delete", "Bash"] {
+        for tool in ["Write", "Edit", "Bash"] {
             let args = if tool == "Bash" {
                 serde_json::json!({"command": "cargo build"})
             } else {

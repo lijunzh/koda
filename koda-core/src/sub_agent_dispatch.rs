@@ -1309,7 +1309,7 @@ fn instructions_for(instructions: &str, in_worktree: bool) -> String {
 /// Whether an agent's tool lists leave it any of the file-writing tools. An empty
 /// allow list means every tool, as in `get_definitions`.
 fn edits_files(allowed: &[String], disallowed: &[String]) -> bool {
-    ["Write", "Edit", "Delete"].iter().any(|tool| {
+    ["Write", "Edit"].iter().any(|tool| {
         let allowed = allowed.is_empty() || allowed.iter().any(|t| t == tool);
         allowed && !disallowed.iter().any(|t| t == tool)
     })
@@ -1710,11 +1710,7 @@ mod release_workspace_tests {
     fn denying_one_file_tool_leaves_the_others() {
         assert!(edits_files(&[], &names(&["Edit"])));
         assert!(edits_files(&[], &names(&["Write"])));
-        assert!(
-            edits_files(&[], &names(&["Write", "Edit"])),
-            "Delete remains"
-        );
-        assert!(!edits_files(&[], &names(&["Write", "Edit", "Delete"])));
+        assert!(!edits_files(&[], &names(&["Write", "Edit"])));
     }
 
     #[test]

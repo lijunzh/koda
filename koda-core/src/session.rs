@@ -28,7 +28,6 @@ use crate::child_agent::{self, ChildAgentRegistry};
 use crate::config::KodaConfig;
 use crate::db::Database;
 use crate::engine::{EngineCommand, EngineSink};
-use crate::file_tracker::FileTracker;
 use crate::inference::{InferenceContext, TurnOutcome};
 use crate::providers::{self, ImageData, LlmProvider};
 use crate::sub_agent_cache::SubAgentCache;
@@ -166,8 +165,6 @@ pub struct KodaSession {
     /// literal construction; bypassing `interrupt()` in non-test code
     /// breaks the swap invariant and permanently poisons the session.
     pub cancel: SessionCancel,
-    /// File lifecycle tracker — tracks files created by Koda (#465).
-    pub file_tracker: FileTracker,
     /// Whether the session title has already been set (first-message guard).
     pub title_set: bool,
     /// Per-session HTTP CONNECT proxy (Phase 3b of #934).
@@ -314,7 +311,6 @@ impl KodaSession {
                 tracing::warn!(error = %e, "failed to start MCP servers (non-fatal)");
             }
         }
-        let file_tracker = FileTracker::new(&id, db.clone()).await;
 
         // Spawn the per-session HTTP CONNECT proxy with the default dev
         // allowlist. Fail-open: on spawn failure, log + run unfiltered.
@@ -367,7 +363,6 @@ impl KodaSession {
             provider,
             mode,
             cancel: SessionCancel::new(),
-            file_tracker,
             title_set: false,
             proxy,
             socks5_proxy,
@@ -571,7 +566,6 @@ impl KodaSession {
             cancel: effective_cancel.clone(),
             cmd_rx,
             queued_steers: &mut self.queued_steers,
-            file_tracker: &mut self.file_tracker,
             git_snapshot: &self.git_snapshot,
             bg_agents: &self.bg_agents,
             sub_agent_cache: &self.sub_agent_cache,

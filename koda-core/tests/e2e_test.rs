@@ -159,8 +159,6 @@ async fn test_provider_error_emits_error_event() {
     let sink = koda_core::engine::sink::TestSink::new();
     let (_, mut cmd_rx) = mpsc::channel::<EngineCommand>(1);
     let tool_defs = env.tool_defs();
-    let mut file_tracker =
-        koda_core::file_tracker::FileTracker::new(&env.session_id, env.db.clone()).await;
 
     let result = inference::inference_loop(InferenceContext {
         project_root: &env.root,
@@ -179,7 +177,6 @@ async fn test_provider_error_emits_error_event() {
         cancel: CancellationToken::new(),
         cmd_rx: &mut cmd_rx,
         queued_steers: &mut Vec::new(),
-        file_tracker: &mut file_tracker,
         bg_agents: &koda_core::child_agent::new_shared(),
         sub_agent_cache: &koda_core::sub_agent_cache::SubAgentCache::new(),
     })
@@ -278,8 +275,6 @@ async fn test_cancel_during_streaming() {
     let (_, mut cmd_rx) = mpsc::channel::<EngineCommand>(1);
     let tool_defs = env.tool_defs();
     let cancel = CancellationToken::new();
-    let mut file_tracker =
-        koda_core::file_tracker::FileTracker::new(&env.session_id, env.db.clone()).await;
 
     // **#1109 F3**: was `sleep(100ms).await` — replaced with oneshot wait.
     let cancel_clone = cancel.clone();
@@ -308,7 +303,6 @@ async fn test_cancel_during_streaming() {
         cancel,
         cmd_rx: &mut cmd_rx,
         queued_steers: &mut Vec::new(),
-        file_tracker: &mut file_tracker,
         bg_agents: &koda_core::child_agent::new_shared(),
         sub_agent_cache: &koda_core::sub_agent_cache::SubAgentCache::new(),
     })

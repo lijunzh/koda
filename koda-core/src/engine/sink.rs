@@ -459,7 +459,7 @@ fn summarize_tool_call(name: &str, args: &serde_json::Value) -> String {
     }
 
     let body = match name {
-        "Read" | "Edit" | "Write" | "Delete" | "List" => path_arg(args),
+        "Read" | "Edit" | "Write" | "List" => path_arg(args),
         "Glob" => args
             .get("pattern")
             .and_then(|v| v.as_str())
@@ -932,14 +932,14 @@ mod tests {
         let sink = BufferingSink::new();
         sink.emit(EngineEvent::ApprovalRequest {
             id: "a1".into(),
-            tool_name: "Delete".into(),
-            detail: "foo.txt".into(),
+            tool_name: "Bash".into(),
+            detail: "rm -rf build".into(),
             preview: None,
             effect: crate::tools::ToolEffect::Destructive,
         });
         let lines = sink.take_lines();
         assert_eq!(lines.len(), 1);
-        assert!(lines[0].contains("Delete"));
+        assert!(lines[0].contains("Bash"));
         assert!(
             lines[0].contains("auto-rejected"),
             "approval-without-channel must be marked as auto-rejected; got: {}",
@@ -1275,11 +1275,6 @@ mod tests {
                 "Edit",
                 serde_json::json!({"file_path": "a.rs", "old_str": "a", "new_str": "b"}),
                 "a.rs",
-            ),
-            (
-                "Delete",
-                serde_json::json!({"file_path": "old.log"}),
-                "old.log",
             ),
             (
                 "List",

@@ -100,7 +100,6 @@ async fn test_cancel_during_chat_stream_returns_immediately() {
     let sink = TestSink::new();
     let cancel = CancellationToken::new();
     let (_, mut cmd_rx) = mpsc::channel::<EngineCommand>(1);
-    let mut file_tracker = koda_core::file_tracker::FileTracker::new(&session_id, db.clone()).await;
 
     // **#1109 F3**: was `sleep(100ms).await` to give inference time to
     // start. Replaced with a oneshot signal so cancel fires the moment
@@ -131,7 +130,6 @@ async fn test_cancel_during_chat_stream_returns_immediately() {
         cancel,
         cmd_rx: &mut cmd_rx,
         queued_steers: &mut Vec::new(),
-        file_tracker: &mut file_tracker,
         bg_agents: &koda_core::child_agent::new_shared(),
         sub_agent_cache: &koda_core::sub_agent_cache::SubAgentCache::new(),
     })

@@ -43,7 +43,7 @@ The master agent — i.e. you talking to Koda directly — uses this matrix:
 | `ReadOnly`               | ✅ auto   | ✅ auto     | ✅ auto     |
 | `LocalMutation` (Write/Edit/MemoryWrite) | ❌ deny | ⏸ confirm | ✅ auto |
 | `RemoteAction`           | ❌ deny   | ⏸ confirm   | ✅ auto     |
-| `Destructive` (Delete, `rm -rf`, force-push, …) | ❌ deny | ⏸ confirm | ⏸ confirm |
+| `Destructive` (`rm -rf`, force-push, …) | ❌ deny | ⏸ confirm | ⏸ confirm |
 | Outside-project write    | ❌ deny   | ⏸ confirm   | ⏸ confirm   |
 | Bash outside the sandbox | ❌ deny   | ⏸ confirm   | ⏸ confirm   |
 
@@ -168,7 +168,7 @@ where `write_access` only spoke to the second half.
 In headless mode there is no human to prompt. Koda applies the
 headless policy documented in [Headless mode](./headless.md): read
 and safe in-project mutating tools approve, destructive Bash commands
-and `Delete` are rejected, and the sandbox enforces the perimeter.
+are rejected, and the sandbox enforces the perimeter.
 Auto still requires the kernel sandbox before headless execution can
 start.
 

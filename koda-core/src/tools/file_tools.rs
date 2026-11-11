@@ -1,8 +1,9 @@
-//! File system tools: Read, Write, Edit, Delete, and List.
+//! File system tools: Read, Write, Edit and List. Deleting goes through Bash,
+//! as in Codex and Claude Code.
 //!
 //! **Path policy** (see `docs/src/sandbox.md` for full rationale):
 //! - Read / List use `resolve_path_unrestricted` — any path on the filesystem.
-//! - Write / Edit / Delete use `safe_resolve_path` — restricted to project root.
+//! - Write / Edit use `safe_resolve_path` — restricted to project root.
 //!
 //! ## Tools
 //!
@@ -11,14 +12,13 @@
 //! | **Read** | Read file contents with line numbers. Supports `start_line`/`num_lines` for large files. | ReadOnly |
 //! | **Write** | Create a new file or overwrite an existing one. Use `overwrite: true` to replace. | LocalMutation |
 //! | **Edit** | Find-and-replace in an existing file. Matches `old_str` exactly and replaces with `new_str`. Use `replace_all: true` to replace all occurrences. | LocalMutation |
-//! | **Delete** | Delete a file. Always requires confirmation (Destructive effect). | Destructive |
 //! | **List** | List files and directories. Respects `.gitignore`. | ReadOnly |
 //!
 //! ## Path safety
 //!
 //! All file paths resolve relative to the project root for relative inputs, or
 //! as-is for absolute inputs.  Read / List accept any reachable path;
-//! Write / Edit / Delete are restricted to the project root (see sandbox.md).
+//! Write / Edit are restricted to the project root (see sandbox.md).
 
 use sha2::{Digest, Sha256};
 
@@ -118,26 +118,6 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     }
                 },
                 "required": ["file_path", "old_str", "new_str"]
-            }),
-        },
-        ToolDefinition {
-            name: "Delete".to_string(),
-            description: "Delete a file or directory. For directories, set recursive to true. \
-                Returns what was removed and the count of deleted items."
-                .to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "file_path": {
-                        "type": "string",
-                        "description": "Path to the file or directory to delete"
-                    },
-                    "recursive": {
-                        "type": "boolean",
-                        "description": "Required for deleting non-empty directories (default: false)"
-                    }
-                },
-                "required": ["file_path"]
             }),
         },
         ToolDefinition {
@@ -620,81 +600,6 @@ pub async fn edit_file(
     ))
 }
 
-/// Delete a file and return confirmation.
-pub async fn delete_file(project_root: &Path, args: &Value) -> Result<String> {
-    let path_str = args["file_path"]
-        .as_str()
-        .or_else(|| args["path"].as_str())
-        .ok_or_else(|| anyhow::anyhow!("Missing 'file_path' argument"))?;
-    let recursive = args["recursive"].as_bool().unwrap_or(false);
-    let resolved = safe_resolve_path(project_root, path_str)?;
-
-    // #1281: symlink-aware re-check before any unlink. delete is the
-    // most dangerous of the three: a symlink swap could trick us into
-    // unlinking the wrong path (though `remove_file` on a symlink
-    // removes the link itself, so the blast radius is small — we still
-    // want a clear error rather than silent surprise).
-    koda_sandbox::fs::verify_mutation_safe(&resolved, &allowed_mutation_roots(project_root))
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-
-    if !resolved.exists() {
-        anyhow::bail!("Path not found: {}", resolved.display());
-    }
-
-    // Prevent deleting the project root itself
-    if resolved == project_root {
-        anyhow::bail!("Cannot delete the project root directory");
-    }
-
-    if resolved.is_file() {
-        let size = tokio::fs::metadata(&resolved).await?.len();
-        tokio::fs::remove_file(&resolved).await?;
-        Ok(format!(
-            "Deleted file {} ({} bytes)",
-            resolved.display(),
-            size
-        ))
-    } else if resolved.is_dir() {
-        // Check if directory is empty
-        let is_empty = resolved.read_dir()?.next().is_none();
-
-        if is_empty {
-            tokio::fs::remove_dir(&resolved).await?;
-            Ok(format!("Deleted empty directory {}", resolved.display()))
-        } else if recursive {
-            // Count items for informative output
-            let count = count_dir_entries(&resolved);
-            tokio::fs::remove_dir_all(&resolved).await?;
-            Ok(format!(
-                "Deleted directory {} ({} items removed)",
-                resolved.display(),
-                count
-            ))
-        } else {
-            anyhow::bail!(
-                "Directory {} is not empty. Set recursive=true to delete it and all contents.",
-                resolved.display()
-            )
-        }
-    } else {
-        anyhow::bail!("Path is not a file or directory: {}", resolved.display())
-    }
-}
-
-/// Count all entries in a directory recursively.
-fn count_dir_entries(path: &Path) -> usize {
-    let mut count = 0;
-    if let Ok(entries) = std::fs::read_dir(path) {
-        for entry in entries.flatten() {
-            count += 1;
-            if entry.path().is_dir() {
-                count += count_dir_entries(&entry.path());
-            }
-        }
-    }
-    count
-}
-
 /// List files in a directory, respecting .gitignore.
 /// Entry cap is set by `OutputCaps` (context-scaled).
 ///
@@ -937,31 +842,6 @@ impl Tool for EditTool {
     }
 }
 
-/// `Delete` — remove a file.
-pub struct DeleteTool;
-
-#[async_trait]
-impl Tool for DeleteTool {
-    fn name(&self) -> &'static str {
-        "Delete"
-    }
-    fn definition(&self) -> ToolDefinition {
-        def("Delete")
-    }
-    fn classify(&self, _args: &Value) -> ToolEffect {
-        // Matches the pre-#1265 `tools::classify_tool` arm — Delete
-        // is irreversible, the strictest gating tier.
-        ToolEffect::Destructive
-    }
-    fn mutated_path(&self, args: &Value) -> Option<std::path::PathBuf> {
-        extract_file_path_arg(args)
-    }
-    async fn execute(&self, ctx: &ToolExecCtx<'_>, args: &Value) -> ToolResult {
-        let r = delete_file(ctx.project_root, args).await;
-        crate::tools::wrap_result(r)
-    }
-}
-
 /// `List` — directory listing.
 pub struct ListTool;
 
@@ -983,7 +863,7 @@ impl Tool for ListTool {
 }
 
 /// Pull `file_path` (or its `path` alias) out of an args object.
-/// Used by `Write`/`Edit`/`Delete`'s `mutated_path`.
+/// Used by `Write`/`Edit`'s `mutated_path`.
 fn extract_file_path_arg(args: &Value) -> Option<std::path::PathBuf> {
     args.get("file_path")
         .or_else(|| args.get("path"))
@@ -1471,28 +1351,6 @@ mod tests {
         );
     }
 
-    // ── Delete ───────────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn delete_file_removes_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        let f = tmp.path().join("doomed.txt");
-        std::fs::write(&f, "goodbye").unwrap();
-
-        let args = json!({"file_path": "doomed.txt"});
-        let result = delete_file(tmp.path(), &args).await.unwrap();
-        assert!(result.contains("Deleted"));
-        assert!(!f.exists());
-    }
-
-    #[tokio::test]
-    async fn delete_file_nonexistent_errors() {
-        let tmp = tempfile::tempdir().unwrap();
-        let args = json!({"file_path": "nope.txt"});
-        let result = delete_file(tmp.path(), &args).await;
-        assert!(result.is_err());
-    }
-
     // ── List ─────────────────────────────────────────────────────
 
     #[tokio::test]
@@ -1623,7 +1481,7 @@ mod tests {
     //
     // The unit tests in koda_sandbox::fs::policy already cover the verifier
     // in isolation. These integration tests prove the wiring — that
-    // write_file / edit_file / delete_file actually call the verifier and
+    // write_file / edit_file actually call the verifier and
     // refuse to mutate when an attacker plants an escaping symlink under
     // the project root. Each test asserts BOTH that the tool errors AND
     // that the file the symlink points to is unchanged.
@@ -1755,31 +1613,6 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn delete_file_refuses_symlink_escaping_project_root() {
-        let Some(outside_file) = outside_or_skip() else {
-            return;
-        };
-
-        let project = tempfile::tempdir().unwrap();
-        let link = project.path().join("to_delete");
-        std::os::unix::fs::symlink(&outside_file, &link).unwrap();
-
-        let args = json!({ "file_path": link.to_str().unwrap() });
-        let err = delete_file(project.path(), &args)
-            .await
-            .expect_err("delete through escaping symlink must fail");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("symlink") || msg.contains("outside"),
-            "error should mention symlink/outside: {msg}"
-        );
-        // Both the link AND the target must still exist.
-        assert!(outside_file.exists(), "outside target must not be deleted");
-        assert!(link.exists(), "link itself must still exist");
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
     async fn write_file_allows_in_project_symlink() {
         // Counter-example: a symlink whose target is INSIDE the
         // project root must keep working. Lots of repos use
@@ -1843,12 +1676,6 @@ mod tests {
                 true,
             ),
             ("Edit", Box::new(EditTool), ToolEffect::LocalMutation, true),
-            (
-                "Delete",
-                Box::new(DeleteTool),
-                ToolEffect::Destructive,
-                true,
-            ),
             ("List", Box::new(ListTool), ToolEffect::ReadOnly, false),
         ]
     }
@@ -1904,21 +1731,13 @@ mod tests {
             EditTool.mutated_path(&args),
             Some(std::path::PathBuf::from("lib.rs")),
         );
-        assert_eq!(
-            DeleteTool.mutated_path(&args),
-            Some(std::path::PathBuf::from("lib.rs")),
-        );
     }
 
     #[test]
     fn mutated_path_handles_missing_args_gracefully() {
         // No path at all — must return None, not panic. (A common
         // failure mode of "unwrap because args _should_ have it".)
-        for tool in [
-            Box::new(WriteTool) as Box<dyn Tool>,
-            Box::new(EditTool),
-            Box::new(DeleteTool),
-        ] {
+        for tool in [Box::new(WriteTool) as Box<dyn Tool>, Box::new(EditTool)] {
             assert!(tool.mutated_path(&serde_json::json!({})).is_none());
             // Wrong-typed value — also graceful.
             assert!(

@@ -87,9 +87,6 @@ async fn make_session_with_mcp(
         .tools
         .set_session(Arc::new(env.db.clone()), env.session_id.clone());
 
-    let file_tracker =
-        koda_core::file_tracker::FileTracker::new(&env.session_id, env.db.clone()).await;
-
     let provider = MockProvider::new(responses);
     let recorded = provider.recorded_calls_handle();
 
@@ -100,7 +97,6 @@ async fn make_session_with_mcp(
         provider: Box::new(provider),
         mode: TrustMode::Auto,
         cancel: cancel.clone(),
-        file_tracker,
         title_set: false,
         proxy: None,
         socks5_proxy: None,

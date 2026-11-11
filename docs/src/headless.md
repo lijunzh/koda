@@ -39,8 +39,8 @@ policy** — more restrictive than interactive Auto mode:
 
 - **Approves** read-only tools: Read, Grep, Glob, WebFetch
 - **Approves** safe write tools: Write, Edit (files within the project)
-- **Rejects** all destructive operations: `Delete` tool, `rm -rf`,
-  `git push --force`, etc.
+- **Rejects** all destructive operations: `rm -rf`, `git push --force`,
+  etc.
 - **Skips** AskUser questions (prints to stderr, continues with empty answer)
 
 The sandbox enforces credential protection and write restrictions

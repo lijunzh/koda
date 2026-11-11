@@ -224,7 +224,6 @@ mod naming_convention {
         "AskUser",
         "Bash",
         "Cargo",
-        "Delete",
         "Edit",
         "Glob",
         "Grep",
@@ -284,7 +283,9 @@ mod naming_convention {
         // - The Cargo tool (22 → 23).
         // - SendMessage and WaitForMail removed with the mailbox (23 → 21):
         //   sub-agents are synchronous and only `/root` could be addressed.
-        assert_eq!(BUILTIN_TOOLS.len(), 21);
+        // - Delete removed (21 → 20): files are deleted with `rm` in Bash,
+        //   as in the peers.
+        assert_eq!(BUILTIN_TOOLS.len(), 20);
     }
 
     /// Ensure BUILTIN_TOOLS stays in sync with the actual registry.

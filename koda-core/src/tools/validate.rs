@@ -10,7 +10,6 @@
 //! - **Edit**: file exists, `old_str` is found, `old_str` is unique
 //!   (unless `replace_all: true`), `new_str` does not contain omission
 //!   placeholders (e.g. `// rest of code ...`)
-//! - **Delete**: file exists
 //! - **Bash**: command is non-empty
 //!
 //! Validation errors are returned as tool results (not panics), so the
@@ -63,7 +62,6 @@ pub async fn validate_tool_call(
     match tool_name {
         "Edit" => validate_edit(args, project_root, read_cache, last_writer, last_bash).await,
         "Write" => validate_write(args, project_root, read_cache).await,
-        "Delete" => validate_delete(args, project_root).await,
         "Bash" => validate_bash(args),
         _ => None,
     }
@@ -306,43 +304,6 @@ async fn validate_write(
         && !super::file_tools::has_seen(cache, &resolved)
     {
         return Some(super::file_tools::not_read_message(path_str));
-    }
-
-    None
-}
-
-/// Delete: path must exist.
-async fn validate_delete(args: &serde_json::Value, project_root: &Path) -> Option<String> {
-    let path_str = args["file_path"]
-        .as_str()
-        .or_else(|| args["path"].as_str())
-        .unwrap_or("");
-    if path_str.is_empty() {
-        return Some("Missing 'file_path' argument.".into());
-    }
-
-    let resolved = match safe_resolve_path(project_root, path_str) {
-        Ok(p) => p,
-        Err(e) => return Some(format!("Invalid path: {e}")),
-    };
-
-    if !resolved.exists() {
-        return Some(format!("Path not found: '{path_str}'. Nothing to delete."));
-    }
-
-    // Non-empty dir without recursive flag
-    if resolved.is_dir() {
-        let is_empty = resolved
-            .read_dir()
-            .map(|mut d| d.next().is_none())
-            .unwrap_or(false);
-        let recursive = args["recursive"].as_bool().unwrap_or(false);
-        if !is_empty && !recursive {
-            return Some(format!(
-                "Directory '{}' is not empty. Set recursive=true to delete it.",
-                path_str
-            ));
-        }
     }
 
     None
@@ -628,38 +589,6 @@ mod tests {
         assert!(err.contains("content"), "{err}");
     }
 
-    // ── Delete validation ─────────────────────────────────────
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn delete_valid_file() {
-        let dir = setup();
-        let args = json!({"path": "hello.txt"});
-        assert!(validate_delete(&args, dir.path()).await.is_none());
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn delete_not_found() {
-        let dir = setup();
-        let args = json!({"path": "nope.txt"});
-        let err = validate_delete(&args, dir.path()).await.unwrap();
-        assert!(err.contains("not found"), "{err}");
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn delete_nonempty_dir_without_recursive() {
-        let dir = setup();
-        let args = json!({"path": "subdir"});
-        let err = validate_delete(&args, dir.path()).await.unwrap();
-        assert!(err.contains("recursive"), "{err}");
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn delete_nonempty_dir_with_recursive() {
-        let dir = setup();
-        let args = json!({"path": "subdir", "recursive": true});
-        assert!(validate_delete(&args, dir.path()).await.is_none());
-    }
-
     // ── file_path alias acceptance ──────────────────────────
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -681,13 +610,6 @@ mod tests {
         let dir = setup();
         let args = json!({"file_path": "brand_new.txt", "content": "hello"});
         assert!(validate_write(&args, dir.path(), None).await.is_none());
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn delete_accepts_file_path_param() {
-        let dir = setup();
-        let args = json!({"file_path": "hello.txt"});
-        assert!(validate_delete(&args, dir.path()).await.is_none());
     }
 
     // ── Bash validation ───────────────────────────────────────

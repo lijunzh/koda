@@ -1,7 +1,7 @@
 //! Pre-confirmation diff previews for destructive tool operations.
 //!
-//! Computes **structured** preview data before the user confirms an Edit,
-//! Write, or Delete.  The actual rendering (colors, syntax highlighting)
+//! Computes **structured** preview data before the user confirms an Edit
+//! or Write.  The actual rendering (colors, syntax highlighting)
 //! is the client's responsibility — koda-core never emits ANSI codes.
 //!
 //! Edit and Write-overwrite produce a proper unified diff (via `similar`)
@@ -34,14 +34,8 @@ pub enum DiffPreview {
     UnifiedDiff(UnifiedDiffPreview),
     /// New file creation.
     WriteNew(WriteNewPreview),
-    /// Single file deletion.
-    DeleteFile(DeleteFilePreview),
-    /// Directory deletion.
-    DeleteDir(DeleteDirPreview),
     /// Target file doesn't exist yet (for Edit on missing file).
     FileNotYetExists,
-    /// Target path not found.
-    PathNotFound,
 }
 
 /// A proper unified diff between old and new file content.
@@ -115,22 +109,6 @@ pub struct WriteNewPreview {
     pub truncated: bool,
 }
 
-/// Preview of a single file deletion.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-pub struct DeleteFilePreview {
-    /// Line count of the file being deleted.
-    pub line_count: usize,
-    /// Byte count of the file being deleted.
-    pub byte_count: u64,
-}
-
-/// Preview of a directory deletion.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-pub struct DeleteDirPreview {
-    /// Whether the deletion is recursive.
-    pub recursive: bool,
-}
-
 // ── Compute ───────────────────────────────────────────────────
 
 /// Compute a structured diff preview for a tool action.
@@ -144,7 +122,6 @@ pub async fn compute(
     match tool_name {
         "Edit" => preview_edit(args, project_root).await,
         "Write" => preview_write(args, project_root).await,
-        "Delete" => preview_delete(args, project_root).await,
         _ => None,
     }
 }
@@ -288,39 +265,6 @@ async fn preview_write(args: &serde_json::Value, project_root: &Path) -> Option<
     }
 }
 
-async fn preview_delete(args: &serde_json::Value, project_root: &Path) -> Option<DiffPreview> {
-    let inner = args.get("payload").unwrap_or(args);
-    let path_str = inner
-        .get("path")
-        .or(inner.get("file_path"))
-        .and_then(|v| v.as_str())?;
-    let resolved = safe_resolve_path(project_root, path_str).ok()?;
-
-    if !resolved.exists() {
-        return Some(DiffPreview::PathNotFound);
-    }
-
-    let meta = tokio::fs::metadata(&resolved).await.ok()?;
-    if meta.is_file() {
-        let line_count = tokio::fs::read_to_string(&resolved)
-            .await
-            .map(|c| c.lines().count())
-            .unwrap_or(0);
-        Some(DiffPreview::DeleteFile(DeleteFilePreview {
-            line_count,
-            byte_count: meta.len(),
-        }))
-    } else if meta.is_dir() {
-        let recursive = args
-            .get("recursive")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        Some(DiffPreview::DeleteDir(DeleteDirPreview { recursive }))
-    } else {
-        None
-    }
-}
-
 // ── Tests ─────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -403,17 +347,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_delete_file() {
-        let tmp = TempDir::new().unwrap();
-        let file = tmp.path().join("doomed.rs");
-        std::fs::write(&file, "goodbye\n").unwrap();
-
-        let args = json!({ "path": file.to_str().unwrap() });
-        let preview = compute("Delete", &args, tmp.path()).await.unwrap();
-        assert!(matches!(preview, DiffPreview::DeleteFile(_)));
-    }
-
-    #[tokio::test]
     async fn test_unknown_tool_returns_none() {
         let tmp = TempDir::new().unwrap();
         let args = json!({"path": "anything.rs"});
@@ -457,43 +390,6 @@ mod tests {
             }
             other => panic!("expected UnifiedDiff, got {other:?}"),
         }
-    }
-
-    #[tokio::test]
-    async fn test_delete_dir() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join("subdir");
-        std::fs::create_dir(&dir).unwrap();
-        std::fs::write(dir.join("file.txt"), "content").unwrap();
-
-        let args = json!({ "path": dir.to_str().unwrap(), "recursive": true });
-        let preview = compute("Delete", &args, tmp.path()).await.unwrap();
-        match preview {
-            DiffPreview::DeleteDir(d) => assert!(d.recursive),
-            other => panic!("expected DeleteDir, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_delete_dir_non_recursive() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join("emptydir");
-        std::fs::create_dir(&dir).unwrap();
-
-        let args = json!({ "path": dir.to_str().unwrap() });
-        let preview = compute("Delete", &args, tmp.path()).await.unwrap();
-        match preview {
-            DiffPreview::DeleteDir(d) => assert!(!d.recursive),
-            other => panic!("expected DeleteDir, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_delete_nonexistent_path() {
-        let tmp = TempDir::new().unwrap();
-        let args = json!({ "path": "nonexistent_file.rs" });
-        let preview = compute("Delete", &args, tmp.path()).await.unwrap();
-        assert!(matches!(preview, DiffPreview::PathNotFound));
     }
 
     #[tokio::test]

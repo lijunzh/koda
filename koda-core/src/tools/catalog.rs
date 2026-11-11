@@ -206,7 +206,6 @@ impl ToolCatalog {
             boxed(file_tools::ReadTool),
             boxed(file_tools::WriteTool),
             boxed(file_tools::EditTool),
-            boxed(file_tools::DeleteTool),
             boxed(file_tools::ListTool),
             // PR-5: search cohort.
             boxed(grep::GrepTool),
@@ -480,7 +479,6 @@ mod tests {
             "Read",
             "Write",
             "Edit",
-            "Delete",
             "List",
             "Grep",
             "Glob",
@@ -599,10 +597,6 @@ mod tests {
         assert_eq!(
             catalog.classify_tool_with_mcp("Write"),
             ToolEffect::LocalMutation
-        );
-        assert_eq!(
-            catalog.classify_tool_with_mcp("Delete"),
-            ToolEffect::Destructive
         );
     }
 

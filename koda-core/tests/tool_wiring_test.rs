@@ -144,8 +144,6 @@ fn test_classify_tool_covers_all_tools_explicitly() {
         // LocalMutation / Destructive. Strictly more conservative
         // than the pre-#1265 `LocalMutation` name-only default.
         ("Bash", ToolEffect::Destructive),
-        // Destructive
-        ("Delete", ToolEffect::Destructive),
     ]
     .into_iter()
     .collect();

@@ -72,7 +72,6 @@ pub mod db;
 /// Engine protocol: `EngineEvent` / `EngineCommand` enums.
 pub mod engine;
 /// File lifecycle tracker — tracks files created by Koda per session (#465).
-pub mod file_tracker;
 /// Git context injection — branch, staged/unstaged diffs, recent commits.
 pub mod git;
 /// The main inference loop — send messages, stream responses, dispatch tools.

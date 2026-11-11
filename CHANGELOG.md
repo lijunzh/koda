@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Removed
+
+- **The `Delete` tool.** Models delete files with `rm` through Bash, as in Codex, Claude Code and the other peers, none of which has a delete tool. Two ways to delete meant two approval rules: since 0.6.3 a plain `rm a` runs in the sandbox in Auto while `Delete` of the same file asked, and in recorded eval runs it became Auto's most frequent prompt. A forced `rm` (`-f`, `-rf`) still asks. With it go the file tracker that let Koda delete files it had created without asking, and its `owned_files` table, which the first start drops from the database, and the system prompt's "`Delete` not `rm`". An agent config that still lists `Delete` loads as before; the name is ignored.
+
 ### Fixed
 
 - **A heredoc no longer asks in Auto because of the code in it.** Writing a file with `cat > a.rs <<'EOF'` asked for approval, and a headless run refused it, whenever the body held code like `fn main() {` or text like `| sh`: the classifier matched the whole command against its fork-bomb and pipe-to-shell patterns. As in Codex, a heredoc body is now data. What it can still trigger: a shell running it (`bash <<EOF`), a `$(…)` or backtick in an unquoted body, and a destructive command in a body with no terminator, which may be a misread `<<`. In recorded eval sessions this removes about two-thirds of the prompts Auto made.
