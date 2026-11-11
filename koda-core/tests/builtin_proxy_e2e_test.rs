@@ -543,7 +543,7 @@ async fn a_later_command_reaches_only_koda_s_own_background_server() {
         .execute(
             "Bash",
             &bash(
-                format!("python3 -m http.server {port} --bind 127.0.0.1"),
+                format!("python3 -u -m http.server {port} --bind 127.0.0.1"),
                 true,
             ),
             None,
@@ -576,9 +576,12 @@ async fn a_later_command_reaches_only_koda_s_own_background_server() {
                 .map(|path| std::fs::read_to_string(path.trim()).unwrap_or_default())
                 .unwrap_or_default();
             panic!(
-                "never reached Koda's own server on {port}: {}\nports Koda sees: {:?}\nserver log:\n{log}",
+                "never reached Koda's own server on {port}: {}\nports Koda sees: {:?}\n\
+                 background: {:?}\nstarted: {}\nserver log:\n{log}",
                 own.output,
                 tools.bg_registry.listening_ports().await,
+                tools.bg_registry.snapshot(),
+                started.output,
             );
         }
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
