@@ -23,7 +23,7 @@ that the user can immediately invoke via `ActivateSkill` or `/<name>`.
 - **`when_to_use` is the most important field.** It's what the model uses
   to decide whether to auto-activate the skill. Include trigger phrases.
 - **Scope tools.** A code-review skill should not have `Write` access. A
-  scaffolding skill should not have `Delete`. Use `allowed_tools` to
+  research skill should not have `Edit`. Use `allowed_tools` to
   enforce least privilege.
 
 ## Process
@@ -135,7 +135,7 @@ Optionally add:
 
 - **Don't omit `when_to_use`.** Without it, the model has no signal for
   when to auto-activate. The skill becomes user-invoke-only by accident.
-- **Don't grant `Write`/`Edit`/`Delete` unless the skill actually modifies
+- **Don't grant `Write`/`Edit` unless the skill actually modifies
   files.** A code-review skill with `Write` access is a footgun.
 - **Don't write a 500-line SKILL.md for a 5-step workflow.** Concision is
   a public good — every skill activation pays the token cost.

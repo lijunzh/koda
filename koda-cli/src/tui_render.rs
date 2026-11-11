@@ -250,8 +250,7 @@ impl TuiRenderer {
                         ]),
                     );
                 } else {
-                    let is_diff_tool =
-                        matches!(name.as_str(), "Write" | "Edit" | "Delete" | "MemoryWrite");
+                    let is_diff_tool = matches!(name.as_str(), "Write" | "Edit" | "MemoryWrite");
                     if self.preview_shown && is_diff_tool {
                         // Compact: just show line count
                         let line_count = output.lines().count();
@@ -515,7 +514,7 @@ fn numbered_read_lines(
 /// - **Read:** one dim summary line (`└ 123 lines`, `└ lines 40–80 of
 ///   1,340`); the highlighted content is in the full view only. Most reads
 ///   aren't worth reading, and they were what made the reply hard to find.
-/// - **Edit, Write, Delete:** the diff, not folded, as before.
+/// - **Edit, Write:** the diff, not folded, as before.
 /// - **Everything else:** the first [`FOLD_HEAD`] lines and, when the call
 ///   failed, the last [`FOLD_TAIL`], with a [`fold_marker`] for the rest.
 ///
@@ -543,7 +542,7 @@ pub(crate) fn tool_output_view(
     // Syntax highlighting for Read tool output. Honors the global
     // KODA_SYNTAX_HIGHLIGHT=off kill switch (see [`theme`]).
     let use_highlight = name == "Read" && file_ext.is_some() && theme::syntax_highlight_enabled();
-    let is_diff_tool = matches!(name, "Edit" | "Write" | "Delete");
+    let is_diff_tool = matches!(name, "Edit" | "Write");
     let mut highlighter = if use_highlight {
         Some(crate::highlight::CodeHighlighter::new(file_ext.unwrap()))
     } else {

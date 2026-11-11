@@ -48,9 +48,6 @@ async fn make_session(env: &Env, provider: Box<dyn LlmProvider>) -> (KodaSession
         .tools
         .set_session(Arc::new(env.db.clone()), env.session_id.clone());
 
-    let file_tracker =
-        koda_core::file_tracker::FileTracker::new(&env.session_id, env.db.clone()).await;
-
     let session = KodaSession {
         id: env.session_id.clone(),
         agent,
@@ -58,7 +55,6 @@ async fn make_session(env: &Env, provider: Box<dyn LlmProvider>) -> (KodaSession
         provider,
         mode: TrustMode::Auto,
         cancel: cancel.clone(),
-        file_tracker,
         title_set: false,
         proxy: None,
         socks5_proxy: None,

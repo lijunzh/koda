@@ -78,7 +78,7 @@ pub const CONTENT_WRITE: Style = Style::new().fg(Color::DarkGray);
 
 const ACCENT_READ: Color = Color::Cyan; // Read/Grep/List/Glob
 const ACCENT_WRITE: Color = Color::Rgb(255, 191, 0); // Write/Edit (amber)
-const ACCENT_DELETE: Color = Color::Red;
+const ACCENT_DESTRUCTIVE: Color = Color::Red; // a destructive MCP tool
 const ACCENT_BASH: Color = Color::Rgb(255, 165, 0); // orange
 const ACCENT_NETWORK: Color = Color::Blue;
 const ACCENT_AGENT: Color = Color::Magenta;
@@ -112,14 +112,13 @@ pub fn tool_dot_color(name: &str) -> Color {
         "WebFetch" | "WebSearch" => return ACCENT_NETWORK,
         "Task" | "Agent" | "InvokeAgent" => return ACCENT_AGENT,
         "Bash" | "Cargo" => return ACCENT_BASH,
-        "Delete" => return ACCENT_DELETE,
         _ => {}
     }
     match ToolCatalog::default_static().classify_call(name, &serde_json::Value::Null) {
         ToolEffect::ReadOnly => ACCENT_READ,
         ToolEffect::RemoteAction => ACCENT_NETWORK,
         ToolEffect::LocalMutation => ACCENT_WRITE,
-        ToolEffect::Destructive => ACCENT_DELETE,
+        ToolEffect::Destructive => ACCENT_DESTRUCTIVE,
     }
 }
 
@@ -242,9 +241,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_dot_distinguishes_destructive_from_mutating() {
-        // Delete needs to *pop* — red, not amber.
-        assert_eq!(tool_dot_color("Delete"), ACCENT_DELETE);
+    fn tool_dot_mutating_is_amber() {
         assert_eq!(tool_dot_color("Write"), ACCENT_WRITE);
         assert_eq!(tool_dot_color("Edit"), ACCENT_WRITE);
     }

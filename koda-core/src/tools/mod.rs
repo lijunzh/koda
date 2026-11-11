@@ -10,7 +10,6 @@
 //! | **Read** | `file_tools` | ReadOnly | Read file contents with line numbers |
 //! | **Write** | `file_tools` | LocalMutation | Create or overwrite a file |
 //! | **Edit** | `file_tools` | LocalMutation | Find-and-replace in an existing file |
-//! | **Delete** | `file_tools` | Destructive | Delete a file |
 //! | **List** | `file_tools` | ReadOnly | List files and directories |
 //! | **Bash** | `shell` | LocalMutation | Execute shell commands (with background mode) |
 //! | **Cargo** | `cargo` | LocalMutation | `cargo check`/`clippy`/`test`/`build` with parsed diagnostics |
@@ -66,7 +65,7 @@ pub enum ToolEffect {
     ReadOnly,
     /// Side-effects on remote services only: GitHub API, WebFetch POST.
     RemoteAction,
-    /// Mutates local filesystem or state: Write, Edit, Delete, MemoryWrite.
+    /// Mutates local filesystem or state: Write, Edit, MemoryWrite.
     LocalMutation,
     /// Irreversible or high-blast-radius: rm -rf, git push --force, DROP TABLE.
     Destructive,
@@ -625,8 +624,7 @@ impl ToolRegistry {
             // post-exec hook (out of scope for this stack).
             if result.success {
                 if matches!(name, "Write" | "Edit")
-                    && let Some(path) =
-                        crate::file_tracker::resolve_file_path_from_args(&args, &self.project_root)
+                    && let Some(path) = resolve_file_path_from_args(&args, &self.project_root)
                     && let Ok(mut guard) = self.last_writer.lock()
                 {
                     guard.insert(path, (name.to_string(), std::time::Instant::now()));
@@ -728,6 +726,35 @@ impl ToolRegistry {
         }
     }
 }
+
+/// Extract and resolve a file path from tool call arguments.
+///
+/// Looks for `"path"` or `"file_path"` in the JSON args, then resolves
+/// relative paths against `project_root`. The result is cleaned
+/// (normalized) so that `./foo/../bar.txt` and `bar.txt` resolve to
+/// the same path (#474).
+///
+/// Uses `canonicalize()` when the file already exists (resolves symlinks),
+/// falling back to `PathClean::clean()` for new files that don't exist yet.
+pub(crate) fn resolve_file_path_from_args(
+    args: &serde_json::Value,
+    project_root: &Path,
+) -> Option<PathBuf> {
+    let path_str = args
+        .get("path")
+        .or(args.get("file_path"))
+        .and_then(|v| v.as_str())?;
+    let requested = Path::new(path_str);
+    let abs_path = if requested.is_absolute() {
+        requested.to_path_buf()
+    } else {
+        project_root.join(requested)
+    };
+    // Prefer canonicalize (resolves symlinks, e.g. macOS /var → /private/var)
+    // but fall back to clean() for files that don't exist yet (Write creates them).
+    Some(abs_path.canonicalize().unwrap_or_else(|_| abs_path.clean()))
+}
+
 /// Validate and resolve a path, preventing directory traversal.
 ///
 /// Works for both existing and non-existing files (no `canonicalize!`).
@@ -754,7 +781,7 @@ impl ToolRegistry {
 /// assert!(safe_resolve_path(root, "/tmp/scratch.txt").is_ok());
 /// ```
 pub fn safe_resolve_path(project_root: &Path, requested: &str) -> Result<PathBuf> {
-    // NOTE: used only for Write / Edit / Delete.  Read-only tools call
+    // NOTE: used only for Write / Edit.  Read-only tools call
     // resolve_path_unrestricted — see docs/src/sandbox.md for the rationale.
     let requested_path = Path::new(requested);
 
@@ -1529,22 +1556,6 @@ pub fn describe_action(tool_name: &str, args: &serde_json::Value) -> String {
             }
         }
         "Cargo" => cargo::describe(args),
-        "Delete" => {
-            let path = args
-                .get("file_path")
-                .or(args.get("path"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
-            let recursive = args
-                .get("recursive")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            if recursive {
-                format!("Delete directory (recursive): {path}")
-            } else {
-                format!("Delete: {path}")
-            }
-        }
         "Write" => {
             let path = args
                 .get("path")
@@ -1648,12 +1659,6 @@ mod describe_action_tests {
     }
 
     #[test]
-    fn test_describe_delete() {
-        let desc = describe_action("Delete", &json!({"file_path": "old.rs"}));
-        assert!(desc.contains("old.rs"));
-    }
-
-    #[test]
     fn test_describe_edit() {
         let desc = describe_action("Edit", &json!({"payload": {"file_path": "src/main.rs"}}));
         assert!(desc.contains("src/main.rs"));
@@ -1675,16 +1680,11 @@ mod describe_action_tests {
     #[test]
     fn test_get_definitions_deny_list() {
         let registry = ToolRegistry::new(PathBuf::from("/tmp"), 128_000);
-        let denied = vec![
-            "Write".to_string(),
-            "Edit".to_string(),
-            "Delete".to_string(),
-        ];
+        let denied = vec!["Write".to_string(), "Edit".to_string()];
         let defs = registry.get_definitions(&[], &denied);
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
         assert!(!names.contains(&"Write"));
         assert!(!names.contains(&"Edit"));
-        assert!(!names.contains(&"Delete"));
         assert!(names.contains(&"Read"));
         assert!(names.contains(&"Grep"));
     }

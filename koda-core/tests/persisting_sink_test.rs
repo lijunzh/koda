@@ -341,8 +341,8 @@ async fn sub_agent_approval_request_persists_as_auto_reject_marker() {
 
     sink.emit(EngineEvent::ApprovalRequest {
         id: "ap-1".into(),
-        tool_name: "Delete".into(),
-        detail: "rm important.txt".into(),
+        tool_name: "Bash".into(),
+        detail: "rm -f important.txt".into(),
         preview: None,
         effect: ToolEffect::Destructive,
     });
@@ -356,7 +356,7 @@ async fn sub_agent_approval_request_persists_as_auto_reject_marker() {
          user can see why a sub-agent skipped a destructive op; got: {}",
         events[0].payload
     );
-    assert!(events[0].payload.contains("Delete"));
+    assert!(events[0].payload.contains("Bash"));
     assert_eq!(events[0].parent_tool_call_id.as_deref(), Some("parent-2"));
 }
 

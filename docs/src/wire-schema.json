@@ -25,41 +25,6 @@
         }
       ]
     },
-    "DeleteDirPreview": {
-      "description": "Preview of a directory deletion.",
-      "properties": {
-        "recursive": {
-          "description": "Whether the deletion is recursive.",
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "recursive"
-      ],
-      "type": "object"
-    },
-    "DeleteFilePreview": {
-      "description": "Preview of a single file deletion.",
-      "properties": {
-        "byte_count": {
-          "description": "Byte count of the file being deleted.",
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "line_count": {
-          "description": "Line count of the file being deleted.",
-          "format": "uint",
-          "minimum": 0,
-          "type": "integer"
-        }
-      },
-      "required": [
-        "line_count",
-        "byte_count"
-      ],
-      "type": "object"
-    },
     "DiffHunk": {
       "description": "A single hunk in a unified diff.",
       "properties": {
@@ -172,51 +137,10 @@
           "type": "object"
         },
         {
-          "$ref": "#/$defs/DeleteFilePreview",
-          "description": "Single file deletion.",
-          "properties": {
-            "kind": {
-              "const": "DeleteFile",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "type": "object"
-        },
-        {
-          "$ref": "#/$defs/DeleteDirPreview",
-          "description": "Directory deletion.",
-          "properties": {
-            "kind": {
-              "const": "DeleteDir",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "type": "object"
-        },
-        {
           "description": "Target file doesn't exist yet (for Edit on missing file).",
           "properties": {
             "kind": {
               "const": "FileNotYetExists",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Target path not found.",
-          "properties": {
-            "kind": {
-              "const": "PathNotFound",
               "type": "string"
             }
           },
@@ -511,7 +435,7 @@
         },
         {
           "const": "LocalMutation",
-          "description": "Mutates local filesystem or state: Write, Edit, Delete, MemoryWrite.",
+          "description": "Mutates local filesystem or state: Write, Edit, MemoryWrite.",
           "type": "string"
         },
         {

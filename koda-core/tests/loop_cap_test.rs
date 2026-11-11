@@ -25,8 +25,6 @@ async fn only_the_matching_decision_resumes_the_turn() {
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<EngineCommand>(4);
 
     let tool_defs = env.tool_defs();
-    let mut file_tracker =
-        koda_core::file_tracker::FileTracker::new(&env.session_id, env.db.clone()).await;
     let cache = koda_core::sub_agent_cache::SubAgentCache::new();
     let git = koda_core::git::GitSnapshot::default();
     let mut steers = Vec::new();
@@ -47,7 +45,6 @@ async fn only_the_matching_decision_resumes_the_turn() {
         cancel: CancellationToken::new(),
         cmd_rx: &mut cmd_rx,
         queued_steers: &mut steers,
-        file_tracker: &mut file_tracker,
         bg_agents: &env.bg_agents,
         sub_agent_cache: &cache,
     });

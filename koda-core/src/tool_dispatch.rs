@@ -30,7 +30,6 @@
 use crate::approval_flow::{CommandInbox, handle_ask_user, request_approval};
 use crate::db::Role;
 use crate::engine::{ApprovalDecision, EngineEvent};
-use crate::file_tracker::FileTracker;
 use crate::persistence::Persistence;
 use crate::preview;
 use crate::providers::ToolCall;
@@ -40,29 +39,25 @@ use crate::trust::{self, ToolApproval, TrustMode};
 use crate::turn_context::{ToolExecutionContext, TurnContext};
 
 use anyhow::Result;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use tokio::sync::mpsc;
 
-/// Post-execution recording: emit result event, persist to DB, track progress
-/// and file lifecycle. Called after every successful tool execution regardless
+/// Post-execution recording: emit result event and persist to DB. Called after every successful tool execution regardless
 /// of execution strategy (parallel, split-batch, or sequential).
 ///
 /// Takes `&TurnContext` (not `ToolExecutionContext`) because spawner
 /// identity is irrelevant to recording — only the per-turn ambient
-/// fields are read. `file_tracker` stays as a separate `&mut` arg per
-/// the design rationale in `crate::turn_context` module docs.
+/// fields are read.
 pub(crate) async fn record_tool_result(
     tc: &ToolCall,
     result: &str,
     success: bool,
     full_output: Option<&str>,
     ctx: &TurnContext<'_>,
-    file_tracker: &mut FileTracker,
 ) -> Result<()> {
     let TurnContext {
         db,
         session_id,
-        project_root,
         sink,
         tools,
         ..
@@ -101,15 +96,6 @@ pub(crate) async fn record_tool_result(
     // conversation history persists it, the engine surfaces
     // transitions via `EngineEvent::TodoUpdate`. See
     // `DESIGN.md § Progress Tracking`.
-    let parsed_args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
-    track_file_lifecycle(
-        &tc.function_name,
-        &parsed_args,
-        project_root,
-        file_tracker,
-        success,
-    )
-    .await;
     Ok(())
 }
 
@@ -131,86 +117,20 @@ fn truncate_for_history(output: &str, max_chars: usize) -> String {
     )
 }
 
-/// Resolve the file path from a tool call's arguments.
-///
-/// Used by the file lifecycle tracker to record which paths
-/// Koda creates or deletes (#465). Only relevant for Write and Delete.
-fn resolve_tool_path(
-    tool_name: &str,
-    args: &serde_json::Value,
-    project_root: &Path,
-) -> Option<PathBuf> {
-    if !matches!(tool_name, "Write" | "Delete") {
-        return None;
-    }
-    crate::file_tracker::resolve_file_path_from_args(args, project_root)
-}
-
-/// Update file lifecycle tracker after a tool execution (#465).
-///
-/// - Write → track as owned (Koda created it)
-/// - Delete → untrack (file no longer exists)
-///
-/// Only tracks when `success` is true, using the structured boolean
-/// from `ToolResult` rather than fragile string-prefix matching (#476).
-async fn track_file_lifecycle(
-    tool_name: &str,
-    args: &serde_json::Value,
-    project_root: &Path,
-    file_tracker: &mut FileTracker,
-    success: bool,
-) {
-    if !success {
-        return;
-    }
-    if let Some(path) = resolve_tool_path(tool_name, args, project_root) {
-        match tool_name {
-            "Write" => file_tracker.track_created(path).await,
-            "Delete" => file_tracker.untrack(&path).await,
-            _ => {}
-        }
-    }
-}
-
 /// Decide whether a batch of tool calls can run in parallel.
 ///
 /// A batch is parallel-eligible iff every call in it (a) auto-approves
 /// under the current trust mode and (b) doesn't conflict with another
 /// call in the batch on the same target file.
-///
-/// **#1022 B13**: this used to call [`trust::check_tool`] (no
-/// `FileTracker`), which is *not* the same classification the
-/// sequential dispatch loop uses. Sequential calls
-/// [`trust::check_tool_with_tracker`] so that `Delete` of a
-/// Koda-owned file (created via `Write` earlier this session)
-/// downgrades from `NeedsConfirmation` to `AutoApprove` per #465. The
-/// mismatch meant batches like `[Read other.txt, Delete owned.tmp]`
-/// were spuriously refused parallelization — each tool was eligible
-/// in isolation, but the batch fell into the slower split-batch /
-/// sequential path. Pure perf regression, no correctness impact, but
-/// the kind of invariant violation that grows teeth over time as
-/// other path-aware downgrades get added to the tracker path.
-///
-/// Now takes the same `Option<&FileTracker>` the sequential loop
-/// passes, and forwards it to `check_tool_with_tracker`. Same
-/// classification, same answer. Tests guard the regression below
-/// (`test_can_parallelize_delete_owned_file_uses_tracker`).
 pub(crate) fn can_parallelize(
     tool_calls: &[ToolCall],
     mode: TrustMode,
     project_root: &Path,
-    file_tracker: Option<&crate::file_tracker::FileTracker>,
 ) -> bool {
     let all_approved = !tool_calls.iter().any(|tc| {
         let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
         matches!(
-            trust::check_tool_with_tracker(
-                &tc.function_name,
-                &args,
-                mode,
-                Some(project_root),
-                file_tracker,
-            ),
+            trust::check_tool(&tc.function_name, &args, mode, Some(project_root)),
             ToolApproval::NeedsConfirmation | ToolApproval::Blocked
         )
     });
@@ -442,7 +362,6 @@ async fn validate_then_execute_one_tool(
 pub(crate) async fn execute_tools_parallel(
     tool_calls: &[ToolCall],
     tx: ToolExecutionContext<'_>,
-    file_tracker: &mut FileTracker,
 ) -> Result<()> {
     let ctx = tx.turn;
     let count = tool_calls.len();
@@ -480,7 +399,6 @@ pub(crate) async fn execute_tools_parallel(
             success,
             full_output.as_deref(),
             ctx,
-            file_tracker,
         )
         .await?;
     }
@@ -497,7 +415,6 @@ pub(crate) async fn execute_tools_split_batch(
     tool_calls: &[ToolCall],
     tx: ToolExecutionContext<'_>,
     cmd_rx: &mut CommandInbox<'_>,
-    file_tracker: &mut FileTracker,
 ) -> Result<()> {
     let ctx = tx.turn;
     // Partition into parallelizable vs sequential
@@ -536,28 +453,20 @@ pub(crate) async fn execute_tools_split_batch(
                 args: serde_json::from_str(&parallel[j].arguments).unwrap_or_default(),
                 is_sub_agent: false,
             });
-            record_tool_result(
-                parallel[j],
-                &result,
-                success,
-                full_output.as_deref(),
-                ctx,
-                file_tracker,
-            )
-            .await?;
+            record_tool_result(parallel[j], &result, success, full_output.as_deref(), ctx).await?;
         }
     } else {
         // 0–1 parallelizable tools — just run sequentially
         for tc in &parallel {
             let calls = std::slice::from_ref(*tc);
-            execute_tools_sequential(calls, tx, cmd_rx, file_tracker).await?;
+            execute_tools_sequential(calls, tx, cmd_rx).await?;
         }
     }
 
     // Run non-parallelizable tools sequentially
     if !sequential.is_empty() {
         let seq_calls: Vec<ToolCall> = sequential.into_iter().cloned().collect();
-        execute_tools_sequential(&seq_calls, tx, cmd_rx, file_tracker).await?;
+        execute_tools_sequential(&seq_calls, tx, cmd_rx).await?;
     }
 
     Ok(())
@@ -591,7 +500,6 @@ pub(crate) async fn execute_tools_sequential(
     tool_calls: &[ToolCall],
     tx: ToolExecutionContext<'_>,
     cmd_rx: &mut CommandInbox<'_>,
-    file_tracker: &mut FileTracker,
 ) -> Result<()> {
     let ctx = tx.turn;
     let TurnContext {
@@ -632,7 +540,7 @@ pub(crate) async fn execute_tools_sequential(
                 Some(_) => "User did not provide an answer.".into(),
                 None => return record_stopped_calls(&tool_calls[i..], ctx).await,
             };
-            record_tool_result(tc, &result, true, None, ctx, file_tracker).await?;
+            record_tool_result(tc, &result, true, None, ctx).await?;
             continue;
         }
 
@@ -646,26 +554,12 @@ pub(crate) async fn execute_tools_sequential(
         )
         .await
         {
-            record_tool_result(
-                tc,
-                &format!("Validation error: {error}"),
-                false,
-                None,
-                ctx,
-                file_tracker,
-            )
-            .await?;
+            record_tool_result(tc, &format!("Validation error: {error}"), false, None, ctx).await?;
             continue;
         }
 
-        // Check approval for this tool call (with file ownership awareness, #465)
-        let mut approval = trust::check_tool_with_tracker(
-            &tc.function_name,
-            &parsed_args,
-            mode,
-            Some(project_root),
-            Some(file_tracker),
-        );
+        let mut approval =
+            trust::check_tool(&tc.function_name, &parsed_args, mode, Some(project_root));
         // Stopping a background process Koda started is a local mutation,
         // not the destructive `kill` it reads as: Auto doesn't ask.
         if mode == TrustMode::Auto
@@ -689,7 +583,7 @@ pub(crate) async fn execute_tools_sequential(
                 tx.caller_spawner,
             )
         {
-            record_tool_result(tc, &hint, false, None, ctx, file_tracker).await?;
+            record_tool_result(tc, &hint, false, None, ctx).await?;
             continue;
         }
 
@@ -798,15 +692,7 @@ pub(crate) async fn execute_tools_sequential(
         } else {
             execute_one_tool(tc, tx).await
         };
-        record_tool_result(
-            tc,
-            &result,
-            success,
-            full_output.as_deref(),
-            ctx,
-            file_tracker,
-        )
-        .await?;
+        record_tool_result(tc, &result, success, full_output.as_deref(), ctx).await?;
     }
     Ok(())
 }
@@ -864,7 +750,6 @@ mod tests {
             &calls,
             TrustMode::Safe,
             Path::new("/test/project"),
-            None,
         ));
     }
 
@@ -875,7 +760,6 @@ mod tests {
             &calls,
             TrustMode::Safe,
             Path::new("/test/project"),
-            None,
         ));
     }
 
@@ -895,7 +779,6 @@ mod tests {
             &calls,
             TrustMode::Safe,
             Path::new("/test/project"),
-            None,
         ));
     }
 
@@ -906,7 +789,6 @@ mod tests {
             &calls,
             TrustMode::Safe,
             Path::new("/test/project"),
-            None,
         ));
     }
 
@@ -930,7 +812,6 @@ mod tests {
             &calls,
             TrustMode::Auto, // Auto mode would normally allow parallelization
             Path::new("/test/project"),
-            None,
         ));
     }
 
@@ -954,7 +835,6 @@ mod tests {
             &calls,
             TrustMode::Auto,
             Path::new("/test/project"),
-            None,
         ));
     }
 
@@ -970,7 +850,6 @@ mod tests {
         let null = serde_json::Value::Null;
         assert!(cat.is_mutating_call("Write", &null));
         assert!(cat.is_mutating_call("Edit", &null));
-        assert!(cat.is_mutating_call("Delete", &null));
         assert!(cat.is_mutating_call("Bash", &null));
         assert!(cat.is_mutating_call("MemoryWrite", &null));
         assert!(!cat.is_mutating_call("Read", &null));
@@ -992,7 +871,6 @@ mod tests {
             &calls,
             TrustMode::Safe,
             Path::new("/test/project"),
-            None,
         ));
     }
 
@@ -1003,73 +881,6 @@ mod tests {
             &calls,
             TrustMode::Auto,
             Path::new("/test/project"),
-            None,
         ));
-    }
-
-    /// #1022 B13 regression: `can_parallelize` must use the same
-    /// approval classification the sequential dispatch loop uses,
-    /// i.e. `check_tool_with_tracker` not `check_tool`. Without the
-    /// tracker, `Delete owned.tmp` looks like `NeedsConfirmation`
-    /// (because Delete is Destructive in Safe mode); with the tracker
-    /// it auto-approves (#465: Koda created it, Koda removes it). The
-    /// bug spuriously refused parallelization for batches that
-    /// included a Delete of a file Koda created earlier in the
-    /// session — pure perf regression, but the kind of
-    /// classification mismatch that compounds.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_can_parallelize_delete_owned_file_uses_tracker() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let db = crate::db::Database::open(&dir.path().join("test.db"))
-            .await
-            .unwrap();
-        let mut tracker = crate::file_tracker::FileTracker::new("test-sess", db).await;
-        // Canonicalize root so the tracked path matches what
-        // `resolve_file_path_from_args` produces at lookup time — on
-        // macOS, tempdirs live under `/var/folders/...` but
-        // `canonicalize()` resolves to `/private/var/folders/...`.
-        // Production code goes through canonicalization on both write
-        // and lookup, so we mirror that here.
-        let root = dir.path().join("project");
-        std::fs::create_dir_all(&root).unwrap();
-        let root = root.canonicalize().unwrap();
-        let owned_abs = root.join("temp_output.md");
-        std::fs::write(&owned_abs, "").unwrap();
-        tracker
-            .track_created(owned_abs.canonicalize().unwrap())
-            .await;
-
-        // Batch: Read other.txt + Delete owned.tmp. Both auto-approve
-        // when the tracker is consulted; without the tracker the
-        // Delete is misclassified as NeedsConfirmation.
-        let calls = vec![
-            ToolCall {
-                id: "t1".to_string(),
-                function_name: "Read".to_string(),
-                arguments: r#"{"path": "other.txt"}"#.to_string(),
-                thought_signature: None,
-            },
-            ToolCall {
-                id: "t2".to_string(),
-                function_name: "Delete".to_string(),
-                arguments: r#"{"path": "temp_output.md"}"#.to_string(),
-                thought_signature: None,
-            },
-        ];
-
-        // Bug repro: without the tracker, Safe mode refuses
-        // parallelization because Delete → NeedsConfirmation.
-        assert!(
-            !can_parallelize(&calls, TrustMode::Safe, &root, None),
-            "sanity: without tracker, Delete must look like NeedsConfirmation"
-        );
-
-        // Fix proof: with the tracker, Delete of owned file
-        // auto-approves → batch is parallelizable.
-        assert!(
-            can_parallelize(&calls, TrustMode::Safe, &root, Some(&tracker)),
-            "with tracker, Delete of Koda-owned file must be \
-             parallel-eligible (matches sequential path classification)"
-        );
     }
 }

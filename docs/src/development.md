@@ -29,7 +29,6 @@ koda/
 │   │   │   ├── context_cache.rs # Per-session context cache
 │   │   │   ├── queries.rs  # Persistence trait impl (all SQL queries)
 │   │   │   └── tests.rs    # Database integration tests
-│   │   ├── file_tracker.rs # File lifecycle tracking (create/edit/delete ownership)
 │   │   ├── git.rs          # Read-only git context for the system prompt (branch, diff, recent commits)
 │   │   ├── inference.rs    # Streaming inference loop + tool execution
 │   │   ├── inference_helpers.rs # Token estimation, message assembly, overflow detection
@@ -80,7 +79,7 @@ koda/
 │   │       ├── bg_process.rs # Background process registry + spawning
 │   │       ├── cargo.rs    # Cargo tool: structured compiler and test feedback
 │   │       ├── catalog.rs  # Read-only tool metadata catalog
-│   │       ├── file_tools.rs # Read, Write, Edit, Delete
+│   │       ├── file_tools.rs # Read, Write, Edit, List
 │   │       ├── fuzzy.rs    # Fuzzy old_str matching for Edit
 │   │       ├── glob_tool.rs# Glob file search
 │   │       ├── grep.rs     # Ripgrep-based text search
@@ -235,9 +234,9 @@ context tracking, loop detection, config defaults, bash safety, etc.
 **koda-core E2E tests** (mock provider, CI) require the `test-support` feature:
 
 - `tests/e2e_test.rs` — core pipeline: text streaming, tool calls, errors, history, cancel
-- `tests/e2e_tools_test.rs` — tool coverage: Glob, Grep, Edit, Delete, AST verification
+- `tests/e2e_tools_test.rs` — tool coverage: Glob, Grep, Edit, AST verification
 - `tests/e2e_agent_test.rs` — sub-agent invocation + cache hit
-- `tests/e2e_skills_test.rs` — skills, compaction, file ownership
+- `tests/e2e_skills_test.rs` — skills, compaction
 - `tests/cancel_test.rs` — Ctrl+C interruption during inference
 
 **koda-core integration tests**, no feature flag:

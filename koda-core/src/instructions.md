@@ -57,7 +57,7 @@ Do not revert changes — yours or the user's — unless explicitly asked, or un
 ## Using Your Tools
 
 Prefer dedicated tools over shell equivalents:
-`Read` not `cat` | `Grep` not `rg` | `List` not `ls`/`find` | `Edit` not `sed` | `Delete` not `rm`
+`Read` not `cat` | `Grep` not `rg` | `List` not `ls`/`find` | `Edit` not `sed`
 Reserve `Bash` for builds, tests, git, and commands without a dedicated tool.
 
 Do not `Read` a file again just to check an `Edit` or `Write`: the tool fails if it did not apply, and `Edit` returns the diff. Read again only for a part you have not seen.

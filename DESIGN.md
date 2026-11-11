@@ -579,7 +579,7 @@ this design:
 | Persist latest list in engine? | Split: CC yes, Codex/Zed/Gemini no | **Yes** — keyed by `session_id`, for clients reconnecting mid-session. Persistence ≠ re-injection. |
 | Validate "max 1 in_progress" in tool? | Only Gemini does | **Yes** — small, deterministic, removes one class of model mistake |
 | Diff-in-tool-result for UI animation? | Only Claude Code | **Yes** — return `{added, changed, removed}` so UI can highlight transitions; model still gets a plain reminder string |
-| `FileTracker` summarized into prompt? | None do this | **No** — same anti-pattern as `progress.rs`. `FileTracker` stays scoped to trust / auto-approve-delete only. |
+| `FileTracker` summarized into prompt? | None do this | **No** — same anti-pattern as `progress.rs`. (`FileTracker` was later removed with the `Delete` tool.) |
 
 **Current reality (pre-fix).** Koda today has **four** mechanisms
 fighting over the same concern, which is the racing condition #1077
@@ -589,7 +589,7 @@ is really about — not just `progress.rs`:
 |---|---|---|---|---|
 | 1 | `progress.rs` | string-matched tool output text (`"Created"`/`"Wrote"`/…) | system prompt | **Delete** |
 | 2 | `TodoWrite` + `get_todo_section` | model writes, DB persists | system prompt + tool result | **Drop the system-prompt injection**; keep DB persistence + tool-result reminder |
-| 3 | `FileTracker` | typed dispatch outcome | trust / auto-approve-delete only | **Keep as-is** (scope is correct, never promote to prompt) |
+| 3 | `FileTracker` | typed dispatch outcome | trust / auto-approve-delete only | **Kept then** (never promote to prompt); removed in 2026-11 with the `Delete` tool |
 | 4 | `BgAgentRegistry` snapshot vs. event-queue | dual fan-out via `BgStatusEmitter` | UI panel + `EngineEvent::BgTaskUpdate` | **Already fixed** in #1078 — same pattern this principle generalizes |
 
 **Replacement plan** (tracked in #1077, to land in phased PRs):
@@ -1210,7 +1210,7 @@ user-facing mental-model doc).
 **Key design choices**:
 - **`Auto × Destructive` confirms, not auto-approves** (#1251). The user
   said YOLO for normal work, not for `rm -rf` / `git reset --hard` /
-  `git push --force` / `Delete`. Destructive ops by definition can't be
+  `git push --force`. Destructive ops by definition can't be
   undone by the sandbox alone (deleting a tracked file is "legal" inside
   the project root), so Auto keeps the prompt as a deliberate speed-bump.
 - **What counts as Destructive follows Codex, plus four kinds of command
@@ -1321,26 +1321,21 @@ user-facing mental-model doc).
    refuses to start or resume; `Safe`/`Plan` may still run with warnings and
    human approval floors
 
-### File Lifecycle Tracking (P2)
+### No Delete tool (P2)
 
-Track file create/edit/delete ownership per turn to auto-approve deleting
-files that koda created in the same turn.
-
-A common pattern — scaffold a temp file, use it, delete it — requires two
-confirmation prompts. The second (“approve delete?”) is redundant when koda
-just created the file moments ago. The file tracker (`file_tracker.rs`)
-records which files were created/edited per turn. `check_tool()` in
-`trust.rs` queries the tracker: if a Delete targets a file koda created
-this turn, it’s auto-approved.
-
-**Implementation choices**:
-- Paths are canonicalized (`std::fs::canonicalize()` + `path_clean::clean()`
-  fallback for not-yet-created files) to prevent `./foo/../bar.txt` vs
-  `bar.txt` mismatches
-- Success is tracked via `ToolResult.success: bool` (set by
-  `ToolRegistry::execute()`) — failed writes don't register ownership
-- Tracker resets per turn via `reset()` — no cross-turn state leakage
-- In-memory only — no persistence needed since ownership is turn-scoped
+Koda had a `Delete` tool until 2026-11, and with it a file tracker
+(`file_tracker.rs`, #465) that let it delete files Koda had created
+without asking. Both are gone. None of the peers has a file-delete tool:
+Codex deletes through a `*** Delete File:` entry in `apply_patch`, which it
+approves like any write inside the sandbox, and Claude Code, Qwen Code,
+Gemini CLI and Goose delete through the shell. Two ways to delete meant two
+approval rules: after #1556 a plain `rm a` ran in the sandbox in Auto while
+`Delete` of the same file still asked, and in recorded eval runs `Delete`
+became Auto's most frequent prompt. Haiku, the main model, used it 3 times
+against 75 `rm` commands. Deleting is now a Bash command, judged by the
+same classifier as everything else: `rm` runs in the sandbox, a forced
+`rm` asks. The `owned_files` table is no longer created or read; old
+databases keep theirs, unused.
 
 ### No File Undo (P2)
 

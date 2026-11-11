@@ -92,7 +92,7 @@ impl ModelSettings {
 /// - **`allowed_tools`** — Allowlist (empty = all tools available)
 /// - **`disallowed_tools`** — Denylist (excluded even if `allowed_tools` is empty)
 /// - **`model`** — Override the default model (e.g. `"gemini-2.5-flash"` for cheap workers)
-/// - **`write_access`** — Grant Write/Edit/Delete tools (default: `false`)
+/// - **`write_access`** — Grant Write/Edit tools (default: `false`)
 /// - **`max_iterations`** — Cap inference loops (prevents runaway agents)
 /// - **`isolation`** — `"worktree"` for a git worktree of its own (default: the project)
 #[derive(Debug, Clone, Deserialize)]
@@ -138,7 +138,7 @@ pub struct AgentConfig {
     /// Override max inference iterations.
     #[serde(default)]
     pub max_iterations: Option<u32>,
-    /// Grant write access (Write/Edit/Delete tools). Default: false.
+    /// Grant write access (Write/Edit tools). Default: false.
     /// Sub-agents are read-only by default (principle of least privilege).
     /// Set to `true` for agents that need to create or modify files.
     #[serde(default)]
@@ -351,7 +351,7 @@ impl KodaConfig {
         // still uses `write_access: true` so users migrate.
         //
         // **Back-compat rule**: only apply the legacy default-deny
-        // (inject Write/Edit/Delete into disallowed_tools) when the
+        // (inject Write/Edit into disallowed_tools) when the
         // agent JSON did NOT declare `trust` explicitly. If it did,
         // the new trust matrix (`check_tool_for_sub_agent`) is the
         // single mechanism — we don't want an explicit `trust: "safe"`
@@ -378,7 +378,7 @@ impl KodaConfig {
             agent.disallowed_tools
         } else {
             // Legacy mechanism: pre-#1250 JSONs that didn't set `trust`
-            // relied on `write_access: false` to inject Write/Edit/Delete
+            // relied on `write_access: false` to inject Write/Edit
             // into the deny list. Preserve that behavior.
             Self::apply_default_deny(agent.disallowed_tools, agent.write_access)
         };
@@ -403,10 +403,10 @@ impl KodaConfig {
 
     /// Write tools that are blocked by default for sub-agents.
     /// Sub-agents must opt in with `"write_access": true` in their JSON config.
-    const WRITE_TOOLS: &'static [&'static str] = &["Write", "Edit", "Delete"];
+    const WRITE_TOOLS: &'static [&'static str] = &["Write", "Edit"];
 
     /// Apply default-deny for write tools. If `write_access` is false,
-    /// inject Write/Edit/Delete into disallowed_tools (deduped).
+    /// inject Write/Edit into disallowed_tools (deduped).
     fn apply_default_deny(mut disallowed: Vec<String>, write_access: bool) -> Vec<String> {
         if !write_access {
             for tool in Self::WRITE_TOOLS {
@@ -846,7 +846,6 @@ mod tests {
         let result = KodaConfig::apply_default_deny(vec![], false);
         assert!(result.contains(&"Write".to_string()));
         assert!(result.contains(&"Edit".to_string()));
-        assert!(result.contains(&"Delete".to_string()));
     }
 
     #[test]
@@ -862,7 +861,6 @@ mod tests {
             KodaConfig::apply_default_deny(vec!["Write".to_string(), "Bash".to_string()], false);
         assert_eq!(result.iter().filter(|t| *t == "Write").count(), 1);
         assert!(result.contains(&"Edit".to_string()));
-        assert!(result.contains(&"Delete".to_string()));
         assert!(result.contains(&"Bash".to_string()));
     }
 
@@ -882,7 +880,6 @@ mod tests {
         let config = KodaConfig::load(tmp.path(), "custom").unwrap();
         assert!(config.disallowed_tools.contains(&"Write".to_string()));
         assert!(config.disallowed_tools.contains(&"Edit".to_string()));
-        assert!(config.disallowed_tools.contains(&"Delete".to_string()));
     }
 
     // ── #1250: trust replaces write_access ────────────────────
@@ -890,7 +887,7 @@ mod tests {
     #[test]
     fn test_explicit_trust_skips_legacy_default_deny() {
         // **#1250**: when `trust` is declared explicitly, the loader
-        // must NOT inject Write/Edit/Delete into disallowed_tools via
+        // must NOT inject Write/Edit into disallowed_tools via
         // legacy default-deny. The new trust matrix is the single
         // mechanism. If the JSON declares trust:safe, writes should be
         // available (and gated by the trust matrix at call time).
@@ -914,10 +911,6 @@ mod tests {
         assert!(
             !config.disallowed_tools.contains(&"Edit".to_string()),
             "explicit trust must skip legacy default-deny (Edit should be available)"
-        );
-        assert!(
-            !config.disallowed_tools.contains(&"Delete".to_string()),
-            "explicit trust must skip legacy default-deny (Delete should be available)"
         );
         assert_eq!(config.trust, crate::trust::TrustMode::Safe);
     }
@@ -943,7 +936,8 @@ mod tests {
         .unwrap();
         let config = KodaConfig::load(tmp.path(), "verifier").unwrap();
         // User-declared disallowed_tools survive (no auto-injection,
-        // but no auto-removal either):
+        // but no auto-removal either), including a name Koda no longer
+        // has, like the removed `Delete`:
         assert!(config.disallowed_tools.contains(&"Write".to_string()));
         assert!(config.disallowed_tools.contains(&"Edit".to_string()));
         assert!(config.disallowed_tools.contains(&"Delete".to_string()));
@@ -953,7 +947,7 @@ mod tests {
     fn test_legacy_write_access_false_still_default_denies() {
         // **#1250 back-compat**: pre-#1250 JSONs that didn't set `trust`
         // and relied on `write_access: false` (or omission) to get
-        // Write/Edit/Delete into disallowed_tools must keep working.
+        // Write/Edit into disallowed_tools must keep working.
         // Test isolated from `test_custom_agent_without_write_access_is_readonly`
         // because that one accidentally also covers this; this is the
         // explicit pin against accidental future regression.
@@ -1020,7 +1014,7 @@ mod tests {
     #[test]
     fn test_builtin_explore_declares_plan_trust() {
         // **#1250**: `explore` keeps `trust: "plan"` (kernel-enforced
-        // read-only) and drops the redundant Write/Edit/Delete entries
+        // read-only) and drops the redundant Write/Edit entries
         // from `disallowed_tools` (Plan trust blocks all mutations).
         // What remains in `disallowed_tools` is the behavioral floor:
         // meta-tools and read-only-classified mutators that the trust

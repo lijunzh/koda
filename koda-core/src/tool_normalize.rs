@@ -27,7 +27,6 @@ const CANONICAL: &[&str] = &[
     "AskUser",
     "Bash",
     "Cargo",
-    "Delete",
     "Edit",
     "Glob",
     "Grep",
@@ -96,11 +95,6 @@ static ALIASES: LazyLock<HashMap<String, &'static str>> = LazyLock::new(|| {
     m.insert("edit_file".into(), "Edit");
     m.insert("editfile".into(), "Edit");
     m.insert("file_edit".into(), "Edit");
-
-    m.insert("delete_file".into(), "Delete");
-    m.insert("deletefile".into(), "Delete");
-    m.insert("remove_file".into(), "Delete");
-    m.insert("rm".into(), "Delete");
 
     // Search tools
     m.insert("grep_search".into(), "Grep");
@@ -213,7 +207,6 @@ mod tests {
         assert_eq!(normalize_tool_name("read"), "Read");
         assert_eq!(normalize_tool_name("write"), "Write");
         assert_eq!(normalize_tool_name("edit"), "Edit");
-        assert_eq!(normalize_tool_name("delete"), "Delete");
         assert_eq!(normalize_tool_name("bash"), "Bash");
         assert_eq!(normalize_tool_name("grep"), "Grep");
         assert_eq!(normalize_tool_name("glob"), "Glob");
@@ -228,7 +221,6 @@ mod tests {
         assert_eq!(normalize_tool_name("read_file"), "Read");
         assert_eq!(normalize_tool_name("write_file"), "Write");
         assert_eq!(normalize_tool_name("edit_file"), "Edit");
-        assert_eq!(normalize_tool_name("delete_file"), "Delete");
         assert_eq!(normalize_tool_name("run_shell_command"), "Bash");
         assert_eq!(normalize_tool_name("grep_search"), "Grep");
         assert_eq!(normalize_tool_name("glob_search"), "Glob");
@@ -247,7 +239,6 @@ mod tests {
     #[test]
     fn short_aliases() {
         assert_eq!(normalize_tool_name("ls"), "List");
-        assert_eq!(normalize_tool_name("rm"), "Delete");
         assert_eq!(normalize_tool_name("rg"), "Grep");
         assert_eq!(normalize_tool_name("shell"), "Bash");
         assert_eq!(normalize_tool_name("curl"), "WebFetch");

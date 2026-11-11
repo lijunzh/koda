@@ -1,10 +1,10 @@
 //! #1361 regression: read-only-by-system-prompt sub-agents must
-//! disallow Write/Edit/Delete in their config.
+//! disallow Write and Edit in their config.
 //!
 //! Before this guard, `explore` and `plan` had system prompts loudly
 //! declaring "STRICTLY PROHIBITED from creating, editing, or deleting
 //! any files" but their `disallowed_tools` arrays didn't list
-//! `Write`/`Edit`/`Delete`. The dispatcher's `has_write_tools` check
+//! `Write`/`Edit`. The dispatcher's `has_write_tools` check
 //! returned `true`, so:
 //!
 //! 1. They were routed through the slow workspace provider
@@ -30,10 +30,9 @@ const READ_ONLY_MARKERS: &[&str] = &[
 
 /// Tools that MUST appear in `disallowed_tools` for any agent that
 /// hits a `READ_ONLY_MARKER`. Mirrors the `has_write_tools` check in
-/// `koda-core/src/sub_agent_dispatch.rs` (which only inspects `Write`
-/// and `Edit`) plus `Delete` for completeness \u2014 a read-only agent
-/// shouldn't be able to remove files either.
-const REQUIRED_DISALLOWED: &[&str] = &["Write", "Edit", "Delete"];
+/// `koda-core/src/sub_agent_dispatch.rs`, which inspects `Write` and
+/// `Edit`.
+const REQUIRED_DISALLOWED: &[&str] = &["Write", "Edit"];
 
 /// Embedded JSON for every built-in agent, mirroring the
 /// `BUILTIN_AGENTS` array in `koda-core/src/config.rs`.

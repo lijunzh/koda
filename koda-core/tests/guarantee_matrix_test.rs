@@ -93,15 +93,15 @@ fn matrix_write_outside_project() {
     assert_eq!(confirm, ToolApproval::NeedsConfirmation);
 }
 
-// ── Row 5: Delete files ──
+// ── Row 5: Delete files (through Bash, as in Codex and Claude Code) ──
 
 #[test]
 fn matrix_delete_files() {
-    let args = serde_json::json!({"file_path": "old.rs"});
-    let (auto, confirm) = check_both("Delete", &args);
+    let args = serde_json::json!({"command": "rm -rf build"});
+    let (auto, confirm) = check_both("Bash", &args);
     // #1250: Destructive ops require human confirmation in BOTH Auto and Safe
-    // at top-level. The user said YOLO for normal work, not for `rm`-equivalent
-    // operations. (Sub-agents block destructive entirely — see trust.rs tests.)
+    // at top-level. The user said YOLO for normal work, not for a forced
+    // `rm`. (Sub-agents block destructive entirely — see trust.rs tests.)
     assert_eq!(auto, ToolApproval::NeedsConfirmation);
     assert_eq!(confirm, ToolApproval::NeedsConfirmation);
 }

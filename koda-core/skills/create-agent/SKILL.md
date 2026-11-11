@@ -21,7 +21,7 @@ the user can immediately invoke via `InvokeAgent`.
   agents used `write_access` (now deprecated). Today every new agent
   must declare its natural `trust` mode — the kernel and approval
   matrix derive everything from it. Skipping `trust` falls back to
-  legacy default-deny which silently strips Write/Edit/Delete and
+  legacy default-deny which silently strips Write/Edit and
   causes opaque "no such tool" failures.
 - **Principle of least privilege.** Pick the lowest trust mode that
   works: `plan` for pure search/analysis, `safe` for write-capable
@@ -113,7 +113,7 @@ override lets you save cost for high-volume workers.
   "description": "Runs the test suite and reports failures. Does NOT modify files.",
   "system_prompt": "You run tests and report results. You can run any read-only command including builds and tests, but never write files.",
   "trust": "safe",
-  "disallowed_tools": ["Write", "Edit", "Delete"]
+  "disallowed_tools": ["Write", "Edit"]
 }
 ```
 
@@ -173,7 +173,7 @@ longer auto-blocks Write/Edit on its own.
 ## Anti-patterns to avoid
 
 - **Don't omit `trust`.** Without it, the loader falls back to legacy
-  default-deny which silently strips Write/Edit/Delete and causes
+  default-deny which silently strips Write/Edit and causes
   opaque "no such tool" failures. This is the #1 footgun. Always
   declare `trust` explicitly.
 - **Don't set `trust: "auto"` on a sub-agent.** Auto is reserved for

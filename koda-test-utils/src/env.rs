@@ -267,8 +267,6 @@ impl Env {
     ) -> (anyhow::Result<()>, Vec<EngineEvent>) {
         let (_, mut cmd_rx) = mpsc::channel::<EngineCommand>(1);
         let tool_defs = self.tool_defs();
-        let mut file_tracker =
-            koda_core::file_tracker::FileTracker::new(&self.session_id, self.db.clone()).await;
         // #1022 B12: registry lives on the session in production.
         // Env now holds one shared registry per test so background
         // agents spawned during inference remain visible after
@@ -293,7 +291,6 @@ impl Env {
             cancel,
             cmd_rx: &mut cmd_rx,
             queued_steers: &mut Vec::new(),
-            file_tracker: &mut file_tracker,
             bg_agents: &bg_agents,
             sub_agent_cache: &sub_agent_cache,
             // #1325 Phase 4: test envs are always the user-facing

@@ -139,7 +139,6 @@ mod display_regression {
         ("List", "List"),
         ("Write", "Write"),
         ("Edit", "Edit"),
-        ("Delete", "Delete"),
         ("Grep", "Search"),
         ("Glob", "Glob"),
         ("Bash", "Shell"),
@@ -160,7 +159,6 @@ mod display_regression {
             "List" => "List",
             "Write" => "Write",
             "Edit" => "Edit",
-            "Delete" => "Delete",
             "Grep" => "Search",
             "Glob" => "Glob",
             "Bash" => "Shell",
@@ -193,8 +191,8 @@ mod display_regression {
     fn test_tool_count() {
         assert_eq!(
             KNOWN_TOOLS.len(),
-            17,
-            "Expected 17 known tools (update this test when adding tools)"
+            16,
+            "Expected 16 known tools (update this test when adding or removing tools)"
         );
     }
 }

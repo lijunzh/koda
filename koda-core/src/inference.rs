@@ -43,7 +43,6 @@ use crate::engine::{
     CompactionStatus, CompactionTrigger, EngineCommand, EngineEvent, EngineSink, LoopGuardAction,
     Notice, RetryReason,
 };
-use crate::file_tracker::FileTracker;
 use crate::inference_helpers::{
     AUTO_COMPACT_THRESHOLD, CONTEXT_WARN_THRESHOLD, ContextShape, MAX_SERVER_DELAY,
     MIN_COMPACTABLE_DIVISOR, ModelCall, RATE_LIMIT_MAX_RETRIES, STREAM_MAX_RETRIES,
@@ -897,7 +896,6 @@ pub struct InferenceContext<'a> {
     /// survives it, even if the turn is dropped.
     pub queued_steers: &'a mut Vec<String>,
     /// File lifecycle tracker for ownership-aware approval (#465).
-    pub file_tracker: &'a mut FileTracker,
     /// Background sub-agent registry (#1022 B12). Owned by [`crate::session::KodaSession`]
     /// so bg agents survive across turns; this is just a borrow into
     /// the loop. Drained at the top of every iteration to inject
@@ -1059,7 +1057,6 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
         cancel,
         cmd_rx,
         queued_steers,
-        file_tracker,
         bg_agents,
         sub_agent_cache,
     } = ctx;
@@ -1831,7 +1828,6 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
                         *success,
                         full_output.as_deref(),
                         &turn_ctx,
-                        file_tracker,
                     )
                     .await?;
                 }
@@ -1859,15 +1855,8 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
                         args: parsed_args,
                         is_sub_agent: false,
                     });
-                    crate::tool_dispatch::record_tool_result(
-                        &tc,
-                        &err_msg,
-                        false,
-                        None,
-                        &turn_ctx,
-                        file_tracker,
-                    )
-                    .await?;
+                    crate::tool_dispatch::record_tool_result(&tc, &err_msg, false, None, &turn_ctx)
+                        .await?;
                 } else {
                     allowed.push(tc);
                 }
@@ -1878,19 +1867,12 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
         };
 
         // Execute remaining tool calls — parallelize when possible.
-        // #1022 B13: pass `file_tracker` so the parallelizability check
-        // sees the same Koda-owned-file downgrade the sequential path
-        // sees. Without it, batches containing `Delete owned.tmp` are
-        // spuriously refused parallelization (perf regression).
-        if remaining_tools.len() > 1
-            && can_parallelize(&remaining_tools, mode, project_root, Some(file_tracker))
-        {
-            execute_tools_parallel(&remaining_tools, tool_ctx, file_tracker).await?;
+        if remaining_tools.len() > 1 && can_parallelize(&remaining_tools, mode, project_root) {
+            execute_tools_parallel(&remaining_tools, tool_ctx).await?;
         } else if remaining_tools.len() > 1 && !has_file_conflict(&remaining_tools) {
-            execute_tools_split_batch(&remaining_tools, tool_ctx, &mut cmd_rx, file_tracker)
-                .await?;
+            execute_tools_split_batch(&remaining_tools, tool_ctx, &mut cmd_rx).await?;
         } else if !remaining_tools.is_empty() {
-            execute_tools_sequential(&remaining_tools, tool_ctx, &mut cmd_rx, file_tracker).await?;
+            execute_tools_sequential(&remaining_tools, tool_ctx, &mut cmd_rx).await?;
         }
 
         // Update skill scope: if any ActivateSkill call was made, check whether

@@ -179,50 +179,6 @@ async fn test_edit_tool_replacement_e2e() {
     );
 }
 
-// ── Delete (standalone) ────────────────────────────────────────
-
-#[tokio::test]
-async fn test_delete_tool_standalone_e2e() {
-    let env = Env::new().await;
-
-    // Write first (so Koda owns it), then delete in a separate turn
-    let target = env.root.join("temp_notes.md");
-
-    // Turn 1: create
-    env.insert_user_message("write a temp file").await;
-    let p1 = MockProvider::new(vec![
-        MockResponse::tool_call(
-            "Write",
-            serde_json::json!({
-                "path": target.to_string_lossy(),
-                "content": "temporary notes"
-            }),
-        ),
-        MockResponse::Text("Created.".into()),
-    ]);
-    env.run_inference(&p1).await;
-    assert!(target.exists());
-
-    // Turn 2: delete
-    env.insert_user_message("delete the temp file").await;
-    let p2 = MockProvider::new(vec![
-        MockResponse::tool_call(
-            "Delete",
-            serde_json::json!({"path": target.to_string_lossy()}),
-        ),
-        MockResponse::Text("Deleted.".into()),
-    ]);
-    let events = env.run_inference(&p2).await;
-
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, EngineEvent::ToolCallResult { name, .. } if name == "Delete")),
-        "expected Delete tool result"
-    );
-    assert!(!target.exists(), "file should be gone");
-}
-
 // ── AST post-edit verification (#467/#504) ─────────────────────
 
 /// Regression: Write of valid Rust → tool result should NOT contain

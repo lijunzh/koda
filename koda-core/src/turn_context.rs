@@ -19,17 +19,11 @@
 //!
 //! ## What stays OUT of TurnContext
 //!
-//! - **`file_tracker: &mut FileTracker`** — the only mutable piece of
-//!   ambient state. Pulling it into `TurnContext` would force a `&mut
-//!   TurnContext` everywhere, which conflicts with the parallel-execution
-//!   path (the mutation only happens in the post-join `record_tool_result`
-//!   loop, not inside the parallel futures themselves). Passing it as a
-//!   separate `&mut FileTracker` argument keeps `TurnContext` cheap to
-//!   share across borrow boundaries.
-//! - **`cmd_rx: &mut mpsc::Receiver<EngineCommand>`** — also `&mut`,
-//!   and only relevant to dispatch paths that may issue interactive
-//!   approvals (sequential / split-batch). Lives outside the context
-//!   for the same reason as `file_tracker`.
+//! - **`cmd_rx: &mut mpsc::Receiver<EngineCommand>`** — `&mut`, and
+//!   only relevant to dispatch paths that may issue interactive
+//!   approvals (sequential / split-batch). Pulling it into `TurnContext`
+//!   would force a `&mut TurnContext` everywhere, which conflicts with
+//!   the parallel-execution path.
 //! - **Per-call data** like `tc: &ToolCall`, `result: &str`,
 //!   `tool_calls: &[ToolCall]` — these are inputs, not context.
 //!
@@ -69,7 +63,7 @@ use crate::trust::TrustMode;
 /// Constructed once per turn at the inference-loop entry; threaded
 /// by `&` reference through dispatch. All fields are immutable
 /// borrows or `Clone`-by-value handles — see module docs for why
-/// `file_tracker` and `cmd_rx` stay outside.
+/// `cmd_rx` stays outside.
 pub struct TurnContext<'a> {
     /// Project root — used for path safety + workspace scoping.
     pub project_root: &'a Path,

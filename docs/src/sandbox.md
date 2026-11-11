@@ -11,7 +11,8 @@ Koda's **Read, List, Grep, and Glob** tools are intentionally unrestricted —
 they can access any path on the filesystem the OS permits, including paths
 outside the project directory (e.g. `../other-repo`, `~/.ssh/config`).
 
-Only **Write, Edit, and Delete** are gated to the project root.
+Only **Write and Edit** are gated to the project root. Deleting goes
+through Bash, inside the kernel sandbox.
 
 ### Why reads are unrestricted
 
@@ -63,7 +64,7 @@ Bash commands can only write to:
 - The project directory
 - `/tmp` and standard cache dirs (`~/.cache`, `~/.cargo`, etc.)
 
-The in-process file tools (`Write`, `Edit`, `Delete`) enforce the
+The in-process file tools (`Write`, `Edit`) enforce the
 same perimeter via `safe_resolve_path` (logical check) and
 `koda_sandbox::fs::verify_mutation_safe` (canonicalizing
 symlink-aware check). The two layer: the first rejects literal
@@ -240,8 +241,8 @@ doesn't start, and the main agent is told why, so it can do the work itself:
 in Safe that means you approve each edit. In Auto, sub-agents write in the
 project as usual.
 
-Safe moves agents that have `Write`, `Edit` or `Delete`. An agent denied all
-three stays in the project, so a testing agent can run your tests against your build
+Safe moves agents that have `Write` or `Edit`. An agent denied both
+stays in the project, so a testing agent can run your tests against your build
 output. Its commands aren't reviewed first, so deny `Bash` too if an agent
 shouldn't run any.
 
