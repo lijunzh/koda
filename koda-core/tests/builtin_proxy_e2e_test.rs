@@ -566,11 +566,21 @@ async fn a_later_command_reaches_only_koda_s_own_background_server() {
         if own.output.contains("code=200") {
             break;
         }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "never reached Koda's own server: {}",
-            own.output
-        );
+        if std::time::Instant::now() >= deadline {
+            // What the server logged, and which ports Koda saw it on.
+            let log = started
+                .output
+                .lines()
+                .find_map(|l| l.trim().strip_prefix("Output:"))
+                .and_then(|rest| rest.split(" (").next())
+                .map(|path| std::fs::read_to_string(path.trim()).unwrap_or_default())
+                .unwrap_or_default();
+            panic!(
+                "never reached Koda's own server on {port}: {}\nports Koda sees: {:?}\nserver log:\n{log}",
+                own.output,
+                tools.bg_registry.listening_ports().await,
+            );
+        }
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }
     let other = tools.execute("Bash", &reach(their_port), None, None).await;
