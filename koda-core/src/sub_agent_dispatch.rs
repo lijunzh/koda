@@ -1107,8 +1107,7 @@ pub(crate) fn execute_sub_agent<'a>(
 
                         // A `kill` of the agent's own processes inside a longer
                         // command can't work in the sandbox: say how instead.
-                        let own_kill_hint = (approval != ToolApproval::AutoApprove
-                            && mode != crate::trust::TrustMode::Plan
+                        let own_kill_hint = (mode != crate::trust::TrustMode::Plan
                             && tc.function_name == "Bash")
                             .then(|| {
                                 crate::tools::shell::own_kill_in_longer_command(
