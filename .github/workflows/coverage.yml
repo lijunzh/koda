@@ -219,66 +219,6 @@ jobs:
           done
           exit $fail
 
-  # ── Merge lcov reports across platforms ────────────────────────────────
-  merge:
-    name: Merge Coverage Reports
-    needs: coverage
-    runs-on: ubuntu-latest
-    if: always()
-    steps:
-      - name: Install lcov
-        run: sudo apt-get install -y lcov
-
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: lcov-reports-*
-          merge-multiple: true
-          path: reports
-
-      - name: Merge per-crate reports
-        run: |
-          cd reports
-          # Merge each crate's reports across platforms.
-          for crate in core sandbox; do
-            files=$(ls lcov-${crate}.info 2>/dev/null || true)
-            if [ -n "$files" ]; then
-              # If multiple files exist (from matrix), merge them.
-              # With merge-multiple they land in the same dir, but
-              # artifact names differ per-OS so we just concat all
-              # matching files.
-              lcov_args=""
-              for f in lcov-${crate}.info; do
-                lcov_args="$lcov_args --add-tracefile $f"
-              done
-              lcov $lcov_args --ignore-errors mismatch,corrupt,unused,empty \
-                --output-file merged-${crate}.info 2>/dev/null || \
-                cp lcov-${crate}.info merged-${crate}.info
-            fi
-          done
-
-          # Final unified report across all crates + platforms.
-          # `--ignore-errors mismatch,corrupt,unused,empty` is required because
-          # Ubuntu 22.04 ships lcov 1.15 which doesn't understand Rust's v0
-          # symbol mangling (e.g. closures inside generic functions). See #913
-          # for the full root-cause analysis. Per-line coverage totals are
-          # unaffected; only function-name parsing is bypassed.
-          merge_args=""
-          for f in merged-*.info; do
-            [ -f "$f" ] && merge_args="$merge_args --add-tracefile $f"
-          done
-          if [ -n "$merge_args" ]; then
-            lcov $merge_args --ignore-errors mismatch,corrupt,unused,empty \
-              --output-file merged-all.info
-          fi
-
-      - name: Upload merged reports
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: lcov-merged
-          path: reports/merged-*.info
-          retention-days: 7
-
   # ── Report regressions ──────────────────────────────────────────
   report:
     name: Report
