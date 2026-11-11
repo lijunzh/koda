@@ -234,6 +234,11 @@ fn apply_git_config_deny(cmd: &mut Command, root: &str) {
     // the same ground via deny rules); skipping it for the worktree
     // edge case is the right trade-off versus parsing the gitdir
     // pointer and chasing the real .git directory.
+    // A shared temp root gets no `.git` of its own: Koda would then take
+    // it for a git root, for every project under it.
+    if is_shared_temp_root(Path::new(root)) && !Path::new(&git_dir).exists() {
+        return;
+    }
     if let Ok(meta) = std::fs::symlink_metadata(&git_dir)
         && meta.is_file()
     {
@@ -368,6 +373,24 @@ pub fn is_available() -> bool {
 /// Returns `(cmd, home)` with everything set up *except* the final
 /// `-- sh -c command` terminator — callers add that (plus any extra mounts
 /// for strict mode) before spawning.
+/// Whether `root` is a temp directory everyone's files live under (`/tmp`,
+/// `/var/tmp`, `$TMPDIR`), as opposed to a folder in one. Koda pre-creates
+/// `.git/` and `.koda/` folders in a project root to mount them read-only;
+/// in a shared temp root they would make it look like a git root, and a
+/// Koda project, to everything under it. A project rooted there gives up
+/// that protection for paths that don't exist yet.
+fn is_shared_temp_root(root: &Path) -> bool {
+    let shared = [
+        Path::new("/tmp").to_path_buf(),
+        Path::new("/var/tmp").to_path_buf(),
+        std::env::temp_dir(),
+    ];
+    let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    shared
+        .iter()
+        .any(|dir| dir == root || dir.canonicalize().is_ok_and(|dir| dir == canonical))
+}
+
 fn base_cmd(project_root: &Path) -> (Command, String) {
     let root = project_root.to_string_lossy().into_owned();
     let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
@@ -394,10 +417,17 @@ fn base_cmd(project_root: &Path) -> (Command, String) {
     // Re-bind as read-only after the project-root writable bind (CC parity #844).
     // Pre-create if absent so bwrap has a mountpoint — otherwise a sandboxed
     // command could `mkdir -p` and write agent definitions.
+    // Not in a shared temp root, which would leave `.koda/` in `/tmp` for
+    // every project under it to find.
+    let shared_temp = is_shared_temp_root(project_root);
     for rel in PROTECTED_PROJECT_SUBDIRS {
         let p = format!("{root}/{rel}");
-        let _ = std::fs::create_dir_all(&p);
-        cmd.args(["--ro-bind", &p, &p]);
+        if !shared_temp {
+            let _ = std::fs::create_dir_all(&p);
+        }
+        if Path::new(&p).exists() {
+            cmd.args(["--ro-bind", &p, &p]);
+        }
     }
 
     (cmd, home)
@@ -451,6 +481,49 @@ pub(crate) fn policy_overlay_args(policy: &SandboxPolicy) -> Result<Vec<Vec<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_temp_roots_are_told_from_folders_in_them() {
+        assert!(is_shared_temp_root(Path::new("/tmp")));
+        assert!(is_shared_temp_root(Path::new("/tmp/")));
+        assert!(is_shared_temp_root(Path::new("/var/tmp")));
+        assert!(is_shared_temp_root(&std::env::temp_dir()));
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!is_shared_temp_root(dir.path()));
+    }
+
+    /// A command whose project root is `/tmp` itself must not leave `.git/`
+    /// or `.koda/` there: Koda would take `/tmp` for a git root, and every
+    /// project under it would load the wrong instructions. A test once did
+    /// exactly that on every Linux run.
+    #[test]
+    fn a_shared_temp_root_gets_no_git_or_koda_folders() {
+        if !is_available() {
+            eprintln!("bwrap not available; skipping");
+            return;
+        }
+        let tmp = Path::new("/tmp");
+        let made = [".git", ".koda"].map(|d| tmp.join(d));
+        if made.iter().any(|p| p.exists()) {
+            eprintln!("skip: /tmp already holds .git or .koda from an earlier run");
+            return;
+        }
+        let cmd = build_command("true", tmp, &SandboxPolicy::strict_default()).unwrap();
+        for path in &made {
+            assert!(!path.exists(), "{} was created", path.display());
+        }
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !args
+                .iter()
+                .any(|a| a.starts_with("/tmp/.git") || a.starts_with("/tmp/.koda")),
+            "{args:?}"
+        );
+    }
 
     #[test]
     fn policy_overlay_args_empty_for_default_policy() {
