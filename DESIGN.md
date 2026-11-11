@@ -1296,6 +1296,17 @@ user-facing mental-model doc).
   classified as a script, which Codex misses; and a body whose terminator
   never comes may be a misread `<<`, so a destructive command in it still
   counts. `<<` inside `((…))` is a shift, not a heredoc.
+- **Arithmetic and function definitions are judged by what they run, as
+  in Codex** (`bash_safety.rs`). `$((…))` is arithmetic, not a
+  substitution: only the `$(…)` inside it runs, so
+  `$(( $(date +%s) - start ))` is judged by `date`, and a bare
+  `(( $(…) > 3 ))` evaluates its substitution rather than running the
+  output. A function definition is judged by the commands in its body, so
+  `run() { cargo test; }` no longer matches the fork-bomb pattern `() {`,
+  which is gone. Codex has no fork-bomb check and leaves runaway processes
+  to its sandbox, but Koda's sandbox limits CPU, memory and open files, not
+  the number of processes, so a function that calls itself
+  (`:(){ :|:& };:`) still asks.
 - **A substitution is judged by what it runs** (`bash_safety.rs`). The
   command inside a `$(…)`, backticks or `<(…)` / `>(…)` is classified on its
   own, and a destructive one makes the whole command destructive. So does a

