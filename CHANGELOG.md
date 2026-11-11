@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- **In Auto, only a forced `rm` asks among file changes, as in Codex.** Auto asked for any `rm` or `rmdir`, `chmod`, `chown`, `kill`, `sed -i`, `find -delete` or `-exec`, `eval` and an interpreter's `-c`, so a model's cleanup of its own temp file or a `python3 -c` port probe stopped for approval, and a headless run refused it. These now run inside the sandbox, which keeps them in the project. A forced `rm` (`-f`, `-rf`, `--force`) still asks, now also behind `env`, `nohup` or `xargs` and inside `sh -c`, `eval` or `find -exec`; so do `git reset --hard`, `git clean -f`, `git push --force`, publishing, `gh` merges, deletes, `auth` and `api`, `sudo`, disk tools and reboots. Safe mode still asks for every change. A `find -exec … \;` is now read correctly: the escaped `;` used to make the classifier give up.
 - **Ctrl+D quits during a turn too, as in Codex.** On an empty input it quit only at idle; while a turn ran, the key went to the input box and did nothing, including in the moment after the answer is on screen but before the turn has ended. It now stops the turn the way `Esc` does, then quits, so the session is saved and the resume hint prints. With text in the input box it still deletes forward, and with an approval or question open it does nothing.
 
 ## [0.6.2] - 2026-11-10

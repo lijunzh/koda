@@ -259,24 +259,13 @@ fn test_destructive_commands() {
         "git reset --hard HEAD~5",
         "git clean -f",
         "git clean -fd",
-        "chmod 777 /etc/passwd",
-        "kill -9 1234",
-        "sed -i 's/foo/bar/g' file.txt",
-        "sed --in-place 's/foo/bar/' file.txt",
         "npm publish",
         "cargo publish",
         "gh pr merge 42 --squash",
         "gh issue delete 42",
         "gh repo delete owner/repo",
-        // Interpreter inline execution (#525)
-        "python -c 'import os; os.remove(\"/tmp/x\")'",
-        "python3 -c 'import shutil; shutil.rmtree(\"/tmp\")'",
-        "perl -e 'unlink(\"/tmp/x\")'",
-        "ruby -e 'File.delete(\"/tmp/x\")'",
-        "node -e 'require(\"fs\").rmSync(\"/tmp\")'",
-        // Nested shell bypass (#525)
+        // A forced rm inside a nested shell (#525)
         "sh -c 'rm -rf /'",
-        "bash -c 'dangerous command'",
         // GitHub CLI destructive (#525)
         "gh api -X DELETE /repos/owner/repo",
         "gh api --method DELETE /repos/owner/repo",
@@ -287,6 +276,30 @@ fn test_destructive_commands() {
             classify_bash_command(cmd),
             ToolEffect::Destructive,
             "expected Destructive: {cmd}"
+        );
+    }
+}
+
+/// As in Codex, what only changes files runs in the sandbox without asking:
+/// the sandbox keeps it in the project. These used to ask.
+#[test]
+fn test_sandboxed_changes_no_longer_ask() {
+    for cmd in [
+        "chmod 777 /etc/passwd",
+        "kill -9 1234",
+        "sed -i 's/foo/bar/g' file.txt",
+        "sed --in-place 's/foo/bar/' file.txt",
+        "python -c 'import os; os.remove(\"/tmp/x\")'",
+        "python3 -c 'import shutil; shutil.rmtree(\"/tmp\")'",
+        "perl -e 'unlink(\"/tmp/x\")'",
+        "ruby -e 'File.delete(\"/tmp/x\")'",
+        "node -e 'require(\"fs\").rmSync(\"/tmp\")'",
+        "bash -c 'make clean'",
+    ] {
+        assert_eq!(
+            classify_bash_command(cmd),
+            ToolEffect::LocalMutation,
+            "expected LocalMutation: {cmd}"
         );
     }
 }
@@ -329,11 +342,11 @@ fn test_sed_stdout_vs_in_place() {
     );
     assert_eq!(
         classify_bash_command("sed -i 's/foo/bar/g' file.txt"),
-        ToolEffect::Destructive
+        ToolEffect::LocalMutation
     );
     assert_eq!(
         classify_bash_command("sed --in-place 's/foo/bar/' file.txt"),
-        ToolEffect::Destructive
+        ToolEffect::LocalMutation
     );
 }
 

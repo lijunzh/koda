@@ -59,6 +59,16 @@ definition can't be undone by the sandbox alone (deleting a tracked
 file is "legal" inside the project root), so Auto keeps the prompt
 as a deliberate speed-bump.
 
+**Which Bash commands are `Destructive`** follows Codex: a forced `rm`
+(`rm -f`, `rm -rf`, `rm --force`) is the one local file operation that
+asks, even behind `env` or `xargs` or inside `sh -c`, `eval` or
+`find -exec`. Koda adds what the sandbox can't contain or what loses work
+for good: `git reset --hard`, `git clean -f`, `git push --force`,
+`npm publish` and `cargo publish`, `gh` merges, deletes, `auth` and `api`,
+`sudo`, disk tools and reboots. A plain `rm`, `chmod`, `sed -i`,
+`find -delete`, `kill` or an interpreter's `-c` changes files in the
+project, so in Auto it runs inside the sandbox without asking.
+
 ## Sub-agent matrix (context-sensitive resolution)
 
 Sub-agents (anything dispatched via `InvokeAgent`) have **no live

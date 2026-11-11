@@ -1213,6 +1213,21 @@ user-facing mental-model doc).
   `git push --force` / `Delete`. Destructive ops by definition can't be
   undone by the sandbox alone (deleting a tracked file is "legal" inside
   the project root), so Auto keeps the prompt as a deliberate speed-bump.
+- **What counts as Destructive follows Codex, plus four kinds of command
+  it leaves out** (`bash_safety.rs`, 2026-11). Codex treats a forced `rm`
+  as its one dangerous command and lets its sandbox handle everything
+  else; Claude Code, with its sandbox on, runs every sandboxed command
+  without asking. Koda's list had grown to any `rm` or `rmdir`, `chmod`,
+  `chown`, `kill`, `sed -i`, `find -delete` and `-exec`, `eval` and an
+  interpreter's `-c`, so in Auto a model's cleanup of its own temp file or
+  a `python3 -c` port probe asked, while `python3 script.py`, which can do
+  the same, didn't. Now a forced `rm` is the one local file operation that
+  asks, wherever it is: behind `env`, `nohup`, `xargs` and the like, inside
+  `sh -c`, `eval` or `find -exec`. Koda adds what the sandbox can't contain
+  or what loses work for good, since it has no undo: `git reset --hard`,
+  `git clean -f`, `git push --force`, publishing, `gh` merges, deletes,
+  auth and `api`, `sudo`, disk tools and reboots. Safe mode still asks for
+  every change.
 - **Sub-agents resolve `⏸ confirm` cells using a context-sensitive
   matrix** (`check_tool_for_sub_agent`, #1251). Sub-agents have no live
   human approval channel by design — the master TUI is the only
