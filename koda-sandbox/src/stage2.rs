@@ -94,6 +94,13 @@ pub fn run(argv: Vec<OsString>) -> Result<()> {
     // the new netns's loopback interface DOWN by default.
     bring_up_loopback().context("stage2: bring up lo")?;
 
+    // Step 1b: the ports of Koda's background servers this command may
+    // reach, and, for a background command, the socket its own namespace
+    // is served on (`bwrap_loopback`). Bound before the proxy listener, so
+    // its ephemeral port can't take one of theirs.
+    let loopback = crate::bwrap_loopback::Bridge::bind_from_env()
+        .context("stage2: set up the loopback bridge")?;
+
     // Step 2: bind a TCP listener on the in-netns loopback. Port 0 ->
     // kernel-assigned ephemeral port. We must read the port back
     // before forking so the parent can rewrite env vars correctly.
@@ -114,7 +121,8 @@ pub fn run(argv: Vec<OsString>) -> Result<()> {
     }
     if pid == 0 {
         // Child: become the bridge.
-        run_bridge_child(listener, uds_path);
+        let own_ports = loopback.own_ports().chain([local_port]).collect();
+        run_bridge_child(listener, uds_path, loopback, own_ports);
         // Unreachable in normal flow; if it returns we exit cleanly.
         unsafe { libc::_exit(0) };
     }
@@ -247,7 +255,12 @@ impl Drop for CloseOnDrop {
 /// concurrent connection count is bounded by what the user's command
 /// produces, and these threads spend their lives in `read`/`write`
 /// syscalls (cheap).
-fn run_bridge_child(listener: TcpListener, uds_path: PathBuf) {
+fn run_bridge_child(
+    listener: TcpListener,
+    uds_path: PathBuf,
+    loopback: crate::bwrap_loopback::Bridge,
+    own_ports: Vec<u16>,
+) {
     // PR_SET_PDEATHSIG: when our parent (which becomes the user
     // command after execvp — same PID) exits, send us SIGTERM. Without
     // this, a forked bridge would orphan into init and survive
@@ -260,6 +273,7 @@ fn run_bridge_child(listener: TcpListener, uds_path: PathBuf) {
         return;
     }
 
+    loopback.spawn(own_ports);
     loop {
         let (tcp, _) = match listener.accept() {
             Ok(p) => p,
@@ -278,7 +292,7 @@ fn run_bridge_child(listener: TcpListener, uds_path: PathBuf) {
 
 /// Bidirectional copy between a TCP and a Unix stream. Returns when
 /// either direction EOFs.
-fn bridge_two_streams(tcp: TcpStream, uds: UnixStream) -> std::io::Result<()> {
+pub(crate) fn bridge_two_streams(tcp: TcpStream, uds: UnixStream) -> std::io::Result<()> {
     let tcp_r = tcp.try_clone()?;
     let mut tcp_w = tcp;
     let uds_r = uds.try_clone()?;

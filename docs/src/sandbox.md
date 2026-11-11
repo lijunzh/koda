@@ -185,15 +185,29 @@ hosts, servers on your local network, and servers on `localhost`. The
 sandbox also can't read `~/.ssh`, so ssh couldn't use your keys even with a
 route.
 
-One exception on macOS: a command can connect to a `localhost` port that a
-server Koda started with `background: true` is listening on, so "start the
-dev server, then curl it" works without leaving the sandbox. Koda reads
-those ports from the background command's process group before each Bash
-call (with `lsof`). Every other local port stays closed, including servers
-you started yourself and databases. Codex and Claude Code block loopback
-the same way unless their `allow_local_binding` setting is on, which opens
-every local port instead. On Linux each command runs in its own network
-namespace, so a later command can't reach a background server at all.
+One exception: a command can connect to a `localhost` port that a server
+Koda started with `background: true` is listening on, so "start the dev
+server, then curl it" works without leaving the sandbox. Every other local
+port stays closed, including servers you started yourself and databases.
+Codex and Claude Code block loopback the same way unless their
+`allow_local_binding` setting is on, which opens every local port instead.
+
+How Koda finds those servers differs by platform:
+
+- **macOS:** Before each Bash call, Koda reads the ports from the
+  background command's process group with `lsof`.
+- **Linux:** Each command runs in its own network namespace, so a background
+  server listens on a loopback no other command shares.
+  - The background command's sandbox serves its namespace on a Unix socket
+    that only you can open.
+  - Before each Bash call, Koda asks that socket which ports are listening.
+  - The new command's sandbox opens those ports on its own loopback and
+    forwards each connection through the socket.
+  - This works for a server started with `background: true`, not one
+    started with `&` inside an ordinary call: that call's sandbox stops
+    serving its namespace when the call ends.
+  - Codex and Claude Code don't bridge namespaces, so on Linux a later
+    command can't reach a background server at all.
 
 When a command you need fails because of that, such as `git push` to an SSH
 remote, the model asks to run that one command outside the sandbox: a Bash

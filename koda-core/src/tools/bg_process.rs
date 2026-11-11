@@ -141,6 +141,9 @@ struct BgEntry {
     spawner: Option<u32>,
     /// PIDs other than the leader seen in the group ([`BgRegistry::note_member`]).
     members: Vec<u32>,
+    /// The socket the command's sandbox serves its network namespace on, so
+    /// later commands can reach its servers (bwrap only).
+    loopback_socket: Option<std::path::PathBuf>,
 }
 
 /// Registry of running background processes, scoped to one session.
@@ -171,6 +174,7 @@ impl BgRegistry {
                 status: BgProcessStatus::Running,
                 spawner,
                 members: Vec::new(),
+                loopback_socket: None,
             },
         );
         pid
@@ -191,6 +195,7 @@ impl BgRegistry {
                 status: BgProcessStatus::Running,
                 spawner,
                 members: Vec::new(),
+                loopback_socket: None,
             },
         );
         group
@@ -457,11 +462,86 @@ fn kill_command(group: u32, child: Option<&mut Child>) -> std::io::Result<()> {
 }
 
 impl BgRegistry {
-    /// Loopback TCP ports the running background commands listen on, their
-    /// children's included, so a sandboxed command may connect to a server
-    /// Koda started (`koda_sandbox::seatbelt::loopback_port_rules`). Empty
-    /// off macOS, where the sandbox gives each command its own network.
+    /// Record the socket `pid`'s sandbox serves its network namespace on.
+    pub fn set_loopback_socket(&self, pid: u32, socket: std::path::PathBuf) {
+        if let Some(entry) = self.inner.lock().unwrap().get_mut(&pid) {
+            entry.loopback_socket = Some(socket);
+        }
+    }
+
+    /// The servers of the running background commands that a sandboxed
+    /// command may reach (`koda_sandbox::Loopback`): their ports on macOS,
+    /// and on Linux the ports plus the sockets that lead into their network
+    /// namespaces.
+    pub async fn loopback(&self) -> koda_sandbox::Loopback {
+        #[cfg(target_os = "linux")]
+        let loopback = koda_sandbox::Loopback {
+            forwards: self.loopback_forwards().await,
+            ..Default::default()
+        };
+        #[cfg(not(target_os = "linux"))]
+        let loopback = koda_sandbox::Loopback {
+            ports: self.lsof_ports().await,
+            ..Default::default()
+        };
+        loopback
+    }
+
+    /// The loopback TCP ports the running background commands listen on,
+    /// their children's included.
     pub async fn listening_ports(&self) -> Vec<u16> {
+        let loopback = self.loopback().await;
+        let mut ports = loopback.ports;
+        ports.extend(loopback.forwards.iter().map(|f| f.port));
+        ports
+    }
+
+    /// Ask each running background command's socket for its ports. The
+    /// socket of a command that has stopped is removed.
+    #[cfg(target_os = "linux")]
+    async fn loopback_forwards(&self) -> Vec<koda_sandbox::LoopbackForward> {
+        self.reap();
+        let mut sockets = Vec::new();
+        for entry in self.inner.lock().unwrap().values_mut() {
+            if entry.status == BgProcessStatus::Running {
+                sockets.extend(entry.loopback_socket.clone());
+            } else if let Some(socket) = entry.loopback_socket.take() {
+                let _ = std::fs::remove_file(socket);
+            }
+        }
+        if sockets.is_empty() {
+            return Vec::new();
+        }
+        let query = tokio::task::spawn_blocking(move || {
+            let mut forwards = Vec::new();
+            for socket in sockets {
+                match koda_sandbox::bwrap_loopback::listening_ports(&socket) {
+                    Ok(ports) => {
+                        forwards.extend(ports.into_iter().map(|port| {
+                            koda_sandbox::LoopbackForward {
+                                port,
+                                socket: socket.clone(),
+                            }
+                        }));
+                    }
+                    // Not served yet, or its sandbox has gone.
+                    Err(e) => tracing::debug!("loopback socket {}: {e}", socket.display()),
+                }
+            }
+            forwards
+        });
+        let mut forwards = query.await.unwrap_or_default();
+        // Two commands can't both listen on one port of a forwarding
+        // command's loopback; the first keeps it.
+        let mut seen = std::collections::HashSet::new();
+        forwards.retain(|f| seen.insert(f.port));
+        forwards
+    }
+
+    /// Loopback TCP ports the running background commands' process groups
+    /// listen on, found with `lsof`: seatbelt shares the host's loopback.
+    #[cfg(not(target_os = "linux"))]
+    async fn lsof_ports(&self) -> Vec<u16> {
         if !cfg!(target_os = "macos") {
             return Vec::new();
         }
@@ -484,11 +564,11 @@ impl BgRegistry {
         match tokio::time::timeout(Duration::from_secs(2), lsof).await {
             Ok(Ok(out)) => parse_lsof_ports(&String::from_utf8_lossy(&out.stdout)),
             Ok(Err(e)) => {
-                tracing::warn!("BgRegistry::listening_ports: lsof failed: {e}");
+                tracing::warn!("BgRegistry::lsof_ports: lsof failed: {e}");
                 Vec::new()
             }
             Err(_) => {
-                tracing::warn!("BgRegistry::listening_ports: lsof took over 2s");
+                tracing::warn!("BgRegistry::lsof_ports: lsof took over 2s");
                 Vec::new()
             }
         }
@@ -497,6 +577,7 @@ impl BgRegistry {
 
 /// Ports from `lsof -Fn` output: lines like `n*:8766`, `n127.0.0.1:3000` or
 /// `n[::1]:5173`, between the `p` (process) and `f` (file) lines.
+#[cfg(any(not(target_os = "linux"), test))]
 fn parse_lsof_ports(out: &str) -> Vec<u16> {
     let mut ports: Vec<u16> = out
         .lines()

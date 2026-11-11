@@ -32,6 +32,8 @@
 #[cfg(target_os = "linux")]
 pub mod bwrap;
 #[cfg(target_os = "linux")]
+pub mod bwrap_loopback;
+#[cfg(target_os = "linux")]
 pub mod bwrap_proxy;
 pub mod defaults;
 pub mod env;
@@ -79,7 +81,7 @@ pub use violations::{
 pub use workspace::{CwdProvider, GitWorktreeProvider, WorkspaceProvider};
 
 use anyhow::Result;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
 // ── Public API: SandboxRuntime trait ─────────────────────────────────────────
@@ -120,14 +122,41 @@ pub struct SandboxTransformRequest<'a> {
     /// fallback.
     pub proxy_port: Option<u16>,
 
-    /// Loopback TCP ports the command may connect to directly, besides the
-    /// proxy: the ports servers the caller started are listening on, so a
-    /// command can reach a dev server it started earlier. Empty for none.
-    ///
-    /// Seatbelt only, and only with `proxy_port` (the open baseline allows
-    /// all network). bwrap gives each command its own network namespace,
-    /// whose loopback isn't the host's, so it ignores this.
-    pub loopback_ports: &'a [u16],
+    /// The servers of the caller's own background commands, which this
+    /// command may reach on localhost besides the proxy. Only with
+    /// `proxy_port`: the open baseline allows all network anyway.
+    pub loopback: &'a Loopback,
+}
+
+/// Which localhost servers a sandboxed command may reach: those of the
+/// caller's own background commands, and no others (the user's own servers,
+/// databases and Docker stay closed).
+///
+/// The two backends do it differently. Seatbelt shares the host's loopback,
+/// so it opens `ports`. bwrap gives every command its own network namespace,
+/// so a server lives in its background command's namespace: that command
+/// `serve`s its namespace on a Unix socket, and a later command `forwards`
+/// each port to it ([`crate::stage2`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Loopback {
+    /// Seatbelt: loopback TCP ports the command may connect to directly.
+    pub ports: Vec<u16>,
+    /// bwrap: ports to open on the command's own loopback, each forwarded
+    /// into the namespace of the background command that listens on it.
+    pub forwards: Vec<LoopbackForward>,
+    /// bwrap: serve this command's namespace on this socket, so later
+    /// commands can reach the servers it starts. For background commands.
+    pub serve: Option<PathBuf>,
+}
+
+/// A port a background command's server listens on, and the socket that
+/// command serves its network namespace on (bwrap).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoopbackForward {
+    /// The port, the same on both sides.
+    pub port: u16,
+    /// The background command's socket.
+    pub socket: PathBuf,
 }
 
 /// Output of [`SandboxRuntime::transform`].
@@ -210,7 +239,7 @@ impl SandboxRuntime for SeatbeltRuntime {
                 port,
                 req.policy.net.allow_local_binding,
                 req.policy.net.weaker_macos_isolation,
-                req.loopback_ports,
+                &req.loopback.ports,
             )?,
             None => seatbelt::build_command(req.command, req.project_root, req.policy)?,
         };
@@ -331,6 +360,7 @@ fn try_build_kernel_enforced(
         port,
         &uds,
         &stage2,
+        req.loopback,
     )?;
     Ok(Some(cmd))
 }
@@ -454,7 +484,7 @@ mod tests {
             project_root: Path::new("/tmp"),
             policy: &policy,
             proxy_port: None,
-            loopback_ports: &[],
+            loopback: &Loopback::default(),
         };
         let runtime = UnsandboxedRuntime;
         let result = runtime.transform(req).unwrap();
@@ -493,7 +523,7 @@ mod tests {
                 project_root: Path::new("/tmp"),
                 policy: &policy,
                 proxy_port: Some(8080),
-                loopback_ports: &[],
+                loopback: &Loopback::default(),
             })
             .unwrap();
         let without = UnsandboxedRuntime
@@ -502,7 +532,7 @@ mod tests {
                 project_root: Path::new("/tmp"),
                 policy: &policy,
                 proxy_port: None,
-                loopback_ports: &[],
+                loopback: &Loopback::default(),
             })
             .unwrap();
         // Both should be `sh -c true` — no proxy-related divergence in
@@ -530,7 +560,7 @@ mod tests {
             project_root: Path::new("/tmp"),
             policy: &policy,
             proxy_port: Some(54321),
-            loopback_ports: &[],
+            loopback: &Loopback::default(),
         };
         let cmd = SeatbeltRuntime.transform(req).unwrap().command;
         let profile = cmd
@@ -566,7 +596,7 @@ mod tests {
             project_root: Path::new("/tmp"),
             policy: &policy,
             proxy_port: None,
-            loopback_ports: &[],
+            loopback: &Loopback::default(),
         };
         let cmd = SeatbeltRuntime.transform(req).unwrap().command;
         let profile = cmd
@@ -604,7 +634,7 @@ mod tests {
             project_root: project.path(),
             policy: &policy,
             proxy_port: Some(54321),
-            loopback_ports: &[],
+            loopback: &Loopback::default(),
         };
         // Construct without spawning. We don't assert anything about the
         // arg vector — bwrap simply doesn't touch the network namespace

@@ -114,6 +114,10 @@ pub fn build_command(
 /// helper binary (located via [`stage2_binary`]). The host filesystem
 /// is bind-mounted read-only into the sandbox, so the same path is
 /// reachable from inside.
+///
+/// `loopback` names the background servers the command may reach, and for
+/// a background command the socket to serve its own namespace on
+/// ([`crate::bwrap_loopback`]); its `ports` are seatbelt's and ignored here.
 pub fn build_command_with_proxy(
     command: &str,
     project_root: &Path,
@@ -121,6 +125,7 @@ pub fn build_command_with_proxy(
     proxy_port: u16,
     uds_path: &Path,
     stage2_bin: &Path,
+    loopback: &crate::Loopback,
 ) -> Result<Command> {
     if !is_available() {
         anyhow::bail!(
@@ -170,6 +175,26 @@ pub fn build_command_with_proxy(
     );
     // Debug breadcrumb — never read by stage 2 itself.
     cmd.env("KODA_SANDBOX_PROXY_PORT_DEBUG", proxy_port.to_string());
+
+    // The loopback bridge to Koda's background servers. Their sockets
+    // share one directory, bound in explicitly since it may not be under
+    // `/tmp`.
+    if !loopback.forwards.is_empty() || loopback.serve.is_some() {
+        let dir = crate::bwrap_loopback::socket_dir();
+        if dir.is_dir() {
+            let dir = dir.to_string_lossy().into_owned();
+            cmd.args(["--bind", &dir, &dir]);
+        }
+        if !loopback.forwards.is_empty() {
+            cmd.env(
+                crate::bwrap_loopback::FORWARDS_ENV_KEY,
+                crate::bwrap_loopback::encode_forwards(&loopback.forwards),
+            );
+        }
+        if let Some(socket) = &loopback.serve {
+            cmd.env(crate::bwrap_loopback::SERVE_ENV_KEY, socket);
+        }
+    }
 
     // Replace the usual `-- sh -c <cmd>` terminator with the stage 2
     // helper. Stage 2 sets up the in-netns bridge then execvp's
@@ -602,6 +627,7 @@ mod tests {
             12345,
             &uds,
             &stage2,
+            &crate::Loopback::default(),
         )
         .unwrap();
 
@@ -668,6 +694,7 @@ mod tests {
             54321,
             &uds,
             &stage2,
+            &crate::Loopback::default(),
         )
         .unwrap();
 

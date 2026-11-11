@@ -494,3 +494,105 @@ async fn curl_to_blocked_host_returns_403_via_proxy() {
         "curl must NOT succeed (host is blocked); output:\n{combined}"
     );
 }
+
+/// With the real session proxy, kernel-enforced on Linux with each command
+/// in its own network namespace, a server Koda starts in the background is
+/// reachable from later commands through the loopback bridge, and a
+/// localhost server Koda didn't start isn't.
+///
+/// Linux only. macOS has its own test of the same promise
+/// (`tools::shell::tests::a_sandboxed_command_reaches_only_koda_s_own_background_server`).
+/// On GitHub's macOS runners this session-level version found the
+/// background `python3` running but silent and not listening after 20
+/// seconds, while it passes on a Mac; the cause is still unknown.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_later_command_reaches_only_koda_s_own_background_server() {
+    let have = |tool: &str| {
+        std::process::Command::new(tool)
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success())
+    };
+    if !koda_core::sandbox::is_available() || !have("python3") || !have("curl") {
+        eprintln!("skip: needs the kernel sandbox, python3 and curl");
+        return;
+    }
+    let env = Env::builder()
+        .provider_type(ProviderType::Mock)
+        .build()
+        .await;
+    let session = make_real_session(&env).await;
+    let tools = &session.agent.tools;
+    let free_port = || {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    };
+    let port = free_port();
+    // A host server Koda didn't start, answering 200 to anyone who reaches it.
+    let theirs = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let their_port = theirs.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        for mut conn in theirs.incoming().flatten() {
+            let _ = conn.read(&mut [0u8; 1024]);
+            let _ = conn.write_all(b"HTTP/1.0 200 OK\r\nContent-Length: 0\r\n\r\n");
+        }
+    });
+
+    let bash = |command: String, background: bool| {
+        serde_json::json!({"command": command, "background": background}).to_string()
+    };
+    let started = tools
+        .execute(
+            "Bash",
+            &bash(
+                format!("python3 -u -m http.server {port} --bind 127.0.0.1"),
+                true,
+            ),
+            None,
+            None,
+        )
+        .await;
+    assert!(started.success, "{}", started.output);
+
+    let reach = |port: u16| {
+        bash(
+            format!(
+                "curl -s --max-time 5 --noproxy '*' -o /dev/null -w 'code=%{{http_code}}' http://127.0.0.1:{port}/"
+            ),
+            false,
+        )
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let own = tools.execute("Bash", &reach(port), None, None).await;
+        if own.output.contains("code=200") {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            // What the server logged, and which ports Koda saw it on.
+            let log = started
+                .output
+                .lines()
+                .find_map(|l| l.trim().strip_prefix("Output:"))
+                .and_then(|rest| rest.split(" (").next())
+                .map(|path| std::fs::read_to_string(path.trim()).unwrap_or_default())
+                .unwrap_or_default();
+            panic!(
+                "never reached Koda's own server on {port}: {}\nports Koda sees: {:?}\n\
+                 background: {:?}\nstarted: {}\nserver log:\n{log}",
+                own.output,
+                tools.bg_registry.listening_ports().await,
+                tools.bg_registry.snapshot(),
+                started.output,
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    let other = tools.execute("Bash", &reach(their_port), None, None).await;
+    assert!(other.output.contains("code=000"), "{}", other.output);
+}

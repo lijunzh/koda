@@ -167,14 +167,13 @@ pub fn build(
         policy,
         proxy_port,
         socks5_port,
-        &[],
+        &koda_sandbox::Loopback::default(),
     )
 }
 
-/// [`build`], letting the command also connect straight to `loopback_ports`
-/// on localhost: the ports Koda's own background servers listen on
-/// ([`crate::tools::bg_process::BgRegistry::listening_ports`]). macOS only;
-/// see [`SandboxTransformRequest::loopback_ports`].
+/// [`build`], letting the command also reach Koda's own background servers
+/// on localhost ([`crate::tools::bg_process::BgRegistry::loopback`]); see
+/// [`koda_sandbox::Loopback`].
 pub fn build_with_loopback(
     command: &str,
     project_root: &Path,
@@ -182,7 +181,7 @@ pub fn build_with_loopback(
     policy: &SandboxPolicy,
     proxy_port: Option<u16>,
     socks5_port: Option<u16>,
-    loopback_ports: &[u16],
+    loopback: &koda_sandbox::Loopback,
 ) -> Result<Command> {
     let runtime = current_runtime();
     warn_if_unavailable_once(runtime.as_ref());
@@ -228,7 +227,7 @@ pub fn build_with_loopback(
         // can't escape via direct TCP. On Linux this is a no-op
         // until 3c.1 ships kernel-enforcement (slirp4netns / similar).
         proxy_port,
-        loopback_ports,
+        loopback,
     };
 
     let mut cmd = match runtime.transform(req) {

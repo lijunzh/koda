@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **On Linux, a sandboxed command can reach a dev server Koda started in the background**, as on macOS since 0.6.1. bwrap runs each command in its own network namespace, so `curl localhost:8765` after `python3 -m http.server 8765` in the background found nothing there. Now the background command's sandbox serves its namespace on a Unix socket that only the user can open. Before each Bash call, Koda asks that socket which ports are listening. The new command's sandbox listens on those ports and forwards each connection through the socket. Every other local port stays closed, as on macOS. Codex and Claude Code's sandbox runtime don't bridge namespaces on Linux.
+
 - **`s` at an approval prompt: yes for the rest of the session.** For a local change inside the project, `s` approves and stops asking for the same Bash command or the same file (Edit, Write) until the session ends. As in Codex, the allow is held in memory only and never written to a config file, so Koda behaves the same on every machine and a new session asks again. Destructive actions, leaving the sandbox, remote actions and anything outside the project still ask every time. In recorded eval sessions run in Safe mode, this would have removed about 40% of the prompts. The `a` key, which switches to Auto, is now labelled `auto` instead of `always`.
 
 ### Removed
