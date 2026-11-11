@@ -12,7 +12,7 @@ without ever leaving the terminal.
 cargo install koda-cli
 ```
 
-On first run, an onboarding wizard guides you through provider and API key setup.
+On first run, an onboarding wizard guides you through provider and API key setup, unless you name a provider with `--provider`.
 
 Linux note: the default trust mode is Auto, which requires bubblewrap
 (`bwrap`) so the kernel sandbox can contain auto-approved mutations.

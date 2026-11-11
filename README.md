@@ -30,7 +30,7 @@ cd koda && cargo build --release -p koda-cli
 
 ### Run
 
-On first run, an onboarding wizard will guide you through provider and API key setup.
+On first run, an onboarding wizard will guide you through provider and API key setup, unless you name a provider with `--provider`.
 
 ```bash
 # Open the interactive fullscreen TUI

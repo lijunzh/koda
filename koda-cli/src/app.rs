@@ -326,6 +326,10 @@ pub(crate) async fn run() -> Result<()> {
         .with_trust(parse_top_level_trust_mode(&cli.mode));
     check_typed_reasoning(typed.0.as_deref(), typed.1, &config)?;
 
+    // Onboarding asks which provider to use. A start that names one already
+    // skips it, as Codex skips the screens a start doesn't need.
+    let first_run = first_run && !overrides.provider;
+
     // Initialize database is already done above
 
     // Load or create session
