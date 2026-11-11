@@ -238,6 +238,13 @@ impl Database {
         .execute(pool)
         .await?;
 
+        // `owned_files` fed the file tracker (#465), removed with the
+        // `Delete` tool. Its rows only said which files `Delete` could remove
+        // without asking. An older Koda recreates it empty if it needs it.
+        sqlx::query("DROP TABLE IF EXISTS owned_files")
+            .execute(pool)
+            .await?;
+
         // Global key-value store (#693): replaces settings.toml and keys.toml.
         // Keys are namespaced by convention:
         //   - `setting:*`  — last-used provider, etc.

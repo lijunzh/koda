@@ -1334,8 +1334,8 @@ approval rules: after #1556 a plain `rm a` ran in the sandbox in Auto while
 became Auto's most frequent prompt. Haiku, the main model, used it 3 times
 against 75 `rm` commands. Deleting is now a Bash command, judged by the
 same classifier as everything else: `rm` runs in the sandbox, a forced
-`rm` asks. The `owned_files` table is no longer created or read; old
-databases keep theirs, unused.
+`rm` asks. Opening a database drops the tracker's `owned_files` table;
+an older Koda recreates it empty if run again.
 
 ### No File Undo (P2)
 

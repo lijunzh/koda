@@ -2359,3 +2359,31 @@ async fn resume_ids_resolve_whole_or_by_a_unique_prefix() {
     assert!(db.resolve_session_id("").await.is_err());
     assert!(db.resolve_session_id("%").await.is_err());
 }
+
+/// The file tracker's table goes when a database from before its removal
+/// is opened.
+#[tokio::test]
+async fn test_open_drops_the_owned_files_table() {
+    let (db, tmp) = setup().await;
+    sqlx::query(
+        "CREATE TABLE owned_files (session_id TEXT NOT NULL, path TEXT NOT NULL, \
+         PRIMARY KEY(session_id, path))",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO owned_files VALUES ('s', '/p/a.txt')")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    drop(db);
+
+    let db = Database::open(&tmp.path().join("test.db")).await.unwrap();
+    let tables: Vec<(String,)> = sqlx::query_as(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'owned_files'",
+    )
+    .fetch_all(db.pool())
+    .await
+    .unwrap();
+    assert!(tables.is_empty(), "owned_files should be dropped");
+}
