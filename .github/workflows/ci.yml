@@ -266,7 +266,8 @@ jobs:
             "tools::file_tools::tests::write_file_refuses_symlink_escaping_project_root"
             "tools::file_tools::tests::write_file_refuses_symlinked_parent_dir_escaping_project_root"
             "tools::file_tools::tests::edit_file_refuses_symlink_escaping_project_root"
-            "tools::file_tools::tests::delete_file_refuses_symlink_escaping_project_root"
+            # (The Delete tool's symlink test left with the tool, #1564: an
+            # `rm` runs in Bash, confined by the sandbox tests below.)
             # ── MCP transport SSRF ─────────────────────────────────────
             "mcp_client_connect_rejects_loopback_ssrf"
             # ── sandbox path confinement (worker / fs / workspace) ────────
