@@ -227,7 +227,28 @@ jobs:
     if: always()
     steps:
       - name: Install lcov
-        run: sudo apt-get install -y lcov
+        # Ubuntu's mirrors sometimes fail DNS from GitHub runners
+        # (security.ubuntu.com on 2026-11-11: the install failed after 35
+        # minutes, and its rerun hung). Same retry as ci.yml's bubblewrap
+        # step, plus a time limit on each attempt and a refreshed package
+        # list between them. Worst case, five hung attempts: 5 x 90 s + 4 x 60 s
+        # + 150 s of waits = 14 minutes, under the step's limit.
+        timeout-minutes: 15
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if timeout 90 sudo apt-get install -y -o Acquire::Retries=2 lcov; then
+              echo "lcov installed on attempt $attempt"
+              break
+            fi
+            if [ "$attempt" -eq 5 ]; then
+              echo "::error::apt-get install lcov failed after 5 attempts (Ubuntu mirror unreachable?)"
+              exit 1
+            fi
+            delay=$((15 * attempt))
+            echo "::warning::apt-get install lcov attempt $attempt/5 failed; retrying in ${delay}s"
+            sleep $delay
+            timeout 60 sudo apt-get update -o Acquire::Retries=2 || true
+          done
 
       - uses: actions/download-artifact@v4
         with:
