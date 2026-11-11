@@ -55,7 +55,7 @@ use crate::db::Database;
 use crate::engine::EngineSink;
 use crate::sub_agent_cache::SubAgentCache;
 use crate::tools::ToolRegistry;
-use crate::trust::TrustMode;
+use crate::trust::{SessionAllows, TrustMode};
 
 /// Per-turn ambient context shared across the inference loop, tool
 /// dispatch, and sub-agent invocation.
@@ -99,6 +99,9 @@ pub struct TurnContext<'a> {
     /// Tool registry (built-in + MCP). Per-session; constant within
     /// a single turn.
     pub tools: &'a ToolRegistry,
+
+    /// What the user allowed for the rest of the session at a prompt.
+    pub session_allows: &'a SessionAllows,
 }
 
 impl<'a> TurnContext<'a> {
@@ -118,6 +121,7 @@ impl<'a> TurnContext<'a> {
         bg_agents: &'a Arc<ChildAgentRegistry>,
         mode: TrustMode,
         tools: &'a ToolRegistry,
+        session_allows: &'a SessionAllows,
     ) -> Self {
         Self {
             project_root,
@@ -130,6 +134,7 @@ impl<'a> TurnContext<'a> {
             bg_agents,
             mode,
             tools,
+            session_allows,
         }
     }
 }
@@ -223,6 +228,7 @@ mod tests {
         let bg_agents = Arc::new(ChildAgentRegistry::new());
         let tools = ToolRegistry::new(root.clone(), 8_000);
         let sink = NullSink;
+        let allows = SessionAllows::default();
 
         // Act: build the context.
         let ctx = TurnContext::new(
@@ -236,6 +242,7 @@ mod tests {
             &bg_agents,
             TrustMode::Safe,
             &tools,
+            &allows,
         );
 
         // Assert: every field is reachable + carries the value we passed.
@@ -258,6 +265,7 @@ mod tests {
         let bg_agents = Arc::new(ChildAgentRegistry::new());
         let tools = ToolRegistry::new(root.clone(), 8_000);
         let sink = NullSink;
+        let allows = SessionAllows::default();
         let turn = TurnContext::new(
             &root,
             &config,
@@ -269,6 +277,7 @@ mod tests {
             &bg_agents,
             TrustMode::Auto,
             &tools,
+            &allows,
         );
 
         // Top-level invocation: no parent spawner.

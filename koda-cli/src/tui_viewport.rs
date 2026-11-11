@@ -404,7 +404,10 @@ fn render_menu(frame: &mut ratatui::Frame, menu: &MenuContent, menu_area: ratatu
             frame.render_widget(Paragraph::new(lines), menu_area);
         }
         MenuContent::Approval {
-            tool_name, detail, ..
+            tool_name,
+            detail,
+            allow_for_session,
+            ..
         } => {
             // A request to leave the sandbox gets the warning and the
             // model's reason on lines of their own, so neither is cut off
@@ -443,18 +446,27 @@ fn render_menu(frame: &mut ratatui::Frame, menu: &MenuContent, menu_area: ratatu
                     Span::styled(format!("  {detail}"), Style::default().fg(Color::DarkGray)),
                 ])],
             };
-            lines.push(Line::from(vec![
+            let mut keys = vec![
                 Span::styled("  [y]", Style::default().fg(Color::Green)),
                 Span::styled(" approve  ", Style::default().fg(Color::DarkGray)),
+            ];
+            if *allow_for_session {
+                keys.extend([
+                    Span::styled("[s]", Style::default().fg(Color::Green)),
+                    Span::styled(" this session  ", Style::default().fg(Color::DarkGray)),
+                ]);
+            }
+            keys.extend([
                 Span::styled("[n]", Style::default().fg(Color::Red)),
                 Span::styled(" reject  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("[f]", Style::default().fg(Color::Yellow)),
                 Span::styled(" feedback  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("[a]", Style::default().fg(Color::Rgb(124, 111, 100))),
-                Span::styled(" always  ", Style::default().fg(Color::DarkGray)),
+                Span::styled(" auto  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("[esc]", Style::default().fg(Color::Rgb(124, 111, 100))),
                 Span::styled(" stop", Style::default().fg(Color::DarkGray)),
-            ]));
+            ]);
+            lines.push(Line::from(keys));
             frame.render_widget(Paragraph::new(lines), menu_area);
         }
         MenuContent::LoopCap { .. } => {

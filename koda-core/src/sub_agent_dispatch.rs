@@ -212,6 +212,7 @@ pub(crate) fn execute_sub_agent<'a>(
             sub_agent_cache,
             bg_agents,
             mode,
+            session_allows,
             ..
         } = *parent_tx.turn;
         let cancel = parent_tx.turn.cancel.clone();
@@ -692,6 +693,7 @@ pub(crate) fn execute_sub_agent<'a>(
             bg_agents,
             mode,
             &tools,
+            session_allows,
         );
         let sub_tx =
             crate::turn_context::ToolExecutionContext::new(&sub_turn, Some(my_invocation_id));
@@ -1180,12 +1182,14 @@ pub(crate) fn execute_sub_agent<'a>(
                                     &detail,
                                     diff_preview,
                                     effect,
+                                    false,
                                 )
                                 .await
                                 {
-                                    Some(ApprovalDecision::Approve) => {
-                                        tool_output(tc, sub_tx, &cancel).await
-                                    }
+                                    Some(
+                                        ApprovalDecision::Approve
+                                        | ApprovalDecision::ApproveForSession,
+                                    ) => tool_output(tc, sub_tx, &cancel).await,
                                     Some(ApprovalDecision::Reject) => {
                                         "[rejected by user]".to_string()
                                     }

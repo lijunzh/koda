@@ -364,8 +364,8 @@ emits `EngineEvent::ApprovalRequest` and awaits
 channel, and nothing in the engine depends on that.
 
 **Decision variants distinguish the source of "no" (#1022 B15)**.
-`ApprovalDecision` has four variants, not three: `Approve`, `Reject`,
-`RejectWithFeedback { feedback }`, `RejectAuto { reason }`. The split
+`ApprovalDecision` has `Approve`, `ApproveForSession`, `Reject`,
+`RejectWithFeedback { feedback }` and `RejectAuto { reason }`. The split
 between `Reject` (interactive: a human said no) and `RejectAuto`
 (structural: no human is in the loop, e.g. headless mode refuses
 destructive ops by policy) matters because the model adapts
@@ -1228,6 +1228,17 @@ user-facing mental-model doc).
   `git clean -f`, `git push --force`, publishing, `gh` merges, deletes,
   auth and `api`, `sudo`, disk tools and reboots. Safe mode still asks for
   every change.
+- **A yes can cover the rest of the session, in memory only** (2026-11).
+  At a prompt for a local change inside the project, `s` approves and stops
+  asking for the same Bash command or the same file until the session ends
+  (`trust::SessionAllows`, `trust::session_allow_key`). This is Codex's
+  model. Claude Code instead writes "don't ask again" rules to a per-machine
+  settings file, which would make Koda's behaviour depend on dotfiles that
+  differ between machines, and would be a second gating mechanism beside
+  `TrustMode`. A session allow only remembers a yes the mode asked for, and
+  is never offered for destructive actions, leaving the sandbox, remote
+  actions or the outside-project floor. In recorded eval sessions run in
+  Safe mode, it would have removed about 40% of prompts.
 - **Sub-agents resolve `⏸ confirm` cells using a context-sensitive
   matrix** (`check_tool_for_sub_agent`, #1251). Sub-agents have no live
   human approval channel by design — the master TUI is the only

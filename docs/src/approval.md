@@ -137,6 +137,7 @@ When a confirmation prompt appears:
 | Key   | Effect                                                            |
 |-------|-------------------------------------------------------------------|
 | `y`   | Approve this one action                                           |
+| `s`   | Approve, and don't ask again this session for the same command or file |
 | `n`   | Reject this one action                                            |
 | `a`   | Approve **and** enable Auto mode for the rest of the session      |
 | `f`   | Reject and provide written feedback the model can act on          |
@@ -144,6 +145,20 @@ When a confirmation prompt appears:
 
 `n` and `f` let the model carry on and try something else. `Esc` and `Ctrl+C`
 stop it until your next prompt, and the model sees that you stopped the action.
+
+### Allow for this session
+
+`s` is offered only for a local change inside the project. Destructive
+actions, leaving the sandbox, remote actions and anything outside the project
+ask every time. What `s` covers is what you saw:
+
+- **Bash:** the exact command. `cargo test` doesn't cover `cargo test -p koda-core`.
+- **Edit and Write:** the file. Later edits to it don't ask, whatever they change.
+- **Other tools:** the exact arguments.
+
+The allow lives in memory for this session only, as in Codex. Koda never
+writes it to a config file, so it behaves the same on every machine, and a new
+session or a restart asks again.
 
 ## Per-agent trust declaration
 

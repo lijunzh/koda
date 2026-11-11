@@ -293,6 +293,7 @@ impl Env {
             queued_steers: &mut Vec::new(),
             bg_agents: &bg_agents,
             sub_agent_cache: &sub_agent_cache,
+            session_allows: &koda_core::trust::SessionAllows::default(),
             // #1325 Phase 4: test envs are always the user-facing
             // root agent. SpawnAgent-driven children get their own
             // path injected by the spawn machinery and don't reach

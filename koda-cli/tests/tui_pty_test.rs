@@ -553,6 +553,45 @@ async fn n_rejects_and_lets_the_model_go_on() {
     assert!(sent.contains("User rejected this action."), "{sent}");
 }
 
+fn bash(command: &str) -> ResponseTemplate {
+    tool_calls(&[("Bash", json!({ "command": command }))])
+}
+
+/// `s` approves a local change for the rest of the session: the same command
+/// runs again without a prompt. A destructive command doesn't offer `s`, and
+/// pressing it there does nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn s_allows_a_command_for_the_session_but_not_a_destructive_one() {
+    let server = scripted_model(vec![
+        bash("touch a.txt"),
+        bash("touch a.txt"),
+        bash("rm -rf build"),
+    ])
+    .await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.submit("first prompt");
+    tui.wait_for_screen("[s] this session");
+    tui.type_text("s");
+
+    // The repeat runs unasked, so the next prompt is the destructive one.
+    tui.wait_for_screen("rm -rf build");
+    tui.wait_for_screen("[y] approve");
+    assert!(
+        !tui.screen().contains("[s] this session"),
+        "{}",
+        tui.screen()
+    );
+    tui.type_text("s");
+    assert!(tui.screen().contains("[y] approve"), "{}", tui.screen());
+    assert_eq!(model_calls(&server).await.len(), 3);
+
+    tui.type_text("y");
+    tui.wait_for_screen("All done.");
+    assert!(home.path().join("a.txt").exists());
+}
+
 /// Stopping at the second call of a batch keeps what the first one did.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_stop_keeps_the_calls_that_already_ran() {

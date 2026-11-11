@@ -156,10 +156,20 @@ async fn handle_inference_key_inline(
     }
 
     // Approval hotkeys
-    if let MenuContent::Approval { id, .. } = menu {
+    if let MenuContent::Approval {
+        id,
+        allow_for_session,
+        ..
+    } = menu
+    {
         let approval_id = id.clone();
         let decision = match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => Some(ApprovalDecision::Approve),
+            // Yes, and don't ask again this session for this command or
+            // file. Offered only for local changes inside the project.
+            KeyCode::Char('s') | KeyCode::Char('S') if *allow_for_session => {
+                Some(ApprovalDecision::ApproveForSession)
+            }
             KeyCode::Char('n') | KeyCode::Char('N') => Some(ApprovalDecision::Reject),
             KeyCode::Char('a') | KeyCode::Char('A') => {
                 // Sandbox-aware Auto switch (#860 hard refusal). If the

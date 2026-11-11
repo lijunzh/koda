@@ -636,6 +636,7 @@ mod tests {
             detail: "rm -rf build".into(),
             preview: None,
             effect,
+            allow_for_session: false,
         }
     }
 

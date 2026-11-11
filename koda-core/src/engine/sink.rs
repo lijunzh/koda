@@ -936,6 +936,7 @@ mod tests {
             detail: "rm -rf build".into(),
             preview: None,
             effect: crate::tools::ToolEffect::Destructive,
+            allow_for_session: false,
         });
         let lines = sink.take_lines();
         assert_eq!(lines.len(), 1);
@@ -1629,6 +1630,7 @@ mod tests {
             detail: "write 1 file".into(),
             preview: None,
             effect: crate::tools::ToolEffect::LocalMutation,
+            allow_for_session: false,
         };
         let (kind, payload) = classify_for_persist(&event, Some("parent-call"))
             .expect("ApprovalRequest must persist on sub-agent path");

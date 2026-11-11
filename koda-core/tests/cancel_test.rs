@@ -132,6 +132,7 @@ async fn test_cancel_during_chat_stream_returns_immediately() {
         queued_steers: &mut Vec::new(),
         bg_agents: &koda_core::child_agent::new_shared(),
         sub_agent_cache: &koda_core::sub_agent_cache::SubAgentCache::new(),
+        session_allows: &koda_core::trust::SessionAllows::default(),
     })
     .await;
 

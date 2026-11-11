@@ -26,6 +26,7 @@ async fn only_the_matching_decision_resumes_the_turn() {
 
     let tool_defs = env.tool_defs();
     let cache = koda_core::sub_agent_cache::SubAgentCache::new();
+    let allows = koda_core::trust::SessionAllows::default();
     let git = koda_core::git::GitSnapshot::default();
     let mut steers = Vec::new();
     let turn = inference::inference_loop(InferenceContext {
@@ -47,6 +48,7 @@ async fn only_the_matching_decision_resumes_the_turn() {
         queued_steers: &mut steers,
         bg_agents: &env.bg_agents,
         sub_agent_cache: &cache,
+        session_allows: &allows,
     });
     tokio::pin!(turn);
 

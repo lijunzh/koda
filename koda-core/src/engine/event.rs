@@ -238,6 +238,10 @@ pub enum EngineEvent {
         preview: Option<crate::preview::DiffPreview>,
         /// The classified effect that triggered confirmation.
         effect: crate::tools::ToolEffect,
+        /// Whether the client may answer
+        /// [`ApprovalDecision::ApproveForSession`]: only for local changes
+        /// inside the project (see [`crate::trust::session_allow_key`]).
+        allow_for_session: bool,
     },
 
     /// The model needs a clarifying answer from the user before proceeding.
@@ -794,6 +798,10 @@ impl EngineCommand {
 pub enum ApprovalDecision {
     /// Approve and execute the action.
     Approve,
+    /// Approve, and don't ask again this session for the same command or
+    /// file. Only valid when the request had `allow_for_session`; otherwise
+    /// it counts as [`ApprovalDecision::Approve`].
+    ApproveForSession,
     /// Reject the action (interactive: a human said no).
     Reject,
     /// Reject with feedback (tells the LLM what to change).
@@ -885,6 +893,7 @@ mod tests {
             detail: "rm -rf node_modules".into(),
             preview: None,
             effect: crate::tools::ToolEffect::Destructive,
+            allow_for_session: false,
         };
         let json = serde_json::to_string(&event).unwrap();
         let deserialized: EngineEvent = serde_json::from_str(&json).unwrap();

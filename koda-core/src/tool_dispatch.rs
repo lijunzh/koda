@@ -510,6 +510,7 @@ pub(crate) async fn execute_tools_sequential(
         mode,
         sink,
         ref cancel,
+        session_allows,
         ..
     } = *ctx;
     for (i, tc) in tool_calls.iter().enumerate() {
@@ -587,6 +588,20 @@ pub(crate) async fn execute_tools_sequential(
             continue;
         }
 
+        // A yes "for this session" covers the same command or file again.
+        let effect = (approval == ToolApproval::NeedsConfirmation).then(|| {
+            crate::trust::resolve_tool_effect_with_registry(&tc.function_name, &parsed_args, tools)
+        });
+        let session_key = effect.and_then(|effect| {
+            trust::session_allow_key(&tc.function_name, &parsed_args, effect, project_root)
+        });
+        if session_key
+            .as_deref()
+            .is_some_and(|key| session_allows.contains(key))
+        {
+            approval = ToolApproval::AutoApprove;
+        }
+
         match approval {
             ToolApproval::AutoApprove => {
                 // Execute without asking
@@ -616,11 +631,7 @@ pub(crate) async fn execute_tools_sequential(
                 let detail = tools::describe_action(&tc.function_name, &parsed_args);
                 let diff_preview =
                     preview::compute(&tc.function_name, &parsed_args, project_root).await;
-                let effect = crate::trust::resolve_tool_effect_with_registry(
-                    &tc.function_name,
-                    &parsed_args,
-                    tools,
-                );
+                let effect = effect.expect("computed for every NeedsConfirmation");
 
                 match request_approval(
                     sink,
@@ -630,10 +641,16 @@ pub(crate) async fn execute_tools_sequential(
                     &detail,
                     diff_preview,
                     effect,
+                    session_key.is_some(),
                 )
                 .await
                 {
                     Some(ApprovalDecision::Approve) => {}
+                    Some(ApprovalDecision::ApproveForSession) => {
+                        if let Some(key) = session_key {
+                            session_allows.insert(key);
+                        }
+                    }
                     Some(ApprovalDecision::Reject) => {
                         db.insert_message(
                             session_id,

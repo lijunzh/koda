@@ -51,6 +51,7 @@ pub(super) fn handle_inference_ui_inline(
             tool_name,
             detail,
             preview,
+            allow_for_session,
             ..
         }) => {
             if preview.is_some() {
@@ -67,6 +68,7 @@ pub(super) fn handle_inference_ui_inline(
                 id,
                 tool_name,
                 detail,
+                allow_for_session,
             };
         }
         UiEvent::Engine(EngineEvent::LoopCapReached {
