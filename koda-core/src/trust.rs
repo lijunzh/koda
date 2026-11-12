@@ -13,7 +13,7 @@
 //!
 //! | Mode | Sandbox | Approval | Use case |
 //! |------|---------|----------|----------|
-//! | **Plan** | project, read-only | deny all non-read | Sub-agent investigation only — see [`coerce_for_top_level()`](crate::trust::coerce_for_top_level) |
+//! | **Plan** | project, read-only | deny all non-read | Sub-agents, and headless runs that should only look (`koda --mode plan -p`) — see [`coerce_for_top_level()`](crate::trust::coerce_for_top_level) |
 //! | **Safe** | project, read+write | confirm side effects | Opt-in via `--mode safe` (CI, locked-down workstations) |
 //! | **Auto** | project, read+write | auto-approve mutations; destructive still confirms | Autonomous coding |
 //!
@@ -22,6 +22,15 @@
 //! the keyboard toggle all funnel through [`coerce_for_top_level()`](crate::trust::coerce_for_top_level)
 //! which coerces `Plan → Safe` with a warning. Sub-agents reach Plan
 //! via their JSON `"trust": "plan"` declaration plus parent clamping.
+//!
+//! A headless run (`koda --mode plan -p "..."`) is the exception: it keeps
+//! Plan. Nobody is there to approve anything, so a run that should only
+//! look (a morning digest over mail, a review) wants every write refused,
+//! the way `codex exec` defaults to a read-only sandbox and Claude Code,
+//! Gemini CLI and Qwen Code take a plan mode with `-p`. Plan also makes the
+//! project read-only in the kernel sandbox
+//! ([`policy_for_agent`](crate::sandbox::policy_for_agent)), so a command
+//! wrongly judged read-only still can't write there.
 //!
 //! ## Top-level (interactive) decision matrix
 //!
@@ -202,10 +211,19 @@ impl TrustMode {
     }
 }
 
+/// What the model reads in place of a tool's result when Plan refuses the
+/// call. It says why and what to do instead, and nothing about switching
+/// modes: a headless run can't, and an interactive session never sits in
+/// Plan.
+pub const PLAN_BLOCKED_MESSAGE: &str = "[plan mode] Not run: this session is read-only, so \
+     only tools that read are allowed. Don't retry it or try another way to make the change; \
+     say in your answer what you would do instead.";
+
 /// Coerce a candidate trust mode to one valid for the **top-level**
 /// session, returning `(coerced, warning)`.
 ///
-/// **#1244**: `Plan` is sub-agent-only. Pre-fix, the main session
+/// **#1244**: `Plan` is sub-agent-only in an interactive session (a
+/// headless run keeps it; see the module docs). Pre-fix, the main session
 /// could enter Plan via `--mode plan`, `/resume` of a Plan-persisted
 /// session, or any other call that fed `TrustMode::parse(..)` output
 /// directly into `KodaConfig::with_trust(..)` / `set_trust(..)`. None
@@ -588,7 +606,22 @@ pub fn check_tool(
     mode: TrustMode,
     project_root: Option<&Path>,
 ) -> ToolApproval {
-    check_tool_inner(tool_name, args, mode, project_root, false)
+    check_tool_inner(tool_name, args, mode, project_root, false, None)
+}
+
+/// [`check_tool`], classifying with `registry`'s catalog, which knows the
+/// connected MCP servers: a tool its server marks `readOnlyHint` counts as
+/// read-only, so Plan runs it and Safe doesn't ask. [`check_tool`] uses a
+/// catalog without MCP servers, where every MCP tool counts as a remote
+/// action.
+pub fn check_tool_with_registry(
+    tool_name: &str,
+    args: &serde_json::Value,
+    mode: TrustMode,
+    project_root: Option<&Path>,
+    registry: &crate::tools::ToolRegistry,
+) -> ToolApproval {
+    check_tool_inner(tool_name, args, mode, project_root, false, Some(registry))
 }
 
 /// Like [`check_tool`] but for sub-agent contexts (no human at the keyboard).
@@ -623,7 +656,19 @@ pub fn check_tool_for_sub_agent(
     mode: TrustMode,
     project_root: Option<&Path>,
 ) -> ToolApproval {
-    check_tool_inner(tool_name, args, mode, project_root, true)
+    check_tool_inner(tool_name, args, mode, project_root, true, None)
+}
+
+/// [`check_tool_for_sub_agent`] with `registry`'s MCP-aware catalog; see
+/// [`check_tool_with_registry`].
+pub fn check_tool_for_sub_agent_with_registry(
+    tool_name: &str,
+    args: &serde_json::Value,
+    mode: TrustMode,
+    project_root: Option<&Path>,
+    registry: &crate::tools::ToolRegistry,
+) -> ToolApproval {
+    check_tool_inner(tool_name, args, mode, project_root, true, Some(registry))
 }
 
 /// Shared implementation for [`check_tool`] and [`check_tool_for_sub_agent`].
@@ -638,8 +683,9 @@ fn check_tool_inner(
     mode: TrustMode,
     project_root: Option<&Path>,
     is_sub_agent: bool,
+    registry: Option<&crate::tools::ToolRegistry>,
 ) -> ToolApproval {
-    let effect = resolve_tool_effect(tool_name, args);
+    let effect = resolve_tool_effect_inner(tool_name, args, registry);
 
     // Read-only tools always auto-approve in every mode and context
     if effect == ToolEffect::ReadOnly {

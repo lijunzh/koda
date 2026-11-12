@@ -236,7 +236,7 @@ do. Where its writes land is a separate choice, and it follows your mode:
 |---------|--------------|
 | Auto | The project, like the main agent's. |
 | Safe | A git worktree of its own. A sub-agent can't ask for approval, so its file edits don't reach the project until you merge its branch. |
-| Plan | Nowhere. Sub-agents are read-only. |
+| Plan | Nowhere. Sub-agents are read-only, and the kernel sandbox keeps the project read-only for their commands. |
 
 An agent can ask for a worktree in any mode with `"isolation": "worktree"`
 in its JSON. When a worktree holds work at the end, Koda commits what isn't

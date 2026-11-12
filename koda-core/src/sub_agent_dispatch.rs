@@ -1087,11 +1087,12 @@ pub(crate) fn execute_sub_agent<'a>(
                         // here. `check_tool_for_sub_agent` resolves it per the
                         // safe-side rule: mutating ops auto-approve (the agent
                         // was invoked to do work), destructive ops block.
-                        let mut approval = trust::check_tool_for_sub_agent(
+                        let mut approval = trust::check_tool_for_sub_agent_with_registry(
                             &tc.function_name,
                             &parsed_args,
                             mode,
                             Some(effective_root_ref),
+                            &tools,
                         );
                         // A sub-agent may stop the background processes it
                         // started; `kill` alone would be blocked as destructive.
