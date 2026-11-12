@@ -46,6 +46,29 @@ policy** — more restrictive than interactive Auto mode:
 The sandbox enforces credential protection and write restrictions
 regardless of trust mode.
 
+### Read-only runs
+
+`--mode plan` makes a run read-only, for a job that should only look,
+such as summarizing a mailbox or reviewing a branch:
+
+```bash
+koda --mode plan -p "Anything in my inbox I need to deal with?"
+```
+
+- **Runs** tools that read: Read, Grep, Glob, web fetch and search, Bash
+  commands Koda judges read-only, and MCP tools whose server marks them
+  `readOnlyHint`.
+- **Refuses** everything else without asking: Write, Edit, other Bash
+  commands and MCP tools without the mark. The model is told the call was
+  refused and that it should say what it would do instead.
+- **Keeps the project read-only in the kernel sandbox** too, so a command
+  wrongly judged read-only still can't change it. Temp and cache
+  directories stay writable.
+
+An MCP server whose tools don't carry `readOnlyHint` can't be used in a
+read-only run. Codex's `exec` (read-only sandbox by default), and the plan
+modes of Claude Code, Gemini CLI and Qwen Code with `-p`, work the same way.
+
 ## Output formats
 
 `--output-format text` (default) — streams the assistant's reply to stdout

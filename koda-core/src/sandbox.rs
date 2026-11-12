@@ -358,10 +358,9 @@ pub fn policy_for_agent(trust: crate::trust::TrustMode, project_root: &Path) -> 
     // workspace is materialized (the test "does not panic on nonexistent
     // project root" pins this contract).
     //
-    // Plan mode is intentionally included: reads dominate in Plan but writes
-    // ARE permitted within the project (e.g. writing scratch files).  The
-    // higher-layer tool registry is what enforces read-only semantics for
-    // Plan, not the kernel sandbox write-allow list.
+    // Plan is included too, then denied the whole root below: its
+    // read-only promise is enforced by the trust layer first, and the
+    // kernel backs it up.
     let canonical_root = project_root
         .canonicalize()
         .unwrap_or_else(|_| project_root.to_path_buf());
@@ -396,6 +395,21 @@ pub fn policy_for_agent(trust: crate::trust::TrustMode, project_root: &Path) -> 
         } else {
             vec![git.join("hooks").into(), git.join("config").into()]
         };
+    }
+
+    // Plan is read-only, and the kernel enforces it too: the project root
+    // goes on the write-deny list, which both backends apply after the
+    // allow list (seatbelt last-match-wins, bwrap a later `--ro-bind`), so
+    // a Bash command `BashTool::classify` wrongly judged read-only still
+    // can't change the project. Codex's `exec` gets the same guarantee
+    // from its read-only sandbox. Temp and cache directories stay
+    // writable: read-only commands such as `git log` or `rg` may use them,
+    // and they hold none of the user's work.
+    if trust == crate::trust::TrustMode::Plan {
+        policy
+            .fs
+            .deny_write_within_allow
+            .push(canonical_root.into());
     }
 
     policy
@@ -1465,6 +1479,57 @@ mod tests {
             crate::trust::TrustMode::Safe,
             std::path::Path::new("/nonexistent/path/that/should/not/exist"),
         );
+    }
+
+    // ── Plan is read-only in the kernel too ──
+
+    #[test]
+    fn policy_for_agent_denies_project_writes_only_in_plan() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let denies_root = |mode| {
+            policy_for_agent(mode, dir.path())
+                .fs
+                .deny_write_within_allow
+                .contains(&root.clone().into())
+        };
+        assert!(denies_root(crate::trust::TrustMode::Plan));
+        assert!(!denies_root(crate::trust::TrustMode::Safe));
+        assert!(!denies_root(crate::trust::TrustMode::Auto));
+    }
+
+    /// A command that gets past the trust layer still can't write to the
+    /// project under Plan's policy, though it can under Safe's. Plan's
+    /// policy is what a `--mode plan` registry starts with.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn plan_policy_blocks_a_project_write_in_the_kernel() {
+        if !is_available() {
+            eprintln!("skip: kernel sandbox not available on this host");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let run = |mode: crate::trust::TrustMode, file: &'static str| {
+            let policy = crate::tools::ToolRegistry::with_trust(dir.path().into(), 128_000, mode)
+                .sandbox_policy()
+                .clone();
+            let cmd = build(
+                &format!("touch {file}"),
+                dir.path(),
+                &mode,
+                &policy,
+                None,
+                None,
+            );
+            async move { cmd.unwrap().output().await.unwrap() }
+        };
+        let out = run(crate::trust::TrustMode::Plan, "plan.txt").await;
+        assert!(!out.status.success(), "touch succeeded under Plan: {out:?}");
+        assert!(!dir.path().join("plan.txt").exists());
+
+        let out = run(crate::trust::TrustMode::Safe, "safe.txt").await;
+        assert!(out.status.success(), "touch failed under Safe: {out:?}");
+        assert!(dir.path().join("safe.txt").exists());
     }
 
     // ── Phase 5 PR-5 of #934: trust-derived deny-rule traversal depth ──

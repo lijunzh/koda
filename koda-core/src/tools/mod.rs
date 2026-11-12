@@ -316,6 +316,11 @@ impl ToolRegistry {
         // lives inside `ToolCatalog::new()`.
         let catalog = ToolCatalog::new();
         let skill_registry = crate::skills::SkillRegistry::discover(&project_root);
+        let sandbox_policy = if trust == crate::trust::TrustMode::Plan {
+            crate::sandbox::policy_for_agent(trust, &project_root)
+        } else {
+            koda_sandbox::SandboxPolicy::strict_default()
+        };
 
         Self {
             project_root,
@@ -329,11 +334,14 @@ impl ToolRegistry {
             session_id: std::sync::RwLock::new(None),
             caps: OutputCaps::for_context(max_context_tokens),
             bg_registry: bg_process::BgRegistry::new(),
-            trust,
             // Phase 5 PR-2 of #934: seed with strict_default(). Callers
             // can override via [`Self::with_sandbox_policy`] (sub-agent
             // dispatch does this; the main agent inherits the default).
-            sandbox_policy: koda_sandbox::SandboxPolicy::strict_default(),
+            // A Plan registry (a headless `--mode plan` run) starts from
+            // Plan's policy instead, which makes the project read-only in
+            // the kernel sandbox as well as at the trust layer.
+            sandbox_policy,
+            trust,
             proxy_port: std::sync::RwLock::new(None),
             socks5_port: std::sync::RwLock::new(None),
         }

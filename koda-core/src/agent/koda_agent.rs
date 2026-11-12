@@ -64,6 +64,30 @@ pub struct KodaAgent {
     pub semantic_memory: String,
 }
 
+/// Told to a session in Plan (a headless `--mode plan` run) so it knows
+/// before its first call that only reading will work, as Claude Code's
+/// plan mode tells its model.
+const PLAN_MODE_NOTE: &str = "\n## Read-only session\n\n\
+     This session is read-only (plan mode). You can read files, search, run commands that \
+     only read, and use tools that only read. Anything that would change a file, run another \
+     command or act somewhere else is refused. Don't try it: do what you can by reading, and \
+     say in your answer what you would change or do.\n";
+
+/// The base system prompt, plus [`PLAN_MODE_NOTE`] in Plan.
+fn system_prompt_for(
+    config: &KodaConfig,
+    env: &crate::prompt::EnvironmentInfo<'_>,
+    commands: &[&str],
+    skills: &crate::skills::SkillRegistry,
+) -> String {
+    let mut prompt =
+        crate::prompt::build_system_prompt(&config.system_prompt, env, commands, skills);
+    if config.trust == crate::trust::TrustMode::Plan {
+        prompt.push_str(PLAN_MODE_NOTE);
+    }
+    prompt
+}
+
 impl KodaAgent {
     /// Build a new agent from config and project root.
     ///
@@ -89,12 +113,7 @@ impl KodaAgent {
             model: &config.model,
             platform: std::env::consts::OS,
         };
-        let system_prompt = crate::prompt::build_system_prompt(
-            &config.system_prompt,
-            &env,
-            commands,
-            &tools.skill_registry,
-        );
+        let system_prompt = system_prompt_for(config, &env, commands, &tools.skill_registry);
 
         Ok(Self {
             project_root,
@@ -121,12 +140,7 @@ impl KodaAgent {
             model: &config.model,
             platform: std::env::consts::OS,
         };
-        self.system_prompt = crate::prompt::build_system_prompt(
-            &config.system_prompt,
-            &env,
-            commands,
-            &self.tools.skill_registry,
-        );
+        self.system_prompt = system_prompt_for(config, &env, commands, &self.tools.skill_registry);
     }
 
     /// The tools a turn offers the model: the built-ins plus whatever the

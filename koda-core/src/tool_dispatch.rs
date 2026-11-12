@@ -559,8 +559,13 @@ pub(crate) async fn execute_tools_sequential(
             continue;
         }
 
-        let mut approval =
-            trust::check_tool(&tc.function_name, &parsed_args, mode, Some(project_root));
+        let mut approval = trust::check_tool_with_registry(
+            &tc.function_name,
+            &parsed_args,
+            mode,
+            Some(project_root),
+            tools,
+        );
         // Stopping a background process Koda started is a local mutation,
         // not the destructive `kill` it reads as: Auto doesn't ask.
         if mode == TrustMode::Auto
@@ -619,7 +624,7 @@ pub(crate) async fn execute_tools_sequential(
                 db.insert_message(
                     session_id,
                     &Role::Tool,
-                    Some("[safe mode] Action blocked. You are in read-only mode. DO NOT retry this command. Describe what you would do instead. The user must press Shift+Tab to switch to auto or strict mode."),
+                    Some(crate::trust::PLAN_BLOCKED_MESSAGE),
                     None,
                     Some(&tc.id),
                     None,

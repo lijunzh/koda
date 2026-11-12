@@ -129,7 +129,7 @@ struct Cli {
     )]
     reasoning_effort: Option<String>,
 
-    /// Trust mode: auto (default) or safe.
+    /// Trust mode: auto (default), safe, or plan (headless runs only).
     /// "auto" auto-approves mutating actions; the kernel sandbox
     /// contains them. Destructive ops (rm -rf, git reset --hard,
     /// git push --force) and outside-project writes still
@@ -139,9 +139,13 @@ struct Cli {
     /// "safe" confirms every mutation before executing — use this
     /// in CI, locked-down workstations, or any context where you
     /// want a human in every approval loop.
+    /// "plan" is read-only, for a headless run (-p) that should only
+    /// look: reads, searches, read-only commands and MCP tools marked
+    /// read-only run; everything else is refused, and the kernel
+    /// sandbox keeps the project read-only.
     /// Sandbox with credential protection is always active.
     #[arg(long, env = "KODA_MODE", default_value = "auto",
-          value_parser = ["safe", "auto"])]
+          value_parser = ["safe", "auto", "plan"])]
     mode: String,
 
     /// Add MCP servers for this run only, from a JSON file or inline JSON
@@ -295,7 +299,7 @@ pub(crate) async fn run() -> Result<()> {
                 cli.reasoning_effort,
             )
             .with_context_override(cli.max_context_tokens)
-            .with_trust(parse_top_level_trust_mode(&cli.mode))
+            .with_trust(parse_top_level_trust_mode(&cli.mode, true))
             .with_session_mcp_servers(session_mcp);
         check_typed_reasoning(typed.0.as_deref(), typed.1, &config)?;
         let session_id = match cli.session {
@@ -338,7 +342,7 @@ pub(crate) async fn run() -> Result<()> {
             cli.reasoning_effort,
         )
         .with_context_override(cli.max_context_tokens)
-        .with_trust(parse_top_level_trust_mode(&cli.mode))
+        .with_trust(parse_top_level_trust_mode(&cli.mode, false))
         .with_session_mcp_servers(session_mcp);
     check_typed_reasoning(typed.0.as_deref(), typed.1, &config)?;
 
@@ -418,9 +422,28 @@ fn check_typed_reasoning(
 ///     [`koda_core::sandbox::setup_hint`] so users see the exact fix
 ///     (e.g. `apt install bubblewrap`) right at the failure site —
 ///     no extra subcommand to remember (#1259 follow-up).
-fn parse_top_level_trust_mode(cli_mode: &str) -> koda_core::trust::TrustMode {
+///
+/// A headless run (`headless`) keeps Plan: `koda --mode plan -p "..."` is
+/// a run that may only read, with every write refused, as `codex exec`'s
+/// read-only sandbox and the plan modes of Claude Code, Gemini CLI and Qwen
+/// Code allow. There it isn't a trap, since nobody is waiting to approve
+/// a write anyway. Asked for by flag in an interactive session, Plan is
+/// refused outright rather than turned into Safe: the person typed it, and
+/// can fix the command.
+fn parse_top_level_trust_mode(cli_mode: &str, headless: bool) -> koda_core::trust::TrustMode {
     let parsed = koda_core::trust::TrustMode::parse(cli_mode).unwrap_or_default();
-    let (mode, warning) = koda_core::trust::coerce_for_top_level(parsed);
+    if parsed == koda_core::trust::TrustMode::Plan && !headless {
+        eprintln!(
+            "error: --mode plan is for headless runs (koda --mode plan -p \"...\"). \
+             Interactive sessions use --mode safe or --mode auto."
+        );
+        std::process::exit(1);
+    }
+    let (mode, warning) = if headless {
+        (parsed, None)
+    } else {
+        koda_core::trust::coerce_for_top_level(parsed)
+    };
     if let Some(w) = warning {
         eprintln!("warning: {w}");
     }
