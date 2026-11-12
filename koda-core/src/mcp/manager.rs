@@ -170,8 +170,9 @@ impl McpManager {
 
         let result = client.call_tool(tool_name, arguments).await?;
 
-        // Convert CallToolResult content to a string.
-        let output = call_tool_result_to_string(&result);
+        // Convert CallToolResult content to a string, marked as data: an
+        // MCP server's text, error text included, isn't the user's.
+        let output = crate::untrusted::wrap(qualified_name, &call_tool_result_to_string(&result));
 
         // Check for error flag.
         if result.is_error.unwrap_or(false) {

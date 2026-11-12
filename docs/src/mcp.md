@@ -175,6 +175,10 @@ Koda passes them through verbatim (no sanitization) but wraps them in
 clearly-labelled provenance markers so a malicious or compromised server
 can't masquerade as Koda's own mandates.
 
+Tool results get the same treatment: what an MCP tool returns, error text
+included, reaches the model between external-content markers with a note
+that it is data, not a message from you (see [Tools](tools.md#external-content)).
+
 If you connect to MCP servers you don't fully trust, prefer the `stdio`
 transport (which still flows through the OS sandbox for tool calls) and
 review the `instructions` block via your model's tracing/debug output
