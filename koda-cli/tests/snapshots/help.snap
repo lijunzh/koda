@@ -94,6 +94,9 @@ Options:
           [default: auto]
           [possible values: safe, auto]
 
+      --mcp-config <FILE|JSON>
+          Add MCP servers for this run only, from a JSON file or inline JSON in the `{"mcpServers": {...}}` shape of Claude Code's `.mcp.json`. Repeatable; later servers win a name clash, and all of them win over servers stored with `/mcp add`. Nothing is saved
+
   -h, --help
           Print help (see a summary with '-h')
 

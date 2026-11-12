@@ -294,7 +294,8 @@ impl KodaSession {
         // Wire db+session into ToolRegistry for RecallContext
         agent.tools.set_session(Arc::new(db.clone()), id.clone());
 
-        // Start MCP servers from DB config (#662).
+        // Start MCP servers from DB config (#662), plus this run's
+        // `--mcp-config` servers.
         //
         // Per-session ownership is intentional, not pending refactor (see #959).
         // Codex (closest peer agent) chose the same shape: per-session
@@ -303,7 +304,7 @@ impl KodaSession {
         // management for an unmeasured startup-cost optimization. Reopen #959
         // if a real bug surfaces (e.g. multi-session resume becomes slow with
         // many configured servers).
-        match crate::mcp::McpManager::start_from_db(&db).await {
+        match crate::mcp::McpManager::start_from_db(&db, &config.session_mcp_servers).await {
             Ok(manager) => {
                 if !manager.is_empty() {
                     let mgr = Arc::new(tokio::sync::RwLock::new(manager));
@@ -550,6 +551,9 @@ impl KodaSession {
         // don't have this problem (they're not swapped) but we capture
         // uniformly for symmetry.
         let effective_cancel = turn_cancel.clone().unwrap_or_else(|| self.cancel_token());
+        // Per turn, not cached: MCP servers connect after the agent is
+        // built and `/mcp` can change them mid-session.
+        let tool_defs = self.agent.turn_tool_defs(config);
         let result = crate::inference::inference_loop_outcome(InferenceContext {
             project_root: &self.agent.project_root,
             config,
@@ -559,7 +563,7 @@ impl KodaSession {
             project_memory: &self.agent.semantic_memory,
             provider: self.provider.as_ref(),
             tools: &self.agent.tools,
-            tool_defs: &self.agent.tool_defs,
+            tool_defs: &tool_defs,
             pending_images,
             mode: self.mode,
             sink,

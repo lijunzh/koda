@@ -111,7 +111,7 @@ pub async fn run_headless(
                 trust: config.trust.as_str().to_string(),
                 tools: session
                     .agent
-                    .tool_defs
+                    .turn_tool_defs(&config)
                     .iter()
                     .map(|tool| tool.name.clone())
                     .collect(),

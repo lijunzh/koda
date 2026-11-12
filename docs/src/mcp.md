@@ -123,6 +123,42 @@ MCP server configs are stored in the local SQLite keystore (`~/.config/koda/db/k
 under the `mcp:` key prefix. They survive session restarts and are loaded
 automatically on each startup.
 
+## Servers for one run (`--mcp-config`)
+
+`--mcp-config` adds servers for one run, headless or in the TUI, without
+saving them. It takes a path to a JSON file, or the JSON itself when the
+value starts with `{`, in the shape Claude Code and Qwen Code use:
+
+```json
+{"mcpServers": {
+  "mail":  {"command": "mail-mcp", "args": ["--read-only"], "env": {"MAIL_DIR": "./mail"}},
+  "notes": {"type": "http", "url": "https://notes.example.com/mcp",
+            "headers": {"Authorization": "Bearer sk-…"}}
+}}
+```
+
+```bash
+koda -p "Anything in my inbox?" --mcp-config mcp.json
+```
+
+- A stdio server takes `command`, and optionally `args`, `env` and `cwd`.
+  An HTTP server takes `url`, and optionally `headers`; `type` (`stdio` or
+  `http`) is optional. SSE servers aren't supported.
+- `startupTimeoutSec`, `toolTimeoutSec`, `enabledTools` and `disabledTools`
+  work as in [Timeouts](#timeouts) and [Tool filtering](#tool-filtering).
+  Fields Koda doesn't know are ignored.
+- The flag is repeatable. A later server wins a name clash, and a flag's
+  server replaces a stored one of the same name for this run.
+- Nothing is written to the database, and `/mcp list` shows the servers
+  only while the run lasts.
+- A value Koda can't read or use stops the start with an error, rather
+  than running without the servers you asked for.
+
+The caller names these servers for this one run, so they connect without a
+prompt, as with Claude Code's and Qwen Code's `--mcp-config`. Koda doesn't
+read a project's `.mcp.json`: a file in a repository someone else wrote
+would need folder trust first.
+
 ## Server-supplied instructions
 
 The MCP spec lets each server return a free-form `instructions` string in
