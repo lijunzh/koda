@@ -412,32 +412,32 @@ impl ToolCatalog {
             self.definitions.values().cloned().collect()
         };
 
-        // Append MCP tool definitions, applying the same filter
-        // semantics. `try_read` (not `read`) is intentional: if a
-        // writer is mid-update we'd rather return the built-ins
-        // immediately than block the LLM's prompt-build path.
-        if let Some(mgr) = self.mcp_manager()
-            && let Ok(mgr) = mgr.try_read()
-        {
-            let mut mcp_defs = mgr.all_tool_definitions();
-            mcp_defs.sort_by(|a, b| a.name.cmp(&b.name));
-            if !allowed.is_empty() {
-                for def in mcp_defs {
-                    if allowed.contains(&def.name) {
-                        defs.push(def);
-                    }
-                }
-            } else if !denied.is_empty() {
-                for def in mcp_defs {
-                    if !denied.contains(&def.name) {
-                        defs.push(def);
-                    }
-                }
-            } else {
-                defs.extend(mcp_defs);
-            }
-        }
+        defs.extend(self.mcp_definitions(allowed, denied));
+        defs
+    }
 
+    /// The connected MCP servers' tool definitions, sorted by name, with
+    /// the same allow/deny semantics as [`Self::get_definitions`].
+    ///
+    /// Servers connect after the agent is built, and `/mcp` can add or drop
+    /// them mid-session, so callers take this per turn rather than caching
+    /// it with the built-ins. `try_read` (not `read`) is intentional: if a
+    /// writer is mid-update we'd rather return nothing for this turn than
+    /// block the LLM's prompt-build path.
+    pub fn mcp_definitions(&self, allowed: &[String], denied: &[String]) -> Vec<ToolDefinition> {
+        let Some(mgr) = self.mcp_manager() else {
+            return Vec::new();
+        };
+        let Ok(mgr) = mgr.try_read() else {
+            return Vec::new();
+        };
+        let mut defs = mgr.all_tool_definitions();
+        defs.sort_by(|a, b| a.name.cmp(&b.name));
+        if !allowed.is_empty() {
+            defs.retain(|d| allowed.contains(&d.name));
+        } else if !denied.is_empty() {
+            defs.retain(|d| !denied.contains(&d.name));
+        }
         defs
     }
 }

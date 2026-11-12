@@ -143,6 +143,13 @@ struct Cli {
     #[arg(long, env = "KODA_MODE", default_value = "auto",
           value_parser = ["safe", "auto"])]
     mode: String,
+
+    /// Add MCP servers for this run only, from a JSON file or inline JSON
+    /// in the `{"mcpServers": {...}}` shape of Claude Code's `.mcp.json`.
+    /// Repeatable; later servers win a name clash, and all of them win over
+    /// servers stored with `/mcp add`. Nothing is saved.
+    #[arg(long, value_name = "FILE|JSON", action = clap::ArgAction::Append)]
+    mcp_config: Vec<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -269,6 +276,13 @@ pub(crate) async fn run() -> Result<()> {
         None => config,
     };
 
+    // `--mcp-config` servers, for this run only. A bad value stops the start:
+    // the caller asked for these servers by name.
+    let mut session_mcp = std::collections::HashMap::new();
+    for arg in &cli.mcp_config {
+        session_mcp.extend(koda_core::mcp::config::parse_mcp_config_arg(arg)?);
+    }
+
     // Headless mode: skip onboarding, banner, version check
     if let Some(prompt) = headless_prompt {
         let config = koda_core::config::KodaConfig::load(&project_root, &cli.agent)?;
@@ -281,7 +295,8 @@ pub(crate) async fn run() -> Result<()> {
                 cli.reasoning_effort,
             )
             .with_context_override(cli.max_context_tokens)
-            .with_trust(parse_top_level_trust_mode(&cli.mode));
+            .with_trust(parse_top_level_trust_mode(&cli.mode))
+            .with_session_mcp_servers(session_mcp);
         check_typed_reasoning(typed.0.as_deref(), typed.1, &config)?;
         let session_id = match cli.session {
             Some(id) => db.resolve_session_id(&id).await?,
@@ -323,7 +338,8 @@ pub(crate) async fn run() -> Result<()> {
             cli.reasoning_effort,
         )
         .with_context_override(cli.max_context_tokens)
-        .with_trust(parse_top_level_trust_mode(&cli.mode));
+        .with_trust(parse_top_level_trust_mode(&cli.mode))
+        .with_session_mcp_servers(session_mcp);
     check_typed_reasoning(typed.0.as_deref(), typed.1, &config)?;
 
     // Onboarding asks which provider to use. A start that names one already

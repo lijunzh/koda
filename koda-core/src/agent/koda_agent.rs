@@ -52,7 +52,9 @@ pub struct KodaAgent {
     pub project_root: PathBuf,
     /// Tool registry with all built-in tools.
     pub tools: ToolRegistry,
-    /// Pre-computed tool definitions for the LLM.
+    /// Built-in tool definitions, computed once in `new()`. MCP tools are
+    /// not here: servers connect later. Use [`Self::turn_tool_defs`] for
+    /// what a turn offers the model.
     pub tool_defs: Vec<ToolDefinition>,
     /// Assembled system prompt.
     pub system_prompt: String,
@@ -77,7 +79,9 @@ impl KodaAgent {
             config.max_context_tokens,
             config.trust,
         );
-        let tool_defs = tools.get_definitions(&config.allowed_tools, &config.disallowed_tools);
+        let mut tool_defs = tools.get_definitions(&config.allowed_tools, &config.disallowed_tools);
+        // Built-ins only: `turn_tool_defs` adds the MCP tools each turn.
+        tool_defs.retain(|d| !crate::mcp::is_mcp_tool_name(&d.name));
 
         let semantic_memory = memory::load(&project_root)?;
         let env = crate::prompt::EnvironmentInfo {
@@ -123,6 +127,18 @@ impl KodaAgent {
             commands,
             &self.tools.skill_registry,
         );
+    }
+
+    /// The tools a turn offers the model: the built-ins plus whatever the
+    /// connected MCP servers expose right now, under the same allow/deny
+    /// lists.
+    pub fn turn_tool_defs(&self, config: &KodaConfig) -> Vec<ToolDefinition> {
+        let mut defs = self.tool_defs.clone();
+        defs.extend(
+            self.tools
+                .mcp_definitions(&config.allowed_tools, &config.disallowed_tools),
+        );
+        defs
     }
 
     /// Compact MCP status for the TUI status bar.

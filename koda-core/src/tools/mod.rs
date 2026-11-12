@@ -532,6 +532,12 @@ impl ToolRegistry {
         self.catalog.get_definitions(allowed, denied)
     }
 
+    /// The connected MCP servers' tool definitions; see
+    /// [`ToolCatalog::mcp_definitions`].
+    pub fn mcp_definitions(&self, allowed: &[String], denied: &[String]) -> Vec<ToolDefinition> {
+        self.catalog.mcp_definitions(allowed, denied)
+    }
+
     /// Execute a tool by name with the given JSON arguments.
     ///
     /// Empty or whitespace-only `arguments` are treated as `{}` (no args)

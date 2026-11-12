@@ -44,12 +44,23 @@ impl McpManager {
         }
     }
 
-    /// Load configs from the database and connect to all servers in parallel.
+    /// Load configs from the database, add this run's servers from
+    /// `--mcp-config`, and connect to all of them in parallel. A run's server
+    /// replaces a stored one of the same name for this run only; nothing is
+    /// written back.
     ///
     /// Errors from individual servers are logged but don't fail the whole
     /// startup — the manager connects what it can and reports status.
-    pub async fn start_from_db(db: &Database) -> Result<Self> {
-        let configs = config::load_mcp_configs(db).await?;
+    pub async fn start_from_db(
+        db: &Database,
+        session_servers: &HashMap<String, McpServerConfig>,
+    ) -> Result<Self> {
+        let mut configs = config::load_mcp_configs(db).await?;
+        for (name, server) in session_servers {
+            if configs.insert(name.clone(), server.clone()).is_some() {
+                tracing::info!(server = %name, "--mcp-config replaces the stored server for this run");
+            }
+        }
 
         if configs.is_empty() {
             tracing::debug!("no MCP servers configured");

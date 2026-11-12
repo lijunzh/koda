@@ -220,6 +220,9 @@ pub struct KodaConfig {
     pub skip_memory: bool,
     /// Trust mode for this session. Default: `TrustMode::Auto` (#1241).
     pub trust: crate::trust::TrustMode,
+    /// MCP servers from `--mcp-config`, for this run only. Added to the
+    /// stored servers at session start and never written to the database.
+    pub session_mcp_servers: std::collections::HashMap<String, crate::mcp::McpServerConfig>,
 }
 
 /// Parse `--max-context-tokens` / `KODA_MAX_CONTEXT_TOKENS`: a positive whole
@@ -398,6 +401,7 @@ impl KodaConfig {
             max_iterations,
             skip_memory: agent.skip_memory,
             trust: declared_trust,
+            session_mcp_servers: Default::default(),
         })
     }
 
@@ -510,6 +514,15 @@ impl KodaConfig {
                 self.model
             );
         }
+        self
+    }
+
+    /// Add MCP servers for this run (`--mcp-config`). Later entries win.
+    pub fn with_session_mcp_servers(
+        mut self,
+        servers: std::collections::HashMap<String, crate::mcp::McpServerConfig>,
+    ) -> Self {
+        self.session_mcp_servers.extend(servers);
         self
     }
 
@@ -681,6 +694,7 @@ impl KodaConfig {
             max_iterations: crate::loop_guard::MAX_ITERATIONS_DEFAULT,
             skip_memory: false,
             trust: crate::trust::TrustMode::Auto,
+            session_mcp_servers: Default::default(),
         }
     }
 

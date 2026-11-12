@@ -63,7 +63,7 @@ impl fmt::Debug for McpTransport {
                 .debug_struct("Stdio")
                 .field("command", command)
                 .field("args", args)
-                .field("env", env)
+                .field("env", &env.keys().collect::<Vec<_>>())
                 .field("cwd", cwd)
                 .finish(),
             McpTransport::Http {
@@ -74,7 +74,7 @@ impl fmt::Debug for McpTransport {
                 .debug_struct("Http")
                 .field("url", url)
                 .field("bearer_token", &bearer_token.as_ref().map(|_| "[redacted]"))
-                .field("headers", headers)
+                .field("headers", &headers.keys().collect::<Vec<_>>())
                 .finish(),
         }
     }
@@ -237,6 +237,121 @@ pub async fn list_mcp_server_names(db: &Database) -> Result<Vec<String>> {
                 .map(String::from)
         })
         .collect())
+}
+
+// ── Per-run servers (`--mcp-config`) ──────────────────────────────────────
+
+/// One server entry in the `mcpServers` JSON shape that Claude Code, Qwen
+/// Code and Gemini CLI share. Fields other agents add are ignored.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct McpJsonEntry {
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    command: Option<String>,
+    #[serde(default)]
+    args: Vec<String>,
+    #[serde(default)]
+    env: HashMap<String, String>,
+    cwd: Option<String>,
+    url: Option<String>,
+    #[serde(default)]
+    headers: HashMap<String, String>,
+    #[serde(alias = "startup_timeout_sec")]
+    startup_timeout_sec: Option<u64>,
+    #[serde(alias = "tool_timeout_sec")]
+    tool_timeout_sec: Option<u64>,
+    #[serde(alias = "enabled_tools")]
+    enabled_tools: Option<Vec<String>>,
+    #[serde(alias = "disabled_tools")]
+    disabled_tools: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct McpJsonFile {
+    mcp_servers: HashMap<String, McpJsonEntry>,
+}
+
+impl McpJsonEntry {
+    fn into_config(self, name: &str) -> Result<McpServerConfig> {
+        let kind = self.kind.as_deref().map(str::to_ascii_lowercase);
+        let transport = match (kind.as_deref(), self.command, self.url) {
+            (None | Some("stdio"), Some(command), None) => McpTransport::Stdio {
+                command,
+                args: self.args,
+                env: self.env,
+                cwd: self.cwd,
+            },
+            (
+                None | Some("http") | Some("streamable-http") | Some("streamable_http"),
+                None,
+                Some(url),
+            ) => McpTransport::Http {
+                url,
+                bearer_token: None,
+                headers: self.headers,
+            },
+            (Some("sse"), ..) => {
+                anyhow::bail!(
+                    "MCP server '{name}': the SSE transport isn't supported; use stdio or http"
+                )
+            }
+            (Some(other), ..)
+                if !["stdio", "http", "streamable-http", "streamable_http"].contains(&other) =>
+            {
+                anyhow::bail!("MCP server '{name}': unknown type '{other}'; use stdio or http")
+            }
+            (_, Some(_), Some(_)) => {
+                anyhow::bail!("MCP server '{name}': give either `command` or `url`, not both")
+            }
+            _ => anyhow::bail!(
+                "MCP server '{name}': needs `command` (stdio) or `url` (http) to match its type"
+            ),
+        };
+        let config = McpServerConfig {
+            transport,
+            startup_timeout_sec: self
+                .startup_timeout_sec
+                .unwrap_or(DEFAULT_STARTUP_TIMEOUT_SEC),
+            tool_timeout_sec: self.tool_timeout_sec.unwrap_or(DEFAULT_TOOL_TIMEOUT_SEC),
+            enabled_tools: self.enabled_tools,
+            disabled_tools: self.disabled_tools,
+        };
+        config
+            .validate()
+            .with_context(|| format!("MCP server '{name}'"))?;
+        Ok(config)
+    }
+}
+
+/// Parse one `--mcp-config` value: a path to a JSON file, or the JSON itself
+/// when the value starts with `{`. The shape is `{"mcpServers": {...}}`, as
+/// in Claude Code's `.mcp.json`.
+///
+/// These servers last for one run: they are never written to the database.
+/// Any error is returned, not logged and skipped, because a flag the caller
+/// typed that silently does nothing is worse than a refusal to start.
+pub fn parse_mcp_config_arg(arg: &str) -> Result<HashMap<String, McpServerConfig>> {
+    let (text, source) = if arg.trim_start().starts_with('{') {
+        (arg.to_string(), "inline JSON".to_string())
+    } else {
+        let text = std::fs::read_to_string(arg)
+            .with_context(|| format!("--mcp-config: can't read {arg}"))?;
+        (text, arg.to_string())
+    };
+    let file: McpJsonFile = serde_json::from_str(&text).with_context(|| {
+        format!("--mcp-config: {source} isn't {{\"mcpServers\": {{...}}}} JSON")
+    })?;
+    let mut servers = HashMap::new();
+    for (name, entry) in file.mcp_servers {
+        validate_server_name(&name).context("--mcp-config")?;
+        let config = entry
+            .into_config(&name)
+            .with_context(|| format!("--mcp-config: {source}"))?;
+        servers.insert(name, config);
+    }
+    Ok(servers)
 }
 
 #[cfg(test)]
@@ -435,6 +550,105 @@ mod tests {
         assert!(
             !debug_output.contains("[redacted]"),
             "no token → should not show [redacted]: {debug_output}"
+        );
+    }
+
+    // ── --mcp-config ─────────────────────────────────────────────────────
+
+    #[test]
+    fn mcp_config_arg_reads_claude_code_shape_inline() {
+        let servers = parse_mcp_config_arg(
+            r#"{"mcpServers": {
+                "mail": {"command": "mail-mcp", "args": ["--ro"], "env": {"K": "v"}, "startupTimeoutSec": 5},
+                "api": {"type": "http", "url": "https://api.example.com/mcp", "headers": {"X-Key": "k"}},
+                "bare": {"url": "https://other.example.com/mcp"}
+            }}"#,
+        )
+        .unwrap();
+        assert_eq!(servers.len(), 3);
+        let mail = &servers["mail"];
+        assert_eq!(mail.startup_timeout_sec, 5);
+        assert_eq!(mail.tool_timeout_sec, DEFAULT_TOOL_TIMEOUT_SEC);
+        match &mail.transport {
+            McpTransport::Stdio {
+                command, args, env, ..
+            } => {
+                assert_eq!(command, "mail-mcp");
+                assert_eq!(args, &["--ro"]);
+                assert_eq!(env["K"], "v");
+            }
+            other => panic!("expected stdio, got {other:?}"),
+        }
+        assert!(
+            matches!(&servers["api"].transport, McpTransport::Http { headers, .. } if headers["X-Key"] == "k")
+        );
+        assert!(matches!(
+            &servers["bare"].transport,
+            McpTransport::Http { .. }
+        ));
+    }
+
+    #[test]
+    fn mcp_config_arg_reads_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp.json");
+        std::fs::write(&path, r#"{"mcpServers": {"x": {"command": "x-mcp"}}}"#).unwrap();
+        let servers = parse_mcp_config_arg(path.to_str().unwrap()).unwrap();
+        assert!(servers.contains_key("x"));
+    }
+
+    #[test]
+    fn mcp_config_arg_refuses_what_it_cannot_run() {
+        for (arg, want) in [
+            (
+                r#"{"mcpServers": {"s": {"type": "sse", "url": "https://e.com/sse"}}}"#,
+                "SSE",
+            ),
+            (
+                r#"{"mcpServers": {"s": {"command": "a", "url": "https://e.com"}}}"#,
+                "not both",
+            ),
+            (
+                r#"{"mcpServers": {"s": {"args": ["a"]}}}"#,
+                "needs `command`",
+            ),
+            (
+                r#"{"mcpServers": {"s": {"type": "http", "command": "a"}}}"#,
+                "needs `command`",
+            ),
+            (
+                r#"{"mcpServers": {"s": {"type": "grpc", "url": "x"}}}"#,
+                "unknown type",
+            ),
+            (
+                r#"{"mcpServers": {"a__b": {"command": "a"}}}"#,
+                "double-underscore",
+            ),
+            (r#"{"servers": {}}"#, "mcpServers"),
+            ("/nonexistent/mcp.json", "can't read"),
+        ] {
+            let err = format!("{:#}", parse_mcp_config_arg(arg).unwrap_err());
+            assert!(err.contains(want), "{arg}: {err}");
+        }
+    }
+
+    #[test]
+    fn debug_hides_env_and_header_values() {
+        let servers = parse_mcp_config_arg(
+            r#"{"mcpServers": {
+                "s": {"command": "a", "env": {"TOKEN": "env-secret"}},
+                "h": {"url": "https://e.com/mcp", "headers": {"Authorization": "Bearer hdr-secret"}}
+            }}"#,
+        )
+        .unwrap();
+        let out = format!("{servers:?}");
+        assert!(
+            out.contains("TOKEN") && out.contains("Authorization"),
+            "{out}"
+        );
+        assert!(
+            !out.contains("env-secret") && !out.contains("hdr-secret"),
+            "{out}"
         );
     }
 }
