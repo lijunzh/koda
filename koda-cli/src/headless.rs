@@ -1,5 +1,4 @@
-//! One-shot runs: one prompt, one turn, then exit. `koda exec` and
-//! `koda -p` both land here.
+//! One-shot runs: one prompt, one turn, then exit: `koda exec`.
 //!
 //! Koda answers its own requests: it approves what the mode allows,
 //! refuses destructive actions, answers a question with nothing and keeps
@@ -7,11 +6,8 @@
 //!
 //! ## Output
 //!
-//! - [`Output::Text`] (`koda exec`, `koda -p`): the streamed reply on
-//!   stdout, progress (tool calls, footer) on stderr.
-//! - [`Output::Summary`] (`koda -p --output-format json`): one
-//!   pretty-printed run summary on stdout after the turn ([`run_summary`]);
-//!   the reply and progress go to stderr.
+//! - [`Output::Text`] (`koda exec`): the streamed reply on stdout,
+//!   progress (tool calls, footer) on stderr.
 //! - [`Output::Events`] (`koda exec --json`): stdout carries only JSON-RPC
 //!   notifications from the client protocol (`koda-protocol`), one per
 //!   line: `session/started`, the turn and its items, each server request
@@ -34,32 +30,17 @@ use koda_core::persistence::{Persistence, SessionUsage};
 use koda_core::session::KodaSession;
 
 use anyhow::Result;
-use serde::Serialize;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
-/// `koda -p`'s `--output-format`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-pub enum OutputFormat {
-    /// Streamed reply on stdout, decorations on stderr.
-    Text,
-    /// One run-summary JSON object on stdout after the turn.
-    Json,
-    /// Removed in 0.7.0: `koda exec --json` replaces it.
-    #[value(hide = true)]
-    StreamJson,
-}
-
 /// What a one-shot run writes to stdout. See the module docs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Output {
     /// The reply as text.
     Text,
-    /// One run summary after the turn.
-    Summary,
     /// The protocol's notifications, deltas included or not.
     Events {
         /// Whether to print `item/*/delta` notifications too.
@@ -213,9 +194,6 @@ pub async fn run_headless(
             stats: &cli_sink.stats(),
         };
         match run.output {
-            Output::Summary => {
-                println!("{}", serde_json::to_string_pretty(&run_summary(outcome)?)?)
-            }
             Output::Events { .. } => cli_sink.print(&Outgoing::Notification(
                 ServerNotification::ExecSummary(exec_summary(outcome)),
             )),
@@ -244,7 +222,7 @@ fn protocol_mode(mode: koda_core::trust::TrustMode) -> koda_client::protocol::st
 }
 
 // ---------------------------------------------------------------------------
-// Run summary: `koda -p --output-format json` and `exec/summary`
+// Run summary: `exec/summary`
 // ---------------------------------------------------------------------------
 
 /// Per-run counters the sink accumulates from the event stream.
@@ -280,50 +258,6 @@ fn run_failure(result: &Result<()>, stats: &RunStats) -> Option<String> {
         (Ok(()), Some(TurnEndReason::Error { message })) => Some(message.clone()),
         (Ok(()), _) => None,
     }
-}
-
-/// `koda -p --output-format json`'s object. Its shape predates the client
-/// protocol and is kept as it was.
-#[derive(Debug, Serialize)]
-struct SummaryObject<'a> {
-    session_id: &'a str,
-    #[serde(rename = "type")]
-    kind: &'static str,
-    success: bool,
-    error: Option<String>,
-    provider: &'a str,
-    model: &'a str,
-    response: &'a str,
-    turn_end: Option<TurnEndReason>,
-    elapsed_ms: u64,
-    usage: UsageTotals,
-    usage_by_agent: BTreeMap<String, UsageTotals>,
-    tool_calls: BTreeMap<String, u64>,
-    sub_agent_tool_calls: BTreeMap<String, u64>,
-}
-
-/// `koda -p --output-format json`'s object.
-fn run_summary(outcome: RunOutcome<'_>) -> serde_json::Result<serde_json::Value> {
-    let failure = run_failure(outcome.result, outcome.stats);
-    serde_json::to_value(SummaryObject {
-        session_id: outcome.session_id,
-        kind: "run_summary",
-        success: failure.is_none(),
-        error: failure,
-        provider: outcome.provider,
-        model: outcome.model,
-        response: outcome.response,
-        turn_end: outcome.stats.turn_end.clone(),
-        elapsed_ms: outcome.elapsed_ms,
-        usage: outcome.usage.into(),
-        usage_by_agent: outcome
-            .usage_by_agent
-            .iter()
-            .map(|(agent, usage)| (agent.clone(), usage.into()))
-            .collect(),
-        tool_calls: outcome.stats.tool_calls.clone(),
-        sub_agent_tool_calls: outcome.stats.sub_agent_tool_calls.clone(),
-    })
 }
 
 /// `koda exec --json`'s last line.
@@ -726,9 +660,9 @@ impl HeadlessSink {
                 }
             }
             // A sub-agent's results aren't shown: its answer is.
-            Output::Text | Output::Summary
+            Output::Text
                 if parent_id.is_some() && matches!(event, EngineEvent::ToolCallResult { .. }) => {}
-            Output::Text | Output::Summary => self.render(event),
+            Output::Text => self.render(event),
         }
     }
 }
@@ -781,11 +715,7 @@ mod tests {
 
     #[test]
     fn requests_are_answered_the_same_in_every_format() {
-        for format in [
-            Output::Text,
-            Output::Summary,
-            Output::Events { deltas: false },
-        ] {
+        for format in [Output::Text, Output::Events { deltas: false }] {
             let (sink, mut rx) = sink(format);
             sink.emit(approval("a1", ToolEffect::LocalMutation));
             sink.emit(approval("a2", ToolEffect::Destructive));
@@ -836,7 +766,7 @@ mod tests {
 
     #[test]
     fn stats_split_top_level_and_sub_agent_tool_calls() {
-        let (sink, _rx) = sink(Output::Summary);
+        let (sink, _rx) = sink(Output::Text);
         sink.emit(tool_start("Read", false));
         sink.emit(tool_start("Read", false));
         sink.emit(tool_start("Edit", false));
@@ -859,7 +789,7 @@ mod tests {
     }
 
     #[test]
-    fn run_summary_keeps_legacy_keys_and_adds_metrics() {
+    fn exec_summary_carries_the_run_and_its_metrics() {
         let stats = RunStats {
             tool_calls: BTreeMap::from([("Read".to_string(), 2)]),
             sub_agent_tool_calls: BTreeMap::new(),
@@ -873,7 +803,7 @@ mod tests {
         };
         let by_agent = vec![("main".to_string(), usage.clone())];
         let result: Result<()> = Ok(());
-        let summary = run_summary(RunOutcome {
+        let summary = exec_summary(RunOutcome {
             result: &result,
             session_id: "s1",
             provider: "mock",
@@ -883,28 +813,25 @@ mod tests {
             usage: &usage,
             usage_by_agent: &by_agent,
             stats: &stats,
-        })
-        .unwrap();
+        });
 
-        assert_eq!(summary["type"], "run_summary");
-        // Keys the `json` format has always had.
-        assert_eq!(summary["success"], true);
-        assert_eq!(summary["response"], "done");
-        assert_eq!(summary["session_id"], "s1");
-        assert_eq!(summary["model"], "mock-model");
-        // Additive metrics.
-        assert_eq!(summary["error"], serde_json::Value::Null);
-        assert_eq!(summary["turn_end"]["kind"], "complete");
-        assert_eq!(summary["usage"]["prompt_tokens"], 120);
-        assert_eq!(summary["usage"]["api_calls"], 2);
-        assert_eq!(summary["usage_by_agent"]["main"]["completion_tokens"], 30);
-        assert_eq!(summary["tool_calls"]["Read"], 2);
+        assert!(summary.success);
+        assert_eq!(summary.error, None);
+        assert_eq!(summary.response, "done");
+        assert_eq!(summary.session_id, "s1");
+        assert_eq!(summary.model, "mock-model");
+        assert_eq!(summary.duration_ms, 42);
+        assert_eq!(summary.turn_status, Some(TurnStatus::Completed));
+        assert_eq!(summary.usage.input_tokens, 120);
+        assert_eq!(summary.usage.model_calls, 2);
+        assert_eq!(summary.usage_by_agent["main"].output_tokens, 30);
+        assert_eq!(summary.tool_calls["Read"], 2);
     }
 
     #[test]
-    fn run_summary_reports_errors() {
+    fn exec_summary_reports_errors() {
         let result: Result<()> = Err(anyhow::anyhow!("provider exploded"));
-        let summary = run_summary(RunOutcome {
+        let summary = exec_summary(RunOutcome {
             result: &result,
             session_id: "s1",
             provider: "mock",
@@ -914,18 +841,17 @@ mod tests {
             usage: &SessionUsage::default(),
             usage_by_agent: &[],
             stats: &RunStats::default(),
-        })
-        .unwrap();
-        assert_eq!(summary["success"], false);
-        assert_eq!(summary["error"], "provider exploded");
-        assert_eq!(summary["turn_end"], serde_json::Value::Null);
+        });
+        assert!(!summary.success);
+        assert_eq!(summary.error.as_deref(), Some("provider exploded"));
+        assert_eq!(summary.turn_status, None);
     }
 
     /// A turn the engine ended early on a warning returns `Ok` but carries
     /// `TurnEnd::Error`; the summary must report failure with that message
     /// (server error, image rejection, dropped connection all take this path).
     #[test]
-    fn run_summary_reports_early_stop_as_failure() {
+    fn exec_summary_reports_early_stop_as_failure() {
         for message in [
             "Provider returned a server error: 500",
             "This model rejected the image attachment",
@@ -938,7 +864,7 @@ mod tests {
                 ..Default::default()
             };
             let result: Result<()> = Ok(());
-            let summary = run_summary(RunOutcome {
+            let summary = exec_summary(RunOutcome {
                 result: &result,
                 session_id: "s1",
                 provider: "mock",
@@ -948,11 +874,10 @@ mod tests {
                 usage: &SessionUsage::default(),
                 usage_by_agent: &[],
                 stats: &stats,
-            })
-            .unwrap();
-            assert_eq!(summary["success"], false, "{message}");
-            assert_eq!(summary["error"], message);
-            assert_eq!(summary["turn_end"]["kind"], "error");
+            });
+            assert!(!summary.success, "{message}");
+            assert_eq!(summary.error.as_deref(), Some(message));
+            assert_eq!(summary.turn_status, Some(TurnStatus::Failed));
             assert_eq!(run_failure(&result, &stats).as_deref(), Some(message));
         }
     }

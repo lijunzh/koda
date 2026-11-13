@@ -138,7 +138,7 @@ value starts with `{`, in the shape Claude Code and Qwen Code use:
 ```
 
 ```bash
-koda -p "Anything in my inbox?" --mcp-config mcp.json
+koda exec "Anything in my inbox?" --mcp-config mcp.json
 ```
 
 - A stdio server takes `command`, and optionally `args`, `env` and `cwd`.

@@ -110,7 +110,7 @@ async fn run_koda(server: &FakeLlmServer) -> (Value, Vec<Value>, String) {
     let tmp = tempfile::tempdir().unwrap();
     seed_project(tmp.path());
     let child = tokio::process::Command::new(koda_bin())
-        .args(["-p", TASK, "--output-format", "json"])
+        .args(["exec", "--json", TASK])
         .args(["--provider", "lmstudio", "--model", "stub"])
         .args(["--base-url", &server.url()])
         .args(["--max-context-tokens", WINDOW])
@@ -130,8 +130,8 @@ async fn run_koda(server: &FakeLlmServer) -> (Value, Vec<Value>, String) {
         output.status.success(),
         "stdout: {stdout}\nstderr: {stderr}"
     );
-    let start = stdout.find('{').expect("no JSON on stdout");
-    let result: Value = serde_json::from_str(&stdout[start..]).unwrap();
+    let summary = stdout.lines().last().expect("no output on stdout");
+    let result: Value = serde_json::from_str::<Value>(summary).unwrap()["params"].clone();
     // Skip koda's model-listing GETs.
     let requests = server.received_requests().await;
     let chats = requests.iter().filter(|r| !r.body.is_empty());
@@ -198,7 +198,7 @@ async fn empty_summary_keeps_the_task_and_the_run_carries_on() {
         .iter()
         .filter(|r| r["messages"].is_array() && r["stream"] != json!(true));
     assert_eq!(
-        result["usage"]["prompt_tokens"],
+        result["usage"]["inputTokens"],
         10 * summary_calls.count() as i64,
         "{result}"
     );

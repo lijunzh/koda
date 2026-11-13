@@ -47,8 +47,14 @@ principle.
 
 ```bash
 koda                      # Auto-starts embedded engine + CLI client (default)
-koda -p "fix the bug"     # Headless mode (direct engine, no server)
+koda exec "fix the bug"   # Headless mode (direct engine, no server)
 ```
+
+A one-shot run is `koda exec` and nothing else, as in Codex: `koda "..."`
+doesn't run a prompt and `koda` with stdin piped stops, since the TUI needs a
+terminal. `koda -p` and its `--output-format` were removed in 0.7.0: one way
+in keeps one path to maintain, and `koda exec --json` already carries the
+summary `--output-format json` printed.
 
 ---
 
@@ -66,7 +72,7 @@ and a recompile.
 - **Any model, any provider.** Cloud APIs, local models, mixed routing.
   No vendor lock-in. The tool serves the person, not the platform
 - **Customization over configuration.** If a decision can be made at compile
-  time, it must be. Flags that select an execution scenario are fine (`-p`
+  time, it must be. Flags that select an execution scenario are fine (`exec`
   for headless) — flags that alter behavior within
   a scenario are not (`--autonomy`, `--model-tier`). If something needs to
   change, change the code.

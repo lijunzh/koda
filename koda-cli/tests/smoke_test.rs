@@ -1,7 +1,7 @@
 //! Smoke tests: headless mode with MockProvider.
 //!
 //! These tests exercise the full binary pipeline without a real LLM.
-//! They run `koda -p "..." --provider mock --output-format json`
+//! They run `koda exec "..." --provider mock`, as text or with `--json`,
 //! with scripted responses via KODA_MOCK_RESPONSES env var.
 //!
 //! CI-safe: no network, no API keys, no LLM required.
@@ -18,25 +18,30 @@ fn koda_bin() -> String {
     path.to_string_lossy().to_string()
 }
 
+/// `koda exec --json` on the mock provider.
 fn run_mock(prompt: &str, responses: &str) -> (String, String, bool) {
-    run_mock_with_mode(prompt, responses, None)
+    run_mock_exec_as(&["--json"], prompt, responses, None)
 }
 
+/// `koda exec` as text: the reply on stdout, progress on stderr.
 fn run_mock_with_mode(prompt: &str, responses: &str, mode: Option<&str>) -> (String, String, bool) {
+    run_mock_exec_as(&[], prompt, responses, mode)
+}
+
+fn run_mock_exec_as(
+    flags: &[&str],
+    prompt: &str,
+    responses: &str,
+    mode: Option<&str>,
+) -> (String, String, bool) {
     let tmp = tempfile::tempdir().unwrap();
     let mut cmd = Command::new(koda_bin());
-    cmd.args([
-        "-p",
-        prompt,
-        "--provider",
-        "mock",
-        "--output-format",
-        "json",
-        "--project-root",
-    ])
-    .arg(tmp.path())
-    .env("XDG_CONFIG_HOME", tmp.path())
-    .env("KODA_MOCK_RESPONSES", responses);
+    cmd.arg("exec")
+        .args(flags)
+        .args([prompt, "--provider", "mock", "--project-root"])
+        .arg(tmp.path())
+        .env("XDG_CONFIG_HOME", tmp.path())
+        .env("KODA_MOCK_RESPONSES", responses);
     if let Some(m) = mode {
         cmd.args(["--mode", m]);
     }
@@ -47,14 +52,16 @@ fn run_mock_with_mode(prompt: &str, responses: &str, mode: Option<&str>) -> (Str
     (stdout, stderr, output.status.success())
 }
 
+/// The `exec/summary` that ends `koda exec --json`'s stdout.
 fn extract_json(stdout: &str) -> serde_json::Value {
-    // The JSON is pretty-printed across multiple lines.
-    // Find the opening '{' and collect everything from there.
-    let start = stdout
-        .find('{')
-        .unwrap_or_else(|| panic!("No JSON object in stdout:\n{stdout}"));
-    serde_json::from_str(&stdout[start..])
-        .unwrap_or_else(|e| panic!("Invalid JSON: {e}\nfrom: {}", &stdout[start..]))
+    let last = stdout
+        .lines()
+        .last()
+        .unwrap_or_else(|| panic!("No output on stdout:\n{stdout}"));
+    let message: serde_json::Value =
+        serde_json::from_str(last).unwrap_or_else(|e| panic!("Invalid JSON: {e}\nfrom: {last}"));
+    assert_eq!(message["method"], "exec/summary", "{stdout}");
+    message["params"].clone()
 }
 // ── Headless MockProvider tests ──────────────────────────────
 
@@ -144,12 +151,11 @@ fn mock_tool_use_read_file() {
 
     let output = Command::new(koda_bin())
         .args([
-            "-p",
+            "exec",
+            "--json",
             "read hello.txt",
             "--provider",
             "mock",
-            "--output-format",
-            "json",
             "--project-root",
         ])
         .arg(tmp.path())
@@ -171,37 +177,6 @@ fn mock_tool_use_read_file() {
     );
 }
 
-/// Run a read-then-answer mock session in `format`, with `hello.txt`
-/// in the project root. Returns (stdout, stderr, success).
-fn run_mock_read_session(format: &str) -> (String, String, bool) {
-    let tmp = tempfile::tempdir().unwrap();
-    std::fs::write(tmp.path().join("hello.txt"), "mock test content").unwrap();
-    let responses = r#"[
-        {"tool":"Read","args":{"path":"hello.txt"}},
-        {"text":"I read the file."}
-    ]"#;
-    let output = Command::new(koda_bin())
-        .args([
-            "-p",
-            "read hello.txt",
-            "--provider",
-            "mock",
-            "--output-format",
-            format,
-            "--project-root",
-        ])
-        .arg(tmp.path())
-        .env("XDG_CONFIG_HOME", tmp.path())
-        .env("KODA_MOCK_RESPONSES", responses)
-        .output()
-        .expect("Failed to run koda");
-    (
-        String::from_utf8_lossy(&output.stdout).to_string(),
-        String::from_utf8_lossy(&output.stderr).to_string(),
-        output.status.success(),
-    )
-}
-
 /// Run a session with a prompt big enough that the engine compacts mid-turn,
 /// as soon as there is history to compact (after the second tool call), then
 /// finishes with `final_response`.
@@ -221,12 +196,11 @@ fn run_mock_compacted_session(final_response: &str) -> (serde_json::Value, Strin
     let prompt = format!("read both files {}", "padding ".repeat(4_700));
     let output = Command::new(koda_bin())
         .args([
-            "-p",
+            "exec",
+            "--json",
             prompt.as_str(),
             "--provider",
             "mock",
-            "--output-format",
-            "json",
             "--project-root",
         ])
         .arg(tmp.path())
@@ -237,6 +211,10 @@ fn run_mock_compacted_session(final_response: &str) -> (serde_json::Value, Strin
         .expect("Failed to run koda");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        stdout.contains(r#""type":"contextCompaction""#),
+        "no compaction ran: {stdout}\nstderr: {stderr}"
+    );
     (extract_json(&stdout), stderr)
 }
 
@@ -245,29 +223,11 @@ fn run_mock_compacted_session(final_response: &str) -> (serde_json::Value, Strin
 #[test]
 fn mock_compaction_hint_is_never_the_response() {
     let (json, stderr) = run_mock_compacted_session("The final answer.");
-    assert!(stderr.contains("Compacted"), "no compaction ran: {stderr}");
     assert_eq!(json["response"], "The final answer.", "stderr: {stderr}");
 
     // The case that was seen: the model ends on nothing after tool use.
     let (json, stderr) = run_mock_compacted_session("");
-    assert!(stderr.contains("Compacted"), "no compaction ran: {stderr}");
     assert_eq!(json["response"], "", "stderr: {stderr}");
-}
-
-#[test]
-fn mock_json_stdout_is_exactly_one_summary_object() {
-    // Regression: the streamed reply used to land on stdout ahead of
-    // the JSON object, so stdout as a whole wasn't valid JSON.
-    let (stdout, stderr, success) = run_mock_read_session("json");
-    assert!(success, "Failed.\nstderr: {stderr}");
-    let json: serde_json::Value = serde_json::from_str(stdout.trim())
-        .unwrap_or_else(|e| panic!("stdout is not one JSON object: {e}\nstdout:\n{stdout}"));
-    assert_eq!(json["type"], "run_summary");
-    assert_eq!(json["success"], true);
-    assert_eq!(json["tool_calls"]["Read"], 1, "summary: {json}");
-    assert_eq!(json["turn_end"]["kind"], "complete", "summary: {json}");
-    assert!(json["usage"].is_object(), "summary: {json}");
-    assert!(json["elapsed_ms"].is_u64(), "summary: {json}");
 }
 
 /// `koda exec` on the mock provider: read hello.txt, then reply.
@@ -383,12 +343,58 @@ fn exec_writes_the_last_reply_to_a_file() {
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "I read the file.");
 }
 
+/// `koda -p`, `--output-format` (`stream-json` included) and a bare prompt
+/// were removed in 0.7.0: each stops before any run and names `koda exec`.
 #[test]
-fn stream_json_is_refused_with_its_replacement() {
-    let (stdout, stderr, success) = run_mock_read_session("stream-json");
-    assert!(!success);
-    assert!(stdout.is_empty(), "{stdout}");
-    assert!(stderr.contains("koda exec --json"), "{stderr}");
+fn removed_one_shot_forms_are_refused_with_their_replacement() {
+    for args in [
+        &["-p", "say hi"][..],
+        &["--prompt", "say hi"],
+        &["-p", "-"],
+        &["say hi"],
+        &["--output-format", "json"],
+        &["--output-format", "stream-json"],
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let output = Command::new(koda_bin())
+            .args(args)
+            .args(["--provider", "mock", "--project-root"])
+            .arg(tmp.path())
+            .env("XDG_CONFIG_HOME", tmp.path())
+            .env("KODA_MOCK_RESPONSES", r#"[{"text":"ran"}]"#)
+            .output()
+            .expect("Failed to run koda");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {stderr}");
+        assert!(stdout.is_empty(), "{args:?}: {stdout}");
+        assert!(stderr.contains("koda exec"), "{args:?}: {stderr}");
+    }
+}
+
+/// `koda` alone opens the TUI, which needs a terminal. A piped prompt is
+/// `koda exec`'s, as `codex` refuses one too.
+#[test]
+fn a_piped_prompt_without_exec_is_refused() {
+    use std::io::Write as _;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut child = Command::new(koda_bin())
+        .args(["--provider", "mock", "--project-root"])
+        .arg(tmp.path())
+        .env("XDG_CONFIG_HOME", tmp.path())
+        .env("KODA_MOCK_RESPONSES", r#"[{"text":"ran"}]"#)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("Failed to run koda");
+    // Koda may exit before reading it; a broken pipe is fine.
+    let _ = child.stdin.take().unwrap().write_all(b"say hi");
+    let output = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(stderr.contains("koda exec"), "{stderr}");
 }
 
 #[test]
@@ -407,7 +413,7 @@ fn mock_error_response_handled() {
 fn mock_session_id_returned() {
     let (stdout, stderr, _) = run_mock("say hi", r#"[{"text":"ok"}]"#);
     let json = extract_json(&stdout);
-    let session_id = json["session_id"].as_str();
+    let session_id = json["sessionId"].as_str();
     assert!(
         session_id.is_some() && !session_id.unwrap().is_empty(),
         "Expected session_id in JSON.\nJSON: {json}\nstderr: {stderr}"
@@ -430,12 +436,11 @@ fn mock_at_file_reference() {
 
     let output = Command::new(koda_bin())
         .args([
-            "-p",
+            "exec",
+            "--json",
             "analyze @data.txt",
             "--provider",
             "mock",
-            "--output-format",
-            "json",
             "--project-root",
         ])
         .arg(tmp.path())
@@ -470,12 +475,11 @@ fn mock_session_resume() {
     // Turn 1
     let output1 = Command::new(koda_bin())
         .args([
-            "-p",
+            "exec",
+            "--json",
             "turn one",
             "--provider",
             "mock",
-            "--output-format",
-            "json",
             "--project-root",
         ])
         .arg(tmp.path())
@@ -486,17 +490,16 @@ fn mock_session_resume() {
 
     let stdout1 = String::from_utf8_lossy(&output1.stdout);
     let json1 = extract_json(&stdout1);
-    let session_id = json1["session_id"].as_str().expect("No session_id");
+    let session_id = json1["sessionId"].as_str().expect("No session_id");
 
     // Turn 2: resume
     let output2 = Command::new(koda_bin())
         .args([
-            "-p",
+            "exec",
+            "--json",
             "turn two",
             "--provider",
             "mock",
-            "--output-format",
-            "json",
             "--session",
             session_id,
             "--project-root",
@@ -516,7 +519,7 @@ fn mock_session_resume() {
     let json2 = extract_json(&stdout2);
     assert_eq!(json2["success"], true);
     assert_eq!(
-        json2["session_id"].as_str().unwrap(),
+        json2["sessionId"].as_str().unwrap(),
         session_id,
         "Resumed session should keep same ID"
     );
@@ -530,12 +533,11 @@ fn mock_session_resume_via_resume_flag() {
     // Turn 1: create session
     let output1 = Command::new(koda_bin())
         .args([
-            "-p",
+            "exec",
+            "--json",
             "turn one",
             "--provider",
             "mock",
-            "--output-format",
-            "json",
             "--project-root",
         ])
         .arg(tmp.path())
@@ -546,17 +548,16 @@ fn mock_session_resume_via_resume_flag() {
 
     let stdout1 = String::from_utf8_lossy(&output1.stdout);
     let json1 = extract_json(&stdout1);
-    let session_id = json1["session_id"].as_str().expect("No session_id");
+    let session_id = json1["sessionId"].as_str().expect("No session_id");
 
     // Turn 2: resume via --resume (not --session)
     let output2 = Command::new(koda_bin())
         .args([
-            "-p",
+            "exec",
+            "--json",
             "turn two",
             "--provider",
             "mock",
-            "--output-format",
-            "json",
             "--resume",
             session_id,
             "--project-root",
@@ -576,7 +577,7 @@ fn mock_session_resume_via_resume_flag() {
     let json2 = extract_json(&stdout2);
     assert_eq!(json2["success"], true);
     assert_eq!(
-        json2["session_id"].as_str().unwrap(),
+        json2["sessionId"].as_str().unwrap(),
         session_id,
         "--resume should resume the same session"
     );
@@ -590,12 +591,11 @@ fn mock_session_resume_via_short_s_flag() {
     // Turn 1
     let output1 = Command::new(koda_bin())
         .args([
-            "-p",
+            "exec",
+            "--json",
             "turn one",
             "--provider",
             "mock",
-            "--output-format",
-            "json",
             "--project-root",
         ])
         .arg(tmp.path())
@@ -606,17 +606,16 @@ fn mock_session_resume_via_short_s_flag() {
 
     let stdout1 = String::from_utf8_lossy(&output1.stdout);
     let json1 = extract_json(&stdout1);
-    let session_id = json1["session_id"].as_str().expect("No session_id");
+    let session_id = json1["sessionId"].as_str().expect("No session_id");
 
     // Turn 2: resume via -s
     let output2 = Command::new(koda_bin())
         .args([
-            "-p",
+            "exec",
+            "--json",
             "turn two",
             "--provider",
             "mock",
-            "--output-format",
-            "json",
             "-s",
             session_id,
             "--project-root",
@@ -634,7 +633,7 @@ fn mock_session_resume_via_short_s_flag() {
     );
     let json2 = extract_json(&String::from_utf8_lossy(&output2.stdout));
     assert_eq!(
-        json2["session_id"].as_str().unwrap(),
+        json2["sessionId"].as_str().unwrap(),
         session_id,
         "-s should resume the same session"
     );

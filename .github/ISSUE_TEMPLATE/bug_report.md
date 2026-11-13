@@ -15,7 +15,7 @@ labels: ["bug"]
 <!-- Minimal steps to trigger the bug. Include commands, prompts, or config. -->
 
 ```bash
-koda -p "your prompt here"
+koda exec "your prompt here"
 ```
 
 ## Error output
@@ -40,7 +40,7 @@ koda -p "your prompt here"
 - **Log level:** <!-- default, or the RUST_LOG you set; RUST_LOG=koda_core=debug,koda_cli=info is best -->
 - **Log file:** <!-- attach ~/.config/koda/logs/latest (cp -L), or paste the lines below -->
 - **Debug bundle:** <!-- TUI: attach the .zip from /debug-bundle -->
-- **`run_summary`:** <!-- headless: output of --output-format json -->
+- **`exec/summary`:** <!-- headless: the last line of koda exec --json -->
 - **Lines that show the problem:** <!-- by name, e.g. compaction branch="cut_off", turn end outcome="stopped" -->
 
 ## Sandbox-related (only fill in if your bug involves trust/Auto/sandbox)

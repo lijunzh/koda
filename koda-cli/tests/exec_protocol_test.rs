@@ -743,34 +743,3 @@ async fn a_resumed_turn_reports_only_itself() {
     assert_eq!(totals["inputTokens"], 400, "the session: {totals}");
     assert_eq!(totals["modelCalls"], 2, "the session: {totals}");
 }
-
-// ── koda -p ──────────────────────────────────────────────────────────────
-
-#[tokio::test(flavor = "multi_thread")]
-async fn the_json_format_is_still_one_summary_object() {
-    let server = stub(vec![], no_other_calls).await;
-    let tmp = tempfile::tempdir().unwrap();
-    let mut command = tokio::process::Command::new(koda_bin());
-    command
-        .args(["-p", "Fix the parser", "--output-format", "json"])
-        .args(["--provider", "lmstudio", "--model", "stub"])
-        .args(["--base-url", &server.url()])
-        .arg("--project-root")
-        .arg(tmp.path())
-        .env("XDG_CONFIG_HOME", tmp.path())
-        .kill_on_drop(true);
-    let output = tokio::time::timeout(Duration::from_secs(120), command.output())
-        .await
-        .expect("koda hung")
-        .unwrap();
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let start = stdout.find('{').expect("no JSON on stdout");
-    let summary: Value = serde_json::from_str(&stdout[start..]).unwrap();
-    assert_eq!(summary["type"], "run_summary", "{stdout}");
-    assert_eq!(summary["success"], true, "{stdout}");
-    assert_eq!(summary["response"], "Done.", "{stdout}");
-    assert!(summary["session_id"].is_string(), "{stdout}");
-    assert_eq!(summary["usage"]["prompt_tokens"], 200, "{stdout}");
-    assert_eq!(summary["turn_end"]["kind"], "complete", "{stdout}");
-}

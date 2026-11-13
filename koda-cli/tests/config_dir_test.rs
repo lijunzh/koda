@@ -21,8 +21,8 @@ fn koda_bin() -> String {
 /// Run headless koda on the mock provider with separate HOME and config dirs.
 fn run(home: &Path, xdg: &Path, project: &Path, responses: &str) -> (String, bool) {
     let output = Command::new(koda_bin())
-        .args(["-p", "go", "--provider", "mock", "--mode", "auto"])
-        .args(["--output-format", "json", "--project-root"])
+        .args(["exec", "go", "--provider", "mock", "--mode", "auto"])
+        .arg("--project-root")
         .arg(project)
         .env("HOME", home)
         .env("XDG_CONFIG_HOME", xdg)

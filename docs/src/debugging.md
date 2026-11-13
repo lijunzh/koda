@@ -19,7 +19,7 @@ you set that variable.
 | Panic log | `<config>/logs/panic.log` | Crash records from every process. See [Troubleshooting](./troubleshooting.md). |
 | Database | `<config>/db/koda.db` | Every message of every session, with token usage. |
 | Debug bundle | `<config>/debug-bundles/*.zip` | Written by [`/debug-bundle`](./commands.md#debug-bundle) in the TUI. |
-| Headless output | stdout | A run summary, with `koda -p --output-format json`, or the protocol with `koda exec --json`. |
+| Headless output | stdout | The protocol with `koda exec --json`, ending with the run summary, `exec/summary`. |
 
 ### The database
 
@@ -35,7 +35,7 @@ WHERE session_id = '<id>'
 ORDER BY id;
 ```
 
-Get the session ID from `run_summary`, or list the newest with
+Get the session ID from `exec/summary`, or list the newest with
 `SELECT id, title, created_at FROM sessions ORDER BY created_at DESC LIMIT 5;`.
 
 - Compaction never deletes rows. It sets `compacted_at` on the rows it replaced
@@ -53,17 +53,16 @@ Get the session ID from `run_summary`, or list the newest with
 
 ### Headless output
 
-`--output-format json` prints one `run_summary` object when the run ends:
-`success`, `error`, `session_id`, `provider`, `model`, `response`, `turn_end`,
-`elapsed_ms`, `usage`, `usage_by_agent`, `tool_calls` and
-`sub_agent_tool_calls`. `koda exec --json` prints the [client protocol](headless.md#the-client-protocol) as lines, ending with
-`exec/summary`, the same summary in camelCase. See
+`koda exec --json` prints the [client protocol](headless.md#the-client-protocol)
+as lines, ending with `exec/summary`: `success`, `error`, `sessionId`,
+`provider`, `model`, `response`, `turnStatus`, `durationMs`, `usage`,
+`usageByAgent`, `toolCalls` and `subAgentToolCalls`. See
 [Headless mode](./headless.md#output-formats). A run that failed exits with
 code 1.
 
-`turn_end.kind` is `complete`, `cancelled` or `error`, which is coarser than the
-log. A turn stopped by the loop guard or the iteration cap reports `complete`
-here, and only the `turn end` log line says otherwise.
+`turnStatus` is `completed`, `interrupted` or `failed`, which is coarser than
+the log. A turn stopped by the loop guard or the iteration cap reports
+`completed` here, and only the `turn end` log line says otherwise.
 
 ## The log lines
 
@@ -87,7 +86,7 @@ iteration, with `compaction` lines between them when one fires, and one
 `turn end` at the end.
 
 Sub-agents run their own loop and don't write these lines. For their cost, use
-`usage_by_agent` and `sub_agent_tool_calls` in `run_summary`.
+`usageByAgent` and `subAgentToolCalls` in `exec/summary`.
 
 ### `model call`
 
@@ -245,10 +244,10 @@ Setting it replaces the default, so name everything you want:
 
 ```sh
 # Prompts and summaries, as text
-RUST_LOG=koda_core=debug,koda_cli=info koda -p "…"
+RUST_LOG=koda_core=debug,koda_cli=info koda exec "…"
 
 # Those, plus every request body
-RUST_LOG=koda_core=debug,koda_cli=info,koda_core::providers=trace koda -p "…"
+RUST_LOG=koda_core=debug,koda_cli=info,koda_core::providers=trace koda exec "…"
 ```
 
 `koda_core=debug` adds these lines, whose text runs on over the following lines
@@ -280,13 +279,13 @@ the text behind questions 3 and 4, which needs `debug` or `trace`.
 | # | Question | Where to look |
 |---|---|---|
 | 1 | Did a call fail, retry or stop abnormally? | `model call failed`, `Rate limited`, `Server error`, `Network glitch`; `failed_stop=true` or `stop_reason=max_tokens` on `model call` |
-| 2 | What did each call cost? | `prompt_tokens`, `completion_tokens`, `cache_read_tokens`, `thinking_tokens`, `elapsed_ms` on `model call`; totals in `run_summary.usage` |
+| 2 | What did each call cost? | `prompt_tokens`, `completion_tokens`, `cache_read_tokens`, `thinking_tokens`, `elapsed_ms` on `model call`; totals in `exec/summary`'s `usage` |
 | 3 | What did the model see on a given call? | Shape: the last `context assembled` before that `model call`. Text: the `request body` line, or `System prompt:` plus the database rows. |
 | 4 | Did compaction keep the request, and what did the summarizer get and return? | `Stored compaction summary:` should carry the request. `Compaction prompt:` and `Compaction reply:` hold the text. At `info`: `branch`, `conversation_chars`, `clipped_chars`, `reply_chars` on `compaction`. |
 | 5 | Was anything removed without a summary? | `history edited`; a `compaction` branch of `dropped`, `cut_off`, `empty` or `too_short`; `truncated=true`; `Microcompact: cleared` |
 | 6 | Why did the context estimate move? | Compare `context assembled` lines: the `*_chars` fields, `correction` and `summary_chars`. Compare `estimated_tokens` with `context_tokens` on `model call`. |
-| 7 | How did the run end? | `outcome` and `ends_with_question` on `turn end`; `turn_end` in `run_summary` |
-| 8 | What was re-fetched, and at what cost? | `duplicate_read_files` and `duplicate_read_tokens` on `context assembled`, which reset when a compaction removes the reads; `tool_calls` in `run_summary` |
+| 7 | How did the run end? | `outcome` and `ends_with_question` on `turn end`; `turnStatus` in `exec/summary` |
+| 8 | What was re-fetched, and at what cost? | `duplicate_read_files` and `duplicate_read_tokens` on `context assembled`, which reset when a compaction removes the reads; `toolCalls` in `exec/summary` |
 | 9 | Was the system prompt the same before and after compaction? | Compare `system_hash` on `purpose="turn"` lines either side of the `compaction` line |
 | 10 | Why did the prompt cache miss? | `Prompt cache diagnostics` lines (Anthropic's API only); `cache_read_tokens` falling on `model call` |
 
@@ -398,7 +397,7 @@ async fn the_turn_finishes_after_the_read() {
     let tmp = tempfile::tempdir().unwrap();
     std::fs::write(tmp.path().join("notes.txt"), "a note\n").unwrap();
     let child = tokio::process::Command::new(koda_bin())
-        .args(["-p", "Read notes.txt", "--output-format", "json"])
+        .args(["exec", "Read notes.txt"])
         .args(["--provider", "lmstudio", "--model", "stub"])
         .args(["--base-url", &server.url()])
         .args(["--max-context-tokens", "100000"])
@@ -440,7 +439,7 @@ see the end-to-end tests in `koda-core/tests/`.
 1. **The log at debug level.** Re-run with `RUST_LOG=koda_core=debug,koda_cli=info`
    if you can, then copy `~/.config/koda/logs/latest` with `cp -L`. It holds your
    prompts and the files Koda read, so check it before you post it.
-2. **The `run_summary`**, for a headless run.
+2. **The `exec/summary` line**, for a `koda exec --json` run.
 3. **The debug bundle**, for a TUI session: run `/debug-bundle` before you quit.
    It holds the conversation and that process's log. A headless run has no
    bundle, and one written later holds the later process's log, so send that

@@ -32,7 +32,7 @@ async fn a_multiline_prompt_reaches_the_model_unchanged() {
 
     let tmp = tempfile::tempdir().unwrap();
     let child = tokio::process::Command::new(koda_bin())
-        .args(["-p", PROMPT, "--output-format", "json"])
+        .args(["exec", PROMPT])
         .args(["--provider", "lmstudio", "--model", "stub"])
         .args(["--base-url", &server.url()])
         .args(["--max-context-tokens", "100000"])

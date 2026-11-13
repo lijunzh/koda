@@ -37,13 +37,13 @@ On first run, an onboarding wizard will guide you through provider and API key s
 koda
 
 # One-shot prompt (headless mode for scripts/CI)
-koda "fix the failing test in auth.rs"
+koda exec "fix the failing test in auth.rs"
 
 # Specific model (an exact model ID; aliases like `claude-opus` are for /model in the TUI)
-koda -p "explain auth.rs" --model claude-opus-5-5
+koda exec --model claude-opus-5-5 "explain auth.rs"
 
 # Pipe input directly into Koda
-echo "review this diff" | koda
+echo "review this diff" | koda exec
 ```
 
 Inside the TUI, type `/help` to see all commands and keyboard shortcuts.

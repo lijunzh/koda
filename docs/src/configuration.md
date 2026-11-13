@@ -22,13 +22,13 @@ overwritten.
 
 ```bash
 # Per-call override (doesn't change saved config)
-koda "review auth.rs" --model o3
+koda exec --model o3 "review auth.rs"
 
 # Per-project via direnv (.envrc)
 export KODA_MODEL=gemini-2.5-pro
 
 # CI / GitHub Actions
-ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_KEY }} koda -p "check types"
+ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_KEY }} koda exec "check types"
 ```
 
 ## Context window
@@ -51,7 +51,7 @@ text stops Koda at startup with an error rather than being ignored. Startup
 logs `Context window from override: N tokens for <model>`.
 
 ```bash
-KODA_MAX_CONTEXT_TOKENS=65536 koda -p "say hi" --provider lm-studio --base-url http://127.0.0.1:11500/v1
+KODA_MAX_CONTEXT_TOKENS=65536 koda exec "say hi" --provider lm-studio --base-url http://127.0.0.1:11500/v1
 ```
 
 ## Config files
