@@ -1182,10 +1182,7 @@ async fn enter_during_a_held_paste_does_not_reach_the_slash_popup() {
 
 /// `/model` with no name opens a picker of the aliases plus a "local" entry
 /// for the model a local server has loaded; Esc closes it and changes
-/// nothing. Picking "local" isn't tested: Koda finds the local model at
-/// `KODA_LOCAL_URL` but then switches to LM Studio's default address, so a
-/// pick would reach whatever LM Studio runs on this machine (found
-/// 2026-11-12, not fixed here).
+/// nothing.
 #[tokio::test(flavor = "multi_thread")]
 async fn model_picker_lists_the_local_model_and_esc_changes_nothing() {
     let server = scripted_model(vec![]).await;
@@ -1208,6 +1205,40 @@ async fn model_picker_lists_the_local_model_and_esc_changes_nothing() {
     tui.submit("hi");
     let sent = wait_for_model_call(&server, 1).await;
     assert!(sent.contains(r#""model":"stub-model""#), "{sent}");
+}
+
+/// Picking the "local" entry moves the session to the server it was found
+/// at (`KODA_LOCAL_URL`) and that server's model. Switching used to go to
+/// LM Studio's default address instead, so a pick reached whatever LM
+/// Studio ran on the machine; the test's own servers are the only ones
+/// here, and the one Koda started with must get nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn model_picker_local_pick_moves_the_next_turn_to_that_server() {
+    let first = scripted_model(vec![]).await;
+    let local = scripted_model(vec![text_reply("From the local server.")]).await;
+    let models = json!({"object": "list", "data": [
+        {"id": "stub-local", "object": "model", "type": "llm", "state": "loaded"}
+    ]});
+    local.mount_ok("GET", r".*/models$", models).await;
+    let home = home();
+    let local_url = local.url();
+    let mut tui = Tui::start_with_env(home.path(), &first.url(), &[("KODA_LOCAL_URL", &local_url)]);
+
+    run_command(&mut tui, "/model");
+    tui.wait_for_screen("Select a model");
+    highlight(&mut tui, "stub-local");
+    tui.type_text("\r");
+    tui.wait_for_screen("Model: local (stub-local)");
+
+    tui.submit("where are you");
+    let sent = wait_for_model_call(&local, 1).await;
+    assert!(sent.contains(r#""model":"stub-local""#), "{sent}");
+    assert!(sent.contains("where are you"), "{sent}");
+    tui.wait_for_screen("From the local server.");
+    assert!(
+        model_calls(&first).await.is_empty(),
+        "the server Koda started with got the turn"
+    );
 }
 
 /// `/provider <url>` moves the session to the server at that address: the

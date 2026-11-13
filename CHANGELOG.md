@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 - **A slash command that arrives faster than it's typed keeps its text.** When the start of a command was typed and the rest came in a fast burst (a paste in a terminal without bracketed paste, or keys Koda read late while busy), the slash popup opened by the typed start took Enter while the rest was still held. It completed the command, the held text landed after it, and `/mcp add notes …` became `/mcp p add notes …`. Held text is now added before an open menu sees the key.
 
+- **Picking `/model`'s "local" entry now switches to the server the picker found it on.** The picker looks for the local model at `KODA_LOCAL_URL`, but picking it switched to LM Studio's default address (`localhost:1234`), so with `KODA_LOCAL_URL` pointing elsewhere the next turns went to a different server, or to nothing. Both now use `KODA_LOCAL_URL`, else the LM Studio address Koda is already using, else the default.
+
 ## [0.6.4] - 2026-11-12
 
 ### Added
