@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **`KODA_ALLOW_LOCAL_BINDING=1` opens every local port to sandboxed commands on macOS.** By default a command can reach only the local servers Koda started in the background, so a test that starts a server and connects to it failed with "Operation not permitted", as did a command reaching a database or dev server you started. With the variable set, commands may listen and accept on any local port and connect to any port on `localhost`; connections beyond the machine still go only through Koda's proxy. It is off by default and read only from the environment, as Codex's and Claude Code's `allow_local_binding` are. Linux needs no setting: each command's loopback is its own. See [Sandbox](https://lijunzh.github.io/koda/sandbox.html#when-a-command-needs-to-leave-the-sandbox).
+
 ### Changed
 
 - **`koda exec` runs one prompt, and `koda exec --json` prints Koda's client protocol.** `koda exec "prompt"` works like `koda -p`, as `codex exec` does in Codex, and takes every `koda` flag; `-o FILE` also writes the last reply to a file. With `--json`, stdout carries JSON-RPC 2.0 notifications, one per line: `session/started`, the turn, its items (messages, reasoning, tool calls, compaction), each approval or question with how Koda answered it, and `exec/summary` last. `--json-deltas` adds the streaming text and command output. This is the protocol the TUI and other clients will speak; its schema is `docs/src/protocol-schema.json`. See [Headless mode](https://lijunzh.github.io/koda/headless.html#the-client-protocol).

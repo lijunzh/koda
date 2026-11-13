@@ -371,8 +371,13 @@ pub(crate) fn network_open_rules() -> String {
 /// - **Inbound on `localhost:*`** — debugger attach, Node `--inspect`, etc.
 ///   Localhost-only, no security implication.
 /// - **Bind on `localhost:*`** — always allowed for the same reason.
-/// - **Bind on `*:*`** — only when `allow_local_binding` is true (user dev
-///   servers expecting external clients).
+/// - **Any local port, both ways** — only when `allow_local_binding` is
+///   true (`KODA_ALLOW_LOCAL_BINDING`), with the rules Codex and Claude
+///   Code's sandbox-runtime use for the same setting: bind and inbound on
+///   `*:*`, since a dual-stack socket bound to 127.0.0.1 is
+///   `::ffff:127.0.0.1`, which `localhost` doesn't match; outbound only to
+///   `localhost`, so nothing else leaves except through the proxy. That lets
+///   a test start a server and connect to it.
 ///
 /// When `weaker_macos_isolation` is true (Phase 3e of #934) we additionally
 /// permit mach-lookups to Apple's `trustd` and `trustd.agent` daemons.
@@ -410,6 +415,8 @@ pub fn network_proxied_rules(
     rules.push_str("(allow network-bind (local ip \"localhost:*\"))\n");
     if allow_local_binding {
         rules.push_str("(allow network-bind (local ip \"*:*\"))\n");
+        rules.push_str("(allow network-inbound (local ip \"*:*\"))\n");
+        rules.push_str("(allow network-outbound (remote ip \"localhost:*\"))\n");
     }
     if weaker_macos_isolation {
         rules.push_str(&trustd_mach_lookup_rules());
@@ -1147,9 +1154,20 @@ mod tests {
     }
 
     #[test]
-    fn proxied_profile_includes_wildcard_bind_when_local_binding_enabled() {
+    fn proxied_profile_opens_local_ports_when_local_binding_enabled() {
         let p = build_proxied_profile_string("/work", "/Users/x", 8877, true, false);
         assert!(p.contains("(allow network-bind (local ip \"*:*\"))"));
+        assert!(p.contains("(allow network-inbound (local ip \"*:*\"))"));
+        assert!(p.contains("(allow network-outbound (remote ip \"localhost:*\"))"));
+        // Outbound beyond localhost still goes only through the proxy.
+        assert!(!p.contains("(allow network-outbound (remote ip \"*:*\"))"));
+        assert!(!p.contains("(allow network-outbound)\n"));
+    }
+
+    #[test]
+    fn proxied_profile_keeps_other_local_ports_closed_by_default() {
+        let p = build_proxied_profile_string("/work", "/Users/x", 8877, false, false);
+        assert!(!p.contains("(remote ip \"localhost:*\")"));
     }
 
     #[test]

@@ -836,6 +836,19 @@ Bash description saying not to didn't change that. Claude Code tolerates
 refuses `&` inside a background call. Gemini CLI records `jobs -p` in an
 exit trap.
 
+**Every local port opens only on the user's word** (2026-11, following Codex
+and Claude Code's sandbox-runtime). `KODA_ALLOW_LOCAL_BINDING=1` sets
+`NetPolicy::allow_local_binding`, which on macOS allows bind and inbound on
+`*:*` and outbound to `localhost:*`, sandbox-runtime's rules for its setting
+of the same name. Before, the flag added only the wildcard bind and nothing
+set it, so a test that starts a server and connects to it failed whatever
+the user wanted; in evals of Koda's own history it cost models calls on 2 of
+5 core tasks. It is an environment variable because Koda has no settings
+file, and so a repository can't open it; sandbox-runtime asks the same of
+whoever embeds it. Off by default, since it exposes every service listening
+on the machine. Linux ignores it, as sandbox-runtime does: each command's
+loopback is its own.
+
 **Koda signals its own processes; a shell `kill` doesn't** (2026-11, as in
 Codex, where a model stops a session with Ctrl-C through `write_stdin` and
 Codex sends the signal). Each Bash call is its own sandbox, and a sandbox
