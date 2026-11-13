@@ -41,9 +41,9 @@ const REQUIRED_DISALLOWED: &[&str] = &["Write", "Edit"];
 /// this test is decoupled from `KodaConfig`'s internal layout and
 /// stays a pure file-content guarantee.
 const BUILTIN_AGENT_JSONS: &[(&str, &str)] = &[
-    ("default", include_str!("../agents/default.json")),
-    ("task", include_str!("../agents/task.json")),
-    ("explore", include_str!("../agents/explore.json")),
+    ("default", include_str!("../../agents/default.json")),
+    ("task", include_str!("../../agents/task.json")),
+    ("explore", include_str!("../../agents/explore.json")),
 ];
 
 #[test]

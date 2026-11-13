@@ -665,7 +665,7 @@ mod tests {
     // section is composed per-turn in `KodaSession::run_turn` (NOT baked
     // into `build_system_prompt`). See module docs on the helper for why.
     // The bootstrap-level integration test in
-    // `tests/mcp_instructions_bootstrap_test.rs` exercises the live wiring.
+    // `tests/suite/mcp_instructions_bootstrap_test.rs` exercises the live wiring.
 
     #[test]
     fn test_render_mcp_section_empty_returns_empty_string() {
