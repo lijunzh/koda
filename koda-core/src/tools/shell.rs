@@ -1369,13 +1369,13 @@ pub(crate) fn annotate_violations(
 /// Follows a sandbox denial, so the model knows the way out and that the
 /// user decides, rather than guessing at the cause (it once took a blocked
 /// `nc` to mean the user was off their home network).
-const OUTSIDE_SANDBOX_HINT: &str = "Koda's sandbox blocked this command. If the user \
+pub(crate) const OUTSIDE_SANDBOX_HINT: &str = "Koda's sandbox blocked this command. If the user \
      needs it, run it again with Bash, outside_sandbox=true and a reason; they'll be \
      asked to approve it.";
 
 /// [`OUTSIDE_SANDBOX_HINT`] where no one can approve: a sub-agent, or a
 /// headless run.
-const NO_WAY_OUT_HINT: &str = "Koda's sandbox blocked this command, and this run can't \
+pub(crate) const NO_WAY_OUT_HINT: &str = "Koda's sandbox blocked this command, and this run can't \
      leave the sandbox: no one is here to approve it. Do without it, or say which \
      command the user should run themselves.";
 

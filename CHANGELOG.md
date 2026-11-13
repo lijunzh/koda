@@ -20,6 +20,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **Cargo no longer points a headless run or a sub-agent at a retry outside the sandbox it can't have.** After a sandbox denial, Bash already said a run with no one to approve can't leave the sandbox, but the Cargo tool, which gets no output stream from the dispatcher, always said to rerun with `outside_sandbox=true`, so `koda exec` runs and sub-agents spent a call on a request that is always refused. Cargo now gives the same answer as Bash.
+
 - **Stopping a command on macOS no longer leaves a child running.** A stop that caught the command's shell in the middle of starting a job (`server &`) killed the shell but not the job it was starting: macOS, unlike Linux, lets a fork finish without the signal. About one stop in sixteen, made just as such a command started, left a process behind. Koda now stops the group again once its leader has died, which reaches anything the leader started meanwhile.
 
 - **A slash command that arrives faster than it's typed keeps its text.** When the start of a command was typed and the rest came in a fast burst (a paste in a terminal without bracketed paste, or keys Koda read late while busy), the slash popup opened by the typed start took Enter while the rest was still held. It completed the command, the held text landed after it, and `/mcp add notes …` became `/mcp p add notes …`. Held text is now added before an open menu sees the key.

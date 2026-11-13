@@ -1046,6 +1046,7 @@ async fn read_streams(
 /// sandbox, env scrubbing and proxy env all apply. `CARGO_TERM_COLOR=never`
 /// keeps ANSI codes out of the libtest text. Cargo runs in its own process
 /// group, so dropping this future kills it and the tests or builds it started.
+#[allow(clippy::too_many_arguments)] // the context the tool reads, plus `approvable`
 pub async fn run_cargo(
     project_root: &Path,
     args: &Value,
@@ -1054,6 +1055,7 @@ pub async fn run_cargo(
     proxy_port: Option<u16>,
     socks5_port: Option<u16>,
     sink: Option<(&dyn EngineSink, &str)>,
+    approvable: bool,
 ) -> Result<CargoOutput> {
     run_cargo_with_env(
         project_root,
@@ -1063,9 +1065,19 @@ pub async fn run_cargo(
         proxy_port,
         socks5_port,
         sink,
+        approvable,
         &[],
     )
     .await
+}
+
+/// Whether a sandbox denial may point at a run outside the sandbox: only
+/// where someone can approve one. A headless run or background child can't
+/// ask ([`ToolExecCtx::can_ask`]), and a sub-agent (`caller_spawner`) is always refused, as in
+/// Bash. Cargo has no sink from the dispatcher, which streams only Bash, so
+/// before `can_ask` it offered the way out in every run.
+fn approvable(can_ask: bool, caller_spawner: Option<u32>) -> bool {
+    can_ask && caller_spawner.is_none()
 }
 
 /// [`run_cargo`] plus extra environment variables for the child, set after
@@ -1074,7 +1086,7 @@ pub async fn run_cargo(
 /// running the tests: under `cargo llvm-cov`, `RUSTC_WRAPPER` points at
 /// the coverage binary, which the env allowlist forwards to the child,
 /// where it fails with "expected subcommand 'llvm-cov'".
-#[allow(clippy::too_many_arguments)] // the seven of run_cargo, plus the env
+#[allow(clippy::too_many_arguments)] // the eight of run_cargo, plus the env
 async fn run_cargo_with_env(
     project_root: &Path,
     args: &Value,
@@ -1083,18 +1095,16 @@ async fn run_cargo_with_env(
     proxy_port: Option<u16>,
     socks5_port: Option<u16>,
     sink: Option<(&dyn EngineSink, &str)>,
+    approvable: bool,
     extra_env: &[(&str, &Path)],
 ) -> Result<CargoOutput> {
     let parsed = CargoArgs::parse(args)?;
     let command = parsed.command_line();
     tracing::info!("Running {command}");
     let start = Instant::now();
-    // As for Bash: offer a run outside the sandbox only to someone who can
-    // approve it, and only when a sandbox backend ran the command.
-    // The dispatcher streams only Bash, so Cargo usually has no sink: that
-    // means unknown, and keeps the usual hint.
-    let approvable = sink.is_none_or(|(sink, _)| sink.can_ask());
-
+    // As for Bash: a sandbox denial offers a run outside the sandbox only
+    // when `approvable` (see [`approvable`]), and only when a sandbox backend
+    // ran the command.
     let mut cmd = crate::sandbox::build(
         &command,
         project_root,
@@ -1213,6 +1223,7 @@ impl Tool for CargoTool {
             ctx.proxy_port,
             ctx.socks5_port,
             ctx.sink,
+            approvable(ctx.can_ask, ctx.caller_spawner),
         )
         .await
         {
@@ -1840,6 +1851,84 @@ mod tests {
 
     // ── end to end ───────────────────────────────────────────────────
 
+    #[test]
+    fn only_a_top_level_agent_that_can_ask_is_offered_the_way_out() {
+        assert!(approvable(true, None));
+        assert!(!approvable(false, None), "headless or a background child");
+        assert!(!approvable(true, Some(7)), "a sub-agent");
+    }
+
+    /// What `approvable` is for: `cargo test` whose test hits the sandbox
+    /// (here a write to `~/.ssh`) names the way out only where it exists. A
+    /// headless run used to be told to rerun with `outside_sandbox=true`,
+    /// which it is always refused.
+    #[tokio::test]
+    async fn a_sandbox_denial_in_cargo_offers_the_way_out_only_where_someone_can_approve() {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let ssh = format!("{home}/.ssh");
+        if !crate::sandbox::is_available() || !Path::new(&ssh).exists() {
+            eprintln!("skip: needs a sandbox backend and ~/.ssh");
+            return;
+        }
+        if std::process::Command::new("cargo")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("skip: cargo not on PATH");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            "[package]\nname = \"probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n",
+        )
+        .unwrap();
+        std::fs::create_dir(tmp.path().join("src")).unwrap();
+        std::fs::write(
+            tmp.path().join("src/lib.rs"),
+            format!(
+                "#[test]\nfn writes_ssh() {{\n    let ok = std::process::Command::new(\"touch\")\n        .arg(\"{ssh}/koda_hint_canary\")\n        .status()\n        .unwrap()\n        .success();\n    assert!(ok);\n}}\n"
+            ),
+        )
+        .unwrap();
+        let target = tmp.path().join("target");
+        let run = |approvable: bool| {
+            let root = tmp.path().to_path_buf();
+            let target = target.clone();
+            async move {
+                let out = run_cargo_with_env(
+                    &root,
+                    &json!({"subcommand": "test"}),
+                    &crate::trust::TrustMode::Safe,
+                    &koda_sandbox::SandboxPolicy::strict_default(),
+                    None,
+                    None,
+                    None,
+                    approvable,
+                    &[
+                        ("RUSTC_WRAPPER", Path::new("")),
+                        ("CARGO_TARGET_DIR", target.as_path()),
+                    ],
+                )
+                .await
+                .unwrap();
+                out.full_output.unwrap_or(out.summary)
+            }
+        };
+        let tui = run(true).await;
+        assert!(
+            tui.contains(crate::tools::shell::OUTSIDE_SANDBOX_HINT),
+            "{tui}"
+        );
+        let headless = run(false).await;
+        assert!(
+            headless.contains(crate::tools::shell::NO_WAY_OUT_HINT),
+            "{headless}"
+        );
+        assert!(!headless.contains("outside_sandbox=true"), "{headless}");
+    }
+
     /// Drives a real `cargo test` on a throwaway crate through the
     /// sandbox builder. Proves the whole path: argument validation, the
     /// sandboxed spawn with `CARGO_TERM_COLOR=never`, concurrent stream
@@ -1880,6 +1969,7 @@ mod tests {
             None,
             None,
             None,
+            true,
             &[
                 ("RUSTC_WRAPPER", Path::new("")),
                 ("CARGO_TARGET_DIR", target.as_path()),
