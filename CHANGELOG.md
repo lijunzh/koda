@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A slash command that arrives faster than it's typed keeps its text.** When the start of a command was typed and the rest came in a fast burst (a paste in a terminal without bracketed paste, or keys Koda read late while busy), the slash popup opened by the typed start took Enter while the rest was still held. It completed the command, the held text landed after it, and `/mcp add notes …` became `/mcp p add notes …`. Held text is now added before an open menu sees the key.
+
 ## [0.6.4] - 2026-11-12
 
 ### Added

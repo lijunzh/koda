@@ -68,6 +68,19 @@ impl TuiContext {
         &mut self,
         key: crossterm::event::KeyEvent,
     ) -> anyhow::Result<bool> {
+        // Non-bracketed paste-burst integration (#1186). Any modified key
+        // (Ctrl/Alt + something, special keys, etc.) commits whatever's
+        // accumulated so the user's modifier sequence acts on the full
+        // pasted content rather than a stale prefix. Plain `Char` events
+        // are routed through the burst detector by the `_` arm below.
+        // Before an open menu sees the key: a slash popup opened by the
+        // typed start of `/mcp add …` took Enter while the rest was still
+        // held, completed `/mcp `, and the held `p add …` landed after it.
+        // Flushing first updates the menu to the whole text.
+        if !is_plain_insertable_char(key) {
+            self.flush_paste_burst_before_modified_input();
+        }
+
         if !self.menu.is_none()
             && let Some(consumed) = self.handle_menu_key(key).await
         {
@@ -85,15 +98,6 @@ impl TuiContext {
         if self.textarea.should_handle_vim_insert_escape(key) {
             self.textarea.input(key);
             return Ok(true);
-        }
-
-        // Non-bracketed paste-burst integration (#1186). Any modified key
-        // (Ctrl/Alt + something, special keys, etc.) commits whatever's
-        // accumulated so the user's modifier sequence acts on the full
-        // pasted content rather than a stale prefix. Plain `Char` events
-        // are routed through the burst detector by the `_` arm below.
-        if !is_plain_insertable_char(key) {
-            self.flush_paste_burst_before_modified_input();
         }
 
         match (key.code, key.modifiers) {
