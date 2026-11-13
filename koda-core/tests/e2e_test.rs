@@ -148,14 +148,16 @@ async fn test_write_tool_creates_file_in_sandbox() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_provider_error_emits_error_event() {
-    let env = Env::new().await;
+    let mut env = Env::new().await;
+    // The subject is the warning; retries would only wait out backoff.
+    env.config.request_max_retries = 0;
     env.insert_user_message("trigger error").await;
 
     let server_error = MockResponse::Http {
         status: 500,
         body: "Internal Server Error".into(),
     };
-    let provider = MockProvider::new(vec![server_error; 5]);
+    let provider = MockProvider::new(vec![server_error]);
     let sink = koda_core::engine::sink::TestSink::new();
     let (_, mut cmd_rx) = mpsc::channel::<EngineCommand>(1);
     let tool_defs = env.tool_defs();

@@ -215,6 +215,12 @@ pub struct KodaConfig {
     pub model_settings: ModelSettings,
     /// Max inference iterations per turn.
     pub max_iterations: u32,
+    /// Retries a failed request gets after the first try
+    /// (`KODA_REQUEST_MAX_RETRIES`; default 4, as in Codex).
+    pub request_max_retries: u32,
+    /// Retries for a reply whose stream failed partway
+    /// (`KODA_STREAM_MAX_RETRIES`; default 5, as in Codex).
+    pub stream_max_retries: u32,
     /// Skip injecting project/global memory into the system prompt.
     /// Set by `skip_memory: true` in agent JSON. Default: `false`.
     pub skip_memory: bool,
@@ -399,6 +405,14 @@ impl KodaConfig {
             agents_dir,
             model_settings: settings,
             max_iterations,
+            request_max_retries: crate::inference_helpers::retries_from(
+                crate::runtime_env::get("KODA_REQUEST_MAX_RETRIES").as_deref(),
+                crate::inference_helpers::DEFAULT_REQUEST_MAX_RETRIES,
+            ),
+            stream_max_retries: crate::inference_helpers::retries_from(
+                crate::runtime_env::get("KODA_STREAM_MAX_RETRIES").as_deref(),
+                crate::inference_helpers::DEFAULT_STREAM_MAX_RETRIES,
+            ),
             skip_memory: agent.skip_memory,
             trust: declared_trust,
             session_mcp_servers: Default::default(),
@@ -692,6 +706,8 @@ impl KodaConfig {
             agents_dir: PathBuf::from("agents"),
             model_settings,
             max_iterations: crate::loop_guard::MAX_ITERATIONS_DEFAULT,
+            request_max_retries: crate::inference_helpers::DEFAULT_REQUEST_MAX_RETRIES,
+            stream_max_retries: crate::inference_helpers::DEFAULT_STREAM_MAX_RETRIES,
             skip_memory: false,
             trust: crate::trust::TrustMode::Auto,
             session_mcp_servers: Default::default(),

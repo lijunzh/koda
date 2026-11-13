@@ -45,9 +45,9 @@ use crate::engine::{
 };
 use crate::inference_helpers::{
     AUTO_COMPACT_THRESHOLD, CONTEXT_WARN_THRESHOLD, ContextShape, MAX_SERVER_DELAY,
-    MIN_COMPACTABLE_DIVISOR, ModelCall, RATE_LIMIT_MAX_RETRIES, STREAM_MAX_RETRIES,
-    assemble_messages, ends_with_question, estimate_subagent_preflight, estimate_tokens,
-    estimate_tool_defs, is_failed_stop, rate_limit_backoff, short_hash,
+    MIN_COMPACTABLE_DIVISOR, ModelCall, assemble_messages, ends_with_question,
+    estimate_subagent_preflight, estimate_tokens, estimate_tool_defs, is_failed_stop,
+    rate_limit_backoff, short_hash,
 };
 use crate::loop_guard::{
     LoopAction, LoopDetector, MAX_REPEATED_REPLIES, MAX_TRUNCATED_REPLIES, ReplyRepetition,
@@ -441,17 +441,20 @@ fn retry_delay(err: &anyhow::Error, attempt: u32) -> Option<std::time::Duration>
 /// [`MAX_SERVER_DELAY`].
 ///
 /// Returns `Ok(Some(rx))` on success, `Ok(None)` if cancelled during retries,
-/// or `Err` for non-retriable failures.
+/// or `Err` for non-retriable failures. `max_retries` counts retries after
+/// the first try (`KodaConfig::request_max_retries`).
 async fn try_with_rate_limit(
     provider: &dyn LlmProvider,
     messages: &[ChatMessage],
     tool_defs: &[ToolDefinition],
     model_settings: &crate::config::ModelSettings,
+    max_retries: u32,
     cancel: &CancellationToken,
     sink: &dyn EngineSink,
 ) -> Result<Option<SseCollector>> {
+    let max_attempts = max_retries + 1;
     let mut last_err = None;
-    for attempt in 0..RATE_LIMIT_MAX_RETRIES {
+    for attempt in 0..max_attempts {
         let result = tokio::select! {
             result = provider.chat_stream(messages, tool_defs, model_settings) => result,
             _ = cancel.cancelled() => return Ok(None),
@@ -460,7 +463,7 @@ async fn try_with_rate_limit(
             Ok(collector) => return Ok(Some(collector)),
             Err(e)
                 if ProviderError::kind_of(&e).is_retryable()
-                    && attempt + 1 < RATE_LIMIT_MAX_RETRIES
+                    && attempt + 1 < max_attempts
                     && retry_delay(&e, attempt).is_some() =>
             {
                 let delay = retry_delay(&e, attempt).unwrap_or_default();
@@ -473,21 +476,16 @@ async fn try_with_rate_limit(
                 sink.emit(EngineEvent::Retry {
                     reason,
                     attempt: attempt + 1,
-                    max_attempts: RATE_LIMIT_MAX_RETRIES,
+                    max_attempts,
                     delay_ms: delay.as_millis() as u64,
                     notice: Some(Notice::Warn(format!(
                         "\u{23f3} {kind}. Retrying in {}s (attempt {}/{})...",
                         delay.as_secs_f64().ceil(),
                         attempt + 1,
-                        RATE_LIMIT_MAX_RETRIES
+                        max_attempts
                     ))),
                 });
-                tracing::warn!(
-                    "{} (attempt {}/{}): {e:#}",
-                    kind,
-                    attempt + 1,
-                    RATE_LIMIT_MAX_RETRIES
-                );
+                tracing::warn!("{} (attempt {}/{}): {e:#}", kind, attempt + 1, max_attempts);
                 tokio::select! {
                     _ = tokio::time::sleep(delay) => {}
                     _ = cancel.cancelled() => return Ok(None),
@@ -1317,6 +1315,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
             &messages,
             active_tool_defs,
             &config.model_settings,
+            config.request_max_retries,
             &cancel,
             sink,
         )
@@ -1514,21 +1513,23 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
         if let Some(err) = stream_result.network_error {
             tracing::debug!("Discarded partial reply:\n{}", stream_result.text);
             sse_handle.abort();
-            if stream_retries < STREAM_MAX_RETRIES && !stream_error_is_final(&err) {
+            if stream_retries < config.stream_max_retries && !stream_error_is_final(&err) {
                 let delay = rate_limit_backoff(stream_retries);
                 stream_retries += 1;
                 sink.emit(EngineEvent::Retry {
                     reason: RetryReason::StreamFailed,
                     attempt: stream_retries,
-                    max_attempts: STREAM_MAX_RETRIES,
+                    max_attempts: config.stream_max_retries,
                     delay_ms: delay.as_millis() as u64,
                     notice: Some(Notice::Warn(format!(
-                        "\u{23f3} Reply cut off, starting it over in {}s (retry {stream_retries}/{STREAM_MAX_RETRIES})...",
-                        delay.as_secs()
+                        "\u{23f3} Reply cut off, starting it over in {}s (retry {stream_retries}/{})...",
+                        delay.as_secs(),
+                        config.stream_max_retries
                     ))),
                 });
                 tracing::warn!(
-                    "Stream failed (retry {stream_retries}/{STREAM_MAX_RETRIES}): {err}"
+                    "Stream failed (retry {stream_retries}/{}): {err}",
+                    config.stream_max_retries
                 );
                 tokio::select! {
                     _ = tokio::time::sleep(delay) => continue,

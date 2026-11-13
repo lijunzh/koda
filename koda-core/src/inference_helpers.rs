@@ -445,13 +445,28 @@ pub fn is_failed_stop(stop_reason: &str) -> bool {
     )
 }
 
-/// Attempts a request gets: the first, then four retries, matching Codex's
+/// Retries a failed request gets after the first try, unless
+/// `KodaConfig::request_max_retries` says otherwise. Codex's
 /// `DEFAULT_REQUEST_MAX_RETRIES`.
-pub const RATE_LIMIT_MAX_RETRIES: u32 = 5;
+pub const DEFAULT_REQUEST_MAX_RETRIES: u32 = 4;
 
-/// Retries for a reply whose stream failed partway, matching Codex's
+/// Retries for a reply whose stream failed partway, unless
+/// `KodaConfig::stream_max_retries` says otherwise. Codex's
 /// `DEFAULT_STREAM_MAX_RETRIES`.
-pub const STREAM_MAX_RETRIES: u32 = 5;
+pub const DEFAULT_STREAM_MAX_RETRIES: u32 = 5;
+
+/// The most retries either setting can ask for, as in Codex.
+pub const MAX_RETRIES_SETTING: u32 = 100;
+
+/// A retry setting from the environment: a whole number up to
+/// [`MAX_RETRIES_SETTING`], else `default`. Like `KODA_READ_TIMEOUT_SECS`,
+/// a value that isn't a number is ignored.
+pub fn retries_from(setting: Option<&str>, default: u32) -> u32 {
+    setting
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .unwrap_or(default)
+        .min(MAX_RETRIES_SETTING)
+}
 
 /// The longest wait a server can ask for. Past it the limit won't lift
 /// within a turn, so the request fails instead of sitting silent.
@@ -743,6 +758,16 @@ mod tests {
         let out = assemble_messages(&system(), &history);
         assert_eq!(out.len(), 2); // system + user
         assert_eq!(out[1].role, "user");
+    }
+
+    #[test]
+    fn retry_settings_take_a_number_and_cap_it() {
+        assert_eq!(retries_from(None, 4), 4);
+        assert_eq!(retries_from(Some("0"), 4), 0);
+        assert_eq!(retries_from(Some(" 2 "), 4), 2);
+        assert_eq!(retries_from(Some("many"), 4), 4);
+        assert_eq!(retries_from(Some("-1"), 4), 4);
+        assert_eq!(retries_from(Some("1000"), 4), MAX_RETRIES_SETTING);
     }
 
     #[test]

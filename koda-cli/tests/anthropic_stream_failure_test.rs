@@ -51,6 +51,10 @@ async fn run(chunks: &[String], project: &Path) -> Output {
         .arg("--project-root")
         .arg(project)
         .env("XDG_CONFIG_HOME", project)
+        // What's checked is what a failed stream leaves behind; retrying it
+        // only adds the backoff's 31 seconds.
+        .env("KODA_REQUEST_MAX_RETRIES", "0")
+        .env("KODA_STREAM_MAX_RETRIES", "0")
         .env("ANTHROPIC_API_KEY", "test-key")
         .kill_on_drop(true)
         .output();
