@@ -72,8 +72,12 @@ and a recompile.
   change, change the code.
   
   *Documented exceptions* (each justified by a non-interactive scenario):
-  - `--mode safe|auto` (`KODA_MODE`) — trust mode for headless runs where
-    `/safe` and `/auto` slash commands aren't reachable mid-session.
+  - `--mode safe|auto|plan` (`KODA_MODE`) — trust mode for headless runs
+    where `/safe` and `/auto` slash commands aren't reachable mid-session.
+    `plan` (read-only) exists only for headless runs.
+  - `--mcp-config` — the MCP servers for one run, for scripts and evals that
+    need exactly those servers. It's endpoint data (P1 below), and nothing is
+    saved.
   - `--max-tokens` / `--temperature` / `--thinking-budget` /
     `--reasoning-effort` — model-call parameters needed when scripting
     headless against a model whose defaults don't fit the task. Interactive
