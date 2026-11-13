@@ -62,24 +62,6 @@ jobs:
       - name: Check tokio test flavor (#1109 F2)
         run: scripts/check_tokio_test_flavor.sh
 
-      # #1328 self-pin: the Test step below MUST keep `shell: bash`
-      # to enable pipefail. Without pipefail, `cargo test ... | tee`
-      # observes only tee's exit code (always 0), so test failures
-      # are silently swallowed and the bwrap-assertion downstream
-      # takes the blame. This grep guards against accidental
-      # removal in future edits. Cheap (~50ms) and lives in the
-      # workflow file it's protecting — zero new files, zero new
-      # languages.
-      - name: Pin pipefail on Test step (#1328)
-        run: |
-          if ! awk '/- name: Test$/{flag=1; next} flag && /shell: bash$/{found=1; exit} flag && /^      - name:/{exit} END{exit !found}' .github/workflows/ci.yml; then
-            echo "::error::Test step in ci.yml is missing 'shell: bash' (#1328)."
-            echo "Without it, GH Actions defaults to 'bash -e {0}' (no pipefail),"
-            echo "and 'cargo test ... | tee' silently swallows cargo's exit code."
-            echo "Re-add 'shell: bash' on the line directly above 'run: cargo test'."
-            exit 1
-          fi
-
       # Toolchain pin guard: every dtolnay/rust-toolchain step in every
       # workflow must install exactly the channel pinned in
       # rust-toolchain.toml. A step without a `toolchain:` input falls
@@ -182,27 +164,17 @@ jobs:
           if sudo sysctl -a 2>/dev/null | grep -q '^kernel.apparmor_restrict_unprivileged_userns'; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
+        with:
+          tool: cargo-nextest
       - name: Test
-        # CRITICAL: `shell: bash` is load-bearing here. Without it,
-        # GH Actions defaults to `bash -e {0}` (errexit only, NO
-        # pipefail). With pipefail off, `cargo test ... | tee`
-        # observes only `tee`'s exit code (always 0), so any
-        # non-zero from cargo is silently swallowed and the step
-        # appears green even when tests failed. The downstream
-        # bwrap-assertion guard then takes the blame for the missing
-        # tests — a 30-min wild goose chase every time it happens.
-        # See #1328 for the post-mortem (PR #1326 CI run 25471442843,
-        # PR #1330 CI run 25497008448 — both blamed bwrap when the
-        # real failure was upstream in koda-core).
-        #
-        # Setting `shell: bash` makes GH Actions invoke as
-        # `bash --noprofile --norc -eo pipefail {0}` per its docs:
-        # https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#defaultsrunshell
-        shell: bash
-        run: cargo test --workspace --features koda-core/test-support 2>&1 | tee test-output.log
-        # `tee` keeps live streaming for the GH log AND captures output
-        # for the assertion step below. We pipe stderr to stdout because
-        # cargo test prints test names to stderr in some configurations.
+        # nextest runs every test in its own process and tests from all
+        # binaries at once (.config/nextest.toml). The ci profile writes
+        # target/nextest/ci/junit.xml, which the guards below read.
+        run: cargo nextest run --workspace --features koda-core/test-support --profile ci
+      - name: Doc tests
+        # nextest doesn't run doc tests.
+        run: cargo test --workspace --features koda-core/test-support --doc
       # #1104: regression guard — fail CI if the bwrap SEC-002 / TOCTOU
       # tests didn't actually run. Without this, a future cfg-gate or
       # test-binary split could silently exclude them and we'd only
@@ -220,7 +192,9 @@ jobs:
           )
           missing=()
           for t in "${required_tests[@]}"; do
-            if ! grep -qE "test bwrap::tests::${t} \.\.\. ok" test-output.log; then
+            # A test that passed is a self-closing <testcase .../> in the
+            # JUnit report; a failed one has a child element.
+            if ! grep -qE "<testcase name=\"bwrap::tests::${t}\" [^>]*/>" target/nextest/ci/junit.xml; then
               missing+=("$t")
             fi
           done
@@ -245,8 +219,8 @@ jobs:
       - name: Assert security-boundary tests ran (#1265 item 8b)
         run: |
           set -euo pipefail
-          # Each entry is a fully-qualified `cargo test` path as it
-          # appears on a `test ... ok` line in the log. The full path
+          # Each entry is a test's full path within its binary, as nextest's
+          # JUnit report names it. The full path
           # (not just the function name) is intentional: it pins the
           # test to its module, so renaming a fn that happens to
           # collide with a test name elsewhere can't accidentally
@@ -283,7 +257,7 @@ jobs:
             # \Q...\E would be cleaner but grep -E doesn't speak it.
             # Test names contain only [A-Za-z0-9_:] so plain interpolation
             # is safe — no regex metachars to escape.
-            if ! grep -qE "^test ${t} \.\.\. ok\$" test-output.log; then
+            if ! grep -qE "<testcase name=\"${t}\" [^>]*/>" target/nextest/ci/junit.xml; then
               missing+=("$t")
             fi
           done

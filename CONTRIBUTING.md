@@ -10,8 +10,14 @@ full workspace tree, the release checklist, and how CI works.
 git clone https://github.com/lijunzh/koda.git
 cd koda
 cargo build
-cargo test --workspace --features koda-core/test-support
+cargo install --locked cargo-nextest
+cargo nextest run --workspace --features koda-core/test-support
+cargo test --workspace --features koda-core/test-support --doc
 ```
+
+CI runs tests with [cargo-nextest](https://nexte.st), which runs every test in
+its own process and tests from all binaries at once; `.config/nextest.toml`
+holds its settings. Plain `cargo test` still works, one binary at a time.
 
 ## Local checks (one-time setup)
 
