@@ -100,14 +100,11 @@ impl TuiContext {
         self.menu = MenuContent::Model(dd);
     }
 
-    /// Try to detect a locally running LMStudio model.
+    /// The model the "local" entry's server has loaded, if it answers.
     async fn detect_local_model(&self) -> Option<String> {
-        let ptype = koda_core::config::ProviderType::LMStudio;
-        let url = koda_core::runtime_env::get("KODA_LOCAL_URL")
-            .unwrap_or_else(|| ptype.default_base_url().to_string());
         let mut temp_config = self.config.clone();
-        temp_config.provider_type = ptype;
-        temp_config.base_url = url;
+        temp_config.provider_type = koda_core::config::ProviderType::LMStudio;
+        temp_config.base_url = self.local_base_url();
         let temp_provider = koda_core::providers::create_provider(&temp_config);
         let models = temp_provider.list_models().await.ok()?;
         models.first().map(|m| m.id.clone())
@@ -192,6 +189,16 @@ impl TuiContext {
             self.textarea.set_text_clearing_elements("");
             self.textarea.insert_str(&base_url);
         }
+    }
+
+    /// Where the "local" entry's server is: `KODA_LOCAL_URL`, else where
+    /// LM Studio is reached now (see [`Self::base_url_for`]). Finding the
+    /// local model and switching to it both use this, so a pick lands on
+    /// the server the picker listed; switching used LM Studio's default
+    /// address, a different server when `KODA_LOCAL_URL` named another.
+    fn local_base_url(&self) -> String {
+        koda_core::runtime_env::get("KODA_LOCAL_URL")
+            .unwrap_or_else(|| self.base_url_for(koda_core::config::ProviderType::LMStudio))
     }
 
     /// Where to reach `ptype`: the address Koda is running with when that's
@@ -522,8 +529,12 @@ impl TuiContext {
                                 } else {
                                     resolved.model_id.to_string()
                                 };
-                                self.apply_provider(ptype, ptype.default_base_url().to_string())
-                                    .await;
+                                let base_url = if resolved.needs_auto_detect() {
+                                    self.local_base_url()
+                                } else {
+                                    ptype.default_base_url().to_string()
+                                };
+                                self.apply_provider(ptype, base_url).await;
                                 self.config.model = actual_model.clone();
                                 self.config.model_settings.model = actual_model.clone();
                                 self.config.recalculate_model_derived();
