@@ -194,7 +194,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn start_runs_the_handshake() {
         let config = KodaConfig::default_for_testing(ProviderType::LMStudio);
         let client = InProcessClient::start(args(config)).await.unwrap();
@@ -210,7 +210,7 @@ mod tests {
         client.shutdown().await;
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn state_read_reports_what_a_new_session_starts_with() {
         let mut config = KodaConfig::default_for_testing(ProviderType::LMStudio);
         config.model = "stub-model".to_string();
@@ -235,7 +235,7 @@ mod tests {
         client.shutdown().await;
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn requests_run_side_by_side() {
         let config = KodaConfig::default_for_testing(ProviderType::LMStudio);
         let client = InProcessClient::start(args(config)).await.unwrap();

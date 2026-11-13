@@ -164,7 +164,7 @@ mod tests {
         json!({"clientInfo": {"name": "test", "version": "1"}})
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn requests_before_initialize_are_refused_and_so_is_a_second_initialize() {
         let (tx, _host) = spawn(KodaConfig::default_for_testing(ProviderType::LMStudio));
 
@@ -181,7 +181,7 @@ mod tests {
         assert_eq!(again.message, "Already initialized");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_unknown_method_and_bad_params_are_errors_not_crashes() {
         let (tx, _host) = spawn(KodaConfig::default_for_testing(ProviderType::LMStudio));
         ask(&tx, "initialize", initialize()).await.unwrap();
@@ -196,7 +196,7 @@ mod tests {
         assert!(ask(&tx, "state/read", json!({})).await.is_ok());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn shutdown_stops_the_host() {
         let (tx, host) = spawn(KodaConfig::default_for_testing(ProviderType::LMStudio));
         let (done, stopped) = oneshot::channel();
