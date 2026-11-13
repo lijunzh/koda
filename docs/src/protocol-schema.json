@@ -1,0 +1,350 @@
+{
+  "$defs": {
+    "ClientInfo": {
+      "description": "A client's name and version, such as `koda-cli` `0.7.0`.",
+      "properties": {
+        "name": {
+          "description": "The client's name.",
+          "type": "string"
+        },
+        "version": {
+          "description": "The client's version.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "type": "object"
+    },
+    "ErrorObject": {
+      "description": "What went wrong with a request.",
+      "properties": {
+        "code": {
+          "description": "One of the codes in [`codes`], or a Koda code.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "data": {
+          "description": "Detail for a program, if any."
+        },
+        "message": {
+          "description": "One sentence for a person.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
+    "ErrorResponse": {
+      "additionalProperties": false,
+      "description": "The answer to a request that failed.",
+      "properties": {
+        "error": {
+          "$ref": "#/$defs/ErrorObject",
+          "description": "What went wrong."
+        },
+        "id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequestId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The request's id; `null` when it couldn't be read."
+        },
+        "jsonrpc": {
+          "$ref": "#/$defs/JsonRpcVersion",
+          "description": "Always `\"2.0\"`."
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "error"
+      ],
+      "type": "object"
+    },
+    "InitializeParams": {
+      "description": "The client says who it is.",
+      "properties": {
+        "clientInfo": {
+          "$ref": "#/$defs/ClientInfo",
+          "description": "The client's name and version."
+        }
+      },
+      "required": [
+        "clientInfo"
+      ],
+      "type": "object"
+    },
+    "InitializeResponse": {
+      "description": "The server says what it is and which protocol it speaks.",
+      "properties": {
+        "protocolVersion": {
+          "description": "[`crate::PROTOCOL_VERSION`] of the server.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "serverInfo": {
+          "$ref": "#/$defs/ServerInfo",
+          "description": "Koda's name and version."
+        }
+      },
+      "required": [
+        "serverInfo",
+        "protocolVersion"
+      ],
+      "type": "object"
+    },
+    "JsonRpcVersion": {
+      "const": "2.0",
+      "type": "string"
+    },
+    "Message": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Request",
+          "description": "A call that expects a response."
+        },
+        {
+          "$ref": "#/$defs/Notification",
+          "description": "A one-way message."
+        },
+        {
+          "$ref": "#/$defs/Response",
+          "description": "A successful response."
+        },
+        {
+          "$ref": "#/$defs/ErrorResponse",
+          "description": "A failed response."
+        }
+      ],
+      "description": "Any message on the wire, in either direction.\n\nThe variants are told apart by their members, as the specification\ndoes: a request has `id` and `method`, a notification `method` only, a\nresponse `result`, an error `error`."
+    },
+    "Notification": {
+      "additionalProperties": false,
+      "description": "A one-way message: nothing answers it.",
+      "properties": {
+        "jsonrpc": {
+          "$ref": "#/$defs/JsonRpcVersion",
+          "description": "Always `\"2.0\"`."
+        },
+        "method": {
+          "description": "The notification's name.",
+          "type": "string"
+        },
+        "params": {
+          "description": "Its parameters."
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method"
+      ],
+      "type": "object"
+    },
+    "Request": {
+      "additionalProperties": false,
+      "description": "A call that expects a [`Response`] or an [`ErrorResponse`] with the same id.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId",
+          "description": "Echoed in the response."
+        },
+        "jsonrpc": {
+          "$ref": "#/$defs/JsonRpcVersion",
+          "description": "Always `\"2.0\"`."
+        },
+        "method": {
+          "description": "The method name, such as `state/read`.",
+          "type": "string"
+        },
+        "params": {
+          "description": "The method's parameters."
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method"
+      ],
+      "type": "object"
+    },
+    "RequestId": {
+      "anyOf": [
+        {
+          "description": "A numeric id. Koda's own clients use these.",
+          "format": "int64",
+          "type": "integer"
+        },
+        {
+          "description": "A string id.",
+          "type": "string"
+        }
+      ],
+      "description": "A request id, chosen by whoever sends the request."
+    },
+    "Response": {
+      "additionalProperties": false,
+      "description": "The result of a request that succeeded.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId",
+          "description": "The request's id."
+        },
+        "jsonrpc": {
+          "$ref": "#/$defs/JsonRpcVersion",
+          "description": "Always `\"2.0\"`."
+        },
+        "result": {
+          "description": "The method's response."
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "result"
+      ],
+      "type": "object"
+    },
+    "SandboxState": {
+      "description": "The sandbox commands run in.",
+      "properties": {
+        "available": {
+          "description": "Whether it works on this machine. Auto mode needs it.",
+          "type": "boolean"
+        },
+        "backend": {
+          "description": "The backend: `seatbelt`, `bwrap` or `none`.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why not, when it doesn't.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "backend",
+        "available"
+      ],
+      "type": "object"
+    },
+    "ServerInfo": {
+      "description": "Koda's name and version.",
+      "properties": {
+        "name": {
+          "description": "Always `koda`.",
+          "type": "string"
+        },
+        "version": {
+          "description": "The Koda release, such as `0.6.4`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "type": "object"
+    },
+    "StateReadParams": {
+      "additionalProperties": false,
+      "description": "No parameters yet.",
+      "type": "object"
+    },
+    "StateReadResponse": {
+      "description": "The model, provider, context window, mode and sandbox a new session\nstarts with.",
+      "properties": {
+        "baseUrl": {
+          "description": "The address requests go to.",
+          "type": "string"
+        },
+        "contextWindow": {
+          "description": "The context window in tokens.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mode": {
+          "$ref": "#/$defs/TrustMode",
+          "description": "What Koda may do without asking."
+        },
+        "model": {
+          "description": "The model id, such as `claude-sonnet-5-5`.",
+          "type": "string"
+        },
+        "provider": {
+          "description": "The provider, such as `lm-studio` or `anthropic`.",
+          "type": "string"
+        },
+        "sandbox": {
+          "$ref": "#/$defs/SandboxState",
+          "description": "Whether commands can run sandboxed."
+        }
+      },
+      "required": [
+        "model",
+        "provider",
+        "baseUrl",
+        "contextWindow",
+        "mode",
+        "sandbox"
+      ],
+      "type": "object"
+    },
+    "TrustMode": {
+      "description": "What Koda may do without asking.",
+      "oneOf": [
+        {
+          "const": "plan",
+          "description": "Read only; anything else is refused.",
+          "type": "string"
+        },
+        {
+          "const": "safe",
+          "description": "Anything with a side effect needs approval.",
+          "type": "string"
+        },
+        {
+          "const": "auto",
+          "description": "Everything runs without asking, inside the sandbox.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "message": {
+    "$ref": "#/$defs/Message"
+  },
+  "methods": {
+    "initialize": {
+      "params": {
+        "$ref": "#/$defs/InitializeParams"
+      },
+      "result": {
+        "$ref": "#/$defs/InitializeResponse"
+      }
+    },
+    "state/read": {
+      "params": {
+        "$ref": "#/$defs/StateReadParams"
+      },
+      "result": {
+        "$ref": "#/$defs/StateReadResponse"
+      }
+    }
+  },
+  "protocolVersion": 2,
+  "title": "Koda client protocol"
+}

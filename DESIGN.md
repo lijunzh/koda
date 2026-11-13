@@ -280,6 +280,29 @@ Input over the wire waits for a client that needs it, and it has to start with
 a reader that never awaits the turn. Editor support, if it's ever wanted, is an
 adapter outside the core.
 
+### The Client API: `koda-protocol` and `koda-client` (P2, P3)
+
+Every client is to reach Koda through one API, as every Codex front end goes
+through its app-server. `koda-protocol` defines the messages; `koda-client`
+starts Koda's host and talks to it. The host owns the engine, and a client sends
+requests and reads answers. In process, a request and its response still pass
+through their JSON form, so the TUI, a spawned `koda serve --stdio` and a later
+shared server keep one contract.
+
+The framing is JSON-RPC 2.0 with Codex's conventions: `initialize` first,
+`noun/verb` method names, camelCase fields, and Codex's error codes. Two things
+differ. Messages keep `"jsonrpc": "2.0"`, which Codex drops, so a standard
+JSON-RPC library in any language reads them unmodified. And a conversation is a
+session, not a thread. Each method is declared once, with its parameters and
+response; a client names the method's type and gets the response type back, so
+the two can't disagree. `docs/src/protocol-schema.json` is generated from the
+types, and a test fails when it's stale.
+
+The protocol grows with the code that serves it. It has `initialize` and
+`state/read`, and no client uses it yet: `stream-json` stays the public output
+until a turn's events move onto the protocol, and the TUI drives the engine
+directly until its turns go through the client.
+
 ### Extensibility: Thin Core + First-Party Libraries (P1, P2)
 
 The core binary contains only essential tools (file ops, shell, search, web
