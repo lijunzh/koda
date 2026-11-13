@@ -72,31 +72,31 @@ struct Cli {
     output_format: headless::OutputFormat,
 
     /// Agent to use (matches a JSON file in agents/)
-    #[arg(short, long, default_value = "default")]
+    #[arg(short, long, default_value = "default", global = true)]
     agent: String,
 
     /// Session ID to resume (omit to start a new session)
-    #[arg(short, long = "resume", alias = "session")]
+    #[arg(short, long = "resume", alias = "session", global = true)]
     session: Option<String>,
 
     /// Project root directory (defaults to current directory)
-    #[arg(long)]
+    #[arg(long, global = true)]
     project_root: Option<PathBuf>,
 
     /// LLM provider base URL override
-    #[arg(long, env = "KODA_BASE_URL")]
+    #[arg(long, env = "KODA_BASE_URL", global = true)]
     base_url: Option<String>,
 
     /// Model name override
-    #[arg(long, env = "KODA_MODEL")]
+    #[arg(long, env = "KODA_MODEL", global = true)]
     model: Option<String>,
 
     /// LLM provider (openai, anthropic, lmstudio, llama-cpp, gemini, groq, grok, ollama)
-    #[arg(long, env = "KODA_PROVIDER")]
+    #[arg(long, env = "KODA_PROVIDER", global = true)]
     provider: Option<String>,
 
     /// Maximum output tokens
-    #[arg(long)]
+    #[arg(long, global = true)]
     max_tokens: Option<u32>,
 
     /// Context window in tokens, for servers that don't report theirs.
@@ -106,16 +106,16 @@ struct Cli {
         env = "KODA_MAX_CONTEXT_TOKENS",
         value_name = "TOKENS",
         value_parser = koda_core::config::parse_max_context_tokens
-    )]
+    , global = true)]
     max_context_tokens: Option<usize>,
 
     /// Sampling temperature (0.0 - 2.0)
-    #[arg(long)]
+    #[arg(long, global = true)]
     temperature: Option<f64>,
 
     /// Anthropic thinking budget in tokens, for Claude models that still take
     /// one (Haiku 4.5 and older). Current Claude models take --effort instead.
-    #[arg(long)]
+    #[arg(long, global = true)]
     thinking_budget: Option<u32>,
 
     /// Reasoning effort. Claude: low, medium, high, xhigh or max; by default
@@ -125,7 +125,8 @@ struct Cli {
         long,
         alias = "effort",
         env = "KODA_REASONING_EFFORT",
-        value_name = "LEVEL"
+        value_name = "LEVEL",
+        global = true
     )]
     reasoning_effort: Option<String>,
 
@@ -145,19 +146,27 @@ struct Cli {
     /// sandbox keeps the project read-only.
     /// Sandbox with credential protection is always active.
     #[arg(long, env = "KODA_MODE", default_value = "auto",
-          value_parser = ["safe", "auto", "plan"])]
+          value_parser = ["safe", "auto", "plan"], global = true)]
     mode: String,
 
     /// Add MCP servers for this run only, from a JSON file or inline JSON
     /// in the `{"mcpServers": {...}}` shape of Claude Code's `.mcp.json`.
     /// Repeatable; later servers win a name clash, and all of them win over
     /// servers stored with `/mcp add`. Nothing is saved.
-    #[arg(long, value_name = "FILE|JSON", action = clap::ArgAction::Append)]
+    #[arg(long, value_name = "FILE|JSON", action = clap::ArgAction::Append, global = true)]
     mcp_config: Vec<String>,
 }
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Run one prompt without the TUI, then exit.
+    ///
+    /// Koda answers its own requests: it approves what --mode allows,
+    /// refuses destructive actions and anything outside the sandbox, and
+    /// answers a question with nothing. The reply goes to stdout, progress
+    /// to stderr. With --json, stdout carries the client protocol's
+    /// notifications instead, one JSON-RPC message per line.
+    Exec(ExecArgs),
     // Without this, `server` would be read as a prompt and sent to the model.
     /// Removed: Koda no longer has a server mode
     #[command(hide = true)]
@@ -167,9 +176,37 @@ enum Command {
     },
 }
 
+/// `koda exec`'s own flags. The model, provider, mode and the rest are the
+/// same flags as `koda`'s.
+#[derive(clap::Args, Debug)]
+struct ExecArgs {
+    /// The prompt. "-" or none reads it from stdin.
+    #[arg(value_name = "PROMPT")]
+    prompt: Option<String>,
+
+    /// Print the client protocol's notifications on stdout, one JSON-RPC
+    /// message per line: the session, the turn and its items, requests and
+    /// how Koda answered them, and `exec/summary` last.
+    #[arg(long)]
+    json: bool,
+
+    /// With --json, also print streaming deltas: reply and reasoning text
+    /// as it arrives, and command output line by line.
+    #[arg(long, requires = "json")]
+    json_deltas: bool,
+
+    /// Write the last reply to this file.
+    #[arg(short = 'o', long = "output-last-message", value_name = "FILE")]
+    output_last_message: Option<PathBuf>,
+}
+
+const STREAM_JSON_REMOVED: &str = "`--output-format stream-json` was removed in 0.7.0.
+Use `koda exec --json`: it prints the client protocol's notifications, one \
+JSON-RPC message per line. See https://lijunzh.github.io/koda/headless.html";
+
 const SERVER_REMOVED: &str = "`koda server` has been removed. Koda no longer speaks ACP, \
 so editors can't connect to it.
-Run `koda` in a terminal, or `koda -p <prompt> --output-format stream-json` from a script.
+Run `koda` in a terminal, or `koda exec --json <prompt>` from a script.
 See https://lijunzh.github.io/koda/acp.html";
 
 pub(crate) async fn run() -> Result<()> {
@@ -205,8 +242,24 @@ pub(crate) async fn run() -> Result<()> {
         std::process::exit(1);
     }
 
-    // Resolve headless prompt: -p flag, positional arg, or stdin
-    let headless_prompt = resolve_headless_prompt(&cli)?;
+    if cli.output_format == headless::OutputFormat::StreamJson {
+        eprintln!("{STREAM_JSON_REMOVED}");
+        std::process::exit(2);
+    }
+
+    // A one-shot run: `koda exec`, or the -p flag, a positional prompt or
+    // piped stdin.
+    let headless_run = match cli.command.take() {
+        Some(Command::Exec(args)) => Some(exec_run(args)?),
+        _ => resolve_headless_prompt(&cli)?.map(|prompt| headless::Run {
+            prompt,
+            output: match cli.output_format {
+                headless::OutputFormat::Json => headless::Output::Summary,
+                _ => headless::Output::Text,
+            },
+            last_message: None,
+        }),
+    };
 
     // Resolve project root
     let project_root = cli
@@ -288,7 +341,7 @@ pub(crate) async fn run() -> Result<()> {
     }
 
     // Headless mode: skip onboarding, banner, version check
-    if let Some(prompt) = headless_prompt {
+    if let Some(run) = headless_run {
         let config = koda_core::config::KodaConfig::load(&project_root, &cli.agent)?;
         let typed = (cli.reasoning_effort.clone(), cli.thinking_budget);
         let config = with_alias(config.with_overrides(cli.base_url, cli.model, cli.provider))
@@ -306,15 +359,7 @@ pub(crate) async fn run() -> Result<()> {
             Some(id) => db.resolve_session_id(&id).await?,
             None => db.create_session(&config.agent_name, &project_root).await?,
         };
-        let exit_code = headless::run_headless(
-            project_root,
-            config,
-            db,
-            session_id,
-            prompt,
-            cli.output_format,
-        )
-        .await?;
+        let exit_code = headless::run_headless(project_root, config, db, session_id, run).await?;
         // `exit` runs no destructors, and the guard's drop is what writes out
         // the buffered lines, the last of which say how the run ended.
         drop(log_guard);
@@ -467,6 +512,39 @@ fn parse_top_level_trust_mode(cli_mode: &str, headless: bool) -> koda_core::trus
 }
 
 /// Resolve the headless prompt from -p flag, positional arg, or stdin pipe.
+/// `koda exec`'s run: its prompt, from the argument or stdin, and output.
+fn exec_run(args: ExecArgs) -> Result<headless::Run> {
+    let prompt = match args.prompt.as_deref() {
+        Some("-") => read_stdin()?,
+        Some(prompt) => prompt.to_string(),
+        None if !atty_is_terminal() => read_stdin()?,
+        None => String::new(),
+    };
+    if prompt.trim().is_empty() {
+        anyhow::bail!("koda exec needs a prompt: as an argument, or on stdin");
+    }
+    Ok(headless::Run {
+        prompt,
+        output: if args.json {
+            headless::Output::Events {
+                deltas: args.json_deltas,
+            }
+        } else {
+            headless::Output::Text
+        },
+        last_message: args.output_last_message,
+    })
+}
+
+fn read_stdin() -> Result<String> {
+    use std::io::Read;
+    let mut input = String::new();
+    std::io::stdin()
+        .read_to_string(&mut input)
+        .context("Failed to read from stdin")?;
+    Ok(input.trim().to_string())
+}
+
 fn resolve_headless_prompt(cli: &Cli) -> Result<Option<String>> {
     // Explicit -p flag
     if let Some(ref p) = cli.prompt {

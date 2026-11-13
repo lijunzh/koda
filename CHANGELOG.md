@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`koda exec` runs one prompt, and `koda exec --json` prints Koda's client protocol.** `koda exec "prompt"` works like `koda -p`, as `codex exec` does in Codex, and takes every `koda` flag; `-o FILE` also writes the last reply to a file. With `--json`, stdout carries JSON-RPC 2.0 notifications, one per line: `session/started`, the turn, its items (messages, reasoning, tool calls, compaction), each approval or question with how Koda answered it, and `exec/summary` last. `--json-deltas` adds the streaming text and command output. This is the protocol the TUI and other clients will speak; its schema is `docs/src/protocol-schema.json`. See [Headless mode](https://lijunzh.github.io/koda/headless.html#the-client-protocol).
+
+### Removed
+
+- **`--output-format stream-json`.** Use `koda exec --json`. The old format sent each engine event as its own line (`tool_call_start`, `text_delta`, …); the new one sends items that start and complete, every tool call included: one refused at an approval or blocked by `--mode plan` now completes as `declined`, and a sub-agent's calls complete too. `koda -p --output-format json` is unchanged.
+
 ### Fixed
 
 - **A slash command that arrives faster than it's typed keeps its text.** When the start of a command was typed and the rest came in a fast burst (a paste in a terminal without bracketed paste, or keys Koda read late while busy), the slash popup opened by the typed start took Enter while the rest was still held. It completed the command, the held text landed after it, and `/mcp add notes …` became `/mcp p add notes …`. Held text is now added before an open menu sees the key.

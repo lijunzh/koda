@@ -270,11 +270,33 @@ fn mock_json_stdout_is_exactly_one_summary_object() {
     assert!(json["elapsed_ms"].is_u64(), "summary: {json}");
 }
 
-#[test]
-fn mock_stream_json_emits_only_json_lines_ending_in_summary() {
-    let (stdout, stderr, success) = run_mock_read_session("stream-json");
-    assert!(success, "Failed.\nstderr: {stderr}");
+/// `koda exec` on the mock provider: read hello.txt, then reply.
+fn run_mock_exec(flags: &[&str]) -> (String, String, bool) {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("hello.txt"), "mock test content").unwrap();
+    let responses = r#"[
+        {"tool":"Read","args":{"path":"hello.txt"}},
+        {"text":"I read the file."}
+    ]"#;
+    let output = Command::new(koda_bin())
+        .arg("exec")
+        .args(flags)
+        .args(["read hello.txt", "--provider", "mock", "--project-root"])
+        .arg(tmp.path())
+        .env("XDG_CONFIG_HOME", tmp.path())
+        .env("KODA_MOCK_RESPONSES", responses)
+        .output()
+        .expect("Failed to run koda");
+    (
+        String::from_utf8_lossy(&output.stdout).to_string(),
+        String::from_utf8_lossy(&output.stderr).to_string(),
+        output.status.success(),
+    )
+}
 
+/// Every stdout line as JSON, and its method (with the item type for
+/// `item/*`).
+fn protocol_lines(stdout: &str) -> (Vec<serde_json::Value>, Vec<String>) {
     let lines: Vec<serde_json::Value> = stdout
         .lines()
         .map(|line| {
@@ -282,34 +304,91 @@ fn mock_stream_json_emits_only_json_lines_ending_in_summary() {
                 .unwrap_or_else(|e| panic!("non-JSON stdout line ({e}): {line:?}"))
         })
         .collect();
-    let types: Vec<&str> = lines
+    let methods = lines
         .iter()
         .map(|v| {
-            v["type"]
+            assert_eq!(v["jsonrpc"], "2.0", "{v}");
+            let method = v["method"]
                 .as_str()
-                .unwrap_or_else(|| panic!("line without type: {v}"))
+                .unwrap_or_else(|| panic!("no method: {v}"));
+            match v["params"]["item"]["type"].as_str() {
+                Some(kind) => format!("{method} {kind}"),
+                None => method.to_string(),
+            }
         })
         .collect();
+    (lines, methods)
+}
 
-    assert!(types.contains(&"turn_start"), "types: {types:?}");
-    assert!(types.contains(&"text_delta"), "types: {types:?}");
-    assert!(
-        lines
-            .iter()
-            .any(|v| v["type"] == "tool_call_start" && v["name"] == "Read"),
-        "no Read tool_call_start in: {types:?}"
-    );
+#[test]
+fn exec_json_prints_the_protocol_from_session_to_summary() {
+    let (stdout, stderr, success) = run_mock_exec(&["--json"]);
+    assert!(success, "Failed.\nstderr: {stderr}");
+    let (lines, methods) = protocol_lines(&stdout);
     assert_eq!(
-        types.iter().filter(|t| **t == "run_summary").count(),
-        1,
-        "types: {types:?}"
+        methods,
+        [
+            "session/started",
+            "turn/started",
+            "item/started toolCall",
+            "item/completed toolCall",
+            "item/started agentMessage",
+            "item/completed agentMessage",
+            "turn/completed",
+            "exec/summary",
+        ],
+        "{stdout}"
     );
-    let summary = lines.last().unwrap();
-    assert_eq!(summary["type"], "run_summary", "types: {types:?}");
+    let started = &lines[0]["params"];
+    assert_eq!(started["protocolVersion"], 2);
+    assert_eq!(started["session"]["provider"], "mock");
+    let read = &lines[3]["params"]["item"];
+    assert_eq!(read["tool"], "Read");
+    assert_eq!(read["status"], "completed");
+    assert!(
+        read["output"]
+            .as_str()
+            .unwrap()
+            .contains("mock test content")
+    );
+    assert_eq!(lines[5]["params"]["item"]["text"], "I read the file.");
+    assert_eq!(lines[6]["params"]["turn"]["status"], "completed");
+    let summary = &lines[7]["params"];
     assert_eq!(summary["success"], true);
-    assert_eq!(summary["tool_calls"]["Read"], 1);
-    let response = summary["response"].as_str().unwrap_or("");
-    assert!(response.contains("read the file"), "summary: {summary}");
+    assert_eq!(summary["toolCalls"]["Read"], 1);
+    assert_eq!(summary["turnStatus"], "completed");
+    assert_eq!(summary["response"], "I read the file.");
+}
+
+#[test]
+fn exec_json_deltas_adds_the_streaming_text() {
+    let (stdout, stderr, success) = run_mock_exec(&["--json", "--json-deltas"]);
+    assert!(success, "Failed.\nstderr: {stderr}");
+    let (lines, methods) = protocol_lines(&stdout);
+    let text: String = lines
+        .iter()
+        .filter(|v| v["method"] == "item/agentMessage/delta")
+        .map(|v| v["params"]["delta"].as_str().unwrap())
+        .collect();
+    assert_eq!(text, "I read the file.", "{methods:?}");
+}
+
+#[test]
+fn exec_writes_the_last_reply_to_a_file() {
+    let out = tempfile::tempdir().unwrap();
+    let path = out.path().join("last.txt");
+    let (stdout, stderr, success) = run_mock_exec(&["-o", path.to_str().unwrap()]);
+    assert!(success, "Failed.\nstderr: {stderr}");
+    assert!(stdout.contains("I read the file."), "{stdout}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "I read the file.");
+}
+
+#[test]
+fn stream_json_is_refused_with_its_replacement() {
+    let (stdout, stderr, success) = run_mock_read_session("stream-json");
+    assert!(!success);
+    assert!(stdout.is_empty(), "{stdout}");
+    assert!(stderr.contains("koda exec --json"), "{stderr}");
 }
 
 #[test]

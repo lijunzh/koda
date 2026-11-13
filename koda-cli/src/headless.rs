@@ -1,47 +1,81 @@
-//! Headless mode — run a single prompt and exit.
+//! One-shot runs: one prompt, one turn, then exit. `koda exec` and
+//! `koda -p` both land here.
 //!
-//! Invoked via `koda -p "fix the bug"`. Runs one inference turn with
-//! auto-approval (no interactive prompts), prints the output, and exits
-//! with code 0 (success) or 1 (error).
+//! Koda answers its own requests: it approves what the mode allows,
+//! refuses destructive actions, answers a question with nothing and keeps
+//! going at the loop cap. Exit code 0 is success, 1 failure.
 //!
-//! ## Output formats
+//! ## Output
 //!
-//! - `text` (default) — the streamed reply on stdout, progress
-//!   decorations (tool calls, footer) on stderr. For humans and pipes.
-//! - `json` — stdout carries exactly one pretty-printed run summary
-//!   object after the turn ends (see [`run_summary`]); the streamed reply
-//!   and progress go to stderr.
-//! - `stream-json` — stdout carries newline-delimited JSON only: the wire
-//!   protocol in [`koda_core::engine::wire`], from `hello` to a final
-//!   `run_summary`. Machine consumers (the eval harness) parse every stdout
-//!   line; stderr stays quiet.
+//! - [`Output::Text`] (`koda exec`, `koda -p`): the streamed reply on
+//!   stdout, progress (tool calls, footer) on stderr.
+//! - [`Output::Summary`] (`koda -p --output-format json`): one
+//!   pretty-printed run summary on stdout after the turn ([`run_summary`]);
+//!   the reply and progress go to stderr.
+//! - [`Output::Events`] (`koda exec --json`): stdout carries only JSON-RPC
+//!   notifications from the client protocol (`koda-protocol`), one per
+//!   line: `session/started`, the turn and its items, each server request
+//!   followed by `serverRequest/resolved` with the answer Koda took, and
+//!   `exec/summary` last. Deltas only with `--json-deltas`.
 
 use crate::input;
+use koda_client::events::{EventProjector, Outgoing, usage_of};
+use koda_client::protocol::server::ExecSummary;
+use koda_client::protocol::session::{Session, SessionStartedNotification};
+use koda_client::protocol::turn::TurnStatus;
+use koda_client::protocol::{PROTOCOL_VERSION, ServerNotification};
 use koda_core::agent::KodaAgent;
 use koda_core::config::KodaConfig;
 use koda_core::db::{Database, Role};
-use koda_core::engine::wire::{self, RunSummary, WireEvent, WireLine, WireStream};
-use koda_core::engine::{ApprovalDecision, EngineCommand, EngineEvent, EngineSink, TurnEndReason};
+use koda_core::engine::{
+    ApprovalDecision, EngineCommand, EngineEvent, EngineSink, TurnEndReason, UsageTotals,
+};
 use koda_core::persistence::{Persistence, SessionUsage};
 use koda_core::session::KodaSession;
 
 use anyhow::Result;
+use serde::Serialize;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
-/// Headless output format (`--output-format`). See the module docs for
-/// what each format writes to stdout vs stderr.
+/// `koda -p`'s `--output-format`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum OutputFormat {
     /// Streamed reply on stdout, decorations on stderr.
     Text,
     /// One run-summary JSON object on stdout after the turn.
     Json,
-    /// NDJSON on stdout: the wire protocol, ending with the run summary.
+    /// Removed in 0.7.0: `koda exec --json` replaces it.
+    #[value(hide = true)]
     StreamJson,
+}
+
+/// What a one-shot run writes to stdout. See the module docs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Output {
+    /// The reply as text.
+    Text,
+    /// One run summary after the turn.
+    Summary,
+    /// The protocol's notifications, deltas included or not.
+    Events {
+        /// Whether to print `item/*/delta` notifications too.
+        deltas: bool,
+    },
+}
+
+/// One one-shot run.
+#[derive(Debug, Clone)]
+pub struct Run {
+    /// The prompt.
+    pub prompt: String,
+    /// What goes to stdout.
+    pub output: Output,
+    /// Where to write the last reply (`koda exec -o`).
+    pub last_message: Option<PathBuf>,
 }
 
 /// Run a single prompt and exit. Returns process exit code (0 = success).
@@ -50,13 +84,8 @@ pub async fn run_headless(
     mut config: KodaConfig,
     db: Database,
     session_id: String,
-    prompt: String,
-    output_format: OutputFormat,
+    run: Run,
 ) -> Result<i32> {
-    if output_format == OutputFormat::StreamJson {
-        print_line(&WireLine::hello(wire::ONE_SHOT_CAPABILITIES));
-    }
-
     // Query actual model capabilities from the provider API before building agent.
     let tmp_provider = koda_core::providers::create_provider(&config);
     let source = config
@@ -75,7 +104,7 @@ pub async fn run_headless(
     let mut session = KodaSession::new(session_id, agent, db, &config, config.trust).await;
 
     // Process @file references and images
-    let processed = input::process_input(&prompt, &project_root);
+    let processed = input::process_input(&run.prompt, &project_root);
     let user_message = if let Some(context) = input::format_context_files(&processed.context_files)
     {
         format!("{}\n\n{context}", processed.prompt)
@@ -101,25 +130,29 @@ pub async fn run_headless(
         )
         .await?;
 
-    if output_format == OutputFormat::StreamJson {
-        print_line(&WireLine::for_session(
-            &session.id,
-            WireEvent::SessionReady {
-                provider: config.provider_type.meta().name.to_string(),
-                model: config.model.clone(),
-                context_window: config.max_context_tokens,
-                trust: config.trust.as_str().to_string(),
-                tools: session
-                    .agent
-                    .turn_tool_defs(&config)
-                    .iter()
-                    .map(|tool| tool.name.clone())
-                    .collect(),
+    let cli_sink = HeadlessSink::new(cmd_tx, run.output, &session.id);
+    if let Output::Events { .. } = run.output {
+        cli_sink.print(&Outgoing::Notification(ServerNotification::SessionStarted(
+            SessionStartedNotification {
+                session: Session {
+                    id: session.id.clone(),
+                    model: config.model.clone(),
+                    provider: config.provider_type.meta().name.to_string(),
+                    context_window: config.max_context_tokens as u64,
+                    mode: protocol_mode(config.trust),
+                    tools: session
+                        .agent
+                        .turn_tool_defs(&config)
+                        .iter()
+                        .map(|tool| tool.name.clone())
+                        .collect(),
+                },
+                koda_version: env!("CARGO_PKG_VERSION").to_string(),
+                protocol_version: PROTOCOL_VERSION,
             },
-        ));
+        )));
     }
 
-    let cli_sink = HeadlessSink::new(cmd_tx, output_format, &session.id);
     let cancel = session.cancel_token();
     let started = Instant::now();
     let result = {
@@ -139,16 +172,25 @@ pub async fn run_headless(
 
     let elapsed_ms = started.elapsed().as_millis() as u64;
 
-    if output_format != OutputFormat::Text {
+    let response = session
+        .db
+        .last_assistant_message(&session.id)
+        .await
+        .unwrap_or_default();
+    if let Some(path) = &run.last_message
+        && let Err(e) = std::fs::write(path, &response)
+    {
+        eprintln!(
+            "Error: couldn't write the last message to {}: {e}",
+            path.display()
+        );
+    }
+
+    if run.output != Output::Text {
         // Usage comes from the DB rather than the `Footer` event: the
         // footer only fires on a clean finish, while every persisted
         // assistant message (sub-agents included) carries its tokens,
         // so the totals stay right for errored and cancelled turns too.
-        let response = session
-            .db
-            .last_assistant_message(&session.id)
-            .await
-            .unwrap_or_default();
         let usage = session
             .db
             .session_token_usage(&session.id)
@@ -159,7 +201,7 @@ pub async fn run_headless(
             .session_usage_by_agent(&session.id)
             .await
             .unwrap_or_default();
-        let summary = run_summary(RunOutcome {
+        let outcome = RunOutcome {
             result: &result,
             session_id: &session.id,
             provider: config.provider_type.meta().name,
@@ -169,11 +211,15 @@ pub async fn run_headless(
             usage: &usage,
             usage_by_agent: &usage_by_agent,
             stats: &cli_sink.stats(),
-        })?;
-        match output_format {
-            OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&summary)?),
-            OutputFormat::StreamJson => println!("{}", serde_json::to_string(&summary)?),
-            OutputFormat::Text => {}
+        };
+        match run.output {
+            Output::Summary => {
+                println!("{}", serde_json::to_string_pretty(&run_summary(outcome)?)?)
+            }
+            Output::Events { .. } => cli_sink.print(&Outgoing::Notification(
+                ServerNotification::ExecSummary(exec_summary(outcome)),
+            )),
+            Output::Text => {}
         }
     }
 
@@ -187,17 +233,18 @@ pub async fn run_headless(
     }
 }
 
-/// Write one protocol line to stdout. `println!` goes through Rust's
-/// line-buffered stdout, so it reaches a piped consumer as soon as it ends.
-fn print_line(line: &WireLine) {
-    match serde_json::to_string(line) {
-        Ok(text) => println!("{text}"),
-        Err(e) => tracing::warn!("stream-json: failed to serialize a line: {e}"),
+fn protocol_mode(mode: koda_core::trust::TrustMode) -> koda_client::protocol::state::TrustMode {
+    use koda_client::protocol::state::TrustMode as P;
+    use koda_core::trust::TrustMode as T;
+    match mode {
+        T::Plan => P::Plan,
+        T::Safe => P::Safe,
+        T::Auto => P::Auto,
     }
 }
 
 // ---------------------------------------------------------------------------
-// Run summary — the `json` object / final `stream-json` line
+// Run summary: `koda -p --output-format json` and `exec/summary`
 // ---------------------------------------------------------------------------
 
 /// Per-run counters the sink accumulates from the event stream.
@@ -207,11 +254,11 @@ struct RunStats {
     tool_calls: BTreeMap<String, u64>,
     /// Tool calls made by sub-agents, by tool name.
     sub_agent_tool_calls: BTreeMap<String, u64>,
-    /// Reason from the last `TurnEnd` seen (the top-level turn ends last).
+    /// Reason from the top-level `TurnEnd`.
     turn_end: Option<TurnEndReason>,
 }
 
-/// Everything [`run_summary`] needs once the turn is over.
+/// Everything a summary needs once the turn is over.
 struct RunOutcome<'a> {
     result: &'a Result<()>,
     session_id: &'a str,
@@ -235,29 +282,76 @@ fn run_failure(result: &Result<()>, stats: &RunStats) -> Option<String> {
     }
 }
 
-/// Build the run summary: the whole of `json`, the last line of `stream-json`.
+/// `koda -p --output-format json`'s object. Its shape predates the client
+/// protocol and is kept as it was.
+#[derive(Debug, Serialize)]
+struct SummaryObject<'a> {
+    session_id: &'a str,
+    #[serde(rename = "type")]
+    kind: &'static str,
+    success: bool,
+    error: Option<String>,
+    provider: &'a str,
+    model: &'a str,
+    response: &'a str,
+    turn_end: Option<TurnEndReason>,
+    elapsed_ms: u64,
+    usage: UsageTotals,
+    usage_by_agent: BTreeMap<String, UsageTotals>,
+    tool_calls: BTreeMap<String, u64>,
+    sub_agent_tool_calls: BTreeMap<String, u64>,
+}
+
+/// `koda -p --output-format json`'s object.
 fn run_summary(outcome: RunOutcome<'_>) -> serde_json::Result<serde_json::Value> {
     let failure = run_failure(outcome.result, outcome.stats);
-    serde_json::to_value(WireLine::for_session(
-        outcome.session_id,
-        WireEvent::RunSummary(RunSummary {
-            success: failure.is_none(),
-            error: failure,
-            provider: outcome.provider.to_string(),
-            model: outcome.model.to_string(),
-            response: outcome.response.to_string(),
-            turn_end: outcome.stats.turn_end.clone(),
-            elapsed_ms: outcome.elapsed_ms,
-            usage: outcome.usage.into(),
-            usage_by_agent: outcome
-                .usage_by_agent
-                .iter()
-                .map(|(agent, usage)| (agent.clone(), usage.into()))
-                .collect(),
-            tool_calls: outcome.stats.tool_calls.clone(),
-            sub_agent_tool_calls: outcome.stats.sub_agent_tool_calls.clone(),
+    serde_json::to_value(SummaryObject {
+        session_id: outcome.session_id,
+        kind: "run_summary",
+        success: failure.is_none(),
+        error: failure,
+        provider: outcome.provider,
+        model: outcome.model,
+        response: outcome.response,
+        turn_end: outcome.stats.turn_end.clone(),
+        elapsed_ms: outcome.elapsed_ms,
+        usage: outcome.usage.into(),
+        usage_by_agent: outcome
+            .usage_by_agent
+            .iter()
+            .map(|(agent, usage)| (agent.clone(), usage.into()))
+            .collect(),
+        tool_calls: outcome.stats.tool_calls.clone(),
+        sub_agent_tool_calls: outcome.stats.sub_agent_tool_calls.clone(),
+    })
+}
+
+/// `koda exec --json`'s last line.
+fn exec_summary(outcome: RunOutcome<'_>) -> ExecSummary {
+    let failure = run_failure(outcome.result, outcome.stats);
+    let usage = |u: &SessionUsage| usage_of(&UsageTotals::from(u));
+    ExecSummary {
+        session_id: outcome.session_id.to_string(),
+        success: failure.is_none(),
+        error: failure,
+        provider: outcome.provider.to_string(),
+        model: outcome.model.to_string(),
+        response: outcome.response.to_string(),
+        turn_status: outcome.stats.turn_end.as_ref().map(|reason| match reason {
+            TurnEndReason::Complete => TurnStatus::Completed,
+            TurnEndReason::Cancelled => TurnStatus::Interrupted,
+            _ => TurnStatus::Failed,
         }),
-    ))
+        duration_ms: outcome.elapsed_ms,
+        usage: usage(outcome.usage),
+        usage_by_agent: outcome
+            .usage_by_agent
+            .iter()
+            .map(|(agent, u)| (agent.clone(), usage(u)))
+            .collect(),
+        tool_calls: outcome.stats.tool_calls.clone(),
+        sub_agent_tool_calls: outcome.stats.sub_agent_tool_calls.clone(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -266,22 +360,36 @@ fn run_summary(outcome: RunOutcome<'_>) -> serde_json::Result<serde_json::Value>
 
 struct HeadlessSink {
     cmd_tx: tokio::sync::mpsc::Sender<EngineCommand>,
-    format: OutputFormat,
-    wire: WireStream,
+    output: Output,
+    events: Mutex<EventProjector>,
     stats: Mutex<RunStats>,
 }
 
 impl HeadlessSink {
     fn new(
         cmd_tx: tokio::sync::mpsc::Sender<EngineCommand>,
-        format: OutputFormat,
+        output: Output,
         session_id: &str,
     ) -> Self {
         Self {
             cmd_tx,
-            format,
-            wire: WireStream::new(session_id),
+            output,
+            events: Mutex::new(EventProjector::new(session_id)),
             stats: Mutex::new(RunStats::default()),
+        }
+    }
+
+    /// Write one protocol message to stdout. `println!` goes through Rust's
+    /// line-buffered stdout, so it reaches a piped reader as soon as it ends.
+    fn print(&self, message: &Outgoing) {
+        if let Output::Events { deltas: false } = self.output
+            && message.is_delta()
+        {
+            return;
+        }
+        match message.to_json() {
+            Ok(text) => println!("{text}"),
+            Err(e) => tracing::warn!("exec --json: failed to serialize a message: {e}"),
         }
     }
 
@@ -292,7 +400,7 @@ impl HeadlessSink {
             .clone()
     }
 
-    fn record(&self, event: &EngineEvent) {
+    fn record(&self, parent_id: Option<&str>, event: &EngineEvent) {
         let mut stats = self.stats.lock().unwrap_or_else(PoisonError::into_inner);
         match event {
             EngineEvent::ToolCallStart {
@@ -305,15 +413,18 @@ impl HeadlessSink {
                 };
                 *counts.entry(name.clone()).or_default() += 1;
             }
-            EngineEvent::TurnEnd { reason, .. } => stats.turn_end = Some(reason.clone()),
+            EngineEvent::TurnEnd { reason, .. } if parent_id.is_none() => {
+                stats.turn_end = Some(reason.clone());
+            }
             _ => {}
         }
     }
 
     /// Answer the engine's blocking requests. Runs in every output
     /// format: approve non-destructive actions, auto-reject destructive
-    /// ones, skip AskUser, and keep going at the loop cap.
-    fn respond(&self, event: &EngineEvent) {
+    /// ones, skip AskUser, and keep going at the loop cap. Returns the id of
+    /// the request it answered.
+    fn respond(&self, event: &EngineEvent) -> Option<String> {
         let command = match event {
             EngineEvent::ApprovalRequest {
                 id,
@@ -364,16 +475,23 @@ impl HeadlessSink {
                 id: id.clone(),
                 action: koda_core::loop_guard::LoopContinuation::Continue200,
             },
-            _ => return,
+            _ => return None,
+        };
+        let id = match &command {
+            EngineCommand::ApprovalResponse { id, .. }
+            | EngineCommand::AskUserResponse { id, .. }
+            | EngineCommand::LoopDecision { id, .. } => id.clone(),
+            _ => unreachable!("only answers are built above"),
         };
         let _ = self.cmd_tx.try_send(command);
+        Some(id)
     }
 
-    /// Human-readable rendering for `text` and `json`. The streamed reply
-    /// goes to stdout only in `text`; in `json`, stdout is reserved for
-    /// the summary object.
+    /// Human-readable rendering for text and summary output. The streamed
+    /// reply goes to stdout only for text; with a summary, stdout is
+    /// reserved for it.
     fn render(&self, event: EngineEvent) {
-        let reply_on_stdout = self.format == OutputFormat::Text;
+        let reply_on_stdout = self.output == Output::Text;
         match event.notice().unwrap_or(event) {
             EngineEvent::ApprovalRequest {
                 effect,
@@ -593,18 +711,24 @@ impl HeadlessSink {
 
 impl HeadlessSink {
     fn handle(&self, parent_id: Option<&str>, event: EngineEvent) {
-        self.record(&event);
-        self.respond(&event);
-        match self.format {
-            OutputFormat::StreamJson => {
-                if let Some(line) = self.wire.line(parent_id, event) {
-                    print_line(&line);
+        self.record(parent_id, &event);
+        let answered = self.respond(&event);
+        match self.output {
+            Output::Events { .. } => {
+                let mut events = self.events.lock().unwrap_or_else(PoisonError::into_inner);
+                for message in events.project(parent_id, event) {
+                    self.print(&message);
+                }
+                // Koda answered its own request: say so, as a server says
+                // when another client answers.
+                if let Some(resolved) = answered.and_then(|id| events.resolved(&id)) {
+                    self.print(&resolved);
                 }
             }
             // A sub-agent's results aren't shown: its answer is.
-            OutputFormat::Text | OutputFormat::Json
+            Output::Text | Output::Summary
                 if parent_id.is_some() && matches!(event, EngineEvent::ToolCallResult { .. }) => {}
-            OutputFormat::Text | OutputFormat::Json => self.render(event),
+            Output::Text | Output::Summary => self.render(event),
         }
     }
 }
@@ -629,7 +753,7 @@ mod tests {
     use super::*;
     use koda_core::tools::ToolEffect;
 
-    fn sink(format: OutputFormat) -> (HeadlessSink, tokio::sync::mpsc::Receiver<EngineCommand>) {
+    fn sink(format: Output) -> (HeadlessSink, tokio::sync::mpsc::Receiver<EngineCommand>) {
         let (tx, rx) = tokio::sync::mpsc::channel(8);
         (HeadlessSink::new(tx, format, "s1"), rx)
     }
@@ -658,9 +782,9 @@ mod tests {
     #[test]
     fn requests_are_answered_the_same_in_every_format() {
         for format in [
-            OutputFormat::Text,
-            OutputFormat::Json,
-            OutputFormat::StreamJson,
+            Output::Text,
+            Output::Summary,
+            Output::Events { deltas: false },
         ] {
             let (sink, mut rx) = sink(format);
             sink.emit(approval("a1", ToolEffect::LocalMutation));
@@ -712,7 +836,7 @@ mod tests {
 
     #[test]
     fn stats_split_top_level_and_sub_agent_tool_calls() {
-        let (sink, _rx) = sink(OutputFormat::Json);
+        let (sink, _rx) = sink(Output::Summary);
         sink.emit(tool_start("Read", false));
         sink.emit(tool_start("Read", false));
         sink.emit(tool_start("Edit", false));

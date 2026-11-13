@@ -106,12 +106,7 @@ async fn a_server_started_with_amp_is_stopped_koda_s_way_without_asking() {
 
     let tmp = tempfile::tempdir().unwrap();
     let child = tokio::process::Command::new(koda_bin())
-        .args([
-            "-p",
-            "start it, then stop it",
-            "--output-format",
-            "stream-json",
-        ])
+        .args(["exec", "start it, then stop it", "--json"])
         .args([
             "--mode",
             "auto",
@@ -138,14 +133,14 @@ async fn a_server_started_with_amp_is_stopped_koda_s_way_without_asking() {
         .collect();
     let asked: Vec<&Value> = events
         .iter()
-        .filter(|e| e["type"] == "approval_request")
+        .filter(|e| e["method"] == "item/toolCall/requestApproval")
         .collect();
     assert!(asked.is_empty(), "Koda asked: {asked:?}");
     let result = |id: &str| -> String {
         events
             .iter()
-            .find(|e| e["type"] == "tool_call_result" && e["id"] == id)
-            .and_then(|e| e["output"].as_str())
+            .find(|e| e["method"] == "item/completed" && e["params"]["item"]["id"] == id)
+            .and_then(|e| e["params"]["item"]["output"].as_str())
             .unwrap_or_else(|| panic!("no result for {id}: {stdout}"))
             .to_string()
     };

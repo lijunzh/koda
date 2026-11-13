@@ -18,11 +18,12 @@
 | `--effort <L>`, `--reasoning-effort <L>` | `KODA_REASONING_EFFORT` | Reasoning effort. Claude: `low`, `medium`, `high`, `xhigh` or `max`. Without it, each Claude model gets the level Claude Code uses: `medium` for the 5.5 models, `high` for Fable and the 5.0 models. A level the model doesn't take is refused. OpenAI-compatible servers get it as `reasoning_effort`. |
 | `--mode <MODE>` | `KODA_MODE` | Trust mode: `auto` (default, #1241), `safe`, or `plan` (headless runs only: read-only, everything else refused; see [Headless mode](./headless.md#read-only-runs)). Auto auto-approves mutating actions; the kernel sandbox contains them — destructive ops (`rm -rf`, `git reset --hard`, `git push --force`) and outside-project writes still confirm. Auto requires the kernel sandbox; on unsandboxed platforms koda refuses to start (use `--mode safe` or install the platform sandbox backend). Safe confirms every mutation. Kernel sandbox with credential protection is always active when available. |
 | `--mcp-config <FILE\|JSON>` | | Add MCP servers for this run only, from a JSON file or inline JSON in the `{"mcpServers": {...}}` shape of Claude Code's `.mcp.json`. Repeatable. Nothing is saved; a bad value stops the start. See [MCP servers](mcp.md). |
-| `--output-format <FMT>` | | Headless output format: `text` (default), `json` (one run-summary object on stdout), or `stream-json` (the [wire protocol](headless.md#wire-protocol), one JSON line per event). See [Headless mode](headless.md#output-formats). |
+| `--output-format <FMT>` | | `koda -p` output: `text` (default) or `json` (one run-summary object on stdout). `stream-json` was removed in 0.7.0; use `koda exec --json`. See [Headless mode](headless.md#output-formats). |
 | `--project-root <DIR>` | | Project root (defaults to cwd) |
 
 ## Subcommands
 
 | Command | Description |
 |---------|-------------|
+| `koda exec [PROMPT]` | Run one prompt and exit, as `codex exec` does. `--json` prints the [client protocol](headless.md#the-client-protocol) on stdout, one JSON-RPC message per line; `--json-deltas` adds streaming text and command output; `-o FILE` writes the last reply to a file. `-` or no prompt reads stdin. Takes every flag above |
 | `koda --version` | Print version + kernel sandbox availability (one line, paste-friendly for bug reports) |

@@ -69,13 +69,29 @@ An MCP server whose tools don't carry `readOnlyHint` can't be used in a
 read-only run. Codex's `exec` (read-only sandbox by default), and the plan
 modes of Claude Code, Gemini CLI and Qwen Code with `-p`, work the same way.
 
+## `koda exec`
+
+`koda exec` runs one prompt the same way, as Codex's `codex exec` does, and is
+the form for scripts:
+
+```bash
+koda exec "fix the failing test"            # reply on stdout, progress on stderr
+koda exec - < prompt.txt                    # prompt from stdin
+koda exec --json "fix the failing test"     # the client protocol, one JSON line per message
+koda exec -o last.txt "summarize the diff"  # also write the last reply to a file
+```
+
+Every `koda` flag (`--model`, `--provider`, `--mode`, `-s`, `--mcp-config`, …)
+works with it.
+
 ## Output formats
 
-`--output-format text` (default) — streams the assistant's reply to stdout
-exactly as typed. Tool call summaries go to stderr.
+**Text** (`koda exec`, `koda -p`, `--output-format text`): the assistant's reply
+streams to stdout exactly as typed. Tool call summaries go to stderr.
 
-`--output-format json` — stdout carries exactly one JSON object, printed
-after the turn ends. The streamed reply and tool status go to stderr.
+**One summary object** (`koda -p --output-format json`): stdout carries exactly
+one JSON object, printed after the turn ends. The streamed reply and tool status
+go to stderr.
 
 ```json
 {
@@ -102,120 +118,116 @@ after the turn ends. The streamed reply and tool status go to stderr.
 `usage` is summed from stored messages, including those of the session's
 sub-agents, so it is still accurate when the turn errors or is cancelled. On a
 resumed session it covers every turn stored so far. `usage_by_agent` splits it,
-with the session's own calls under `main`. For what one turn used, read
-`turn_summary` below.
-`turn_end` is `null` if the turn never ended (for example, a setup failure).
+with the session's own calls under `main`. `turn_end` is `null` if the turn
+never ended (for example, a setup failure).
 
-`--output-format stream-json` — stdout carries newline-delimited JSON only: the
-wire protocol below. This is the format for scripts and the eval harness:
+**The client protocol** (`koda exec --json`): stdout carries only JSON-RPC 2.0
+notifications, one per line, described below. This is the format for programs
+and the eval harness:
 
 ```bash
-koda -p "fix the failing test" --output-format stream-json \
-  | jq -c 'select(.type == "tool_call_start" or .type == "run_summary")'
+koda exec --json "fix the failing test" \
+  | jq -c 'select(.method == "item/completed") | .params.item'
 ```
 
-## Wire protocol
+`--output-format stream-json`, the protocol of Koda 0.6, was removed in 0.7.0.
+`koda exec --json` replaces it.
 
-`stream-json` is Koda's public protocol, version 1. It is a projection of the
-engine's events, so the engine can change without changing what clients read.
-[`wire-schema.json`](wire-schema.json) is generated from it, and CI fails if the
-two differ.
+## The client protocol
 
-A run writes `hello`, `session_ready`, one turn, and `run_summary`, in that
-order. `koda -p` is always one turn per process.
+`koda exec --json` prints the notifications of Koda's client protocol, the one
+every Koda client will speak. It follows Codex's app-server protocol: JSON-RPC
+2.0 messages (Koda keeps the `"jsonrpc": "2.0"` member), `noun/verb` method
+names and camelCase fields. A conversation is a *session*; a *turn* is one
+prompt and everything Koda does for it; a turn is made of *items* that start,
+may stream, and complete. [`protocol-schema.json`](protocol-schema.json) is
+generated from the protocol's types, and CI fails if the two differ.
 
 ```json
-{"type":"hello","protocol_version":1,"koda_version":"0.6.4","capabilities":["one_shot","self_answer"]}
-{"type":"session_ready","session_id":"a3f8bc12-…","provider":"anthropic","model":"claude-haiku-5-5","context_window":200000,"trust":"auto","tools":["Read","Grep","…"]}
-{"type":"turn_start","session_id":"a3f8bc12-…","turn_id":"7d1e…"}
-{"type":"tool_call_start","session_id":"a3f8bc12-…","turn_id":"7d1e…","id":"call_1","name":"Bash","args":{"command":"cargo test"}}
-{"type":"tool_call_result","session_id":"a3f8bc12-…","turn_id":"7d1e…","id":"call_1","name":"Bash","output":"Exit code: 101 | …","outcome":"error"}
-{"type":"turn_summary","session_id":"a3f8bc12-…","turn_id":"7d1e…","usage":{"prompt_tokens":18234,"completion_tokens":912,"cache_read_tokens":15012,"cache_creation_tokens":0,"thinking_tokens":0,"api_calls":3},"elapsed_ms":8421}
-{"type":"turn_end","session_id":"a3f8bc12-…","turn_id":"7d1e…","reason":{"kind":"complete"}}
-{"type":"run_summary","session_id":"a3f8bc12-…","success":true,"…":"…"}
+{"jsonrpc":"2.0","method":"session/started","params":{"session":{"id":"a3f8bc12-…","model":"claude-haiku-5-5","provider":"anthropic","contextWindow":200000,"mode":"auto","tools":["Read","Grep","…"]},"kodaVersion":"0.7.0","protocolVersion":2}}
+{"jsonrpc":"2.0","method":"turn/started","params":{"sessionId":"a3f8bc12-…","turn":{"id":"7d1e…","status":"inProgress","error":null,"usage":null,"durationMs":null}}}
+{"jsonrpc":"2.0","method":"item/started","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"toolCall","id":"call_1","tool":"Bash","arguments":{"command":"cargo test"},"status":"inProgress","output":null,"detail":null}}}
+{"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"toolCall","id":"call_1","tool":"Bash","arguments":{"command":"cargo test"},"status":"failed","output":"Exit code: 101 | …","detail":null}}}
+{"jsonrpc":"2.0","method":"item/started","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"agentMessage","id":"msg-1","text":""}}}
+{"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"agentMessage","id":"msg-1","text":"The test fails because …"}}}
+{"jsonrpc":"2.0","method":"turn/completed","params":{"sessionId":"a3f8bc12-…","turn":{"id":"7d1e…","status":"completed","error":null,"usage":{"inputTokens":18234,"cachedInputTokens":15012,"cacheCreationTokens":0,"outputTokens":912,"reasoningTokens":0,"modelCalls":3},"durationMs":8421}}}
+{"jsonrpc":"2.0","method":"exec/summary","params":{"sessionId":"a3f8bc12-…","success":true,"…":"…"}}
 ```
 
-**Ids.** `session_id` is on every line except `hello`, which comes before a
-session exists. `turn_id` is on every line from `turn_start` to `turn_end`.
-`parent_id` is on a sub-agent's lines and holds the id of the tool call that
-started it, so two sub-agents running at once can be told apart. Lines without
-it are the top-level agent's own.
+A run prints `session/started`, one turn, and `exec/summary`, in that order.
+Every message after the first carries `sessionId`; every message in a turn
+carries `turnId`.
 
-**Capabilities.** `one_shot` means one turn per process. `self_answer` means the
-process answers its own requests, as in [Trust mode](#trust-mode-in-headless-mode):
-requests on stdout are a record of what was asked, and nothing reads a reply.
-Ignore capability names you don't know.
+### Notifications
 
-| Line | Carries | Notes |
-|------|---------|-------|
-| `hello` | `protocol_version`, `koda_version`, `capabilities` | Always first |
-| `session_ready` | `provider`, `model`, `context_window`, `trust`, `tools` | Before any turn |
-| `turn_start` | | |
-| `text_delta`, `text_done` | `text` | |
-| `thinking_start`, `thinking_delta`, `thinking_done` | `text` | |
-| `tool_call_start` | `id`, `name`, `args` | |
-| `tool_output_line` | `id`, `line`, `is_stderr` | Live Bash output |
-| `tool_call_result` | `id`, `name`, `output`, `outcome` | `outcome` is `success` or `error`; a command that exits non-zero or times out is `error`. Rejected, blocked and cancelled calls, and calls made by sub-agents, have no result line in version 1 |
-| `sub_agent_start` | `agent_name` | |
-| `todo_update` | `items`, `diff` | |
-| `approval_request` | `id`, `tool_name`, `detail`, `preview`, `effect` | Interactive |
-| `ask_user_request` | `id`, `question`, `options` | Interactive |
-| `loop_cap_request` | `id`, `cap`, `recent_tools` | Interactive |
-| `action_blocked` | `tool_name`, `detail`, `preview` | |
-| `context_usage` | `used`, `max` | |
-| `context_window_changed` | `tokens` | |
-| `compaction` | `trigger`, `status` | See below |
-| `retry` | `reason`, `attempt`, `max_attempts`, `delay_ms` | `reason` is `rate_limit`, `network`, `server_error`, `stream_failed`, `context_overflow` or `empty_response`. `attempt` is the one that just failed, counting from 1 |
-| `loop_guard` | `action`, `detail` | `action` is `feedback`, or `stop` when the model ignored it. Sent for a repeated tool call, and for a local model's reply stopped for repeating itself |
-| `info`, `warn`, `error` | `message` | For people. Don't parse them |
-| `turn_summary` | `usage`, `elapsed_ms` | Just before `turn_end` |
-| `turn_end` | `reason` | Exactly one per turn, after any retries. `reason.kind` is `complete`, `cancelled` or `error` |
-| `run_summary` | The object shown above | Always last |
+| Method | Carries | Notes |
+|--------|---------|-------|
+| `session/started` | `session` (`id`, `model`, `provider`, `contextWindow`, `mode`, `tools`), `kodaVersion`, `protocolVersion` | Always first. Stop on a `protocolVersion` you don't support |
+| `turn/started` | `turn`, in progress | |
+| `item/started`, `item/completed` | `item`, `parentItemId` on a sub-agent's items | Every item that starts completes, once |
+| `item/agentMessage/delta` | `itemId`, `delta` | Only with `--json-deltas` |
+| `item/reasoning/textDelta` | `itemId`, `delta` | Only with `--json-deltas` |
+| `item/toolCall/outputDelta` | `itemId`, `delta`, `stream` (`stdout` or `stderr`) | A line of a running command. Only with `--json-deltas` |
+| `turn/plan/updated` | `plan`: `{step, status}` | The model's todo list, whole. `status` is `pending`, `inProgress` or `completed` |
+| `turn/loopGuard` | `action`, `detail` | The model repeated itself. `action` is `feedback`, or `stop` when it didn't change course. Koda's own |
+| `error` | `error.message`, `willRetry`, `retry` | With `willRetry`, Koda tries the model call again and the turn goes on. `retry` has `reason` (`rateLimit`, `network`, `serverError`, `streamFailed`, `contextOverflow`, `emptyResponse`), `attempt` (the one that failed, from 1), `maxAttempts` and `delayMs` |
+| `warning` | `message` | For people |
+| `serverRequest/resolved` | `requestId` | The request was answered. In `koda exec`, right after each request |
+| `turn/completed` | `turn`: `status`, `error`, `usage`, `durationMs` | Exactly one per turn, after any retries. `status` is `completed`, `interrupted` or `failed` |
+| `exec/summary` | the run as a whole | `koda exec` only, always last |
 
-**`compaction`.** `trigger` is `threshold` (context passed the auto-compact
-level), `overflow` (the provider rejected the request), `window` (history was
-dropped unsummarized because the estimate passed the window) or `idle` (old tool
-results were cleared after a gap). `status` adds its own fields:
+### Items
 
-| `status` | Fields | Meaning |
-|----------|--------|---------|
-| `started` | `context_percent` | Exactly one other status follows. `window` and `idle` don't send it |
-| `completed` | `messages_removed`, `summary_tokens` | `summary_tokens` is `null` when there is no summary |
-| `skipped` | `reason` | `pending_tool_calls`, `too_short` or `history_too_large` |
-| `failed` | `error` | The summary call failed |
+| `type` | Fields | Notes |
+|--------|--------|-------|
+| `agentMessage` | `id`, `text` | Text is empty when it starts and complete when it completes |
+| `reasoning` | `id`, `text` | Where the provider shows reasoning |
+| `toolCall` | `id`, `tool`, `arguments`, `status`, `output`, `detail` | One item for every tool, named by `tool`. `status` ends as `completed`, `failed` (it ran and failed, or a command exited non-zero), `declined` (refused at an approval, by `--mode plan` or by a sub-agent's limits) or `cancelled`. `output` is what the model read. `detail` is the one-line description Koda showed when it asked about or blocked the call |
+| `contextCompaction` | `id`, `trigger`, `status`, `contextPercent`, `messagesRemoved`, `summaryTokens`, `reason` | `trigger` is `threshold`, `overflow`, `window` or `idle`. `status` ends as `completed`, `skipped` or `failed` (`reason` says why) |
 
-**`turn_summary`.** `usage` counts this turn alone, however it ended, and
-includes sub-agents, compaction and retries. On a resumed session it doesn't
-include earlier turns. A model call cut off before the provider reported usage
-counts for nothing, so a cancelled or failed turn reports the calls that
-finished.
+Codex has an item per kind of call (`commandExecution`, `fileChange`,
+`mcpToolCall`, …). Koda's tools share one shape, so it has one; typed fields
+such as a diff will be added when a client needs them.
 
-**A cancelled turn** gets five seconds to stop. A sub-agent stops at once and gives
-back its workspace, but a Bash command the turn itself is running doesn't listen,
-so a turn waiting on one is dropped where it is. It still
-closes with one `turn_summary` and one `turn_end` of kind `cancelled`, but
-`run_summary` then has `success: false` and an `error`, and the run exits 1, since
-work may have been left unfinished. A running Bash or Cargo command doesn't see
-the interrupt, because it has its own process group, so it's killed when the turn
-is dropped.
+### Requests
 
-### Reading unknown types
+Koda asks with JSON-RPC requests, which have an `id`:
 
-New line types can appear without a version change, so a reader has to decide
-what to do with a `type` it doesn't know:
+| Method | Carries | Answer |
+|--------|---------|--------|
+| `item/toolCall/requestApproval` | `itemId`, `tool`, `detail`, `effect`, `allowForSession` | `decision`: `approve`, `approveForSession`, `reject` or `rejectWithFeedback` |
+| `item/tool/requestUserInput` | `itemId`, `question`, `options` | `answer` |
+| `turn/loopCap/requestDecision` | `cap`, `recentTools` | `decision`: `continue50`, `continue200` or `stop` |
 
-- **Skip an unknown notification.** Most lines just report something.
-- **Never skip an interactive request.** A skipped request leaves its sender
-  waiting forever. Once a client can reply, it must refuse a request type it
-  can't handle, and a sender must fail a command it doesn't support. In version
-  1 the requests are `approval_request`, `ask_user_request` and
-  `loop_cap_request`, and `self_answer` means no reply is expected.
-- **Stop on a `protocol_version` you don't support.** An incompatible change
+In `koda exec` nothing reads an answer: Koda answers its own, as in
+[Trust mode](#trust-mode-in-headless-mode), and prints `serverRequest/resolved`
+with the request's id right after it. The answer shows in the call's item: a
+refused call completes as `declined`.
+
+### Usage
+
+`turn/completed`'s `usage` counts this turn alone, however it ended, and
+includes sub-agents, compaction and retries. A model call cut off before the
+provider reported usage counts for nothing, so a cancelled or failed turn
+reports the calls that finished. `exec/summary`'s `usage` covers the stored
+session, earlier turns of a resumed one included, and `usageByAgent` splits it
+with the session's own calls under `main`.
+
+**A cancelled turn** gets five seconds to stop. A sub-agent stops at once and
+gives back its workspace, but a Bash command the turn itself is running doesn't
+listen, so a turn waiting on one is dropped where it is. It still closes with
+one `turn/completed` with status `interrupted`, but `exec/summary` then has
+`success: false` and an `error`, and the run exits 1, since work may have been
+left unfinished.
+
+### Reading what you don't know
+
+- **Skip an unknown notification, or an unknown item type.** New ones can appear
+  without a version change.
+- **Never skip a request** once a client can answer: a skipped request leaves
+  Koda waiting. Refuse one you can't handle. (`koda exec` answers its own.)
+- **Stop on a `protocolVersion` you don't support.** An incompatible change
   raises it.
-
-Decode with this in mind. Rust's `#[non_exhaustive]` does nothing here, because
-it governs matches in code and not JSON: serde rejects an unknown tag with
-`unknown variant` unless the reader handles it.
 
 ## File attachment in headless mode
 
@@ -228,6 +240,6 @@ koda "review @src/auth.rs and @tests/auth_test.rs"
 ## Resuming a session in headless mode
 
 ```bash
-# The full session_id from --output-format json
-koda -s a3f8bc12-1587-4c6d-a855-46183ca84fba "run the failing tests and fix them"
+# The session id from session/started, or from --output-format json
+koda exec -s a3f8bc12-1587-4c6d-a855-46183ca84fba "run the failing tests and fix them"
 ```
