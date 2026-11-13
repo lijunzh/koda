@@ -58,9 +58,9 @@ pub struct KodaAgent {
     pub tool_defs: Vec<ToolDefinition>,
     /// Assembled system prompt.
     pub system_prompt: String,
-    /// Cached project memory (CLAUDE.md / KODA.md), loaded once in `new()`
-    /// and reused by `rebuild_system_prompt` to avoid duplicate disk I/O
-    /// and duplicate log lines on startup (#1136).
+    /// Project memory (instruction files and Koda's notes) as loaded in
+    /// `new()`. Each turn reloads it, so changes apply next turn; this copy
+    /// is used only when that reload fails.
     pub semantic_memory: String,
 }
 

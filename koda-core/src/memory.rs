@@ -240,7 +240,8 @@ pub(crate) fn load_in(project_root: &Path, config: Option<&Path>) -> Result<Stri
     }
     let project_files = project_instruction_files(project_root);
     if project_files.is_empty() {
-        tracing::info!("No project instruction file found");
+        // Debug, not info: memory reloads every turn.
+        tracing::debug!("No project instruction file found");
     }
     for path in &project_files {
         push(path, "project instructions")?;
