@@ -188,9 +188,24 @@ route.
 One exception: a command can connect to a `localhost` port that a server
 Koda started with `background: true` is listening on, so "start the dev
 server, then curl it" works without leaving the sandbox. Every other local
-port stays closed, including servers you started yourself and databases.
-Codex and Claude Code block loopback the same way unless their
-`allow_local_binding` setting is on, which opens every local port instead.
+port stays closed, including servers you started yourself, databases, and a
+server a test starts and then connects to.
+
+To open every local port on macOS, both ways, set
+`KODA_ALLOW_LOCAL_BINDING=1` in the environment you start Koda from:
+
+```bash
+export KODA_ALLOW_LOCAL_BINDING=1
+```
+
+A command can then reach any server listening on your machine, such as a
+database or LM Studio, and accept connections on any port, from other
+machines too if it listens on more than loopback. Connections beyond your
+machine still go only through Koda's proxy. It is off by default, as
+Codex's and Claude Code's `allow_local_binding` are, and only your
+environment can turn it on: Koda reads no project settings. On Linux each
+command has a loopback of its own that it can always use, so the setting
+changes nothing there.
 
 How Koda finds those servers differs by platform:
 

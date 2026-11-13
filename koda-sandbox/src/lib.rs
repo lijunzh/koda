@@ -227,8 +227,8 @@ impl SandboxRuntime for SeatbeltRuntime {
         // `allow_local_binding` and `weaker_macos_isolation` come
         // straight from the policy. Localhost binds (e.g. dev servers
         // on 127.0.0.1:3000) are still allowed by
-        // [`network_proxied_rules`] regardless; the bind flag only
-        // gates wildcard `*:*`. The trustd flag (Phase 3e of #934) is
+        // [`network_proxied_rules`] regardless; the binding flag opens
+        // every local port, both ways. The trustd flag (Phase 3e of #934) is
         // off by default and only set by callers that need Go-style
         // out-of-process TLS validation to work inside the sandbox.
         let command = match req.proxy_port {

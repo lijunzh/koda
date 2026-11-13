@@ -412,7 +412,23 @@ pub fn policy_for_agent(trust: crate::trust::TrustMode, project_root: &Path) -> 
             .push(canonical_root.into());
     }
 
+    policy.net.allow_local_binding =
+        local_binding_allowed(crate::runtime_env::get(LOCAL_BINDING_ENV).as_deref());
+
     policy
+}
+
+/// The user's opt-in to every local port, both ways (`=1` or `=true`): a
+/// test that starts a server and connects to it, a database, a dev server
+/// started outside Koda. Off by default, as Codex's and Claude Code's
+/// `allow_local_binding` are, since it exposes every service listening on
+/// the machine. It comes from the user's environment only: Koda reads no
+/// project settings, so a repository can't turn it on. macOS only; on
+/// Linux each command has its own loopback, which it can always use.
+pub const LOCAL_BINDING_ENV: &str = "KODA_ALLOW_LOCAL_BINDING";
+
+fn local_binding_allowed(value: Option<&str>) -> bool {
+    matches!(value, Some("1" | "true"))
 }
 
 /// What a child mustn't write when `.git` is a file, as in a worktree or a
@@ -538,6 +554,56 @@ mod tests {
     /// to the spawned Command. We verify by running `echo $HTTPS_PROXY`
     /// inside the sandbox and reading stdout — platform-agnostic and
     /// independent of the kernel sandbox availability.
+    #[test]
+    fn local_binding_is_on_only_when_the_user_says_so() {
+        assert!(!local_binding_allowed(None));
+        for off in ["", "0", "false", "no", "yes", "TRUE"] {
+            assert!(!local_binding_allowed(Some(off)), "{off:?}");
+        }
+        assert!(local_binding_allowed(Some("1")));
+        assert!(local_binding_allowed(Some("true")));
+    }
+
+    /// What `KODA_ALLOW_LOCAL_BINDING` is for: a command that starts a
+    /// server on 127.0.0.1 and connects to it, as a test with a fake HTTP
+    /// server does. Asked of the kernel, not read off the profile.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn local_binding_lets_a_command_reach_its_own_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = "python3 -c 'import socket\n\
+s = socket.socket()\n\
+s.bind((\"127.0.0.1\", 0))\n\
+s.listen(1)\n\
+socket.create_connection(s.getsockname(), timeout=5)\n\
+print(\"connected\")'";
+        let run = |allow: bool| {
+            let mut policy = policy_for_agent(crate::trust::TrustMode::Auto, dir.path());
+            policy.net.allow_local_binding = allow;
+            let cmd = build(
+                script,
+                dir.path(),
+                &crate::trust::TrustMode::Auto,
+                &policy,
+                Some(9),
+                None,
+            );
+            async move { cmd.unwrap().output().await.unwrap() }
+        };
+        let closed = run(false).await;
+        assert!(
+            !String::from_utf8_lossy(&closed.stdout).contains("connected"),
+            "connected without the setting: {}",
+            String::from_utf8_lossy(&closed.stderr)
+        );
+        let open = run(true).await;
+        assert!(
+            String::from_utf8_lossy(&open.stdout).contains("connected"),
+            "{}",
+            String::from_utf8_lossy(&open.stderr)
+        );
+    }
+
     #[tokio::test]
     async fn build_attaches_proxy_env_when_port_set() {
         let dir = tempfile::tempdir().unwrap();
