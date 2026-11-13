@@ -171,7 +171,23 @@ jobs:
         # nextest runs every test in its own process and tests from all
         # binaries at once (.config/nextest.toml). The ci profile writes
         # target/nextest/ci/junit.xml, which the guards below read.
-        run: cargo nextest run --workspace --features koda-core/test-support --profile ci
+        # EXPERIMENT (not for merge): time test-running variants on one runner.
+        shell: bash
+        run: |
+          set -euo pipefail
+          F="--workspace --features koda-core/test-support"
+          echo "cpus: $(getconf _NPROCESSORS_ONLN)"
+          cargo nextest run $F --no-run
+          cargo test $F --no-run -q
+          t() { local s=$SECONDS; "$@" >/dev/null 2>&1 || echo "  (failed: $*)"; echo "TIMING $((SECONDS-s))s :: $*"; }
+          t cargo nextest run $F --profile ci -j 3
+          t cargo nextest run $F --profile ci -j 6
+          t cargo nextest run $F --profile ci -j 12
+          t cargo test $F --lib --bins -q
+          t cargo nextest run $F --profile ci -E 'kind(test)'
+          t cargo nextest run $F --profile ci -E 'kind(test)' -j 6
+          t cargo test $F -q
+          cargo nextest run $F --profile ci
       - name: Doc tests
         # nextest doesn't run doc tests.
         run: cargo test --workspace --features koda-core/test-support --doc
