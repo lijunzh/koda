@@ -19,6 +19,12 @@ retries = 0
 
 [profile.ci]
 inherits = "default"
+# More tests at once than the runner has CPUs. Starting a process per test is
+# mostly waiting, so overlapping them hides it: on CI, 6 or 12 at once ran the
+# suite in 36 s on Ubuntu's 4 CPUs against 50 s at the default 4, and in
+# 63 s on macOS's 3 CPUs against 106 s at 3. Codex sets 8 where starting a
+# process costs most (Windows). Local runs keep one per CPU.
+test-threads = 8
 
 [profile.ci.junit]
 # target/nextest/ci/junit.xml: the CI guards check that the

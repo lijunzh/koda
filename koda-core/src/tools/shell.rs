@@ -2756,24 +2756,55 @@ mod tests {
             return;
         }
         let registry = BgRegistry::new();
-        let port = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
         let theirs = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let their_port = theirs.local_addr().unwrap().port();
 
-        let server = format!("python3 -m http.server {port} --bind 127.0.0.1");
-        proxied(&registry, &server, true).await;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-        while !registry.listening_ports().await.contains(&port) {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "server never listened"
-            );
+        // Port 0: the server picks a free port and says which, so no other
+        // test can take it between a check and the bind. `-u` writes that
+        // line to the log at once instead of when a buffer fills.
+        let started = proxied(
+            &registry,
+            "python3 -u -m http.server 0 --bind 127.0.0.1",
+            true,
+        )
+        .await;
+        let log = started
+            .summary
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("Output:"))
+            .and_then(|rest| rest.trim().split(' ').next())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| panic!("no log in {}", started.summary));
+        // A busy CI runner can take a while to start Python in the sandbox.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let port = loop {
+            let text = std::fs::read_to_string(&log).unwrap_or_default();
+            let announced = text
+                .split("port ")
+                .nth(1)
+                .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+                .and_then(|n| n.parse::<u16>().ok());
+            if let Some(port) = announced
+                && registry.listening_ports().await.contains(&port)
+            {
+                break port;
+            }
+            if std::time::Instant::now() >= deadline {
+                let lsof_started = std::time::Instant::now();
+                let ports = registry.listening_ports().await;
+                panic!(
+                    "server never seen listening. Log:\n{text}\nprocesses: {:?}\n\
+                     listening ports {ports:?}, found in {:?}",
+                    registry
+                        .snapshot()
+                        .iter()
+                        .map(|s| (s.pid, s.status))
+                        .collect::<Vec<_>>(),
+                    lsof_started.elapsed(),
+                );
+            }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
+        };
         assert!(!registry.listening_ports().await.contains(&their_port));
 
         let reach = |port: u16| {
