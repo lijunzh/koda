@@ -16,6 +16,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **Stopping a command on macOS no longer leaves a child running.** A stop that caught the command's shell in the middle of starting a job (`server &`) killed the shell but not the job it was starting: macOS, unlike Linux, lets a fork finish without the signal. About one stop in sixteen, made just as such a command started, left a process behind. Koda now stops the group again once its leader has died, which reaches anything the leader started meanwhile.
+
 - **A slash command that arrives faster than it's typed keeps its text.** When the start of a command was typed and the rest came in a fast burst (a paste in a terminal without bracketed paste, or keys Koda read late while busy), the slash popup opened by the typed start took Enter while the rest was still held. It completed the command, the held text landed after it, and `/mcp add notes …` became `/mcp p add notes …`. Held text is now added before an open menu sees the key.
 
 - **Picking `/model`'s "local" entry now switches to the server the picker found it on.** The picker looks for the local model at `KODA_LOCAL_URL`, but picking it switched to LM Studio's default address (`localhost:1234`), so with `KODA_LOCAL_URL` pointing elsewhere the next turns went to a different server, or to nothing. Both now use `KODA_LOCAL_URL`, else the LM Studio address Koda is already using, else the default.
