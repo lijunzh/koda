@@ -40,3 +40,11 @@ max-threads = 4
 [[profile.default.overrides]]
 filter = 'binary(tui_pty_test)'
 test-group = "pty"
+
+# perf_test times hot paths against wall-clock bounds. Beside 7 other tests on
+# a 3-CPU macOS runner, 80K path resolutions took 2.4 s against 0.05 s alone,
+# failing a 1 s bound. Run them alone, as Codex runs the tests that "must not
+# compete with other tests on the same runner" (`threads-required`).
+[[profile.default.overrides]]
+filter = 'package(koda-core) & binary(all) & test(/^suite::perf_test::/)'
+threads-required = "num-test-threads"

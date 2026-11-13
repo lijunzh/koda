@@ -36,8 +36,9 @@ use crate::db::{Database, Role};
 use crate::persistence::Persistence;
 use crate::providers::{ChatMessage, LlmProvider};
 use anyhow::Result;
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
 use tokio::sync::RwLock;
 
 /// The reasoning effort a summary call carries: `low` wherever the session
@@ -77,28 +78,45 @@ const TAIL_SHARE: f64 = 0.3;
 /// (e.g. history too large for the model, persistent API errors).
 const MAX_CONSECUTIVE_FAILURES: u32 = 3;
 
-/// Global consecutive failure counter. Shared across the session.
-static CONSECUTIVE_FAILURES: AtomicU32 = AtomicU32::new(0);
+/// Consecutive failures by session. One session's failures never stop
+/// another's compaction, as Gemini CLI keeps its failed-compression flag on
+/// the client that owns one chat. A session with none has no entry.
+static CONSECUTIVE_FAILURES: LazyLock<Mutex<HashMap<String, u32>>> =
+    LazyLock::new(Default::default);
 
-/// Reset the failure counter (call after successful compaction or new session).
-pub fn reset_compact_failures() {
-    CONSECUTIVE_FAILURES.store(0, Ordering::Relaxed);
+fn failures() -> MutexGuard<'static, HashMap<String, u32>> {
+    CONSECUTIVE_FAILURES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Check if the circuit breaker is tripped.
-pub fn is_compact_circuit_broken() -> bool {
-    CONSECUTIVE_FAILURES.load(Ordering::Relaxed) >= MAX_CONSECUTIVE_FAILURES
+/// The session's consecutive failures so far.
+fn consecutive_failures(session_id: &str) -> u32 {
+    failures().get(session_id).copied().unwrap_or(0)
 }
 
-/// Record a compaction failure. Returns true if the circuit breaker just tripped.
-pub fn record_compact_failure() -> bool {
-    let prev = CONSECUTIVE_FAILURES.fetch_add(1, Ordering::Relaxed);
-    prev + 1 >= MAX_CONSECUTIVE_FAILURES
+/// Reset the session's failure counter.
+pub fn reset_compact_failures(session_id: &str) {
+    failures().remove(session_id);
 }
 
-/// Record a compaction success — resets the failure counter.
-fn record_compact_success() {
-    reset_compact_failures();
+/// Check if the session's circuit breaker is tripped.
+pub fn is_compact_circuit_broken(session_id: &str) -> bool {
+    consecutive_failures(session_id) >= MAX_CONSECUTIVE_FAILURES
+}
+
+/// Record a compaction failure for the session. Returns true if its circuit
+/// breaker is now tripped.
+pub fn record_compact_failure(session_id: &str) -> bool {
+    let mut failures = failures();
+    let count = failures.entry(session_id.to_owned()).or_default();
+    *count += 1;
+    *count >= MAX_CONSECUTIVE_FAILURES
+}
+
+/// Record a compaction success — resets the session's failure counter.
+fn record_compact_success(session_id: &str) {
+    reset_compact_failures(session_id);
 }
 
 /// Most output tokens the summary call may use, thinking included.
@@ -394,9 +412,9 @@ pub async fn compact_session_with_provider(
 
     if no_summary {
         // The history is smaller, but the model is still not summarizing.
-        record_compact_failure();
+        record_compact_failure(session_id);
     } else {
-        record_compact_success();
+        record_compact_success(session_id);
     }
 
     let (branch, reply_chars, stop_reason) = reply;
@@ -413,7 +431,7 @@ pub async fn compact_session_with_provider(
         reply_chars,
         stop_reason = %stop_reason,
         summary_chars = summary.len(),
-        consecutive_failures = CONSECUTIVE_FAILURES.load(Ordering::Relaxed),
+        consecutive_failures = consecutive_failures(session_id),
         "compaction"
     );
 
@@ -455,7 +473,7 @@ pub async fn compact_without_summary(
         rows_kept = preserve_count,
         rows_archived = deleted,
         summary_chars = text.len(),
-        consecutive_failures = CONSECUTIVE_FAILURES.load(Ordering::Relaxed),
+        consecutive_failures = consecutive_failures(session_id),
         "compaction"
     );
     Ok(Ok(CompactResult {
@@ -996,21 +1014,43 @@ mod tests {
 
     #[test]
     fn test_circuit_breaker() {
-        reset_compact_failures();
-        assert!(!is_compact_circuit_broken());
+        let id = "breaker-unit-test";
+        reset_compact_failures(id);
+        assert!(!is_compact_circuit_broken(id));
 
-        assert!(!record_compact_failure()); // 1st
-        assert!(!is_compact_circuit_broken());
+        assert!(!record_compact_failure(id)); // 1st
+        assert!(!is_compact_circuit_broken(id));
 
-        assert!(!record_compact_failure()); // 2nd
-        assert!(!is_compact_circuit_broken());
+        assert!(!record_compact_failure(id)); // 2nd
+        assert!(!is_compact_circuit_broken(id));
 
-        assert!(record_compact_failure()); // 3rd — trips
-        assert!(is_compact_circuit_broken());
+        assert!(record_compact_failure(id)); // 3rd — trips
+        assert!(is_compact_circuit_broken(id));
 
         // Reset should untrip
-        reset_compact_failures();
-        assert!(!is_compact_circuit_broken());
+        reset_compact_failures(id);
+        assert!(!is_compact_circuit_broken(id));
+    }
+
+    /// A tripped breaker is the session's alone: another session still
+    /// compacts. Process-wide, one session's failures (or a parallel test's)
+    /// stopped every other session's compaction, or a success reset theirs.
+    #[test]
+    fn a_tripped_breaker_stops_only_its_own_session() {
+        let (tripped, other) = ("breaker-tripped", "breaker-other");
+        for _ in 0..MAX_CONSECUTIVE_FAILURES {
+            record_compact_failure(tripped);
+        }
+        record_compact_failure(other);
+        assert!(is_compact_circuit_broken(tripped));
+        assert!(!is_compact_circuit_broken(other));
+
+        record_compact_success(other);
+        assert!(
+            is_compact_circuit_broken(tripped),
+            "another's success reset it"
+        );
+        reset_compact_failures(tripped);
     }
 
     #[test]
@@ -1292,9 +1332,4 @@ mod tests {
         assert!(!result.ends_with('\n'));
         assert_eq!(result, "Clean content");
     }
-
-    // ── circuit breaker ───────────────────────────────────────────────────────
-    // Covered by test_circuit_breaker above. Removed duplicate tests
-    // that raced on the global CONSECUTIVE_FAILURES AtomicU32 when
-    // running in parallel.
 }
