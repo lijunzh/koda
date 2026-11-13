@@ -341,6 +341,7 @@ async fn sub_agent_approval_request_persists_as_auto_reject_marker() {
 
     sink.emit(EngineEvent::ApprovalRequest {
         id: "ap-1".into(),
+        tool_call_id: "call-1".into(),
         tool_name: "Bash".into(),
         detail: "rm -f important.txt".into(),
         preview: None,
@@ -378,6 +379,7 @@ async fn sub_agent_ask_user_request_persists_truncated() {
     let long_question = "Q".repeat(500);
     sink.emit(EngineEvent::AskUserRequest {
         id: "aq-1".into(),
+        tool_call_id: "call-1".into(),
         question: long_question.clone(),
         options: vec![],
     });

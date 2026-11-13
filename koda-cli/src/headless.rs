@@ -429,6 +429,8 @@ impl HeadlessSink {
                     eprintln!("  \u{2502} {line}");
                 }
             }
+            // A call that never ran was shown as its rejection or block.
+            EngineEvent::ToolCallResult { outcome, .. } if !outcome.ran() => {}
             EngineEvent::ToolCallResult { name, output, .. } => {
                 use koda_core::truncate::{Truncated, truncate_for_display};
                 eprintln!("\x1b[32m  \u{2713} {name}\x1b[0m");
@@ -599,6 +601,9 @@ impl HeadlessSink {
                     print_line(&line);
                 }
             }
+            // A sub-agent's results aren't shown: its answer is.
+            OutputFormat::Text | OutputFormat::Json
+                if parent_id.is_some() && matches!(event, EngineEvent::ToolCallResult { .. }) => {}
             OutputFormat::Text | OutputFormat::Json => self.render(event),
         }
     }
@@ -632,6 +637,7 @@ mod tests {
     fn approval(id: &str, effect: ToolEffect) -> EngineEvent {
         EngineEvent::ApprovalRequest {
             id: id.into(),
+            tool_call_id: format!("call-{id}"),
             tool_name: "Bash".into(),
             detail: "rm -rf build".into(),
             preview: None,
@@ -661,6 +667,7 @@ mod tests {
             sink.emit(approval("a2", ToolEffect::Destructive));
             sink.emit(EngineEvent::AskUserRequest {
                 id: "q1".into(),
+                tool_call_id: "call-q1".into(),
                 question: "which file?".into(),
                 options: vec![],
             });

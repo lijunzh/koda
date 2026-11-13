@@ -35,6 +35,7 @@ pub(super) fn handle_inference_ui_inline(
             id,
             question,
             options,
+            ..
         }) => {
             *prompt_mode = PromptMode::WizardInput {
                 label: "Answer".into(),
