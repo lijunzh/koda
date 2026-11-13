@@ -127,6 +127,12 @@ but a stalled connection (server hung after last byte) will fail fast.
   can take a local model more than five minutes. A server that has died refuses the connection at once, so the long
   wait only covers one that is alive but stuck. Set `KODA_READ_TIMEOUT_SECS`
   lower if you'd rather fail fast.
+- **Local server whose errors won't go away on a retry?** LM Studio answers a
+  prompt too large for its loaded context window with a bare 500, which Koda
+  retries like any server error: four more tries and 15 seconds before the
+  turn ends. Set `KODA_REQUEST_MAX_RETRIES=0` to see the error at once, or `1`
+  to still ride out a single hiccup. `KODA_STREAM_MAX_RETRIES` does the same
+  for a reply that breaks off partway.
 
 ### Example
 
