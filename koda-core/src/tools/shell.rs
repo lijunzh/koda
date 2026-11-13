@@ -2828,16 +2828,19 @@ mod tests {
     async fn stopping_a_background_command_stops_its_children() {
         let registry = BgRegistry::new();
         // 71 and 72 s: no other test sleeps that long, so pgrep finds only these.
+        // Anchored, so it finds the sleeps and not the shell that runs them.
         proxied(&registry, "sleep 71 & sleep 72; wait", true).await;
-        let alive = || {
+        let running = || {
             std::process::Command::new("pgrep")
-                .args(["-f", "sleep 7[12]"])
+                .args(["-f", "^sleep 7[12]$"])
                 .output()
-                .map(|o| !o.stdout.is_empty())
-                .unwrap_or(false)
+                .map(|o| String::from_utf8_lossy(&o.stdout).lines().count())
+                .unwrap_or(0)
         };
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !alive() {
+        let alive = || running() > 0;
+        // Both children started, so the stop comes after the shell's forks.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while running() < 2 {
             assert!(std::time::Instant::now() < deadline, "never started");
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }

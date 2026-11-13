@@ -118,6 +118,16 @@ pub fn process_alive(_pid: u32) -> bool {
 }
 
 /// SIGKILL every process in the group `leader` led. Harmless when it's gone.
+///
+/// A process caught by the kill in the middle of a fork can leave the new
+/// child alive in the group: Linux restarts such a fork so the child gets the
+/// signal too, but macOS doesn't (`bash -c 'sleep 71 & sleep 72; wait'`
+/// killed just as it started left a `sleep` behind 24 times in 400). So when
+/// the leader is our child, the group is killed again once the leader has
+/// died. Anything the leader forked is in the group by then, and the leader,
+/// dead but not yet reaped, holds its id, so the group is still the one we
+/// meant. A leader that is already reaped, or isn't ours, gets no second kill.
+/// Linux needs none, so there it's skipped.
 #[cfg(unix)]
 pub fn kill_group(leader: u32) {
     // SAFETY: `killpg` takes plain integers and touches no memory. It fails
@@ -125,7 +135,90 @@ pub fn kill_group(leader: u32) {
     unsafe {
         libc::killpg(leader as libc::pid_t, libc::SIGKILL);
     }
+    if cfg!(not(target_os = "linux")) && leader_died_unreaped(leader) {
+        // SAFETY: as above.
+        unsafe {
+            libc::killpg(leader as libc::pid_t, libc::SIGKILL);
+        }
+    }
+}
+
+/// Whether `leader`, a child of ours just sent SIGKILL, has died without
+/// being reaped, waiting up to 100 ms for it to. `WNOWAIT` leaves it for
+/// whoever reaps it, such as a [`Child`] that waits on it later.
+#[cfg(unix)]
+fn leader_died_unreaped(leader: u32) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(100);
+    loop {
+        // SAFETY: an all-zero `siginfo_t` is a valid value of the plain C struct.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: `info` is a valid, writable `siginfo_t`; the other arguments
+        // are plain integers. `WNOWAIT` leaves the child unreaped.
+        let found = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                leader as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOWAIT | libc::WNOHANG,
+            )
+        };
+        if found != 0 {
+            // ECHILD: reaped already, or not our child. Its id may be reused.
+            return false;
+        }
+        // With WNOHANG, a child still running leaves `info` as it was: zero.
+        if info.si_signo == libc::SIGCHLD {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
 }
 
 #[cfg(not(unix))]
 pub fn kill_group(_leader: u32) {}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::process::CommandExt as _;
+
+    fn sleeps_left() -> Vec<String> {
+        let out = std::process::Command::new("pgrep")
+            .args(["-f", "^sleep 8131[12]$"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout)
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// Killed while the shell is forking its jobs, the group leaves none
+    /// behind. Before the second kill, macOS kept a `sleep` alive about one
+    /// time in sixteen; Linux never does.
+    #[test]
+    fn a_group_killed_mid_fork_leaves_nothing() {
+        // 81311 and 81312 s: no other test sleeps that long, so pgrep finds only these.
+        for i in 0..200u64 {
+            let mut child = std::process::Command::new("bash")
+                .args(["-c", "sleep 81311 & sleep 81312; wait"])
+                .process_group(0)
+                .spawn()
+                .unwrap();
+            // From at once to 4 ms in: across the shell's two forks.
+            std::thread::sleep(std::time::Duration::from_micros(i % 9 * 500));
+            kill_group(child.id());
+            child.wait().unwrap();
+        }
+        let left = sleeps_left();
+        for pid in &left {
+            let _ = std::process::Command::new("kill")
+                .args(["-9", pid])
+                .status();
+        }
+        assert!(left.is_empty(), "{} left behind: {left:?}", left.len());
+    }
+}
