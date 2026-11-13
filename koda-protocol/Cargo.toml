@@ -10,9 +10,6 @@ homepage.workspace = true
 authors.workspace = true
 keywords = ["ai", "coding-agent", "json-rpc", "protocol"]
 categories = ["development-tools", "api-bindings"]
-# Published once koda-cli depends on it; until then nothing outside the
-# workspace uses it.
-publish = false
 
 [dependencies]
 schemars = { workspace = true }

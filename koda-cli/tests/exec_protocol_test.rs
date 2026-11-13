@@ -1,6 +1,6 @@
-//! The v1 wire protocol, as a real `koda -p --output-format stream-json` run
-//! writes it. Each test runs the binary against a local OpenAI-compatible stub
-//! and reads stdout the way a client would. No API key, no model.
+//! The client protocol as a real `koda exec --json` run writes it. Each test
+//! runs the binary against a local OpenAI-compatible stub and reads stdout
+//! the way a client would. No API key, no model.
 
 use koda_test_utils::network::{FakeLlmServer, Request, ResponseTemplate};
 use serde_json::{Value, json};
@@ -98,7 +98,7 @@ async fn stub(
     server
 }
 
-/// One run of `koda -p`, read as a client reads it.
+/// One run of `koda exec --json`, read as a client reads it.
 struct Run {
     lines: Vec<Value>,
     stdout: String,
@@ -106,41 +106,96 @@ struct Run {
 }
 
 impl Run {
-    fn of_type(&self, kind: &str) -> Vec<&Value> {
-        self.lines.iter().filter(|l| l["type"] == kind).collect()
+    /// Messages with this method.
+    fn of(&self, method: &str) -> Vec<&Value> {
+        self.lines
+            .iter()
+            .filter(|l| l["method"] == method)
+            .collect()
     }
 
-    fn one(&self, kind: &str) -> &Value {
-        let found = self.of_type(kind);
-        assert_eq!(found.len(), 1, "{kind}: {}", self.stdout);
+    fn one(&self, method: &str) -> &Value {
+        let found = self.of(method);
+        assert_eq!(found.len(), 1, "{method}: {}", self.stdout);
         found[0]
     }
 
-    fn types(&self) -> Vec<&str> {
+    fn methods(&self) -> Vec<&str> {
         self.lines
             .iter()
-            .filter_map(|l| l["type"].as_str())
+            .filter_map(|l| l["method"].as_str())
             .collect()
+    }
+
+    /// `item/completed` params for items of this type.
+    fn completed(&self, kind: &str) -> Vec<&Value> {
+        self.of("item/completed")
+            .into_iter()
+            .map(|l| &l["params"])
+            .filter(|p| p["item"]["type"] == kind)
+            .collect()
+    }
+
+    /// The completed tool call with this id.
+    fn call(&self, id: &str) -> &Value {
+        let found = self.completed("toolCall");
+        let call = found.iter().find(|p| p["item"]["id"] == id);
+        call.unwrap_or_else(|| panic!("no completed call {id}: {}", self.stdout))
+    }
+
+    fn turn(&self) -> &Value {
+        &self.one("turn/completed")["params"]["turn"]
+    }
+
+    fn summary(&self) -> &Value {
+        &self.one("exec/summary")["params"]
+    }
+
+    /// Every item that starts completes, once, after it starts.
+    fn assert_items_balanced(&self) {
+        let mut open = std::collections::HashSet::new();
+        for line in &self.lines {
+            let id = line["params"]["item"]["id"].as_str().map(str::to_string);
+            match (line["method"].as_str(), id) {
+                (Some("item/started"), Some(id)) => {
+                    assert!(
+                        open.insert(id.clone()),
+                        "{id} started twice: {}",
+                        self.stdout
+                    )
+                }
+                (Some("item/completed"), Some(id)) => {
+                    assert!(open.remove(&id), "{id} not open: {}", self.stdout)
+                }
+                _ => {}
+            }
+        }
+        assert!(open.is_empty(), "never completed {open:?}: {}", self.stdout);
     }
 }
 
 fn read_run(output: Output) -> Run {
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let lines = stdout
+    let lines: Vec<Value> = stdout
         .lines()
         .map(|line| serde_json::from_str(line).unwrap_or_else(|e| panic!("not JSON: {line}: {e}")))
         .collect();
-    Run {
+    for line in &lines {
+        assert_eq!(line["jsonrpc"], "2.0", "{line}");
+    }
+    let run = Run {
         lines,
         stdout,
         output,
-    }
+    };
+    run.assert_items_balanced();
+    run
 }
 
 fn command(server: &FakeLlmServer, root: &Path) -> tokio::process::Command {
     let mut command = tokio::process::Command::new(koda_bin());
     command
-        .args(["-p", "Fix the parser", "--output-format", "stream-json"])
+        .args(["exec", "Fix the parser", "--json"])
         .args(["--provider", "lmstudio", "--model", "stub"])
         .args(["--base-url", &server.url()])
         .arg("--project-root")
@@ -170,74 +225,71 @@ fn no_other_calls(_: &Value) -> ResponseTemplate {
 // ── Framing ──────────────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_run_opens_with_hello_and_session_ready_and_closes_with_the_summary() {
+async fn a_run_opens_with_its_session_and_closes_with_the_summary() {
     let server = stub(vec![], no_other_calls).await;
     let run = run_koda(&server).await;
     assert!(run.output.status.success(), "{}", run.stdout);
 
-    let types = run.types();
-    assert_eq!(types[..3], ["hello", "session_ready", "turn_start"]);
+    let methods = run.methods();
+    assert_eq!(methods[..2], ["session/started", "turn/started"]);
     assert_eq!(
-        types[types.len() - 3..],
-        ["turn_summary", "turn_end", "run_summary"]
+        methods[methods.len() - 2..],
+        ["turn/completed", "exec/summary"]
     );
 
-    let hello = &run.lines[0];
-    assert_eq!(hello["protocol_version"], 1);
-    assert_eq!(hello["koda_version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(hello["capabilities"], json!(["one_shot", "self_answer"]));
-
-    let ready = &run.lines[1];
-    assert_eq!(ready["provider"], "lm-studio");
-    assert_eq!(ready["model"], "stub");
-    assert!(ready["context_window"].as_u64().unwrap() > 0, "{ready}");
-    assert_eq!(ready["trust"], "auto");
-    let tools = ready["tools"].as_array().unwrap();
-    assert!(tools.contains(&json!("Read")), "{ready}");
-    assert!(tools.contains(&json!("Bash")), "{ready}");
+    let started = &run.lines[0]["params"];
+    assert_eq!(started["protocolVersion"], 2);
+    assert_eq!(started["kodaVersion"], env!("CARGO_PKG_VERSION"));
+    let session = &started["session"];
+    assert_eq!(session["provider"], "lm-studio");
+    assert_eq!(session["model"], "stub");
+    assert!(session["contextWindow"].as_u64().unwrap() > 0, "{session}");
+    assert_eq!(session["mode"], "auto");
+    let tools = session["tools"].as_array().unwrap();
+    assert!(tools.contains(&json!("Read")), "{session}");
+    assert!(tools.contains(&json!("Bash")), "{session}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn every_line_says_which_session_and_turn_it_belongs_to() {
+async fn every_message_says_which_session_and_turn_it_belongs_to() {
     let server = stub(vec![], no_other_calls).await;
     let run = run_koda(&server).await;
 
-    assert!(run.lines[0].get("session_id").is_none(), "hello has none");
-    let session = run.lines[1]["session_id"].as_str().unwrap();
+    let session = run.lines[0]["params"]["session"]["id"].as_str().unwrap();
     assert!(!session.is_empty());
-    let turn = run.one("turn_start")["turn_id"].as_str().unwrap();
-
-    let last = run.lines.len() - 1;
+    let turn = run.one("turn/started")["params"]["turn"]["id"]
+        .as_str()
+        .unwrap();
     for line in &run.lines[1..] {
-        assert_eq!(line["session_id"], session, "{line}");
+        assert_eq!(line["params"]["sessionId"], session, "{line}");
     }
+    let last = run.lines.len() - 2;
     for line in &run.lines[2..last] {
-        assert_eq!(line["turn_id"], turn, "{line}");
+        assert_eq!(line["params"]["turnId"], turn, "{line}");
     }
-    assert!(run.lines[1].get("turn_id").is_none(), "before the turn");
-    assert!(run.lines[last].get("turn_id").is_none(), "after the turn");
+    assert_eq!(run.turn()["id"], turn);
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_wire_carries_no_presentation() {
+async fn only_protocol_messages_reach_stdout() {
     let server = stub(vec![], no_other_calls).await;
     let run = run_koda(&server).await;
-    for kind in [
-        "spinner_start",
-        "spinner_stop",
-        "status_update",
-        "response_start",
-        "footer",
-        "model_usage",
-    ] {
-        assert!(run.of_type(kind).is_empty(), "{kind}: {}", run.stdout);
+    let known = koda_client::protocol::ServerNotification::METHODS;
+    for method in run.methods() {
+        assert!(known.contains(&method), "{method}: {}", run.stdout);
     }
+    // No deltas without --json-deltas.
+    assert!(
+        run.of("item/agentMessage/delta").is_empty(),
+        "{}",
+        run.stdout
+    );
 }
 
 // ── Tools ────────────────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_tool_result_carries_its_outcome() {
+async fn a_tool_call_says_how_it_ended() {
     let server = stub(
         vec![
             tool_call("ok", "Bash", json!({"command": "true"})),
@@ -249,18 +301,45 @@ async fn a_tool_result_carries_its_outcome() {
     .await;
     let run = run_koda(&server).await;
 
-    let outcome = |id: &str| {
-        let results = run.of_type("tool_call_result");
-        let result = results.iter().find(|r| r["id"] == id).unwrap();
-        result["outcome"].as_str().unwrap().to_string()
-    };
-    assert_eq!(outcome("ok"), "success", "{}", run.stdout);
-    assert_eq!(outcome("exit"), "error", "a non-zero exit: {}", run.stdout);
-    assert_eq!(outcome("bad"), "error", "a failed read: {}", run.stdout);
+    let status = |id: &str| run.call(id)["item"]["status"].as_str().unwrap().to_string();
+    assert_eq!(status("ok"), "completed", "{}", run.stdout);
+    assert_eq!(status("exit"), "failed", "a non-zero exit: {}", run.stdout);
+    assert_eq!(status("bad"), "failed", "a failed read: {}", run.stdout);
+    assert_eq!(run.call("ok")["item"]["arguments"]["command"], "true");
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn sub_agent_lines_name_the_call_that_started_them() {
+async fn a_destructive_call_is_asked_about_resolved_and_declined() {
+    let server = stub(
+        vec![tool_call("rm", "Bash", json!({"command": "rm -rf build"}))],
+        no_other_calls,
+    )
+    .await;
+    let run = run_koda(&server).await;
+
+    let request = run.one("item/toolCall/requestApproval");
+    let params = &request["params"];
+    assert_eq!(params["itemId"], "rm", "{request}");
+    assert_eq!(params["effect"], "destructive", "{request}");
+    assert!(params["detail"].as_str().unwrap().contains("rm -rf build"));
+    let resolved = run.one("serverRequest/resolved");
+    assert_eq!(resolved["params"]["requestId"], request["id"], "{resolved}");
+    let at = |line: &Value| run.lines.iter().position(|l| l == line).unwrap();
+    assert_eq!(at(resolved), at(request) + 1, "{}", run.stdout);
+
+    let call = &run.call("rm")["item"];
+    assert_eq!(call["status"], "declined", "{call}");
+    assert!(
+        call["output"]
+            .as_str()
+            .unwrap()
+            .starts_with("[auto-rejected")
+    );
+    assert_eq!(call["detail"], params["detail"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sub_agent_items_name_the_call_that_started_them() {
     // Two sub-agents at once, so nothing but the sink can tell them apart.
     let script = vec![tool_calls(&[
         (
@@ -307,49 +386,50 @@ async fn sub_agent_lines_name_the_call_that_started_them() {
     std::fs::write(tmp.path().join("beta.txt"), "b").unwrap();
     let run = finish(command(&server, tmp.path())).await;
 
-    let starts = run.of_type("sub_agent_start");
-    assert_eq!(starts.len(), 2, "one per agent: {}", run.stdout);
-    let mut parents: Vec<&str> = starts
-        .iter()
-        .map(|s| s["parent_id"].as_str().unwrap())
-        .collect();
-    parents.sort();
-    assert_eq!(parents, ["agent-1", "agent-2"], "{}", run.stdout);
-
-    let starts = run.of_type("tool_call_start");
-    let parent_of = |id: &str| {
-        let line = starts.iter().find(|s| s["id"] == id).unwrap();
-        line.get("parent_id").and_then(Value::as_str)
-    };
+    let parent_of = |id: &str| run.call(id).get("parentItemId").and_then(Value::as_str);
     assert_eq!(parent_of("read-alpha"), Some("agent-1"), "{}", run.stdout);
     assert_eq!(parent_of("read-beta"), Some("agent-2"), "{}", run.stdout);
+    assert_eq!(run.call("read-alpha")["item"]["status"], "completed");
     // The delegation itself is the top-level agent's own call.
     assert_eq!(parent_of("agent-1"), None, "{}", run.stdout);
-    assert!(!run.stdout.contains("is_sub_agent"), "{}", run.stdout);
+    // A sub-agent's turn is not a turn of the session.
+    assert_eq!(run.of("turn/started").len(), 1, "{}", run.stdout);
 
     // Their tokens count toward the turn: 2 stream calls and 4 from children.
-    let usage = &run.one("turn_summary")["usage"];
-    assert_eq!(usage["api_calls"], 6, "{usage}");
-    assert_eq!(usage["prompt_tokens"], 100 + 200 + 4 * 30, "{usage}");
+    let usage = &run.turn()["usage"];
+    assert_eq!(usage["modelCalls"], 6, "{usage}");
+    assert_eq!(usage["inputTokens"], 100 + 200 + 4 * 30, "{usage}");
 
     // The run summary agrees, and splits them out by agent.
-    let summary = run.one("run_summary");
-    assert_eq!(summary["usage"]["api_calls"], 6, "{summary}");
-    assert_eq!(summary["usage"]["prompt_tokens"], 420, "{summary}");
+    let summary = run.summary();
+    assert_eq!(summary["usage"]["modelCalls"], 6, "{summary}");
+    assert_eq!(summary["usage"]["inputTokens"], 420, "{summary}");
     assert_eq!(
-        summary["usage_by_agent"]["main"]["api_calls"], 2,
+        summary["usageByAgent"]["main"]["modelCalls"], 2,
         "{summary}"
     );
     assert_eq!(
-        summary["usage_by_agent"]["explore"]["api_calls"], 4,
+        summary["usageByAgent"]["explore"]["modelCalls"], 4,
         "{summary}"
     );
+    assert_eq!(summary["subAgentToolCalls"]["Read"], 2, "{summary}");
 }
 
 // ── Typed state ──────────────────────────────────────────────────────────
 
+/// The `retry` of the one `error` that will retry.
+fn retry(run: &Run) -> &Value {
+    let errors = run.of("error");
+    let retrying: Vec<_> = errors
+        .iter()
+        .filter(|e| e["params"]["willRetry"] == true)
+        .collect();
+    assert_eq!(retrying.len(), 1, "{}", run.stdout);
+    &retrying[0]["params"]["retry"]
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn a_retry_is_typed() {
+async fn a_retry_is_an_error_that_will_retry() {
     let server = stub(
         vec![ResponseTemplate::new(429).set_body_string("slow down")],
         no_other_calls,
@@ -357,13 +437,13 @@ async fn a_retry_is_typed() {
     .await;
     let run = run_koda(&server).await;
 
-    let retry = run.one("retry");
-    assert_eq!(retry["reason"], "rate_limit", "{retry}");
+    let retry = retry(&run);
+    assert_eq!(retry["reason"], "rateLimit", "{retry}");
     assert_eq!(retry["attempt"], 1, "{retry}");
-    assert_eq!(retry["max_attempts"], 5, "{retry}");
-    assert_eq!(retry["delay_ms"], 1000, "{retry}");
-    assert!(run.of_type("warn").is_empty(), "{}", run.stdout);
-    assert_eq!(run.one("turn_end")["reason"]["kind"], "complete");
+    assert_eq!(retry["maxAttempts"], 5, "{retry}");
+    assert_eq!(retry["delayMs"], 1000, "{retry}");
+    assert!(run.of("warning").is_empty(), "{}", run.stdout);
+    assert_eq!(run.turn()["status"], "completed");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -375,9 +455,9 @@ async fn a_server_error_waits_as_long_as_the_server_says() {
     let run = run_koda(&server).await;
 
     assert_eq!(run.output.status.code(), Some(0), "{}", run.stdout);
-    let retry = run.one("retry");
-    assert_eq!(retry["reason"], "server_error", "{retry}");
-    assert_eq!(retry["delay_ms"], 0, "{retry}");
+    let retry = retry(&run);
+    assert_eq!(retry["reason"], "serverError", "{retry}");
+    assert_eq!(retry["delayMs"], 0, "{retry}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -390,10 +470,10 @@ async fn a_reply_cut_off_partway_starts_over() {
     let run = run_koda(&server).await;
 
     assert_eq!(run.output.status.code(), Some(0), "{}", run.stdout);
-    let retry = run.one("retry");
-    assert_eq!(retry["reason"], "stream_failed", "{retry}");
+    let retry = retry(&run);
+    assert_eq!(retry["reason"], "streamFailed", "{retry}");
     assert_eq!(retry["attempt"], 1, "{retry}");
-    assert_eq!(retry["max_attempts"], 5, "{retry}");
+    assert_eq!(retry["maxAttempts"], 5, "{retry}");
     let calls = server.received_requests().await;
     let chats = calls
         .iter()
@@ -402,7 +482,7 @@ async fn a_reply_cut_off_partway_starts_over() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn an_empty_reply_is_a_typed_retry_and_its_tokens_count() {
+async fn an_empty_reply_is_a_retry_and_its_tokens_count() {
     let empty = sse(&[
         json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
         usage(50, 0),
@@ -414,11 +494,10 @@ async fn an_empty_reply_is_a_typed_retry_and_its_tokens_count() {
     .await;
     let run = run_koda(&server).await;
 
-    let retry = run.one("retry");
-    assert_eq!(retry["reason"], "empty_response", "{retry}");
-    let usage = &run.one("turn_summary")["usage"];
-    assert_eq!(usage["api_calls"], 3, "{usage}");
-    assert_eq!(usage["prompt_tokens"], 100 + 50 + 200, "{usage}");
+    assert_eq!(retry(&run)["reason"], "emptyResponse");
+    let usage = &run.turn()["usage"];
+    assert_eq!(usage["modelCalls"], 3, "{usage}");
+    assert_eq!(usage["inputTokens"], 100 + 50 + 200, "{usage}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -427,13 +506,17 @@ async fn the_loop_guard_is_typed() {
     let server = stub((0..10).map(|_| same()).collect(), no_other_calls).await;
     let run = run_koda(&server).await;
 
-    let guards = run.of_type("loop_guard");
+    let guards = run.of("turn/loopGuard");
     assert_eq!(guards.len(), 2, "{}", run.stdout);
-    assert_eq!(guards[0]["action"], "feedback");
-    assert_eq!(guards[1]["action"], "stop");
-    assert!(guards[0]["detail"].as_str().unwrap().contains("Bash"));
+    assert_eq!(guards[0]["params"]["action"], "feedback");
+    assert_eq!(guards[1]["params"]["action"], "stop");
+    assert!(
+        guards[0]["params"]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("Bash")
+    );
     assert!(!run.stdout.contains("Loop detected"), "{}", run.stdout);
-    assert!(!run.stdout.contains("Loop guard:"), "{}", run.stdout);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -446,7 +529,10 @@ async fn an_agent_file_sets_the_loop_cap() {
 
     let run = finish(command(&server, tmp.path())).await;
 
-    assert_eq!(run.one("loop_cap_request")["cap"], 1, "{}", run.stdout);
+    let request = run.one("turn/loopCap/requestDecision");
+    assert_eq!(request["params"]["cap"], 1, "{}", run.stdout);
+    let resolved = run.one("serverRequest/resolved");
+    assert_eq!(resolved["params"]["requestId"], request["id"]);
 }
 
 /// Stub an agent that reads big files until a summary call arrives.
@@ -483,7 +569,7 @@ async fn filling_stub() -> FakeLlmServer {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_compaction_is_typed_and_its_tokens_count() {
+async fn a_compaction_is_an_item_and_its_tokens_count() {
     let server = filling_stub().await;
     let tmp = tempfile::tempdir().unwrap();
     for i in 0..40 {
@@ -494,44 +580,49 @@ async fn a_compaction_is_typed_and_its_tokens_count() {
     command.args(["--max-context-tokens", "12000"]);
     let run = finish(command).await;
 
-    let steps = run.of_type("compaction");
-    let threshold: Vec<_> = steps
-        .iter()
-        .filter(|s| s["trigger"] == "threshold")
+    let started: Vec<&Value> = run
+        .of("item/started")
+        .into_iter()
+        .map(|l| &l["params"]["item"])
+        .filter(|i| i["type"] == "contextCompaction" && i["trigger"] == "threshold")
         .collect();
-    assert_eq!(threshold[0]["status"], "started", "{}", run.stdout);
+    assert!(!started.is_empty(), "{}", run.stdout);
+    assert_eq!(started[0]["status"], "inProgress");
     assert!(
-        threshold[0]["context_percent"].as_u64().unwrap() >= 80,
+        started[0]["contextPercent"].as_u64().unwrap() >= 80,
         "{}",
         run.stdout
     );
-    // Each start is closed by the next line, and one of them got a summary.
-    for pair in threshold.chunks(2) {
-        assert_eq!(pair[0]["status"], "started", "{}", run.stdout);
-        assert_ne!(pair[1]["status"], "started", "{}", run.stdout);
-    }
-    let done = threshold
+    let done = run.completed("contextCompaction");
+    let summarized = done
         .iter()
-        .find(|s| s["status"] == "completed")
+        .map(|p| &p["item"])
+        .find(|i| i["status"] == "completed" && i["trigger"] == "threshold")
         .unwrap_or_else(|| panic!("no compaction finished: {}", run.stdout));
-    assert!(done["messages_removed"].as_u64().unwrap() > 0, "{done}");
-    assert!(done["summary_tokens"].as_u64().unwrap() > 0, "{done}");
+    assert!(
+        summarized["messagesRemoved"].as_u64().unwrap() > 0,
+        "{summarized}"
+    );
+    assert!(
+        summarized["summaryTokens"].as_u64().unwrap() > 0,
+        "{summarized}"
+    );
     assert!(!run.stdout.contains("compacting before"), "{}", run.stdout);
 
-    let usage = &run.one("turn_summary")["usage"];
-    let reads = run.of_type("tool_call_start").len() as i64;
+    let usage = &run.turn()["usage"];
+    let reads = run.completed("toolCall").len() as i64;
     assert_eq!(
-        usage["api_calls"],
+        usage["modelCalls"],
         reads + 2,
         "reads, summary, reply: {usage}"
     );
-    assert_eq!(usage["prompt_tokens"], reads * 100 + 70 + 200, "{usage}");
+    assert_eq!(usage["inputTokens"], reads * 100 + 70 + 200, "{usage}");
 }
 
-// ── Turn summary ─────────────────────────────────────────────────────────
+// ── Turn usage ───────────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread")]
-async fn turn_summary_adds_up_the_turn() {
+async fn turn_completed_adds_up_the_turn() {
     let server = stub(
         vec![tool_call("a", "Bash", json!({"command": "true"}))],
         no_other_calls,
@@ -539,18 +630,19 @@ async fn turn_summary_adds_up_the_turn() {
     .await;
     let run = run_koda(&server).await;
 
-    let summary = run.one("turn_summary");
-    assert_eq!(summary["usage"]["prompt_tokens"], 300, "{summary}");
-    assert_eq!(summary["usage"]["completion_tokens"], 30, "{summary}");
-    assert_eq!(summary["usage"]["api_calls"], 2, "{summary}");
+    let turn = run.turn();
+    assert_eq!(turn["status"], "completed", "{turn}");
+    assert_eq!(turn["usage"]["inputTokens"], 300, "{turn}");
+    assert_eq!(turn["usage"]["outputTokens"], 30, "{turn}");
+    assert_eq!(turn["usage"]["modelCalls"], 2, "{turn}");
     for field in [
-        "cache_read_tokens",
-        "cache_creation_tokens",
-        "thinking_tokens",
+        "cachedInputTokens",
+        "cacheCreationTokens",
+        "reasoningTokens",
     ] {
-        assert_eq!(summary["usage"][field], 0, "{summary}");
+        assert_eq!(turn["usage"][field], 0, "{turn}");
     }
-    assert!(summary["elapsed_ms"].is_u64(), "{summary}");
+    assert!(turn["durationMs"].is_u64(), "{turn}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -566,11 +658,13 @@ async fn a_failed_turn_still_reports_what_it_used() {
     let run = run_koda(&server).await;
     assert_eq!(run.output.status.code(), Some(1), "{}", run.stdout);
 
-    assert_eq!(run.one("turn_end")["reason"]["kind"], "error");
-    let usage = &run.one("turn_summary")["usage"];
-    assert_eq!(usage["prompt_tokens"], 100, "{usage}");
-    assert_eq!(usage["api_calls"], 1, "{usage}");
-    assert_eq!(run.lines.last().unwrap()["type"], "run_summary");
+    let turn = run.turn();
+    assert_eq!(turn["status"], "failed", "{turn}");
+    assert!(turn["error"]["message"].is_string(), "{turn}");
+    assert_eq!(turn["usage"]["inputTokens"], 100, "{turn}");
+    assert_eq!(turn["usage"]["modelCalls"], 1, "{turn}");
+    assert_eq!(run.lines.last().unwrap()["method"], "exec/summary");
+    assert_eq!(run.summary()["success"], false);
 }
 
 #[cfg(unix)]
@@ -620,10 +714,10 @@ async fn a_cancelled_turn_still_reports_what_it_used() {
         .unwrap();
     let run = read_run(output);
 
-    assert_eq!(run.one("turn_end")["reason"]["kind"], "cancelled");
-    let usage = &run.one("turn_summary")["usage"];
-    assert_eq!(usage["prompt_tokens"], 100, "{usage}");
-    assert_eq!(usage["api_calls"], 1, "{usage}");
+    let turn = run.turn();
+    assert_eq!(turn["status"], "interrupted", "{turn}");
+    assert_eq!(turn["usage"]["inputTokens"], 100, "{turn}");
+    assert_eq!(turn["usage"]["modelCalls"], 1, "{turn}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -632,25 +726,25 @@ async fn a_resumed_turn_reports_only_itself() {
     let tmp = tempfile::tempdir().unwrap();
     let first = finish(command(&server, tmp.path())).await;
     assert!(first.output.status.success(), "{}", first.stdout);
-    let session = first.lines[1]["session_id"].as_str().unwrap();
+    let session = first.lines[0]["params"]["session"]["id"].as_str().unwrap();
 
     let mut again = command(&server, tmp.path());
     again.args(["-s", session]);
     let second = finish(again).await;
     assert!(second.output.status.success(), "{}", second.stdout);
 
-    assert_eq!(second.lines[1]["session_id"], session, "{}", second.stdout);
-    let usage = &second.one("turn_summary")["usage"];
-    assert_eq!(usage["prompt_tokens"], 200, "this turn: {usage}");
-    assert_eq!(usage["api_calls"], 1, "this turn: {usage}");
+    assert_eq!(second.lines[0]["params"]["session"]["id"], session);
+    let usage = &second.turn()["usage"];
+    assert_eq!(usage["inputTokens"], 200, "this turn: {usage}");
+    assert_eq!(usage["modelCalls"], 1, "this turn: {usage}");
 
     // The run summary covers the stored session, by design.
-    let totals = &second.one("run_summary")["usage"];
-    assert_eq!(totals["prompt_tokens"], 400, "the session: {totals}");
-    assert_eq!(totals["api_calls"], 2, "the session: {totals}");
+    let totals = &second.summary()["usage"];
+    assert_eq!(totals["inputTokens"], 400, "the session: {totals}");
+    assert_eq!(totals["modelCalls"], 2, "the session: {totals}");
 }
 
-// ── One-shot mode ────────────────────────────────────────────────────────
+// ── koda -p ──────────────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_json_format_is_still_one_summary_object() {
@@ -678,4 +772,5 @@ async fn the_json_format_is_still_one_summary_object() {
     assert_eq!(summary["response"], "Done.", "{stdout}");
     assert!(summary["session_id"].is_string(), "{stdout}");
     assert_eq!(summary["usage"]["prompt_tokens"], 200, "{stdout}");
+    assert_eq!(summary["turn_end"]["kind"], "complete", "{stdout}");
 }

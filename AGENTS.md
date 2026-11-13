@@ -72,6 +72,8 @@ and `EngineCommand` (input); approval flows through async channels.
 
 Workspace: `koda-core` (library, pure engine, zero terminal deps), `koda-cli`
 (binary `koda`, ratatui TUI), `koda-sandbox` (kernel sandbox runtime),
+`koda-protocol` (the client protocol's messages and schema), `koda-client`
+(the client API, and engine events projected onto the protocol),
 `koda-test-utils`.
 
 ### Where things are
@@ -198,4 +200,5 @@ The `test-support` feature gates `MockProvider` and `TestSink`, so E2E tests nee
 - **koda-cli stub server:** real headless runs against `FakeLlmServer`, in
   `no_summary_compaction_test.rs`, `gemini_stub_test.rs`,
   `history_edit_log_test.rs`, `context_count_test.rs`,
-  `headless_interrupt_test.rs`, `stop_reason_log_test.rs`.
+  `headless_interrupt_test.rs`, `stop_reason_log_test.rs`, and
+  `exec_protocol_test.rs` for what `koda exec --json` prints.

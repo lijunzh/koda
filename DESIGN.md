@@ -240,18 +240,23 @@ render, but that is now a presentational choice (snapshot is
 cheaper for a panel that re-renders every frame), not the
 documented carve-out it used to be.
 
-### Wire Protocol: A Projection of the Engine (P2, P3)
+### The Client Protocol: A Projection of the Engine (P2, P3)
 
 `EngineEvent` is the engine's internal enum and the TUI's in-process interface.
-External clients read a smaller public `WireEvent`, defined in
-`koda-core/src/engine/wire.rs`, which `project()` builds from it. The match has
-no wildcard, so adding an engine event forces a decision about the wire.
+External clients read the client protocol (`koda-protocol`): sessions, turns,
+and items that start, stream and complete, as in Codex's app-server protocol.
+`koda-client`'s `EventProjector` builds protocol messages from engine events;
+because engine events are flat and items aren't, it keeps the open items, the
+turn in progress and the requests waiting for an answer. Every tool call that
+starts ends with a `ToolCallResult` saying how (ran, failed, declined,
+cancelled), and requests name their call, so every item completes.
 
 Keeping the two apart lets the engine change without breaking clients, and keeps
-presentation (spinners, the footer, status bars) off the wire. It doesn't need a
-framework: one module and one function. A fact the wire needs and the engine
-doesn't have gets added to the engine at its source, like a tool's outcome or
-the id on a loop-cap request.
+presentation (spinners, the footer, status bars) off the protocol. A fact the
+protocol needs and the engine doesn't have gets added to the engine at its
+source, like a tool's outcome or the call an approval is about. `EngineEvent` is
+`#[non_exhaustive]`, so the projector has a catch-all: a new engine event stays
+off the protocol until it is given a form there.
 
 Typed state events (`Compaction`, `Retry`, `LoopGuard`) carry the text a person
 would read as a `notice`, and `EngineEvent::notice()` turns one back into `Info`
@@ -265,9 +270,9 @@ keeps its messages in its own session, linked to its parent by the
 
 ### One Client Protocol, and ACP Removed (P2)
 
-Koda has one client protocol: the versioned `stream-json` projection in
-`koda-core/src/engine/wire.rs`. It is output only, since the only clients are
-scripts and the eval harness, and the TUI runs in-process.
+Koda has one client protocol, `koda-protocol` (below). `koda exec --json`
+prints it; it is output only so far, since the only clients are scripts and the
+eval harness, and the TUI runs in-process. It replaced `stream-json` in 0.7.0.
 
 Koda used to speak ACP through `koda server --stdio`, on the theory that it
 would give us Zed integration for free. It was removed on 2026-11-01. Its input
@@ -298,10 +303,13 @@ response; a client names the method's type and gets the response type back, so
 the two can't disagree. `docs/src/protocol-schema.json` is generated from the
 types, and a test fails when it's stale.
 
-The protocol grows with the code that serves it. It has `initialize` and
-`state/read`, and no client uses it yet: `stream-json` stays the public output
-until a turn's events move onto the protocol, and the TUI drives the engine
-directly until its turns go through the client.
+The protocol grows with the code that serves it. It has `initialize`,
+`state/read`, a session's notifications (session, turn, items, errors and
+warnings) and the server requests for approvals, questions and the loop cap.
+`koda exec --json` prints the notifications, answering its own requests and
+saying so with `serverRequest/resolved`, so the eval harness reads the same
+messages a server will send. The TUI drives the engine directly until its turns
+go through the client.
 
 ### Extensibility: Thin Core + First-Party Libraries (P1, P2)
 

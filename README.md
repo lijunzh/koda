@@ -64,6 +64,8 @@ ACP are gone. [What changed, and what to use instead](https://lijunzh.github.io/
 |---|---|
 | [**koda-cli**](koda-cli/) | Terminal frontend (TUI + headless) |
 | [**koda-core**](koda-core/) | Engine library — providers, tools, inference loop |
+| [**koda-protocol**](koda-protocol/) | The client protocol: JSON-RPC 2.0 messages and their types |
+| [**koda-client**](koda-client/) | The client API, and engine events projected onto the protocol |
 | [**koda-sandbox**](koda-sandbox/) | Capability-aware sandbox layer — kernel-enforced FS/net/exec policies |
 | [**koda-test-utils**](koda-test-utils/) | Test utilities — mock providers, test sinks, and E2E harness |
 

@@ -32,7 +32,7 @@ async fn sigint_during_a_model_call_still_reports_the_turn() {
 
     let tmp = tempfile::tempdir().unwrap();
     let child = tokio::process::Command::new(koda_bin())
-        .args(["-p", "Fix the parser", "--output-format", "stream-json"])
+        .args(["exec", "Fix the parser", "--json"])
         .args(["--provider", "lmstudio", "--model", "stub"])
         .args(["--base-url", &server.url()])
         .arg("--project-root")
@@ -68,11 +68,11 @@ async fn sigint_during_a_model_call_still_reports_the_turn() {
         .lines()
         .filter_map(|line| serde_json::from_str(line).ok())
         .collect();
-    let of_type = |kind: &str| events.iter().find(|e| e["type"] == kind);
-    let turn_end = of_type("turn_end").unwrap_or_else(|| panic!("no turn_end: {stdout}"));
-    assert_eq!(turn_end["reason"]["kind"], "cancelled", "{stdout}");
-    let summary = of_type("run_summary").unwrap_or_else(|| panic!("no summary: {stdout}"));
-    assert_eq!(summary["turn_end"]["kind"], "cancelled", "{stdout}");
+    let of = |method: &str| events.iter().find(|e| e["method"] == method);
+    let turn = of("turn/completed").unwrap_or_else(|| panic!("no turn/completed: {stdout}"));
+    assert_eq!(turn["params"]["turn"]["status"], "interrupted", "{stdout}");
+    let summary = of("exec/summary").unwrap_or_else(|| panic!("no summary: {stdout}"));
+    assert_eq!(summary["params"]["turnStatus"], "interrupted", "{stdout}");
 
     let log = read_log(tmp.path());
     assert!(log.contains(r#"outcome="cancelled""#), "{log}");
@@ -202,7 +202,7 @@ impl Project {
 
     fn koda(&self, server: &FakeLlmServer) -> tokio::process::Child {
         tokio::process::Command::new(koda_bin())
-            .args(["-p", "Fix the parser", "--output-format", "stream-json"])
+            .args(["exec", "Fix the parser", "--json"])
             .args(["--provider", "lmstudio", "--model", "stub"])
             .args(["--base-url", &server.url()])
             .args(["--mode", "safe"])
@@ -249,16 +249,20 @@ struct Interrupted {
 }
 
 impl Interrupted {
-    fn one(&self, kind: &str) -> &Value {
-        let found: Vec<_> = self.events.iter().filter(|e| e["type"] == kind).collect();
-        assert_eq!(found.len(), 1, "{kind}: {}", self.stdout);
-        found[0]
+    fn one(&self, method: &str) -> &Value {
+        let found: Vec<_> = self
+            .events
+            .iter()
+            .filter(|e| e["method"] == method)
+            .collect();
+        assert_eq!(found.len(), 1, "{method}: {}", self.stdout);
+        &found[0]["params"]
     }
 
     fn summary(&self) -> &Value {
         let last = self.events.last().unwrap();
-        assert_eq!(last["type"], "run_summary", "{}", self.stdout);
-        last
+        assert_eq!(last["method"], "exec/summary", "{}", self.stdout);
+        &last["params"]
     }
 }
 
@@ -292,7 +296,7 @@ async fn interrupt(child: tokio::process::Child) -> Interrupted {
 /// The turn stopped on its own, in time, as a clean cancel.
 fn assert_clean_cancel(run: &Interrupted) {
     assert!(run.took < CANCEL_GRACE, "took {:?}", run.took);
-    assert_eq!(run.one("turn_end")["reason"]["kind"], "cancelled");
+    assert_eq!(run.one("turn/completed")["turn"]["status"], "interrupted");
     assert_eq!(run.summary()["success"], true, "{}", run.stdout);
     assert_eq!(run.output.status.code(), Some(0), "{}", run.stdout);
 }
@@ -359,6 +363,7 @@ async fn a_sub_agent_whose_model_fails_releases_its_workspace() {
 
     // The top-level agent carried on after its sub-agent failed.
     assert!(stdout.contains(r#""response":"Done.""#), "{stdout}");
+    assert!(stdout.contains(r#""method":"exec/summary""#), "{stdout}");
     assert!(!project.holds("work.txt"), "the workspace is still there");
     assert_work_is_on_a_branch(&project, "work.txt");
 }
@@ -384,9 +389,9 @@ async fn sigint_stops_a_running_command_at_once() {
     assert_clean_cancel(&run);
 
     // What finished before the signal still counts.
-    let usage = &run.one("turn_summary")["usage"];
-    assert_eq!(usage["api_calls"], 1, "{usage}");
-    assert_eq!(usage["prompt_tokens"], 100, "{usage}");
+    let usage = &run.one("turn/completed")["turn"]["usage"];
+    assert_eq!(usage["modelCalls"], 1, "{usage}");
+    assert_eq!(usage["inputTokens"], 100, "{usage}");
 
     // The command died with the call; it didn't run on unwatched.
     let left = std::process::Command::new("pgrep")

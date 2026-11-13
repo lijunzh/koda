@@ -21,11 +21,16 @@
 //! ```
 
 pub mod initialize;
+pub mod item;
 mod request;
 pub mod rpc;
+pub mod server;
+pub mod session;
 pub mod state;
+pub mod turn;
 
 pub use request::{ClientRequest, DecodeError, Method, encode, methods};
+pub use server::{ServerNotification, ServerRequest};
 
 use schemars::generate::SchemaSettings;
 use serde_json::{Value, json};
@@ -34,12 +39,15 @@ use serde_json::{Value, json};
 /// was `stream-json`, the output-only format this protocol replaces.
 pub const PROTOCOL_VERSION: u32 = 2;
 
-/// The protocol as one JSON Schema document: every message shape, and
-/// for each method its parameters and result.
+/// The protocol as one JSON Schema document: every message shape; for each
+/// client method and server request its parameters and result; for each
+/// notification its parameters.
 pub fn schema() -> Value {
     let mut generator = SchemaSettings::draft2020_12().into_generator();
     let message = generator.subschema_for::<rpc::Message>();
     let methods = request::method_schemas(&mut generator);
+    let server_requests = server::server_request_schemas(&mut generator);
+    let notifications = server::notification_schemas(&mut generator);
     let definitions = generator.take_definitions(true);
     json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -47,6 +55,8 @@ pub fn schema() -> Value {
         "protocolVersion": PROTOCOL_VERSION,
         "message": message,
         "methods": methods,
+        "serverRequests": server_requests,
+        "notifications": notifications,
         "$defs": definitions,
     })
 }
@@ -81,14 +91,16 @@ mod tests {
     #[test]
     fn the_schema_lists_every_method() {
         let schema = schema();
-        let table = schema["methods"].as_object().unwrap();
-        let listed: Vec<&str> = table.keys().map(String::as_str).collect();
-        assert_eq!(listed.len(), ClientRequest::METHODS.len());
-        for method in ClientRequest::METHODS {
-            assert!(
-                table.contains_key(*method),
-                "{method} missing from the schema"
-            );
+        for (key, methods) in [
+            ("methods", ClientRequest::METHODS),
+            ("serverRequests", ServerRequest::METHODS),
+            ("notifications", ServerNotification::METHODS),
+        ] {
+            let table = schema[key].as_object().unwrap();
+            assert_eq!(table.len(), methods.len(), "{key}");
+            for method in methods {
+                assert!(table.contains_key(*method), "{method} missing from {key}");
+            }
         }
     }
 }

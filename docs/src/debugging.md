@@ -19,7 +19,7 @@ you set that variable.
 | Panic log | `<config>/logs/panic.log` | Crash records from every process. See [Troubleshooting](./troubleshooting.md). |
 | Database | `<config>/db/koda.db` | Every message of every session, with token usage. |
 | Debug bundle | `<config>/debug-bundles/*.zip` | Written by [`/debug-bundle`](./commands.md#debug-bundle) in the TUI. |
-| Headless output | stdout | A run summary, with `--output-format json` or `stream-json`. |
+| Headless output | stdout | A run summary, with `koda -p --output-format json`, or the protocol with `koda exec --json`. |
 
 ### The database
 
@@ -56,8 +56,8 @@ Get the session ID from `run_summary`, or list the newest with
 `--output-format json` prints one `run_summary` object when the run ends:
 `success`, `error`, `session_id`, `provider`, `model`, `response`, `turn_end`,
 `elapsed_ms`, `usage`, `usage_by_agent`, `tool_calls` and
-`sub_agent_tool_calls`. `stream-json` prints the [wire protocol](headless.md#wire-protocol) as lines, then
-the same summary as the last line. See
+`sub_agent_tool_calls`. `koda exec --json` prints the [client protocol](headless.md#the-client-protocol) as lines, ending with
+`exec/summary`, the same summary in camelCase. See
 [Headless mode](./headless.md#output-formats). A run that failed exits with
 code 1.
 

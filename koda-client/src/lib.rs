@@ -6,9 +6,12 @@
 //! form on the way, exactly as it would over stdio or a socket; one contract
 //! by construction. Codex's `app-server-client` is the model.
 //!
-//! Notifications, server requests (approvals, questions, the loop cap) and
-//! sessions arrive with the changes that first use them.
+//! [`events::EventProjector`] turns a session's engine events into the
+//! protocol's notifications and server requests; `koda exec --json` prints
+//! them. Session requests and turns through the host arrive with the
+//! changes that first use them.
 
+pub mod events;
 mod host;
 
 use std::fmt;
