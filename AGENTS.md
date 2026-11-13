@@ -48,7 +48,7 @@ cargo nextest run --workspace --features koda-core/test-support  # Run all tests
 cargo test --workspace --features koda-core/test-support --doc   # Doc tests (nextest skips them; CI runs both)
 cargo nextest run -p koda-core --features test-support   # Engine tests only
 cargo nextest run -p koda-cli                            # CLI tests only
-cargo nextest run -p koda-core --test perf_test          # Run a specific test file
+cargo nextest run -p koda-core -E 'test(/^suite::perf_test::/)'  # One koda-core test file (they're modules of tests/all.rs)
 cargo fmt --all                          # Format all crates
 cargo fmt --all --check                                                    # Check formatting (CI enforced)
 cargo clippy --workspace --all-targets --features koda-core/test-support -- -D warnings  # Lint (CI enforced)
@@ -185,7 +185,7 @@ The heredoc is single-quoted (`<<'EOF'`) so nothing inside it is expanded.
 The `test-support` feature gates `MockProvider` and `TestSink`, so E2E tests need it.
 
 - **Unit:** co-located in `src/` modules in both crates.
-- **koda-core E2E** (mock provider): `tests/e2e_*.rs` and `tests/cancel_test.rs`,
+- **koda-core E2E** (mock provider): `tests/suite/e2e_*.rs` and `tests/suite/cancel_test.rs`,
   using the `Env` harness in `koda-test-utils/src/env.rs`.
 - **koda-core integration:** the rest of `koda-core/tests/`, such as
   `guarantee_matrix_test.rs` (trust mode × tool effect), `tool_wiring_test.rs`

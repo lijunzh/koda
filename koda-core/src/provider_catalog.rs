@@ -20,7 +20,7 @@
 //!    `Anthropic`).
 //! 4. (Optional) Add a URL fingerprint in `from_url_or_name()` if
 //!    the provider's base URL is auto-detectable.
-//! 5. Add a row to `koda-core/tests/snapshot_test.rs` so the
+//! 5. Add a row to `koda-core/tests/suite/snapshot_test.rs` so the
 //!    metadata gets pinned by regression test.
 //!
 //! That's the entire surface — no separate registration, no

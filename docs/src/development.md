@@ -231,31 +231,38 @@ from production builds to keep `koda-core`'s public API clean.
 **koda-core unit tests** are co-located in `src/` modules, no feature flag:
 context tracking, loop detection, config defaults, bash safety, etc.
 
-**koda-core E2E tests** (mock provider, CI) require the `test-support` feature:
+**koda-core integration tests** are one binary: `tests/all.rs` includes each
+file under `tests/suite/` as a module, as Codex's core tests do, so they compile
+and link once instead of 40 times. nextest still runs each test in its own
+process. A test's name starts with its file, `suite::session_test::…`; run one
+file with `cargo nextest run -p koda-core -E 'test(/^suite::session_test::/)'`.
 
-- `tests/e2e_test.rs` — core pipeline: text streaming, tool calls, errors, history, cancel
-- `tests/e2e_tools_test.rs` — tool coverage: Glob, Grep, Edit, AST verification
-- `tests/e2e_agent_test.rs` — sub-agent invocation + cache hit
-- `tests/e2e_skills_test.rs` — skills, compaction
-- `tests/cancel_test.rs` — Ctrl+C interruption during inference
+**koda-core E2E tests** (mock provider, CI) require the `test-support` feature,
+and their modules are gated on it in `tests/suite/mod.rs`:
+
+- `tests/suite/e2e_test.rs` — core pipeline: text streaming, tool calls, errors, history, cancel
+- `tests/suite/e2e_tools_test.rs` — tool coverage: Glob, Grep, Edit, AST verification
+- `tests/suite/e2e_agent_test.rs` — sub-agent invocation + cache hit
+- `tests/suite/e2e_skills_test.rs` — skills, compaction
+- `tests/suite/cancel_test.rs` — Ctrl+C interruption during inference
 
 **koda-core integration tests**, no feature flag:
 
-- `tests/file_tools_test.rs` — path safety, file CRUD
-- `tests/new_tools_test.rs` — glob, tool naming
-- `tests/guarantee_matrix_test.rs` — trust mode × tool effect matrix
-- `tests/inference_recovery_test.rs` — rate-limit retry, context overflow
-- `tests/inference_edge_test.rs` — loop detection, empty tool calls
-- `tests/e2e_safety_test.rs` — approval gates, bash safety classification
-- `tests/session_test.rs` — session lifecycle, TurnStart/TurnEnd events
-- `tests/purge_test.rs` — /purge feature (compacted stats, age filter)
-- `tests/perf_test.rs` — DB, grep, markdown throughput
-- `tests/tool_wiring_test.rs` — every tool routable + approval-handled
-- `tests/tool_normalize_test.rs` — snake_case → PascalCase normalization
-- `tests/golden_test.rs` — snapshot / golden file tests
-- `tests/snapshot_test.rs` — the Bash classifier's verdict on a fixed set of
+- `tests/suite/file_tools_test.rs` — path safety, file CRUD
+- `tests/suite/new_tools_test.rs` — glob, tool naming
+- `tests/suite/guarantee_matrix_test.rs` — trust mode × tool effect matrix
+- `tests/suite/inference_recovery_test.rs` — rate-limit retry, context overflow
+- `tests/suite/inference_edge_test.rs` — loop detection, empty tool calls
+- `tests/suite/e2e_safety_test.rs` — approval gates, bash safety classification
+- `tests/suite/session_test.rs` — session lifecycle, TurnStart/TurnEnd events
+- `tests/suite/purge_test.rs` — /purge feature (compacted stats, age filter)
+- `tests/suite/perf_test.rs` — DB, grep, markdown throughput
+- `tests/suite/tool_wiring_test.rs` — every tool routable + approval-handled
+- `tests/suite/tool_normalize_test.rs` — snake_case → PascalCase normalization
+- `tests/suite/golden_test.rs` — snapshot / golden file tests
+- `tests/suite/snapshot_test.rs` — the Bash classifier's verdict on a fixed set of
   commands, and every provider's metadata. No test pins tool descriptions.
-- `tests/token_audit.rs` — token estimation accuracy checks
+- `tests/suite/token_audit.rs` — token estimation accuracy checks
 
 **koda-cli unit tests** are co-located in `src/`: markdown rendering, REPL
 parsing, highlighting.

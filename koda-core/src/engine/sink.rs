@@ -1526,7 +1526,7 @@ mod tests {
     // ── classify_for_persist (8a PR-2) ──────────────────────────────
     //
     // The pre-#1265-8a-PR-2 negative-assertion tests for PersistingSink
-    // (in `tests/persisting_sink_test.rs`) sent a non-allowlisted event,
+    // (in `tests/suite/persisting_sink_test.rs`) sent a non-allowlisted event,
     // slept 50ms hoping any erroneous fire-and-forget DB insert would
     // land, then asserted the table was empty. That's a fundamentally
     // racy negative assertion: "absence after a guess."

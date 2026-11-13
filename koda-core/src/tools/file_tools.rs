@@ -726,14 +726,14 @@ pub async fn list_files(project_root: &Path, args: &Value, max_entries: usize) -
 // Tool trait implementations (#1265 item 5, PR-4/N).
 //
 // Each struct delegates to the corresponding free function above
-// — the functions stay public because tests in `tests/file_tools_test.rs`
+// — the functions stay public because tests in `tests/suite/file_tools_test.rs`
 // call them directly. The structs are the canonical entry point
 // for production dispatch (via `ToolCatalog::get_tool` → `Tool::execute`).
 //
 // Why structs *and* free functions, instead of moving the bodies
 // into the trait impl?
 //
-//   1. Test stability. `tests/file_tools_test.rs` exercises
+//   1. Test stability. `tests/suite/file_tools_test.rs` exercises
 //      `file_tools::edit_file` directly with custom fixtures. Moving
 //      the body into a trait method would force test churn for no
 //      win — the existing tests already cover the bodies and

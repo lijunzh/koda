@@ -463,7 +463,7 @@ mod tests {
     //! built-in registers, filter modes work, MCP slot is a valid
     //! lifecycle). Wiring tests that prove "every tool actually
     //! routes through dispatch" stay in their existing locations
-    //! (`koda-core/tests/tool_wiring_test.rs`,
+    //! (`koda-core/tests/suite/tool_wiring_test.rs`,
     //! `tool_normalize_test.rs`) because those touch ToolRegistry.
 
     use super::*;
