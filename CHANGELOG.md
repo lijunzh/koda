@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-11-12
+
 ### Added
 
 - **`koda --mode plan -p "..."` is a read-only run.** Reads, searches, Bash commands Koda judges read-only and MCP tools whose server marks them `readOnlyHint` run; everything else is refused without asking, and the model is told to say what it would do instead. The sandbox also keeps the project read-only, so a command misjudged as read-only still can't write there; temp and cache folders stay writable. This is what `codex exec` gives by default and what the plan modes of Claude Code, Gemini CLI and Qwen Code give a headless run. The interactive app refuses `--mode plan` at start instead of quietly switching to Safe.

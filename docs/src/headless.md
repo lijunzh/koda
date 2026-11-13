@@ -125,7 +125,7 @@ A run writes `hello`, `session_ready`, one turn, and `run_summary`, in that
 order. `koda -p` is always one turn per process.
 
 ```json
-{"type":"hello","protocol_version":1,"koda_version":"0.6.3","capabilities":["one_shot","self_answer"]}
+{"type":"hello","protocol_version":1,"koda_version":"0.6.4","capabilities":["one_shot","self_answer"]}
 {"type":"session_ready","session_id":"a3f8bc12-…","provider":"anthropic","model":"claude-haiku-5-5","context_window":200000,"trust":"auto","tools":["Read","Grep","…"]}
 {"type":"turn_start","session_id":"a3f8bc12-…","turn_id":"7d1e…"}
 {"type":"tool_call_start","session_id":"a3f8bc12-…","turn_id":"7d1e…","id":"call_1","name":"Bash","args":{"command":"cargo test"}}
