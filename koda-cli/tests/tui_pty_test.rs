@@ -72,6 +72,21 @@ impl Tui {
 
     /// [`Self::start_with_args`] with no `--provider` unless `flags` has one.
     fn start_with_flags(home: &Path, base_url: &str, flags: &[&str], ready: &str) -> Self {
+        Self::start_full(home, base_url, flags, &[], ready)
+    }
+
+    /// [`Self::start_with_model`] with extra environment variables.
+    fn start_with_env(home: &Path, base_url: &str, env: &[(&str, &str)]) -> Self {
+        Self::start_full(home, base_url, &["--provider", "lmstudio"], env, IDLE_HINT)
+    }
+
+    fn start_full(
+        home: &Path,
+        base_url: &str,
+        flags: &[&str],
+        env: &[(&str, &str)],
+        ready: &str,
+    ) -> Self {
         let (master, slave) = open_pty();
         let mut command = Command::new(env!("CARGO_BIN_EXE_koda"));
         command
@@ -85,6 +100,7 @@ impl Tui {
             .env("HOME", home)
             .env("XDG_CONFIG_HOME", home.join(".config"))
             .env("TERM", "xterm-256color")
+            .envs(env.iter().copied())
             .stdin(stdio(slave))
             .stdout(stdio(slave))
             .stderr(stdio(slave));
@@ -1052,4 +1068,299 @@ async fn a_message_that_cant_be_saved_isnt_sent() {
         model_calls(&server).await.is_empty(),
         "the model was called"
     );
+}
+
+// ── Slash commands, before the client API moves them ──────────────────────
+//
+// Each test checks what a command changes, mostly what the model is sent
+// next, not only what the screen says, so the move behind one client API
+// (vault: "Koda - Client API Design") can't break one quietly.
+
+/// A plain JSON reply, for the calls Koda doesn't stream (compaction).
+fn json_reply(text: &str) -> ResponseTemplate {
+    ResponseTemplate::new(200)
+        .insert_header("content-type", "application/json")
+        .set_body_string(
+            json!({
+                "id": "c", "object": "chat.completion", "model": "stub-model",
+                "choices": [{"index": 0, "finish_reason": "stop",
+                             "message": {"role": "assistant", "content": text}}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
+            })
+            .to_string(),
+        )
+}
+
+/// A reply with this text and nothing else.
+fn text_reply(text: &str) -> ResponseTemplate {
+    sse(&[
+        json!({"choices": [{"delta": {"content": text}}]}),
+        json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+    ])
+}
+
+/// Run `command` from the slash popup: type it, then Enter.
+fn run_command(tui: &mut Tui, command: &str) {
+    tui.type_text(command);
+    tui.type_text("\r");
+}
+
+const DOWN: &str = "\x1b[B";
+
+/// In an open picker, press Down until the highlighted line shows `text`.
+/// Pickers move with the arrow keys only, and Down wraps.
+fn highlight(tui: &mut Tui, text: &str) {
+    for _ in 0..40 {
+        let screen = tui.screen();
+        if screen
+            .lines()
+            .any(|line| line.trim_start().starts_with('\u{203a}') && line.contains(text))
+        {
+            return;
+        }
+        tui.type_text(DOWN);
+    }
+    panic!("never highlighted {text:?}:\n{}", tui.screen());
+}
+
+/// The lines of the screen from the open picker's title down.
+fn picker_lines(screen: &str, title: &str) -> String {
+    screen
+        .lines()
+        .skip_while(|line| !line.contains(title))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `/model` with no name opens a picker of the aliases plus a "local" entry
+/// for the model a local server has loaded; Esc closes it and changes
+/// nothing. Picking "local" isn't tested: Koda finds the local model at
+/// `KODA_LOCAL_URL` but then switches to LM Studio's default address, so a
+/// pick would reach whatever LM Studio runs on this machine (found
+/// 2026-11-12, not fixed here).
+#[tokio::test(flavor = "multi_thread")]
+async fn model_picker_lists_the_local_model_and_esc_changes_nothing() {
+    let server = scripted_model(vec![]).await;
+    let models = json!({"object": "list", "data": [
+        {"id": "stub-local", "object": "model", "type": "llm", "state": "loaded"}
+    ]});
+    server.mount_ok("GET", r".*/models$", models).await;
+    let home = home();
+    let url = server.url();
+    let mut tui = Tui::start_with_env(home.path(), &url, &[("KODA_LOCAL_URL", &url)]);
+
+    run_command(&mut tui, "/model");
+    tui.wait_for_screen("Select a model");
+    highlight(&mut tui, "stub-local");
+    let listed = picker_lines(&tui.screen(), "Select a model");
+    assert!(listed.contains("claude-haiku"), "{listed}");
+    tui.type_text(ESC);
+    tui.wait_for_screen_without("Select a model");
+
+    tui.submit("hi");
+    let sent = wait_for_model_call(&server, 1).await;
+    assert!(sent.contains(r#""model":"stub-model""#), "{sent}");
+}
+
+/// `/provider <url>` moves the session to the server at that address: the
+/// next request goes there, not to the one Koda started with.
+#[tokio::test(flavor = "multi_thread")]
+async fn provider_with_an_address_moves_the_next_turn_there() {
+    let first = scripted_model(vec![]).await;
+    let second = scripted_model(vec![text_reply("From the second server.")]).await;
+    let models = json!({"object": "list", "data": [
+        {"id": "stub-model", "object": "model", "type": "llm", "state": "loaded"}
+    ]});
+    second.mount_ok("GET", r".*/models$", models).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &first.url());
+
+    run_command(&mut tui, &format!("/provider {}", second.url()));
+    tui.wait_for_screen_without(BUSY_PROMPT);
+    tui.submit("where are you");
+    let sent = wait_for_model_call(&second, 1).await;
+    assert!(sent.contains("where are you"), "{sent}");
+    tui.wait_for_screen("From the second server.");
+    assert!(
+        model_calls(&first).await.is_empty(),
+        "the first server still got the turn"
+    );
+}
+
+/// `/sessions` lists earlier sessions; picking one resumes it, and the model
+/// gets its history.
+#[tokio::test(flavor = "multi_thread")]
+async fn sessions_picker_resumes_an_earlier_session() {
+    let server = scripted_model(vec![]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    tui.submit("alpha topic please");
+    tui.wait_for_screen("All done.");
+    quit_and_read_session_id(&mut tui);
+
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    run_command(&mut tui, "/sessions");
+    tui.wait_for_screen("Sessions");
+    highlight(&mut tui, "alpha topic");
+    tui.type_text("\r");
+    tui.wait_for_screen("Resumed session");
+
+    tui.submit("continue it");
+    let sent = wait_for_model_call(&server, 2).await;
+    assert!(sent.contains("alpha topic please"), "history lost: {sent}");
+    assert!(sent.contains("continue it"), "{sent}");
+}
+
+/// `/sessions resume <id>` resumes by id; `/sessions delete <id>` removes a
+/// session, and the picker no longer offers it.
+#[tokio::test(flavor = "multi_thread")]
+async fn sessions_resume_and_delete_by_id() {
+    let server = scripted_model(vec![]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    tui.submit("bravo session words");
+    tui.wait_for_screen("All done.");
+    let bravo = quit_and_read_session_id(&mut tui);
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    tui.submit("charlie session words");
+    tui.wait_for_screen("All done.");
+    let charlie = quit_and_read_session_id(&mut tui);
+
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    run_command(&mut tui, &format!("/sessions resume {bravo}"));
+    tui.wait_for_screen("bravo session words");
+    tui.submit("bravo again");
+    let sent = wait_for_model_call(&server, 3).await;
+    assert!(sent.contains("bravo session words"), "{sent}");
+    assert!(!sent.contains("charlie session words"), "{sent}");
+    tui.wait_for_screen_without(BUSY_PROMPT);
+
+    run_command(&mut tui, &format!("/sessions delete {charlie}"));
+    tui.wait_for_screen_without(BUSY_PROMPT);
+    run_command(&mut tui, "/sessions");
+    tui.wait_for_screen("Sessions");
+    let listed = picker_lines(&tui.screen(), "Sessions");
+    assert!(
+        !listed.contains(&charlie[..8]),
+        "deleted session listed:\n{listed}"
+    );
+    assert!(listed.contains(&bravo[..8]), "{listed}");
+}
+
+/// A stdio MCP server with one tool, `lookup`.
+const MCP_SERVER: &str = r#"while IFS= read -r line; do
+  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"notes","version":"0.1.0"}}}\n' "$id" ;;
+    *'"method":"tools/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"lookup","description":"Look a note up","inputSchema":{"type":"object","properties":{}}}]}}\n' "$id" ;;
+    *'"method":"tools/call"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"lookup-ran"}]}}\n' "$id" ;;
+  esac
+done
+"#;
+
+/// `/mcp add` saves a server; with none running when Koda started there's
+/// no MCP manager yet, so it connects at the next start. Then `/mcp` lists
+/// it, its tools reach the model, and `/mcp remove` takes them away.
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_add_list_and_remove_change_the_tools_the_model_gets() {
+    let server = scripted_model(vec![]).await;
+    let home = home();
+    let script = home.path().join("notes-server.sh");
+    std::fs::write(&script, MCP_SERVER).unwrap();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    run_command(&mut tui, &format!("/mcp add notes sh {}", script.display()));
+    tui.wait_for_screen("MCP server 'notes' saved");
+    quit_and_read_session_id(&mut tui);
+
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    run_command(&mut tui, "/mcp list");
+    tui.wait_for_screen("notes (1 tools)");
+
+    tui.submit("use your tools");
+    let sent = wait_for_model_call(&server, 1).await;
+    assert!(
+        sent.contains("notes__lookup"),
+        "MCP tool not offered: {sent}"
+    );
+    tui.wait_for_screen("All done.");
+    tui.wait_for_screen_without(BUSY_PROMPT);
+
+    run_command(&mut tui, "/mcp remove notes");
+    tui.wait_for_screen("MCP server 'notes' removed");
+    tui.submit("and now");
+    let sent = wait_for_model_call(&server, 2).await;
+    assert!(
+        !sent.contains("notes__lookup"),
+        "removed tool still offered: {sent}"
+    );
+}
+
+/// `/memory add` saves a note for this project and the model gets it.
+/// Koda loads memory when the agent starts (`KodaAgent::new`), so today the
+/// note arrives after a restart, not with the next request; the 2026-11-03
+/// decision says "applies next call" (found 2026-11-12, not fixed here).
+#[tokio::test(flavor = "multi_thread")]
+async fn memory_add_reaches_the_model() {
+    let server = scripted_model(vec![]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    run_command(&mut tui, "/memory add the code word is zebrafish");
+    tui.wait_for_screen("Saved to Koda's notes for this project");
+    quit_and_read_session_id(&mut tui);
+
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    tui.submit("what is the code word");
+    let sent = wait_for_model_call(&server, 1).await;
+    assert!(
+        sent.contains("zebrafish"),
+        "the note didn't reach the model: {sent}"
+    );
+}
+
+/// `/compact` summarizes the earlier turns with the model, and the next
+/// request carries the summary instead of the turns it replaced.
+#[tokio::test(flavor = "multi_thread")]
+async fn compact_replaces_earlier_turns_with_the_summary() {
+    let summary = "<summary>SUMMARY-MARKER-QUOKKA covers the earlier turns.</summary>";
+    let server = scripted_model(vec![
+        final_text(),
+        final_text(),
+        final_text(),
+        json_reply(summary),
+    ])
+    .await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    for (n, prompt) in ["turn one oldest", "turn two", "turn three"]
+        .iter()
+        .enumerate()
+    {
+        tui.submit(prompt);
+        wait_for_model_call(&server, n + 1).await;
+        tui.wait_for_screen_without(BUSY_PROMPT);
+    }
+
+    run_command(&mut tui, "/compact");
+    tui.wait_for_screen("Compacted");
+    let sent = wait_for_model_call(&server, 4).await;
+    assert!(
+        sent.contains("turn one oldest"),
+        "the summary call lacks history: {sent}"
+    );
+
+    tui.submit("after compaction");
+    let sent = wait_for_model_call(&server, 5).await;
+    assert!(sent.contains("SUMMARY-MARKER-QUOKKA"), "no summary: {sent}");
+    // The summary carries earlier prompts as text; the turn itself is gone.
+    let body: Value = serde_json::from_str(&sent).unwrap();
+    let as_message = body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|m| m["content"] == "turn one oldest");
+    assert!(!as_message, "the oldest turn survived as a message: {sent}");
+    assert!(sent.contains("after compaction"), "{sent}");
 }
