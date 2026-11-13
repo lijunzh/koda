@@ -932,6 +932,7 @@ mod tests {
         let sink = BufferingSink::new();
         sink.emit(EngineEvent::ApprovalRequest {
             id: "a1".into(),
+            tool_call_id: "call-1".into(),
             tool_name: "Bash".into(),
             detail: "rm -rf build".into(),
             preview: None,
@@ -1626,6 +1627,7 @@ mod tests {
     fn classify_sub_agent_persists_approval_request_as_auto_reject_line() {
         let event = EngineEvent::ApprovalRequest {
             id: "a-1".into(),
+            tool_call_id: "call-1".into(),
             tool_name: "WriteFile".into(),
             detail: "write 1 file".into(),
             preview: None,
@@ -1646,6 +1648,7 @@ mod tests {
         let long_question = "q".repeat(200);
         let event = EngineEvent::AskUserRequest {
             id: "q-1".into(),
+            tool_call_id: "call-1".into(),
             question: long_question,
             options: Vec::new(),
         };

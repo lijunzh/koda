@@ -8,6 +8,7 @@
 use crate::approval_flow::{CommandInbox, request_approval};
 use crate::config::AgentIsolation;
 use crate::db::Role;
+use crate::engine::event::ToolOutcome;
 use crate::engine::{ApprovalDecision, EngineCommand, EngineEvent};
 use crate::memory;
 use crate::persistence::Persistence;
@@ -1012,6 +1013,12 @@ pub(crate) fn execute_sub_agent<'a>(
                                        further sub-agents. Complete the task directly with \
                                        the tools you have, or report back what additional \
                                        dispatch the parent agent should perform.";
+                        sink.emit(EngineEvent::ToolCallResult {
+                            id: tc.id.clone(),
+                            name: tc.function_name.clone(),
+                            output: refusal.to_string(),
+                            outcome: ToolOutcome::Declined,
+                        });
                         db.insert_message(
                             &sub_session,
                             &Role::Tool,
@@ -1036,6 +1043,12 @@ pub(crate) fn execute_sub_agent<'a>(
                                        further sub-agents. Complete the task directly with \
                                        the tools you have, or report back what additional \
                                        dispatch the parent agent should perform.";
+                        sink.emit(EngineEvent::ToolCallResult {
+                            id: tc.id.clone(),
+                            name: tc.function_name.clone(),
+                            output: refusal.to_string(),
+                            outcome: ToolOutcome::Declined,
+                        });
                         db.insert_message(
                             &sub_session,
                             &Role::Tool,
@@ -1053,6 +1066,12 @@ pub(crate) fn execute_sub_agent<'a>(
                                        agent gathers any required input before delegating. \
                                        Proceed with the information you already have or \
                                        report what's missing.";
+                        sink.emit(EngineEvent::ToolCallResult {
+                            id: tc.id.clone(),
+                            name: tc.function_name.clone(),
+                            output: refusal.to_string(),
+                            outcome: ToolOutcome::Declined,
+                        });
                         db.insert_message(
                             &sub_session,
                             &Role::Tool,
@@ -1079,8 +1098,8 @@ pub(crate) fn execute_sub_agent<'a>(
                     )
                     .await;
 
-                    let output = if let Some(error) = validation_error {
-                        format!("Validation error: {error}")
+                    let (output, outcome) = if let Some(error) = validation_error {
+                        (format!("Validation error: {error}"), ToolOutcome::Error)
                     } else {
                         // #1250: sub-agent context. The dead approval channel
                         // (line 173) means `NeedsConfirmation` is meaningless
@@ -1121,7 +1140,7 @@ pub(crate) fn execute_sub_agent<'a>(
                             })
                             .flatten();
                         if let Some(hint) = own_kill_hint {
-                            hint
+                            (hint, ToolOutcome::Error)
                         } else {
                         match approval {
                             ToolApproval::AutoApprove => {
@@ -1152,11 +1171,15 @@ pub(crate) fn execute_sub_agent<'a>(
                                 )
                                 .await;
                                 sink.emit(EngineEvent::ActionBlocked {
+                                    tool_call_id: tc.id.clone(),
                                     tool_name: tc.function_name.clone(),
                                     detail,
                                     preview: diff_preview,
                                 });
-                                "[safe mode] Action blocked.".to_string()
+                                (
+                                    "[safe mode] Action blocked.".to_string(),
+                                    ToolOutcome::Declined,
+                                )
                             }
                             ToolApproval::NeedsConfirmation => {
                                 let detail =
@@ -1179,6 +1202,7 @@ pub(crate) fn execute_sub_agent<'a>(
                                     sink,
                                     &mut CommandInbox::new(cmd_rx, &mut no_steers),
                                     &cancel,
+                                    &tc.id,
                                     &tc.function_name,
                                     &detail,
                                     diff_preview,
@@ -1191,12 +1215,14 @@ pub(crate) fn execute_sub_agent<'a>(
                                         ApprovalDecision::Approve
                                         | ApprovalDecision::ApproveForSession,
                                     ) => tool_output(tc, sub_tx, &cancel).await,
-                                    Some(ApprovalDecision::Reject) => {
-                                        "[rejected by user]".to_string()
-                                    }
-                                    Some(ApprovalDecision::RejectWithFeedback { feedback }) => {
-                                        format!("[rejected: {feedback}]")
-                                    }
+                                    Some(ApprovalDecision::Reject) => (
+                                        "[rejected by user]".to_string(),
+                                        ToolOutcome::Declined,
+                                    ),
+                                    Some(ApprovalDecision::RejectWithFeedback { feedback }) => (
+                                        format!("[rejected: {feedback}]"),
+                                        ToolOutcome::Declined,
+                                    ),
                                     Some(ApprovalDecision::RejectAuto { reason }) => {
                                         // #1022 B15: same shape as the existing
                                         // sub-agent auto-reject below, so the model
@@ -1204,7 +1230,10 @@ pub(crate) fn execute_sub_agent<'a>(
                                         // signal regardless of whether the auto-
                                         // rejection came from headless policy or
                                         // from a closed approval channel.
-                                        format!("[auto-rejected: {reason}]")
+                                        (
+                                            format!("[auto-rejected: {reason}]"),
+                                            ToolOutcome::Declined,
+                                        )
                                     }
                                     None => {
                                         // #1022 B10: `request_approval` returns `None`
@@ -1215,16 +1244,17 @@ pub(crate) fn execute_sub_agent<'a>(
                                         // "[cancelled]" that looked like the user
                                         // hit Ctrl+C.
                                         if cancel.is_cancelled() {
-                                            "[cancelled]".to_string()
+                                            ("[cancelled]".to_string(), ToolOutcome::Cancelled)
                                         } else {
-                                            format!(
+                                            let text = format!(
                                                 "[auto-rejected: '{tool}' requires user \
                                                  confirmation but this sub-agent has no \
                                                  channel to the user. The parent agent \
                                                  must pre-approve destructive operations \
                                                  or run the tool itself.]",
                                                 tool = tc.function_name,
-                                            )
+                                            );
+                                            (text, ToolOutcome::Declined)
                                         }
                                     }
                                 }
@@ -1233,6 +1263,12 @@ pub(crate) fn execute_sub_agent<'a>(
                         }
                     };
 
+                    sink.emit(EngineEvent::ToolCallResult {
+                        id: tc.id.clone(),
+                        name: tc.function_name.clone(),
+                        output: output.clone(),
+                        outcome,
+                    });
                     db.insert_message(
                         &sub_session,
                         &Role::Tool,
@@ -1367,10 +1403,10 @@ async fn tool_output(
     tc: &crate::providers::ToolCall,
     tx: crate::turn_context::ToolExecutionContext<'_>,
     cancel: &CancellationToken,
-) -> String {
+) -> (String, ToolOutcome) {
     match unless_cancelled(cancel, execute_one_tool(tc, tx)).await {
-        Some((_id, result, _success, _full)) => result,
-        None => "[cancelled]".to_string(),
+        Some((_id, result, success, _full)) => (result, success.into()),
+        None => ("[cancelled]".to_string(), ToolOutcome::Cancelled),
     }
 }
 

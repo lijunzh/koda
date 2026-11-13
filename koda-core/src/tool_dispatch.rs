@@ -29,6 +29,7 @@
 
 use crate::approval_flow::{CommandInbox, handle_ask_user, request_approval};
 use crate::db::Role;
+use crate::engine::event::ToolOutcome;
 use crate::engine::{ApprovalDecision, EngineEvent};
 use crate::persistence::Persistence;
 use crate::preview;
@@ -495,6 +496,43 @@ async fn record_stopped_calls(tool_calls: &[ToolCall], ctx: &TurnContext<'_>) ->
     Ok(())
 }
 
+/// End a call that started but never ran: the client hears how it ended,
+/// and the model reads `text` as its result.
+async fn record_unrun_call(
+    tc: &ToolCall,
+    text: &str,
+    outcome: ToolOutcome,
+    ctx: &TurnContext<'_>,
+) -> Result<()> {
+    ctx.sink.emit(EngineEvent::ToolCallResult {
+        id: tc.id.clone(),
+        name: tc.function_name.clone(),
+        output: text.to_string(),
+        outcome,
+    });
+    ctx.db
+        .insert_message(
+            ctx.session_id,
+            &Role::Tool,
+            Some(text),
+            None,
+            Some(&tc.id),
+            None,
+        )
+        .await?;
+    Ok(())
+}
+
+/// The turn stopped while `tool_calls[0]`, already started, waited or ran:
+/// end it as cancelled and answer the rest.
+async fn record_stopped_after_start(tool_calls: &[ToolCall], ctx: &TurnContext<'_>) -> Result<()> {
+    if let Some((started, rest)) = tool_calls.split_first() {
+        record_unrun_call(started, STOPPED_TOOL_RESULT, ToolOutcome::Cancelled, ctx).await?;
+        record_stopped_calls(rest, ctx).await?;
+    }
+    Ok(())
+}
+
 /// Run tool calls one at a time (when confirmation is needed, or single call).
 pub(crate) async fn execute_tools_sequential(
     tool_calls: &[ToolCall],
@@ -504,8 +542,6 @@ pub(crate) async fn execute_tools_sequential(
     let ctx = tx.turn;
     let TurnContext {
         project_root,
-        db,
-        session_id,
         tools,
         mode,
         sink,
@@ -535,11 +571,11 @@ pub(crate) async fn execute_tools_sequential(
         // AskUser: pause inference, show question in TUI, wait for typed answer.
         // Handled here (not in execute_one_tool) because it needs sink + cmd_rx.
         if tc.function_name == "AskUser" {
-            let answer = handle_ask_user(sink, cmd_rx, cancel, &parsed_args).await;
+            let answer = handle_ask_user(sink, cmd_rx, cancel, &tc.id, &parsed_args).await;
             let result = match answer {
                 Some(text) if !text.trim().is_empty() => text,
                 Some(_) => "User did not provide an answer.".into(),
-                None => return record_stopped_calls(&tool_calls[i..], ctx).await,
+                None => return record_stopped_after_start(&tool_calls[i..], ctx).await,
             };
             record_tool_result(tc, &result, true, None, ctx).await?;
             continue;
@@ -617,17 +653,16 @@ pub(crate) async fn execute_tools_sequential(
                 let diff_preview =
                     preview::compute(&tc.function_name, &parsed_args, project_root).await;
                 sink.emit(EngineEvent::ActionBlocked {
+                    tool_call_id: tc.id.clone(),
                     tool_name: tc.function_name.clone(),
                     detail: detail.clone(),
                     preview: diff_preview,
                 });
-                db.insert_message(
-                    session_id,
-                    &Role::Tool,
-                    Some(crate::trust::PLAN_BLOCKED_MESSAGE),
-                    None,
-                    Some(&tc.id),
-                    None,
+                record_unrun_call(
+                    tc,
+                    crate::trust::PLAN_BLOCKED_MESSAGE,
+                    ToolOutcome::Declined,
+                    ctx,
                 )
                 .await?;
                 continue;
@@ -642,6 +677,7 @@ pub(crate) async fn execute_tools_sequential(
                     sink,
                     cmd_rx,
                     cancel,
+                    &tc.id,
                     &tc.function_name,
                     &detail,
                     diff_preview,
@@ -657,28 +693,18 @@ pub(crate) async fn execute_tools_sequential(
                         }
                     }
                     Some(ApprovalDecision::Reject) => {
-                        db.insert_message(
-                            session_id,
-                            &Role::Tool,
-                            Some("User rejected this action."),
-                            None,
-                            Some(&tc.id),
-                            None,
+                        record_unrun_call(
+                            tc,
+                            "User rejected this action.",
+                            ToolOutcome::Declined,
+                            ctx,
                         )
                         .await?;
                         continue;
                     }
                     Some(ApprovalDecision::RejectWithFeedback { feedback }) => {
                         let result = format!("User rejected this action with feedback: {feedback}");
-                        db.insert_message(
-                            session_id,
-                            &Role::Tool,
-                            Some(&result),
-                            None,
-                            Some(&tc.id),
-                            None,
-                        )
-                        .await?;
+                        record_unrun_call(tc, &result, ToolOutcome::Declined, ctx).await?;
                         continue;
                     }
                     Some(ApprovalDecision::RejectAuto { reason }) => {
@@ -687,18 +713,10 @@ pub(crate) async fn execute_tools_sequential(
                         // plan to the structural constraint, not ask for
                         // clarification.
                         let result = format!("[auto-rejected: {reason}]");
-                        db.insert_message(
-                            session_id,
-                            &Role::Tool,
-                            Some(&result),
-                            None,
-                            Some(&tc.id),
-                            None,
-                        )
-                        .await?;
+                        record_unrun_call(tc, &result, ToolOutcome::Declined, ctx).await?;
                         continue;
                     }
-                    None => return record_stopped_calls(&tool_calls[i..], ctx).await,
+                    None => return record_stopped_after_start(&tool_calls[i..], ctx).await,
                 }
             }
         }
@@ -707,7 +725,7 @@ pub(crate) async fn execute_tools_sequential(
             tokio::select! {
                 biased;
                 () = cancel.cancelled() => {
-                    return record_stopped_calls(&tool_calls[i..], ctx).await;
+                    return record_stopped_after_start(&tool_calls[i..], ctx).await;
                 }
                 outcome = execute_one_tool(tc, tx) => outcome,
             }

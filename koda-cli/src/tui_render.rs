@@ -75,6 +75,9 @@ pub struct TuiRenderer {
     /// first one went. The finished result isn't rendered again; the
     /// streamed lines are folded in place ([`ScrollBuffer::fold_since`]).
     stream_starts: HashMap<String, u64>,
+    /// Calls a sub-agent made. Their results aren't shown: the sub-agent's
+    /// answer is.
+    sub_agent_calls: std::collections::HashSet<String>,
 }
 
 impl Default for TuiRenderer {
@@ -97,6 +100,7 @@ impl TuiRenderer {
             md: crate::md_render::MarkdownRenderer::new(),
             pending_tool_args: HashMap::new(),
             stream_starts: HashMap::new(),
+            sub_agent_calls: std::collections::HashSet::new(),
         }
     }
 
@@ -176,6 +180,9 @@ impl TuiRenderer {
                 // Track args for syntax highlighting in ToolCallResult
                 self.pending_tool_args
                     .insert(id.clone(), (name.clone(), args.to_string()));
+                if is_sub_agent {
+                    self.sub_agent_calls.insert(id.clone());
+                }
                 let indent = if is_sub_agent { "  " } else { "" };
                 let line = crate::tool_header::build_header_line(indent, &name, &args);
                 tui_output::emit_line(buffer, line);
@@ -216,6 +223,14 @@ impl TuiRenderer {
                 output,
                 outcome,
             } => {
+                // A call that never ran was shown as its approval or block;
+                // a sub-agent's call shows as its header and live lines.
+                let sub_agent = self.sub_agent_calls.remove(&id);
+                if sub_agent || !outcome.ran() {
+                    self.stream_starts.remove(&id);
+                    self.pending_tool_args.remove(&id);
+                    return;
+                }
                 let failed = outcome == koda_core::engine::event::ToolOutcome::Error;
                 // If we streamed output lines, skip rendering the full result
                 // (the user already saw it in real-time): fold what streamed,
@@ -319,9 +334,7 @@ impl TuiRenderer {
                 // touching scrollback.
             }
             EngineEvent::ActionBlocked {
-                tool_name: _,
-                detail,
-                preview,
+                detail, preview, ..
             } => {
                 tui_output::emit_line(
                     buffer,
@@ -845,6 +858,47 @@ mod tests {
         assert!(folded[7].contains("Exit code: 0"), "{folded:?}");
         buffer.set_full(true);
         assert_eq!(text(&buffer).len(), 22);
+    }
+
+    /// A refused call shows as its approval, and a sub-agent's call as its
+    /// header and live lines: their results add nothing.
+    #[test]
+    fn refused_and_sub_agent_results_add_nothing() {
+        use koda_core::engine::ToolOutcome;
+        for (is_sub_agent, outcome) in [
+            (false, ToolOutcome::Declined),
+            (false, ToolOutcome::Cancelled),
+            (true, ToolOutcome::Success),
+            (true, ToolOutcome::Error),
+        ] {
+            let mut renderer = TuiRenderer::new();
+            let mut buffer = ScrollBuffer::new(256);
+            renderer.render_to_buffer(
+                EngineEvent::ToolCallStart {
+                    id: "w1".into(),
+                    name: "Write".into(),
+                    args: json!({ "file_path": "a.txt" }),
+                    is_sub_agent,
+                },
+                &mut buffer,
+            );
+            let header = buffer.all_lines().count();
+            renderer.render_to_buffer(
+                EngineEvent::ToolCallResult {
+                    id: "w1".into(),
+                    name: "Write".into(),
+                    output: "User rejected this action.".into(),
+                    outcome,
+                },
+                &mut buffer,
+            );
+            assert_eq!(
+                buffer.all_lines().count(),
+                header,
+                "{is_sub_agent} {outcome:?}"
+            );
+            assert!(renderer.pending_tool_args.is_empty());
+        }
     }
 
     /// Drive `TuiRenderer` with a complete Read tool call and return all

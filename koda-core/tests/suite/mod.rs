@@ -63,5 +63,6 @@ mod session_test;
 mod snapshot_test;
 mod steering_test;
 mod token_audit;
+mod tool_call_lifecycle_test;
 mod tool_normalize_test;
 mod tool_wiring_test;

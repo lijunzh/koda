@@ -25,8 +25,8 @@
 //! unless the reader handles it.
 
 use super::event::{
-    CompactionStatus, CompactionTrigger, EngineEvent, LoopGuardAction, RetryReason, ToolOutcome,
-    TurnEndReason, UsageTotals,
+    CompactionStatus, CompactionTrigger, EngineEvent, LoopGuardAction, RetryReason, TurnEndReason,
+    UsageTotals,
 };
 use crate::preview::DiffPreview;
 use crate::tools::ToolEffect;
@@ -292,6 +292,18 @@ pub enum WireEvent {
     RunSummary(RunSummary),
 }
 
+// Protocol 1 reports only calls that ran, so it has two outcomes.
+/// Whether a tool call succeeded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolOutcome {
+    /// The tool did what was asked.
+    Success,
+    /// It failed: bad arguments, an execution error, a timeout, or a command
+    /// that exited non-zero.
+    Error,
+}
+
 /// The run as a whole.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct RunSummary {
@@ -350,7 +362,12 @@ pub fn project(event: EngineEvent) -> Option<WireEvent> {
             id,
             name,
             output,
-            outcome,
+            outcome: match outcome {
+                super::event::ToolOutcome::Success => ToolOutcome::Success,
+                super::event::ToolOutcome::Error => ToolOutcome::Error,
+                // Protocol 1 has no result for a call that never ran.
+                _ => return None,
+            },
         },
         EngineEvent::SubAgentStart { agent_name } => WireEvent::SubAgentStart { agent_name },
         EngineEvent::TodoUpdate { items, diff } => WireEvent::TodoUpdate { items, diff },
@@ -363,6 +380,7 @@ pub fn project(event: EngineEvent) -> Option<WireEvent> {
             preview,
             effect,
             allow_for_session: _,
+            tool_call_id: _,
         } => WireEvent::ApprovalRequest {
             id,
             tool_name,
@@ -374,6 +392,7 @@ pub fn project(event: EngineEvent) -> Option<WireEvent> {
             id,
             question,
             options,
+            tool_call_id: _,
         } => WireEvent::AskUserRequest {
             id,
             question,
@@ -392,6 +411,7 @@ pub fn project(event: EngineEvent) -> Option<WireEvent> {
             tool_name,
             detail,
             preview,
+            tool_call_id: _,
         } => WireEvent::ActionBlocked {
             tool_name,
             detail,
@@ -455,6 +475,10 @@ impl WireStream {
 
     /// The line for an engine event, if it has one.
     pub fn line(&self, parent_id: Option<&str>, event: EngineEvent) -> Option<WireLine> {
+        // Protocol 1 has no result for a sub-agent's call.
+        if parent_id.is_some() && matches!(event, EngineEvent::ToolCallResult { .. }) {
+            return None;
+        }
         let mut current = self.turn_id.lock().unwrap_or_else(PoisonError::into_inner);
         let turn_id = match &event {
             EngineEvent::TurnStart { turn_id } => {
@@ -612,12 +636,34 @@ mod tests {
                 id: "a".into(),
                 name: "Bash".into(),
                 output: "Exit code: 1".into(),
-                outcome: ToolOutcome::Error,
+                outcome: super::super::event::ToolOutcome::Error,
             })
             .unwrap(),
         )
         .unwrap();
         assert_eq!(line["outcome"], "error");
+    }
+
+    /// Protocol 1 reports only calls that ran, and only the agent's own.
+    #[test]
+    fn results_protocol_1_never_had_stay_off_it() {
+        use super::super::event::ToolOutcome as Outcome;
+        let result = |outcome| EngineEvent::ToolCallResult {
+            id: "a".into(),
+            name: "Write".into(),
+            output: "User rejected this action.".into(),
+            outcome,
+        };
+        let stream = WireStream::new("s1");
+        for outcome in [Outcome::Declined, Outcome::Cancelled] {
+            assert!(stream.line(None, result(outcome)).is_none(), "{outcome:?}");
+        }
+        assert!(stream.line(None, result(Outcome::Success)).is_some());
+        assert!(
+            stream
+                .line(Some("call-1"), result(Outcome::Success))
+                .is_none()
+        );
     }
 
     #[test]

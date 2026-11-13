@@ -88,6 +88,7 @@ pub(crate) async fn handle_ask_user(
     sink: &dyn crate::engine::EngineSink,
     cmd_rx: &mut CommandInbox<'_>,
     cancel: &CancellationToken,
+    tool_call_id: &str,
     args: &serde_json::Value,
 ) -> Option<String> {
     let question = args["question"].as_str().unwrap_or("").to_string();
@@ -103,6 +104,7 @@ pub(crate) async fn handle_ask_user(
     let request_id = uuid::Uuid::new_v4().to_string();
     sink.emit(EngineEvent::AskUserRequest {
         id: request_id.clone(),
+        tool_call_id: tool_call_id.to_string(),
         question,
         options,
     });
@@ -134,6 +136,7 @@ pub(crate) async fn request_approval(
     sink: &dyn crate::engine::EngineSink,
     cmd_rx: &mut CommandInbox<'_>,
     cancel: &CancellationToken,
+    tool_call_id: &str,
     tool_name: &str,
     detail: &str,
     preview: Option<crate::preview::DiffPreview>,
@@ -143,6 +146,7 @@ pub(crate) async fn request_approval(
     let approval_id = uuid::Uuid::new_v4().to_string();
     sink.emit(EngineEvent::ApprovalRequest {
         id: approval_id.clone(),
+        tool_call_id: tool_call_id.to_string(),
         tool_name: tool_name.to_string(),
         detail: detail.to_string(),
         preview,
@@ -261,7 +265,7 @@ mod tests {
             let mut rx = cmd_rx;
             let mut steers = Vec::new();
             let mut rx = CommandInbox::new(&mut rx, &mut steers);
-            handle_ask_user(&*sink2, &mut rx, &cancel2, &args).await
+            handle_ask_user(&*sink2, &mut rx, &cancel2, "call-1", &args).await
         });
 
         // Wait for AskUserRequest to be emitted, then reply with matching id.
@@ -300,7 +304,7 @@ mod tests {
             let mut rx = cmd_rx;
             let mut steers = Vec::new();
             let mut rx = CommandInbox::new(&mut rx, &mut steers);
-            handle_ask_user(&*sink2, &mut rx, &cancel2, &args).await
+            handle_ask_user(&*sink2, &mut rx, &cancel2, "call-1", &args).await
         });
 
         let (q, opts) = sink
@@ -331,7 +335,7 @@ mod tests {
             let mut rx = cmd_rx;
             let mut steers = Vec::new();
             let mut rx = CommandInbox::new(&mut rx, &mut steers);
-            handle_ask_user(&*sink2, &mut rx, &cancel2, &args).await
+            handle_ask_user(&*sink2, &mut rx, &cancel2, "call-1", &args).await
         });
 
         let id = sink
@@ -376,7 +380,7 @@ mod tests {
             let mut rx = cmd_rx;
             let mut steers = Vec::new();
             let mut rx = CommandInbox::new(&mut rx, &mut steers);
-            handle_ask_user(&*sink2, &mut rx, &cancel2, &args).await
+            handle_ask_user(&*sink2, &mut rx, &cancel2, "call-1", &args).await
         });
 
         // Wait for the spawned task to reach the command-receive loop
@@ -404,7 +408,7 @@ mod tests {
             let mut rx = cmd_rx;
             let mut steers = Vec::new();
             let mut rx = CommandInbox::new(&mut rx, &mut steers);
-            handle_ask_user(&*sink2, &mut rx, &cancel2, &args).await
+            handle_ask_user(&*sink2, &mut rx, &cancel2, "call-1", &args).await
         });
 
         sink.wait_for(Duration::from_secs(5), |e| {
@@ -429,7 +433,7 @@ mod tests {
             let mut rx = cmd_rx;
             let mut steers = Vec::new();
             let mut rx = CommandInbox::new(&mut rx, &mut steers);
-            handle_ask_user(&*sink2, &mut rx, &cancel2, &args).await
+            handle_ask_user(&*sink2, &mut rx, &cancel2, "call-1", &args).await
         });
 
         sink.wait_for(Duration::from_secs(5), |e| {
@@ -459,6 +463,7 @@ mod tests {
                 &*sink2,
                 &mut rx,
                 &cancel2,
+                "call-1",
                 "Write",
                 "overwrite main.rs",
                 None,
@@ -503,6 +508,7 @@ mod tests {
                 &*sink2,
                 &mut rx,
                 &cancel2,
+                "call-1",
                 "Bash",
                 "rm -rf .",
                 None,
@@ -547,6 +553,7 @@ mod tests {
                 &*sink2,
                 &mut rx,
                 &cancel2,
+                "call-1",
                 "Edit",
                 "replace line 42",
                 None,
@@ -587,6 +594,7 @@ mod tests {
                 &*sink2,
                 &mut rx,
                 &cancel2,
+                "call-1",
                 "Write",
                 "detail",
                 None,
@@ -641,6 +649,7 @@ mod tests {
                 &*sink2,
                 &mut rx,
                 &cancel2,
+                "call-1",
                 "Bash",
                 "detail",
                 None,
@@ -676,6 +685,7 @@ mod tests {
                 &*sink2,
                 &mut rx,
                 &cancel2,
+                "call-1",
                 "Write",
                 "detail",
                 None,
@@ -710,6 +720,7 @@ mod tests {
                 &*sink2,
                 &mut rx,
                 &cancel2,
+                "call-1",
                 "Write",
                 "detail",
                 None,

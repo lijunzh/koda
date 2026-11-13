@@ -72,15 +72,16 @@ pub enum EngineEvent {
         is_sub_agent: bool,
     },
 
-    /// A tool call completed with output.
+    /// A tool call ended, however it ended: every [`Self::ToolCallStart`]
+    /// gets one, sub-agents' calls included.
     ToolCallResult {
         /// Matches the `id` from `ToolCallStart`.
         id: String,
         /// Tool name.
         name: String,
-        /// The tool's output text.
+        /// What the model reads: the tool's output, or why it didn't run.
         output: String,
-        /// Whether the call succeeded.
+        /// How the call ended.
         outcome: ToolOutcome,
     },
 
@@ -230,6 +231,8 @@ pub enum EngineEvent {
     ApprovalRequest {
         /// Unique ID for this approval request.
         id: String,
+        /// The tool call it is about.
+        tool_call_id: String,
         /// Tool name requiring approval.
         tool_name: String,
         /// Human-readable description of the action.
@@ -252,6 +255,8 @@ pub enum EngineEvent {
     AskUserRequest {
         /// Unique ID for this request.
         id: String,
+        /// The `AskUser` call that asks.
+        tool_call_id: String,
         /// The question to ask.
         question: String,
         /// Optional answer choices (empty = freeform).
@@ -260,6 +265,8 @@ pub enum EngineEvent {
 
     /// An action was blocked by safe mode (shown but not executed).
     ActionBlocked {
+        /// The tool call that was blocked.
+        tool_call_id: String,
         /// Tool name that was blocked.
         tool_name: String,
         /// Description of the blocked action.
@@ -487,7 +494,7 @@ pub enum Notice {
     Warn(String),
 }
 
-/// Whether a tool call succeeded.
+/// How a tool call ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolOutcome {
@@ -496,6 +503,18 @@ pub enum ToolOutcome {
     /// It failed: bad arguments, an execution error, a timeout, or a command
     /// that exited non-zero.
     Error,
+    /// It never ran: refused at an approval, by plan mode or by a
+    /// sub-agent's limits.
+    Declined,
+    /// The turn was stopped before or while it ran.
+    Cancelled,
+}
+
+impl ToolOutcome {
+    /// Whether the tool ran: [`Self::Success`] or [`Self::Error`].
+    pub fn ran(self) -> bool {
+        matches!(self, Self::Success | Self::Error)
+    }
 }
 
 impl From<bool> for ToolOutcome {
@@ -836,6 +855,7 @@ mod tests {
     fn test_ask_user_request_roundtrip() {
         let event = EngineEvent::AskUserRequest {
             id: "ask-1".into(),
+            tool_call_id: "call-1".into(),
             question: "Which database?".into(),
             options: vec!["SQLite".into(), "PostgreSQL".into()],
         };
@@ -889,6 +909,7 @@ mod tests {
     fn test_engine_event_approval_request_roundtrip() {
         let event = EngineEvent::ApprovalRequest {
             id: "approval_1".into(),
+            tool_call_id: "call-1".into(),
             tool_name: "Bash".into(),
             detail: "rm -rf node_modules".into(),
             preview: None,
