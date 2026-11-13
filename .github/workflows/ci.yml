@@ -126,7 +126,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [macos-latest]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -171,7 +171,18 @@ jobs:
         # nextest runs every test in its own process and tests from all
         # binaries at once (.config/nextest.toml). The ci profile writes
         # target/nextest/ci/junit.xml, which the guards below read.
-        run: cargo nextest run --workspace --features koda-core/test-support --profile ci
+        # EXPERIMENT (not for merge): find what fails at -j 6 on macOS.
+        shell: bash
+        run: |
+          set -uo pipefail
+          F="--workspace --features koda-core/test-support"
+          cargo nextest run $F --no-run
+          for j in 6 6 6 8; do
+            s=$SECONDS
+            cargo nextest run $F --profile ci -j $j --status-level fail --final-status-level fail --failure-output final 2>&1 | grep -E "FAIL|TIMEOUT|SIGABRT|SIGSEGV|panicked|Summary|thread '" | head -40
+            echo "TIMING $((SECONDS-s))s :: -j $j"
+          done
+          cargo nextest run $F --profile ci
       - name: Doc tests
         # nextest doesn't run doc tests.
         run: cargo test --workspace --features koda-core/test-support --doc
