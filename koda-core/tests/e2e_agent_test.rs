@@ -2,7 +2,6 @@
 
 use koda_core::{engine::EngineEvent, persistence::Persistence, runtime_env};
 use koda_test_utils::{ENV_MUTEX, Env, MockProvider, MockResponse};
-use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_sub_agent_invocation_e2e() {
@@ -423,13 +422,8 @@ fn write_agent_config(env: &Env, name: &str, skip_memory: bool) {
 /// Runs one InvokeAgent call via the outer provider and returns the env-provider
 /// recorded calls (messages the sub-agent's MockProvider received).
 ///
-/// **#1163 (Lean A)**: every InvokeAgent dispatch is now a background
-/// spawn that returns immediately with a task_id. The parent's
-/// `run_inference` therefore returns BEFORE the sub-agent has called
-/// its mock provider — reading `take_env_calls()` straight after would
-/// race and observe an empty slice. We poll the bg-agent registry for
-/// terminal status before reading the recorded calls so the assertion
-/// site sees the full conversation regardless of scheduler timing.
+/// The sub-agent runs inside the parent's `InvokeAgent` call (#1366), so
+/// its calls are recorded by the time `run_inference` returns.
 async fn invoke_agent_and_take_calls(
     env: &Env,
     agent_name: &str,
@@ -443,14 +437,7 @@ async fn invoke_agent_and_take_calls(
         ),
         MockResponse::Text("done".into()),
     ]);
-    let events = env.run_inference(&provider).await;
-    // Wait for the bg sub-agent to reach a terminal state — pre-#1163
-    // the inline foreground path completed inside `run_inference`, so
-    // `take_env_calls()` could be read immediately. Now we have to
-    // synchronize with the spawned task ourselves.
-    let _ = env
-        .collect_bg_events_after(events, Duration::from_secs(10))
-        .await;
+    env.run_inference(&provider).await;
     MockProvider::take_env_calls()
 }
 
@@ -467,18 +454,8 @@ async fn skip_memory_excludes_project_memory_from_sub_agent() {
     let calls = invoke_agent_and_take_calls(&env, "lean-agent").await;
     runtime_env::remove("KODA_MOCK_RESPONSES");
 
-    // **#1163 (Lean A) regression guard**: pre-#1163 the helper
-    // returned before the sub-agent had called its provider, so this
-    // assertion could pass vacuously on an empty `calls` vec (the
-    // sentinel-absence check below is trivially true on no content).
-    // The helper now waits for terminal bg status, so an empty
-    // `calls` vec genuinely means the sub-agent never ran — fail loud.
-    assert!(
-        !calls.is_empty(),
-        "sub-agent provider should have been called — the helper waits \
-         for terminal bg status, so an empty vec means the spawn never \
-         drove its provider (real failure, not a race)."
-    );
+    // Without this, the absence check below would pass on no calls at all.
+    assert!(!calls.is_empty(), "the sub-agent never called its provider");
     let all_content: String = calls
         .iter()
         .flatten()
