@@ -302,6 +302,7 @@ orb create ubuntu:resolute ubuntu
 orb -m ubuntu sudo apt-get update
 orb -m ubuntu sudo apt-get install -y build-essential pkg-config git bubblewrap
 orb -m ubuntu bash -c 'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal'
+orb -m ubuntu bash -lc 'cargo install --locked cargo-nextest'
 ```
 
 rustup installs the toolchain in `rust-toolchain.toml` on first use. OrbStack's
@@ -312,7 +313,7 @@ working in. Keep the build directory on the machine's own disk (faster, and
 Linux builds don't mix with macOS ones):
 
 ```bash
-orb -m ubuntu bash -lc 'CARGO_TARGET_DIR=$HOME/target/koda cargo test --workspace --features koda-core/test-support'
+orb -m ubuntu bash -lc 'CARGO_TARGET_DIR=$HOME/target/koda cargo nextest run --workspace --features koda-core/test-support'
 ```
 
 Pass `-j 4` when local model evals are running, so the build doesn't push their
@@ -393,10 +394,10 @@ names what broke. Wall-clock is set by the slowest (Test).
 
 | Job | Check name(s) | Runs |
 |---|---|---|
-| `fmt` | `Format` | `cargo fmt --check`, plus text guards: tokio test flavor (#1109), `shell: bash` on the Test step (#1328), toolchain pin |
+| `fmt` | `Format` | `cargo fmt --check`, plus text guards: tokio test flavor (#1109), toolchain pin |
 | `clippy` | `Clippy` | `cargo clippy --workspace --all-targets --features koda-core/test-support -- -D warnings` |
 | `check` | `Check (no features)` | `cargo check --workspace --all-targets` (the crates.io shape, no test-support) |
-| `test` | `Test (ubuntu-latest)`, `Test (macos-latest)` | `cargo test --workspace --features koda-core/test-support`, then asserts the security-boundary tests ran |
+| `test` | `Test (ubuntu-latest)`, `Test (macos-latest)` | `cargo nextest run --workspace --features koda-core/test-support --profile ci`, the doc tests with `cargo test --doc`, then asserts from nextest's JUnit report that the security-boundary tests ran |
 | `doc` | `Docs` | `cargo doc --workspace --no-deps` with `RUSTDOCFLAGS=-Dwarnings` |
 | `audit` | `Security Audit` | `cargo audit --deny unsound --deny yanked`, gated on dependency changes (below) |
 

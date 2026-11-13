@@ -1,0 +1,36 @@
+# cargo-nextest runs every test in its own process and runs tests from all
+# binaries at once; `cargo test` runs the binaries one after another. Codex
+# uses it too (`codex-rs/.config/nextest.toml`).
+#
+#   cargo nextest run --workspace --features koda-core/test-support
+#
+# Doc tests aren't run by nextest: `cargo test --workspace --doc`.
+
+[profile.default]
+# A test that runs past 60 seconds is stopped. The slowest today take a few
+# seconds; a hung one shouldn't hold the run for the job's whole limit.
+slow-timeout = { period = "30s", terminate-after = 2 }
+# Report every failure, not just the first.
+fail-fast = false
+# No automatic retry, unlike Codex's one. Koda's "flaky" failures have been
+# real bugs (a held paste mangling a slash command, #1579), and a retry that
+# passes turns the run green.
+retries = 0
+
+[profile.ci]
+inherits = "default"
+
+[profile.ci.junit]
+# target/nextest/ci/junit.xml: the CI guards check that the
+# security-boundary tests ran from this report.
+path = "junit.xml"
+
+# The PTY tests drive Koda in a real terminal and wait on what it draws, so
+# they're timing-sensitive under load (#1579 showed it on a busy runner).
+# Running every binary at once adds load; cap how many run together.
+[test-groups.pty]
+max-threads = 4
+
+[[profile.default.overrides]]
+filter = 'binary(tui_pty_test)'
+test-group = "pty"

@@ -44,10 +44,11 @@ write there.
 ```bash
 cargo build                              # Debug build (all crates)
 cargo build --release -p koda-cli        # Release build (CLI only)
-cargo test --workspace --features koda-core/test-support  # Run all tests (incl. E2E)
-cargo test -p koda-core --features test-support          # Engine tests only
-cargo test -p koda-cli                                   # CLI tests only
-cargo test -p koda-core --test perf_test                 # Run a specific test file
+cargo nextest run --workspace --features koda-core/test-support  # Run all tests, as CI does (cargo install --locked cargo-nextest)
+cargo test --workspace --features koda-core/test-support --doc   # Doc tests (nextest skips them; CI runs both)
+cargo nextest run -p koda-core --features test-support   # Engine tests only
+cargo nextest run -p koda-cli                            # CLI tests only
+cargo nextest run -p koda-core --test perf_test          # Run a specific test file
 cargo fmt --all                          # Format all crates
 cargo fmt --all --check                                                    # Check formatting (CI enforced)
 cargo clippy --workspace --all-targets --features koda-core/test-support -- -D warnings  # Lint (CI enforced)
