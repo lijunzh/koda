@@ -312,7 +312,13 @@ pub(crate) async fn execute_one_tool(
             None
         };
         let r = tools
-            .execute(&tc.function_name, &tc.arguments, streaming, caller_spawner)
+            .execute_for(
+                &tc.function_name,
+                &tc.arguments,
+                streaming,
+                caller_spawner,
+                sink.can_ask(),
+            )
             .await;
         (r.output, r.success, r.full_output)
     };

@@ -565,6 +565,22 @@ impl ToolRegistry {
         // Every other tool ignores this. Top-level callers pass `None`.
         caller_spawner: Option<u32>,
     ) -> ToolResult {
+        let can_ask = sink_for_streaming.is_none_or(|(sink, _)| sink.can_ask());
+        self.execute_for(name, arguments, sink_for_streaming, caller_spawner, can_ask)
+            .await
+    }
+
+    /// [`Self::execute`] for the dispatcher, which knows whether anyone can
+    /// approve a call even when it streams nothing to the tool
+    /// ([`tool_trait::ToolExecCtx::can_ask`]).
+    pub async fn execute_for(
+        &self,
+        name: &str,
+        arguments: &str,
+        sink_for_streaming: Option<(&dyn crate::engine::EngineSink, &str)>,
+        caller_spawner: Option<u32>,
+        can_ask: bool,
+    ) -> ToolResult {
         let raw = arguments.trim();
         let raw = if raw.is_empty() { "{}" } else { raw };
         let args: Value = match serde_json::from_str(raw) {
@@ -622,6 +638,7 @@ impl ToolRegistry {
                 caps: &self.caps,
                 sink: sink_for_streaming,
                 caller_spawner,
+                can_ask,
                 bg_registry: &self.bg_registry,
                 trust: &self.trust,
                 sandbox_policy: policy,

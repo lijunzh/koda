@@ -170,6 +170,13 @@ pub struct ToolExecCtx<'a> {
     /// level callers pass `None`.
     pub caller_spawner: Option<u32>,
 
+    /// Whether anyone can approve a call in this run: the dispatcher's
+    /// [`crate::engine::EngineSink::can_ask`], false in a headless run and a
+    /// background child. `sink` above is only for tools that stream, so a
+    /// tool that doesn't (Cargo) learns it here, to offer the way out of the
+    /// sandbox only where someone can take it.
+    pub can_ask: bool,
+
     // ---- Bash-specific fields, added in PR-6 of #1265 item 5 ----
     //
     // These five fields are read exclusively by `BashTool::execute`.
@@ -434,6 +441,7 @@ impl<'a> ToolExecCtx<'a> {
             caps,
             sink: None,
             caller_spawner: None,
+            can_ask: true,
             bg_registry,
             trust,
             sandbox_policy,
@@ -568,6 +576,7 @@ mod tests {
             caps,
             sink: None,
             caller_spawner: None,
+            can_ask: true,
             bg_registry: bg,
             trust,
             sandbox_policy: policy,
