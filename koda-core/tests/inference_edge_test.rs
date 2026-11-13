@@ -54,17 +54,14 @@ async fn rate_limit_then_success() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rate_limit_exhausted_returns_error() {
-    let env = Env::new().await;
+    let mut env = Env::new().await;
+    // One retry covers retrying and then giving up; the default four would
+    // wait out 15 seconds of backoff.
+    env.config.request_max_retries = 1;
     env.insert_user_message("hello").await;
 
-    // All retries are rate limited.
-    let provider = MockProvider::new(vec![
-        MockResponse::RateLimit,
-        MockResponse::RateLimit,
-        MockResponse::RateLimit,
-        MockResponse::RateLimit,
-        MockResponse::RateLimit,
-    ]);
+    // The first try and the one retry are both rate limited.
+    let provider = MockProvider::new(vec![MockResponse::RateLimit, MockResponse::RateLimit]);
     let (result, _events) = env.run_inference_result(&provider).await;
 
     assert!(result.is_err(), "should fail after max retries");
@@ -145,15 +142,18 @@ async fn esc_during_a_request_retry_wait_stops_at_once() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn network_error_mid_stream_discards_response() {
-    let env = Env::new().await;
+    let mut env = Env::new().await;
+    // One retry is enough to cover retrying and then giving up; the default
+    // five would wait out 31 seconds of backoff.
+    env.config.stream_max_retries = 1;
     env.insert_user_message("hello").await;
 
     let dropped = MockResponse::NetworkError {
         partial_text: "partial respo".into(),
         error: "connection reset by peer".into(),
     };
-    // The first attempt and all five retries fail.
-    let provider = MockProvider::new(vec![dropped; 6]);
+    // The first attempt and the one retry both fail.
+    let provider = MockProvider::new(vec![dropped; 2]);
     let (result, events) = env.run_inference_result(&provider).await;
 
     let retries = events
@@ -168,7 +168,7 @@ async fn network_error_mid_stream_discards_response() {
             )
         })
         .count();
-    assert_eq!(retries, 5, "{events:?}");
+    assert_eq!(retries, 1, "{events:?}");
 
     // Should end gracefully (not crash).
     assert!(result.is_ok(), "network error should be graceful");
@@ -614,15 +614,16 @@ async fn cancel_during_tool_execution() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn server_error_exits_gracefully() {
-    let env = Env::new().await;
+    let mut env = Env::new().await;
+    // The subject is the warning; retries would only wait out backoff.
+    env.config.request_max_retries = 0;
     env.insert_user_message("hello").await;
 
-    // A 500 on every attempt.
     let server_error = MockResponse::Http {
         status: 500,
         body: "Internal Server Error".into(),
     };
-    let provider = MockProvider::new(vec![server_error; 5]);
+    let provider = MockProvider::new(vec![server_error]);
     let (result, events) = env.run_inference_result(&provider).await;
 
     // Should exit gracefully, not crash.

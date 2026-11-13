@@ -493,7 +493,7 @@ a second `/model` costs nothing.
 
 An HTTP failure is classified once, in `providers/error.rs`, from its status, headers and body. The inference loop matches on the kind and never reads the message. Text matching stays only where a provider states something no other way, overflow and image rejection, and it stays in that file.
 
-Koda follows Codex's limits rather than inventing its own: four retries of a request on a 429, 5xx or network failure, and five of a reply whose stream failed. A wait the server names replaces the backoff. Past five minutes the limit won't lift within a turn, so the request fails.
+Koda follows Codex's limits rather than inventing its own: four retries of a request on a 429, 5xx or network failure, and five of a reply whose stream failed. A wait the server names replaces the backoff. Past five minutes the limit won't lift within a turn, so the request fails. Both counts are settings, `KodaConfig::request_max_retries` and `stream_max_retries`, as they are in Codex's provider config, capped at 100 like Codex's. Koda has no per-provider config file, so they're set with `KODA_REQUEST_MAX_RETRIES` and `KODA_STREAM_MAX_RETRIES`, as the read timeout is. Tests about what a failure leaves behind set them to zero or one, instead of waiting out up to 31 seconds of real backoff each.
 
 **Local servers get the same retries.** No peer we checked retries less on a local server, and Goose retries Ollama more. The cost is LM Studio's bare 500, which can mean overflow: it now waits up to 15 seconds before the turn ends. It is still not read as overflow, because the same page comes back for failures unrelated to size.
 

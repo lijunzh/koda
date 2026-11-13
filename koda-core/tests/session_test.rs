@@ -442,7 +442,10 @@ async fn early_stop_turn_end(
     images: Option<Vec<koda_core::providers::ImageData>>,
     warn_text: &str,
 ) -> TurnEndReason {
-    let env = Env::new().await;
+    let mut env = Env::new().await;
+    // The subject is how the turn ends; retries would only wait out backoff.
+    env.config.request_max_retries = 0;
+    env.config.stream_max_retries = 0;
     env.insert_user_message("hello").await;
 
     let provider = Box::new(MockProvider::new(responses));
@@ -478,7 +481,7 @@ async fn session_server_error_turn_ends_with_error() {
                 status: 500,
                 body: "Internal Server Error".into(),
             };
-            5
+            1
         ],
         None,
         "server error",
@@ -523,7 +526,7 @@ async fn session_network_drop_turn_ends_with_error() {
                 partial_text: "partial".into(),
                 error: "connection reset".into(),
             };
-            6
+            1
         ],
         None,
         "Stream failed",

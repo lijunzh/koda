@@ -45,17 +45,12 @@ async fn test_rate_limit_single_retry_recovers() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_rate_limit_exhausted_returns_error() {
-    let env = Env::builder().max_context_tokens(100_000).build().await;
+    let mut env = Env::builder().max_context_tokens(100_000).build().await;
+    // Retrying is covered in inference_edge_test; here only the error matters.
+    env.config.request_max_retries = 0;
     env.insert_user_message("hello").await;
 
-    // All 5 retries fail with rate limit
-    let provider = MockProvider::new(vec![
-        MockResponse::RateLimit,
-        MockResponse::RateLimit,
-        MockResponse::RateLimit,
-        MockResponse::RateLimit,
-        MockResponse::RateLimit,
-    ]);
+    let provider = MockProvider::new(vec![MockResponse::RateLimit]);
 
     let (result, _events) = env.run_inference_result(&provider).await;
     assert!(result.is_err(), "should fail after exhausting retries");
@@ -157,7 +152,9 @@ async fn test_context_overflow_too_few_messages_fails() {
 /// messages (those without `completed_at`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_network_error_next_turn_gets_clean_context() {
-    let env = Env::builder().max_context_tokens(100_000).build().await;
+    let mut env = Env::builder().max_context_tokens(100_000).build().await;
+    // The subject is the next turn's context, not retrying.
+    env.config.stream_max_retries = 0;
     env.insert_user_message("research the inference loop").await;
 
     // First call: network error after partial text
@@ -165,8 +162,7 @@ async fn test_network_error_next_turn_gets_clean_context() {
         partial_text: "I'll start by".into(),
         error: "connection reset".into(),
     };
-    // The first attempt and all five retries fail.
-    let provider = MockProvider::new(vec![dropped; 6]);
+    let provider = MockProvider::new(vec![dropped]);
 
     let (result, events) = env.run_inference_result(&provider).await;
     assert!(

@@ -95,14 +95,16 @@ the next start.
 You can also use **any literal model ID** your provider supports — aliases
 are just shortcuts. `koda --model gpt-4o-mini` or `/model o3` both work.
 
-## HTTP timeouts
+## HTTP timeouts and retries
 
-All providers use a shared HTTP client with the following timeout defaults:
+All providers use a shared HTTP client with the following defaults:
 
 | Setting | Default | Env override | Description |
 |---------|---------|--------------|-------------|
 | Connect timeout | 30 s | `KODA_CONNECT_TIMEOUT_SECS` | Time allowed to establish the TCP/TLS connection |
 | Read timeout | 300 s (5 min); 1,800 s (30 min) for a provider with no API key | `KODA_READ_TIMEOUT_SECS` | Time allowed between bytes from the server (per-byte, not total); `0` turns it off |
+| Request retries | 4 | `KODA_REQUEST_MAX_RETRIES` | Retries after a request fails with a rate limit, server error or network error; at most 100, `0` turns them off |
+| Stream retries | 5 | `KODA_STREAM_MAX_RETRIES` | Retries for a reply whose stream fails partway; at most 100, `0` turns them off |
 
 The read timeout is **per-byte, not total**. A long streaming response is
 fine as long as bytes keep arriving — the timer resets on each chunk.
@@ -116,9 +118,9 @@ but a stalled connection (server hung after last byte) will fail fast.
   with no usage data, which is the giveaway.
 - **Long-running model on a flaky link?** Bump `KODA_READ_TIMEOUT_SECS` to
   600+. Read-phase timeouts manifest as a partial response cut short
-  partway through generation. (Note: koda also auto-retries transient
-  network errors, with up to five attempts and exponential backoff; see
-  `providers/error.rs`.)
+  partway through generation. (Koda also retries transient network errors,
+  waiting 1 second before the first retry and twice as long before each
+  next one, up to 32; the retry settings above set how many.)
 - **Provider with no API key (LM Studio, Ollama, vLLM, llama.cpp, or a
   self-hosted server)?** The default is 30 minutes, because such a server
   sends nothing until it has read the whole prompt, and a 150K-token prompt
