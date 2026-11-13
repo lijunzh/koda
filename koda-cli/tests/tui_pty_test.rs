@@ -1099,10 +1099,38 @@ fn text_reply(text: &str) -> ResponseTemplate {
     ])
 }
 
-/// Run `command` from the slash popup: type it, then Enter.
+/// Run `command`: type it, wait until the input box shows all of it, then
+/// Enter. Typed in one write, a command can reach Koda as a fast burst that
+/// Koda holds as a paste until it goes quiet; an Enter that arrives while
+/// the paste is still held is a newline in the paste, not a submit.
 fn run_command(tui: &mut Tui, command: &str) {
     tui.type_text(command);
+    let want: String = command.split_whitespace().collect();
+    tui.wait_for_screen_that(
+        |screen| input_box(screen).ends_with(&want),
+        &format!("show {command:?} in the input box"),
+    );
     tui.type_text("\r");
+}
+
+/// The input box's text, prompt glyph included, whitespace removed so a
+/// wrapped line compares equal: the lines between the last two horizontal
+/// rules.
+fn input_box(screen: &str) -> String {
+    let lines: Vec<&str> = screen.lines().collect();
+    let rules: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.matches('\u{2500}').count() >= 20)
+        .map(|(i, _)| i)
+        .collect();
+    let [.., top, bottom] = rules[..] else {
+        return String::new();
+    };
+    lines[top + 1..bottom]
+        .iter()
+        .flat_map(|line| line.split_whitespace())
+        .collect()
 }
 
 const DOWN: &str = "\x1b[B";
@@ -1130,6 +1158,26 @@ fn picker_lines(screen: &str, title: &str) -> String {
         .skip_while(|line| !line.contains(title))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// A command whose start is typed and whose rest arrives as a paste,
+/// Enter included, runs whole. This is also what a busy Koda sees when it
+/// reads typed keys late, in one batch. The typed `/me` opens the slash popup;
+/// the open popup used to take Enter while the rest was still held as a
+/// paste, complete `/memory `, and the held text then landed after it:
+/// `/memory mory add …`.
+#[tokio::test(flavor = "multi_thread")]
+async fn enter_during_a_held_paste_does_not_reach_the_slash_popup() {
+    let server = scripted_model(vec![]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    for ch in ["/", "m", "e"] {
+        tui.type_text(ch);
+    }
+    tui.wait_for_screen("/memory");
+    tui.type_text("mory add the code word is zebrafish\r");
+    tui.wait_for_screen("Saved to Koda's notes for this project");
+    tui.wait_for_screen("/memory add the code word is zebrafish");
 }
 
 /// `/model` with no name opens a picker of the aliases plus a "local" entry
