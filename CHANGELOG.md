@@ -12,6 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 - **Picking `/model`'s "local" entry now switches to the server the picker found it on.** The picker looks for the local model at `KODA_LOCAL_URL`, but picking it switched to LM Studio's default address (`localhost:1234`), so with `KODA_LOCAL_URL` pointing elsewhere the next turns went to a different server, or to nothing. Both now use `KODA_LOCAL_URL`, else the LM Studio address Koda is already using, else the default.
 
+- **A note saved with `/memory add` now reaches the model on the next turn.** Koda read memory once, when it started, so a note added with `/memory add` or saved by the model's memory tool, or an edit to `AGENTS.md`, waited for a restart. Memory is now read at the start of each turn; files that haven't changed come from a cache.
+
 ## [0.6.4] - 2026-11-12
 
 ### Added

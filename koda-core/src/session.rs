@@ -554,13 +554,23 @@ impl KodaSession {
         // Per turn, not cached: MCP servers connect after the agent is
         // built and `/mcp` can change them mid-session.
         let tool_defs = self.agent.turn_tool_defs(config);
+        // Per turn too: a note saved with `/memory add` or the memory tool,
+        // or an edit to an instruction file, reaches the next turn.
+        // `memory::load` re-reads only files whose mtime or size changed.
+        let project_memory = match crate::memory::load(&self.agent.project_root) {
+            Ok(memory) => memory,
+            Err(e) => {
+                tracing::warn!("Couldn't reload project memory, using the startup copy: {e:#}");
+                self.agent.semantic_memory.clone()
+            }
+        };
         let result = crate::inference::inference_loop_outcome(InferenceContext {
             project_root: &self.agent.project_root,
             config,
             db: &self.db,
             session_id: &self.id,
             system_prompt: &system_prompt,
-            project_memory: &self.agent.semantic_memory,
+            project_memory: &project_memory,
             provider: self.provider.as_ref(),
             tools: &self.agent.tools,
             tool_defs: &tool_defs,

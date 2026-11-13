@@ -1377,20 +1377,17 @@ async fn mcp_add_list_and_remove_change_the_tools_the_model_gets() {
     );
 }
 
-/// `/memory add` saves a note for this project and the model gets it.
-/// Koda loads memory when the agent starts (`KodaAgent::new`), so today the
-/// note arrives after a restart, not with the next request; the 2026-11-03
-/// decision says "applies next call" (found 2026-11-12, not fixed here).
+/// `/memory add` saves a note for this project, and the next request
+/// carries it, with no restart. Memory used to load once, when the agent
+/// started, so the note arrived only after a restart.
 #[tokio::test(flavor = "multi_thread")]
-async fn memory_add_reaches_the_model() {
+async fn memory_add_reaches_the_next_request() {
     let server = scripted_model(vec![]).await;
     let home = home();
     let mut tui = Tui::start_with_model(home.path(), &server.url());
     run_command(&mut tui, "/memory add the code word is zebrafish");
     tui.wait_for_screen("Saved to Koda's notes for this project");
-    quit_and_read_session_id(&mut tui);
 
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
     tui.submit("what is the code word");
     let sent = wait_for_model_call(&server, 1).await;
     assert!(
