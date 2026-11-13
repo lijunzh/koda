@@ -1,8 +1,8 @@
 //! Messages from Koda to a client: notifications, and requests the client
 //! answers (approvals, questions, the loop cap).
 //!
-//! Each is declared once, in [`server_notifications!`] or
-//! [`server_requests!`], as Codex declares its own.
+//! Each is declared once, in `server_notifications!` or `server_requests!`,
+//! as Codex declares its own.
 
 use schemars::{JsonSchema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
