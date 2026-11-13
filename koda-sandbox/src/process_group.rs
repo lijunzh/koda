@@ -127,6 +127,7 @@ pub fn process_alive(_pid: u32) -> bool {
 /// died. Anything the leader forked is in the group by then, and the leader,
 /// dead but not yet reaped, holds its id, so the group is still the one we
 /// meant. A leader that is already reaped, or isn't ours, gets no second kill.
+/// Linux needs none, so there it's skipped.
 #[cfg(unix)]
 pub fn kill_group(leader: u32) {
     // SAFETY: `killpg` takes plain integers and touches no memory. It fails
@@ -134,7 +135,7 @@ pub fn kill_group(leader: u32) {
     unsafe {
         libc::killpg(leader as libc::pid_t, libc::SIGKILL);
     }
-    if leader_died_unreaped(leader) {
+    if cfg!(not(target_os = "linux")) && leader_died_unreaped(leader) {
         // SAFETY: as above.
         unsafe {
             libc::killpg(leader as libc::pid_t, libc::SIGKILL);
