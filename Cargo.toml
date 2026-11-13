@@ -1,5 +1,12 @@
 [workspace]
-members = ["koda-core", "koda-cli", "koda-test-utils", "koda-sandbox"]
+members = [
+    "koda-core",
+    "koda-cli",
+    "koda-test-utils",
+    "koda-sandbox",
+    "koda-protocol",
+    "koda-client",
+]
 resolver = "3"
 default-members = ["koda-cli"]
 
@@ -37,6 +44,7 @@ glob = "0.3"
 ignore = "0.4"
 libc = "0.2"
 regex = "1"
+schemars = "1"
 
 # Dev-only deps shared across crates.
 tempfile = "3"

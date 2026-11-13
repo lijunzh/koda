@@ -1894,6 +1894,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "koda-client"
+version = "0.6.4"
+dependencies = [
+ "koda-core",
+ "koda-protocol",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "koda-core"
 version = "0.6.4"
 dependencies = [
@@ -1926,6 +1938,15 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "koda-protocol"
+version = "0.6.4"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

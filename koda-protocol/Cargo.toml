@@ -1,0 +1,20 @@
+[package]
+name = "koda-protocol"
+version = "0.6.4"
+edition.workspace = true
+rust-version.workspace = true
+description = "The client protocol of the Koda AI coding agent: JSON-RPC 2.0 messages and their types"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords = ["ai", "coding-agent", "json-rpc", "protocol"]
+categories = ["development-tools", "api-bindings"]
+# Published once koda-cli depends on it; until then nothing outside the
+# workspace uses it.
+publish = false
+
+[dependencies]
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
