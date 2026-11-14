@@ -70,6 +70,7 @@ impl Harness {
             tools,
             tool_defs: ToolCatalog::new().get_definitions(&[], &[]),
             system_prompt: "You are a test assistant.".to_string(),
+            prompt_model: String::new(),
             semantic_memory: String::new(),
         });
         let mut session = KodaSession::new(

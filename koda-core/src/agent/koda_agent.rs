@@ -58,6 +58,10 @@ pub struct KodaAgent {
     pub tool_defs: Vec<ToolDefinition>,
     /// Assembled system prompt.
     pub system_prompt: String,
+    /// The model [`Self::system_prompt`]'s environment section names. A
+    /// turn on another model has its own named instead
+    /// ([`Self::system_prompt_for_model`]).
+    pub prompt_model: String,
     /// Project memory (instruction files and Koda's notes) as loaded in
     /// `new()`. Each turn reloads it, so changes apply next turn; this copy
     /// is used only when that reload fails.
@@ -120,6 +124,7 @@ impl KodaAgent {
             tools,
             tool_defs,
             system_prompt,
+            prompt_model: config.model.clone(),
             semantic_memory,
         })
     }
@@ -141,6 +146,22 @@ impl KodaAgent {
             platform: std::env::consts::OS,
         };
         self.system_prompt = system_prompt_for(config, &env, commands, &self.tools.skill_registry);
+        self.prompt_model = config.model.clone();
+    }
+
+    /// The system prompt for a turn on `model`. One agent serves every turn
+    /// of a session, and of sessions sharing it, while the model can change
+    /// (`/model`, or a saved choice the host restores after the agent was
+    /// built), so the environment section names the turn's own.
+    pub fn system_prompt_for_model(&self, model: &str) -> String {
+        if model == self.prompt_model {
+            return self.system_prompt.clone();
+        }
+        self.system_prompt.replacen(
+            &crate::prompt::model_line(&self.prompt_model),
+            &crate::prompt::model_line(model),
+            1,
+        )
     }
 
     /// The tools a turn offers the model: the built-ins plus whatever the
@@ -162,5 +183,35 @@ impl KodaAgent {
         let mgr = self.tools.mcp_manager()?;
         let guard = mgr.try_read().ok()?;
         guard.status_bar_summary()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn agent(prompt: &str, model: &str) -> KodaAgent {
+        KodaAgent {
+            project_root: PathBuf::from("/tmp"),
+            tools: ToolRegistry::new(PathBuf::from("/tmp"), 100_000),
+            tool_defs: Vec::new(),
+            system_prompt: prompt.to_string(),
+            prompt_model: model.to_string(),
+            semantic_memory: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_turn_on_another_model_names_its_own() {
+        let prompt = format!(
+            "# Env\n{}- Platform: macos\n",
+            crate::prompt::model_line("old-model")
+        );
+        let agent = agent(&prompt, "old-model");
+        assert_eq!(agent.system_prompt_for_model("old-model"), prompt);
+        let switched = agent.system_prompt_for_model("new-model");
+        assert!(switched.contains("- Model: new-model\n"), "{switched}");
+        assert!(!switched.contains("old-model"), "{switched}");
+        assert!(switched.contains("- Platform: macos"), "the rest stays");
     }
 }

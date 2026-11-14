@@ -23,6 +23,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- **The TUI saves and restores its model choice, and stores API keys, through Koda's host.** At startup it names only the flags given and the host fills in the saved choice, by the same rules as before (a flag always wins); `/model`, `/provider` and a `--base-url` that answered are saved with `config/batchWrite`, and the key wizard and `/key` store keys with `modelProvider/apiKey/set`. What you see doesn't change.
+
 - **`koda exec` starts from the saved model choice when no flag names one,** as `codex exec` starts from `config.toml`. Before, it ignored the choice the TUI saved and used the environment's or the default. One flag alone keeps the rest of the saved choice, by the TUI's rules (a different `--provider` takes none of it). Runs that pass `--provider`, as the evals do, don't change. A local server's `auto-detect` model is now resolved by the host.
 
 - **The TUI changes a session's model and mode through Koda's host, and a session keeps its provider, as in Codex.** `/model` lists the session's provider's models (the newest of each Claude line for Anthropic) and switches the model for the next turns; another provider's model is refused with a pointer to `/provider`. `/provider` with another provider, or another address, opens a new session on it; the one you left stays in `/resume`. Shift+Tab sends the mode to the host, which records it with the session. A resumed session reopens on its own provider and model. `/model` no longer has a "local" entry: a local server's models are listed when the session runs on it.
@@ -46,6 +48,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **`--output-format stream-json`.** Use `koda exec --json`. The old format sent each engine event as its own line (`tool_call_start`, `text_delta`, …); the new one sends items that start and complete, every tool call included: one refused at an approval or blocked by `--mode plan` now completes as `declined`, and a sub-agent's calls complete too.
 
 ### Fixed
+
+- **The system prompt names the model a turn runs on.** It named the model Koda started with, so after `/model` (or a saved choice the host restores) the model was told it was another one. The environment section now names the turn's own model.
 
 - **A model's reasoning goes back only to that model, and a Claude model gets the earlier Claude reasoning it can read.** After switching models in a session, Koda sent the previous model's reasoning text to the new one, which read it as its own; a strict server such as OpenAI's may reject the field outright. Reasoning text now goes back only to the model that wrote it (Koda records the model with it; replies from before this change aren't resent their reasoning). Between Claude models it went the other way: Koda sent signed thinking only to the exact model that wrote it, so moving a conversation up, from Sonnet 5.5 to Opus 5.5 say, lost its reasoning. Every Claude model now gets every stored block, and the API keeps the ones the model can read.
 

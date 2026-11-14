@@ -72,21 +72,27 @@ impl Tui {
 
     /// [`Self::start_with_args`] with no `--provider` unless `flags` has one.
     fn start_with_flags(home: &Path, base_url: &str, flags: &[&str], ready: &str) -> Self {
-        Self::start_full(home, base_url, flags, &[], ready)
+        Self::start_full(home, base_url, flags, Some("stub-model"), ready)
+    }
+
+    /// Start `koda` with only `--base-url` naming the model choice, so the
+    /// saved choice fills in the rest.
+    fn start_without_model(home: &Path, base_url: &str) -> Self {
+        Self::start_full(home, base_url, &[], None, IDLE_HINT)
     }
 
     fn start_full(
         home: &Path,
         base_url: &str,
         flags: &[&str],
-        env: &[(&str, &str)],
+        model: Option<&str>,
         ready: &str,
     ) -> Self {
         let (master, slave) = open_pty();
         let mut command = Command::new(env!("CARGO_BIN_EXE_koda"));
         command
             .args(["--base-url", base_url])
-            .args(["--model", "stub-model"])
+            .args(model.map(|m| ["--model", m]).into_iter().flatten())
             .args(["--max-context-tokens", "64000"])
             .args(["--mode", "safe"])
             .args(flags)
@@ -100,7 +106,6 @@ impl Tui {
             .env_remove("ANTHROPIC_API_KEY")
             .env_remove("OPENAI_API_KEY")
             .env_remove("GEMINI_API_KEY")
-            .envs(env.iter().copied())
             .stdin(stdio(slave))
             .stdout(stdio(slave))
             .stderr(stdio(slave));
@@ -1087,6 +1092,32 @@ async fn the_provider_picker_uses_the_running_address() {
     tui.submit("hi");
     let sent = wait_for_model_call(&server, 1).await;
     assert!(sent.contains(r#""model":"stub-picked""#), "{sent}");
+}
+
+/// A model picked in `/model` is the next start's choice: the host saves it
+/// (`config/batchWrite`) and a new session starts from it, with the flags
+/// winning where they name something.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_model_choice_is_the_next_starts_choice() {
+    let server = scripted_model(vec![]).await;
+    let models = json!({"object": "list", "data": [
+        {"id": "stub-local", "object": "model", "type": "llm", "state": "loaded"}
+    ]});
+    server.mount_ok("GET", r".*/models$", models).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    run_command(&mut tui, "/model");
+    tui.wait_for_screen("Select a model");
+    highlight(&mut tui, "stub-local");
+    tui.type_text("\r");
+    tui.wait_for_screen("Model: stub-local");
+    quit_and_read_session_id(&mut tui);
+
+    // Only `--base-url`, LM Studio's like the saved one: the saved model.
+    let mut tui = Tui::start_without_model(home.path(), &server.url());
+    tui.submit("which model");
+    let sent = wait_for_model_call(&server, 1).await;
+    assert!(sent.contains(r#""model":"stub-local""#), "{sent}");
 }
 
 /// Shift+Tab changes the mode on the host, which records it with the

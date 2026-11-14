@@ -9,7 +9,7 @@
 mod events;
 mod idle_ui_events;
 mod menus;
-mod settings;
+pub(crate) mod settings;
 
 use crate::input;
 use crate::scroll_buffer::ScrollBuffer;
@@ -150,25 +150,23 @@ pub struct TuiSession {
     pub bg_agents: Arc<koda_core::child_agent::ChildAgentRegistry>,
 }
 
-/// Open session `resume`, or a new one on `config`'s provider, endpoint and
-/// model, on the host. A resumed session keeps its own.
+/// Open session `resume`, or a new one, on the host, with what `named`
+/// gives; the host fills in the rest (the saved choice, or a resumed
+/// session's own).
 pub(crate) async fn open_host_session(
     client: &koda_client::InProcessClient,
     resume: Option<String>,
     db: koda_core::db::Database,
-    config: &KodaConfig,
+    named: &settings::Named,
 ) -> Result<TuiSession> {
     use koda_client::protocol::{methods, session::SessionStartParams};
-    // The TUI has applied the saved choice under its flags already, so a
-    // new session names all three (until the host restores it, 6c-2b).
-    let new = resume.is_none();
     let started = client
         .request::<methods::SessionStart>(SessionStartParams {
             session_id: resume,
             approval_policy: None,
-            model_provider: new.then(|| config.provider_type.to_string()),
-            base_url: new.then(|| config.base_url.clone()),
-            model: new.then(|| config.model.clone()),
+            model_provider: named.provider.clone(),
+            base_url: named.base_url.clone(),
+            model: named.model.clone(),
         })
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -259,74 +257,6 @@ pub(crate) struct ProviderOverrides {
     pub model: bool,
 }
 
-/// Fill the saved last-used provider (#693) into `config` wherever the
-/// command line left the choice open.
-///
-/// `config` already carries the CLI/env overrides. Before this function
-/// existed the TUI overwrote provider, base URL and model from the saved
-/// row unconditionally, so `koda --provider anthropic --model
-/// claude-sonnet-5-5` started on whatever `/model` had last picked.
-///
-/// - Nothing overridden: restore provider, base URL and model, as before.
-/// - `--model` alone: restore the saved provider and base URL, keep the model.
-/// - `--provider` or `--base-url`: the endpoint is the user's choice. The
-///   saved URL and model were picked for the saved provider, so they still
-///   count as saved config only when that provider is the one now in
-///   effect (a `/model` choice or custom endpoint for the same provider);
-///   for a different provider nothing is restored.
-/// - A field the user set (`--base-url`, `--model`) is never replaced.
-/// - A restored model chosen as an alias is resolved again
-///   ([`koda_core::model_alias::resolve_saved`]), so a newer release in the
-///   alias's line takes over; `live` is this run's Models API answer. When
-///   there is no answer the saved id stands.
-///
-/// Returns the saved alias when the model was restored from the saved row,
-/// so a later save of that row keeps it.
-///
-/// Flags are not written back here. `/model` and `/provider` update the saved
-/// row (`tui_wizards::save_provider`), and so does a `--base-url` given to the
-/// TUI (see `remembers_endpoint`), so a URL given once sticks.
-pub(crate) fn apply_last_provider(
-    config: &mut KodaConfig,
-    last: &koda_core::last_provider::LastProvider,
-    overrides: ProviderOverrides,
-    live: Option<&koda_core::model_alias::ClaudeLineIds>,
-) -> Option<String> {
-    let saved_provider =
-        koda_core::config::ProviderType::from_url_or_name("", Some(&last.provider_type));
-    if overrides.provider || overrides.base_url {
-        if config.provider_type != saved_provider {
-            return None;
-        }
-    } else {
-        config.provider_type = saved_provider;
-    }
-    if !overrides.base_url {
-        config.base_url = last.base_url.clone();
-    }
-    let mut restored_alias = None;
-    if !overrides.model {
-        let model = last
-            .alias
-            .as_deref()
-            .and_then(|alias| koda_core::model_alias::resolve_saved(alias, live))
-            .filter(|resolved| resolved.provider == saved_provider)
-            .map_or_else(|| last.model.clone(), |resolved| resolved.model_id);
-        if model != last.model {
-            tracing::info!(
-                "Saved alias {} now resolves to {model} (was {})",
-                last.alias.as_deref().unwrap_or_default(),
-                last.model
-            );
-        }
-        config.model_settings.model = model.clone();
-        config.model = model;
-        restored_alias = last.alias.clone();
-    }
-    config.recalculate_model_derived();
-    restored_alias
-}
-
 /// Whether a `--base-url` / `KODA_BASE_URL` given to the TUI is saved as the
 /// last-used provider. Only once the server has answered: a mistyped URL
 /// shouldn't stick, and the placeholder model names below must never be
@@ -349,60 +279,6 @@ impl TuiContext {
         version_check: tokio::task::JoinHandle<Option<String>>,
         first_run: bool,
     ) -> Result<Self> {
-        // Restore last-used provider from DB (#693), except where the user
-        // chose on the command line.
-        let mut restored_alias = None;
-        if let Ok(Some(last)) = koda_core::last_provider::load_last_provider(&db).await {
-            // A saved Claude alias follows the Models API: one capped
-            // lookup, only when the saved model is about to be restored.
-            let live = match last.alias.as_deref() {
-                Some(alias)
-                    if !overrides.model && koda_core::model_alias::follows_models_api(alias) =>
-                {
-                    koda_core::model_alias::ensure_live_claude_ids().await
-                }
-                _ => None,
-            };
-            restored_alias = apply_last_provider(&mut config, &last, overrides, live);
-        }
-
-        let provider: Arc<RwLock<Box<dyn LlmProvider>>> =
-            Arc::new(RwLock::new(koda_core::providers::create_provider(&config)));
-
-        if config.model == "auto-detect" {
-            let prov = provider.read().await;
-            match prov.list_models().await {
-                Ok(models) if !models.is_empty() => {
-                    config.model = models[0].id.clone();
-                    config.model_settings.model = config.model.clone();
-                    config.recalculate_model_derived();
-                    tracing::info!("Auto-detected model: {}", config.model);
-                }
-                Ok(_) => {
-                    config.model = "(no model loaded)".to_string();
-                    config.model_settings.model = config.model.clone();
-                }
-                Err(e) => {
-                    config.model = "(connection failed)".to_string();
-                    config.model_settings.model = config.model.clone();
-                    tracing::warn!("Auto-detect failed: {e}");
-                }
-            }
-        }
-
-        let mut context_source = None;
-        if config.model != "(no model loaded)" && config.model != "(connection failed)" {
-            let prov = provider.read().await;
-            context_source = Some(config.query_and_apply_capabilities(prov.as_ref()).await);
-        }
-
-        // A URL given on the command line or in KODA_BASE_URL sticks.
-        // Headless runs never get here, so they stay stateless. A model
-        // restored from a saved alias keeps that alias.
-        if remembers_endpoint(overrides, &config.model) {
-            crate::tui_wizards::save_provider(&config, &db, restored_alias.as_deref()).await;
-        }
-
         // Input history is the TUI's own file. The first time, what Koda kept
         // in its database before comes over.
         let input_history = crate::input_history::InputHistory::in_dir(
@@ -412,32 +288,6 @@ impl TuiContext {
             let earlier = db.history_load().await.unwrap_or_default();
             if let Err(e) = input_history.import(earlier) {
                 tracing::warn!("couldn't bring the input history over: {e}");
-            }
-        }
-
-        // Collect startup lines (will be pushed into scroll buffer after init)
-        let mut startup_lines = crate::startup::collect_startup_lines(&config);
-        if let Some(notice) = context_source.and_then(|s| config.assumed_context_notice(s)) {
-            startup_lines.push(crate::startup::warning_line(notice));
-        }
-        startup_lines.extend(crate::startup::home_dir_warning_lines(&project_root));
-
-        if let Ok(Some(latest)) = version_check.await
-            && let Some((current, latest)) = koda_core::version::update_available(&latest)
-        {
-            startup_lines.extend(crate::startup::update_notice_lines(current, &latest));
-        }
-        // A model Anthropic has released that this Koda doesn't support yet,
-        // at every start until Koda is updated for it.
-        if let Some(ids) = koda_core::model_alias::ensure_live_claude_ids().await {
-            for notice in koda_core::model_alias::new_model_notices(ids) {
-                startup_lines.push(crate::startup::warning_line(notice));
-            }
-            // A model pinned by id while its line has moved on.
-            if config.provider_type == koda_core::config::ProviderType::Anthropic
-                && let Some(notice) = koda_core::model_alias::pinned_older_notice(&config.model)
-            {
-                startup_lines.push(crate::startup::warning_line(notice));
             }
         }
 
@@ -455,7 +305,7 @@ impl TuiContext {
 
         // Koda's host runs the session's turns; the TUI is its client, with
         // the agent it built (slash commands in the prompt, its MCP servers).
-        let client = koda_client::InProcessClient::start(koda_client::StartArgs {
+        let mut client = koda_client::InProcessClient::start(koda_client::StartArgs {
             config: config.clone(),
             project_root: project_root.clone(),
             db: db.clone(),
@@ -468,9 +318,14 @@ impl TuiContext {
         })
         .await
         .map_err(|e| anyhow::anyhow!("couldn't start Koda's host: {e}"))?;
-        let session = open_host_session(&client, resume, db.clone(), &config).await?;
+        // The flags given, and nothing else: the host fills in the rest from
+        // the saved choice for a new session, or a resumed one's own.
+        let named = settings::Named::from_flags(&config, overrides);
+        let session = open_host_session(&client, resume, db.clone(), &named).await?;
 
-        crate::startup::purge_nudge(&client, &mut startup_lines).await;
+        // Lines shown under the banner, which waits for the session's settings.
+        let mut notices: Vec<Line<'static>> = Vec::new();
+        crate::startup::purge_nudge(&client, &mut notices).await;
 
         // Restore persisted approval mode on resume (#590).
         // Fallback to the user's current CLI/config trust mode (not a hardcoded
@@ -494,12 +349,50 @@ impl TuiContext {
                 })?
         };
         if let Some(warning) = initial_mode_warning {
-            startup_lines.push(Line::from(vec![
+            notices.push(Line::from(vec![
                 Span::styled("  \u{26a0} ", Style::new().fg(Color::Yellow)),
                 Span::styled(warning.to_string(), Style::new().fg(Color::Yellow)),
             ]));
         }
         let shared_mode = trust::new_shared_trust(initial_mode);
+
+        // What the session runs with, which the host decided: the saved
+        // choice, a resumed session's own, or the flags. The TUI mirrors it.
+        let (session_settings, host_warnings) =
+            settings::fetch_settings(&mut client, &session.id, initial_mode).await?;
+        settings::mirror(&mut config, &session_settings);
+        // A URL given on the command line or in KODA_BASE_URL sticks, once the
+        // server has answered. Headless runs never save anything.
+        if remembers_endpoint(overrides, &config.model) {
+            settings::save_choice(&client, &config, session_settings.alias.as_deref()).await;
+        }
+        let provider: Arc<RwLock<Box<dyn LlmProvider>>> =
+            Arc::new(RwLock::new(koda_core::providers::create_provider(&config)));
+
+        let mut startup_lines = crate::startup::collect_startup_lines(&config);
+        for warning in host_warnings {
+            startup_lines.push(crate::startup::warning_line(warning));
+        }
+        startup_lines.extend(crate::startup::home_dir_warning_lines(&project_root));
+        if let Ok(Some(latest)) = version_check.await
+            && let Some((current, latest)) = koda_core::version::update_available(&latest)
+        {
+            startup_lines.extend(crate::startup::update_notice_lines(current, &latest));
+        }
+        // A model Anthropic has released that this Koda doesn't support yet,
+        // at every start until Koda is updated for it.
+        if let Some(ids) = koda_core::model_alias::ensure_live_claude_ids().await {
+            for notice in koda_core::model_alias::new_model_notices(ids) {
+                startup_lines.push(crate::startup::warning_line(notice));
+            }
+            // A model pinned by id while its line has moved on.
+            if config.provider_type == koda_core::config::ProviderType::Anthropic
+                && let Some(notice) = koda_core::model_alias::pinned_older_notice(&config.model)
+            {
+                startup_lines.push(crate::startup::warning_line(notice));
+            }
+        }
+        startup_lines.extend(notices);
 
         // Terminal + textarea
         let terminal = init_terminal()?;
@@ -596,7 +489,7 @@ impl TuiContext {
         // `frame_requester` to fire-and-forget redraw requests.
         let (frame_requester, draw_rx) = crate::frame_requester::spawn_frame_scheduler();
 
-        let mut ctx = Self {
+        let ctx = Self {
             terminal,
             textarea,
             renderer,
@@ -650,10 +543,6 @@ impl TuiContext {
             draw_rx,
             child_activity: crate::child_activity::ChildActivityTracker::default(),
         };
-        // The host owns the session's settings: give it the mode, checked
-        // against the sandbox above, and mirror what the session runs with,
-        // which a resumed one brings back from its last run.
-        ctx.sync_settings(false).await?;
         Ok(ctx)
     }
 
@@ -1147,343 +1036,29 @@ mod tests {
         );
     }
 
-    // ── Saved last-used provider vs. CLI overrides ───────────────────────
-    //
-    // `apply_last_provider` is the seam between `with_overrides` (CLI and
-    // env, applied in `app.rs`) and the #693 restore in `TuiContext::new`.
-    // The bug: the restore overwrote every field, so `koda --provider
-    // anthropic --model claude-sonnet-5-5` started on the saved LM Studio
-    // row. Each test saves a row to a real SQLite DB and reads it back the
-    // way `TuiContext::new` does.
-    mod last_provider {
-        use super::super::{ProviderOverrides, apply_last_provider, remembers_endpoint};
-        use koda_core::config::{KodaConfig, ProviderType};
-        use koda_core::last_provider::{LastProvider, load_last_provider, save_last_provider};
-        use koda_core::model_alias::{ClaudeLine, ClaudeLineIds};
-
-        async fn saved(provider: ProviderType, base_url: &str, model: &str) -> LastProvider {
-            saved_as(provider, base_url, model, None).await
-        }
-
-        async fn saved_as(
-            provider: ProviderType,
-            base_url: &str,
-            model: &str,
-            alias: Option<&str>,
-        ) -> LastProvider {
-            let tmp = tempfile::tempdir().unwrap();
-            let db = koda_core::db::Database::init(tmp.path()).await.unwrap();
-            save_last_provider(&db, &provider.to_string(), base_url, model, alias)
-                .await
-                .unwrap();
-            load_last_provider(&db)
-                .await
-                .unwrap()
-                .expect("row was just saved")
-        }
-
-        /// The config `app.rs` hands the TUI: the agent's default (LM Studio
-        /// here) with the given flags applied by `with_overrides`.
-        fn loaded(
-            base_url: Option<&str>,
-            model: Option<&str>,
-            provider: Option<&str>,
-        ) -> (KodaConfig, ProviderOverrides) {
-            let overrides = ProviderOverrides {
-                provider: provider.is_some(),
-                base_url: base_url.is_some(),
-                model: model.is_some(),
-            };
-            let config = KodaConfig::default_for_testing(ProviderType::LMStudio).with_overrides(
-                base_url.map(str::to_string),
-                model.map(str::to_string),
-                provider.map(str::to_string),
-            );
-            (config, overrides)
-        }
-
-        #[test]
-        fn a_command_line_url_is_remembered_once_the_server_answered() {
-            let url = ProviderOverrides {
-                base_url: true,
-                ..Default::default()
-            };
-            assert!(remembers_endpoint(url, "Qwen3.8-27B-Q4_K_M.gguf"));
-            // A model typed with the URL counts the same.
-            assert!(remembers_endpoint(url, "my-model"));
-            // The server never answered: placeholders must not be saved.
-            assert!(!remembers_endpoint(url, "(connection failed)"));
-            assert!(!remembers_endpoint(url, "(no model loaded)"));
-            // No URL given: nothing new to remember.
-            let none = ProviderOverrides::default();
-            assert!(!remembers_endpoint(none, "Qwen3.8-27B-Q4_K_M.gguf"));
-            let provider_only = ProviderOverrides {
-                provider: true,
-                model: true,
-                ..Default::default()
-            };
-            assert!(!remembers_endpoint(provider_only, "m"));
-        }
-
-        #[tokio::test]
-        async fn restoring_the_saved_row_keeps_the_agent_loop_cap() {
-            let last = saved(
-                ProviderType::Anthropic,
-                "https://api.anthropic.com",
-                "claude-sonnet-5",
-            )
-            .await;
-            let (mut config, overrides) = loaded(None, None, None);
-            config.max_iterations = 7;
-
-            apply_last_provider(&mut config, &last, overrides, None);
-
-            assert_eq!(config.model, "claude-sonnet-5");
-            assert_eq!(config.max_iterations, 7);
-        }
-
-        #[tokio::test]
-        async fn no_overrides_restores_the_saved_row() {
-            let last = saved(
-                ProviderType::Anthropic,
-                "https://api.anthropic.com",
-                "claude-sonnet-5",
-            )
-            .await;
-            let (mut config, overrides) = loaded(None, None, None);
-            assert_eq!(
-                config.max_context_tokens, 4_096,
-                "LM Studio auto-detect floor"
-            );
-
-            apply_last_provider(&mut config, &last, overrides, None);
-
-            assert_eq!(config.provider_type, ProviderType::Anthropic);
-            assert_eq!(config.base_url, "https://api.anthropic.com");
-            assert_eq!(config.model, "claude-sonnet-5");
-            assert_eq!(config.model_settings.model, "claude-sonnet-5");
-            assert_eq!(
-                config.max_context_tokens, 1_000_000,
-                "derived settings follow the restored model (Sonnet 4.6 has a 1M window by default)"
-            );
-        }
-
-        #[tokio::test]
-        async fn explicit_provider_and_model_beat_the_saved_row() {
-            // The exact bug: the DB remembers LM Studio, the user passes both flags.
-            let last = saved(
-                ProviderType::LMStudio,
-                "http://lmstudio.local:1234/v1",
-                "qwen3-local",
-            )
-            .await;
-            let (mut config, overrides) =
-                loaded(None, Some("claude-sonnet-5-5"), Some("anthropic"));
-            let url_from_flags = config.base_url.clone();
-
-            apply_last_provider(&mut config, &last, overrides, None);
-
-            assert_eq!(config.provider_type, ProviderType::Anthropic);
-            assert_eq!(config.model, "claude-sonnet-5-5");
-            assert_eq!(config.model_settings.model, "claude-sonnet-5-5");
-            assert_eq!(
-                config.base_url, url_from_flags,
-                "the saved LM Studio URL must not replace what the flags produced"
-            );
-        }
-
-        #[tokio::test]
-        async fn model_alone_keeps_the_saved_provider_and_url() {
-            let last = saved(ProviderType::Ollama, "http://localhost:11434/v1", "llama3").await;
-            let (mut config, overrides) = loaded(None, Some("qwen3:32b"), None);
-
-            apply_last_provider(&mut config, &last, overrides, None);
-
-            assert_eq!(config.provider_type, ProviderType::Ollama);
-            assert_eq!(config.base_url, "http://localhost:11434/v1");
-            assert_eq!(config.model, "qwen3:32b");
-            assert_eq!(config.model_settings.model, "qwen3:32b");
-        }
-
-        #[tokio::test]
-        async fn provider_alone_for_a_different_provider_restores_nothing() {
-            let last = saved(
-                ProviderType::LMStudio,
-                "http://lmstudio.local:1234/v1",
-                "qwen3-local",
-            )
-            .await;
-            let (mut config, overrides) = loaded(None, None, Some("anthropic"));
-            let url_from_flags = config.base_url.clone();
-            let model_from_agent = config.model.clone();
-
-            apply_last_provider(&mut config, &last, overrides, None);
-
-            assert_eq!(config.provider_type, ProviderType::Anthropic);
-            assert_eq!(config.base_url, url_from_flags);
-            assert_eq!(config.model, model_from_agent);
-            assert_eq!(config.model_settings.model, model_from_agent);
-        }
-
-        #[tokio::test]
-        async fn provider_alone_for_the_saved_provider_keeps_its_saved_url_and_model() {
-            // A /model choice and a custom endpoint for the same provider are
-            // saved config, which the precedence puts above built-in defaults.
-            let last = saved(
-                ProviderType::Anthropic,
-                "https://proxy.example/anthropic",
-                "claude-opus-5",
-            )
-            .await;
-            let (mut config, overrides) = loaded(None, None, Some("anthropic"));
-
-            apply_last_provider(&mut config, &last, overrides, None);
-
-            assert_eq!(config.provider_type, ProviderType::Anthropic);
-            assert_eq!(config.base_url, "https://proxy.example/anthropic");
-            assert_eq!(config.model, "claude-opus-5");
-        }
-
-        #[tokio::test]
-        async fn base_url_alone_is_kept_and_the_saved_model_applies_to_the_same_provider() {
-            let last = saved(ProviderType::Ollama, "http://localhost:11434/v1", "llama3").await;
-            let (mut config, overrides) = loaded(Some("http://127.0.0.1:11434/v1"), None, None);
-            assert_eq!(
-                config.provider_type,
-                ProviderType::Ollama,
-                "re-detected from the URL"
-            );
-
-            apply_last_provider(&mut config, &last, overrides, None);
-
-            assert_eq!(config.base_url, "http://127.0.0.1:11434/v1");
-            assert_eq!(config.model, "llama3");
-
-            // Same flag, but the URL belongs to another provider: nothing applies.
-            let (mut config, overrides) = loaded(Some("https://api.anthropic.com"), None, None);
-            let model_from_agent = config.model.clone();
-            apply_last_provider(&mut config, &last, overrides, None);
-            assert_eq!(config.provider_type, ProviderType::Anthropic);
-            assert_eq!(config.base_url, "https://api.anthropic.com");
-            assert_eq!(config.model, model_from_agent);
-        }
-        fn live_haiku(id: &str) -> ClaudeLineIds {
-            ClaudeLineIds::from([(ClaudeLine::Haiku, id.to_string())])
-        }
-
-        #[tokio::test]
-        async fn a_saved_alias_follows_a_newer_release() {
-            // The reported case: `claude-haiku` was picked when it meant 4.5.
-            let last = saved_as(
-                ProviderType::Anthropic,
-                "https://api.anthropic.com",
-                "claude-haiku-5-5-20261001",
-                Some("claude-haiku"),
-            )
-            .await;
-            let (mut config, overrides) = loaded(None, None, None);
-
-            apply_last_provider(
-                &mut config,
-                &last,
-                overrides,
-                Some(&live_haiku("claude-haiku-5-5")),
-            );
-
-            assert_eq!(config.model, "claude-haiku-5-5");
-            assert_eq!(config.model_settings.model, "claude-haiku-5-5");
-            assert_eq!(config.base_url, "https://api.anthropic.com");
-        }
-
-        #[tokio::test]
-        async fn a_saved_alias_keeps_its_id_without_a_live_answer() {
-            let last = saved_as(
-                ProviderType::Anthropic,
-                "https://api.anthropic.com",
-                "claude-haiku-6",
-                Some("claude-haiku"),
-            )
-            .await;
-            let (mut config, overrides) = loaded(None, None, None);
-
-            apply_last_provider(&mut config, &last, overrides, None);
-
-            assert_eq!(
-                config.model, "claude-haiku-6",
-                "offline, the saved id beats the older pinned fallback"
-            );
-        }
-
-        #[tokio::test]
-        async fn a_literal_saved_id_is_never_re_resolved() {
-            let last = saved(
-                ProviderType::Anthropic,
-                "https://api.anthropic.com",
-                "claude-haiku-5-5-20261001",
-            )
-            .await;
-            let (mut config, overrides) = loaded(None, None, None);
-
-            apply_last_provider(
-                &mut config,
-                &last,
-                overrides,
-                Some(&live_haiku("claude-haiku-5-5")),
-            );
-
-            assert_eq!(config.model, "claude-haiku-5-5-20261001");
-        }
-
-        #[tokio::test]
-        async fn model_flag_beats_a_saved_alias() {
-            let last = saved_as(
-                ProviderType::Anthropic,
-                "https://api.anthropic.com",
-                "claude-haiku-5-5-20261001",
-                Some("claude-haiku"),
-            )
-            .await;
-            let (mut config, overrides) = loaded(None, Some("claude-opus-5-5"), None);
-
-            apply_last_provider(
-                &mut config,
-                &last,
-                overrides,
-                Some(&live_haiku("claude-haiku-5-5")),
-            );
-
-            assert_eq!(config.model, "claude-opus-5-5");
-        }
-
-        #[tokio::test]
-        async fn a_restored_alias_is_returned_for_the_endpoint_save() {
-            // `--base-url` alone saves the row again (`remembers_endpoint`);
-            // the restored model's alias must survive that save.
-            let last = saved_as(
-                ProviderType::Anthropic,
-                "https://api.anthropic.com",
-                "claude-haiku-5-5-20261001",
-                Some("claude-haiku"),
-            )
-            .await;
-
-            let (mut config, overrides) =
-                loaded(Some("https://proxy.example/v1"), None, Some("anthropic"));
-            let alias = apply_last_provider(&mut config, &last, overrides, None);
-            assert_eq!(alias.as_deref(), Some("claude-haiku"));
-            assert_eq!(config.base_url, "https://proxy.example/v1");
-
-            let (mut config, overrides) = loaded(
-                Some("https://proxy.example/v1"),
-                Some("claude-opus-5-5"),
-                Some("anthropic"),
-            );
-            let alias = apply_last_provider(&mut config, &last, overrides, None);
-            assert_eq!(alias, None, "a --model choice is not the alias's model");
-
-            let (mut config, overrides) = loaded(Some("http://localhost:1234/v1"), None, None);
-            let alias = apply_last_provider(&mut config, &last, overrides, None);
-            assert_eq!(alias, None, "a different provider restores nothing");
-        }
+    // Restoring the saved choice under the flags is the host's now
+    // (`koda_client` `settings::with_saved`, tested there).
+    #[test]
+    fn a_command_line_url_is_remembered_once_the_server_answered() {
+        use super::{ProviderOverrides, remembers_endpoint};
+        let url = ProviderOverrides {
+            base_url: true,
+            ..Default::default()
+        };
+        assert!(remembers_endpoint(url, "Qwen3.8-27B-Q4_K_M.gguf"));
+        // A model typed with the URL counts the same.
+        assert!(remembers_endpoint(url, "my-model"));
+        // The server never answered: placeholders must not be saved.
+        assert!(!remembers_endpoint(url, "(connection failed)"));
+        assert!(!remembers_endpoint(url, "(no model loaded)"));
+        // No URL given: nothing new to remember.
+        let none = ProviderOverrides::default();
+        assert!(!remembers_endpoint(none, "Qwen3.8-27B-Q4_K_M.gguf"));
+        let provider_only = ProviderOverrides {
+            provider: true,
+            model: true,
+            ..Default::default()
+        };
+        assert!(!remembers_endpoint(provider_only, "m"));
     }
 }

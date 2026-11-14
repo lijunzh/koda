@@ -112,7 +112,7 @@ impl TuiContext {
             &self.client,
             Some(self.session.id.clone()),
             self.session.db.clone(),
-            &self.config,
+            &crate::tui_context::settings::Named::default(),
         )
         .await?;
         self.host_session = opened.id.clone();
