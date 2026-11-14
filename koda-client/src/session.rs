@@ -110,6 +110,8 @@ impl SessionCommand {
 #[derive(Clone)]
 pub(crate) struct SessionContext {
     pub config: KodaConfig,
+    /// `~/.config/koda/config.toml`, read again for each new session.
+    pub config_file: koda_config::ConfigFile,
     pub project_root: PathBuf,
     pub db: Database,
     pub events: mpsc::UnboundedSender<Outgoing>,
@@ -139,6 +141,7 @@ pub(crate) async fn open(
 ) -> Result<OpenSession, ErrorObject> {
     let SessionContext {
         mut config,
+        config_file: context_file,
         project_root,
         db,
         events,
@@ -179,10 +182,11 @@ pub(crate) async fn open(
     }
     // A new session takes the saved choice where the client named nothing,
     // as a Codex thread starts from `config.toml`'s defaults.
+    let saved = crate::config_file::values(&crate::config_file::load(&context_file)?);
     if !resumed {
-        choice = crate::settings::with_saved(choice, &crate::settings::saved(&db).await);
+        choice = crate::settings::with_saved(choice, &saved);
     }
-    let alias = crate::settings::apply_start(&mut config, &choice).await?;
+    let alias = crate::settings::apply_start(&mut config, &choice, &saved.model_providers).await?;
     crate::settings::detect_model(&mut config).await;
 
     // Ask the provider for the model's window first. A guess is said once
@@ -228,7 +232,7 @@ pub(crate) async fn open(
     // Its MCP servers start in the background; opening waits only for the
     // required ones, and fails when one of them does, as Codex's does.
     let mcp = session.mcp();
-    let servers = crate::mcp::configured(&session.db, &config).await?;
+    let servers = crate::mcp::configured(&context_file, &config)?;
     let on_status = crate::mcp::status_fn(&id, &events);
     if let Err(e) = session.start_mcp(servers, Some(on_status)).await {
         if let Some(mcp) = &mcp {
@@ -308,6 +312,7 @@ pub(crate) async fn open(
         task: SessionTask {
             session,
             config,
+            config_file: context_file,
             alias: alias.map(str::to_string),
             pending_settings: Vec::new(),
             mcp,
@@ -324,6 +329,8 @@ pub(crate) async fn open(
 pub(crate) struct SessionTask {
     session: KodaSession,
     config: KodaConfig,
+    /// The config file, for an MCP reload.
+    config_file: koda_config::ConfigFile,
     /// The alias the model was chosen by, if any.
     alias: Option<String>,
     /// `session/settings/update`s that arrived during the turn, applied
@@ -482,7 +489,7 @@ impl SessionTask {
         let Some(mcp) = &self.mcp else {
             return;
         };
-        match crate::mcp::configured(&self.session.db, &self.config).await {
+        match crate::mcp::configured(&self.config_file, &self.config) {
             Ok(servers) => koda_core::mcp::McpManager::reconcile(mcp, servers).await,
             Err(error) => tracing::warn!("MCP reload: {}", error.message),
         }

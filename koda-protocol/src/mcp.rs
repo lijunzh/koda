@@ -63,7 +63,7 @@ pub struct McpServerConfigValue {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ListMcpServerStatusParams {
-    /// The session whose servers to list. Without one, the stored servers,
+    /// The session whose servers to list. Without one, the configured servers,
     /// none of them started.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
@@ -120,7 +120,7 @@ pub enum McpServerConnectionStatus {
     Failed,
 }
 
-/// `config/mcpServer/reload`: every open session takes the stored servers
+/// `config/mcpServer/reload`: every open session takes the configured servers
 /// again, starting new ones, stopping removed ones and restarting changed
 /// or failed ones, before its next turn. Answered once the idle sessions
 /// have taken them, so a `mcpServerStatus/list` that follows shows the

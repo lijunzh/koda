@@ -160,6 +160,13 @@
             "$ref": "#/$defs/ConfigEdit"
           },
           "type": "array"
+        },
+        "expectedVersion": {
+          "description": "Write only if the file is still at this version (from `config/read`\nor an earlier write); otherwise refused with\n[`ConfigWriteErrorCode::ConfigVersionConflict`].",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -172,7 +179,7 @@
       "description": "One change: a key, its new value (`null` removes it) and how to merge.",
       "properties": {
         "keyPath": {
-          "description": "The key: one of [`KEYS`], or `mcp_servers.<name>`.",
+          "description": "The key: one of [`KEYS`], `model_providers.<id>.base_url`, or\n`mcp_servers.<name>`.",
           "type": "string"
         },
         "mergeStrategy": {
@@ -190,21 +197,135 @@
       ],
       "type": "object"
     },
+    "ConfigLayer": {
+      "description": "A layer, its version and its values.",
+      "properties": {
+        "config": {
+          "description": "Every value it holds, Koda's keys or not."
+        },
+        "name": {
+          "$ref": "#/$defs/ConfigLayerSource",
+          "description": "The layer."
+        },
+        "version": {
+          "description": "Its version.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "config"
+      ],
+      "type": "object"
+    },
+    "ConfigLayerMetadata": {
+      "description": "A layer and its version.",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/ConfigLayerSource",
+          "description": "The layer."
+        },
+        "version": {
+          "description": "Its version, `sha256:` of its values; pass it as\n`expectedVersion` to write only if nothing changed since.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "type": "object"
+    },
+    "ConfigLayerSource": {
+      "description": "Where a value comes from. Koda has one layer so far, the user's file;\nCodex also has managed, project and `-c` layers.",
+      "oneOf": [
+        {
+          "description": "`~/.config/koda/config.toml`.",
+          "properties": {
+            "file": {
+              "description": "The file's path.",
+              "type": "string"
+            },
+            "type": {
+              "const": "user",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "file"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "ConfigReadParams": {
       "additionalProperties": false,
       "description": "`config/read`.",
+      "properties": {
+        "includeLayers": {
+          "description": "Also return each layer and its values.",
+          "type": "boolean"
+        }
+      },
       "type": "object"
     },
     "ConfigReadResponse": {
-      "description": "The answer to `config/read`: the saved settings. A key nothing has\nsaved is absent, and a new session then uses the host's own.",
+      "description": "The answer to `config/read`: the settings, where each came from, and,\nwhen asked, the layers. A key nothing sets is absent, and a new session\nthen uses the host's own.",
       "properties": {
         "config": {
           "$ref": "#/$defs/KodaConfigValues",
           "description": "The settings, by key."
+        },
+        "layers": {
+          "description": "The layers, lowest first, with `includeLayers`.",
+          "items": {
+            "$ref": "#/$defs/ConfigLayer"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "origins": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ConfigLayerMetadata"
+          },
+          "description": "The layer each value comes from, by dotted key path\n(`model_providers.lm-studio.base_url`).",
+          "type": "object"
         }
       },
       "required": [
-        "config"
+        "config",
+        "origins"
+      ],
+      "type": "object"
+    },
+    "ConfigWarningNotification": {
+      "description": "`configWarning`: something in a config file needs a look, such as a key\nKoda doesn't know, which it loads past. In Codex's shape.",
+      "properties": {
+        "details": {
+          "description": "More detail, if any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "The file it concerns.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "summary": {
+          "description": "One sentence for a person.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "summary"
       ],
       "type": "object"
     },
@@ -215,13 +336,23 @@
           "$ref": "#/$defs/KodaConfigValues",
           "description": "The settings as saved now."
         },
+        "filePath": {
+          "description": "The file written.",
+          "type": "string"
+        },
         "status": {
           "$ref": "#/$defs/WriteStatus",
           "description": "How the write went."
+        },
+        "version": {
+          "description": "The file's version now.",
+          "type": "string"
         }
       },
       "required": [
         "status",
+        "version",
+        "filePath",
         "config"
       ],
       "type": "object"
@@ -716,15 +847,8 @@
       "type": "string"
     },
     "KodaConfigValues": {
-      "description": "Koda's saved settings.",
+      "description": "Koda's settings.",
       "properties": {
-        "base_url": {
-          "description": "The provider's endpoint.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "mcp_servers": {
           "additionalProperties": {
             "$ref": "#/$defs/McpServerConfigValue"
@@ -745,6 +869,13 @@
             "string",
             "null"
           ]
+        },
+        "model_providers": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ModelProviderConfigValue"
+          },
+          "description": "Settings per provider, by provider id.",
+          "type": "object"
         }
       },
       "type": "object"
@@ -761,7 +892,7 @@
           ]
         },
         "sessionId": {
-          "description": "The session whose servers to list. Without one, the stored servers,\nnone of them started.",
+          "description": "The session whose servers to list. Without one, the configured servers,\nnone of them started.",
           "type": [
             "string",
             "null"
@@ -992,7 +1123,7 @@
     },
     "McpServerRefreshParams": {
       "additionalProperties": false,
-      "description": "`config/mcpServer/reload`: every open session takes the stored servers\nagain, starting new ones, stopping removed ones and restarting changed\nor failed ones, before its next turn. Answered once the idle sessions\nhave taken them, so a `mcpServerStatus/list` that follows shows the\nchange; new servers are then still starting.",
+      "description": "`config/mcpServer/reload`: every open session takes the configured servers\nagain, starting new ones, stopping removed ones and restarting changed\nor failed ones, before its next turn. Answered once the idle sessions\nhave taken them, so a `mcpServerStatus/list` that follows shows the\nchange; new servers are then still starting.",
       "type": "object"
     },
     "McpServerRefreshResponse": {
@@ -1235,6 +1366,19 @@
         "providerId",
         "apiKey"
       ],
+      "type": "object"
+    },
+    "ModelProviderConfigValue": {
+      "description": "One provider's settings: `[model_providers.<id>]`.",
+      "properties": {
+        "base_url": {
+          "description": "The provider's endpoint, used whenever a session runs on it and\nnames none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
       "type": "object"
     },
     "ModelProviderListParams": {
@@ -2804,6 +2948,11 @@
     }
   },
   "notifications": {
+    "configWarning": {
+      "params": {
+        "$ref": "#/$defs/ConfigWarningNotification"
+      }
+    },
     "error": {
       "params": {
         "$ref": "#/$defs/ErrorNotification"

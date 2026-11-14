@@ -290,6 +290,10 @@ pub(crate) async fn fetch_settings(
             Ok(Some(Outgoing::Notification(ServerNotification::Warning(w)))) => {
                 warnings.push(w.message);
             }
+            // Sent after `initialize`, so still queued here.
+            Ok(Some(Outgoing::Notification(ServerNotification::ConfigWarning(w)))) => {
+                warnings.push(w.summary);
+            }
             Ok(Some(_)) => {}
             Ok(None) => anyhow::bail!("Koda's host stopped"),
             Err(_) => anyhow::bail!("Koda's host didn't report the session's settings"),
@@ -309,27 +313,40 @@ pub(crate) fn mirror(config: &mut KodaConfig, settings: &SessionSettings) {
     config.model_settings.max_context_tokens = window;
 }
 
-/// Save `config`'s provider, endpoint and model as the choice a new session
-/// starts from (`config/batchWrite`); the model by `alias` when it was
-/// chosen by one, so it follows its line.
+/// Save `config`'s provider and model as the choice a new session starts
+/// from (`config/batchWrite` into config.toml); the model by `alias` when
+/// it was chosen by one, so it follows its line. The endpoint is saved as
+/// the provider's `[model_providers.<id>] base_url` when it isn't the
+/// provider's default, and removed when it is, so the file stays short.
 pub(crate) async fn save_choice(
     client: &koda_client::InProcessClient,
     config: &KodaConfig,
     alias: Option<&str>,
 ) {
     use koda_client::protocol::config::{ConfigBatchWriteParams, ConfigEdit, MergeStrategy};
-    let edit = |key: &str, value: &str| ConfigEdit {
-        key_path: key.to_string(),
-        value: serde_json::Value::String(value.to_string()),
+    use serde_json::Value;
+    let edit = |key: String, value: Value| ConfigEdit {
+        key_path: key,
+        value,
         merge_strategy: MergeStrategy::Replace,
+    };
+    let ptype = config.provider_type;
+    let endpoint = if config.base_url == ptype.default_base_url() {
+        Value::Null
+    } else {
+        Value::String(config.base_url.clone())
     };
     let saved = client
         .request::<methods::ConfigBatchWrite>(ConfigBatchWriteParams {
             edits: vec![
-                edit("model_provider", &config.provider_type.to_string()),
-                edit("base_url", &config.base_url),
-                edit("model", alias.unwrap_or(&config.model)),
+                edit("model_provider".into(), Value::String(ptype.to_string())),
+                edit(format!("model_providers.{ptype}.base_url"), endpoint),
+                edit(
+                    "model".into(),
+                    Value::String(alias.unwrap_or(&config.model).to_string()),
+                ),
             ],
+            expected_version: None,
         })
         .await;
     if let Err(e) = saved {

@@ -8,6 +8,9 @@ are collected or transmitted anywhere.
 - Conversations are stored **only** on your machine: in your local SQLite
   database, and in the log when you turn it up to debug level
 - API keys are stored locally in the same database (file mode 0600)
+- Your settings (model choice, provider endpoints, MCP servers) are in
+  `~/.config/koda/config.toml`, also readable by you only. It holds no API
+  keys
 - Koda sends data only to the provider you chose, and to the sites and MCP
   servers its tools reach when the model calls `WebFetch`, `WebSearch` or an
   MCP tool

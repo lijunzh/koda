@@ -27,6 +27,7 @@
 //! what its next turns run with ([`InProcessClient::configure_session`]).
 
 pub mod builtin_skills;
+mod config_file;
 pub mod events;
 mod host;
 mod mcp;
@@ -47,6 +48,7 @@ use koda_protocol::{Method, methods};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
+pub use koda_config::ConfigFile;
 pub use koda_protocol as protocol;
 
 use events::Outgoing;
@@ -60,6 +62,10 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct StartArgs {
     /// What new sessions start with.
     pub config: KodaConfig,
+    /// The config file, `~/.config/koda/config.toml` in production
+    /// ([`ConfigFile::in_dir`] of Koda's config folder). Tests pass a
+    /// scratch one.
+    pub config_file: ConfigFile,
     /// The project sessions work in.
     pub project_root: PathBuf,
     /// Where sessions are stored.
@@ -135,8 +141,14 @@ impl RequestHandle {
 }
 
 impl InProcessClient {
-    /// Start the host and run the `initialize` handshake.
+    /// Start the host and run the `initialize` handshake. A config file
+    /// that can't be read or isn't valid stops it here, naming the line;
+    /// settings earlier versions kept in the database move into the file
+    /// first, once.
     pub async fn start(args: StartArgs) -> Result<Self, RequestError> {
+        config_file::migrate(&args.db, &args.config_file).await;
+        let loaded = args.config_file.load().map_err(RequestError::Config)?;
+        let config_warnings = config_file::warnings(&args.config_file, &loaded);
         // Stored API keys reach the sessions through the environment; one
         // already set there wins.
         if let Err(e) = koda_core::keystore::inject_into_env(&args.db).await {
@@ -152,6 +164,8 @@ impl InProcessClient {
         let handles = host::HandleMap::default();
         let (commands, host) = host::spawn(HostArgs {
             config: args.config,
+            config_file: args.config_file,
+            config_warnings,
             project_root: args.project_root,
             db: args.db,
             events: events_tx,
@@ -339,6 +353,9 @@ pub enum RequestError {
         /// What serde said.
         source: serde_json::Error,
     },
+    /// The config file couldn't be read, or isn't valid: the host didn't
+    /// start.
+    Config(koda_config::ConfigError),
 }
 
 impl fmt::Display for RequestError {
@@ -352,6 +369,7 @@ impl fmt::Display for RequestError {
             Self::Decode { method, source } => {
                 write!(f, "{method}: response didn't decode: {source}")
             }
+            Self::Config(error) => error.fmt(f),
         }
     }
 }
@@ -362,6 +380,7 @@ impl std::error::Error for RequestError {
             Self::Closed { .. } => None,
             Self::Server { error, .. } => Some(error),
             Self::Encode { source, .. } | Self::Decode { source, .. } => Some(source),
+            Self::Config(error) => Some(error),
         }
     }
 }
@@ -380,6 +399,7 @@ mod tests {
         let db = Database::init(dir.path()).await.unwrap();
         let args = StartArgs {
             config,
+            config_file: ConfigFile::in_dir(dir.path()),
             project_root: dir.path().to_path_buf(),
             db,
             raw_events: false,
@@ -405,6 +425,53 @@ mod tests {
         assert_eq!(
             client.server().protocol_version,
             koda_protocol::PROTOCOL_VERSION
+        );
+        client.shutdown().await;
+    }
+
+    /// A config file that isn't valid stops the host before it starts,
+    /// naming the line, as Codex refuses a bad `config.toml`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_broken_config_file_stops_the_start() {
+        let config = KodaConfig::default_for_testing(ProviderType::LMStudio);
+        let (args, dir) = args(config).await;
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "model = \"a\"\nmodel_provider = \n",
+        )
+        .unwrap();
+        let Err(error) = InProcessClient::start(args).await else {
+            panic!("started on a broken config file");
+        };
+        assert!(matches!(error, RequestError::Config(_)), "{error:?}");
+        assert!(error.to_string().contains("line 2"), "{error}");
+    }
+
+    /// A key Koda doesn't know is loaded past and reported right after
+    /// `initialize`, as Codex sends `configWarning`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unknown_config_keys_are_reported_after_initialize() {
+        use koda_protocol::ServerNotification;
+        let config = KodaConfig::default_for_testing(ProviderType::LMStudio);
+        let (args, dir) = args(config).await;
+        std::fs::write(dir.path().join("config.toml"), "modle = \"claude-opus\"\n").unwrap();
+        let mut client = InProcessClient::start(args).await.unwrap();
+        let event = tokio::time::timeout(Duration::from_secs(5), client.next_event())
+            .await
+            .unwrap();
+        let Some(Outgoing::Notification(ServerNotification::ConfigWarning(warning))) = event else {
+            panic!("expected a config warning, got {event:?}");
+        };
+        assert!(warning.summary.contains("`modle`"), "{warning:?}");
+        assert_eq!(
+            warning.path.as_deref(),
+            Some(
+                dir.path()
+                    .join("config.toml")
+                    .display()
+                    .to_string()
+                    .as_str()
+            )
         );
         client.shutdown().await;
     }

@@ -820,25 +820,23 @@ async fn a_resumed_run_keeps_its_model_unless_flags_say_otherwise() {
     assert_eq!(models, ["first-model", "first-model", "flag-model"]);
 }
 
-/// `koda exec` without flags runs on the saved choice, as `codex exec` uses
-/// `config.toml`; `--model` alone keeps the saved provider and endpoint.
+/// `koda exec` without flags runs on config.toml's choice, as `codex exec`
+/// uses `config.toml`; `--model` alone keeps the saved provider, and the
+/// provider's endpoint comes from `[model_providers.lm-studio]`.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_run_without_flags_uses_the_saved_choice() {
     let server = stub(vec![], no_other_calls).await;
     let tmp = tempfile::tempdir().unwrap();
-    let db = koda_core::db::Database::init(&tmp.path().join("koda"))
-        .await
-        .unwrap();
-    koda_core::last_provider::save_last_provider(
-        &db,
-        "lm-studio",
-        &server.url(),
-        "saved-model",
-        None,
+    std::fs::create_dir_all(tmp.path().join("koda")).unwrap();
+    std::fs::write(
+        tmp.path().join("koda/config.toml"),
+        format!(
+            "model_provider = \"lm-studio\"\nmodel = \"saved-model\"\n\n\
+             [model_providers.lm-studio]\nbase_url = \"{}\"\n",
+            server.url()
+        ),
     )
-    .await
     .unwrap();
-    drop(db);
     let exec = |flags: &[&str]| {
         let mut command = tokio::process::Command::new(koda_bin());
         command

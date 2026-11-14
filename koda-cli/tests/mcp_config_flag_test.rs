@@ -65,12 +65,18 @@ fn final_text() -> ResponseTemplate {
     ])
 }
 
+/// The config file `run_echo_turn` runs with.
+fn config_file(tmp: &tempfile::TempDir) -> koda_config::ConfigFile {
+    koda_config::ConfigFile::in_dir(&tmp.path().join("koda"))
+}
+
 /// Run one headless turn whose model calls `mail__echo` once. `flag` is
-/// passed as `--mcp-config` when set; `stored` is saved to the database first.
-/// Returns the chat request bodies and the config dir.
+/// passed as `--mcp-config` when set; `stored` is written to config.toml as
+/// `[mcp_servers.mail]` first. Returns the chat request bodies and the
+/// config dir.
 async fn run_echo_turn(
     flag: Option<String>,
-    stored: Option<koda_core::mcp::McpServerConfig>,
+    stored: Option<serde_json::Value>,
 ) -> (Vec<String>, tempfile::TempDir) {
     let server = FakeLlmServer::spawn().await;
     let turns = AtomicUsize::new(0);
@@ -85,13 +91,12 @@ async fn run_echo_turn(
         .await;
 
     let tmp = tempfile::tempdir().unwrap();
-    if let Some(config) = stored {
-        let db = koda_core::db::Database::init(&tmp.path().join("koda"))
-            .await
-            .unwrap();
-        koda_core::mcp::config::save_mcp_config(&db, "mail", &config)
-            .await
-            .unwrap();
+    if let Some(server) = stored {
+        let edit = koda_config::Edit {
+            key_path: "mcp_servers.mail".into(),
+            value: server,
+        };
+        config_file(&tmp).edit(None, &[edit]).unwrap();
     }
     let mut cmd = tokio::process::Command::new(koda_bin());
     cmd.args(["exec", "Echo something"])
@@ -150,25 +155,18 @@ async fn a_flag_server_answers_tool_calls_and_is_not_saved() {
     let (bodies, tmp) = run_echo_turn(Some(flag), None).await;
     assert_echo_round_trip(&bodies);
 
-    let db = koda_core::db::Database::init(&tmp.path().join("koda"))
-        .await
-        .unwrap();
-    let stored = koda_core::mcp::config::list_mcp_server_names(&db)
-        .await
-        .unwrap();
+    let stored = config_file(&tmp).load().unwrap().config.mcp_servers;
     assert!(stored.is_empty(), "saved: {stored:?}");
 }
 
-/// A server stored with `/mcp add` connects after the agent is built; its
-/// tools must still reach the model.
+/// A server in config.toml connects after the agent is built; its tools
+/// must still reach the model.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_stored_server_is_offered_to_the_model() {
-    let stored: koda_core::mcp::McpServerConfig = serde_json::from_value(json!({
-        "transport": "stdio",
+async fn a_configured_server_is_offered_to_the_model() {
+    let stored = json!({
         "command": "sh",
         "args": ["-c", ECHO_SERVER],
-    }))
-    .unwrap();
+    });
     let (bodies, _tmp) = run_echo_turn(None, Some(stored)).await;
     assert_echo_round_trip(&bodies);
 }

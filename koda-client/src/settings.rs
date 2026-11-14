@@ -7,10 +7,12 @@
 //! such as `claude-opus` follows its line, so the choice is kept as made
 //! and resolved again on resume (latest model first, `DESIGN.md`).
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use koda_core::config::{KodaConfig, ProviderType};
 use koda_core::model_alias;
+use koda_protocol::config::{KodaConfigValues, ModelProviderConfigValue};
 use koda_protocol::model::{
     Model, ModelListParams, ModelListResponse, ModelProviderListResponse, ModelProviderSummary,
 };
@@ -70,6 +72,12 @@ fn resolve_model(
     }
 }
 
+/// Refuse `model` for `ptype` as a session would: `local`, or an alias of
+/// another provider.
+pub(crate) fn check_model(model: &str, ptype: ProviderType) -> Result<(), ErrorObject> {
+    resolve_model(model, ptype).map(|_| ())
+}
+
 /// Fetch the live Claude ids first when `model` is an alias that follows
 /// the Models API, so it resolves to its line's newest model.
 async fn refresh_for(model: Option<&str>) {
@@ -81,11 +89,14 @@ async fn refresh_for(model: Option<&str>) {
 /// Apply `choice` to `config`, for a session that starts or resumes. A
 /// provider can be named, or picked by an alias (`claude-opus` picks
 /// Anthropic); a provider without a model gets its default, which is kept
-/// as its line's alias when it is that line's newest. Returns the alias the
-/// model was chosen by, if any.
+/// as its line's alias when it is that line's newest. Without a named
+/// endpoint, the config file's `[model_providers.<id>] base_url` for the
+/// provider is used (`endpoints`), whatever the saved provider is. Returns
+/// the alias the model was chosen by, if any.
 pub(crate) async fn apply_start(
     config: &mut KodaConfig,
     choice: &ModelChoice,
+    endpoints: &BTreeMap<String, ModelProviderConfigValue>,
 ) -> Result<Option<&'static str>, ErrorObject> {
     refresh_for(choice.model.as_deref()).await;
     let by_alias = choice
@@ -98,10 +109,16 @@ pub(crate) async fn apply_start(
         (None, Some(resolved)) => resolved.provider,
         (None, None) => config.provider_type,
     };
-    let base_url = match &choice.base_url {
-        Some(url) => url.clone(),
-        None if ptype == config.provider_type => config.base_url.clone(),
-        None => ptype.default_base_url().to_string(),
+    // A named endpoint, else the one the config file gives this provider,
+    // else the host's for its own provider or the provider's default.
+    let configured = endpoints
+        .get(&ptype.to_string())
+        .and_then(|p| p.base_url.clone());
+    let base_url = match (&choice.base_url, configured) {
+        (Some(url), _) => url.clone(),
+        (None, Some(url)) => url,
+        (None, None) if ptype == config.provider_type => config.base_url.clone(),
+        (None, None) => ptype.default_base_url().to_string(),
     };
     let (model, alias) = match &choice.model {
         Some(model) => resolve_model(model, ptype)?,
@@ -265,146 +282,27 @@ pub(crate) fn mode_of(mode: TrustMode) -> koda_core::trust::TrustMode {
 
 // ── The saved choice (config) ───────────────────────────────────────────
 
-use koda_protocol::config::{
-    ConfigBatchWriteParams, ConfigReadResponse, ConfigWriteResponse, KodaConfigValues, WriteStatus,
-};
-
-/// The saved choice, as config keys: the model as chosen (an alias or an
-/// id), its provider's id and endpoint.
-/// The saved model choice; [`read_config`] adds the MCP servers.
-pub(crate) async fn saved(db: &koda_core::db::Database) -> KodaConfigValues {
-    match koda_core::last_provider::load_last_provider(db).await {
-        Ok(Some(last)) => {
-            let ptype = ProviderType::from_url_or_name("", Some(&last.provider_type));
-            KodaConfigValues {
-                model: Some(last.alias.unwrap_or(last.model)),
-                model_provider: Some(ptype.to_string()),
-                base_url: Some(last.base_url),
-                mcp_servers: Default::default(),
-            }
-        }
-        Ok(None) => KodaConfigValues::default(),
-        Err(e) => {
-            tracing::warn!("couldn't read the saved model choice: {e:#}");
-            KodaConfigValues::default()
-        }
-    }
-}
-
-/// A new session's choice with the saved one filling in what the client
-/// didn't name, by the rules the TUI has kept since #1408: what's named
-/// always wins; a named provider or endpoint takes the saved endpoint and
-/// model only when it's the saved provider, since they were picked for it.
+/// A new session's choice with the config file's filling in what the
+/// client didn't name: what's named always wins, and a named provider or
+/// endpoint takes the saved model only when it's the saved provider, since
+/// a model id belongs to its provider. Endpoints are per provider and
+/// applied in [`apply_start`], once the provider is known.
 pub(crate) fn with_saved(mut choice: ModelChoice, saved: &KodaConfigValues) -> ModelChoice {
     let Some(saved_provider) = saved.model_provider.clone() else {
         return choice;
     };
-    if choice.provider.is_some() || choice.base_url.is_some() {
-        let named = match (&choice.provider, &choice.base_url) {
-            (Some(id), _) => id.clone(),
-            (None, Some(url)) => ProviderType::from_url_or_name(url, None).to_string(),
-            (None, None) => unreachable!("one is named"),
-        };
-        if named != saved_provider {
-            return choice;
-        }
-    } else {
-        choice.provider = Some(saved_provider);
+    let named = match (&choice.provider, &choice.base_url) {
+        (Some(id), _) => Some(id.clone()),
+        (None, Some(url)) => Some(ProviderType::from_url_or_name(url, None).to_string()),
+        (None, None) => None,
+    };
+    match named {
+        Some(named) if named != saved_provider => return choice,
+        Some(_) => {}
+        None => choice.provider = Some(saved_provider),
     }
-    choice.base_url = choice.base_url.or_else(|| saved.base_url.clone());
     choice.model = choice.model.or_else(|| saved.model.clone());
     choice
-}
-
-/// `config/read`.
-pub(crate) async fn read_config(db: &koda_core::db::Database) -> ConfigReadResponse {
-    ConfigReadResponse {
-        config: KodaConfigValues {
-            mcp_servers: crate::mcp::stored(db).await,
-            ..saved(db).await
-        },
-    }
-}
-
-/// `config/batchWrite`: apply the edits, all or none, and save them. A key
-/// Koda doesn't take, or a value that doesn't fit its key, refuses the
-/// whole batch. A removed model key falls back to the host's; an
-/// `mcp_servers.<name>` edit saves or removes that server, which open
-/// sessions take on `config/mcpServer/reload`.
-pub(crate) async fn write_config(
-    db: &koda_core::db::Database,
-    host: &KodaConfig,
-    params: ConfigBatchWriteParams,
-) -> Result<ConfigWriteResponse, ErrorObject> {
-    let mut values = saved(db).await;
-    let mut servers = Vec::new();
-    let mut model_edited = false;
-    for edit in params.edits {
-        if let Some(name) = crate::mcp::server_key(&edit.key_path) {
-            servers.push(crate::mcp::check_edit(name, edit.value)?);
-            continue;
-        }
-        model_edited = true;
-        let slot = match edit.key_path.as_str() {
-            "model" => &mut values.model,
-            "model_provider" => &mut values.model_provider,
-            "base_url" => &mut values.base_url,
-            other => {
-                return Err(invalid(format!(
-                    "unknown config key {other:?}; Koda takes {} and {}.<name>",
-                    koda_protocol::config::KEYS.join(", "),
-                    koda_protocol::mcp::SERVERS_KEY,
-                )));
-            }
-        };
-        *slot = match edit.value {
-            serde_json::Value::Null => None,
-            serde_json::Value::String(value) => Some(value),
-            other => {
-                return Err(invalid(format!(
-                    "{} takes a string or null, not {other}",
-                    edit.key_path
-                )));
-            }
-        };
-    }
-    if model_edited {
-        save_choice(db, host, &values).await?;
-    }
-    crate::mcp::apply_edits(db, servers).await?;
-    Ok(ConfigWriteResponse {
-        status: WriteStatus::Ok,
-        config: read_config(db).await.config,
-    })
-}
-
-/// Check the model choice and save it.
-async fn save_choice(
-    db: &koda_core::db::Database,
-    host: &KodaConfig,
-    values: &KodaConfigValues,
-) -> Result<(), ErrorObject> {
-    let ptype = match &values.model_provider {
-        Some(id) => provider(id)?,
-        None => host.provider_type,
-    };
-    let base_url = values.base_url.clone().unwrap_or_else(|| {
-        if ptype == host.provider_type {
-            host.base_url.clone()
-        } else {
-            ptype.default_base_url().to_string()
-        }
-    });
-    let choice = values
-        .model
-        .clone()
-        .unwrap_or_else(|| ptype.default_model().to_string());
-    // An alias is kept as an alias, with its id as the fallback a start
-    // without the Models API uses.
-    let (model, alias) = resolve_model(&choice, ptype)?;
-    koda_core::last_provider::save_last_provider(db, &ptype.to_string(), &base_url, &model, alias)
-        .await
-        .map_err(|e| internal(format!("couldn't save the config: {e:#}")))
 }
 
 // ── API keys ────────────────────────────────────────────────────────────
@@ -482,7 +380,12 @@ mod tests {
         KodaConfigValues {
             model: Some("saved-model".into()),
             model_provider: Some("lm-studio".into()),
-            base_url: Some("http://127.0.0.1:1234/v1".into()),
+            model_providers: BTreeMap::from([(
+                "lm-studio".into(),
+                ModelProviderConfigValue {
+                    base_url: Some("http://127.0.0.1:1234/v1".into()),
+                },
+            )]),
             mcp_servers: Default::default(),
         }
     }
@@ -495,22 +398,21 @@ mod tests {
         }
     }
 
-    // The rules the TUI kept since #1408 (`apply_last_provider`), now the
-    // host's.
+    // The model rules the TUI kept since #1408 (`apply_last_provider`), now
+    // the host's. Endpoints are per provider since config.toml (CF-1b).
 
     #[test]
     fn nothing_named_restores_the_saved_choice() {
         let got = with_saved(ModelChoice::default(), &saved_lm_studio());
         assert_eq!(got.provider.as_deref(), Some("lm-studio"));
-        assert_eq!(got.base_url.as_deref(), Some("http://127.0.0.1:1234/v1"));
+        assert_eq!(got.base_url, None, "endpoints apply in apply_start");
         assert_eq!(got.model.as_deref(), Some("saved-model"));
     }
 
     #[test]
-    fn a_named_model_keeps_the_saved_provider_and_endpoint() {
+    fn a_named_model_keeps_the_saved_provider() {
         let got = with_saved(choice(None, None, Some("named")), &saved_lm_studio());
         assert_eq!(got.provider.as_deref(), Some("lm-studio"));
-        assert_eq!(got.base_url.as_deref(), Some("http://127.0.0.1:1234/v1"));
         assert_eq!(got.model.as_deref(), Some("named"));
     }
 
@@ -523,9 +425,8 @@ mod tests {
     }
 
     #[test]
-    fn the_saved_provider_named_keeps_its_saved_endpoint_and_model() {
+    fn the_saved_provider_named_keeps_its_saved_model() {
         let got = with_saved(choice(Some("lm-studio"), None, None), &saved_lm_studio());
-        assert_eq!(got.base_url.as_deref(), Some("http://127.0.0.1:1234/v1"));
         assert_eq!(got.model.as_deref(), Some("saved-model"));
     }
 
@@ -544,6 +445,50 @@ mod tests {
             &saved_lm_studio(),
         );
         assert_eq!(got.model, None);
+    }
+
+    /// A provider's endpoint from the config file applies whenever a new
+    /// session runs on it and names none, whichever provider is saved.
+    #[tokio::test]
+    async fn a_configured_endpoint_applies_to_its_provider() {
+        let endpoints = saved_lm_studio().model_providers;
+        let host = KodaConfig::default_for_testing(ProviderType::Anthropic);
+
+        let mut config = host.clone();
+        apply_start(
+            &mut config,
+            &choice(Some("lm-studio"), None, Some("m")),
+            &endpoints,
+        )
+        .await
+        .unwrap();
+        assert_eq!(config.base_url, "http://127.0.0.1:1234/v1");
+
+        // A named endpoint wins.
+        let mut config = host.clone();
+        apply_start(
+            &mut config,
+            &choice(
+                Some("lm-studio"),
+                Some("http://10.0.0.2:1234/v1"),
+                Some("m"),
+            ),
+            &endpoints,
+        )
+        .await
+        .unwrap();
+        assert_eq!(config.base_url, "http://10.0.0.2:1234/v1");
+
+        // Another provider with none configured gets its default.
+        let mut config = host.clone();
+        apply_start(
+            &mut config,
+            &choice(Some("ollama"), None, Some("m")),
+            &endpoints,
+        )
+        .await
+        .unwrap();
+        assert_eq!(config.base_url, ProviderType::Ollama.default_base_url());
     }
 
     #[test]

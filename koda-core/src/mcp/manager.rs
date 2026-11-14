@@ -12,9 +12,8 @@ use serde_json::Value;
 use tokio::sync::watch;
 
 use super::client::{McpClient, McpClientStatus};
-use super::config::{self, McpServerConfig};
+use super::config::McpServerConfig;
 use super::tool_bridge::{McpToolAnnotations, parse_mcp_tool_name};
-use crate::db::Database;
 use crate::providers::ToolDefinition;
 use crate::tools::ToolEffect;
 
@@ -102,20 +101,19 @@ impl McpManager {
         }
     }
 
-    /// The servers a session starts: the stored ones, plus this run's from
-    /// `--mcp-config`. A run's server replaces a stored one of the same name
-    /// for this run only; nothing is written back.
-    pub async fn configured(
-        db: &Database,
+    /// The servers a session starts: the configured ones, plus this run's
+    /// from `--mcp-config`. A run's server replaces a configured one of the
+    /// same name for this run only; nothing is written back.
+    pub fn configured(
+        mut configs: HashMap<String, McpServerConfig>,
         session_servers: &HashMap<String, McpServerConfig>,
-    ) -> Result<HashMap<String, McpServerConfig>> {
-        let mut configs = config::load_mcp_configs(db).await?;
+    ) -> HashMap<String, McpServerConfig> {
         for (name, server) in session_servers {
             if configs.insert(name.clone(), server.clone()).is_some() {
-                tracing::info!(server = %name, "--mcp-config replaces the stored server for this run");
+                tracing::info!(server = %name, "--mcp-config replaces the configured server for this run");
             }
         }
-        Ok(configs)
+        configs
     }
 
     /// Who is told when a server's startup changes.

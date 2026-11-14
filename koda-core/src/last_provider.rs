@@ -1,18 +1,15 @@
-//! Last-used provider recall (#693).
+//! The model choice earlier versions saved in the database (#693).
 //!
-//! Remembers the last provider/model/base-URL so Koda can auto-restore
-//! on next startup. Stored in SQLite via the [`crate::db`] KV store.
+//! Koda keeps the choice a new session starts from in
+//! `~/.config/koda/config.toml` now (`model`, `model_provider`,
+//! `[model_providers.<id>] base_url`), where a person can read and edit it.
+//! Earlier versions saved it in the database's `kv_store` as
+//! `setting:last_provider`; the host reads that row once, writes it into the
+//! file, and deletes it ([`load_last_provider`](crate::last_provider::load_last_provider), [`delete_last_provider`](crate::last_provider::delete_last_provider)).
 //!
-//! This is **not** user configuration — Koda follows "customization over
-//! configuration" (see DESIGN.md §P1). The only persisted state is which
-//! provider the user last chose via `/model`.
-//!
-//! When that choice was an alias (`claude-haiku`), the alias is saved next
-//! to the id it resolved to, so startup can resolve it again and pick up a
-//! newer release; the id is what runs when it can't.
-//!
-//! Renamed from `settings.rs` to avoid implying a user-editable config
-//! surface — koda has none.
+//! When that choice was an alias (`claude-haiku`), the alias was saved next
+//! to the id it resolved to; the move keeps the alias, so it follows its
+//! line.
 
 use crate::db::Database;
 use anyhow::Result;
@@ -20,7 +17,7 @@ use anyhow::Result;
 /// KV key for the last-used provider.
 const KV_KEY: &str = "setting:last_provider";
 
-/// Last-used provider configuration, restored on startup.
+/// The model choice as earlier versions saved it.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LastProvider {
     /// Provider type name (e.g. `"Anthropic"`, `"Gemini"`).
@@ -35,7 +32,7 @@ pub struct LastProvider {
     pub alias: Option<String>,
 }
 
-/// Load the last-used provider from the DB. Returns `None` if not set.
+/// The choice earlier versions saved, if any.
 pub async fn load_last_provider(db: &Database) -> Result<Option<LastProvider>> {
     match db.kv_get(KV_KEY).await? {
         Some(json) => Ok(serde_json::from_str(&json)?),
@@ -43,23 +40,9 @@ pub async fn load_last_provider(db: &Database) -> Result<Option<LastProvider>> {
     }
 }
 
-/// Save the last-used provider to the DB. `alias` is the alias the user
-/// picked, or `None` for a literal model id.
-pub async fn save_last_provider(
-    db: &Database,
-    provider_type: &str,
-    base_url: &str,
-    model: &str,
-    alias: Option<&str>,
-) -> Result<()> {
-    let lp = LastProvider {
-        provider_type: provider_type.to_string(),
-        base_url: base_url.to_string(),
-        model: model.to_string(),
-        alias: alias.map(str::to_string),
-    };
-    let json = serde_json::to_string(&lp)?;
-    db.kv_set(KV_KEY, &json).await
+/// Delete the saved choice, once it is in the config file.
+pub async fn delete_last_provider(db: &Database) -> Result<()> {
+    db.kv_delete(KV_KEY).await
 }
 
 #[cfg(test)]

@@ -10,15 +10,15 @@ When multiple sources specify the model, provider, or API key, the
        ↓
 2. Shell env vars     KODA_MODEL, KODA_PROVIDER, KODA_BASE_URL
        ↓
-3. Keystore / DB      saved by /model, /provider, /key (injected at startup)
+3. Config file        ~/.config/koda/config.toml, which /model and /provider write
        ↓
 4. Built-in defaults  Claude Sonnet via Anthropic              (lowest)
 ```
 
-API keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, …)
-follow the same chain. Keys saved with `/key` are injected at startup —
-but a key already in the shell environment takes precedence and is never
-overwritten.
+API keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, …) are
+never in the config file. Keys saved with `/key` are kept in Koda's database
+and injected at startup, but a key already in the shell environment takes
+precedence and is never overwritten.
 
 ```bash
 # Per-call override (doesn't change saved config)
@@ -30,6 +30,44 @@ export KODA_MODEL=gemini-2.5-pro
 # CI / GitHub Actions
 ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_KEY }} koda exec "check types"
 ```
+
+## The config file
+
+`~/.config/koda/config.toml` holds the settings a new session starts with,
+as Codex keeps `~/.codex/config.toml`. `/model`, `/provider` and `koda mcp`
+write it, and you can edit it by hand:
+
+```toml
+# The model a new session starts with: an alias such as claude-opus follows
+# its line to the newest release; an id stays as written.
+model_provider = "anthropic"
+model = "claude-opus"
+
+# A provider's endpoint, used whenever a session runs on that provider.
+[model_providers.lm-studio]
+base_url = "http://192.168.1.20:1234/v1"
+
+# MCP servers every new session starts (see MCP Servers).
+[mcp_servers.notes]
+command = "notes-mcp"
+args = ["--quiet"]
+```
+
+- **A hand edit applies to the next session,** without a restart. Run
+  `/mcp reconnect` for open sessions to take MCP server changes.
+- **Koda keeps your comments and layout** when it writes the file.
+- **A file that isn't valid stops Koda at startup,** naming the line and
+  column, so a typo can't quietly change what runs.
+- **A key Koda doesn't know is reported at startup** and otherwise ignored.
+  So is an MCP server it can't start.
+- **The file is readable by you only** (mode 0600), since an MCP server's
+  `env` can hold a token. API keys never go in it.
+- **Settings move in once.** Earlier versions kept the model choice and MCP
+  servers in the database; the first start of this version writes them into
+  the file, unless it already sets them, and deletes them from the database.
+
+The file is per machine, so a laptop and a desktop can point at different
+local servers.
 
 ## Context window
 
@@ -60,7 +98,8 @@ Everything lives in `~/.config/koda/`:
 
 | Path | Content |
 |------|---------|
-| `db/koda.db` | SQLite — sessions, messages, settings, API keys |
+| `config.toml` | Your settings: the model choice, provider endpoints, MCP servers (see [The config file](#the-config-file)) |
+| `db/koda.db` | SQLite — sessions, messages, API keys |
 | `history.jsonl` | What you typed in the TUI, for ↑ / ↓: the newest 500 entries, one JSON object per line, readable by you only |
 | `logs/koda-<pid>.log` | Tracing log, one per process; `logs/latest` links to the newest (see [Debugging a run](./debugging.md)) |
 | `agents/` | Global custom agent JSON definitions |
