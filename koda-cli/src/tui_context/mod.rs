@@ -419,6 +419,13 @@ impl TuiContext {
         {
             startup_lines.extend(crate::startup::update_notice_lines(current, &latest));
         }
+        // A model Anthropic has released that this Koda doesn't support yet,
+        // at every start until Koda is updated for it.
+        if let Some(ids) = koda_core::model_alias::ensure_live_claude_ids().await {
+            for notice in koda_core::model_alias::new_model_notices(ids) {
+                startup_lines.push(crate::startup::warning_line(notice));
+            }
+        }
 
         // Command names from SLASH_COMMANDS for the system prompt.
         let commands: Vec<&str> = crate::completer::SLASH_COMMANDS

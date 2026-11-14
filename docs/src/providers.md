@@ -83,11 +83,16 @@ does.
 | `claude-haiku` | Anthropic | `claude-haiku-5-5` |
 | `claude-sonnet` | Anthropic | `claude-sonnet-5-5` |
 | `claude-opus` | Anthropic | `claude-opus-5-5` |
+| `claude-fable` | Anthropic | `claude-fable-5-2` |
 | `local` | LM Studio | auto-detect at runtime |
 
-The three Claude aliases follow the Anthropic Models API: when an API key is
-set, the first time you open `/model` (or pick an alias) Koda asks for the
-newest model in each line and uses it, with a 5-second cap. The ids above are
+The four Claude aliases follow the Anthropic Models API: when an API key is
+set, Koda asks at startup for the newest model in each line and uses it, with
+a 5-second cap. Picking Anthropic in `/provider` offers those same newest
+models, not every model the API lists; an older one can still be typed, and
+gets a warning that Koda is built for the current models. When a line's newest
+model is one this Koda doesn't support yet, the TUI says so at startup, with a
+link to ask for it in an issue; the model still runs, without a tuned effort. The ids above are
 the offline fallback, used with no key, no network or an API error. A model
 picked by alias is remembered as the alias, so a newer release is picked up on
 the next start.

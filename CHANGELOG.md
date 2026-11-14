@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **Koda tells you when Anthropic releases a model it doesn't support yet.** At every TUI start with an Anthropic key, Koda asks the Models API for the newest model in each line. If one is missing from Koda's tables, a startup notice names it, with a link that opens an issue asking for support (it carries only the model id). The model still runs, as a current one without a tuned effort; `koda exec` only logs the notice.
+- **`claude-fable` follows the newest Fable model,** as `claude-haiku`, `claude-sonnet` and `claude-opus` follow theirs (pinned to `claude-fable-5-2` offline). Picking Anthropic in `/provider` now offers the newest model of each line, not every model the API lists.
+
 - **`KODA_ALLOW_LOCAL_BINDING=1` opens every local port to sandboxed commands on macOS.** By default a command can reach only the local servers Koda started in the background, so a test that starts a server and connects to it failed with "Operation not permitted", as did a command reaching a database or dev server you started. With the variable set, commands may listen and accept on any local port and connect to any port on `localhost`; connections beyond the machine still go only through Koda's proxy. It is off by default and read only from the environment, as Codex's and Claude Code's `allow_local_binding` are. Linux needs no setting: each command's loopback is its own. See [Sandbox](https://lijunzh.github.io/koda/sandbox.html#when-a-command-needs-to-leave-the-sandbox).
 
 - **`session/unsubscribe` closes a session,** stopping its running turn, as Codex's `thread/unsubscribe` does. Sub-agents' status now reaches a client as it changes, not only between the turn's model calls.

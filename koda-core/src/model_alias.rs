@@ -37,22 +37,28 @@ pub enum ClaudeLine {
     Sonnet,
     /// `opus`
     Opus,
+    /// `fable`
+    Fable,
 }
 
 impl ClaudeLine {
     /// Parse the API's `line` value.
     ///
-    /// `None` for lines Koda has no alias for (`fable`, `mythos`) and for
-    /// anything unknown; the API says not to infer a line from the id, and
-    /// this never does.
+    /// `None` for lines Koda doesn't offer (`mythos`) and for anything
+    /// unknown; the API says not to infer a line from the id, and this never
+    /// does.
     pub fn parse(line: &str) -> Option<Self> {
         match line {
             "haiku" => Some(Self::Haiku),
             "sonnet" => Some(Self::Sonnet),
             "opus" => Some(Self::Opus),
+            "fable" => Some(Self::Fable),
             _ => None,
         }
     }
+
+    /// The lines Koda offers, in `/model` order.
+    pub const ALL: [Self; 4] = [Self::Haiku, Self::Sonnet, Self::Opus, Self::Fable];
 }
 
 /// Newest model id per Claude line, as the Models API reported it.
@@ -132,6 +138,12 @@ static ALIASES: &[ModelAlias] = &[
         provider: ProviderType::Anthropic,
         line: Some(ClaudeLine::Opus),
     },
+    ModelAlias {
+        alias: "claude-fable",
+        model_id: "claude-fable-5-2",
+        provider: ProviderType::Anthropic,
+        line: Some(ClaudeLine::Fable),
+    },
 ];
 
 // ── Live Claude ids ─────────────────────────────────────────
@@ -170,6 +182,9 @@ impl LiveClaudeIds {
                 match fetch().await {
                     Ok(ids) => {
                         tracing::info!("Claude aliases from the Models API: {ids:?}");
+                        for notice in new_model_notices(&ids) {
+                            tracing::warn!("{notice}");
+                        }
                         Some(ids)
                     }
                     Err(e) => {
@@ -217,6 +232,40 @@ pub async fn ensure_live_claude_ids() -> Option<&'static ClaudeLineIds> {
             .map_err(|_| anyhow::anyhow!("timed out after {LIVE_LOOKUP_TIMEOUT:?}"))?
     })
     .await
+}
+
+// ── New models ──────────────────────────────────────────────
+
+/// Where to ask for a model Koda doesn't support yet.
+const NEW_MODEL_ISSUE: &str = "https://github.com/lijunzh/koda/issues/new";
+
+/// The newest model of each line that Koda doesn't support yet, that is,
+/// one missing from the effort table ([`crate::model_effort`]), in line
+/// order. Koda runs it as a current model, without a tuned effort.
+pub fn unsupported_newest(ids: &ClaudeLineIds) -> Vec<&str> {
+    ClaudeLine::ALL
+        .iter()
+        .filter_map(|line| ids.get(line))
+        .filter(|id| crate::model_effort::lookup(id).is_none())
+        .map(String::as_str)
+        .collect()
+}
+
+/// What to tell the user about each model [`unsupported_newest`] finds,
+/// with a link that opens an issue asking for it. The link carries only the
+/// model id. The TUI shows these at every start until Koda supports the
+/// model; `koda exec` only logs them.
+pub fn new_model_notices(ids: &ClaudeLineIds) -> Vec<String> {
+    unsupported_newest(ids)
+        .into_iter()
+        .map(|id| {
+            format!(
+                "Anthropic has released {id}, which this Koda doesn't support yet. It runs as \
+                 a current model, without a tuned effort. Ask for support: \
+                 {NEW_MODEL_ISSUE}?title=Support+{id}"
+            )
+        })
+        .collect()
 }
 
 // ── Resolution ──────────────────────────────────────────────
@@ -519,11 +568,11 @@ mod tests {
     }
 
     #[test]
-    fn claude_line_parse_knows_only_aliased_lines() {
+    fn claude_line_parse_knows_only_offered_lines() {
         assert_eq!(ClaudeLine::parse("haiku"), Some(ClaudeLine::Haiku));
         assert_eq!(ClaudeLine::parse("sonnet"), Some(ClaudeLine::Sonnet));
         assert_eq!(ClaudeLine::parse("opus"), Some(ClaudeLine::Opus));
-        assert_eq!(ClaudeLine::parse("fable"), None);
+        assert_eq!(ClaudeLine::parse("fable"), Some(ClaudeLine::Fable));
         assert_eq!(ClaudeLine::parse("mythos"), None);
         assert_eq!(ClaudeLine::parse("Sonnet"), None);
         assert_eq!(ClaudeLine::parse(""), None);
@@ -634,5 +683,42 @@ mod tests {
                 a.model_id
             );
         }
+    }
+
+    #[test]
+    fn claude_fable_follows_the_fable_line() {
+        assert_eq!(
+            resolve_with("claude-fable", None).unwrap().model_id,
+            "claude-fable-5-2",
+            "pinned"
+        );
+        let live = HashMap::from([(ClaudeLine::Fable, "claude-fable-6".to_string())]);
+        assert_eq!(
+            resolve_with("claude-fable", Some(&live)).unwrap().model_id,
+            "claude-fable-6"
+        );
+    }
+
+    #[test]
+    fn a_newest_model_koda_lacks_gets_a_notice_with_an_issue_link() {
+        let ids = HashMap::from([
+            (ClaudeLine::Haiku, "claude-haiku-5-5".to_string()),
+            (ClaudeLine::Opus, "claude-opus-6".to_string()),
+            (ClaudeLine::Fable, "claude-fable-5-2".to_string()),
+        ]);
+        assert_eq!(unsupported_newest(&ids), ["claude-opus-6"]);
+        let notices = new_model_notices(&ids);
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].starts_with("Anthropic has released claude-opus-6"));
+        assert!(
+            notices[0].ends_with(
+                "https://github.com/lijunzh/koda/issues/new?title=Support+claude-opus-6"
+            ),
+            "{}",
+            notices[0]
+        );
+
+        let known = HashMap::from([(ClaudeLine::Sonnet, "claude-sonnet-5-5".to_string())]);
+        assert!(new_model_notices(&known).is_empty());
     }
 }
