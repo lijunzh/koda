@@ -78,7 +78,7 @@ pub async fn run_headless(
     }
 
     let mut agent = KodaAgent::new(&config, project_root.clone(), &[]).await?;
-    crate::builtin_skills::inject_builtin_skills(&mut agent);
+    koda_client::builtin_skills::inject_builtin_skills(&mut agent);
     agent.rebuild_system_prompt(&config, &[]);
     let agent = Arc::new(agent);
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel::<koda_core::engine::EngineCommand>(32);

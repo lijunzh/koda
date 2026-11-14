@@ -12,6 +12,8 @@
 //! sub-agent's own turn events are folded into its parent's tool call.
 
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 use koda_core::engine::event::{
     CompactionStatus as EngineCompactionStatus, CompactionTrigger as EngineCompactionTrigger,
@@ -107,6 +109,9 @@ pub struct EventProjector {
     requests: HashMap<String, RequestId>,
     next_item: u64,
     next_request: i64,
+    /// Request ids shared with the host's other sessions, so a response
+    /// names one session's request. `None` numbers them per projector.
+    shared_request_ids: Option<Arc<AtomicI64>>,
 }
 
 impl EventProjector {
@@ -123,7 +128,50 @@ impl EventProjector {
             requests: HashMap::new(),
             next_item: 0,
             next_request: 0,
+            shared_request_ids: None,
         }
+    }
+
+    /// A projector whose server requests take their ids from `ids`, which
+    /// the host's other sessions share.
+    pub fn with_request_ids(session_id: &str, ids: Arc<AtomicI64>) -> Self {
+        Self {
+            shared_request_ids: Some(ids),
+            ..Self::new(session_id)
+        }
+    }
+
+    /// The engine's id for the open request `request_id`, if this
+    /// projector sent it and it is unanswered.
+    pub fn engine_request(&self, request_id: &RequestId) -> Option<String> {
+        self.requests
+            .iter()
+            .find(|(_, id)| *id == request_id)
+            .map(|(engine_id, _)| engine_id.clone())
+    }
+
+    /// `serverRequest/resolved` for every request still open, which then
+    /// needs no answer: the turn they belonged to is over.
+    pub fn resolve_all(&mut self) -> Vec<Outgoing> {
+        let mut open: Vec<_> = self.requests.keys().cloned().collect();
+        open.sort();
+        open.iter()
+            .filter_map(|engine_id| self.resolved(engine_id))
+            .collect()
+    }
+
+    /// A `userMessage` item, started and completed: what the user said, as
+    /// the model received it.
+    pub fn user_message(&mut self, text: String, client_message_ids: Vec<String>) -> Vec<Outgoing> {
+        let item = Item::UserMessage {
+            id: self.new_item_id("user"),
+            text,
+            client_message_ids,
+        };
+        vec![
+            self.item_started(None, item.clone()),
+            self.item_completed(None, item),
+        ]
     }
 
     /// The session's id.
@@ -459,8 +507,13 @@ impl EventProjector {
     }
 
     fn request_id(&mut self, engine_id: String) -> RequestId {
-        self.next_request += 1;
-        let id = RequestId::Integer(self.next_request);
+        let id = match &self.shared_request_ids {
+            Some(ids) => RequestId::Integer(ids.fetch_add(1, Ordering::Relaxed) + 1),
+            None => {
+                self.next_request += 1;
+                RequestId::Integer(self.next_request)
+            }
+        };
         self.requests.insert(engine_id, id.clone());
         id
     }

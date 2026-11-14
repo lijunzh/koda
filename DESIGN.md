@@ -310,12 +310,25 @@ the two can't disagree. `docs/src/protocol-schema.json` is generated from the
 types, and a test fails when it's stale.
 
 The protocol grows with the code that serves it. It has `initialize`,
-`state/read`, a session's notifications (session, turn, items, errors and
-warnings) and the server requests for approvals, questions and the loop cap.
-`koda exec --json` prints the notifications, answering its own requests and
-saying so with `serverRequest/resolved`, so the eval harness reads the same
-messages a server will send. The TUI drives the engine directly until its turns
-go through the client.
+`state/read`, `session/start`, `turn/start`, `turn/interrupt` and `turn/steer`,
+a session's notifications (session, turn, items, errors and warnings) and the
+server requests for approvals, questions and the loop cap. `koda exec --json`
+prints the notifications, answering its own requests and saying so with
+`serverRequest/resolved`, so the eval harness reads the same messages a server
+will send. The TUI drives the engine directly until its turns go through the
+client.
+
+On the host, each open session has a task that owns it and runs its turns, as
+Codex's turn requests behave: `turn/start` is answered at once with the turn in
+progress, before its first notification, and a second one is refused while it
+runs; `turn/interrupt` is answered once the turn has stopped, after its
+`turn/completed`; `turn/steer` names the turn it is for, and the text shows up
+as a `userMessage` item when the model receives it, so text a turn ends without
+delivering simply has no item. Requests a stopped turn left open are resolved
+before its `turn/completed`. Everything a session produces goes on one ordered
+queue to the client, unbounded so unread events never hold up a response. A
+server request's id is unique across the host's sessions, so a client's answer
+names one session's request.
 
 ### Extensibility: Thin Core + First-Party Libraries (P1, P2)
 

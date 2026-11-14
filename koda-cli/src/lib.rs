@@ -18,7 +18,6 @@ compile_error!(
 
 pub(crate) mod ansi_parse;
 pub(crate) mod app;
-pub(crate) mod builtin_skills;
 pub(crate) mod child_activity;
 pub(crate) mod clipboard;
 pub(crate) mod completer;

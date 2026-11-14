@@ -6,18 +6,34 @@
 //! does the same (`app-server/src/in_process.rs`).
 //!
 //! Each request is answered on its own task, so a slow one never holds up
-//! the rest; shutting down cancels whatever is still running.
+//! the rest; shutting down cancels whatever is still running. Each open
+//! session has a task of its own ([`crate::session`]), which runs its turns
+//! and answers the requests about them.
 
-use std::sync::{Arc, OnceLock};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicI64;
+use std::sync::{Arc, OnceLock, PoisonError};
+use std::time::Duration;
 
 use koda_core::config::KodaConfig;
+use koda_core::db::Database;
 use koda_protocol::initialize::{ClientInfo, InitializeResponse, ServerInfo};
-use koda_protocol::rpc::{self, ErrorObject, codes};
+use koda_protocol::rpc::{self, ErrorObject, RequestId, codes};
+use koda_protocol::session::{SessionStartParams, SessionStartResponse};
 use koda_protocol::state::{SandboxState, StateReadResponse, TrustMode};
 use koda_protocol::{ClientRequest, PROTOCOL_VERSION};
 use serde_json::Value;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::{JoinHandle, JoinSet};
+
+use crate::events::Outgoing;
+use crate::session::{self, OpenRequests, SessionCommand, SessionContext, internal, invalid};
+
+/// How long shutdown waits for sessions to stop their turns. A turn bounds
+/// its own wind-down at five seconds; the client stops the host by force
+/// after its own five.
+const SESSION_STOP: Duration = Duration::from_secs(4);
 
 /// A request's answer: the method's response as JSON, or an error.
 pub(crate) type Answer = Result<Value, ErrorObject>;
@@ -29,25 +45,52 @@ pub(crate) enum HostCommand {
         request: rpc::Request,
         reply: oneshot::Sender<Answer>,
     },
-    /// Cancel what's running and stop; say so on `done`.
+    /// The client's answer to the server request `id`.
+    Response { id: RequestId, result: Answer },
+    /// Stop every session and the host; say so on `done`.
     Shutdown { done: oneshot::Sender<()> },
 }
 
-/// Start a host for `config` on its own task.
-pub(crate) fn spawn(config: KodaConfig) -> (mpsc::Sender<HostCommand>, JoinHandle<()>) {
+/// What a host is started with.
+pub(crate) struct HostArgs {
+    /// What new sessions start with.
+    pub config: KodaConfig,
+    /// The project sessions work in.
+    pub project_root: PathBuf,
+    /// Where sessions are stored.
+    pub db: Database,
+    /// The client's queue of notifications and server requests.
+    pub events: mpsc::UnboundedSender<Outgoing>,
+}
+
+/// Start a host on its own task.
+pub(crate) fn spawn(args: HostArgs) -> (mpsc::Sender<HostCommand>, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel(64);
     let host = Arc::new(Host {
-        config,
+        context: SessionContext {
+            config: args.config,
+            project_root: args.project_root,
+            db: args.db,
+            events: args.events,
+            request_ids: Arc::new(AtomicI64::new(0)),
+            open_requests: OpenRequests::default(),
+        },
         client: OnceLock::new(),
+        sessions: Mutex::new(HashMap::new()),
+        tasks: Mutex::new(JoinSet::new()),
     });
     (tx, tokio::spawn(run(host, rx)))
 }
 
 struct Host {
-    /// What new sessions start with.
-    config: KodaConfig,
+    /// What every session shares; its config is what new sessions start with.
+    context: SessionContext,
     /// Set by `initialize`; until then every other request is refused.
     client: OnceLock<ClientInfo>,
+    /// Open sessions' command channels, by id.
+    sessions: Mutex<HashMap<String, mpsc::UnboundedSender<SessionCommand>>>,
+    /// Their tasks. Dropping the host stops them.
+    tasks: Mutex<JoinSet<()>>,
 }
 
 async fn run(host: Arc<Host>, mut commands: mpsc::Receiver<HostCommand>) {
@@ -57,18 +100,20 @@ async fn run(host: Arc<Host>, mut commands: mpsc::Receiver<HostCommand>) {
             command = commands.recv() => match command {
                 Some(HostCommand::Request { request, reply }) => {
                     let host = Arc::clone(&host);
-                    running.spawn(async move {
-                        // A client that stopped waiting just drops the answer.
-                        let _ = reply.send(host.answer(request).await);
-                    });
+                    running.spawn(async move { host.handle(request, reply).await });
                 }
+                Some(HostCommand::Response { id, result }) => host.route(id, result).await,
                 Some(HostCommand::Shutdown { done }) => {
                     running.shutdown().await;
+                    host.stop_sessions().await;
                     let _ = done.send(());
                     return;
                 }
                 // Every client is gone.
-                None => return,
+                None => {
+                    host.stop_sessions().await;
+                    return;
+                }
             },
             Some(finished) = running.join_next(), if !running.is_empty() => {
                 if let Err(error) = finished
@@ -82,46 +127,137 @@ async fn run(host: Arc<Host>, mut commands: mpsc::Receiver<HostCommand>) {
 }
 
 impl Host {
-    async fn answer(&self, request: rpc::Request) -> Answer {
-        let request = ClientRequest::try_from(request).map_err(|e| e.to_error_object())?;
-        match request {
+    async fn handle(&self, request: rpc::Request, reply: oneshot::Sender<Answer>) {
+        let request = match ClientRequest::try_from(request) {
+            Ok(request) => request,
+            Err(e) => {
+                let _ = reply.send(Err(e.to_error_object()));
+                return;
+            }
+        };
+        let (session_id, command) = match request {
             ClientRequest::Initialize { params, .. } => {
-                if self.client.set(params.client_info).is_err() {
-                    return Err(ErrorObject::new(
-                        codes::INVALID_REQUEST,
-                        "Already initialized",
-                    ));
-                }
-                to_json(InitializeResponse {
-                    server_info: ServerInfo {
-                        name: "koda".to_string(),
-                        // Every Koda crate shares one version.
-                        version: env!("CARGO_PKG_VERSION").to_string(),
-                    },
-                    protocol_version: PROTOCOL_VERSION,
-                })
+                let _ = reply.send(self.initialize(params.client_info));
+                return;
             }
             _ if self.client.get().is_none() => {
-                Err(ErrorObject::new(codes::INVALID_REQUEST, "Not initialized"))
+                let _ = reply.send(Err(invalid("Not initialized")));
+                return;
             }
-            ClientRequest::StateRead { .. } => to_json(self.state().await?),
+            ClientRequest::StateRead { .. } => {
+                let _ = reply.send(self.state().await.and_then(to_json));
+                return;
+            }
+            ClientRequest::SessionStart { params, .. } => {
+                let _ = reply.send(self.start_session(params).await.and_then(to_json));
+                return;
+            }
+            // The session's task answers these, a turn's start before its
+            // first notification and an interrupt once the turn has stopped.
+            ClientRequest::TurnStart { params, .. } => (
+                params.session_id.clone(),
+                SessionCommand::StartTurn { params, reply },
+            ),
+            ClientRequest::TurnInterrupt { params, .. } => (
+                params.session_id.clone(),
+                SessionCommand::Interrupt { params, reply },
+            ),
+            ClientRequest::TurnSteer { params, .. } => (
+                params.session_id.clone(),
+                SessionCommand::Steer { params, reply },
+            ),
+        };
+        let sessions = self.sessions.lock().await;
+        let Some(session) = sessions.get(&session_id) else {
+            command.refuse(invalid(format!("no open session {session_id:?}")));
+            return;
+        };
+        if let Err(mpsc::error::SendError(command)) = session.send(command) {
+            command.refuse(internal(format!("session {session_id} has stopped")));
         }
+    }
+
+    fn initialize(&self, client_info: ClientInfo) -> Answer {
+        if self.client.set(client_info).is_err() {
+            return Err(invalid("Already initialized"));
+        }
+        to_json(InitializeResponse {
+            server_info: ServerInfo {
+                name: "koda".to_string(),
+                // Every Koda crate shares one version.
+                version: env!("CARGO_PKG_VERSION").to_string(),
+            },
+            protocol_version: PROTOCOL_VERSION,
+        })
+    }
+
+    async fn start_session(
+        &self,
+        params: SessionStartParams,
+    ) -> Result<SessionStartResponse, ErrorObject> {
+        if let Some(id) = &params.session_id
+            && self.sessions.lock().await.contains_key(id)
+        {
+            return Err(invalid(format!("session {id} is already open")));
+        }
+        let opened = session::open(self.context.clone(), params.session_id).await?;
+        let id = opened.session.id.clone();
+        let mut sessions = self.sessions.lock().await;
+        // A prefix may have resolved to a session opened meanwhile.
+        if sessions.contains_key(&id) {
+            return Err(invalid(format!("session {id} is already open")));
+        }
+        sessions.insert(id, opened.commands);
+        self.tasks.lock().await.spawn(opened.task.run());
+        Ok(SessionStartResponse {
+            session: opened.session,
+        })
+    }
+
+    /// Hand the client's answer to the session whose request it is.
+    async fn route(&self, id: RequestId, result: Answer) {
+        let owner = self
+            .context
+            .open_requests
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&id)
+            .cloned();
+        let Some(session_id) = owner else {
+            tracing::debug!("an answer to request {id}, which isn't open");
+            return;
+        };
+        if let Some(session) = self.sessions.lock().await.get(&session_id) {
+            let _ = session.send(SessionCommand::Respond { id, result });
+        }
+    }
+
+    /// Tell every session to stop, wait a while for their turns to wind
+    /// down, then stop what's left.
+    async fn stop_sessions(&self) {
+        for session in self.sessions.lock().await.drain().map(|(_, s)| s) {
+            let _ = session.send(SessionCommand::Shutdown);
+        }
+        let mut tasks = self.tasks.lock().await;
+        let _ = tokio::time::timeout(SESSION_STOP, async {
+            while tasks.join_next().await.is_some() {}
+        })
+        .await;
+        tasks.shutdown().await;
     }
 
     async fn state(&self) -> Result<StateReadResponse, ErrorObject> {
         // The sandbox check may start a process, so it runs off the async threads.
         let report = tokio::task::spawn_blocking(koda_core::sandbox::dependency_report)
             .await
-            .map_err(|e| {
-                ErrorObject::new(codes::INTERNAL_ERROR, format!("sandbox check failed: {e}"))
-            })?;
-        let config = &self.config;
+            .map_err(|e| internal(format!("sandbox check failed: {e}")))?;
+        let config = &self.context.config;
         Ok(StateReadResponse {
             model: config.model.clone(),
             provider: config.provider_type.to_string(),
             base_url: config.base_url.clone(),
             context_window: config.max_context_tokens as u64,
-            mode: trust_mode(config.trust),
+            mode: protocol_mode(config.trust),
             sandbox: SandboxState {
                 backend: report.backend.to_string(),
                 available: report.available,
@@ -131,7 +267,7 @@ impl Host {
     }
 }
 
-fn trust_mode(mode: koda_core::trust::TrustMode) -> TrustMode {
+pub(crate) fn protocol_mode(mode: koda_core::trust::TrustMode) -> TrustMode {
     match mode {
         koda_core::trust::TrustMode::Plan => TrustMode::Plan,
         koda_core::trust::TrustMode::Safe => TrustMode::Safe,
@@ -139,7 +275,7 @@ fn trust_mode(mode: koda_core::trust::TrustMode) -> TrustMode {
     }
 }
 
-fn to_json<T: serde::Serialize>(response: T) -> Answer {
+pub(crate) fn to_json<T: serde::Serialize>(response: T) -> Answer {
     serde_json::to_value(response)
         .map_err(|e| ErrorObject::new(codes::INTERNAL_ERROR, format!("response encoding: {e}")))
 }
@@ -148,7 +284,20 @@ fn to_json<T: serde::Serialize>(response: T) -> Answer {
 mod tests {
     use super::*;
     use koda_core::config::ProviderType;
-    use koda_protocol::rpc::RequestId;
+
+    /// A host on a scratch database. Keep the directory while it runs.
+    async fn host() -> (mpsc::Sender<HostCommand>, JoinHandle<()>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::init(dir.path()).await.unwrap();
+        let (events, _) = mpsc::unbounded_channel();
+        let (tx, handle) = spawn(HostArgs {
+            config: KodaConfig::default_for_testing(ProviderType::LMStudio),
+            project_root: dir.path().to_path_buf(),
+            db,
+            events,
+        });
+        (tx, handle, dir)
+    }
     use serde_json::json;
 
     async fn ask(tx: &mpsc::Sender<HostCommand>, method: &str, params: Value) -> Answer {
@@ -166,7 +315,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn requests_before_initialize_are_refused_and_so_is_a_second_initialize() {
-        let (tx, _host) = spawn(KodaConfig::default_for_testing(ProviderType::LMStudio));
+        let (tx, _host, _dir) = host().await;
 
         let early = ask(&tx, "state/read", json!({})).await.unwrap_err();
         assert_eq!(early.code, codes::INVALID_REQUEST);
@@ -183,7 +332,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_unknown_method_and_bad_params_are_errors_not_crashes() {
-        let (tx, _host) = spawn(KodaConfig::default_for_testing(ProviderType::LMStudio));
+        let (tx, _host, _dir) = host().await;
         ask(&tx, "initialize", initialize()).await.unwrap();
 
         let unknown = ask(&tx, "thread/start", json!({})).await.unwrap_err();
@@ -198,7 +347,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn shutdown_stops_the_host() {
-        let (tx, host) = spawn(KodaConfig::default_for_testing(ProviderType::LMStudio));
+        let (tx, host, _dir) = host().await;
         let (done, stopped) = oneshot::channel();
         tx.send(HostCommand::Shutdown { done }).await.unwrap();
         stopped.await.unwrap();

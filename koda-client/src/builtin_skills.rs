@@ -1,18 +1,19 @@
-//! Built-in skill injection for koda-cli.
+//! Built-in skill injection for every Koda front end.
 //!
-//! `koda-cli` owns its documentation — `koda-core` stays generic.
-//! The `koda-docs` skill points the agent at the online user manual
-//! so it can answer "how do I use koda?" questions via `WebFetch`.
+//! Koda's documentation belongs to its front ends, so `koda-core` stays
+//! generic; the host builds the agent, so it lives here. The `koda-docs`
+//! skill points the agent at the online user manual so it can answer "how
+//! do I use koda?" questions via `WebFetch`.
 //!
-//! Call [`inject_builtin_skills`] once after [`KodaAgent::new`] in each
-//! CLI entry point (TUI, headless).
+//! Call [`inject_builtin_skills`] once after [`KodaAgent::new`], wherever
+//! an agent is built (the host, and the TUI until its turns move there).
 
 use koda_core::agent::KodaAgent;
 
 /// URL of the published Koda user manual (mdBook on GitHub Pages).
 const KODA_DOCS_URL: &str = "https://lijunzh.github.io/koda/";
 
-/// Inject koda-cli's built-in skills into the agent's skill registry.
+/// Inject the built-in skills into the agent's skill registry.
 ///
 /// This is the only place that knows about the docs URL — keeping
 /// `koda-core` completely decoupled from CLI-specific content.

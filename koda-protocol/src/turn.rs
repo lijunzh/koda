@@ -60,6 +60,69 @@ pub struct Usage {
     pub model_calls: u64,
 }
 
+/// `turn/start`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TurnStartParams {
+    /// The session.
+    pub session_id: String,
+    /// What the user said.
+    pub input: String,
+    /// The client's id for the message, echoed on its `userMessage` item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_message_id: Option<String>,
+    /// The trust mode from this turn on. Without one, the session keeps
+    /// its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<crate::state::TrustMode>,
+}
+
+/// The answer to `turn/start`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnStartResponse {
+    /// The turn, in progress.
+    pub turn: Turn,
+}
+
+/// `turn/interrupt`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TurnInterruptParams {
+    /// The session.
+    pub session_id: String,
+    /// The turn to stop. Refused when it isn't the one running.
+    pub turn_id: String,
+}
+
+/// The answer to `turn/interrupt`, sent once the turn has stopped.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TurnInterruptResponse {}
+
+/// `turn/steer`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TurnSteerParams {
+    /// The session.
+    pub session_id: String,
+    /// The turn the text is for. Refused when it isn't the one running.
+    pub expected_turn_id: String,
+    /// What the user said.
+    pub input: String,
+    /// The client's id for the text, echoed on the `userMessage` item that
+    /// delivers it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_message_id: Option<String>,
+}
+
+/// The answer to `turn/steer`: the text is queued for the turn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnSteerResponse {
+    /// The turn it was queued for.
+    pub turn_id: String,
+}
+
 /// `turn/started`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]

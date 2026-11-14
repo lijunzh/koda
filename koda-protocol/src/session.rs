@@ -23,6 +23,24 @@ pub struct Session {
     pub tools: Vec<String>,
 }
 
+/// `session/start`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionStartParams {
+    /// An earlier session to resume, by its full id. Without one, a new
+    /// session starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+}
+
+/// The answer to `session/start`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionStartResponse {
+    /// The session, ready for a turn.
+    pub session: Session,
+}
+
 /// `session/started`: a session is ready for its first turn.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]

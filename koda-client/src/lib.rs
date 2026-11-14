@@ -6,19 +6,29 @@
 //! form on the way, exactly as it would over stdio or a socket; one contract
 //! by construction. Codex's `app-server-client` is the model.
 //!
-//! [`events::EventProjector`] turns a session's engine events into the
-//! protocol's notifications and server requests; `koda exec --json` prints
-//! them. Session requests and turns through the host arrive with the
-//! changes that first use them.
+//! A session opens with `session/start`; `turn/start`, `turn/interrupt` and
+//! `turn/steer` drive its turns. What a turn does arrives on one ordered
+//! queue, [`InProcessClient::next_event`]: notifications, and the server
+//! requests (approvals, questions, the loop cap) the client answers with
+//! [`InProcessClient::resolve_server_request`] or
+//! [`InProcessClient::reject_server_request`]. The queue is unbounded, as
+//! Codex's client queue is, so unread events never hold up a response.
+//!
+//! [`events::EventProjector`] turns a session's engine events into those
+//! messages; `koda exec --json` prints them.
 
+pub mod builtin_skills;
 pub mod events;
 mod host;
+mod session;
 
 use std::fmt;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use koda_core::config::KodaConfig;
+use koda_core::db::Database;
 use koda_protocol::initialize::{ClientInfo, InitializeParams, InitializeResponse};
 use koda_protocol::rpc::{ErrorObject, RequestId};
 use koda_protocol::{Method, methods};
@@ -27,7 +37,8 @@ use tokio::task::JoinHandle;
 
 pub use koda_protocol as protocol;
 
-use host::HostCommand;
+use events::Outgoing;
+use host::{HostArgs, HostCommand};
 
 /// How long [`InProcessClient::shutdown`] waits before stopping the host by force.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -36,6 +47,10 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct StartArgs {
     /// What new sessions start with.
     pub config: KodaConfig,
+    /// The project sessions work in.
+    pub project_root: PathBuf,
+    /// Where sessions are stored.
+    pub db: Database,
     /// Who the client is, sent in `initialize`.
     pub client_info: ClientInfo,
 }
@@ -44,6 +59,7 @@ pub struct StartArgs {
 pub struct InProcessClient {
     commands: mpsc::Sender<HostCommand>,
     host: JoinHandle<()>,
+    events: mpsc::UnboundedReceiver<Outgoing>,
     next_id: AtomicI64,
     server: InitializeResponse,
 }
@@ -51,10 +67,17 @@ pub struct InProcessClient {
 impl InProcessClient {
     /// Start the host and run the `initialize` handshake.
     pub async fn start(args: StartArgs) -> Result<Self, RequestError> {
-        let (commands, host) = host::spawn(args.config);
+        let (events_tx, events) = mpsc::unbounded_channel();
+        let (commands, host) = host::spawn(HostArgs {
+            config: args.config,
+            project_root: args.project_root,
+            db: args.db,
+            events: events_tx,
+        });
         let mut client = Self {
             commands,
             host,
+            events,
             next_id: AtomicI64::new(1),
             server: InitializeResponse {
                 server_info: koda_protocol::initialize::ServerInfo {
@@ -104,7 +127,45 @@ impl InProcessClient {
         })
     }
 
-    /// Stop the host, cancelling requests still running. Waits up to five
+    /// The next notification or server request, in the order Koda produced
+    /// them. `None` once the host has stopped.
+    pub async fn next_event(&mut self) -> Option<Outgoing> {
+        self.events.recv().await
+    }
+
+    /// Answer the server request `id` with `result`, the request's response
+    /// type as JSON.
+    pub async fn resolve_server_request(
+        &self,
+        id: RequestId,
+        result: serde_json::Value,
+    ) -> Result<(), RequestError> {
+        self.respond(id, Ok(result)).await
+    }
+
+    /// Refuse the server request `id`. Koda reads it as no: the approval is
+    /// refused, the question gets an empty answer, the loop stops.
+    pub async fn reject_server_request(
+        &self,
+        id: RequestId,
+        error: ErrorObject,
+    ) -> Result<(), RequestError> {
+        self.respond(id, Err(error)).await
+    }
+
+    async fn respond(
+        &self,
+        id: RequestId,
+        result: Result<serde_json::Value, ErrorObject>,
+    ) -> Result<(), RequestError> {
+        self.commands
+            .send(HostCommand::Response { id, result })
+            .await
+            .map_err(|_| RequestError::Closed { method: "response" })
+    }
+
+    /// Stop the host, stopping running turns and cancelling requests still
+    /// running. Waits up to five
     /// seconds, then stops it by force.
     pub async fn shutdown(self) {
         let Self {
@@ -187,20 +248,28 @@ mod tests {
     use koda_core::trust::TrustMode;
     use koda_protocol::state::{self, StateReadParams};
 
-    fn args(config: KodaConfig) -> StartArgs {
-        StartArgs {
+    /// Start arguments on a scratch database. Keep the directory while the
+    /// client runs.
+    async fn args(config: KodaConfig) -> (StartArgs, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::init(dir.path()).await.unwrap();
+        let args = StartArgs {
             config,
+            project_root: dir.path().to_path_buf(),
+            db,
             client_info: ClientInfo {
                 name: "koda-client-test".to_string(),
                 version: "0".to_string(),
             },
-        }
+        };
+        (args, dir)
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn start_runs_the_handshake() {
         let config = KodaConfig::default_for_testing(ProviderType::LMStudio);
-        let client = InProcessClient::start(args(config)).await.unwrap();
+        let (args, _dir) = args(config).await;
+        let client = InProcessClient::start(args).await.unwrap();
         assert_eq!(client.server().server_info.name, "koda");
         assert_eq!(
             client.server().server_info.version,
@@ -221,7 +290,8 @@ mod tests {
         config.base_url = "http://127.0.0.1:9/v1".to_string();
         config.max_context_tokens = 32_768;
         config.trust = TrustMode::Safe;
-        let client = InProcessClient::start(args(config)).await.unwrap();
+        let (args, _dir) = args(config).await;
+        let client = InProcessClient::start(args).await.unwrap();
 
         let state = client
             .request::<methods::StateRead>(StateReadParams {})
@@ -241,7 +311,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn requests_run_side_by_side() {
         let config = KodaConfig::default_for_testing(ProviderType::LMStudio);
-        let client = InProcessClient::start(args(config)).await.unwrap();
+        let (args, _dir) = args(config).await;
+        let client = InProcessClient::start(args).await.unwrap();
         let (a, b) = tokio::join!(
             client.request::<methods::StateRead>(StateReadParams {}),
             client.request::<methods::StateRead>(StateReadParams {}),

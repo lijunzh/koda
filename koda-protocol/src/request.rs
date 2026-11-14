@@ -113,6 +113,32 @@ client_requests! {
         params: crate::state::StateReadParams,
         response: crate::state::StateReadResponse,
     },
+    /// Open a session: a new one, or an earlier one by id. `session/started`
+    /// follows.
+    SessionStart => "session/start" {
+        params: crate::session::SessionStartParams,
+        response: crate::session::SessionStartResponse,
+    },
+    /// Start a turn. Answered at once with the turn in progress, before its
+    /// first notification; everything after arrives as notifications, ending
+    /// with `turn/completed`. Refused while a turn is running.
+    TurnStart => "turn/start" {
+        params: crate::turn::TurnStartParams,
+        response: crate::turn::TurnStartResponse,
+    },
+    /// Stop the running turn. Answered once it has stopped, after its
+    /// `turn/completed`.
+    TurnInterrupt => "turn/interrupt" {
+        params: crate::turn::TurnInterruptParams,
+        response: crate::turn::TurnInterruptResponse,
+    },
+    /// Add text to the running turn. It reaches the model before its next
+    /// call, as a `userMessage` item; text the turn ends without delivering
+    /// gets no item.
+    TurnSteer => "turn/steer" {
+        params: crate::turn::TurnSteerParams,
+        response: crate::turn::TurnSteerResponse,
+    },
 }
 
 /// Why a [`rpc::Request`] isn't a [`ClientRequest`].
