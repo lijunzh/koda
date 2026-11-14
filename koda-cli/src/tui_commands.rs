@@ -15,10 +15,10 @@ use crate::tui_render::TuiRenderer;
 use koda_core::persistence::Persistence;
 use koda_core::trust;
 
+use crate::tui_context::TuiSession;
 use koda_core::agent::KodaAgent;
 use koda_core::config::KodaConfig;
 use koda_core::providers::LlmProvider;
-use koda_core::session::KodaSession;
 use ratatui::text::{Line, Span};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -39,7 +39,7 @@ pub async fn handle_slash_command(
     input: &str,
     config: &mut KodaConfig,
     provider: &Arc<RwLock<Box<dyn LlmProvider>>>,
-    session: &mut KodaSession,
+    session: &mut TuiSession,
     shared_mode: &trust::SharedTrustMode,
     renderer: &mut TuiRenderer,
     project_root: &std::path::Path,
@@ -248,7 +248,7 @@ pub async fn handle_slash_command(
 
 async fn dispatch_mcp(
     buffer: &mut ScrollBuffer,
-    session: &koda_core::session::KodaSession,
+    session: &TuiSession,
     agent: &Arc<koda_core::agent::KodaAgent>,
     arg: Option<&str>,
 ) {
@@ -384,7 +384,7 @@ fn get_git_diff() -> String {
 
 async fn handle_delete_session(
     buffer: &mut ScrollBuffer,
-    session: &KodaSession,
+    session: &TuiSession,
     id: &str,
     project_root: &std::path::Path,
 ) {
@@ -428,7 +428,7 @@ fn session_to_delete<'a>(id: &str, known: &[&'a str], current: &str) -> Result<&
 
 async fn handle_resume_session(
     buffer: &mut ScrollBuffer,
-    session: &mut KodaSession,
+    session: &mut TuiSession,
     id: &str,
     project_root: &std::path::Path,
     shared_mode: &trust::SharedTrustMode,
@@ -473,8 +473,8 @@ async fn handle_resume_session(
                             },
                             None => None,
                         };
+                        // The TUI opens it on the host before the next turn.
                         session.id = target.id.clone();
-                        session.title_set = true;
                         let short_id = target.id[..8].to_string();
                         let title_part = target
                             .title
@@ -708,11 +708,7 @@ fn handle_expand(buffer: &mut ScrollBuffer, renderer: &TuiRenderer, n: usize) {
 ///
 /// Loads messages from the DB, filters to assistant turns with text content,
 /// and copies the Nth-last one (1 = most recent).
-async fn handle_copy_response(
-    buffer: &mut ScrollBuffer,
-    session: &koda_core::session::KodaSession,
-    n: usize,
-) {
+async fn handle_copy_response(buffer: &mut ScrollBuffer, session: &TuiSession, n: usize) {
     let messages = match session.db.load_all_messages(&session.id).await {
         Ok(msgs) => msgs,
         Err(e) => {
@@ -774,11 +770,7 @@ async fn handle_copy_response(
 /// rationale, and security policy. This handler's job is solely to
 /// translate the live session into a [`debug_bundle::BundleInput`] and
 /// surface success/failure to the TUI.
-async fn handle_debug_bundle(
-    buffer: &mut ScrollBuffer,
-    session: &koda_core::session::KodaSession,
-    config: &KodaConfig,
-) {
+async fn handle_debug_bundle(buffer: &mut ScrollBuffer, session: &TuiSession, config: &KodaConfig) {
     use crate::debug_bundle::{BundleInput, write_bundle};
 
     // Load the same data /debug-bundle uses — messages from DB, plus session info
@@ -837,7 +829,7 @@ async fn handle_debug_bundle(
         session_title: session_title.as_deref(),
         session_started_at: session_started_at.as_deref(),
         model: Some(config.model.as_str()),
-        provider: Some(session.provider.provider_name()),
+        provider: Some(config.provider_type.meta().name),
         context_window: None, // PR α: not surfacing yet; PR β can wire from provider
         messages: &messages,
         events: &events,

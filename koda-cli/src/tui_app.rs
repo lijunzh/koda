@@ -14,7 +14,6 @@
 //!
 //! See #209 for the refactoring plan.
 
-use crate::sink::UiEvent;
 use crate::tui_context::{ProviderOverrides, TuiContext};
 
 use anyhow::Result;
@@ -29,12 +28,14 @@ use std::path::PathBuf;
 use tokio::sync::mpsc;
 
 /// Run the main interactive event loop with persistent TUI.
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     project_root: PathBuf,
     config: KodaConfig,
     overrides: ProviderOverrides,
     db: Database,
-    session_id: String,
+    resume: Option<String>,
+    prompt: Option<String>,
     version_check: tokio::task::JoinHandle<Option<String>>,
     first_run: bool,
 ) -> Result<()> {
@@ -43,7 +44,7 @@ pub async fn run(
         config,
         overrides,
         db,
-        session_id,
+        resume,
         version_check,
         first_run,
     )
@@ -57,19 +58,34 @@ pub async fn run(
         ));
     }
 
-    // Channels stay in run() — consumed by tokio::select! in different ways
-    let (ui_tx, mut ui_rx) = mpsc::unbounded_channel::<UiEvent>();
+    // The engine's events, from the host; the dialogs' answers and steering
+    // text, from the key handlers to the turn loop.
+    let mut ui_rx = ctx
+        .client
+        .take_raw_events()
+        .ok_or_else(|| anyhow::anyhow!("the host's engine events were taken"))?;
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<EngineCommand>(32);
+
+    // `koda "prompt"` sends it, as `codex "prompt"` does. On a first run it
+    // waits in the input box until a provider is chosen.
+    if let Some(prompt) = prompt {
+        if first_run {
+            ctx.textarea.insert_str(&prompt);
+        } else {
+            ctx.pending_command = Some(prompt);
+        }
+    }
 
     // Initial viewport draw
     ctx.draw()?;
 
     // ── Main event loop ────────────────────────────────────────
-    ctx.run_event_loop(&ui_tx, &mut ui_rx, &cmd_tx, &mut cmd_rx)
-        .await?;
+    let ran = ctx.run_event_loop(&mut ui_rx, &cmd_tx, &mut cmd_rx).await;
 
     // ── Cleanup ────────────────────────────────────────────
     ctx.cleanup().await;
+    ctx.client.shutdown().await;
+    ran?;
 
     Ok(())
 }

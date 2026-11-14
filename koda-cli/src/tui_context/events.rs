@@ -153,7 +153,6 @@ impl TuiContext {
                     &self.agent.tools.bg_registry,
                 ) > 0
                 {
-                    self.session.interrupt();
                     crate::tui_bg_tasks::cancel_all_bg_work(
                         &mut self.scroll_buffer,
                         &self.session.bg_agents,
@@ -181,7 +180,6 @@ impl TuiContext {
                 let composer_dirty = !self.textarea.text().trim().is_empty();
                 if bg_alive {
                     self.quit_armed_at = None;
-                    self.session.interrupt();
                     crate::tui_bg_tasks::cancel_all_bg_work(
                         &mut self.scroll_buffer,
                         &self.session.bg_agents,

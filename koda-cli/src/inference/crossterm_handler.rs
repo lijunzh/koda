@@ -40,7 +40,7 @@ use tokio::sync::mpsc;
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_crossterm_event_inline(
     ev: Event,
-    session_cancel: &koda_core::session::SessionCancel,
+    stop: &super::TurnStop,
     cmd_tx: &mpsc::Sender<EngineCommand>,
     scroll_buffer: &mut ScrollBuffer,
     hist_h: usize,
@@ -91,7 +91,7 @@ pub(super) async fn handle_crossterm_event_inline(
         Event::Key(key) => {
             return handle_inference_key_inline(
                 key,
-                session_cancel,
+                stop,
                 cmd_tx,
                 scroll_buffer,
                 menu,
@@ -119,7 +119,7 @@ pub(super) async fn handle_crossterm_event_inline(
 #[allow(clippy::too_many_arguments)]
 async fn handle_inference_key_inline(
     key: crossterm::event::KeyEvent,
-    session_cancel: &koda_core::session::SessionCancel,
+    stop: &super::TurnStop,
     cmd_tx: &mpsc::Sender<EngineCommand>,
     scroll_buffer: &mut ScrollBuffer,
     menu: &mut MenuContent,
@@ -340,18 +340,11 @@ async fn handle_inference_key_inline(
             }
         }
         (KeyCode::Esc, _) => {
-            // #1216: Gemini-style cascade. `session.interrupt()` fires
-            // the session-lifetime cancel root — collapsing the
-            // per-turn `cancel_token` (it's a child), every bg agent's
-            // per-task cancel (also children), and every nested bg
-            // agent transitively — then atomically swaps in a fresh
-            // root so the next turn isn't born cancelled.
-            //
-            // We still call `cancel_all_bg_work` for its `mark_cancelling`
-            // side effect (flips overlay icons red instantly so the user
-            // gets visual feedback even before the underlying status
-            // transition propagates through the watch channel).
-            session_cancel.interrupt();
+            // `turn/interrupt` stops the turn, and its sub-agents with it.
+            // `cancel_all_bg_work` also stops background processes and
+            // marks the overlay's rows as stopping at once, before their
+            // status arrives.
+            stop.interrupt();
             crate::tui_bg_tasks::cancel_all_bg_work(
                 scroll_buffer,
                 bg_agents,
@@ -365,7 +358,7 @@ async fn handle_inference_key_inline(
             // Ctrl+D on an empty composer quits, mid-turn as at idle, as in
             // Codex. The turn stops first, the way Esc stops it, so it is
             // saved before Koda exits. With text it deletes forward, below.
-            session_cancel.interrupt();
+            stop.interrupt();
             return true;
         }
         (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
@@ -373,7 +366,7 @@ async fn handle_inference_key_inline(
             // intentional aliases. The asymmetry shows up at idle
             // (Esc dismisses popups, Ctrl+C arms quit), see the idle
             // handler in `tui_context::events`.
-            session_cancel.interrupt();
+            stop.interrupt();
             crate::tui_bg_tasks::cancel_all_bg_work(
                 scroll_buffer,
                 bg_agents,

@@ -318,10 +318,13 @@ through the client in process: it opens its session with `approvalPolicy:
 never` (Codex's name), so the host answers each request itself, as one-shot
 runs always have, and says so with `serverRequest/resolved`; `--json` prints
 what the host sends, so the eval harness reads the same messages any client
-gets. The TUI drives the engine directly until its turns go through the
-client. Until then the client also hands out the engine's own events in
-process, for the renderers that still read them, as Codex's TUI read its old
-events while it moved onto its app-server. For the same move, three more
+gets. The TUI is a client too: the host runs its turns, and it answers the
+host's requests from its dialogs, steers with `turn/steer` and stops with
+`turn/interrupt`. Its renderer still reads the engine's own events, which the
+client hands out in process until the TUI renders items, as Codex's TUI read
+its old events while it moved onto its app-server. While idle, the TUI still
+writes the database itself for `/compact`, resume and history; the host
+writes it only during turns, so the two never write at once. For the same move, three more
 things stay in process only, each until the protocol has requests for it: a
 front end that builds its own agent hands it to the host, which every session
 then uses; a session's sub-agent registry, for showing and stopping

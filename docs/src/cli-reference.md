@@ -1,5 +1,8 @@
 # CLI reference
 
+`koda` opens the TUI. `koda "prompt"` opens it and sends the prompt, as
+`codex "prompt"` does; `koda exec "prompt"` runs one prompt without it.
+
 ## Flags
 
 | Flag | Env var | Description |
@@ -18,9 +21,9 @@
 | `--mcp-config <FILE\|JSON>` | | Add MCP servers for this run only, from a JSON file or inline JSON in the `{"mcpServers": {...}}` shape of Claude Code's `.mcp.json`. Repeatable. Nothing is saved; a bad value stops the start. See [MCP servers](mcp.md). |
 | `--project-root <DIR>` | | Project root (defaults to cwd) |
 
-`koda -p`, `--output-format` and a prompt given to `koda` itself were removed in
-0.7.0; `koda exec` runs a prompt. `koda` with stdin piped stops with the same
-pointer, since the TUI needs a terminal.
+`koda -p` and `--output-format` were removed in 0.7.0; `koda exec` runs a
+prompt. `koda` with stdin piped stops with the same pointer, since the TUI
+needs a terminal.
 
 ## Subcommands
 

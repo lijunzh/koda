@@ -14,9 +14,9 @@ use crate::tui_output;
 
 use crate::tui_types::MenuContent;
 
+use crate::tui_context::TuiSession;
 use koda_core::config::KodaConfig;
 use koda_core::providers::LlmProvider;
-use koda_core::session::KodaSession;
 use ratatui::text::{Line, Span};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -27,7 +27,7 @@ use tui_output::{BOLD, CYAN, DIM};
 
 pub(crate) async fn handle_compact(
     buffer: &mut ScrollBuffer,
-    session: &KodaSession,
+    session: &TuiSession,
     config: &KodaConfig,
     provider: &Arc<RwLock<Box<dyn LlmProvider>>>,
 ) {
@@ -87,7 +87,7 @@ pub(crate) async fn handle_compact(
 
 pub(crate) async fn handle_purge(
     buffer: &mut ScrollBuffer,
-    session: &KodaSession,
+    session: &TuiSession,
     age_filter: Option<&str>,
     menu: &mut MenuContent,
 ) {
@@ -153,7 +153,7 @@ pub(crate) async fn handle_purge(
 /// Execute the purge after user confirms via menu.
 pub(crate) async fn execute_purge(
     buffer: &mut ScrollBuffer,
-    session: &KodaSession,
+    session: &TuiSession,
     min_age_days: u32,
 ) {
     use koda_core::persistence::Persistence;

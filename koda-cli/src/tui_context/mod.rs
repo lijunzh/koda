@@ -23,11 +23,9 @@ use crossterm::event::{Event, EventStream, KeyCode, KeyModifiers};
 use futures_util::StreamExt;
 use koda_core::agent::KodaAgent;
 use koda_core::config::KodaConfig;
-use koda_core::db::Role;
 use koda_core::engine::EngineCommand;
 use koda_core::persistence::Persistence;
 use koda_core::providers::LlmProvider;
-use koda_core::session::KodaSession;
 use koda_core::trust::{self, TrustMode};
 use ratatui::{
     style::{Color, Style},
@@ -110,7 +108,12 @@ pub(crate) struct TuiContext {
     // Rule: acquire lock, do sync work, drop lock, then .await.
     pub config: KodaConfig,
     pub provider: Arc<RwLock<Box<dyn LlmProvider>>>,
-    pub session: KodaSession,
+    pub session: TuiSession,
+    /// Koda's host, in process: it runs the session's turns.
+    pub client: koda_client::InProcessClient,
+    /// The session open on the host. When a command has switched
+    /// `session.id`, the TUI opens that one before the next turn.
+    pub(crate) host_session: String,
     pub shared_mode: trust::SharedTrustMode,
     pub agent: Arc<KodaAgent>,
     pub project_root: PathBuf,
@@ -128,18 +131,52 @@ pub(crate) struct TuiContext {
     /// `widgets::child_activity_overlay` rendered above the status bar.
     /// See [`crate::child_activity::ChildActivityTracker`].
     pub child_activity: crate::child_activity::ChildActivityTracker,
+}
 
-    /// #1349 Bug 2 — set when a `ChildTaskUpdate` reports a terminal
-    /// status while the TUI is idle AND no other bg agents are still
-    /// in flight. Read at the top of [`Self::run_event_loop`] to
-    /// synthesize an empty user turn, whose inference loop calls
-    /// `ChildAgentRegistry::drain_completed` and surfaces the bg-agent's
-    /// result to the model without the user having to type anything.
-    ///
-    /// The flag is the simple, codex-equivalent of
-    /// `maybe_start_turn_for_pending_work` — see #1349 for the full
-    /// rationale and the alternatives weighed.
-    pub(crate) auto_resume_pending: bool,
+/// The TUI's view of its session. The host owns the session and runs its
+/// turns; the TUI keeps what it still reads and writes directly while idle
+/// (history, `/compact`, resume, titles), as the 5c plan settled.
+pub struct TuiSession {
+    /// The open session's id. A command that switches sessions changes it,
+    /// and the TUI opens that session on the host before its next turn.
+    pub id: String,
+    /// The database the host also writes to. The TUI writes only while idle.
+    pub db: koda_core::db::Database,
+    /// The session's sub-agents, from the host
+    /// ([`koda_client::InProcessClient::session_handles`]).
+    pub bg_agents: Arc<koda_core::child_agent::ChildAgentRegistry>,
+}
+
+/// Open session `resume`, or a new one, on the host.
+pub(crate) async fn open_host_session(
+    client: &koda_client::InProcessClient,
+    resume: Option<String>,
+    db: koda_core::db::Database,
+) -> Result<TuiSession> {
+    use koda_client::protocol::{methods, session::SessionStartParams};
+    let started = client
+        .request::<methods::SessionStart>(SessionStartParams {
+            session_id: resume,
+            approval_policy: None,
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let id = started.session.id;
+    let bg_agents = client
+        .session_handles(&id)
+        .map(|handles| handles.bg_agents)
+        .unwrap_or_else(koda_core::child_agent::new_shared);
+    Ok(TuiSession { id, db, bg_agents })
+}
+
+/// What a turn starts with, and what to give back if it can't start.
+pub(crate) struct TurnInput {
+    /// The message the model gets: the prompt, with attached files and pastes.
+    pub message: String,
+    pub images: Vec<koda_core::providers::ImageData>,
+    /// What the user typed, and its paste blocks, for the input box.
+    pub typed: String,
+    pub paste_blocks: Vec<crate::input::PasteBlock>,
 }
 
 /// Outcome of dispatching a single command.
@@ -149,9 +186,7 @@ pub(crate) enum CommandOutcome {
     /// Command was fully handled (slash command, dropdown opened, etc.).
     Handled,
     /// Non-slash input — ready to start an inference turn.
-    StartInference {
-        pending_images: Option<Vec<koda_core::providers::ImageData>>,
-    },
+    StartInference(TurnInput),
     /// /quit was invoked.
     Quit,
 }
@@ -289,7 +324,7 @@ impl TuiContext {
         mut config: KodaConfig,
         overrides: ProviderOverrides,
         db: koda_core::db::Database,
-        session_id: String,
+        resume: Option<String>,
         version_check: tokio::task::JoinHandle<Option<String>>,
         first_run: bool,
     ) -> Result<Self> {
@@ -373,8 +408,22 @@ impl TuiContext {
         agent.rebuild_system_prompt(&config, &commands);
         let agent = Arc::new(agent);
 
-        let mut session =
-            KodaSession::new(session_id, agent.clone(), db.clone(), &config, config.trust).await;
+        // Koda's host runs the session's turns; the TUI is its client, with
+        // the agent it built (slash commands in the prompt, its MCP servers).
+        let client = koda_client::InProcessClient::start(koda_client::StartArgs {
+            config: config.clone(),
+            project_root: project_root.clone(),
+            db: db.clone(),
+            raw_events: true,
+            client_info: koda_client::protocol::initialize::ClientInfo {
+                name: "koda-tui".to_string(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+            },
+            agent: Some(agent.clone()),
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("couldn't start Koda's host: {e}"))?;
+        let session = open_host_session(&client, resume, db.clone()).await?;
 
         crate::startup::purge_nudge(&db, &mut startup_lines).await;
 
@@ -474,7 +523,6 @@ impl TuiContext {
                 .flatten();
             match session.db.load_context(&session.id).await {
                 Ok(msgs) if !msgs.is_empty() => {
-                    session.title_set = true; // resumed session already has a title
                     let oldest_id = msgs.first().map(|m| m.id);
                     let interrupted = detect_interruption(&msgs);
                     // Compute stats for the away-summary banner.
@@ -547,14 +595,15 @@ impl TuiContext {
             paste_burst: crate::composer::paste_burst::PasteBurst::default(),
             config,
             provider,
+            host_session: session.id.clone(),
             session,
+            client,
             shared_mode,
             agent,
             project_root,
             frame_requester,
             draw_rx,
             child_activity: crate::child_activity::ChildActivityTracker::default(),
-            auto_resume_pending: false,
         })
     }
 
@@ -661,37 +710,13 @@ impl TuiContext {
     /// The main event loop.
     pub async fn run_event_loop(
         &mut self,
-        ui_tx: &mpsc::UnboundedSender<UiEvent>,
-        ui_rx: &mut mpsc::UnboundedReceiver<UiEvent>,
+        ui_rx: &mut mpsc::UnboundedReceiver<koda_client::RawEvent>,
         cmd_tx: &mpsc::Sender<EngineCommand>,
         cmd_rx: &mut mpsc::Receiver<EngineCommand>,
     ) -> Result<()> {
         loop {
             if self.should_quit {
                 break;
-            }
-
-            // ── Auto-resume after bg-agent completion (#1349 Bug 2) ──
-            //
-            // If a `ChildTaskUpdate` terminal status arrived while idle
-            // and the registry now reports zero non-terminal bg agents,
-            // synthesize an empty turn. The inference loop's
-            // `drain_completed` folds the finished agent's result into
-            // the conversation so the model sees it on its very next
-            // inference call.
-            //
-            // Gated on `Idle` + no pending input so the user's own
-            // typing always wins over auto-resume — if they typed
-            // something while the bg agent was finishing, that's the
-            // higher-priority signal.
-            if self.tui_state == TuiState::Idle
-                && self.auto_resume_pending
-                && self.pending_command.is_none()
-            {
-                self.auto_resume_pending = false;
-                self.run_inference_turn(None, ui_tx, ui_rx, cmd_tx, cmd_rx)
-                    .await?;
-                continue;
             }
 
             // ── Dispatch pending commands ────────────────────
@@ -705,8 +730,8 @@ impl TuiContext {
                         self.should_quit = true;
                         continue;
                     }
-                    CommandOutcome::StartInference { pending_images } => {
-                        self.run_inference_turn(pending_images, ui_tx, ui_rx, cmd_tx, cmd_rx)
+                    CommandOutcome::StartInference(input) => {
+                        self.run_inference_turn(input, ui_rx, cmd_tx, cmd_rx)
                             .await?;
                         continue;
                     }
@@ -726,23 +751,15 @@ impl TuiContext {
             // active and the user stops typing, the timer fires and we
             // commit the buffered text into the textarea as one insert.
             //
-            // The `ui_rx.recv()` arm (#1349 Bugs 1+2) drains engine
-            // events while idle so that:
-            //  - `ChildAgentActivity` keeps the bg-task overlay live
-            //    (Bug 1 — frozen pill).
-            //  - `ChildTaskUpdate { Completed/Errored/Cancelled }` can
-            //    set `auto_resume_pending` so the loop synthesizes an
-            //    empty turn and the model sees the bg agent's mail
-            //    without the user having to type anything (Bug 2).
-            //  - `Info` / `Warn` / `Error` and other narrative events
-            //    flow through the renderer into the scroll buffer so
-            //    bg-agent narration doesn't silently disappear.
+            // The `ui_rx.recv()` arm (#1349) drains engine events while
+            // idle: sub-agent activity keeps the overlay live, and
+            // narrative events reach the scroll buffer.
             tokio::select! {
                 Some(Ok(ev)) = self.crossterm_events.next() => {
                     self.handle_idle_event(ev).await?;
                 }
-                Some(ui_event) = ui_rx.recv() => {
-                    self.handle_idle_ui_event(ui_event);
+                Some(raw) = ui_rx.recv() => {
+                    self.handle_idle_ui_event(UiEvent::Engine(raw.event));
                 }
                 // #1354: bg-activity overlay self-perpetuating tick.
                 // `TuiContext::draw()` calls `schedule_frame_in(1 s)`
@@ -927,54 +944,15 @@ impl TuiContext {
             user_message = format!("{user_message}\n\n{pasted}");
         }
 
-        // The turn reads the conversation back from the database, so a message
-        // that wasn't saved would be sent as nothing: once, a request with no
-        // messages, which the API rejected with an error that read like a key
-        // problem. Say what failed and give the text back instead.
-        if let Err(e) = self
-            .session
-            .db
-            .insert_message(
-                &self.session.id,
-                &Role::User,
-                Some(&user_message),
-                None,
-                None,
-                None,
-            )
-            .await
-        {
-            tracing::warn!("Failed to persist user message: {e}");
-            crate::tui_output::err_msg(
-                &mut self.scroll_buffer,
-                format!("Couldn't save your message, so it wasn't sent: {e:#}"),
-            );
-            self.textarea.set_text_clearing_elements(input);
-            self.paste_blocks = std::mem::take(&mut processed.paste_blocks);
-            return CommandOutcome::Handled;
-        }
-
-        // Auto-set session title from first user message (#590)
-        if !self.session.title_set {
-            self.session.title_set = true;
-            let title: String = user_message.chars().take(50).collect();
-            let _ = self
-                .session
-                .db
-                .set_session_title(&self.session.id, &title)
-                .await;
-        }
-
-        let pending_images = if processed.images.is_empty() {
-            None
-        } else {
-            Some(processed.images)
-        };
-
-        self.session.mode = trust::read_trust(&self.shared_mode);
-        self.session.update_provider(&self.config);
-
-        CommandOutcome::StartInference { pending_images }
+        // The host saves the message and titles a new session from it; a
+        // message it couldn't save comes back to the input box
+        // (`run_inference_turn`).
+        CommandOutcome::StartInference(TurnInput {
+            message: user_message,
+            images: processed.images,
+            typed: input.to_string(),
+            paste_blocks: std::mem::take(&mut processed.paste_blocks),
+        })
     }
 
     // ═══════════════════════════════════════════════════════════
