@@ -140,6 +140,22 @@ client_requests! {
         params: crate::storage::StoragePurgeParams,
         response: crate::storage::StoragePurgeResponse,
     },
+    /// Change what a session's next turns run with. A running turn keeps
+    /// its own; `session/settings/updated` follows once applied.
+    SessionSettingsUpdate => "session/settings/update" {
+        params: crate::session::SessionSettingsUpdateParams,
+        response: crate::session::SessionSettingsUpdateResponse,
+    },
+    /// The models a provider offers.
+    ModelList => "model/list" {
+        params: crate::model::ModelListParams,
+        response: crate::model::ModelListResponse,
+    },
+    /// The providers Koda offers, with their key status.
+    ModelProviderList => "modelProvider/list" {
+        params: crate::model::ModelProviderListParams,
+        response: crate::model::ModelProviderListResponse,
+    },
     /// Compact a session's history now. Answered at once; the compaction
     /// runs as a turn of its own, replacing a running turn.
     SessionCompactStart => "session/compact/start" {

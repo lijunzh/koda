@@ -1,0 +1,264 @@
+//! What a session runs with: its provider, endpoint and model, chosen at
+//! `session/start` and changed with `session/settings/update`, and the
+//! lists a client picks them from (`model/list`, `modelProvider/list`).
+//!
+//! A session's provider is fixed, as a Codex thread's is: switching
+//! provider means a new session. A model is an id or an alias; an alias
+//! such as `claude-opus` follows its line, so the choice is kept as made
+//! and resolved again on resume (latest model first, `DESIGN.md`).
+
+use std::time::Duration;
+
+use koda_core::config::{KodaConfig, ProviderType};
+use koda_core::model_alias;
+use koda_protocol::model::{
+    Model, ModelListParams, ModelListResponse, ModelProviderListResponse, ModelProviderSummary,
+};
+use koda_protocol::rpc::ErrorObject;
+use koda_protocol::session::SessionSettings;
+use koda_protocol::state::TrustMode;
+
+use crate::session::invalid;
+
+/// How long a provider gets to list its models.
+const LIST_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// A provider, endpoint and model, as asked for. Each is optional: what's
+/// missing comes from the session's earlier choice or the host's.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ModelChoice {
+    pub provider: Option<String>,
+    pub base_url: Option<String>,
+    pub model: Option<String>,
+}
+
+/// The provider `id` names, by its own id (`lm-studio`, as
+/// `modelProvider/list` gives them).
+pub(crate) fn provider(id: &str) -> Result<ProviderType, ErrorObject> {
+    // The catalog reads names leniently and falls back for an unknown one;
+    // only a provider's own id comes back unchanged. (Builds with Koda's
+    // test support add `mock`.)
+    let ptype = ProviderType::from_url_or_name("", Some(id));
+    if ptype.to_string() == id {
+        Ok(ptype)
+    } else {
+        Err(invalid(format!(
+            "unknown provider {id:?}; modelProvider/list names them"
+        )))
+    }
+}
+
+/// Resolve `model` for `ptype`: an alias's id, refused if the alias is
+/// another provider's, or the id as given. Returns the id and the alias.
+fn resolve_model(
+    model: &str,
+    ptype: ProviderType,
+) -> Result<(String, Option<&'static str>), ErrorObject> {
+    if model == model_alias::LOCAL_ALIAS {
+        return Err(invalid(
+            "\"local\" names no model: list the local server's models and pick one by id",
+        ));
+    }
+    match model_alias::resolve(model) {
+        Some(resolved) if resolved.provider != ptype => Err(invalid(format!(
+            "{model} is a {} model and this session uses {ptype}; a session's provider \
+             doesn't change, so start a new session with that provider",
+            resolved.provider
+        ))),
+        Some(resolved) => Ok((resolved.model_id, Some(resolved.alias))),
+        None => Ok((model.to_string(), None)),
+    }
+}
+
+/// Fetch the live Claude ids first when `model` is an alias that follows
+/// the Models API, so it resolves to its line's newest model.
+async fn refresh_for(model: Option<&str>) {
+    if model.is_some_and(model_alias::follows_models_api) {
+        model_alias::ensure_live_claude_ids().await;
+    }
+}
+
+/// Apply `choice` to `config`, for a session that starts or resumes. A
+/// provider can be named, or picked by an alias (`claude-opus` picks
+/// Anthropic); a provider without a model gets its default, which is kept
+/// as its line's alias when it is that line's newest. Returns the alias the
+/// model was chosen by, if any.
+pub(crate) async fn apply_start(
+    config: &mut KodaConfig,
+    choice: &ModelChoice,
+) -> Result<Option<&'static str>, ErrorObject> {
+    refresh_for(choice.model.as_deref()).await;
+    let by_alias = choice
+        .model
+        .as_deref()
+        .filter(|m| *m != model_alias::LOCAL_ALIAS)
+        .and_then(model_alias::resolve);
+    let ptype = match (&choice.provider, &by_alias) {
+        (Some(id), _) => provider(id)?,
+        (None, Some(resolved)) => resolved.provider,
+        (None, None) => config.provider_type,
+    };
+    let base_url = match &choice.base_url {
+        Some(url) => url.clone(),
+        None if ptype == config.provider_type => config.base_url.clone(),
+        None => ptype.default_base_url().to_string(),
+    };
+    let (model, alias) = match &choice.model {
+        Some(model) => resolve_model(model, ptype)?,
+        None if ptype == config.provider_type => (
+            config.model.clone(),
+            model_alias::following_alias(&config.model),
+        ),
+        None => {
+            let default = ptype.default_model().to_string();
+            match model_alias::following_alias(&default) {
+                Some(alias) => {
+                    refresh_for(Some(alias)).await;
+                    resolve_model(alias, ptype)?
+                }
+                None => (default, None),
+            }
+        }
+    };
+    // Nothing changed: the window the host was given stands.
+    if ptype == config.provider_type && base_url == config.base_url && model == config.model {
+        return Ok(alias);
+    }
+    config.provider_type = ptype;
+    config.base_url = base_url;
+    config.model = model.clone();
+    config.model_settings.model = model;
+    config.recalculate_model_derived();
+    Ok(alias)
+}
+
+/// What `session/settings/update` would change, checked without applying
+/// it: an alias of another provider, or an effort the model doesn't take
+/// on Anthropic, is refused. Returns the model's id and alias when it
+/// changes.
+pub(crate) fn check_update(
+    config: &KodaConfig,
+    model: Option<&str>,
+    effort: Option<&str>,
+) -> Result<Option<(String, Option<&'static str>)>, ErrorObject> {
+    let next = model
+        .map(|m| resolve_model(m, config.provider_type))
+        .transpose()?;
+    if let Some(level) = effort
+        && config.provider_type == ProviderType::Anthropic
+    {
+        let target = next.as_ref().map_or(config.model.as_str(), |(id, _)| id);
+        koda_core::model_effort::check_typed(target, level).map_err(invalid)?;
+    }
+    Ok(next)
+}
+
+/// Resolve an update's model again, with the live Claude ids fetched, for
+/// applying it once it has passed [`check_update`].
+pub(crate) async fn resolve_update(
+    config: &KodaConfig,
+    model: &str,
+) -> Result<(String, Option<&'static str>), ErrorObject> {
+    refresh_for(Some(model)).await;
+    resolve_model(model, config.provider_type)
+}
+
+/// The settings a session reports.
+pub(crate) fn report(
+    config: &KodaConfig,
+    alias: Option<&str>,
+    mode: koda_core::trust::TrustMode,
+) -> SessionSettings {
+    SessionSettings {
+        model: config.model.clone(),
+        alias: alias.map(str::to_string),
+        model_provider: config.provider_type.to_string(),
+        base_url: config.base_url.clone(),
+        context_window: config.max_context_tokens as u64,
+        effort: koda_core::model_effort::sent(
+            &config.provider_type.to_string(),
+            &config.model,
+            config.model_settings.reasoning_effort.as_deref(),
+        ),
+        mode: crate::host::protocol_mode(mode),
+    }
+}
+
+/// `model/list`: the provider's aliases, then the models it lists that no
+/// alias names. For Anthropic that is the newest model of each line. A
+/// provider that can't be reached lists only its aliases.
+pub(crate) async fn list_models(
+    host: &KodaConfig,
+    params: ModelListParams,
+) -> Result<ModelListResponse, ErrorObject> {
+    let ptype = match &params.model_provider {
+        Some(id) => provider(id)?,
+        None => host.provider_type,
+    };
+    if ptype == ProviderType::Anthropic {
+        model_alias::ensure_live_claude_ids().await;
+    }
+    let mut data: Vec<Model> = model_alias::all()
+        .into_iter()
+        .filter(|a| a.provider == ptype && a.alias != model_alias::LOCAL_ALIAS)
+        .map(|a| Model {
+            id: a.model_id,
+            alias: Some(a.alias.to_string()),
+        })
+        .collect();
+    let mut config = host.clone();
+    config.provider_type = ptype;
+    config.base_url = match params.base_url {
+        Some(url) => url,
+        None if ptype == host.provider_type => host.base_url.clone(),
+        None => ptype.default_base_url().to_string(),
+    };
+    let listed = tokio::time::timeout(
+        LIST_TIMEOUT,
+        koda_core::providers::create_provider(&config).list_models(),
+    )
+    .await;
+    match listed {
+        Ok(Ok(models)) => {
+            for model in models {
+                if !data.iter().any(|m| m.id == model.id) {
+                    data.push(Model {
+                        id: model.id,
+                        alias: None,
+                    });
+                }
+            }
+        }
+        Ok(Err(e)) => tracing::info!("model/list: {ptype} listed nothing: {e:#}"),
+        Err(_) => tracing::info!("model/list: {ptype} didn't answer in {LIST_TIMEOUT:?}"),
+    }
+    Ok(ModelListResponse { data })
+}
+
+/// `modelProvider/list`: every provider Koda offers, with whether a key is
+/// set for it (from the environment, where stored keys are put at start).
+pub(crate) fn list_providers(host: &KodaConfig) -> ModelProviderListResponse {
+    ModelProviderListResponse {
+        data: ProviderType::OFFERED
+            .iter()
+            .map(|p| ModelProviderSummary {
+                id: p.to_string(),
+                name: p.display_name().to_string(),
+                base_url: p.default_base_url().to_string(),
+                requires_api_key: p.requires_api_key(),
+                has_api_key: koda_core::runtime_env::get(p.env_key_name())
+                    .is_some_and(|k| !k.is_empty()),
+            })
+            .collect(),
+        default_provider_id: host.provider_type.to_string(),
+    }
+}
+
+/// The protocol's trust mode for the session's mode.
+pub(crate) fn mode_of(mode: TrustMode) -> koda_core::trust::TrustMode {
+    match mode {
+        TrustMode::Plan => koda_core::trust::TrustMode::Plan,
+        TrustMode::Safe => koda_core::trust::TrustMode::Safe,
+        TrustMode::Auto => koda_core::trust::TrustMode::Auto,
+    }
+}

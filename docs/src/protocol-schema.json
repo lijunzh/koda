@@ -746,6 +746,122 @@
       ],
       "description": "Any message on the wire, in either direction.\n\nThe variants are told apart by their members, as the specification\ndoes: a request has `id` and `method`, a notification `method` only, a\nresponse `result`, an error `error`."
     },
+    "Model": {
+      "description": "One model a provider offers.",
+      "properties": {
+        "alias": {
+          "description": "The alias this entry is, such as `claude-opus`, which follows its\nline. A pick by alias should be made by it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "The id to send, or `auto-detect` for `local`, whose model the server\nnames.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "ModelListParams": {
+      "additionalProperties": false,
+      "description": "`model/list`: the models a provider offers.",
+      "properties": {
+        "baseUrl": {
+          "description": "The provider's endpoint. Without one, its default.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "modelProvider": {
+          "description": "The provider, by id. Without one, the host's.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ModelListResponse": {
+      "description": "The answer to `model/list`.",
+      "properties": {
+        "data": {
+          "description": "The models, aliases first. For Anthropic, the newest model of each\nline, not every model it lists.",
+          "items": {
+            "$ref": "#/$defs/Model"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "data"
+      ],
+      "type": "object"
+    },
+    "ModelProviderListParams": {
+      "additionalProperties": false,
+      "description": "`modelProvider/list`: the providers Koda offers.",
+      "type": "object"
+    },
+    "ModelProviderListResponse": {
+      "description": "The answer to `modelProvider/list`.",
+      "properties": {
+        "data": {
+          "description": "The providers, in the order a picker shows them.",
+          "items": {
+            "$ref": "#/$defs/ModelProviderSummary"
+          },
+          "type": "array"
+        },
+        "defaultProviderId": {
+          "description": "The host's provider, which a new session uses by default.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "data",
+        "defaultProviderId"
+      ],
+      "type": "object"
+    },
+    "ModelProviderSummary": {
+      "description": "One provider. Codex's `ModelProviderSummary`, with Koda's key status.",
+      "properties": {
+        "baseUrl": {
+          "description": "The default endpoint.",
+          "type": "string"
+        },
+        "hasApiKey": {
+          "description": "Whether a key is set for it. Never the key itself.",
+          "type": "boolean"
+        },
+        "id": {
+          "description": "The id, such as `lm-studio`.",
+          "type": "string"
+        },
+        "name": {
+          "description": "The name a person reads, such as `LM Studio`.",
+          "type": "string"
+        },
+        "requiresApiKey": {
+          "description": "Whether it needs an API key.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "baseUrl",
+        "requiresApiKey",
+        "hasApiKey"
+      ],
+      "type": "object"
+    },
     "Notification": {
       "additionalProperties": false,
       "description": "A one-way message: nothing answers it.",
@@ -1191,6 +1307,116 @@
       ],
       "type": "object"
     },
+    "SessionSettings": {
+      "description": "What a session's turns run with.",
+      "properties": {
+        "alias": {
+          "description": "The alias the model was chosen by, if any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "baseUrl": {
+          "description": "The provider's endpoint.",
+          "type": "string"
+        },
+        "contextWindow": {
+          "description": "The context window, in tokens.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "effort": {
+          "description": "The reasoning effort sent, if any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mode": {
+          "$ref": "#/$defs/TrustMode",
+          "description": "The trust mode."
+        },
+        "model": {
+          "description": "The model's id.",
+          "type": "string"
+        },
+        "modelProvider": {
+          "description": "The provider's id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "model",
+        "modelProvider",
+        "baseUrl",
+        "contextWindow",
+        "mode"
+      ],
+      "type": "object"
+    },
+    "SessionSettingsUpdateParams": {
+      "additionalProperties": false,
+      "description": "`session/settings/update`: what the session's next turns run with, as\nCodex's `thread/settings/update`. Only what's given changes. A running\nturn keeps its own; `session/settings/updated` follows once applied.\nThe provider can't change: a model of another provider is refused.",
+      "properties": {
+        "effort": {
+          "description": "The reasoning effort, such as `high`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TrustMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The trust mode."
+        },
+        "model": {
+          "description": "The model: an id, or an alias of the session's provider.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sessionId": {
+          "description": "The session.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "type": "object"
+    },
+    "SessionSettingsUpdateResponse": {
+      "description": "The answer to `session/settings/update`.",
+      "type": "object"
+    },
+    "SessionSettingsUpdatedNotification": {
+      "description": "`session/settings/updated`: a session's settings changed. Codex's\n`thread/settings/updated`.",
+      "properties": {
+        "sessionId": {
+          "description": "The session.",
+          "type": "string"
+        },
+        "settings": {
+          "$ref": "#/$defs/SessionSettings",
+          "description": "All of its settings, as they are now."
+        }
+      },
+      "required": [
+        "sessionId",
+        "settings"
+      ],
+      "type": "object"
+    },
     "SessionStartParams": {
       "additionalProperties": false,
       "description": "`session/start`.",
@@ -1205,6 +1431,27 @@
             }
           ],
           "description": "Who answers the session's requests. Without one, the client does."
+        },
+        "baseUrl": {
+          "description": "The provider's endpoint, for a local server or a gateway. Without\none, the provider's default, or a resumed session's own.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "description": "The model: an id, or an alias such as `claude-opus`, which follows\nits line's newest model. Without one, the provider's default, or a\nresumed session's own choice, an alias resolved again.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "modelProvider": {
+          "description": "The provider, by id (`anthropic`, `lm-studio`, …, as\n`modelProvider/list` gives them). A new session without one uses the\nhost's; a resumed one keeps the provider it was started with, as\nCodex's `thread/resume` does. A session's provider never changes.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "sessionId": {
           "description": "An earlier session to resume, by its full id. Without one, a new\nsession starts.",
@@ -2040,6 +2287,22 @@
         "$ref": "#/$defs/InitializeResponse"
       }
     },
+    "model/list": {
+      "params": {
+        "$ref": "#/$defs/ModelListParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ModelListResponse"
+      }
+    },
+    "modelProvider/list": {
+      "params": {
+        "$ref": "#/$defs/ModelProviderListParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ModelProviderListResponse"
+      }
+    },
     "session/compact/start": {
       "params": {
         "$ref": "#/$defs/SessionCompactStartParams"
@@ -2062,6 +2325,14 @@
       },
       "result": {
         "$ref": "#/$defs/SessionListResponse"
+      }
+    },
+    "session/settings/update": {
+      "params": {
+        "$ref": "#/$defs/SessionSettingsUpdateParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionSettingsUpdateResponse"
       }
     },
     "session/start": {
@@ -2173,6 +2444,11 @@
     "session/deleted": {
       "params": {
         "$ref": "#/$defs/SessionDeletedNotification"
+      }
+    },
+    "session/settings/updated": {
+      "params": {
+        "$ref": "#/$defs/SessionSettingsUpdatedNotification"
       }
     },
     "session/started": {

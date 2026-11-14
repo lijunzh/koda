@@ -226,6 +226,12 @@ pub struct SessionInfo {
     pub preview: Option<String>,
     /// The project it was started in; `None` for sessions older than the column.
     pub project_root: Option<String>,
+    /// The provider's id, when the session recorded it.
+    pub provider: Option<String>,
+    /// The provider's endpoint, when recorded.
+    pub base_url: Option<String>,
+    /// The model choice as made, an alias or an id, when recorded.
+    pub model: Option<String>,
 }
 
 /// Stats about compacted (archived) messages in the database.
@@ -260,6 +266,15 @@ pub trait Persistence: Send + Sync {
     async fn set_session_title(&self, session_id: &str, title: &str) -> Result<()>;
     /// Persist the current approval mode for a session (restored on resume).
     async fn set_session_mode(&self, session_id: &str, mode: &str) -> Result<()>;
+    /// Record the session's provider, endpoint and model choice (an alias
+    /// or an id), restored on resume.
+    async fn set_session_model(
+        &self,
+        session_id: &str,
+        provider: &str,
+        base_url: &str,
+        model: &str,
+    ) -> Result<()>;
     /// Get the stored approval mode for a session.
     async fn get_session_mode(&self, session_id: &str) -> Result<Option<String>>;
     /// Seconds elapsed since the session was last accessed (`last_accessed_at`).

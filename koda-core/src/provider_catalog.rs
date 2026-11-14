@@ -278,6 +278,52 @@ impl ProviderType {
     }
 }
 
+impl ProviderType {
+    /// The providers Koda offers, in the order a picker shows them.
+    pub const OFFERED: [Self; 15] = [
+        Self::LMStudio,
+        Self::Ollama,
+        Self::LlamaCpp,
+        Self::OpenAI,
+        Self::Anthropic,
+        Self::DeepSeek,
+        Self::Gemini,
+        Self::Groq,
+        Self::Grok,
+        Self::Mistral,
+        Self::MiniMax,
+        Self::OpenRouter,
+        Self::Together,
+        Self::Fireworks,
+        Self::Vllm,
+    ];
+
+    /// The name a person reads, such as `LM Studio`. The id is
+    /// its `to_string()` (`lm-studio`), which [`Self::from_url_or_name`]
+    /// reads back.
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Self::OpenAI => "OpenAI",
+            Self::Anthropic => "Anthropic",
+            Self::LMStudio => "LM Studio",
+            Self::Gemini => "Google Gemini",
+            Self::Groq => "Groq",
+            Self::Grok => "Grok (xAI)",
+            Self::Ollama => "Ollama",
+            Self::DeepSeek => "DeepSeek",
+            Self::Mistral => "Mistral",
+            Self::MiniMax => "MiniMax",
+            Self::OpenRouter => "OpenRouter",
+            Self::Together => "Together",
+            Self::Fireworks => "Fireworks",
+            Self::Vllm => "vLLM",
+            Self::LlamaCpp => "llama.cpp",
+            #[cfg(any(test, feature = "test-support"))]
+            Self::Mock => "Mock",
+        }
+    }
+}
+
 impl std::fmt::Display for ProviderType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.meta().name)

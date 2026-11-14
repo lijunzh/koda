@@ -752,3 +752,70 @@ async fn a_resumed_turn_reports_only_itself() {
     assert_eq!(totals["inputTokens"], 400, "the session: {totals}");
     assert_eq!(totals["modelCalls"], 2, "the session: {totals}");
 }
+
+/// `koda exec -s` keeps the session's own provider, endpoint and model
+/// unless flags name others, as `codex exec resume` does.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resumed_run_keeps_its_model_unless_flags_say_otherwise() {
+    let server = stub(vec![], no_other_calls).await;
+    let tmp = tempfile::tempdir().unwrap();
+    // `koda exec`, with these flags.
+    let exec = |flags: &[&str]| {
+        let mut command = tokio::process::Command::new(koda_bin());
+        command
+            .args(["exec", "Go on", "--json"])
+            .args(flags)
+            .arg("--project-root")
+            .arg(tmp.path())
+            .env("XDG_CONFIG_HOME", tmp.path())
+            .kill_on_drop(true);
+        command
+    };
+    let url = server.url();
+    let first = finish(exec(&[
+        "--provider",
+        "lmstudio",
+        "--base-url",
+        &url,
+        "--model",
+        "first-model",
+    ]))
+    .await;
+    assert!(first.output.status.success(), "{}", first.stdout);
+    let session = first.lines[0]["params"]["session"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // No provider, endpoint or model flags: the session's own come back.
+    let resumed = finish(exec(&["-s", &session])).await;
+    assert!(resumed.output.status.success(), "{}", resumed.stdout);
+    assert_eq!(
+        resumed.lines[0]["params"]["session"]["model"],
+        "first-model"
+    );
+
+    let flagged = finish(exec(&[
+        "--provider",
+        "lmstudio",
+        "--base-url",
+        &url,
+        "--model",
+        "flag-model",
+        "-s",
+        &session,
+    ]))
+    .await;
+    assert!(flagged.output.status.success(), "{}", flagged.stdout);
+    assert_eq!(flagged.lines[0]["params"]["session"]["model"], "flag-model");
+
+    let models: Vec<String> = server
+        .received_requests()
+        .await
+        .iter()
+        .filter(|r| r.url.path().ends_with("/chat/completions"))
+        .map(|r| body(r)["model"].as_str().unwrap_or_default().to_string())
+        .filter(|m| !m.is_empty())
+        .collect();
+    assert_eq!(models, ["first-model", "first-model", "flag-model"]);
+}

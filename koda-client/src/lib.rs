@@ -30,6 +30,7 @@ pub mod builtin_skills;
 pub mod events;
 mod host;
 mod session;
+mod settings;
 
 use std::fmt;
 use std::path::PathBuf;

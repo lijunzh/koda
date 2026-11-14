@@ -216,3 +216,8 @@ koda exec "review @src/auth.rs and @tests/auth_test.rs"
 # The session id from session/started or exec/summary
 koda exec -s a3f8bc12-1587-4c6d-a855-46183ca84fba "run the failing tests and fix them"
 ```
+
+A resumed run keeps the session's own provider, endpoint and model, as
+`codex exec resume` does: a model chosen by alias (`claude-opus`) moves to its
+line's newest. `--provider`, `--base-url` or `--model` override them for this
+run and from then on.

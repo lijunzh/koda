@@ -469,7 +469,7 @@ macro_rules! session_info_select {
         (SELECT u.content FROM messages u
           WHERE u.session_id = s.id AND u.role = 'user'
           ORDER BY u.id LIMIT 1) as preview,
-        s.project_root
+        s.project_root, s.provider, s.base_url, s.model
      FROM sessions s
      LEFT JOIN messages m ON m.session_id = s.id"
     };
@@ -1001,6 +1001,23 @@ impl Persistence for Database {
     async fn set_session_mode(&self, session_id: &str, mode: &str) -> Result<()> {
         sqlx::query("UPDATE sessions SET mode = ? WHERE id = ?")
             .bind(mode)
+            .bind(session_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn set_session_model(
+        &self,
+        session_id: &str,
+        provider: &str,
+        base_url: &str,
+        model: &str,
+    ) -> Result<()> {
+        sqlx::query("UPDATE sessions SET provider = ?, base_url = ?, model = ? WHERE id = ?")
+            .bind(provider)
+            .bind(base_url)
+            .bind(model)
             .bind(session_id)
             .execute(&self.pool)
             .await?;

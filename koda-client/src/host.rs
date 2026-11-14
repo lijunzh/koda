@@ -188,6 +188,17 @@ impl Host {
                 let _ = reply.send(self.start_session(params).await.and_then(to_json));
                 return;
             }
+            ClientRequest::ModelList { params, .. } => {
+                let answer = crate::settings::list_models(&self.context.config, params).await;
+                let _ = reply.send(answer.and_then(to_json));
+                return;
+            }
+            ClientRequest::ModelProviderList { .. } => {
+                let _ = reply.send(to_json(crate::settings::list_providers(
+                    &self.context.config,
+                )));
+                return;
+            }
             ClientRequest::SessionList { params, .. } => {
                 let _ = reply.send(self.list_sessions(params).await.and_then(to_json));
                 return;
@@ -226,6 +237,10 @@ impl Host {
             ClientRequest::TurnSteer { params, .. } => (
                 params.session_id.clone(),
                 SessionCommand::Steer { params, reply },
+            ),
+            ClientRequest::SessionSettingsUpdate { params, .. } => (
+                params.session_id.clone(),
+                SessionCommand::UpdateSettings { params, reply },
             ),
             // Answered at once; the compaction runs as a turn.
             ClientRequest::SessionCompactStart { params, .. } => {
@@ -371,7 +386,12 @@ impl Host {
             return Err(invalid(format!("session {id} is already open")));
         }
         let policy = params.approval_policy.unwrap_or_default();
-        let opened = session::open(self.context.clone(), params.session_id, policy).await?;
+        let choice = crate::settings::ModelChoice {
+            provider: params.model_provider,
+            base_url: params.base_url,
+            model: params.model,
+        };
+        let opened = session::open(self.context.clone(), params.session_id, policy, choice).await?;
         let id = opened.session.id.clone();
         let mut sessions = self.sessions.lock().await;
         // A prefix may have resolved to a session opened meanwhile.

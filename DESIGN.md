@@ -317,8 +317,9 @@ types, and a test fails when it's stale.
 
 The protocol grows with the code that serves it. It has `initialize`,
 `state/read`, `session/start`, `session/list`, `session/delete`,
-`session/compact/start`, `session/unsubscribe`, `storage/read`,
-`storage/purge`, `turn/start`,
+`session/compact/start`, `session/settings/update`, `session/unsubscribe`,
+`model/list`, `modelProvider/list`, `storage/read`, `storage/purge`,
+`turn/start`,
 `turn/interrupt` and `turn/steer`,
 a session's notifications (session, turn, items, errors and warnings) and the
 server requests for approvals, questions and the loop cap. `koda exec` runs
@@ -352,7 +353,18 @@ runs; `turn/interrupt` is answered once the turn has stopped, after its
 `turn/completed`; `turn/steer` names the turn it is for, and the text shows up
 as a `userMessage` item when the model receives it, so text a turn ends without
 delivering simply has no item, and a client that wants it back keeps its own
-copy until the item arrives, as Codex's TUI does. `session/compact/start`
+copy until the item arrives, as Codex's TUI does. A session's provider is
+fixed, as a Codex thread's is: `session/start` takes `modelProvider`, `baseUrl`
+and `model`, and switching provider means a new session.
+`session/settings/update` (Codex's `thread/settings/update`) changes the model
+within that provider, the effort and the mode for the turns after it; one sent
+during a turn is checked at once and applied when the turn ends, and
+`session/settings/updated` reports every setting. The session records its
+provider, endpoint and model choice, an alias kept as an alias, and a resume
+reopens on them unless the client names others, as Codex's `thread/resume`
+restores a thread's; an alias then moves to its line's newest model. `model/list`
+gives a provider's models (for Anthropic, the newest of each line) and
+`modelProvider/list` the providers, with whether a key is set. `session/compact/start`
 (Codex's `thread/compact/start`) is answered at once and compacts as a turn of
 its own, with a `contextCompaction` item whose trigger is `manual`; a running
 turn is stopped first and ends interrupted, and the compaction's turn can be

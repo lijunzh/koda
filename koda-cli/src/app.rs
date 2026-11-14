@@ -342,7 +342,11 @@ pub(crate) async fn run() -> Result<()> {
     }
 
     // Headless mode: skip onboarding, banner, version check
-    if let Some(run) = headless_run {
+    if let Some(mut run) = headless_run {
+        run.model_flags = cli.model.is_some()
+            || cli.provider.is_some()
+            || cli.base_url.is_some()
+            || alias.is_some();
         let config = koda_core::config::KodaConfig::load(&project_root, &cli.agent)?;
         let typed = (cli.reasoning_effort.clone(), cli.thinking_budget);
         let config = with_alias(config.with_overrides(cli.base_url, cli.model, cli.provider))
@@ -550,6 +554,8 @@ fn exec_run(args: ExecArgs) -> Result<headless::Run> {
             headless::Output::Text
         },
         last_message: args.output_last_message,
+        // Set once the flags are read.
+        model_flags: false,
     })
 }
 

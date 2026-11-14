@@ -63,6 +63,9 @@ pub struct Run {
     pub output: Output,
     /// Where to write the last reply (`koda exec -o`).
     pub last_message: Option<PathBuf>,
+    /// Whether `--model`, `--provider` or `--base-url` was given. A resumed
+    /// session keeps its own model unless they were, as in Codex.
+    pub model_flags: bool,
 }
 
 /// Run a single prompt and exit. `resume` is an earlier session's full id;
@@ -93,6 +96,15 @@ pub async fn run_headless(
         .collect();
 
     let provider = config.provider_type.meta().name;
+    // What the flags chose, for a resumed session to run with instead of
+    // its own.
+    let chosen = run.model_flags.then(|| {
+        (
+            config.provider_type.to_string(),
+            config.base_url.clone(),
+            config.model.clone(),
+        )
+    });
     let mut client = InProcessClient::start(StartArgs {
         config,
         project_root,
@@ -112,6 +124,11 @@ pub async fn run_headless(
 
     let opened = client
         .request::<methods::SessionStart>(SessionStartParams {
+            // Given flags win; without them a resumed session keeps its own
+            // provider and model. A new session starts with this config.
+            model_provider: chosen.as_ref().map(|c| c.0.clone()),
+            base_url: chosen.as_ref().map(|c| c.1.clone()),
+            model: chosen.map(|c| c.2),
             session_id: resume,
             approval_policy: Some(ApprovalPolicy::Never),
         })
