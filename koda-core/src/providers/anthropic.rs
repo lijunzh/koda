@@ -671,12 +671,31 @@ pub(crate) fn stored_thinking(model: &str, blocks: Vec<serde_json::Value>) -> Re
     Ok(serde_json::to_string(&StoredThinking { model, blocks })?)
 }
 
-/// Blocks to replay on a turn. A block means nothing to another model.
+/// Blocks to replay on a turn to `model`.
+///
+/// The models in Koda's effort table ([`crate::model_effort::rejects_thinking_budget`])
+/// get every stored block, whichever Claude model wrote it. The API keeps the
+/// ones the model reads (a newer model reads most older ones: Haiku 5.5 and
+/// Sonnet 5.5 blocks go up to Opus 5.5, Opus 5.5 blocks up to Fable 5.1) and
+/// leaves out the rest, unbilled. A model switch never fails a request. So
+/// moving up a conversation keeps its reasoning, as does coming back to a
+/// model after another. Any other model gets only its own blocks.
+///
+/// Limits:
+/// - The table is the test, not the model's age. A Claude model missing from
+///   it gets only its own blocks: the older line, which takes a thinking
+///   budget, and any newer model until it is added to the table.
+/// - The older line keeps the exact-model rule because nothing documents
+///   how it treats another model's signature; Koda hasn't tested it (that
+///   would take paid calls). It may refuse the request, so Koda doesn't risk it.
+/// - Which blocks a model reads is the API's rule, from Anthropic's Preserved
+///   thinking documentation as observed in September and October 2026, for
+///   the Claude API. Koda doesn't check it, and the rule differs by platform.
 fn replayable_thinking(stored: Option<&str>, model: &str) -> Vec<ContentBlock> {
     let Some(stored) = stored.and_then(|s| serde_json::from_str::<StoredThinking>(s).ok()) else {
         return Vec::new();
     };
-    if stored.model != model {
+    if stored.model != model && !crate::model_effort::rejects_thinking_budget(model) {
         return Vec::new();
     }
     stored
@@ -1321,7 +1340,7 @@ mod tests {
     }
 
     #[test]
-    fn thinking_goes_back_first_and_only_to_the_model_that_wrote_it() {
+    fn thinking_goes_back_first_to_the_models_that_may_read_it() {
         let provider = AnthropicProvider::new("k".into(), None);
         let block = serde_json::json!({"type": "thinking", "thinking": "", "signature": "sig"});
         let stored = stored_thinking("claude-haiku-5-5", vec![block]).unwrap();
@@ -1336,7 +1355,14 @@ mod tests {
         assert_eq!(sent[0]["content"][0]["signature"], "sig");
         assert_eq!(sent[0]["content"][1]["text"], "done");
 
-        for model in [Some("claude-sonnet-5-5"), None] {
+        // Another adaptive-thinking model gets it too: the API keeps it if
+        // that model reads it. An older model, or a one-off request, doesn't.
+        for model in ["claude-opus-5-5", "claude-fable-5-2"] {
+            let sent =
+                serde_json::to_value(provider.convert_messages(&messages, Some(model))).unwrap();
+            assert_eq!(sent[0]["content"][0]["signature"], "sig", "{model}");
+        }
+        for model in [Some("claude-sonnet-4-5"), None] {
             let sent = serde_json::to_value(provider.convert_messages(&messages, model)).unwrap();
             assert_eq!(sent[0]["content"], "done", "{model:?}");
         }
