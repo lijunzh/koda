@@ -248,6 +248,22 @@ impl Tui {
         self.type_text("\r");
     }
 
+    /// Submit `prompt` and wait for its turn to end, which shows `reply`.
+    ///
+    /// Waiting only for the busy prompt to go isn't enough: on a slow machine
+    /// the model can have the call before the screen shows the busy prompt,
+    /// and keys typed then go to the running turn. A frame that shows the
+    /// reply one more time was drawn during the turn or after it, so the
+    /// prompt it shows says whether the turn has ended.
+    fn submit_and_finish(&mut self, prompt: &str, reply: &str) {
+        let before = self.screen().matches(reply).count();
+        self.submit(prompt);
+        self.wait_for_screen_that(
+            |screen| screen.matches(reply).count() > before && !screen.contains(BUSY_PROMPT),
+            &format!("finish the turn for {prompt:?}"),
+        );
+    }
+
     /// Press `key` and wait for the turn to stop: the engine says so, and
     /// the turn ends a moment later, when its `turn/completed` reaches the
     /// TUI. Keys typed before that still go to the turn.
@@ -849,6 +865,27 @@ fn resume_hint_session_id(tui: &Tui) -> String {
         .unwrap_or_else(|| panic!("no resume hint in:\n{text}"))
 }
 
+/// What you typed comes back with Up after a restart. The TUI keeps it in
+/// its own `history.jsonl`, in Codex's record shape, not in the database.
+#[tokio::test(flavor = "multi_thread")]
+async fn typed_prompts_come_back_with_up_after_a_restart() {
+    let server = scripted_model(vec![final_text()]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    tui.submit("remember this prompt");
+    wait_for_model_call(&server, 1).await;
+    let session = quit_and_read_session_id(&mut tui);
+
+    let text = std::fs::read_to_string(home.path().join(".config/koda/history.jsonl")).unwrap();
+    let entry: Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
+    assert_eq!(entry["text"], "remember this prompt");
+    assert_eq!(entry["session_id"], session.as_str());
+
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    tui.type_text("\x1b[A");
+    tui.wait_for_screen("remember this prompt");
+}
+
 /// A resumed session shows the earlier conversation, folded as it was live,
 /// and the model gets that history with the next prompt.
 #[tokio::test(flavor = "multi_thread")]
@@ -1321,11 +1358,10 @@ async fn sessions_resume_and_delete_by_id() {
     let mut tui = Tui::start_with_model(home.path(), &server.url());
     run_command(&mut tui, &format!("/sessions resume {bravo}"));
     tui.wait_for_screen("bravo session words");
-    tui.submit("bravo again");
+    tui.submit_and_finish("bravo again", "All done.");
     let sent = wait_for_model_call(&server, 3).await;
     assert!(sent.contains("bravo session words"), "{sent}");
     assert!(!sent.contains("charlie session words"), "{sent}");
-    tui.wait_for_screen_without(BUSY_PROMPT);
 
     run_command(&mut tui, &format!("/sessions delete {charlie}"));
     tui.wait_for_screen_without(BUSY_PROMPT);
@@ -1427,9 +1463,8 @@ async fn compact_replaces_earlier_turns_with_the_summary() {
         .iter()
         .enumerate()
     {
-        tui.submit(prompt);
+        tui.submit_and_finish(prompt, "All done.");
         wait_for_model_call(&server, n + 1).await;
-        tui.wait_for_screen_without(BUSY_PROMPT);
     }
 
     run_command(&mut tui, "/compact");
@@ -1472,9 +1507,8 @@ async fn esc_stops_a_compaction_and_keeps_the_history() {
         .iter()
         .enumerate()
     {
-        tui.submit(prompt);
+        tui.submit_and_finish(prompt, "All done.");
         wait_for_model_call(&server, n + 1).await;
-        tui.wait_for_screen_without(BUSY_PROMPT);
     }
 
     run_command(&mut tui, "/compact");

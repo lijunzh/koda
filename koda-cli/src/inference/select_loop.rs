@@ -229,7 +229,6 @@ impl TuiContext {
             turn_id: turn_id.clone(),
         };
         let mut tracker = TurnTracker::new(turn_id);
-        let db_handle = self.session.db.clone();
 
         self.tui_state = TuiState::Inferring;
         self.inference_start = Some(std::time::Instant::now());
@@ -364,7 +363,7 @@ impl TuiContext {
                         &mut self.history,
                         &mut self.history_idx,
                         &mut self.paste_blocks,
-                        &db_handle,
+                        (&self.input_history, &self.session.id),
                         &bg_agents_for_status,
                         &agent_for_status.tools.bg_registry,
                         &mut self.child_activity,

@@ -53,7 +53,7 @@ pub(super) async fn handle_crossterm_event_inline(
     history: &mut Vec<String>,
     history_idx: &mut Option<usize>,
     paste_blocks: &mut Vec<input::PasteBlock>,
-    db: &koda_core::db::Database,
+    input_history: (&crate::input_history::InputHistory, &str),
     bg_agents: &koda_core::child_agent::ChildAgentRegistry,
     bg_processes: &koda_core::tools::bg_process::BgRegistry,
     child_activity: &mut crate::child_activity::ChildActivityTracker,
@@ -102,7 +102,7 @@ pub(super) async fn handle_crossterm_event_inline(
                 completer,
                 history,
                 history_idx,
-                db,
+                input_history,
                 bg_agents,
                 bg_processes,
                 child_activity,
@@ -130,7 +130,7 @@ async fn handle_inference_key_inline(
     completer: &mut crate::completer::InputCompleter,
     history: &mut Vec<String>,
     history_idx: &mut Option<usize>,
-    db: &koda_core::db::Database,
+    input_history: (&crate::input_history::InputHistory, &str),
     bg_agents: &koda_core::child_agent::ChildAgentRegistry,
     bg_processes: &koda_core::tools::bg_process::BgRegistry,
     child_activity: &mut crate::child_activity::ChildActivityTracker,
@@ -326,7 +326,7 @@ async fn handle_inference_key_inline(
                 }
                 textarea.set_text_clearing_elements("");
                 history.push(text.clone());
-                let _ = db.history_push(&text).await;
+                input_history.0.push(input_history.1, &text);
                 *history_idx = None;
 
                 let preview = truncate_preview(&text, 80);

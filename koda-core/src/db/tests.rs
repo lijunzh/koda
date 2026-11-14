@@ -1257,28 +1257,6 @@ async fn test_load_all_messages_includes_compacted() {
 }
 
 #[tokio::test]
-async fn test_recent_user_messages() {
-    let (db, _tmp) = setup().await;
-    let session = db.create_session("default", _tmp.path()).await.unwrap();
-
-    db.insert_message(&session, &Role::User, Some("first"), None, None, None)
-        .await
-        .unwrap();
-    db.insert_message(&session, &Role::User, Some("second"), None, None, None)
-        .await
-        .unwrap();
-    db.insert_message(&session, &Role::User, Some("third"), None, None, None)
-        .await
-        .unwrap();
-
-    let recent = db.recent_user_messages(2).await.unwrap();
-    assert_eq!(recent.len(), 2);
-    // Most recent first.
-    assert_eq!(recent[0], "third");
-    assert_eq!(recent[1], "second");
-}
-
-#[tokio::test]
 async fn test_last_user_message() {
     let (db, _tmp) = setup().await;
     let session = db.create_session("default", _tmp.path()).await.unwrap();

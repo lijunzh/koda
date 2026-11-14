@@ -259,7 +259,8 @@ impl Database {
         .execute(pool)
         .await?;
 
-        // REPL input history (#693): replaces ~/.config/koda/history.
+        // Input history until the TUI kept its own `history.jsonl`; read once
+        // to bring it over (`history_load`).
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS input_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -517,11 +518,6 @@ impl Database {
     }
 }
 
-// ── Input history (#693) ─────────────────────────────────────────────────────────
-
-/// Maximum number of input history entries to keep.
-const MAX_INPUT_HISTORY: i64 = 500;
-
 impl Database {
     /// The session `id` names: itself, or the one session whose id starts
     /// with it (the short ids `/sessions` shows). An error says why there's
@@ -549,27 +545,9 @@ impl Database {
         }
     }
 
-    /// Append an input to the history.
-    pub async fn history_push(&self, input: &str) -> Result<()> {
-        sqlx::query("INSERT INTO input_history (input) VALUES (?)")
-            .bind(input)
-            .execute(&self.pool)
-            .await?;
-
-        // Trim old entries beyond the cap.
-        sqlx::query(
-            "DELETE FROM input_history WHERE id NOT IN (
-                SELECT id FROM input_history ORDER BY id DESC LIMIT ?
-            )",
-        )
-        .bind(MAX_INPUT_HISTORY)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Load all history entries, oldest first.
+    /// The input history Koda kept here before the TUI kept its own file
+    /// (`history.jsonl`, as Codex's TUI does), oldest first. Read once, to
+    /// bring it over; nothing writes it any more.
     pub async fn history_load(&self) -> Result<Vec<String>> {
         let rows: Vec<(String,)> =
             sqlx::query_as("SELECT input FROM input_history ORDER BY id ASC")
