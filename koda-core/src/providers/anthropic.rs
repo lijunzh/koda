@@ -458,15 +458,25 @@ impl AnthropicProvider {
         Ok(page)
     }
 
-    /// The newest model in each Claude line (`haiku` / `sonnet` / `opus`),
+    /// The newest model in each Claude line Koda offers (`haiku`, `sonnet`,
+    /// `opus`, `fable`),
     /// by the Models API's `line` and `created_at`.
     ///
-    /// This is what the `claude-haiku` / `claude-sonnet` / `claude-opus`
+    /// This is what the `claude-haiku`, `-sonnet`, `-opus` and `-fable`
     /// aliases follow; `crate::model_alias` asks once per process and
     /// keeps its pinned ids when this fails.
     pub async fn latest_claude_ids(&self) -> Result<ClaudeLineIds> {
         let page = self.fetch_models().await?;
         Ok(latest_by_line(&page.data))
+    }
+
+    /// [`Self::latest_claude_ids`], with the line of every model listed.
+    pub async fn claude_lines(&self) -> Result<crate::model_alias::ClaudeLines> {
+        let page = self.fetch_models().await?;
+        Ok(crate::model_alias::ClaudeLines {
+            newest: latest_by_line(&page.data),
+            line_of: lines_by_id(&page.data),
+        })
     }
 }
 
@@ -496,6 +506,19 @@ fn latest_by_line(entries: &[ModelsListEntry]) -> ClaudeLineIds {
     newest
         .into_iter()
         .map(|(line, entry)| (line, entry.id.clone()))
+        .collect()
+}
+
+/// The line of every listed model that has one Koda offers, retired ones
+/// left out, as [`latest_by_line`] does.
+fn lines_by_id(entries: &[ModelsListEntry]) -> HashMap<String, ClaudeLine> {
+    entries
+        .iter()
+        .filter(|entry| entry.lifecycle.as_deref() != Some("retired"))
+        .filter_map(|entry| {
+            let line = entry.line.as_deref().and_then(ClaudeLine::parse)?;
+            Some((entry.id.clone(), line))
+        })
         .collect()
 }
 
@@ -916,15 +939,17 @@ impl LlmProvider for AnthropicProvider {
         usage.prompt_tokens + usage.cache_read_tokens + usage.cache_creation_tokens
     }
 
+    /// The newest model of each line Koda offers (Haiku, Sonnet, Opus and
+    /// Fable), as the Models API reports them, not every model the API
+    /// lists: Koda is built for the latest models. An older one can still be
+    /// typed, and gets a warning on its first turn.
     async fn list_models(&self) -> Result<Vec<ModelInfo>> {
-        // Use the /v1/models endpoint to discover available models and verify the API key.
-        let page = self.fetch_models().await?;
-
-        Ok(page
-            .data
-            .into_iter()
-            .map(|m| ModelInfo {
-                id: m.id,
+        let newest = latest_by_line(&self.fetch_models().await?.data);
+        Ok(ClaudeLine::ALL
+            .iter()
+            .filter_map(|line| newest.get(line))
+            .map(|id| ModelInfo {
+                id: id.clone(),
                 owned_by: Some("anthropic".to_string()),
             })
             .collect())
@@ -1828,10 +1853,10 @@ mod tests {
         );
         retired.lifecycle = Some("retired".to_string());
         let entries = vec![
-            // A line Koda has no alias for.
+            // A line Koda doesn't offer.
             entry(
-                "claude-fable-5-1",
-                Some("fable"),
+                "claude-mythos-5",
+                Some("mythos"),
                 Some("2026-10-01T00:00:00Z"),
             ),
             // `line: null`, even though it is the newest of all.
@@ -2003,7 +2028,8 @@ mod tests {
             assert_eq!(ids[&ClaudeLine::Haiku], "claude-haiku-5-5");
             assert_eq!(ids[&ClaudeLine::Sonnet], "claude-sonnet-7");
             assert_eq!(ids[&ClaudeLine::Opus], "claude-opus-5-5");
-            assert_eq!(ids.len(), 3);
+            assert_eq!(ids[&ClaudeLine::Fable], "claude-fable-5-1");
+            assert_eq!(ids.len(), 4);
             // One request, carrying the key and the version Koda sends everywhere.
             let seen = fixture.seen.lock().unwrap();
             assert_eq!(seen.len(), 1);
@@ -2012,6 +2038,46 @@ mod tests {
             let key = seen[0].get("x-api-key").unwrap().to_str().unwrap();
             assert_eq!(key, "sk-ant-test");
             drop(seen);
+            ct.cancel();
+        }
+
+        /// The answer also says each listed model's line, as the API reports
+        /// it: an older Haiku is a Haiku, an unlined model has none.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn claude_lines_knows_each_models_line() {
+            let (provider, _fixture, ct) = spawn((200, LIST), (404, "{}")).await;
+            let lines = provider.claude_lines().await.expect("ok");
+            assert_eq!(lines.newest[&ClaudeLine::Haiku], "claude-haiku-5-5");
+            assert_eq!(
+                lines.line_of["claude-haiku-4-5-20251001"],
+                ClaudeLine::Haiku
+            );
+            assert_eq!(lines.line_of["claude-sonnet-5-5"], ClaudeLine::Sonnet);
+            assert!(!lines.line_of.contains_key("claude-3-7-sonnet-20250219"));
+            ct.cancel();
+        }
+
+        /// `/provider` offers the newest model of each line, in line order,
+        /// not every model the API lists: no older Haiku, no unlined model.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn list_models_offers_only_the_newest_per_line() {
+            let (provider, _fixture, ct) = spawn((200, LIST), (404, "{}")).await;
+            let ids: Vec<String> = provider
+                .list_models()
+                .await
+                .expect("ok")
+                .into_iter()
+                .map(|m| m.id)
+                .collect();
+            assert_eq!(
+                ids,
+                [
+                    "claude-haiku-5-5",
+                    "claude-sonnet-7",
+                    "claude-opus-5-5",
+                    "claude-fable-5-1"
+                ]
+            );
             ct.cancel();
         }
 

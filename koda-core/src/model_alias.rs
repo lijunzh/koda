@@ -37,26 +37,53 @@ pub enum ClaudeLine {
     Sonnet,
     /// `opus`
     Opus,
+    /// `fable`
+    Fable,
 }
 
 impl ClaudeLine {
     /// Parse the API's `line` value.
     ///
-    /// `None` for lines Koda has no alias for (`fable`, `mythos`) and for
-    /// anything unknown; the API says not to infer a line from the id, and
-    /// this never does.
+    /// `None` for lines Koda doesn't offer (`mythos`) and for anything
+    /// unknown; the API says not to infer a line from the id, and this never
+    /// does.
     pub fn parse(line: &str) -> Option<Self> {
         match line {
             "haiku" => Some(Self::Haiku),
             "sonnet" => Some(Self::Sonnet),
             "opus" => Some(Self::Opus),
+            "fable" => Some(Self::Fable),
             _ => None,
         }
     }
+
+    /// The lines Koda offers, in `/model` order.
+    pub const ALL: [Self; 4] = [Self::Haiku, Self::Sonnet, Self::Opus, Self::Fable];
 }
 
 /// Newest model id per Claude line, as the Models API reported it.
 pub type ClaudeLineIds = HashMap<ClaudeLine, String>;
+
+/// What one Models API answer says about the Claude lines: each line's
+/// newest model, and the line of every model it listed, as the API reports
+/// it (the id never decides the line).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClaudeLines {
+    /// The newest model of each line.
+    pub newest: ClaudeLineIds,
+    /// Every listed model's line.
+    pub line_of: HashMap<String, ClaudeLine>,
+}
+
+impl From<ClaudeLineIds> for ClaudeLines {
+    fn from(newest: ClaudeLineIds) -> Self {
+        let line_of = newest
+            .iter()
+            .map(|(line, id)| (id.clone(), *line))
+            .collect();
+        Self { newest, line_of }
+    }
+}
 
 /// A hardcoded model alias.
 #[derive(Debug, Clone, Copy)]
@@ -132,6 +159,12 @@ static ALIASES: &[ModelAlias] = &[
         provider: ProviderType::Anthropic,
         line: Some(ClaudeLine::Opus),
     },
+    ModelAlias {
+        alias: "claude-fable",
+        model_id: "claude-fable-5-2",
+        provider: ProviderType::Anthropic,
+        line: Some(ClaudeLine::Fable),
+    },
 ];
 
 // ── Live Claude ids ─────────────────────────────────────────
@@ -142,7 +175,7 @@ static ALIASES: &[ModelAlias] = &[
 /// for the life of the cache, so a dead network costs one capped request
 /// per run rather than one per `/model`.
 pub struct LiveClaudeIds {
-    cell: tokio::sync::OnceCell<Option<ClaudeLineIds>>,
+    cell: tokio::sync::OnceCell<Option<ClaudeLines>>,
 }
 
 impl LiveClaudeIds {
@@ -155,22 +188,32 @@ impl LiveClaudeIds {
 
     /// The ids, if the fetch ran this run and succeeded.
     pub fn get(&self) -> Option<&ClaudeLineIds> {
+        self.lines().map(|lines| &lines.newest)
+    }
+
+    /// The whole answer, lines included, if the fetch succeeded.
+    pub fn lines(&self) -> Option<&ClaudeLines> {
         self.cell.get().and_then(|outcome| outcome.as_ref())
     }
 
     /// Run `fetch` unless an outcome is already cached, and return the ids
     /// if there are any. Concurrent callers share one fetch.
-    pub async fn get_or_fetch<F, Fut>(&self, fetch: F) -> Option<&ClaudeLineIds>
+    pub async fn get_or_fetch<F, Fut, T>(&self, fetch: F) -> Option<&ClaudeLineIds>
     where
         F: FnOnce() -> Fut,
-        Fut: Future<Output = anyhow::Result<ClaudeLineIds>>,
+        Fut: Future<Output = anyhow::Result<T>>,
+        T: Into<ClaudeLines>,
     {
         self.cell
             .get_or_init(|| async {
                 match fetch().await {
-                    Ok(ids) => {
-                        tracing::info!("Claude aliases from the Models API: {ids:?}");
-                        Some(ids)
+                    Ok(answer) => {
+                        let lines: ClaudeLines = answer.into();
+                        tracing::info!("Claude aliases from the Models API: {:?}", lines.newest);
+                        for notice in new_model_notices(&lines.newest) {
+                            tracing::warn!("{notice}");
+                        }
+                        Some(lines)
                     }
                     Err(e) => {
                         tracing::warn!(
@@ -182,6 +225,7 @@ impl LiveClaudeIds {
             })
             .await
             .as_ref()
+            .map(|lines| &lines.newest)
     }
 }
 
@@ -212,11 +256,82 @@ pub async fn ensure_live_claude_ids() -> Option<&'static ClaudeLineIds> {
             key,
             Some(ptype.default_base_url()),
         );
-        tokio::time::timeout(LIVE_LOOKUP_TIMEOUT, provider.latest_claude_ids())
+        tokio::time::timeout(LIVE_LOOKUP_TIMEOUT, provider.claude_lines())
             .await
             .map_err(|_| anyhow::anyhow!("timed out after {LIVE_LOOKUP_TIMEOUT:?}"))?
     })
     .await
+}
+
+// ── New models ──────────────────────────────────────────────
+
+/// Where to ask for a model Koda doesn't support yet.
+const NEW_MODEL_ISSUE: &str = "https://github.com/lijunzh/koda/issues/new";
+
+/// The newest model of each line that Koda doesn't support yet, that is,
+/// one missing from the effort table ([`crate::model_effort`]), in line
+/// order. Koda runs it as a current model, without a tuned effort.
+pub fn unsupported_newest(ids: &ClaudeLineIds) -> Vec<&str> {
+    ClaudeLine::ALL
+        .iter()
+        .filter_map(|line| ids.get(line))
+        .filter(|id| crate::model_effort::lookup(id).is_none())
+        .map(String::as_str)
+        .collect()
+}
+
+/// What to tell the user about each model [`unsupported_newest`] finds,
+/// with a link that opens an issue asking for it. The link carries only the
+/// model id. The TUI shows these at every start until Koda supports the
+/// model; `koda exec` only logs them.
+pub fn new_model_notices(ids: &ClaudeLineIds) -> Vec<String> {
+    unsupported_newest(ids)
+        .into_iter()
+        .map(|id| {
+            format!(
+                "Anthropic has released {id}, which this Koda doesn't support yet. It runs as \
+                 a current model, without a tuned effort. Ask for support: \
+                 {NEW_MODEL_ISSUE}?title=Support+{id}"
+            )
+        })
+        .collect()
+}
+
+/// The alias to save for a model picked from a list or set as a default:
+/// the alias whose line `model_id` is the newest of (or the alias's pinned
+/// id, when the Models API hasn't answered). Picking the newest model means
+/// "the latest", so the choice follows the line on later starts. `None` for
+/// any other id, which stays pinned.
+pub fn following_alias(model_id: &str) -> Option<&'static str> {
+    following_alias_with(model_id, LIVE.get())
+}
+
+/// [`following_alias`] against explicit live ids.
+pub fn following_alias_with(model_id: &str, live: Option<&ClaudeLineIds>) -> Option<&'static str> {
+    ALIASES
+        .iter()
+        .filter(|a| a.line.is_some())
+        .find(|a| a.resolved(live).model_id == model_id)
+        .map(|a| a.alias)
+}
+
+/// When `model` is pinned to a Claude model older than its line's newest,
+/// and Koda supports the newest: say so, and how to follow the line.
+pub fn pinned_older_notice(model: &str) -> Option<String> {
+    pinned_older_notice_with(model, LIVE.lines()?)
+}
+
+/// [`pinned_older_notice`] against an explicit Models API answer.
+pub fn pinned_older_notice_with(model: &str, lines: &ClaudeLines) -> Option<String> {
+    let line = lines.line_of.get(model)?;
+    let newest = lines.newest.get(line)?;
+    if newest == model || crate::model_effort::lookup(newest).is_none() {
+        return None;
+    }
+    let alias = ALIASES.iter().find(|a| a.line == Some(*line))?.alias;
+    Some(format!(
+        "You're on {model}; {newest} is newer. /model {alias} follows the newest."
+    ))
 }
 
 // ── Resolution ──────────────────────────────────────────────
@@ -519,11 +634,11 @@ mod tests {
     }
 
     #[test]
-    fn claude_line_parse_knows_only_aliased_lines() {
+    fn claude_line_parse_knows_only_offered_lines() {
         assert_eq!(ClaudeLine::parse("haiku"), Some(ClaudeLine::Haiku));
         assert_eq!(ClaudeLine::parse("sonnet"), Some(ClaudeLine::Sonnet));
         assert_eq!(ClaudeLine::parse("opus"), Some(ClaudeLine::Opus));
-        assert_eq!(ClaudeLine::parse("fable"), None);
+        assert_eq!(ClaudeLine::parse("fable"), Some(ClaudeLine::Fable));
         assert_eq!(ClaudeLine::parse("mythos"), None);
         assert_eq!(ClaudeLine::parse("Sonnet"), None);
         assert_eq!(ClaudeLine::parse(""), None);
@@ -562,7 +677,7 @@ mod tests {
         let second = cache
             .get_or_fetch(|| async move {
                 c.fetch_add(1, Ordering::SeqCst);
-                Err(anyhow::anyhow!("must not be called"))
+                Err::<ClaudeLineIds, _>(anyhow::anyhow!("must not be called"))
             })
             .await
             .expect("cached ids");
@@ -580,7 +695,7 @@ mod tests {
         let first = cache
             .get_or_fetch(|| async move {
                 c.fetch_add(1, Ordering::SeqCst);
-                Err(anyhow::anyhow!("network down"))
+                Err::<ClaudeLineIds, _>(anyhow::anyhow!("network down"))
             })
             .await;
         assert!(first.is_none());
@@ -634,5 +749,96 @@ mod tests {
                 a.model_id
             );
         }
+    }
+
+    #[test]
+    fn claude_fable_follows_the_fable_line() {
+        assert_eq!(
+            resolve_with("claude-fable", None).unwrap().model_id,
+            "claude-fable-5-2",
+            "pinned"
+        );
+        let live = HashMap::from([(ClaudeLine::Fable, "claude-fable-6".to_string())]);
+        assert_eq!(
+            resolve_with("claude-fable", Some(&live)).unwrap().model_id,
+            "claude-fable-6"
+        );
+    }
+
+    #[test]
+    fn a_newest_model_koda_lacks_gets_a_notice_with_an_issue_link() {
+        let ids = HashMap::from([
+            (ClaudeLine::Haiku, "claude-haiku-5-5".to_string()),
+            (ClaudeLine::Opus, "claude-opus-6".to_string()),
+            (ClaudeLine::Fable, "claude-fable-5-2".to_string()),
+        ]);
+        assert_eq!(unsupported_newest(&ids), ["claude-opus-6"]);
+        let notices = new_model_notices(&ids);
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].starts_with("Anthropic has released claude-opus-6"));
+        assert!(
+            notices[0].ends_with(
+                "https://github.com/lijunzh/koda/issues/new?title=Support+claude-opus-6"
+            ),
+            "{}",
+            notices[0]
+        );
+
+        let known = HashMap::from([(ClaudeLine::Sonnet, "claude-sonnet-5-5".to_string())]);
+        assert!(new_model_notices(&known).is_empty());
+    }
+
+    #[test]
+    fn a_lines_newest_model_is_saved_as_its_alias_and_others_stay_pinned() {
+        let live = HashMap::from([(ClaudeLine::Opus, "claude-opus-6".to_string())]);
+        assert_eq!(
+            following_alias_with("claude-opus-6", Some(&live)),
+            Some("claude-opus")
+        );
+        // Without an answer from the API, the pinned id stands in.
+        assert_eq!(
+            following_alias_with("claude-sonnet-5-5", None),
+            Some("claude-sonnet")
+        );
+        // Once the line has moved on, the old id is just an id.
+        assert_eq!(following_alias_with("claude-opus-5-5", Some(&live)), None);
+        assert_eq!(following_alias_with("claude-opus-5", None), None);
+        assert_eq!(following_alias_with("gpt-6-astra", None), None);
+    }
+
+    #[test]
+    fn a_model_pinned_behind_its_line_gets_a_notice() {
+        let lines = ClaudeLines {
+            newest: HashMap::from([
+                (ClaudeLine::Sonnet, "claude-sonnet-5-5".to_string()),
+                (ClaudeLine::Opus, "claude-opus-6".to_string()),
+            ]),
+            line_of: HashMap::from([
+                ("claude-sonnet-5-5".to_string(), ClaudeLine::Sonnet),
+                ("claude-sonnet-5".to_string(), ClaudeLine::Sonnet),
+                ("claude-opus-6".to_string(), ClaudeLine::Opus),
+                ("claude-opus-5-5".to_string(), ClaudeLine::Opus),
+            ]),
+        };
+        assert_eq!(
+            pinned_older_notice_with("claude-sonnet-5", &lines).as_deref(),
+            Some(
+                "You're on claude-sonnet-5; claude-sonnet-5-5 is newer. \
+                 /model claude-sonnet follows the newest."
+            )
+        );
+        assert_eq!(
+            pinned_older_notice_with("claude-sonnet-5-5", &lines),
+            None,
+            "newest"
+        );
+        assert_eq!(
+            pinned_older_notice_with("ornith", &lines),
+            None,
+            "not listed"
+        );
+        // A newest model Koda doesn't support yet has its own notice; this one
+        // doesn't send anyone to it.
+        assert_eq!(pinned_older_notice_with("claude-opus-5-5", &lines), None);
     }
 }

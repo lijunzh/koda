@@ -100,6 +100,11 @@ impl Tui {
             .env("HOME", home)
             .env("XDG_CONFIG_HOME", home.join(".config"))
             .env("TERM", "xterm-256color")
+            // No real provider is ever called: a key from the developer's
+            // shell would send the startup's Models API lookup to Anthropic.
+            .env_remove("ANTHROPIC_API_KEY")
+            .env_remove("OPENAI_API_KEY")
+            .env_remove("GEMINI_API_KEY")
             .envs(env.iter().copied())
             .stdin(stdio(slave))
             .stdout(stdio(slave))

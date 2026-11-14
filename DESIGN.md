@@ -539,10 +539,14 @@ model switch, provider setup).
 
 ### Claude Family Aliases Follow the Models API (P1, P3)
 
-`claude-haiku`, `claude-sonnet` and `claude-opus` are resolved at runtime
-from Anthropic's `GET /v1/models`: the newest `created_at` whose `line` is
-`haiku`, `sonnet` or `opus`. The pinned ids in `model_alias.rs` are the
-offline fallback (no key, no network, timeout, API error).
+`claude-haiku`, `claude-sonnet`, `claude-opus` and `claude-fable` are
+resolved at runtime from Anthropic's `GET /v1/models`: the newest
+`created_at` whose `line` is `haiku`, `sonnet`, `opus` or `fable`. The
+pinned ids in `model_alias.rs` are the offline fallback (no key, no
+network, timeout, API error). Anthropic's model list in `/provider` offers
+the same newest model per line, not every model the API lists: the latest
+model outranks backward compatibility (P1), and an older one can still be
+typed.
 
 Anthropic has no floating family alias; every id from the 4.6 generation
 on is a pinned snapshot, so an alias table moves only by hand and goes
@@ -550,12 +554,27 @@ stale between releases (P1: latest dependencies, one environment). The
 API knows the lines, so Koda asks it rather than guessing from the id
 (P3: adapt to servers rather than models).
 
-**When**: on first use, not at startup. The TUI asks once per process the
-first time it shows or resolves an alias (`/model`), capped at 5 s, and
-keeps the outcome, success or failure, for the run. Startup already has
-the saved pinned id, headless never resolves aliases, and users of other
-providers should not pay for an Anthropic request. One request per run;
-a second `/model` costs nothing.
+**When**: at TUI start, when an Anthropic key is configured. The request
+starts as the TUI launches and the startup joins it, capped at 5 s; its
+outcome, success or failure, is kept for the run, so `/model` costs
+nothing more. Headless asks only when `--model` names an alias. Without an
+Anthropic key nothing is sent.
+
+**A new model Koda doesn't know.** If a line's newest model is missing from
+the effort table (`model_effort`), the TUI says so at every start, with a
+link that opens an issue asking for it; the link carries only the model
+id. The model still runs, as a current one without a tuned effort. The
+notice goes away when Koda is updated for it, which is the reminder. Codex
+does the like with its catalog's upgrade info, shown once at startup;
+Koda shows it until it's handled. `koda exec` only logs it.
+
+**A choice that goes stale.** A session keeps no model of its own: resuming
+one runs it on today's choice, as latest-first wants. A model picked from a
+list, or set as a provider's default, is saved as its line's alias when it
+is that line's newest, so it follows the line. Only an id typed by hand
+stays pinned, and when its line has a newer model Koda supports, the TUI
+says so at every start, with the alias that follows the newest. The line of
+each model comes from the Models API, never from the id.
 
 ### Provider Retries (P2, P3)
 
