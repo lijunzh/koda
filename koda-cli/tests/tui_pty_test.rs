@@ -1120,6 +1120,23 @@ async fn a_model_choice_is_the_next_starts_choice() {
     assert!(sent.contains(r#""model":"stub-local""#), "{sent}");
 }
 
+/// Flags are for one run, as Codex's are: a `--base-url` and `--model` given
+/// at startup are never written into config.toml; only `/model` and
+/// `/provider` save a choice.
+#[tokio::test(flavor = "multi_thread")]
+async fn startup_flags_are_not_saved() {
+    let server = scripted_model(vec![]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    tui.submit("hi");
+    wait_for_model_call(&server, 1).await;
+    quit_and_read_session_id(&mut tui);
+    let config = home.path().join(".config/koda/config.toml");
+    let saved = std::fs::read_to_string(&config).unwrap_or_default();
+    assert!(!saved.contains("stub-model"), "a flag was saved: {saved}");
+    assert!(!saved.contains(&server.url()), "a flag was saved: {saved}");
+}
+
 /// Shift+Tab changes the mode on the host, which records it with the
 /// session (`session/settings/update`); the TUI no longer writes it. Safe
 /// goes to Auto, which needs the sandbox.

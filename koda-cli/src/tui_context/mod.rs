@@ -263,14 +263,6 @@ pub(crate) struct ProviderOverrides {
     pub model: bool,
 }
 
-/// Whether a `--base-url` / `KODA_BASE_URL` given to the TUI is saved as the
-/// last-used provider. Only once the server has answered: a mistyped URL
-/// shouldn't stick, and the placeholder model names below must never be
-/// restored as the saved model.
-fn remembers_endpoint(overrides: ProviderOverrides, model: &str) -> bool {
-    overrides.base_url && model != "(no model loaded)" && model != "(connection failed)"
-}
-
 impl TuiContext {
     /// Initialize all TUI state. Call before entering the event loop.
     ///
@@ -367,11 +359,8 @@ impl TuiContext {
         let (session_settings, host_warnings) =
             settings::fetch_settings(&mut client, &session.id, initial_mode).await?;
         settings::mirror(&mut config, &session_settings);
-        // A URL given on the command line or in KODA_BASE_URL sticks, once the
-        // server has answered. Headless runs never save anything.
-        if remembers_endpoint(overrides, &config.model) {
-            settings::save_choice(&client, &config, session_settings.alias.as_deref()).await;
-        }
+        // Flags are for this run only, as Codex's are: only `/model` and
+        // `/provider` save a choice into config.toml.
         let provider: Arc<RwLock<Box<dyn LlmProvider>>> =
             Arc::new(RwLock::new(koda_core::providers::create_provider(&config)));
 
@@ -1062,31 +1051,5 @@ mod tests {
                 .0,
             TrustMode::Safe,
         );
-    }
-
-    // Restoring the saved choice under the flags is the host's now
-    // (`koda_client` `settings::with_saved`, tested there).
-    #[test]
-    fn a_command_line_url_is_remembered_once_the_server_answered() {
-        use super::{ProviderOverrides, remembers_endpoint};
-        let url = ProviderOverrides {
-            base_url: true,
-            ..Default::default()
-        };
-        assert!(remembers_endpoint(url, "Qwen3.8-27B-Q4_K_M.gguf"));
-        // A model typed with the URL counts the same.
-        assert!(remembers_endpoint(url, "my-model"));
-        // The server never answered: placeholders must not be saved.
-        assert!(!remembers_endpoint(url, "(connection failed)"));
-        assert!(!remembers_endpoint(url, "(no model loaded)"));
-        // No URL given: nothing new to remember.
-        let none = ProviderOverrides::default();
-        assert!(!remembers_endpoint(none, "Qwen3.8-27B-Q4_K_M.gguf"));
-        let provider_only = ProviderOverrides {
-            provider: true,
-            model: true,
-            ..Default::default()
-        };
-        assert!(!remembers_endpoint(provider_only, "m"));
     }
 }

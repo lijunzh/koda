@@ -25,6 +25,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- **Flags are for one run.** A `--base-url` (or `KODA_BASE_URL`) given to the TUI was saved as the next start's choice once the server answered; now no flag is ever written, as Codex's aren't. `/model` and `/provider` save a choice into config.toml.
 - **A provider's saved endpoint applies whenever a session runs on that provider,** not only when it is the saved provider: `[model_providers.<id>] base_url` names the provider it belongs to. A named `--base-url` still wins, and a resumed session keeps its own.
 - **The client protocol's config follows the file.** The `base_url` key is now `model_providers.<id>.base_url`. `config/read` reports where each value comes from (`origins`, with the file and its `sha256:` version) and, with `includeLayers`, the layer's values; `config/batchWrite` takes `expectedVersion` and is refused with `configVersionConflict` if the file changed since, and answers with the new `version` and `filePath`. A new `configWarning` notification follows `initialize` when the file has something to report.
 
