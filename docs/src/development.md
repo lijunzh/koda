@@ -38,7 +38,6 @@ koda/
 │   │   ├── loop_guard.rs   # Loop detection + iteration hard-cap
 │   │   ├── mcp/            # MCP client: config, manager, tool bridge
 │   │   ├── memory.rs       # Semantic memory (global + project tiers → first user message)
-│   │   ├── microcompact.rs # Lightweight tool result aging between full compactions
 │   │   ├── model_alias.rs  # Curated model aliases (e.g. "sonnet" → exact model ID)
 │   │   ├── model_context.rs# Model → context window size lookup table (fallback)
 │   │   ├── output_caps.rs  # Output cap scaling based on context window size
@@ -254,7 +253,6 @@ and their modules are gated on it in `tests/suite/mod.rs`:
 - `tests/suite/inference_edge_test.rs` — loop detection, empty tool calls
 - `tests/suite/e2e_safety_test.rs` — approval gates, bash safety classification
 - `tests/suite/session_test.rs` — session lifecycle, TurnStart/TurnEnd events
-- `tests/suite/purge_test.rs` — /purge feature (compacted stats, age filter)
 - `tests/suite/perf_test.rs` — DB, grep, markdown throughput
 - `tests/suite/tool_wiring_test.rs` — every tool routable + approval-handled
 - `tests/suite/tool_normalize_test.rs` — snake_case → PascalCase normalization

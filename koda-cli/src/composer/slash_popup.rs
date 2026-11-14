@@ -73,11 +73,6 @@ pub const SLASH_COMMANDS: &[(&str, &str, Option<&str>)] = &[
     ("/model", "Pick a model (aliases + local)", None),
     ("/provider", "Browse all models from a provider", None),
     (
-        "/purge",
-        "Delete archived history (e.g. /purge 90d)",
-        Some("<days>"),
-    ),
-    (
         "/resume",
         "Resume or delete a session (picker, an id, delete <id>)",
         None,

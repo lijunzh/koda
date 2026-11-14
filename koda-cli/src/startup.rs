@@ -104,17 +104,6 @@ pub fn update_notice_lines(current: &str, latest: &str) -> Vec<Line<'static>> {
     ]
 }
 
-/// Build purge nudge lines.
-pub fn purge_nudge_lines(size_str: &str) -> Vec<Line<'static>> {
-    vec![Line::from(vec![
-        Span::styled("  \u{1f4a1} ", Style::default()),
-        Span::styled(
-            format!("{size_str} of archived history \u{2014} run /purge to clean up"),
-            DIM,
-        ),
-    ])]
-}
-
 /// A yellow `⚠` startup line.
 pub fn warning_line(message: String) -> Line<'static> {
     Line::from(vec![
@@ -165,24 +154,6 @@ pub fn home_dir_warning_lines(project_root: &std::path::Path) -> Vec<Line<'stati
 /// leak. (Addresses CodeQL alert #7 / `rust/cleartext-logging`.)
 pub fn print_resume_hint(session_id: &str) {
     println!("\nResume this session with:\n  koda --resume {session_id}");
-}
-
-/// Nudge threshold: 500MB of compacted data.
-pub const PURGE_NUDGE_BYTES: i64 = 500 * 1024 * 1024;
-
-/// Append purge nudge lines if compacted data exceeds threshold.
-pub async fn purge_nudge(client: &koda_client::InProcessClient, lines: &mut Vec<Line<'static>>) {
-    use koda_client::protocol::{methods, storage::StorageReadParams};
-    match client
-        .request::<methods::StorageRead>(StorageReadParams {})
-        .await
-    {
-        Ok(stats) if stats.size_bytes as i64 >= PURGE_NUDGE_BYTES => {
-            let size = crate::tui_wizards::format_bytes(stats.size_bytes as i64);
-            lines.extend(purge_nudge_lines(&size));
-        }
-        _ => {}
-    }
 }
 
 // ── Helpers ───────────────────────────────────────────

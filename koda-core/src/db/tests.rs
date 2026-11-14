@@ -1333,70 +1333,6 @@ async fn test_get_session_idle_secs() {
 }
 
 #[tokio::test]
-async fn test_clear_message_content() {
-    let (db, _tmp) = setup().await;
-    let session = db.create_session("default", _tmp.path()).await.unwrap();
-
-    let id1 = db
-        .insert_message(&session, &Role::User, Some("secret"), None, None, None)
-        .await
-        .unwrap();
-    let id2 = db
-        .insert_message(
-            &session,
-            &Role::Assistant,
-            Some("response"),
-            None,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-    db.clear_message_content(&[id1, id2], "[redacted]")
-        .await
-        .unwrap();
-
-    let msgs = db.load_all_messages(&session).await.unwrap();
-    for msg in &msgs {
-        assert_eq!(
-            msg.content.as_deref(),
-            Some("[redacted]"),
-            "msg {:?} should be redacted",
-            msg.role
-        );
-    }
-}
-
-#[tokio::test]
-async fn test_compacted_stats() {
-    let (db, _tmp) = setup().await;
-    let session = db.create_session("default", _tmp.path()).await.unwrap();
-
-    // Initially zero.
-    let stats = db.compacted_stats().await.unwrap();
-    assert_eq!(stats.message_count, 0);
-
-    // Create some messages and compact.
-    for i in 0..10 {
-        db.insert_message(
-            &session,
-            &Role::User,
-            Some(&format!("msg {i}")),
-            None,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-    }
-    db.compact_session(&session, "summary", 2).await.unwrap();
-
-    let stats = db.compacted_stats().await.unwrap();
-    assert!(stats.message_count > 0, "should have compacted messages");
-}
-
-#[tokio::test]
 async fn test_session_usage_by_agent() {
     let (db, _tmp) = setup().await;
     let session = db.create_session("default", _tmp.path()).await.unwrap();
@@ -1489,33 +1425,6 @@ async fn usage_includes_linked_sub_agent_sessions() {
     // A child's own totals stay its own.
     let own = db.session_token_usage(&child).await.unwrap();
     assert_eq!(own.prompt_tokens, 60);
-}
-
-#[tokio::test]
-async fn test_purge_compacted() {
-    let (db, _tmp) = setup().await;
-    let session = db.create_session("default", _tmp.path()).await.unwrap();
-
-    for i in 0..10 {
-        db.insert_message(
-            &session,
-            &Role::User,
-            Some(&format!("msg {i}")),
-            None,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-    }
-    db.compact_session(&session, "summary", 2).await.unwrap();
-    // Purge with 0 min_age_days to catch everything.
-    let purged = db.purge_compacted(0).await.unwrap();
-    assert!(purged > 0, "should purge some messages");
-
-    // After purge, compacted stats should be lower.
-    let stats = db.compacted_stats().await.unwrap();
-    assert_eq!(stats.message_count, 0, "all compacted should be purged");
 }
 
 // ── config_dir ─────────────────────────────────────────────────────────
@@ -2238,58 +2147,6 @@ async fn ctx_cache_compaction_forces_full_reload() {
     // Synthetic summary appended.
     assert_eq!(after[3].role, Role::System);
     assert_eq!(after[3].content.as_deref(), Some("summary"));
-}
-
-/// Microcompact rewrites tool-result content in place via
-/// `clear_message_content`. The cached snapshot holds the pre-clear
-/// content, so the gen bump in `clear_message_content` must invalidate
-/// it.
-#[tokio::test]
-async fn ctx_cache_clear_message_content_forces_full_reload() {
-    let (db, _tmp) = setup().await;
-    let session = db.create_session("default", _tmp.path()).await.unwrap();
-    let tc_json = r#"[{"id":"tc_1","function_name":"Read","arguments":"{}"}]"#;
-    insert_complete_assistant(&db, &session, None, Some(tc_json)).await;
-    let tool_id = db
-        .insert_message(
-            &session,
-            &Role::Tool,
-            Some("LARGE original content"),
-            None,
-            Some("tc_1"),
-            None,
-        )
-        .await
-        .unwrap();
-
-    // Prime cache with original content.
-    let before = db.load_context(&session).await.unwrap();
-    assert_eq!(
-        before
-            .iter()
-            .find(|m| m.id == tool_id)
-            .unwrap()
-            .content
-            .as_deref(),
-        Some("LARGE original content")
-    );
-
-    // Microcompact stub-rewrite.
-    db.clear_message_content(&[tool_id], "[cleared]")
-        .await
-        .unwrap();
-
-    // Without invalidation, this would return stale content.
-    let after = db.load_context(&session).await.unwrap();
-    assert_eq!(
-        after
-            .iter()
-            .find(|m| m.id == tool_id)
-            .unwrap()
-            .content
-            .as_deref(),
-        Some("[cleared]")
-    );
 }
 
 /// `delete_session` invalidates only the deleted session's cache entry;

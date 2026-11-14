@@ -76,20 +76,7 @@ the history as it was.
   are kept word for word beside the summary
 - The summary replaces the old messages in the DB
 - The compressed session continues normally
-- Use `/purge` later to clean up the archived messages
-
-## `/purge [<age>]`
-
-Deletes compacted (archived) message history. Does not touch the live messages
-in your current session.
-
-```text
-/purge        ← delete all archived messages (prompts for confirmation)
-/purge 90d    ← only messages archived more than 90 days ago
-/purge 30d    ← only messages archived more than 30 days ago
-```
-
-Requires `y` to confirm. Deleted messages are gone permanently.
+- The replaced messages stay in the database, marked as compacted
 
 ## `/diff`
 

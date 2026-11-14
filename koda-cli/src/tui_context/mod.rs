@@ -331,7 +331,6 @@ impl TuiContext {
 
         // Lines shown under the banner, which waits for the session's settings.
         let mut notices: Vec<Line<'static>> = Vec::new();
-        crate::startup::purge_nudge(&client, &mut notices).await;
 
         // Restore persisted approval mode on resume (#590).
         // Fallback to the user's current CLI/config trust mode (not a hardcoded

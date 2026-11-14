@@ -99,11 +99,6 @@ pub async fn handle_slash_command(
 
         "/compact" => SlashAction::Compact,
 
-        "/purge" => {
-            crate::tui_wizards::handle_purge(buffer, client, arg, menu).await;
-            SlashAction::Continue
-        }
-
         "/expand" => {
             let n: usize = arg.and_then(|s| s.parse().ok()).unwrap_or(1);
             handle_expand(buffer, renderer, n);

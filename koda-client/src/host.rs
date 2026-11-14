@@ -26,7 +26,6 @@ use koda_protocol::session::{
     SessionStartParams, SessionStartResponse, SessionUnsubscribeResponse, SessionUnsubscribeStatus,
 };
 use koda_protocol::state::{SandboxState, StateReadResponse, TrustMode};
-use koda_protocol::storage::{StoragePurgeParams, StoragePurgeResponse, StorageReadResponse};
 use koda_protocol::{ClientRequest, PROTOCOL_VERSION};
 use serde_json::Value;
 use tokio::sync::{Mutex, mpsc, oneshot};
@@ -267,14 +266,6 @@ impl Host {
                 );
                 return;
             }
-            ClientRequest::StorageRead { .. } => {
-                let _ = reply.send(self.read_storage().await.and_then(to_json));
-                return;
-            }
-            ClientRequest::StoragePurge { params, .. } => {
-                let _ = reply.send(self.purge_storage(params).await.and_then(to_json));
-                return;
-            }
             ClientRequest::SessionUnsubscribe { params, .. } => {
                 let status = self.unsubscribe(&params.session_id).await;
                 let _ = reply.send(to_json(SessionUnsubscribeResponse { status }));
@@ -393,39 +384,6 @@ impl Host {
                     SessionDeletedNotification { session_id: id },
                 )));
         Ok(SessionDeleteResponse {})
-    }
-
-    async fn read_storage(&self) -> Result<StorageReadResponse, ErrorObject> {
-        use koda_core::persistence::Persistence;
-        let stats = self
-            .context
-            .db
-            .compacted_stats()
-            .await
-            .map_err(|e| internal(format!("couldn't read the store: {e:#}")))?;
-        let count = |n: i64| u64::try_from(n).unwrap_or(0);
-        Ok(StorageReadResponse {
-            compacted_messages: count(stats.message_count),
-            sessions: count(stats.session_count),
-            size_bytes: count(stats.size_bytes),
-            oldest_compacted_at: stats.oldest_unix,
-        })
-    }
-
-    async fn purge_storage(
-        &self,
-        params: StoragePurgeParams,
-    ) -> Result<StoragePurgeResponse, ErrorObject> {
-        use koda_core::persistence::Persistence;
-        let deleted = self
-            .context
-            .db
-            .purge_compacted(params.min_age_days.unwrap_or(0))
-            .await
-            .map_err(|e| internal(format!("couldn't purge: {e:#}")))?;
-        Ok(StoragePurgeResponse {
-            deleted: deleted as u64,
-        })
     }
 
     /// Close session `id`: its task stops its turn, if one runs, and ends.

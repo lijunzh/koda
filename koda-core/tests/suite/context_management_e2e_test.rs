@@ -208,7 +208,7 @@ async fn preflight_compact_fires_above_85pct_threshold() {
     // `compact_session_with_provider` call ultimately returned
     // `Ok(Ok(_))`, `Ok(Err(skip))`, or `Err(_)` is a `compact.rs`
     // concern with its own dedicated unit + integration tests
-    // (`compact::tests::*`, `microcompact::test_microcompact_session_integration`).
+    // (`compact::tests::*`).
     // Asserting on the success event made this test flake on Ubuntu CI
     // where transient compact internals failed even though the trigger
     // path — the actual subject of the test — worked correctly.

@@ -62,9 +62,7 @@ pub(crate) fn draw_viewport(
     let menu_height = match menu {
         MenuContent::None => 0u16,
         MenuContent::Approval { detail, .. } if outside_sandbox_request(detail).is_some() => 3,
-        MenuContent::Approval { .. }
-        | MenuContent::LoopCap { .. }
-        | MenuContent::PurgeConfirm { .. } => 2,
+        MenuContent::Approval { .. } | MenuContent::LoopCap { .. } => 2,
         MenuContent::AskUser {
             question, options, ..
         } => ask_user_menu_height(question, options, area.width, area.height),
@@ -483,24 +481,6 @@ fn render_menu(frame: &mut ratatui::Frame, menu: &MenuContent, menu_area: ratatu
                     Span::styled(" continue  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("[n]", Style::default().fg(Color::Red)),
                     Span::styled(" stop", Style::default().fg(Color::DarkGray)),
-                ]),
-            ];
-            frame.render_widget(Paragraph::new(lines), menu_area);
-        }
-        MenuContent::PurgeConfirm { detail, .. } => {
-            let lines = vec![
-                Line::from(vec![
-                    Span::styled("  \u{1f9f9} ", Style::default().fg(Color::Yellow)),
-                    Span::styled(
-                        format!("Permanently delete? {detail}"),
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                ]),
-                Line::from(vec![
-                    Span::styled("  [y]", Style::default().fg(Color::Green)),
-                    Span::styled(" confirm  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("[n]", Style::default().fg(Color::Red)),
-                    Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
                 ]),
             ];
             frame.render_widget(Paragraph::new(lines), menu_area);

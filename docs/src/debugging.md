@@ -40,12 +40,12 @@ Get the session ID from `exec/summary`, or list the newest with
 
 - Compaction never deletes rows. It sets `compacted_at` on the rows it replaced
   and adds the summary as a `role = 'system'` row, which carries the usage of
-  the summary call. Rows stay until `/purge` or `/resume delete`.
+  the summary call. Rows stay until the session is deleted (`/resume delete`).
 - `compacted_at IS NULL` is close to what the next request will send, but a
   load can still hide some of those rows. See `history edited` below.
 - `content` is what the model gets. For a tool result, `full_content` can hold
-  the longer output that was cut from `content`. A microcompact overwrites
-  `content` in place with `[Old tool result content cleared]`.
+  the longer output that was cut from `content`. Koda never rewrites a
+  stored message's `content`; compaction only marks rows `compacted_at`.
 - Usage is per row, on assistant rows and summary rows.
 
 > **Never attach `koda.db` to an issue.** It holds every session you have run,
@@ -234,7 +234,6 @@ Plain-text lines worth a search:
 | `Compact summary was cut off at the N-token cap …` | Retrying the summary with more room |
 | `Compact reply has no usable summary: …` | Falling back to the marker |
 | `Dropping N messages without a summary to fit the window` | A `dropped` compaction |
-| `Microcompact: cleared N tool results, saved ~M tokens` | Old tool results overwritten after an idle gap |
 | `Loop detected — injecting feedback` | First loop warning, sent to the model |
 
 ## Turning up the level
@@ -282,7 +281,7 @@ the text behind questions 3 and 4, which needs `debug` or `trace`.
 | 2 | What did each call cost? | `prompt_tokens`, `completion_tokens`, `cache_read_tokens`, `thinking_tokens`, `elapsed_ms` on `model call`; totals in `exec/summary`'s `usage` |
 | 3 | What did the model see on a given call? | Shape: the last `context assembled` before that `model call`. Text: the `request body` line, or `System prompt:` plus the database rows. |
 | 4 | Did compaction keep the request, and what did the summarizer get and return? | `Stored compaction summary:` should carry the request. `Compaction prompt:` and `Compaction reply:` hold the text. At `info`: `branch`, `conversation_chars`, `clipped_chars`, `reply_chars` on `compaction`. |
-| 5 | Was anything removed without a summary? | `history edited`; a `compaction` branch of `dropped`, `cut_off`, `empty` or `too_short`; `truncated=true`; `Microcompact: cleared` |
+| 5 | Was anything removed without a summary? | `history edited`; a `compaction` branch of `dropped`, `cut_off`, `empty` or `too_short`; `truncated=true` |
 | 6 | Why did the context estimate move? | Compare `context assembled` lines: the `*_chars` fields, `correction` and `summary_chars`. Compare `estimated_tokens` with `context_tokens` on `model call`. |
 | 7 | How did the run end? | `outcome` and `ends_with_question` on `turn end`; `turnStatus` in `exec/summary` |
 | 8 | What was re-fetched, and at what cost? | `duplicate_read_files` and `duplicate_read_tokens` on `context assembled`, which reset when a compaction removes the reads; `toolCalls` in `exec/summary` |
@@ -310,9 +309,6 @@ has the reasons. In short:
   marker with no model call.
 - A history under a fifth of the window is left alone, because compacting it
   would free nothing.
-
-Microcompact is a separate layer. After a 5-minute gap it clears old tool
-results, with no model call.
 
 ## Reproducing without a key
 

@@ -1,7 +1,7 @@
 //! RecallContext — on-demand conversation history retrieval.
 //!
 //! Allows the model to page in older conversation context that was dropped
-//! from the sliding window after compaction or microcompact.
+//! from the sliding window after compaction.
 //!
 //! ## When it's used
 //!

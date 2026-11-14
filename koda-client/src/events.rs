@@ -598,7 +598,6 @@ impl EventProjector {
             EngineCompactionTrigger::Threshold => CompactionTrigger::Threshold,
             EngineCompactionTrigger::Overflow => CompactionTrigger::Overflow,
             EngineCompactionTrigger::Window => CompactionTrigger::Window,
-            EngineCompactionTrigger::Idle => CompactionTrigger::Idle,
             EngineCompactionTrigger::Manual => CompactionTrigger::Manual,
             EngineCompactionTrigger::PostTurn => CompactionTrigger::PostTurn,
         };

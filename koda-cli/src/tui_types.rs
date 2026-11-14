@@ -92,8 +92,6 @@ pub enum MenuContent {
         /// The request this answers.
         id: String,
     },
-    /// Purge confirmation bar — \[y\] confirm / \[n\] cancel.
-    PurgeConfirm { min_age_days: u32, detail: String },
     /// Ctrl+R reverse history search overlay.
     HistorySearch {
         /// Current search query (updated on each keystroke).
