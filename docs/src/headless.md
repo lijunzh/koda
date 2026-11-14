@@ -217,6 +217,10 @@ koda exec "review @src/auth.rs and @tests/auth_test.rs"
 koda exec -s a3f8bc12-1587-4c6d-a855-46183ca84fba "run the failing tests and fix them"
 ```
 
+A new run without `--provider`, `--base-url` or `--model` starts from the
+choice the TUI last saved, as `codex exec` starts from `config.toml`; one flag
+alone keeps the rest of it (a different `--provider` takes none of it).
+
 A resumed run keeps the session's own provider, endpoint and model, as
 `codex exec resume` does: a model chosen by alias (`claude-opus`) moves to its
 line's newest. `--provider`, `--base-url` or `--model` override them for this

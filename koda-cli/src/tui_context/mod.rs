@@ -150,18 +150,25 @@ pub struct TuiSession {
     pub bg_agents: Arc<koda_core::child_agent::ChildAgentRegistry>,
 }
 
-/// Open session `resume`, or a new one, on the host.
+/// Open session `resume`, or a new one on `config`'s provider, endpoint and
+/// model, on the host. A resumed session keeps its own.
 pub(crate) async fn open_host_session(
     client: &koda_client::InProcessClient,
     resume: Option<String>,
     db: koda_core::db::Database,
+    config: &KodaConfig,
 ) -> Result<TuiSession> {
     use koda_client::protocol::{methods, session::SessionStartParams};
+    // The TUI has applied the saved choice under its flags already, so a
+    // new session names all three (until the host restores it, 6c-2b).
+    let new = resume.is_none();
     let started = client
         .request::<methods::SessionStart>(SessionStartParams {
             session_id: resume,
             approval_policy: None,
-            ..Default::default()
+            model_provider: new.then(|| config.provider_type.to_string()),
+            base_url: new.then(|| config.base_url.clone()),
+            model: new.then(|| config.model.clone()),
         })
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -461,7 +468,7 @@ impl TuiContext {
         })
         .await
         .map_err(|e| anyhow::anyhow!("couldn't start Koda's host: {e}"))?;
-        let session = open_host_session(&client, resume, db.clone()).await?;
+        let session = open_host_session(&client, resume, db.clone(), &config).await?;
 
         crate::startup::purge_nudge(&client, &mut startup_lines).await;
 

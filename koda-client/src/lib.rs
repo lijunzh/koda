@@ -136,6 +136,11 @@ impl RequestHandle {
 impl InProcessClient {
     /// Start the host and run the `initialize` handshake.
     pub async fn start(args: StartArgs) -> Result<Self, RequestError> {
+        // Stored API keys reach the sessions through the environment; one
+        // already set there wins.
+        if let Err(e) = koda_core::keystore::inject_into_env(&args.db).await {
+            tracing::warn!("couldn't load the stored API keys: {e:#}");
+        }
         let (events_tx, events) = mpsc::unbounded_channel();
         let (raw_tx, raw_events) = if args.raw_events {
             let (tx, rx) = mpsc::unbounded_channel();

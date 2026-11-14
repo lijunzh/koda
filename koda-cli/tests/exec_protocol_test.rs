@@ -819,3 +819,56 @@ async fn a_resumed_run_keeps_its_model_unless_flags_say_otherwise() {
         .collect();
     assert_eq!(models, ["first-model", "first-model", "flag-model"]);
 }
+
+/// `koda exec` without flags runs on the saved choice, as `codex exec` uses
+/// `config.toml`; `--model` alone keeps the saved provider and endpoint.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_without_flags_uses_the_saved_choice() {
+    let server = stub(vec![], no_other_calls).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let db = koda_core::db::Database::init(&tmp.path().join("koda"))
+        .await
+        .unwrap();
+    koda_core::last_provider::save_last_provider(
+        &db,
+        "lm-studio",
+        &server.url(),
+        "saved-model",
+        None,
+    )
+    .await
+    .unwrap();
+    drop(db);
+    let exec = |flags: &[&str]| {
+        let mut command = tokio::process::Command::new(koda_bin());
+        command
+            .args(["exec", "Go on", "--json"])
+            .args(flags)
+            .arg("--project-root")
+            .arg(tmp.path())
+            .env("XDG_CONFIG_HOME", tmp.path())
+            .env_remove("KODA_PROVIDER")
+            .env_remove("KODA_MODEL")
+            .env_remove("KODA_BASE_URL")
+            .kill_on_drop(true);
+        command
+    };
+
+    let plain = finish(exec(&[])).await;
+    assert!(plain.output.status.success(), "{}", plain.stdout);
+    assert_eq!(plain.lines[0]["params"]["session"]["model"], "saved-model");
+
+    let flagged = finish(exec(&["--model", "flag-model"])).await;
+    assert!(flagged.output.status.success(), "{}", flagged.stdout);
+    assert_eq!(flagged.lines[0]["params"]["session"]["model"], "flag-model");
+
+    let models: Vec<String> = server
+        .received_requests()
+        .await
+        .iter()
+        .filter(|r| r.url.path().ends_with("/chat/completions"))
+        .map(|r| body(r)["model"].as_str().unwrap_or_default().to_string())
+        .filter(|m| !m.is_empty())
+        .collect();
+    assert_eq!(models, ["saved-model", "flag-model"]);
+}

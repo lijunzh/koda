@@ -63,9 +63,19 @@ pub struct Run {
     pub output: Output,
     /// Where to write the last reply (`koda exec -o`).
     pub last_message: Option<PathBuf>,
-    /// Whether `--model`, `--provider` or `--base-url` was given. A resumed
-    /// session keeps its own model unless they were, as in Codex.
-    pub model_flags: bool,
+    /// What `--provider`, `--base-url` and `--model` named (a provider by
+    /// its id, a model by alias or id). The host fills in the rest: a new
+    /// session from the saved choice, a resumed one from its own, as
+    /// `codex exec` does.
+    pub named: Named,
+}
+
+/// What the command line named, each optional.
+#[derive(Debug, Clone, Default)]
+pub struct Named {
+    pub provider: Option<String>,
+    pub base_url: Option<String>,
+    pub model: Option<String>,
 }
 
 /// Run a single prompt and exit. `resume` is an earlier session's full id;
@@ -96,15 +106,6 @@ pub async fn run_headless(
         .collect();
 
     let provider = config.provider_type.meta().name;
-    // What the flags chose, for a resumed session to run with instead of
-    // its own.
-    let chosen = run.model_flags.then(|| {
-        (
-            config.provider_type.to_string(),
-            config.base_url.clone(),
-            config.model.clone(),
-        )
-    });
     let mut client = InProcessClient::start(StartArgs {
         config,
         project_root,
@@ -126,9 +127,9 @@ pub async fn run_headless(
         .request::<methods::SessionStart>(SessionStartParams {
             // Given flags win; without them a resumed session keeps its own
             // provider and model. A new session starts with this config.
-            model_provider: chosen.as_ref().map(|c| c.0.clone()),
-            base_url: chosen.as_ref().map(|c| c.1.clone()),
-            model: chosen.map(|c| c.2),
+            model_provider: run.named.provider.clone(),
+            base_url: run.named.base_url.clone(),
+            model: run.named.model.clone(),
             session_id: resume,
             approval_policy: Some(ApprovalPolicy::Never),
         })

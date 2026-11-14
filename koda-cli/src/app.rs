@@ -343,10 +343,18 @@ pub(crate) async fn run() -> Result<()> {
 
     // Headless mode: skip onboarding, banner, version check
     if let Some(mut run) = headless_run {
-        run.model_flags = cli.model.is_some()
-            || cli.provider.is_some()
-            || cli.base_url.is_some()
-            || alias.is_some();
+        run.named = headless::Named {
+            // The catalog's own id, which the host reads (`lmstudio` is
+            // `lm-studio`).
+            provider: cli.provider.as_deref().map(|p| {
+                koda_core::config::ProviderType::from_url_or_name("", Some(p)).to_string()
+            }),
+            base_url: cli.base_url.clone(),
+            model: alias
+                .as_ref()
+                .map(|a| a.alias.to_string())
+                .or_else(|| cli.model.clone()),
+        };
         let config = koda_core::config::KodaConfig::load(&project_root, &cli.agent)?;
         let typed = (cli.reasoning_effort.clone(), cli.thinking_budget);
         let config = with_alias(config.with_overrides(cli.base_url, cli.model, cli.provider))
@@ -555,7 +563,7 @@ fn exec_run(args: ExecArgs) -> Result<headless::Run> {
         },
         last_message: args.output_last_message,
         // Set once the flags are read.
-        model_flags: false,
+        named: headless::Named::default(),
     })
 }
 
