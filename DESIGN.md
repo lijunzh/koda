@@ -109,7 +109,13 @@ and a recompile.
   machine and owes no compatibility to anyone else's. Every dependency and
   the toolchain default to the latest version; an older one needs a stated
   reason. Major bumps are done promptly, by hand. The minimum supported
-  Rust version is the pinned toolchain
+  Rust version is the pinned toolchain.
+- **The latest model outranks backward compatibility.** Koda is built for
+  the current Claude models, and an older one gets no code path of its own:
+  no thinking budget, no 1M beta, no context table, no special thinking
+  replay. It runs as if it were current, with a warning on its first turn
+  (`model_effort::older_claude_notice`). A Claude model newer than Koda's
+  tables is treated as current too, with no effort sent until it's added.
 
 ### P2: Simple enough to own alone
 

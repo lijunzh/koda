@@ -1509,9 +1509,9 @@ mod tests {
 
     #[test]
     fn test_model_settings_defaults_anthropic_has_max_tokens() {
-        let s = ModelSettings::defaults_for("claude-opus-4-5", &ProviderType::Anthropic);
+        let s = ModelSettings::defaults_for("claude-opus-5", &ProviderType::Anthropic);
         assert_eq!(s.max_tokens, Some(16384));
-        assert_eq!(s.model, "claude-opus-4-5");
+        assert_eq!(s.model, "claude-opus-5");
         assert!(s.temperature.is_none());
     }
 
@@ -1596,11 +1596,11 @@ mod tests {
         std::fs::create_dir_all(&agents_dir).unwrap();
         std::fs::write(
             agents_dir.join("myscout.json"),
-            r#"{"name":"myscout","system_prompt":"scout","model":"claude-3-haiku"}"#,
+            r#"{"name":"myscout","system_prompt":"scout","model":"claude-haiku-5-5"}"#,
         )
         .unwrap();
         let raw = KodaConfig::load_agent_json(tmp.path(), "myscout").unwrap();
-        assert_eq!(raw.model.as_deref(), Some("claude-3-haiku"));
+        assert_eq!(raw.model.as_deref(), Some("claude-haiku-5-5"));
     }
 
     // ── sub-agent model inheritance ───────────────────────────────────────

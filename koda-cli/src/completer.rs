@@ -528,9 +528,9 @@ mod tests {
     fn test_model_substring_match() {
         let tmp = tempdir().unwrap();
         let mut c = InputCompleter::new(tmp.path().to_path_buf());
-        c.set_model_names(vec!["claude-3-sonnet".into(), "claude-3-opus".into()]);
+        c.set_model_names(vec!["claude-sonnet-5".into(), "claude-opus-5".into()]);
         let result = c.complete("/model opus");
-        // "opus" matches both the alias "claude-opus" and "claude-3-opus" from model_names
+        // "opus" matches both the alias "claude-opus" and "claude-opus-5" from model_names
         assert!(result.is_some());
         let text = result.unwrap();
         assert!(text.contains("opus"), "got: {text}");

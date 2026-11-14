@@ -118,8 +118,7 @@ struct Cli {
     #[arg(long, global = true)]
     temperature: Option<f64>,
 
-    /// Anthropic thinking budget in tokens, for Claude models that still take
-    /// one (Haiku 4.5 and older). Current Claude models take --effort instead.
+    /// Gemini thinking budget in tokens. Claude models take --effort instead.
     #[arg(long, global = true)]
     thinking_budget: Option<u32>,
 
@@ -446,7 +445,9 @@ fn check_typed_reasoning(
     if let Some(level) = effort {
         koda_core::model_effort::check_typed(model, level).map_err(anyhow::Error::msg)?;
     }
-    if thinking_budget.is_some() && koda_core::model_effort::rejects_thinking_budget(model) {
+    // Current Claude models take effort, not a token budget; the flag is
+    // for Gemini.
+    if thinking_budget.is_some() {
         anyhow::bail!(
             "{model} takes no --thinking-budget. Use --effort with one of: {}.",
             koda_core::model_effort::LEVELS.join(", ")

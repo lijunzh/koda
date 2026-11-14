@@ -71,14 +71,14 @@ mod tests {
         let lp = LastProvider {
             provider_type: "Anthropic".into(),
             base_url: "https://api.anthropic.com".into(),
-            model: "claude-opus-4-5".into(),
+            model: "claude-opus-5".into(),
             alias: None,
         };
         let json = serde_json::to_string(&lp).unwrap();
         let parsed: LastProvider = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.provider_type, "Anthropic");
         assert_eq!(parsed.base_url, "https://api.anthropic.com");
-        assert_eq!(parsed.model, "claude-opus-4-5");
+        assert_eq!(parsed.model, "claude-opus-5");
     }
 
     #[test]
@@ -110,7 +110,7 @@ mod tests {
 
         // A row written before the field existed.
         let old: LastProvider = serde_json::from_str(
-            r#"{"provider_type":"anthropic","base_url":"https://api.anthropic.com","model":"claude-haiku-4-5-20251001"}"#,
+            r#"{"provider_type":"anthropic","base_url":"https://api.anthropic.com","model":"claude-haiku-5-5-20261001"}"#,
         )
         .unwrap();
         assert_eq!(old.alias, None);

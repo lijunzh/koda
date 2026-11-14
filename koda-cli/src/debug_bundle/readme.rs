@@ -95,7 +95,7 @@ mod tests {
         Metadata {
             session_id: "abc-123".to_string(),
             session_title: Some("test session".to_string()),
-            model: Some("claude-sonnet-4-6".to_string()),
+            model: Some("claude-sonnet-5".to_string()),
             provider: Some("anthropic".to_string()),
             context_window: Some(200_000),
             totals: Totals::default(),
@@ -118,7 +118,7 @@ mod tests {
         assert!(readme.contains("abc-123"));
         assert!(readme.contains("0.2.25"));
         assert!(readme.contains("test session"));
-        assert!(readme.contains("claude-sonnet-4-6"));
+        assert!(readme.contains("claude-sonnet-5"));
     }
 
     #[test]

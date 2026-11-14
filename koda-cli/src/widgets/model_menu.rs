@@ -87,7 +87,7 @@ mod tests {
     fn current_model_shows_marker() {
         let item = ModelItem {
             label: "claude-sonnet".into(),
-            model_id: "claude-sonnet-4-6".into(),
+            model_id: "claude-sonnet-5".into(),
             provider: "Anthropic".into(),
             is_current: true,
             is_local: false,
@@ -113,14 +113,14 @@ mod tests {
     fn filter_matches_alias_model_provider() {
         let item = ModelItem {
             label: "claude-sonnet".into(),
-            model_id: "claude-sonnet-4-6".into(),
+            model_id: "claude-sonnet-5".into(),
             provider: "Anthropic".into(),
             is_current: false,
             is_local: false,
         };
         assert!(item.matches_filter("sonnet"));
         assert!(item.matches_filter("anthropic"));
-        assert!(item.matches_filter("4-6"));
+        assert!(item.matches_filter("sonnet-5"));
         assert!(!item.matches_filter("gemini"));
     }
 

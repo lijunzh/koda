@@ -189,7 +189,7 @@ pub struct ToolDefinition {
 /// A discovered model from a provider.
 #[derive(Debug, Clone)]
 pub struct ModelInfo {
-    /// Model identifier (e.g. `"claude-3-5-sonnet-20241022"`).
+    /// Model identifier (e.g. `"claude-sonnet-5-5"`).
     pub id: String,
     /// Provider/organization that owns the model.
     #[allow(dead_code)]

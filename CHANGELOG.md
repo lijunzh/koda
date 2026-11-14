@@ -26,6 +26,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Removed
 
+- **Support for older Claude models.** Koda is built for the current Claude models (the 5.x line and Fable), and the latest model now outranks backward compatibility. An older model (Claude 2 and 3, Instant, and the 4.x Haiku, Sonnet and Opus) still runs, as if it were current, with a warning on its first turn that requests may fail. What went: the `budget_tokens` thinking budget for Claude (`--thinking-budget` is now for Gemini only, and a budget in an agent file isn't sent to Claude), the `-1m` model names and the 1M-context beta for Sonnet 4.x (a `-1m` name is refused with the name to use), and the 200K windows for older models. A Claude model newer than Koda's tables gets a 1M window and no effort until it's added.
+
 - **`koda -p` and `--output-format`.** A one-shot run is `koda exec`, as in Codex: `koda exec "prompt"` replaces `koda -p "prompt"` (and the old one-shot `koda "prompt"`, which now opens the TUI), `git diff | koda exec` replaces `git diff | koda`, and `koda exec --json` replaces `--output-format json`, whose summary object is now the last line, `exec/summary`, in camelCase (`sessionId`, `turnStatus`, `durationMs`, `usage.inputTokens`, …). Each removed form stops with exit code 2 and says what to run instead, and `koda` with stdin piped stops with "stdin is not a terminal", since the TUI needs one.
 - **`--output-format stream-json`.** Use `koda exec --json`. The old format sent each engine event as its own line (`tool_call_start`, `text_delta`, …); the new one sends items that start and complete, every tool call included: one refused at an approval or blocked by `--mode plan` now completes as `declined`, and a sub-agent's calls complete too.
 

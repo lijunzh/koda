@@ -14,6 +14,11 @@
 //! agent config, or carried across a model switch, drops to the highest level
 //! at or below it, once with a warning ([`crate::model_effort::applied`]),
 //! since nobody is there to ask and a 400 would end the run.
+//!
+//! Koda is built for the current Claude models: the latest model always
+//! outranks backward compatibility (`DESIGN.md`). A Claude model missing from
+//! the table is treated as current, with no effort sent. The older line
+//! ([`is_older_claude`]) is recognized only to warn ([`older_claude_notice`]).
 
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
@@ -88,12 +93,11 @@ const TABLE: &[(&str, ModelEffort)] = &[
     ),
 ];
 
-/// The table entry for `model`: an API id, with or without Koda's `-1m`
-/// suffix or a `-YYYYMMDD` snapshot date, or an alias such as `claude-haiku`.
+/// The table entry for `model`: an API id, with or without a `-YYYYMMDD`
+/// snapshot date, or an alias such as `claude-haiku`.
 pub fn lookup(model: &str) -> Option<&'static ModelEffort> {
     let resolved = crate::model_alias::resolve(model).map(|r| r.model_id);
     let id = resolved.as_deref().unwrap_or(model);
-    let id = id.strip_suffix("-1m").unwrap_or(id);
     let id = match id.rsplit_once('-') {
         Some((base, date)) if date.len() == 8 && date.bytes().all(|b| b.is_ascii_digit()) => base,
         _ => id,
@@ -145,23 +149,47 @@ pub fn check_typed(model: &str, level: &str) -> Result<(), String> {
     }
 }
 
-/// Whether `model` takes no `budget_tokens` thinking budget, only effort.
-pub fn rejects_thinking_budget(model: &str) -> bool {
-    lookup(model).is_some()
+/// A thinking budget reached a Claude request, from an agent file or a
+/// setting meant for Gemini: it isn't sent, since current Claude models take
+/// effort and refuse a budget. Logged once per model.
+pub fn warn_ignored_thinking_budget(model: &str) {
+    warn_once(
+        model,
+        "thinking budget",
+        &format!("{model} takes no thinking budget, so it isn't sent; set the effort instead"),
+    );
 }
 
-/// [`rejects_thinking_budget`] for a budget that's about to be sent: one
-/// that would be refused is dropped, with a warning once per model.
-pub fn refuses_thinking_budget(model: &str) -> bool {
-    let refused = rejects_thinking_budget(model);
-    if refused {
-        warn_once(
-            model,
-            "thinking budget",
-            &format!("{model} takes no thinking budget, so it isn't sent; set the effort instead"),
-        );
+/// Whether `model` is from the older Claude line, which Koda no longer
+/// adapts to: Claude 2 and 3, Instant, and the 4.x Haiku, Sonnet and Opus.
+pub fn is_older_claude(model: &str) -> bool {
+    let id = model.to_ascii_lowercase();
+    ["claude-2", "claude-3", "claude-instant"]
+        .iter()
+        .any(|prefix| id.starts_with(prefix))
+        || ["haiku", "sonnet", "opus"]
+            .iter()
+            .any(|line| id.starts_with(&format!("claude-{line}-4")))
+}
+
+/// The warning for an older Claude model, the first time it's used in this
+/// process; `None` for a current model, or one already warned about.
+pub fn older_claude_notice(model: &str) -> Option<String> {
+    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    if !is_older_claude(model) {
+        return None;
     }
-    refused
+    let first = SEEN
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(model.to_string());
+    first.then(|| {
+        format!(
+            "{model} is an older Claude model. Koda is built for the current ones and no \
+             longer adapts to older models, so requests may fail. Pick a current model with /model."
+        )
+    })
 }
 
 /// The effort a request to `provider` carries, for the log: the table's
@@ -206,11 +234,10 @@ mod tests {
     }
 
     #[test]
-    fn lookup_reads_snapshots_the_1m_suffix_and_aliases() {
+    fn lookup_reads_snapshots_and_aliases() {
         let haiku = lookup("claude-haiku-5-5");
         assert!(haiku.is_some());
         assert_eq!(lookup("claude-haiku-5-5-20261001"), haiku);
-        assert_eq!(lookup("claude-sonnet-5-5-1m"), lookup("claude-sonnet-5-5"));
         assert_eq!(lookup("claude-haiku"), haiku);
         // `claude-opus-5` must not be found as a prefix of `claude-opus-5-5`.
         assert_eq!(applied("claude-opus-5-5", None), Some("medium"));
@@ -219,7 +246,7 @@ mod tests {
 
     #[test]
     fn a_model_not_in_the_table_gets_nothing() {
-        assert_eq!(applied("claude-haiku-4-5", None), None);
+        assert_eq!(applied("claude-opus-9", None), None);
         assert_eq!(applied("ornith", Some("high")), None);
         assert!(check_typed("ornith", "anything").is_ok());
     }
@@ -242,8 +269,30 @@ mod tests {
     }
 
     #[test]
-    fn only_table_models_refuse_a_thinking_budget() {
-        assert!(rejects_thinking_budget("claude-haiku-5-5"));
-        assert!(!rejects_thinking_budget("claude-haiku-4-5"));
+    fn the_older_line_is_recognized_and_warned_about_once() {
+        for older in [
+            "claude-haiku-4-5-20251001",
+            "claude-sonnet-4-6",
+            "claude-opus-4-8",
+            "claude-3-5-sonnet-20241022",
+            "claude-3-opus-20240229",
+            "claude-2.1",
+            "claude-instant-1.2",
+        ] {
+            assert!(is_older_claude(older), "{older}");
+        }
+        for current in [
+            "claude-haiku-5-5",
+            "claude-sonnet-5",
+            "claude-opus-5-5",
+            "claude-fable-5-2",
+            "claude-opus-9",
+            "claude-mythos-5",
+        ] {
+            assert!(!is_older_claude(current), "{current}");
+        }
+        assert!(older_claude_notice("claude-opus-4-7").is_some());
+        assert!(older_claude_notice("claude-opus-4-7").is_none(), "once");
+        assert!(older_claude_notice("claude-opus-5-5").is_none());
     }
 }

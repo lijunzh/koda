@@ -27,66 +27,16 @@ const ANTHROPIC_BETA_FEATURES: &str = "prompt-caching-2024-07-31";
 /// Lets a request say what happens to a thinking block whose history changed.
 const THINKING_BINDING_BETA: &str = "thinking-binding-controls-2026-08-01";
 
-/// Beta header value for 1M extended context.
-/// See: https://docs.anthropic.com/en/docs/about-claude/models#extended-context
-const EXTENDED_CONTEXT_BETA: &str = "context-1m-2025-08-07";
-
-/// Virtual model name suffix that opts into 1M extended context.
-const EXTENDED_CONTEXT_SUFFIX: &str = "-1m";
-
-/// Models that need the beta header to get 1M context. Claude 4.6 and
-/// later have 1M by default (see
-/// [`crate::model_context::has_native_1m_context`]), so only Sonnet 4.5
-/// and the dated Sonnet 4 snapshots remain here.
-const EXTENDED_CONTEXT_ELIGIBLE: &[&str] = &[
-    "claude-sonnet-4-5",
-    "claude-sonnet-4-2", // dated variant
-    "claude-sonnet-4",
-];
-
-/// Check whether a base model ID (without `-1m` suffix) takes the
-/// extended-context beta header. False for models whose window is
-/// already 1M, so `/model` doesn't list a pointless `-1m` variant.
-fn is_extended_context_eligible(base_model: &str) -> bool {
-    if crate::model_context::has_native_1m_context(base_model) {
-        return false;
-    }
-    let m = base_model.to_lowercase();
-    EXTENDED_CONTEXT_ELIGIBLE
-        .iter()
-        .any(|prefix| m.starts_with(prefix))
-}
-
-/// Strip the `-1m` suffix from a virtual model name, returning the
-/// real API model ID and whether extended context was requested.
-/// Returns an error message if the model isn't eligible for 1M.
-fn resolve_model(model: &str) -> (&str, bool) {
-    if let Some(base) = model.strip_suffix(EXTENDED_CONTEXT_SUFFIX) {
-        if crate::model_context::has_native_1m_context(base) {
-            // 1M is this model's default; nothing to opt into.
-            (base, false)
-        } else if is_extended_context_eligible(base) {
-            (base, true)
-        } else {
-            tracing::warn!(
-                "Model '{}' does not support 1M extended context. \
-                 Using standard 200K context.",
-                model
-            );
-            (base, false)
-        }
-    } else {
-        (model, false)
-    }
-}
-
-/// Build the `anthropic-beta` header value, appending the extended
-/// context beta flag when requested.
-fn beta_header(extended_context: bool) -> String {
-    if extended_context {
-        format!("{ANTHROPIC_BETA_FEATURES},{EXTENDED_CONTEXT_BETA}")
-    } else {
-        ANTHROPIC_BETA_FEATURES.to_string()
+/// Koda is built for the current Claude models, which have a 1M window
+/// natively. The `-1m` names that opted Sonnet 4.x into the 1M beta are
+/// refused, with the name to use instead.
+fn resolve_model(model: &str) -> Result<&str> {
+    match model.strip_suffix("-1m") {
+        Some(base) => anyhow::bail!(
+            "{model}: current Claude models already have a 1M context window, so the \
+             \"-1m\" name is gone. Use {base}."
+        ),
+        None => Ok(model),
     }
 }
 
@@ -667,7 +617,7 @@ struct StoredThinking {
 
 /// The stored blocks as JSON, for the model that wrote them.
 pub(crate) fn stored_thinking(model: &str, blocks: Vec<serde_json::Value>) -> Result<String> {
-    let model = resolve_model(model).0.to_string();
+    let model = resolve_model(model)?.to_string();
     Ok(serde_json::to_string(&StoredThinking { model, blocks })?)
 }
 
@@ -865,7 +815,7 @@ impl LlmProvider for AnthropicProvider {
         tools: &[ToolDefinition],
         settings: &crate::config::ModelSettings,
     ) -> Result<LlmResponse> {
-        let (api_model, extended_ctx) = resolve_model(&settings.model);
+        let api_model = resolve_model(&settings.model)?;
         // Extract system prompt (Anthropic puts it at the top level)
         let system = messages
             .iter()
@@ -905,7 +855,7 @@ impl LlmProvider for AnthropicProvider {
             .post(format!("{}/v1/messages", self.base_url))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_API_VERSION)
-            .header("anthropic-beta", beta_header(extended_ctx))
+            .header("anthropic-beta", ANTHROPIC_BETA_FEATURES)
             .json(&request);
 
         let msg_resp: MessagesResponse = super::http::send_and_parse_json(req, "Anthropic").await?;
@@ -965,27 +915,14 @@ impl LlmProvider for AnthropicProvider {
         // Use the /v1/models endpoint to discover available models and verify the API key.
         let page = self.fetch_models().await?;
 
-        let mut models: Vec<ModelInfo> = page
+        Ok(page
             .data
             .into_iter()
             .map(|m| ModelInfo {
                 id: m.id,
                 owned_by: Some("anthropic".to_string()),
             })
-            .collect();
-
-        // Append virtual "-1m" variants for eligible models
-        let extended: Vec<ModelInfo> = models
-            .iter()
-            .filter(|m| is_extended_context_eligible(&m.id))
-            .map(|m| ModelInfo {
-                id: format!("{}-1m", m.id),
-                owned_by: m.owned_by.clone(),
-            })
-            .collect();
-        models.extend(extended);
-
-        Ok(models)
+            .collect())
     }
 
     fn provider_name(&self) -> &str {
@@ -996,9 +933,8 @@ impl LlmProvider for AnthropicProvider {
     ///
     /// `GET /v1/models/{id}` reports them as `max_input_tokens` and
     /// `max_tokens`. A field that is missing, `null` or `0` stays `None`,
-    /// so the caller keeps the `model_context.rs` table for it. The model
-    /// is looked up as sent: a virtual `-1m` name gets a 404 and therefore
-    /// the table's answer, which is what gives Sonnet 4.5 / 4 their 1M.
+    /// so the caller keeps the `model_context.rs` table for it, as does a
+    /// model the API doesn't know (a 404).
     async fn model_capabilities(&self, model: &str) -> Result<super::ModelCapabilities> {
         let resp = self
             .client
@@ -1037,7 +973,7 @@ impl LlmProvider for AnthropicProvider {
         tools: &[ToolDefinition],
         settings: &crate::config::ModelSettings,
     ) -> Result<super::stream_collector::SseCollector> {
-        let (api_model, extended_ctx) = resolve_model(&settings.model);
+        let api_model = resolve_model(&settings.model)?;
         let system = messages
             .iter()
             .find(|m| m.role == "system")
@@ -1056,7 +992,7 @@ impl LlmProvider for AnthropicProvider {
         let api_messages = Self::build_cached_messages(&converted)?;
         let api_tools = Self::build_cached_tools(tools);
 
-        let mut max_tokens = settings.max_tokens.unwrap_or(16384);
+        let max_tokens = settings.max_tokens.unwrap_or(16384);
 
         // Build request body with stream: true
         let mut body = serde_json::json!({
@@ -1070,29 +1006,14 @@ impl LlmProvider for AnthropicProvider {
             body["temperature"] = serde_json::json!(temp);
         }
 
-        // A model that takes effort refuses a token budget with a 400, so the
-        // budget goes only to models that still take one.
-        let thinking_budget = settings
-            .thinking_budget
-            .filter(|_| !crate::model_effort::refuses_thinking_budget(api_model));
-
-        // Extended thinking support
-        if let Some(budget) = thinking_budget {
-            // max_tokens must be >= budget
-            if max_tokens < budget {
-                max_tokens = budget + 4096;
-                body["max_tokens"] = serde_json::json!(max_tokens);
-            }
-            body["thinking"] = serde_json::json!({
-                "type": "enabled",
-                "budget_tokens": budget
-            });
-            // Temperature must not be set when thinking is enabled
-            body.as_object_mut().unwrap().remove("temperature");
+        // Current Claude models take effort, not a token budget, and refuse
+        // one with a 400. A budget set for Gemini isn't sent here.
+        if settings.thinking_budget.is_some() {
+            crate::model_effort::warn_ignored_thinking_budget(api_model);
         }
         // Compaction and microcompact edit history, and a block replayed after
         // an edit is a 400 by default. Dropping it loses that reasoning only.
-        let binding = replays_thinking && thinking_budget.is_none();
+        let binding = replays_thinking;
         if binding {
             body["thinking"] = serde_json::json!({
                 "type": "adaptive",
@@ -1121,11 +1042,10 @@ impl LlmProvider for AnthropicProvider {
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_API_VERSION)
             .header("anthropic-beta", {
-                let beta = beta_header(extended_ctx);
                 if binding {
-                    format!("{beta},{THINKING_BINDING_BETA}")
+                    format!("{ANTHROPIC_BETA_FEATURES},{THINKING_BINDING_BETA}")
                 } else {
-                    beta
+                    ANTHROPIC_BETA_FEATURES.to_string()
                 }
             })
             .json(&body);
@@ -1765,79 +1685,15 @@ mod tests {
     // ── Extended context (1M) tests ────────────────────────
 
     #[test]
-    fn test_resolve_model_standard() {
-        let (model, ext) = resolve_model("claude-sonnet-5-5");
-        assert_eq!(model, "claude-sonnet-5-5");
-        assert!(!ext);
-    }
-
-    #[test]
-    fn test_resolve_model_1m_native_is_noop() {
-        // 1M is the default on these; the suffix is stripped, no header.
-        let (model, ext) = resolve_model("claude-sonnet-4-6-1m");
-        assert_eq!(model, "claude-sonnet-4-6");
-        assert!(!ext);
-
-        let (model, ext) = resolve_model("claude-opus-4-6-1m");
-        assert_eq!(model, "claude-opus-4-6");
-        assert!(!ext);
-
-        let (model, ext) = resolve_model("claude-sonnet-5-5-1m");
-        assert_eq!(model, "claude-sonnet-5-5");
-        assert!(!ext);
-    }
-
-    #[test]
-    fn test_resolve_model_1m_eligible() {
-        let (model, ext) = resolve_model("claude-sonnet-4-5-20250929-1m");
-        assert_eq!(model, "claude-sonnet-4-5-20250929");
-        assert!(ext);
-
-        let (model, ext) = resolve_model("claude-sonnet-4-20250514-1m");
-        assert_eq!(model, "claude-sonnet-4-20250514");
-        assert!(ext);
-    }
-
-    #[test]
-    fn test_resolve_model_1m_ineligible() {
-        // Opus 4.5, Haiku — not eligible, should get ext=false
-        let (model, ext) = resolve_model("claude-opus-4-5-20251101-1m");
-        assert_eq!(model, "claude-opus-4-5-20251101");
-        assert!(!ext);
-
-        let (model, ext) = resolve_model("claude-haiku-4-5-20251001-1m");
-        assert_eq!(model, "claude-haiku-4-5-20251001");
-        assert!(!ext);
-    }
-
-    #[test]
-    fn test_is_eligible() {
-        assert!(is_extended_context_eligible("claude-sonnet-4-5-20250929"));
-        assert!(is_extended_context_eligible("claude-sonnet-4-20250514"));
-
-        // Natively 1M: no header, no -1m variant in /model
-        assert!(!is_extended_context_eligible("claude-sonnet-4-6"));
-        assert!(!is_extended_context_eligible("claude-opus-4-6"));
-        assert!(!is_extended_context_eligible("claude-sonnet-5-5"));
-        assert!(!is_extended_context_eligible("claude-haiku-5-5"));
-
-        assert!(!is_extended_context_eligible("claude-opus-4-5-20251101"));
-        assert!(!is_extended_context_eligible("claude-haiku-4-5-20251001"));
-        assert!(!is_extended_context_eligible("claude-3-opus-20240229"));
-    }
-
-    #[test]
-    fn test_beta_header_standard() {
-        let header = beta_header(false);
-        assert_eq!(header, ANTHROPIC_BETA_FEATURES);
-        assert!(!header.contains("context-1m"));
-    }
-
-    #[test]
-    fn test_beta_header_extended() {
-        let header = beta_header(true);
-        assert!(header.contains(ANTHROPIC_BETA_FEATURES));
-        assert!(header.contains(EXTENDED_CONTEXT_BETA));
+    fn a_current_model_resolves_to_itself_and_a_1m_name_is_refused() {
+        assert_eq!(
+            resolve_model("claude-sonnet-5-5").unwrap(),
+            "claude-sonnet-5-5"
+        );
+        let refused = resolve_model("claude-sonnet-5-5-1m")
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("Use claude-sonnet-5-5."), "{refused}");
     }
 
     // ── SSE StreamEvent deserialization tests ──────────────────
@@ -2261,9 +2117,8 @@ mod tests {
                 (404, r#"{"error":{"type":"not_found_error"}}"#),
             )
             .await;
-            // A virtual `-1m` name is one the API never knows.
             let caps = provider
-                .model_capabilities("claude-sonnet-4-5-20250929-1m")
+                .model_capabilities("claude-no-such-model")
                 .await
                 .unwrap();
             assert_eq!(caps.context_window, None);

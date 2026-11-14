@@ -1198,6 +1198,14 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
     );
     let sink: &dyn EngineSink = &_persisting_sink;
 
+    // Koda is built for the current Claude models: an older one runs as if
+    // it were current, once with a warning, however it was chosen.
+    if config.provider_type == crate::config::ProviderType::Anthropic
+        && let Some(message) = crate::model_effort::older_claude_notice(&config.model)
+    {
+        sink.emit(EngineEvent::Warn { message });
+    }
+
     // #1265 item 4 PR-2: collect the per-turn ambient state into a
     // single `TurnContext` so the dispatch helpers don't each take
     // 11–13 explicit args. Reconstructed each turn (`mode` can change
