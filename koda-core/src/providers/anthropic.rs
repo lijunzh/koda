@@ -673,14 +673,24 @@ pub(crate) fn stored_thinking(model: &str, blocks: Vec<serde_json::Value>) -> Re
 
 /// Blocks to replay on a turn to `model`.
 ///
-/// The adaptive-thinking models ([`crate::model_effort::rejects_thinking_budget`])
+/// The models in Koda's effort table ([`crate::model_effort::rejects_thinking_budget`])
 /// get every stored block, whichever Claude model wrote it. The API keeps the
 /// ones the model reads (a newer model reads most older ones: Haiku 5.5 and
 /// Sonnet 5.5 blocks go up to Opus 5.5, Opus 5.5 blocks up to Fable 5.1) and
 /// leaves out the rest, unbilled. A model switch never fails a request. So
 /// moving up a conversation keeps its reasoning, as does coming back to a
-/// model after another. Older models get only their own blocks: nothing
-/// documents how they treat another model's signature.
+/// model after another. Any other model gets only its own blocks.
+///
+/// Limits:
+/// - "The table" is the test, not the model's age. A Claude model missing
+///   from it gets only its own blocks: the older line, which takes a thinking
+///   budget, and a newer model until it is added (Claude Fable 5.2 today).
+/// - The older line keeps the exact-model rule because nothing documents
+///   how it treats another model's signature; Koda hasn't tested it (that
+///   would take paid calls). It may refuse the request, so Koda doesn't risk it.
+/// - Which blocks a model reads is the API's rule, from Anthropic's Preserved
+///   thinking documentation as observed in September and October 2026, for
+///   the Claude API. Koda doesn't check it, and the rule differs by platform.
 fn replayable_thinking(stored: Option<&str>, model: &str) -> Vec<ContentBlock> {
     let Some(stored) = stored.and_then(|s| serde_json::from_str::<StoredThinking>(s).ok()) else {
         return Vec::new();
