@@ -119,6 +119,27 @@ client_requests! {
         params: crate::session::SessionStartParams,
         response: crate::session::SessionStartResponse,
     },
+    /// Stored sessions, newest first.
+    SessionList => "session/list" {
+        params: crate::session::SessionListParams,
+        response: crate::session::SessionListResponse,
+    },
+    /// Delete a stored session, closing it first if it is open.
+    /// `session/deleted` follows.
+    SessionDelete => "session/delete" {
+        params: crate::session::SessionDeleteParams,
+        response: crate::session::SessionDeleteResponse,
+    },
+    /// What compacted messages the store keeps.
+    StorageRead => "storage/read" {
+        params: crate::storage::StorageReadParams,
+        response: crate::storage::StorageReadResponse,
+    },
+    /// Delete compacted messages for good.
+    StoragePurge => "storage/purge" {
+        params: crate::storage::StoragePurgeParams,
+        response: crate::storage::StoragePurgeResponse,
+    },
     /// Close a session the client is done with, stopping its running turn.
     SessionUnsubscribe => "session/unsubscribe" {
         params: crate::session::SessionUnsubscribeParams,

@@ -35,3 +35,27 @@ use time::OffsetDateTime;
 pub(crate) fn utc_now() -> OffsetDateTime {
     OffsetDateTime::now_utc()
 }
+
+/// A time in Unix seconds, as `2026-04-11 14:30` in UTC, the way session
+/// times have always been shown. `?` for one out of range.
+pub(crate) fn unix_minutes(secs: i64) -> String {
+    match OffsetDateTime::from_unix_timestamp(secs) {
+        Ok(dt) => format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}",
+            dt.year(),
+            dt.month() as u8,
+            dt.day(),
+            dt.hour(),
+            dt.minute()
+        ),
+        Err(_) => "?".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod unix_minutes_tests {
+    #[test]
+    fn formats_a_unix_time_in_utc() {
+        assert_eq!(super::unix_minutes(1_775_917_800), "2026-04-11 14:30");
+    }
+}

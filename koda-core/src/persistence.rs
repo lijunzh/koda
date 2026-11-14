@@ -214,6 +214,14 @@ pub struct SessionInfo {
     pub title: Option<String>,
     /// Last active approval mode (for restore on resume).
     pub mode: Option<String>,
+    /// Creation time, in Unix seconds.
+    pub created_unix: i64,
+    /// The last message's time (the creation time before any), in Unix seconds.
+    pub updated_unix: i64,
+    /// The session's first user message, if it has one.
+    pub preview: Option<String>,
+    /// The project it was started in; `None` for sessions older than the column.
+    pub project_root: Option<String>,
 }
 
 /// Stats about compacted (archived) messages in the database.
@@ -227,6 +235,8 @@ pub struct CompactedStats {
     pub size_bytes: i64,
     /// ISO 8601 timestamp of the oldest compacted message.
     pub oldest: Option<String>,
+    /// The same, in Unix seconds.
+    pub oldest_unix: Option<i64>,
 }
 
 /// Core storage contract for sessions, messages, and metadata.
@@ -238,6 +248,8 @@ pub trait Persistence: Send + Sync {
     async fn create_session(&self, agent_name: &str, project_root: &Path) -> Result<String>;
     /// List recent sessions for the given project root.
     async fn list_sessions(&self, limit: i64, project_root: &Path) -> Result<Vec<SessionInfo>>;
+    /// One session by its full id, or `None` if there is none.
+    async fn get_session(&self, session_id: &str) -> Result<Option<SessionInfo>>;
     /// Delete a session by ID. Returns `true` if it existed.
     async fn delete_session(&self, session_id: &str) -> Result<bool>;
     /// Set the auto-generated title for a session.

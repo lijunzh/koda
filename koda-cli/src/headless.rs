@@ -117,7 +117,8 @@ pub async fn run_headless(
         })
         .await?;
     let session_id = opened.session.id;
-    let model = opened.session.model;
+    // An open session always says what it runs.
+    let model = opened.session.model.unwrap_or_default();
     // What starting the session said: `session/started`, and the context
     // window Koda assumed when the server didn't report one.
     while let Some(message) = client.try_next_event() {

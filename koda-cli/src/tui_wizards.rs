@@ -87,11 +87,11 @@ pub(crate) async fn handle_compact(
 
 pub(crate) async fn handle_purge(
     buffer: &mut ScrollBuffer,
-    session: &TuiSession,
+    client: &koda_client::InProcessClient,
     age_filter: Option<&str>,
     menu: &mut MenuContent,
 ) {
-    use koda_core::persistence::Persistence;
+    use koda_client::protocol::{methods, storage::StorageReadParams};
 
     let min_age_days: u32 = match age_filter {
         Some(s) => {
@@ -110,7 +110,10 @@ pub(crate) async fn handle_purge(
         None => 0,
     };
 
-    let stats = match session.db.compacted_stats().await {
+    let stats = match client
+        .request::<methods::StorageRead>(StorageReadParams {})
+        .await
+    {
         Ok(s) => s,
         Err(e) => {
             tui_output::err_msg(buffer, format!("Failed to query stats: {e:#}"));
@@ -118,13 +121,15 @@ pub(crate) async fn handle_purge(
         }
     };
 
-    if stats.message_count == 0 {
+    if stats.compacted_messages == 0 {
         tui_output::dim_msg(buffer, "No compacted messages to purge.".into());
         return;
     }
 
-    let size_str = format_bytes(stats.size_bytes);
-    let oldest_str = stats.oldest.as_deref().unwrap_or("unknown");
+    let size_str = format_bytes(stats.size_bytes as i64);
+    let oldest_str = stats
+        .oldest_compacted_at
+        .map_or_else(|| "unknown".to_string(), crate::util::unix_minutes);
     let age_str = if min_age_days > 0 {
         format!(" older than {min_age_days} days")
     } else {
@@ -133,7 +138,7 @@ pub(crate) async fn handle_purge(
 
     let detail = format!(
         "{} compacted messages across {} sessions ({size_str}), oldest from {oldest_str}{age_str}",
-        stats.message_count, stats.session_count
+        stats.compacted_messages, stats.sessions
     );
 
     tui_output::emit_line(
@@ -153,13 +158,21 @@ pub(crate) async fn handle_purge(
 /// Execute the purge after user confirms via menu.
 pub(crate) async fn execute_purge(
     buffer: &mut ScrollBuffer,
-    session: &TuiSession,
+    client: &koda_client::InProcessClient,
     min_age_days: u32,
 ) {
-    use koda_core::persistence::Persistence;
+    use koda_client::protocol::{methods, storage::StoragePurgeParams};
 
-    match session.db.purge_compacted(min_age_days).await {
-        Ok(deleted) => tui_output::ok_msg(buffer, format!("Purged {deleted} archived messages.")),
+    let purged = client
+        .request::<methods::StoragePurge>(StoragePurgeParams {
+            min_age_days: Some(min_age_days),
+        })
+        .await;
+    match purged {
+        Ok(purged) => tui_output::ok_msg(
+            buffer,
+            format!("Purged {} archived messages.", purged.deleted),
+        ),
         Err(e) => tui_output::err_msg(buffer, format!("Purge failed: {e:#}")),
     }
 }

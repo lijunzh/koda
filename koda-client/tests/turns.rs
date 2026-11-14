@@ -12,9 +12,11 @@ use koda_client::protocol::initialize::ClientInfo;
 use koda_client::protocol::item::Item;
 use koda_client::protocol::rpc::{ErrorObject, RequestId, codes};
 use koda_client::protocol::session::{
-    SessionStartParams, SessionUnsubscribeParams, SessionUnsubscribeStatus,
+    SessionDeleteParams, SessionListParams, SessionStartParams, SessionUnsubscribeParams,
+    SessionUnsubscribeStatus,
 };
 use koda_client::protocol::state::TrustMode;
+use koda_client::protocol::storage::{StoragePurgeParams, StorageReadParams};
 use koda_client::protocol::turn::{
     TurnInterruptParams, TurnStartParams, TurnStatus, TurnSteerParams,
 };
@@ -815,4 +817,157 @@ async fn a_shared_agent_is_what_sessions_run_with() {
         "not the shared agent's prompt: {}",
         sent[0]
     );
+}
+
+// ── Sessions (PR 6a) ─────────────────────────────────────────────────────
+
+impl Koda {
+    async fn storage(&self) -> koda_client::protocol::storage::StorageReadResponse {
+        self.client
+            .request::<methods::StorageRead>(StorageReadParams {})
+            .await
+            .unwrap()
+    }
+
+    async fn list(&self) -> Vec<koda_client::protocol::session::Session> {
+        self.client
+            .request::<methods::SessionList>(SessionListParams::default())
+            .await
+            .unwrap()
+            .data
+    }
+}
+
+/// `session/start` describes the session as stored and as running;
+/// `session/list` gives stored sessions, newest first, without what an open
+/// one runs with.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sessions_are_listed_newest_first_with_their_first_prompt() {
+    let server = model(vec![text("One."), text("Two.")]).await;
+    let mut koda = Koda::start(config(&server)).await;
+    koda.turn("the first session's prompt").await;
+    koda.until("turn/completed").await;
+    let first = koda.session.clone();
+
+    let second = koda
+        .client
+        .request::<methods::SessionStart>(SessionStartParams::default())
+        .await
+        .unwrap()
+        .session;
+    assert_eq!(second.preview, "", "no prompt yet");
+    assert_eq!(second.model.as_deref(), Some("stub"));
+    assert!(second.tools.as_ref().is_some_and(|t| !t.is_empty()));
+    assert!(second.created_at > 1_700_000_000, "{second:?}");
+
+    let listed = koda.list().await;
+    let ids: Vec<&str> = listed.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(ids, [second.id.as_str(), first.as_str()]);
+    let stored = &listed[1];
+    assert_eq!(stored.preview, "the first session's prompt");
+    assert_eq!(stored.name.as_deref(), Some("the first session's prompt"));
+    assert!(stored.updated_at >= stored.created_at);
+    assert!(
+        stored.cwd.as_ref().is_some_and(|c| c.ends_with("project")),
+        "{stored:?}"
+    );
+    assert!(
+        stored.model.is_none() && stored.tools.is_none(),
+        "{stored:?}"
+    );
+
+    let one = koda
+        .client
+        .request::<methods::SessionList>(SessionListParams {
+            limit: Some(1),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(one.data.len(), 1);
+}
+
+/// `session/delete` closes an open session first, stopping its turn, then
+/// deletes it and says so with `session/deleted`, as Codex's `thread/delete`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deleting_an_open_session_stops_its_turn_and_deletes_it() {
+    let slow = text("Too late.").set_delay(Duration::from_secs(20));
+    let server = model(vec![slow]).await;
+    let mut koda = Koda::start(config(&server)).await;
+    koda.turn("hi").await;
+    koda.until("turn/started").await;
+
+    let asked = Instant::now();
+    koda.client
+        .request::<methods::SessionDelete>(SessionDeleteParams {
+            session_id: koda.session.clone(),
+        })
+        .await
+        .unwrap();
+    assert!(
+        asked.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        asked.elapsed()
+    );
+    // The turn ends before the session is deleted.
+    let seen = koda.until("turn/completed").await;
+    assert_eq!(turn_completed(&seen).status, TurnStatus::Interrupted);
+    koda.until("session/deleted").await;
+    assert!(koda.list().await.is_empty());
+    assert!(koda.client.session_handles(&koda.session).is_none());
+    let refused = server_error(koda.turn_with("again", None).await);
+    assert!(refused.message.contains("no open session"), "{refused:?}");
+
+    let gone = server_error(
+        koda.client
+            .request::<methods::SessionDelete>(SessionDeleteParams {
+                session_id: koda.session.clone(),
+            })
+            .await,
+    );
+    assert!(gone.message.contains("no session"), "{gone:?}");
+}
+
+/// `storage/read` counts compacted messages and `storage/purge` deletes them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn storage_counts_and_purges_compacted_messages() {
+    use koda_core::persistence::Persistence;
+    let server = model(vec![text("One."), text("Two.")]).await;
+    let mut koda = Koda::start(config(&server)).await;
+    for prompt in ["first", "second"] {
+        koda.turn(prompt).await;
+        koda.until("turn/completed").await;
+    }
+    assert_eq!(koda.storage().await.compacted_messages, 0);
+    assert!(koda.storage().await.oldest_compacted_at.is_none());
+
+    let db = Database::init(&koda._dir.path().join("config"))
+        .await
+        .unwrap();
+    let compacted = db
+        .compact_session(&koda.session, "summary", 1)
+        .await
+        .unwrap();
+    assert!(compacted > 0);
+    let stats = koda.storage().await;
+    assert_eq!(stats.compacted_messages, compacted as u64);
+    assert_eq!(stats.sessions, 1);
+    assert!(stats.size_bytes > 0);
+    assert!(stats.oldest_compacted_at.is_some_and(|t| t > 1_700_000_000));
+
+    let kept = koda
+        .client
+        .request::<methods::StoragePurge>(StoragePurgeParams {
+            min_age_days: Some(30),
+        })
+        .await
+        .unwrap();
+    assert_eq!(kept.deleted, 0, "nothing is 30 days old");
+    let purged = koda
+        .client
+        .request::<methods::StoragePurge>(StoragePurgeParams::default())
+        .await
+        .unwrap();
+    assert_eq!(purged.deleted, compacted as u64);
+    assert_eq!(koda.storage().await.compacted_messages, 0);
 }

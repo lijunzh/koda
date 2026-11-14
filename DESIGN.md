@@ -310,7 +310,8 @@ the two can't disagree. `docs/src/protocol-schema.json` is generated from the
 types, and a test fails when it's stale.
 
 The protocol grows with the code that serves it. It has `initialize`,
-`state/read`, `session/start`, `session/unsubscribe`, `turn/start`,
+`state/read`, `session/start`, `session/list`, `session/delete`,
+`session/unsubscribe`, `storage/read`, `storage/purge`, `turn/start`,
 `turn/interrupt` and `turn/steer`,
 a session's notifications (session, turn, items, errors and warnings) and the
 server requests for approvals, questions and the loop cap. `koda exec` runs

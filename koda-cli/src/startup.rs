@@ -184,11 +184,14 @@ pub fn print_resume_hint(session_id: &str) {
 pub const PURGE_NUDGE_BYTES: i64 = 500 * 1024 * 1024;
 
 /// Append purge nudge lines if compacted data exceeds threshold.
-pub async fn purge_nudge(db: &koda_core::db::Database, lines: &mut Vec<Line<'static>>) {
-    use koda_core::persistence::Persistence;
-    match db.compacted_stats().await {
-        Ok(stats) if stats.size_bytes >= PURGE_NUDGE_BYTES => {
-            let size = crate::tui_wizards::format_bytes(stats.size_bytes);
+pub async fn purge_nudge(client: &koda_client::InProcessClient, lines: &mut Vec<Line<'static>>) {
+    use koda_client::protocol::{methods, storage::StorageReadParams};
+    match client
+        .request::<methods::StorageRead>(StorageReadParams {})
+        .await
+    {
+        Ok(stats) if stats.size_bytes as i64 >= PURGE_NUDGE_BYTES => {
+            let size = crate::tui_wizards::format_bytes(stats.size_bytes as i64);
             lines.extend(purge_nudge_lines(&size));
         }
         _ => {}

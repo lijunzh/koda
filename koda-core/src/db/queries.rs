@@ -455,6 +455,26 @@ pub fn detect_interruption(messages: &[Message]) -> Option<InterruptionKind> {
 
 // ── Persistence trait ───────────────────────────────────────────────────────────────
 
+/// A session's summary: [`SessionInfoRow`]'s columns, before a filter. A
+/// macro, so queries are built with `concat!` and stay static SQL.
+macro_rules! session_info_select {
+    () => {
+        "SELECT s.id, s.agent_name, s.created_at,
+        COUNT(m.id) as message_count,
+        COALESCE(SUM(m.prompt_tokens), 0) + COALESCE(SUM(m.completion_tokens), 0) as total_tokens,
+        s.title, s.mode,
+        CAST(strftime('%s', s.created_at) AS INTEGER) as created_unix,
+        CAST(strftime('%s', COALESCE(MAX(m.created_at), s.created_at)) AS INTEGER)
+            as updated_unix,
+        (SELECT u.content FROM messages u
+          WHERE u.session_id = s.id AND u.role = 'user'
+          ORDER BY u.id LIMIT 1) as preview,
+        s.project_root
+     FROM sessions s
+     LEFT JOIN messages m ON m.session_id = s.id"
+    };
+}
+
 #[async_trait::async_trait]
 impl Persistence for Database {
     /// Create a new session, returning the generated session ID.
@@ -882,23 +902,30 @@ impl Persistence for Database {
     /// List recent sessions for a specific project.
     async fn list_sessions(&self, limit: i64, project_root: &Path) -> Result<Vec<SessionInfo>> {
         let root = project_root.to_string_lossy().to_string();
-        let rows: Vec<SessionInfoRow> = sqlx::query_as(
-            "SELECT s.id, s.agent_name, s.created_at,
-                    COUNT(m.id) as message_count,
-                    COALESCE(SUM(m.prompt_tokens), 0) + COALESCE(SUM(m.completion_tokens), 0) as total_tokens,
-                    s.title, s.mode
-             FROM sessions s
-             LEFT JOIN messages m ON m.session_id = s.id
-             WHERE s.project_root = ? OR s.project_root IS NULL
+        let rows: Vec<SessionInfoRow> = sqlx::query_as(concat!(
+            session_info_select!(),
+            " WHERE s.project_root = ? OR s.project_root IS NULL
              GROUP BY s.id
              ORDER BY s.created_at DESC, s.rowid DESC
-             LIMIT ?",
-        )
+             LIMIT ?"
+        ))
         .bind(&root)
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(|r| r.into()).collect())
+    }
+
+    async fn get_session(&self, session_id: &str) -> Result<Option<SessionInfo>> {
+        let row: Option<SessionInfoRow> = sqlx::query_as(concat!(
+            session_info_select!(),
+            " WHERE s.id = ?
+             GROUP BY s.id"
+        ))
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(Into::into))
     }
 
     /// Get the model's final answer since the last user message (for headless
@@ -1078,12 +1105,13 @@ impl Persistence for Database {
 
     /// Stats about compacted (archived) messages across all sessions.
     async fn compacted_stats(&self) -> Result<CompactedStats> {
-        let row: (i64, i64, i64, Option<String>) = sqlx::query_as(
+        let row: (i64, i64, i64, Option<String>, Option<i64>) = sqlx::query_as(
             "SELECT
                  COUNT(*),
                  COUNT(DISTINCT session_id),
                  COALESCE(SUM(LENGTH(content) + LENGTH(COALESCE(tool_calls,''))), 0),
-                 MIN(compacted_at)
+                 MIN(compacted_at),
+                 CAST(strftime('%s', MIN(compacted_at)) AS INTEGER)
              FROM messages
              WHERE compacted_at IS NOT NULL",
         )
@@ -1095,6 +1123,7 @@ impl Persistence for Database {
             session_count: row.1,
             size_bytes: row.2,
             oldest: row.3,
+            oldest_unix: row.4,
         })
     }
 

@@ -5,22 +5,42 @@ use serde::{Deserialize, Serialize};
 
 use crate::state::TrustMode;
 
-/// A session as it starts.
+/// A session: one stored conversation. Codex's `Thread`. What it's running
+/// with (`model` through `tools`) is there only while it is open, as from
+/// `session/start`; `session/list` gives stored sessions without it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Session {
     /// The session's id, for resuming it.
     pub id: String,
+    /// Its title, set from the first prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The first user message; empty before there is one.
+    #[serde(default)]
+    pub preview: String,
+    /// When it was created, in Unix seconds.
+    pub created_at: i64,
+    /// When its last message was stored, in Unix seconds.
+    pub updated_at: i64,
+    /// The project it works in; absent for sessions too old to record it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
     /// The model id, such as `claude-sonnet-5-5`.
-    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     /// The provider, such as `lm-studio` or `anthropic`.
-    pub provider: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
     /// The context window in tokens.
-    pub context_window: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
     /// What Koda may do without asking.
-    pub mode: TrustMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<TrustMode>,
     /// The tools the model is offered.
-    pub tools: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<String>>,
 }
 
 /// `session/start`.
@@ -99,4 +119,46 @@ pub enum SessionUnsubscribeStatus {
     Unsubscribed,
     /// No session with that id was open.
     NotLoaded,
+}
+
+/// `session/list`: stored sessions, newest first. Codex's `thread/list`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionListParams {
+    /// The project whose sessions to list; without one, the host's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// How many at most; without one, 50.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+/// The answer to `session/list`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionListResponse {
+    /// The sessions, without what open ones are running with.
+    pub data: Vec<Session>,
+}
+
+/// `session/delete`: delete a stored session. An open one is closed first,
+/// its running turn stopped, as Codex's `thread/delete` does.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionDeleteParams {
+    /// The session, by its full id.
+    pub session_id: String,
+}
+
+/// The answer to `session/delete`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionDeleteResponse {}
+
+/// `session/deleted`: a session was deleted. Codex's `thread/deleted`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionDeletedNotification {
+    /// The session.
+    pub session_id: String,
 }

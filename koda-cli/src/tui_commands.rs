@@ -47,6 +47,7 @@ pub async fn handle_slash_command(
     pending_command: &mut Option<String>,
     menu: &mut crate::tui_types::MenuContent,
     child_activity: &mut crate::child_activity::ChildActivityTracker,
+    client: &koda_client::InProcessClient,
 ) -> SlashAction {
     let parts: Vec<&str> = input.splitn(2, ' ').collect();
     let cmd = parts[0];
@@ -159,7 +160,7 @@ pub async fn handle_slash_command(
         }
 
         "/purge" => {
-            crate::tui_wizards::handle_purge(buffer, session, arg, menu).await;
+            crate::tui_wizards::handle_purge(buffer, client, arg, menu).await;
             SlashAction::Continue
         }
 
@@ -189,17 +190,17 @@ pub async fn handle_slash_command(
             match arg {
                 Some(sub) if sub.starts_with("delete ") => {
                     let id = sub.strip_prefix("delete ").unwrap().trim().to_string();
-                    handle_delete_session(buffer, session, &id, project_root).await;
+                    handle_delete_session(buffer, session, client, &id).await;
                 }
                 Some(sub) if sub.starts_with("resume ") => {
                     let id = sub.strip_prefix("resume ").unwrap().trim().to_string();
-                    handle_resume_session(buffer, session, &id, project_root, shared_mode).await;
+                    handle_resume_session(buffer, session, client, &id, shared_mode).await;
                 }
                 // Bare ID shorthand: /sessions <hex-id>
                 Some(id)
                     if !id.is_empty() && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') =>
                 {
-                    handle_resume_session(buffer, session, id, project_root, shared_mode).await;
+                    handle_resume_session(buffer, session, client, id, shared_mode).await;
                 }
                 _ => {} // no-op: session list is opened by the TUI context
             }
@@ -382,13 +383,30 @@ fn get_git_diff() -> String {
 
 // ── Sub-handlers ────────────────────────────────────────
 
+/// The project's stored sessions, newest first, from the host.
+pub(crate) async fn list_sessions(
+    client: &koda_client::InProcessClient,
+    limit: u32,
+) -> Result<Vec<koda_client::protocol::session::Session>, String> {
+    use koda_client::protocol::{methods, session::SessionListParams};
+    client
+        .request::<methods::SessionList>(SessionListParams {
+            cwd: None,
+            limit: Some(limit),
+        })
+        .await
+        .map(|listed| listed.data)
+        .map_err(|e| e.to_string())
+}
+
 async fn handle_delete_session(
     buffer: &mut ScrollBuffer,
     session: &TuiSession,
+    client: &koda_client::InProcessClient,
     id: &str,
-    project_root: &std::path::Path,
 ) {
-    let sessions = match session.db.list_sessions(100, project_root).await {
+    use koda_client::protocol::{methods, session::SessionDeleteParams};
+    let sessions = match list_sessions(client, 100).await {
         Ok(sessions) => sessions,
         Err(e) => return tui_output::err_msg(buffer, format!("Error: {e}")),
     };
@@ -397,9 +415,13 @@ async fn handle_delete_session(
         Ok(full_id) => full_id,
         Err(why) => return tui_output::err_msg(buffer, why),
     };
-    match session.db.delete_session(full_id).await {
-        Ok(true) => tui_output::ok_msg(buffer, format!("Deleted session {}", &full_id[..8])),
-        Ok(false) => tui_output::err_msg(buffer, "Session not found.".into()),
+    let deleted = client
+        .request::<methods::SessionDelete>(SessionDeleteParams {
+            session_id: full_id.to_string(),
+        })
+        .await;
+    match deleted {
+        Ok(_) => tui_output::ok_msg(buffer, format!("Deleted session {}", &full_id[..8])),
         Err(e) => tui_output::err_msg(buffer, format!("Error: {e}")),
     }
 }
@@ -429,15 +451,15 @@ fn session_to_delete<'a>(id: &str, known: &[&'a str], current: &str) -> Result<&
 async fn handle_resume_session(
     buffer: &mut ScrollBuffer,
     session: &mut TuiSession,
+    client: &koda_client::InProcessClient,
     id: &str,
-    project_root: &std::path::Path,
     shared_mode: &trust::SharedTrustMode,
 ) {
     use tui_output::GREEN;
     if session.id.starts_with(id) {
         tui_output::dim_msg(buffer, "Already in this session.".into());
     } else {
-        match session.db.list_sessions(100, project_root).await {
+        match list_sessions(client, 100).await {
             Ok(sessions) => {
                 let matches: Vec<_> = sessions.iter().filter(|s| s.id.starts_with(id)).collect();
                 match matches.len() {
@@ -477,13 +499,13 @@ async fn handle_resume_session(
                         session.id = target.id.clone();
                         let short_id = target.id[..8].to_string();
                         let title_part = target
-                            .title
+                            .name
                             .as_deref()
                             .map(|t| format!(" — {}", t.chars().take(40).collect::<String>()))
                             .unwrap_or_default();
                         let detail = format!(
-                            "{title_part}  {}  {} msgs",
-                            target.created_at, target.message_count
+                            "{title_part}  {}",
+                            crate::util::unix_minutes(target.updated_at)
                         );
                         tui_output::emit_line(
                             buffer,
