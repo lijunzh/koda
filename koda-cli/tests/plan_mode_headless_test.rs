@@ -1,4 +1,4 @@
-//! `koda --mode plan -p` is a read-only run: tools that read run, and
+//! `koda exec --mode plan` is a read-only run: tools that read run, and
 //! everything else is refused without asking anyone.
 //!
 //! Runs the `koda` binary headless against a local model stub whose first
@@ -100,7 +100,7 @@ async fn plan_runs_reads_and_refuses_the_rest() {
     let output = tokio::time::timeout(
         Duration::from_secs(120),
         tokio::process::Command::new(koda_bin())
-            .args(["-p", "Check my mail", "--output-format", "json"])
+            .args(["exec", "Check my mail"])
             .args(["--mode", "plan"])
             .args(["--provider", "lmstudio", "--model", "stub"])
             .args(["--base-url", &server.url()])
@@ -172,7 +172,7 @@ async fn plan_is_refused_for_an_interactive_session() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("--mode plan is for headless runs"),
+        stderr.contains("--mode plan is for one-shot runs"),
         "stderr: {stderr}"
     );
 }

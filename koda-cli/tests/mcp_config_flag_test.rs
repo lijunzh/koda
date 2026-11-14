@@ -94,7 +94,7 @@ async fn run_echo_turn(
             .unwrap();
     }
     let mut cmd = tokio::process::Command::new(koda_bin());
-    cmd.args(["-p", "Echo something", "--output-format", "json"])
+    cmd.args(["exec", "Echo something"])
         .args(["--provider", "lmstudio", "--model", "stub"])
         .args(["--base-url", &server.url()])
         .arg("--project-root")
@@ -177,7 +177,7 @@ async fn a_stored_server_is_offered_to_the_model() {
 async fn a_bad_flag_stops_the_start() {
     let tmp = tempfile::tempdir().unwrap();
     let output = tokio::process::Command::new(koda_bin())
-        .args(["-p", "hi", "--provider", "lmstudio", "--model", "stub"])
+        .args(["exec", "hi", "--provider", "lmstudio", "--model", "stub"])
         .args(["--base-url", "http://127.0.0.1:9"])
         .args([
             "--mcp-config",

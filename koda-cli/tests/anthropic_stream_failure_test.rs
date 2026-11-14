@@ -43,7 +43,7 @@ async fn run(chunks: &[String], project: &Path) -> Output {
     server.mount_sse("POST", r".*/v1/messages$", &chunks).await;
 
     let child = tokio::process::Command::new(koda_bin())
-        .args(["-p", "Write the file", "--output-format", "json"])
+        .args(["exec", "--json", "Write the file"])
         .args(["--provider", "anthropic", "--model", "claude-haiku-5-5"])
         .args(["--base-url", &server.url()])
         .args(["--max-context-tokens", "100000"])
@@ -75,8 +75,8 @@ fn assert_discarded(output: &Output, project: &Path, reason: &str) {
         stdout.contains(reason) || stderr.contains(reason),
         "no mention of {reason}: {stdout}\n{stderr}"
     );
-    let start = stdout.find('{').expect("no JSON on stdout");
-    let result: Value = serde_json::from_str(&stdout[start..]).unwrap();
+    let summary = stdout.lines().last().expect("no output on stdout");
+    let result: Value = serde_json::from_str::<Value>(summary).unwrap()["params"].clone();
     assert_ne!(
         result["response"], "partial answer",
         "the partial reply counted as finished: {result}"

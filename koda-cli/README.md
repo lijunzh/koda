@@ -23,9 +23,9 @@ Install it with your package manager (`apt install bubblewrap`,
 ## Quick start
 
 ```bash
-koda                              # Interactive REPL
-koda --provider anthropic         # Use a cloud provider
-koda -p "fix the bug in auth.rs"  # Headless one-shot
+koda                               # Interactive REPL
+koda --provider anthropic          # Use a cloud provider
+koda exec "fix the bug in auth.rs" # Headless one-shot
 ```
 
 ## Trust modes

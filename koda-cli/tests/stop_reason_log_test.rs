@@ -35,7 +35,7 @@ async fn run_koda(chunks: Vec<Value>) -> String {
 
     let tmp = tempfile::tempdir().unwrap();
     let child = tokio::process::Command::new(koda_bin())
-        .args(["-p", "Say done", "--output-format", "json"])
+        .args(["exec", "Say done"])
         .args(["--provider", "lmstudio", "--model", "stub"])
         .args(["--base-url", &server.url()])
         .arg("--project-root")

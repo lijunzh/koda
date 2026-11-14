@@ -1,29 +1,36 @@
 # Headless mode
 
-Headless mode runs a single prompt, prints the answer, and exits.
-No TUI — the assistant's reply streams to stdout; tool status goes to stderr.
+`koda exec` runs a single prompt, prints the answer, and exits, as Codex's
+`codex exec` does. No TUI: the assistant's reply streams to stdout; tool status
+goes to stderr.
 
 ```bash
-# Positional prompt (shortest form)
-koda "what does this codebase do?"
+koda exec "what does this codebase do?"
 
-# Explicit -p flag
-koda -p "fix the failing tests"
-
-# Read prompt from stdin (use "-" literally)
-koda -p - < my_question.txt
-
-# Pipe into koda — stdin is auto-detected when not a TTY
-git diff HEAD~1 | koda
-cat error.log | koda
-echo "review auth.rs" | koda
+# Read the prompt from stdin: "-", or no prompt with stdin piped
+koda exec - < my_question.txt
+git diff HEAD~1 | koda exec
+cat error.log | koda exec
 
 # With a model override
-koda "explain this" --model gemini-flash-latest
+koda exec --model gemini-flash-latest "explain this"
 
 # Capture just the assistant reply (tool status stays on stderr)
-koda "list exported functions in lib.rs" > functions.txt
+koda exec "list exported functions in lib.rs" > functions.txt
+
+# Also write the last reply to a file
+koda exec -o last.txt "summarize the diff"
+
+# The client protocol, one JSON line per message
+koda exec --json "fix the failing test"
 ```
+
+Every `koda` flag (`--model`, `--provider`, `--mode`, `-s`, `--mcp-config`, …)
+works with it.
+
+`koda` without `exec` opens the TUI. `koda -p`, `--output-format` and a prompt
+given to `koda` itself (`koda "..."`) were removed in 0.7.0 and stop with a
+pointer here; `koda` with stdin piped stops too, as `codex` does.
 
 ## Exit codes
 
@@ -52,7 +59,7 @@ regardless of trust mode.
 such as summarizing a mailbox or reviewing a branch:
 
 ```bash
-koda --mode plan -p "Anything in my inbox I need to deal with?"
+koda exec --mode plan "Anything in my inbox I need to deal with?"
 ```
 
 - **Runs** tools that read: Read, Grep, Glob, web fetch and search, Bash
@@ -67,59 +74,13 @@ koda --mode plan -p "Anything in my inbox I need to deal with?"
 
 An MCP server whose tools don't carry `readOnlyHint` can't be used in a
 read-only run. Codex's `exec` (read-only sandbox by default), and the plan
-modes of Claude Code, Gemini CLI and Qwen Code with `-p`, work the same way.
-
-## `koda exec`
-
-`koda exec` runs one prompt the same way, as Codex's `codex exec` does, and is
-the form for scripts:
-
-```bash
-koda exec "fix the failing test"            # reply on stdout, progress on stderr
-koda exec - < prompt.txt                    # prompt from stdin
-koda exec --json "fix the failing test"     # the client protocol, one JSON line per message
-koda exec -o last.txt "summarize the diff"  # also write the last reply to a file
-```
-
-Every `koda` flag (`--model`, `--provider`, `--mode`, `-s`, `--mcp-config`, …)
-works with it.
+modes of Claude Code, Gemini CLI and Qwen Code in their one-shot runs, work the
+same way.
 
 ## Output formats
 
-**Text** (`koda exec`, `koda -p`, `--output-format text`): the assistant's reply
-streams to stdout exactly as typed. Tool call summaries go to stderr.
-
-**One summary object** (`koda -p --output-format json`): stdout carries exactly
-one JSON object, printed after the turn ends. The streamed reply and tool status
-go to stderr.
-
-```json
-{
-  "type": "run_summary",
-  "success": true,
-  "error": null,
-  "response": "The exported functions are …",
-  "session_id": "a3f8bc12-…",
-  "provider": "anthropic",
-  "model": "claude-sonnet-5-5",
-  "turn_end": { "kind": "complete" },
-  "elapsed_ms": 8421,
-  "usage": {
-    "prompt_tokens": 18234, "completion_tokens": 912,
-    "cache_read_tokens": 15012, "cache_creation_tokens": 0,
-    "thinking_tokens": 0, "api_calls": 3
-  },
-  "usage_by_agent": { "main": { "…": "same fields as usage" } },
-  "tool_calls": { "Read": 2, "Grep": 1 },
-  "sub_agent_tool_calls": {}
-}
-```
-
-`usage` is summed from stored messages, including those of the session's
-sub-agents, so it is still accurate when the turn errors or is cancelled. On a
-resumed session it covers every turn stored so far. `usage_by_agent` splits it,
-with the session's own calls under `main`. `turn_end` is `null` if the turn
-never ended (for example, a setup failure).
+**Text** (`koda exec`): the assistant's reply streams to stdout exactly as
+typed. Tool call summaries go to stderr.
 
 **The client protocol** (`koda exec --json`): stdout carries only JSON-RPC 2.0
 notifications, one per line, described below. This is the format for programs
@@ -130,8 +91,10 @@ koda exec --json "fix the failing test" \
   | jq -c 'select(.method == "item/completed") | .params.item'
 ```
 
-`--output-format stream-json`, the protocol of Koda 0.6, was removed in 0.7.0.
-`koda exec --json` replaces it.
+`--output-format stream-json`, the protocol of Koda 0.6, and `koda -p
+--output-format json`'s one summary object were removed in 0.7.0. `koda exec
+--json` replaces both: its last line, `exec/summary`, carries what the summary
+object did, in camelCase.
 
 ## The client protocol
 
@@ -234,12 +197,12 @@ left unfinished.
 The `@file` syntax works in headless mode too:
 
 ```bash
-koda "review @src/auth.rs and @tests/auth_test.rs"
+koda exec "review @src/auth.rs and @tests/auth_test.rs"
 ```
 
 ## Resuming a session in headless mode
 
 ```bash
-# The session id from session/started, or from --output-format json
+# The session id from session/started or exec/summary
 koda exec -s a3f8bc12-1587-4c6d-a855-46183ca84fba "run the failing tests and fix them"
 ```

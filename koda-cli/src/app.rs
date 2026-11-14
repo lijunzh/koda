@@ -16,11 +16,11 @@ const LONG_ABOUT: &str = "Koda runs in two modes:
                 Type your question and press Enter.
                 Type /help inside for keybindings and all commands.
 
-  HEADLESS      Pass a prompt to get a single answer and exit.
-                Great for scripts, pipes, and CI pipelines.
-                  koda \"explain this codebase\"
-                  git diff | koda
-                  koda -p - < prompt.txt
+  EXEC          `koda exec` runs one prompt without the TUI and exits.
+                For scripts, pipes and CI pipelines.
+                  koda exec \"explain this codebase\"
+                  git diff | koda exec
+                  koda exec --json \"fix the failing tests\"
 
 Configuration precedence (highest wins):
   1. CLI flags     --model, --provider, --base-url
@@ -35,14 +35,14 @@ local keystore at startup and injected as env vars — shell env
 vars always win over stored keys.";
 
 const AFTER_HELP: &str = "Examples:
-  koda                                # interactive TUI (type /help inside)
-  koda \"explain this codebase\"       # one-shot question, then exit
-  koda -p \"fix the failing tests\"    # same, explicit flag form
-  koda -p -                           # read prompt from stdin
-  git diff | koda                     # pipe diff as the prompt
-  koda \"refactor\" --model o3         # one-shot with a specific model
-  KODA_MODEL=gemini-flash-latest koda \"...\" # env-var model override
-  koda -s abc123 \"continue\"          # resume a saved session";
+  koda                                     # interactive TUI (type /help inside)
+  koda -s abc123                           # resume a saved session
+  koda exec \"explain this codebase\"       # one-shot question, then exit
+  koda exec - < prompt.txt                 # read the prompt from stdin
+  git diff | koda exec                     # pipe a diff as the prompt
+  koda exec --json \"fix the failing tests\" # the client protocol on stdout
+  koda exec --model o3 \"refactor\"         # one-shot with a specific model
+  koda exec -s abc123 \"continue\"          # continue a saved session";
 
 /// Koda 🐻 - A high-performance AI coding agent built in Rust
 #[derive(Parser, Debug)]
@@ -57,19 +57,23 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
 
-    /// Run a single prompt and exit (headless mode).
-    /// Use "-" to read from stdin.
-    #[arg(short, long, value_name = "PROMPT")]
+    /// Removed in 0.7.0 (`koda -p`): `koda exec` runs a prompt.
+    #[arg(
+        short,
+        long,
+        value_name = "PROMPT",
+        hide = true,
+        allow_hyphen_values = true
+    )]
     prompt: Option<String>,
 
-    /// Positional prompt (alternative to -p).
-    /// `koda "fix the bug"` is equivalent to `koda -p "fix the bug"`.
-    #[arg(value_name = "PROMPT", conflicts_with = "prompt")]
+    /// Removed in 0.7.0: a prompt here no longer runs; `koda exec` does.
+    #[arg(value_name = "PROMPT", hide = true)]
     positional_prompt: Option<String>,
 
-    /// Output format for headless mode
-    #[arg(long, value_enum, default_value_t = headless::OutputFormat::Text)]
-    output_format: headless::OutputFormat,
+    /// Removed in 0.7.0, with `koda -p`.
+    #[arg(long, value_name = "FORMAT", hide = true)]
+    output_format: Option<String>,
 
     /// Agent to use (matches a JSON file in agents/)
     #[arg(short, long, default_value = "default", global = true)]
@@ -130,7 +134,7 @@ struct Cli {
     )]
     reasoning_effort: Option<String>,
 
-    /// Trust mode: auto (default), safe, or plan (headless runs only).
+    /// Trust mode: auto (default), safe, or plan (`koda exec` only).
     /// "auto" auto-approves mutating actions; the kernel sandbox
     /// contains them. Destructive ops (rm -rf, git reset --hard,
     /// git push --force) and outside-project writes still
@@ -140,7 +144,7 @@ struct Cli {
     /// "safe" confirms every mutation before executing — use this
     /// in CI, locked-down workstations, or any context where you
     /// want a human in every approval loop.
-    /// "plan" is read-only, for a headless run (-p) that should only
+    /// "plan" is read-only, for a `koda exec` run that should only
     /// look: reads, searches, read-only commands and MCP tools marked
     /// read-only run; everything else is refused, and the kernel
     /// sandbox keeps the project read-only.
@@ -200,9 +204,14 @@ struct ExecArgs {
     output_last_message: Option<PathBuf>,
 }
 
-const STREAM_JSON_REMOVED: &str = "`--output-format stream-json` was removed in 0.7.0.
-Use `koda exec --json`: it prints the client protocol's notifications, one \
-JSON-RPC message per line. See https://lijunzh.github.io/koda/headless.html";
+const ONE_SHOT_REMOVED: &str = "`koda -p`, `--output-format` and `koda \"<prompt>\"` were \
+removed in 0.7.0.
+Run a prompt with `koda exec \"<prompt>\"`, or `koda exec --json` for the client \
+protocol's notifications, one JSON-RPC message per line (`exec/summary` last).
+See https://lijunzh.github.io/koda/headless.html";
+
+const STDIN_NOT_A_TERMINAL: &str = "stdin is not a terminal. To run a piped prompt, use \
+`koda exec`, as in `git diff | koda exec`.";
 
 const SERVER_REMOVED: &str = "`koda server` has been removed. Koda no longer speaks ACP, \
 so editors can't connect to it.
@@ -242,23 +251,19 @@ pub(crate) async fn run() -> Result<()> {
         std::process::exit(1);
     }
 
-    if cli.output_format == headless::OutputFormat::StreamJson {
-        eprintln!("{STREAM_JSON_REMOVED}");
-        std::process::exit(2);
-    }
-
-    // A one-shot run: `koda exec`, or the -p flag, a positional prompt or
-    // piped stdin.
+    // A one-shot run is `koda exec`, as in Codex. `koda` alone opens the TUI.
     let headless_run = match cli.command.take() {
         Some(Command::Exec(args)) => Some(exec_run(args)?),
-        _ => resolve_headless_prompt(&cli)?.map(|prompt| headless::Run {
-            prompt,
-            output: match cli.output_format {
-                headless::OutputFormat::Json => headless::Output::Summary,
-                _ => headless::Output::Text,
-            },
-            last_message: None,
-        }),
+        _ => {
+            if cli.prompt.is_some()
+                || cli.positional_prompt.is_some()
+                || cli.output_format.is_some()
+            {
+                eprintln!("{ONE_SHOT_REMOVED}");
+                std::process::exit(2);
+            }
+            None
+        }
     };
 
     // Resolve project root
@@ -397,6 +402,14 @@ pub(crate) async fn run() -> Result<()> {
 
     // Initialize database is already done above
 
+    // The TUI needs a terminal; a piped prompt is `koda exec`'s. Checked
+    // after the flags, so a bad one is reported first, and before a session
+    // is created for nothing.
+    if !atty_is_terminal() {
+        eprintln!("{STDIN_NOT_A_TERMINAL}");
+        std::process::exit(1);
+    }
+
     // Load or create session
     // A mistyped id (once, a llama-server pid) used to run a session that
     // didn't exist: nothing could be saved, and the model got no messages.
@@ -458,7 +471,7 @@ fn check_typed_reasoning(
 /// validate that Auto isn't requested on a system without kernel
 /// sandbox support. The check is a hard fail (process exits 1)
 /// rather than a silent coerce because:
-///   - Headless: `koda --mode auto -p "..."` silently becoming Safe
+///   - Headless: `koda exec --mode auto "..."` silently becoming Safe
 ///     would `RejectAuto` every mutation and abort the task halfway.
 ///   - Interactive: explicit user intent should never be silently
 ///     reinterpreted (Zen of Python: errors should never pass
@@ -468,7 +481,7 @@ fn check_typed_reasoning(
 ///     (e.g. `apt install bubblewrap`) right at the failure site —
 ///     no extra subcommand to remember (#1259 follow-up).
 ///
-/// A headless run (`headless`) keeps Plan: `koda --mode plan -p "..."` is
+/// A headless run (`headless`) keeps Plan: `koda exec --mode plan "..."` is
 /// a run that may only read, with every write refused, as `codex exec`'s
 /// read-only sandbox and the plan modes of Claude Code, Gemini CLI and Qwen
 /// Code allow. There it isn't a trap, since nobody is waiting to approve
@@ -479,7 +492,7 @@ fn parse_top_level_trust_mode(cli_mode: &str, headless: bool) -> koda_core::trus
     let parsed = koda_core::trust::TrustMode::parse(cli_mode).unwrap_or_default();
     if parsed == koda_core::trust::TrustMode::Plan && !headless {
         eprintln!(
-            "error: --mode plan is for headless runs (koda --mode plan -p \"...\"). \
+            "error: --mode plan is for one-shot runs (koda exec --mode plan \"...\"). \
              Interactive sessions use --mode safe or --mode auto."
         );
         std::process::exit(1);
@@ -511,7 +524,6 @@ fn parse_top_level_trust_mode(cli_mode: &str, headless: bool) -> koda_core::trus
     }
 }
 
-/// Resolve the headless prompt from -p flag, positional arg, or stdin pipe.
 /// `koda exec`'s run: its prompt, from the argument or stdin, and output.
 fn exec_run(args: ExecArgs) -> Result<headless::Run> {
     let prompt = match args.prompt.as_deref() {
@@ -543,42 +555,6 @@ fn read_stdin() -> Result<String> {
         .read_to_string(&mut input)
         .context("Failed to read from stdin")?;
     Ok(input.trim().to_string())
-}
-
-fn resolve_headless_prompt(cli: &Cli) -> Result<Option<String>> {
-    // Explicit -p flag
-    if let Some(ref p) = cli.prompt {
-        if p == "-" {
-            // Read from stdin
-            use std::io::Read;
-            let mut input = String::new();
-            std::io::stdin()
-                .read_to_string(&mut input)
-                .context("Failed to read from stdin")?;
-            return Ok(Some(input.trim().to_string()));
-        }
-        return Ok(Some(p.clone()));
-    }
-
-    // Positional prompt
-    if let Some(ref p) = cli.positional_prompt {
-        return Ok(Some(p.clone()));
-    }
-
-    // Check if stdin is piped (not a TTY) — auto-headless
-    if !atty_is_terminal() {
-        use std::io::Read;
-        let mut input = String::new();
-        std::io::stdin()
-            .read_to_string(&mut input)
-            .context("Failed to read from stdin")?;
-        let trimmed = input.trim().to_string();
-        if !trimmed.is_empty() {
-            return Ok(Some(trimmed));
-        }
-    }
-
-    Ok(None)
 }
 
 /// Prune old `koda-<PID>.log` files, keeping only the `keep` most recent by mtime.

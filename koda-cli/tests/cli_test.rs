@@ -88,7 +88,7 @@ fn test_cli_invalid_flag() {
 }
 
 #[test]
-fn test_cli_help_mentions_headless() {
+fn test_cli_help_mentions_exec() {
     let output = Command::new(koda_bin())
         .arg("--help")
         .output()
@@ -96,12 +96,12 @@ fn test_cli_help_mentions_headless() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("--prompt") || stdout.contains("-p"),
-        "Help should mention -p/--prompt for headless mode: {stdout}"
+        stdout.contains("koda exec"),
+        "Help should point one-shot runs at `koda exec`: {stdout}"
     );
     assert!(
-        stdout.contains("--output-format"),
-        "Help should mention --output-format: {stdout}"
+        !stdout.contains("--output-format") && !stdout.contains("--prompt"),
+        "Help should not list the removed -p flags: {stdout}"
     );
 }
 
@@ -163,31 +163,13 @@ fn the_removed_server_command_says_so() {
     }
 }
 
-#[test]
-fn test_cli_output_format_validates() {
-    let output = Command::new(koda_bin())
-        .args(["--output-format", "invalid_format", "-p", "test"])
-        .output()
-        .expect("Failed to run koda");
-    // clap should reject invalid output formats
-    assert!(
-        !output.status.success(),
-        "Invalid output-format should fail"
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("invalid") || stderr.contains("possible values"),
-        "Should mention invalid value: {stderr}"
-    );
-}
-
 /// A bad context-window pin is an error at parse time, from the flag or the
 /// env var, never a silent fall-back to the server's answer or the table.
 #[test]
 fn test_cli_max_context_tokens_rejects_zero_and_non_numbers() {
     for bad in ["0", "abc", "64k"] {
         let flag = Command::new(koda_bin())
-            .args(["--max-context-tokens", bad, "-p", "test"])
+            .args(["--max-context-tokens", bad, "exec", "test"])
             .output()
             .expect("Failed to run koda");
         assert!(!flag.status.success(), "--max-context-tokens {bad}");
@@ -199,7 +181,7 @@ fn test_cli_max_context_tokens_rejects_zero_and_non_numbers() {
 
         let env = Command::new(koda_bin())
             .env("KODA_MAX_CONTEXT_TOKENS", bad)
-            .args(["-p", "test"])
+            .args(["exec", "test"])
             .output()
             .expect("Failed to run koda");
         assert!(!env.status.success(), "KODA_MAX_CONTEXT_TOKENS={bad}");
@@ -221,7 +203,7 @@ fn test_cli_refuses_effort_a_claude_model_does_not_take() {
     let run = |extra: &[&str]| {
         Command::new(koda_bin())
             .args([
-                "-p",
+                "exec",
                 "test",
                 "--provider",
                 "anthropic",
@@ -250,7 +232,7 @@ fn test_cli_refuses_effort_a_claude_model_does_not_take() {
 
     let from_env = Command::new(koda_bin())
         .args([
-            "-p",
+            "exec",
             "test",
             "--provider",
             "anthropic",
@@ -285,7 +267,7 @@ fn test_cli_refuses_effort_a_claude_model_does_not_take() {
 fn resume_with_an_unknown_id_stops_before_running() {
     let home = tempfile::tempdir().unwrap();
     let output = Command::new(koda_bin())
-        .args(["--resume", "28545", "-p", "hi"])
+        .args(["--resume", "28545", "exec", "hi"])
         .args([
             "--provider",
             "lmstudio",

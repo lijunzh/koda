@@ -25,7 +25,7 @@ confirmation prompt before each mutation. There are no separate
 | **Auto** | ⚡ **AUTO** (bold green) | "Trust the sandbox." Read and mutating ops auto-approve within the sandbox; destructive ops (`rm -rf`, `git reset --hard`, `git push --force`, `Delete`) still ask. Outside-project writes still ask. **Default since #1241** — the kernel sandbox + outside-project floor + destructive backstop combined provide a solid baseline without nag-by-default friction. Auto requires the kernel sandbox; on unsandboxed platforms koda refuses to start (#860 / #1259). |
 
 Plan is for sub-agents and for headless runs that should only look:
-`koda --mode plan -p "..."` (see [Headless mode](./headless.md#read-only-runs)).
+`koda exec --mode plan "..."` (see [Headless mode](./headless.md#read-only-runs)).
 In the interactive app, `--mode` and `Shift+Tab` choose between Safe and
 Auto, and `--mode plan` is refused at start.
 
@@ -118,7 +118,7 @@ These apply **regardless of the trust mode**:
    start** with an actionable error that includes a platform-specific
    install hint (e.g. `apt install bubblewrap`). The previous
    "silently downgrade Auto → Safe" plan was replaced (#860) because
-   silent coercion is catastrophic in headless: `koda --mode auto -p
+   silent coercion is catastrophic in headless: `koda exec --mode auto
    "..."` would become Safe and every mutation would hit `RejectAuto`
    (no human channel), aborting the task halfway. Hard refusal at
    startup gives a clear error + exit code 1 instead. Safe and Plan

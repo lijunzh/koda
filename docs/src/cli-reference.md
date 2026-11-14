@@ -4,8 +4,6 @@
 
 | Flag | Env var | Description |
 |------|---------|-------------|
-| `-p`, `--prompt <PROMPT>` | | Run a single prompt and exit (headless). Use `"-"` for stdin |
-| `<PROMPT>` (positional) | | Same as `-p` — `koda "fix the bug"` works |
 | `-a`, `--agent <NAME>` | | Agent definition to use (JSON in `agents/`, default: `default`) |
 | `-s`, `--resume <ID>` | | Resume a previous session by its full ID. `/sessions resume` in the TUI takes a prefix. |
 | `--model <NAME>` | `KODA_MODEL` | Model ID (e.g. `claude-sonnet-5-5`) or alias (e.g. `claude-sonnet`); an alias also picks its provider. |
@@ -16,10 +14,13 @@
 | `--temperature <F>` | | Sampling temperature (0.0–2.0) |
 | `--thinking-budget <N>` | | Anthropic thinking budget in tokens, for Claude models that still take one (Haiku 4.5 and older). Current Claude models refuse it; use `--effort`. |
 | `--effort <L>`, `--reasoning-effort <L>` | `KODA_REASONING_EFFORT` | Reasoning effort. Claude: `low`, `medium`, `high`, `xhigh` or `max`. Without it, each Claude model gets the level Claude Code uses: `medium` for the 5.5 models, `high` for Fable and the 5.0 models. A level the model doesn't take is refused. OpenAI-compatible servers get it as `reasoning_effort`. |
-| `--mode <MODE>` | `KODA_MODE` | Trust mode: `auto` (default, #1241), `safe`, or `plan` (headless runs only: read-only, everything else refused; see [Headless mode](./headless.md#read-only-runs)). Auto auto-approves mutating actions; the kernel sandbox contains them — destructive ops (`rm -rf`, `git reset --hard`, `git push --force`) and outside-project writes still confirm. Auto requires the kernel sandbox; on unsandboxed platforms koda refuses to start (use `--mode safe` or install the platform sandbox backend). Safe confirms every mutation. Kernel sandbox with credential protection is always active when available. |
+| `--mode <MODE>` | `KODA_MODE` | Trust mode: `auto` (default, #1241), `safe`, or `plan` (`koda exec` only: read-only, everything else refused; see [Headless mode](./headless.md#read-only-runs)). Auto auto-approves mutating actions; the kernel sandbox contains them — destructive ops (`rm -rf`, `git reset --hard`, `git push --force`) and outside-project writes still confirm. Auto requires the kernel sandbox; on unsandboxed platforms koda refuses to start (use `--mode safe` or install the platform sandbox backend). Safe confirms every mutation. Kernel sandbox with credential protection is always active when available. |
 | `--mcp-config <FILE\|JSON>` | | Add MCP servers for this run only, from a JSON file or inline JSON in the `{"mcpServers": {...}}` shape of Claude Code's `.mcp.json`. Repeatable. Nothing is saved; a bad value stops the start. See [MCP servers](mcp.md). |
-| `--output-format <FMT>` | | `koda -p` output: `text` (default) or `json` (one run-summary object on stdout). `stream-json` was removed in 0.7.0; use `koda exec --json`. See [Headless mode](headless.md#output-formats). |
 | `--project-root <DIR>` | | Project root (defaults to cwd) |
+
+`koda -p`, `--output-format` and a prompt given to `koda` itself were removed in
+0.7.0; `koda exec` runs a prompt. `koda` with stdin piped stops with the same
+pointer, since the TUI needs a terminal.
 
 ## Subcommands
 

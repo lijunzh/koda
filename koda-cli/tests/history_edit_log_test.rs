@@ -69,7 +69,7 @@ async fn a_dropped_tool_result_is_logged_as_a_warning() {
     std::fs::write(tmp.path().join("first.txt"), "first file\n").unwrap();
     std::fs::write(tmp.path().join("second.txt"), "second file\n").unwrap();
     let child = tokio::process::Command::new(koda_bin())
-        .args(["-p", "Read the files", "--output-format", "json"])
+        .args(["exec", "Read the files"])
         .args(["--provider", "lmstudio", "--model", "stub"])
         .args(["--base-url", &server.url()])
         .args(["--max-context-tokens", "100000"])

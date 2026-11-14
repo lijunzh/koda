@@ -65,7 +65,7 @@ async fn a_busy_server_and_a_failed_reply_do_not_end_the_turn() {
     std::fs::write(tmp.path().join("notes.txt"), "first file\n").unwrap();
     std::fs::write(tmp.path().join("more.txt"), "second file\n").unwrap();
     let child = tokio::process::Command::new(koda_bin())
-        .args(["-p", "Read notes.txt", "--output-format", "json"])
+        .args(["exec", "--json", "Read notes.txt"])
         .args(["--provider", "gemini", "--model", "gemini-flash-latest"])
         .args(["--base-url", &server.url()])
         .args(["--max-context-tokens", "100000"])
@@ -86,8 +86,8 @@ async fn a_busy_server_and_a_failed_reply_do_not_end_the_turn() {
         output.status.success(),
         "stdout: {stdout}\nstderr: {stderr}"
     );
-    let start = stdout.find('{').expect("no JSON on stdout");
-    let result: Value = serde_json::from_str(&stdout[start..]).unwrap();
+    let summary = stdout.lines().last().expect("no output on stdout");
+    let result: Value = serde_json::from_str::<Value>(summary).unwrap()["params"].clone();
     assert_eq!(result["response"], FINAL_TEXT, "{result}");
 
     let received = server.received_requests().await;
@@ -178,7 +178,7 @@ async fn compaction_leaves_the_system_prompt_alone() {
         std::fs::write(tmp.path().join(format!("notes_{i}.txt")), text).unwrap();
     }
     let child = tokio::process::Command::new(koda_bin())
-        .args(["-p", "Read the notes", "--output-format", "json"])
+        .args(["exec", "Read the notes"])
         .args(["--provider", "gemini", "--model", "gemini-flash-latest"])
         .args(["--base-url", &server.url()])
         .args(["--max-context-tokens", "32000"])

@@ -4,11 +4,11 @@ Koda runs in two modes:
                 Type your question and press Enter.
                 Type /help inside for keybindings and all commands.
 
-  HEADLESS      Pass a prompt to get a single answer and exit.
-                Great for scripts, pipes, and CI pipelines.
-                  koda "explain this codebase"
-                  git diff | koda
-                  koda -p - < prompt.txt
+  EXEC          `koda exec` runs one prompt without the TUI and exits.
+                For scripts, pipes and CI pipelines.
+                  koda exec "explain this codebase"
+                  git diff | koda exec
+                  koda exec --json "fix the failing tests"
 
 Configuration precedence (highest wins):
   1. CLI flags     --model, --provider, --base-url
@@ -22,29 +22,13 @@ follow the same order. Keys saved with /key are loaded from the
 local keystore at startup and injected as env vars — shell env
 vars always win over stored keys.
 
-Usage: koda [OPTIONS] [PROMPT] [COMMAND]
+Usage: koda [OPTIONS] [COMMAND]
 
 Commands:
   exec  Run one prompt without the TUI, then exit
   help  Print this message or the help of the given subcommand(s)
 
-Arguments:
-  [PROMPT]
-          Positional prompt (alternative to -p). `koda "fix the bug"` is equivalent to `koda -p "fix the bug"`
-
 Options:
-  -p, --prompt <PROMPT>
-          Run a single prompt and exit (headless mode). Use "-" to read from stdin
-
-      --output-format <OUTPUT_FORMAT>
-          Output format for headless mode
-
-          Possible values:
-          - text: Streamed reply on stdout, decorations on stderr
-          - json: One run-summary JSON object on stdout after the turn
-          
-          [default: text]
-
   -a, --agent <AGENT>
           Agent to use (matches a JSON file in agents/)
           
@@ -91,7 +75,7 @@ Options:
           [env: KODA_REASONING_EFFORT=]
 
       --mode <MODE>
-          Trust mode: auto (default), safe, or plan (headless runs only). "auto" auto-approves mutating actions; the kernel sandbox contains them. Destructive ops (rm -rf, git reset --hard, git push --force) and outside-project writes still confirm. Auto requires the kernel sandbox; on unsandboxed platforms koda refuses to start with an actionable error (use --mode safe or install the platform sandbox backend). "safe" confirms every mutation before executing — use this in CI, locked-down workstations, or any context where you want a human in every approval loop. "plan" is read-only, for a headless run (-p) that should only look: reads, searches, read-only commands and MCP tools marked read-only run; everything else is refused, and the kernel sandbox keeps the project read-only. Sandbox with credential protection is always active
+          Trust mode: auto (default), safe, or plan (`koda exec` only). "auto" auto-approves mutating actions; the kernel sandbox contains them. Destructive ops (rm -rf, git reset --hard, git push --force) and outside-project writes still confirm. Auto requires the kernel sandbox; on unsandboxed platforms koda refuses to start with an actionable error (use --mode safe or install the platform sandbox backend). "safe" confirms every mutation before executing — use this in CI, locked-down workstations, or any context where you want a human in every approval loop. "plan" is read-only, for a `koda exec` run that should only look: reads, searches, read-only commands and MCP tools marked read-only run; everything else is refused, and the kernel sandbox keeps the project read-only. Sandbox with credential protection is always active
           
           [env: KODA_MODE=]
           [default: auto]
@@ -107,11 +91,11 @@ Options:
           Print version
 
 Examples:
-  koda                                # interactive TUI (type /help inside)
-  koda "explain this codebase"       # one-shot question, then exit
-  koda -p "fix the failing tests"    # same, explicit flag form
-  koda -p -                           # read prompt from stdin
-  git diff | koda                     # pipe diff as the prompt
-  koda "refactor" --model o3         # one-shot with a specific model
-  KODA_MODEL=gemini-flash-latest koda "..." # env-var model override
-  koda -s abc123 "continue"          # resume a saved session
+  koda                                     # interactive TUI (type /help inside)
+  koda -s abc123                           # resume a saved session
+  koda exec "explain this codebase"       # one-shot question, then exit
+  koda exec - < prompt.txt                 # read the prompt from stdin
+  git diff | koda exec                     # pipe a diff as the prompt
+  koda exec --json "fix the failing tests" # the client protocol on stdout
+  koda exec --model o3 "refactor"         # one-shot with a specific model
+  koda exec -s abc123 "continue"          # continue a saved session

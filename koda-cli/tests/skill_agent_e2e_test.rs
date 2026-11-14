@@ -38,15 +38,7 @@ fn koda_bin() -> String {
 fn run_mock(prompt: &str, responses: &str) -> (String, String, bool) {
     let tmp = tempfile::tempdir().unwrap();
     let output = Command::new(koda_bin())
-        .args([
-            "-p",
-            prompt,
-            "--provider",
-            "mock",
-            "--output-format",
-            "json",
-            "--project-root",
-        ])
+        .args(["exec", prompt, "--provider", "mock", "--project-root"])
         .arg(tmp.path())
         .env("XDG_CONFIG_HOME", tmp.path())
         .env("KODA_MOCK_RESPONSES", responses)
@@ -56,14 +48,6 @@ fn run_mock(prompt: &str, responses: &str) -> (String, String, bool) {
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     (stdout, stderr, output.status.success())
-}
-
-fn extract_json(stdout: &str) -> serde_json::Value {
-    let start = stdout
-        .find('{')
-        .unwrap_or_else(|| panic!("no JSON in stdout:\n{stdout}"));
-    serde_json::from_str(&stdout[start..])
-        .unwrap_or_else(|e| panic!("invalid JSON: {e}\nfrom: {}", &stdout[start..]))
 }
 
 /// Strip ANSI escape codes so assertions don't need to match colour sequences.
@@ -95,11 +79,8 @@ fn koda_docs_skill_appears_in_list_skills() {
         {"tool": "ListSkills", "args": {}},
         {"text": "I can see the docs skill."}
     ]"#;
-    let (stdout, stderr, success) = run_mock("what skills are available?", responses);
+    let (_stdout, stderr, success) = run_mock("what skills are available?", responses);
     assert!(success, "process failed.\nstderr: {stderr}");
-
-    let json = extract_json(&stdout);
-    assert_eq!(json["success"], true);
 
     let clean = strip_ansi(&stderr);
     assert!(
@@ -118,11 +99,8 @@ fn koda_docs_skill_activates_and_returns_manual_content() {
         {"tool": "ActivateSkill", "args": {"skill_name": "koda-docs"}},
         {"text": "Done reading docs."}
     ]"#;
-    let (stdout, stderr, success) = run_mock("how do I use koda?", responses);
+    let (_stdout, stderr, success) = run_mock("how do I use koda?", responses);
     assert!(success, "process failed.\nstderr: {stderr}");
-
-    let json = extract_json(&stdout);
-    assert_eq!(json["success"], true);
 
     let clean = strip_ansi(&stderr);
 
@@ -190,11 +168,8 @@ fn invoke_agent_responses(agent_name: &str, prompt: &str) -> String {
 #[test]
 fn explore_sub_agent_is_dispatched_when_invoked() {
     let responses = invoke_agent_responses("explore", "find all Rust source files");
-    let (stdout, stderr, success) = run_mock("explore the codebase", &responses);
+    let (_stdout, stderr, success) = run_mock("explore the codebase", &responses);
     assert!(success, "process failed.\nstderr: {stderr}");
-
-    let json = extract_json(&stdout);
-    assert_eq!(json["success"], true);
 
     let clean = strip_ansi(&stderr);
     assert!(
@@ -233,11 +208,8 @@ fn task_sub_agent_is_dispatched_when_invoked() {
     ])
     .to_string();
 
-    let (stdout, stderr, success) = run_mock("delegate a task", &responses);
+    let (_stdout, stderr, success) = run_mock("delegate a task", &responses);
     assert!(success, "process failed.\nstderr: {stderr}");
-
-    let json = extract_json(&stdout);
-    assert_eq!(json["success"], true);
 
     let clean = strip_ansi(&stderr);
     assert!(
@@ -256,11 +228,8 @@ fn list_agents_shows_all_builtin_sub_agents() {
         {"tool": "ListAgents", "args": {}},
         {"text": "I see the agents."}
     ]"#;
-    let (stdout, stderr, success) = run_mock("what agents are available?", responses);
+    let (_stdout, stderr, success) = run_mock("what agents are available?", responses);
     assert!(success, "process failed.\nstderr: {stderr}");
-
-    let json = extract_json(&stdout);
-    assert_eq!(json["success"], true);
 
     let clean = strip_ansi(&stderr);
 

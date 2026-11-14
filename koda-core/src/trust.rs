@@ -13,7 +13,7 @@
 //!
 //! | Mode | Sandbox | Approval | Use case |
 //! |------|---------|----------|----------|
-//! | **Plan** | project, read-only | deny all non-read | Sub-agents, and headless runs that should only look (`koda --mode plan -p`) — see [`coerce_for_top_level()`](crate::trust::coerce_for_top_level) |
+//! | **Plan** | project, read-only | deny all non-read | Sub-agents, and headless runs that should only look (`koda exec --mode plan`) — see [`coerce_for_top_level()`](crate::trust::coerce_for_top_level) |
 //! | **Safe** | project, read+write | confirm side effects | Opt-in via `--mode safe` (CI, locked-down workstations) |
 //! | **Auto** | project, read+write | auto-approve mutations; destructive still confirms | Autonomous coding |
 //!
@@ -23,7 +23,7 @@
 //! which coerces `Plan → Safe` with a warning. Sub-agents reach Plan
 //! via their JSON `"trust": "plan"` declaration plus parent clamping.
 //!
-//! A headless run (`koda --mode plan -p "..."`) is the exception: it keeps
+//! A headless run (`koda exec --mode plan "..."`) is the exception: it keeps
 //! Plan. Nobody is there to approve anything, so a run that should only
 //! look (a morning digest over mail, a review) wants every write refused,
 //! the way `codex exec` defaults to a read-only sandbox and Claude Code,
@@ -301,7 +301,7 @@ pub fn coerce_for_top_level(candidate: TrustMode) -> (TrustMode, Option<&'static
 /// Pre-#860 the plan was "silently downgrade Auto → Safe when the
 /// sandbox is unavailable". That violates the Zen of Python
 /// (errors should never pass silently) and — critically — it's
-/// **catastrophic in headless mode**: `koda --mode auto -p "..."`
+/// **catastrophic in headless mode**: `koda exec --mode auto "..."`
 /// would silently become Safe, and every mutation would hit
 /// `RejectAuto` (no human channel to approve), causing the task
 /// to abort halfway with a confusing partial-state failure.
@@ -1688,7 +1688,7 @@ mod tests {
     fn require_sandbox_does_not_silently_coerce_to_safe() {
         // Negative assertion: the function MUST return Err for the
         // Auto+unsandboxed case, not Ok(Safe). Headless tasks rely on
-        // this — a silent coerce would turn `koda --mode auto -p "..."`
+        // this — a silent coerce would turn `koda exec --mode auto "..."`
         // into Safe, and then RejectAuto would abort every mutation.
         let result = require_sandbox_for_auto(TrustMode::Auto, false);
         assert!(

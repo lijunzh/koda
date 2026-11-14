@@ -83,7 +83,7 @@ async fn run_koda(usage: Value) -> String {
         std::fs::write(tmp.path().join(format!("notes_{i}.txt")), line.repeat(400)).unwrap();
     }
     let child = tokio::process::Command::new(koda_bin())
-        .args(["-p", "Read the notes", "--output-format", "json"])
+        .args(["exec", "Read the notes"])
         .args(["--provider", "lmstudio", "--model", "stub"])
         .args(["--base-url", &server.url()])
         .args(["--max-context-tokens", WINDOW])
