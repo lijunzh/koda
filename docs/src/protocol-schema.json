@@ -1307,6 +1307,46 @@
       ],
       "type": "object"
     },
+    "MemoryNote": {
+      "description": "One notes file.",
+      "properties": {
+        "path": {
+          "description": "Where the host keeps them.",
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/MemoryScope",
+          "description": "Whose notes."
+        },
+        "text": {
+          "description": "What they say; absent until something is saved there.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "scope",
+        "path"
+      ],
+      "type": "object"
+    },
+    "MemoryScope": {
+      "description": "Which of Koda's notes: the session's project's or everyone's.",
+      "oneOf": [
+        {
+          "const": "project",
+          "description": "The session's project's notes.",
+          "type": "string"
+        },
+        {
+          "const": "global",
+          "description": "The notes every project reads.",
+          "type": "string"
+        }
+      ]
+    },
     "MergeStrategy": {
       "description": "How an edit's value merges with what's there.",
       "oneOf": [
@@ -1841,7 +1881,7 @@
       "type": "object"
     },
     "Session": {
-      "description": "A session: one stored conversation. Codex's `Thread`. What it's running\nwith (`model` through `tools`) is there only while it is open, as from\n`session/start`; `session/list` gives stored sessions without it.",
+      "description": "A session: one stored conversation. Codex's `Thread`. What it's running\nwith (`model` through `instruction_sources`) is there only while it is\nopen, as from `session/start`; `session/list` gives stored sessions\nwithout it.",
       "properties": {
         "contextWindow": {
           "description": "The context window in tokens.",
@@ -1867,6 +1907,16 @@
         "id": {
           "description": "The session's id, for resuming it.",
           "type": "string"
+        },
+        "instructionSources": {
+          "description": "The instruction files (`AGENTS.md` and the like) its prompt carries,\nin that order: the global one, then the project's from the git root\ndown. Codex's `instructionSources`, as of the session's opening.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "mode": {
           "anyOf": [
@@ -2013,6 +2063,73 @@
       },
       "required": [
         "data"
+      ],
+      "type": "object"
+    },
+    "SessionMemoryAddParams": {
+      "additionalProperties": false,
+      "description": "`session/memory/add`: save `text` to the notes. Text that starts with a\n`## Heading` replaces the section with that heading, if there is one,\nas `MemoryWrite` does. The session's next turn reads it.",
+      "properties": {
+        "scope": {
+          "$ref": "#/$defs/MemoryScope",
+          "description": "Whose notes."
+        },
+        "sessionId": {
+          "description": "An open session.",
+          "type": "string"
+        },
+        "text": {
+          "description": "What to save; not blank.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "scope",
+        "text"
+      ],
+      "type": "object"
+    },
+    "SessionMemoryAddResponse": {
+      "description": "The answer to `session/memory/add`.",
+      "properties": {
+        "path": {
+          "description": "The file it went to.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "SessionMemoryReadParams": {
+      "additionalProperties": false,
+      "description": "`session/memory/read`.",
+      "properties": {
+        "sessionId": {
+          "description": "An open session.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "type": "object"
+    },
+    "SessionMemoryReadResponse": {
+      "description": "The answer to `session/memory/read`: the project's notes, then the\nglobal ones, each as the model reads it.",
+      "properties": {
+        "notes": {
+          "description": "The project's notes, then the global ones.",
+          "items": {
+            "$ref": "#/$defs/MemoryNote"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "notes"
       ],
       "type": "object"
     },
@@ -3037,6 +3154,22 @@
       },
       "result": {
         "$ref": "#/$defs/SessionListResponse"
+      }
+    },
+    "session/memory/add": {
+      "params": {
+        "$ref": "#/$defs/SessionMemoryAddParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionMemoryAddResponse"
+      }
+    },
+    "session/memory/read": {
+      "params": {
+        "$ref": "#/$defs/SessionMemoryReadParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionMemoryReadResponse"
       }
     },
     "session/settings/update": {

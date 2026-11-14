@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use koda_client::events::Outgoing;
 use koda_client::protocol::initialize::ClientInfo;
 use koda_client::protocol::item::{CompactionStatus, CompactionTrigger, Item};
+use koda_client::protocol::memory::{MemoryScope, SessionMemoryAddParams, SessionMemoryReadParams};
 use koda_client::protocol::model::{ModelListParams, ModelProviderListParams};
 use koda_client::protocol::rpc::{ErrorObject, RequestId, codes};
 use koda_client::protocol::session::{
@@ -93,6 +94,8 @@ async fn chat_requests(server: &FakeLlmServer) -> Vec<Value> {
 struct Koda {
     client: InProcessClient,
     session: String,
+    /// What `session/start` answered.
+    opened: koda_client::protocol::session::Session,
     project: PathBuf,
     _dir: tempfile::TempDir,
 }
@@ -138,7 +141,11 @@ async fn client_with(
 impl Koda {
     /// A client with one new session open.
     async fn start(config: KodaConfig) -> Self {
-        let dir = tempfile::tempdir().unwrap();
+        Self::start_in(config, tempfile::tempdir().unwrap()).await
+    }
+
+    /// [`Koda::start`] in `dir`, which may hold files the session reads.
+    async fn start_in(config: KodaConfig, dir: tempfile::TempDir) -> Self {
         let client = client(config, &dir).await;
         let started = client
             .request::<methods::SessionStart>(SessionStartParams::default())
@@ -146,7 +153,8 @@ impl Koda {
             .unwrap();
         let mut koda = Self {
             client,
-            session: started.session.id,
+            session: started.session.id.clone(),
+            opened: started.session,
             project: dir.path().join("project"),
             _dir: dir,
         };
@@ -210,6 +218,30 @@ impl Koda {
             })
             .await
             .map(|r| r.turn_id)
+    }
+
+    async fn read_memory(
+        &self,
+    ) -> Result<koda_client::protocol::memory::SessionMemoryReadResponse, RequestError> {
+        self.client
+            .request::<methods::SessionMemoryRead>(SessionMemoryReadParams {
+                session_id: self.session.clone(),
+            })
+            .await
+    }
+
+    async fn add_memory(
+        &self,
+        scope: MemoryScope,
+        text: &str,
+    ) -> Result<koda_client::protocol::memory::SessionMemoryAddResponse, RequestError> {
+        self.client
+            .request::<methods::SessionMemoryAdd>(SessionMemoryAddParams {
+                session_id: self.session.clone(),
+                scope,
+                text: text.to_string(),
+            })
+            .await
     }
 
     /// Every message up to and including the first named `method`.
@@ -670,6 +702,7 @@ async fn a_resumed_session_keeps_its_history() {
     let mut koda = Koda {
         client: second,
         session,
+        opened: resumed.session,
         project: dir.path().join("project"),
         _dir: dir,
     };
@@ -800,15 +833,15 @@ async fn a_shared_agent_is_what_sessions_run_with() {
         .unwrap();
     agent.rebuild_system_prompt(&config, &["/zebra-command"]);
     let client = client_with(config, &dir, Some(std::sync::Arc::new(agent))).await;
-    let session = client
+    let opened = client
         .request::<methods::SessionStart>(SessionStartParams::default())
         .await
         .unwrap()
-        .session
-        .id;
+        .session;
     let mut koda = Koda {
         client,
-        session,
+        session: opened.id.clone(),
+        opened,
         project: dir.path().join("project"),
         _dir: dir,
     };
@@ -1945,5 +1978,94 @@ async fn servers_are_config_in_codexs_shape() {
         .unwrap();
     let names: Vec<&String> = read.config.mcp_servers.keys().collect();
     assert_eq!(names, ["mail"], "a refused batch saved nothing");
+    koda.client.shutdown().await;
+}
+
+// ── Memory ──────────────────────────────────────────────────────────────
+
+/// A session says which instruction files its prompt carries
+/// (`instructionSources`, as Codex's `thread/start` does), and
+/// `session/memory/read` and `session/memory/add` read and save Koda's
+/// notes, which the next turn's prompt carries.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn memory_requests_read_and_save_the_notes_the_model_reads() {
+    let dir = tempfile::tempdir().unwrap();
+    // Koda's notes and global instructions live under the config directory,
+    // which here is the test's own, never the real one.
+    let xdg = dir.path().join("xdg");
+    koda_core::runtime_env::set("XDG_CONFIG_HOME", xdg.display().to_string());
+    std::fs::create_dir_all(xdg.join("koda")).unwrap();
+    std::fs::write(xdg.join("koda/AGENTS.md"), "Global rule.").unwrap();
+    std::fs::create_dir_all(dir.path().join("project")).unwrap();
+    std::fs::write(dir.path().join("project/AGENTS.md"), "Project rule.").unwrap();
+    let server = model(vec![text("Noted.")]).await;
+    let mut koda = Koda::start_in(config(&server), dir).await;
+
+    // The session's sources, global first.
+    let sources = koda.opened.instruction_sources.clone().unwrap();
+    assert_eq!(sources.len(), 2, "{sources:?}");
+    assert!(sources[0].ends_with("xdg/koda/AGENTS.md"), "{sources:?}");
+    assert!(sources[1].ends_with("project/AGENTS.md"), "{sources:?}");
+
+    let notes = koda.read_memory().await.unwrap().notes;
+    assert_eq!(notes.len(), 2);
+    assert_eq!(notes[0].scope, MemoryScope::Project);
+    assert_eq!(notes[1].scope, MemoryScope::Global);
+    assert!(notes.iter().all(|n| n.text.is_none()), "{notes:?}");
+    assert!(
+        notes[1].path.ends_with("xdg/koda/memories/MEMORY.md"),
+        "{notes:?}"
+    );
+
+    let saved = koda
+        .add_memory(MemoryScope::Project, "## Build\nuse make")
+        .await
+        .unwrap();
+    assert_eq!(saved.path, notes[0].path);
+    // The same heading replaces its section.
+    koda.add_memory(MemoryScope::Project, "## Build\nuse nextest")
+        .await
+        .unwrap();
+    koda.add_memory(MemoryScope::Global, "prefer short replies")
+        .await
+        .unwrap();
+    let notes = koda.read_memory().await.unwrap().notes;
+    let project = notes[0].text.as_deref().unwrap();
+    assert!(
+        project.contains("use nextest") && !project.contains("use make"),
+        "{project}"
+    );
+    assert!(
+        notes[1]
+            .text
+            .as_deref()
+            .unwrap()
+            .contains("prefer short replies")
+    );
+
+    // Blank text and a session that isn't open are refused.
+    let blank = server_error(koda.add_memory(MemoryScope::Global, "  ").await);
+    assert!(blank.message.contains("blank"), "{blank:?}");
+    let unknown = server_error(
+        koda.client
+            .request::<methods::SessionMemoryRead>(SessionMemoryReadParams {
+                session_id: "nope".to_string(),
+            })
+            .await,
+    );
+    assert!(unknown.message.contains("no open session"), "{unknown:?}");
+
+    // The next turn's prompt carries both sources and both notes.
+    koda.turn("hi").await;
+    koda.until("turn/completed").await;
+    let prompt = chat_requests(&server).await[0]["messages"].to_string();
+    for text in [
+        "Global rule.",
+        "Project rule.",
+        "use nextest",
+        "prefer short replies",
+    ] {
+        assert!(prompt.contains(text), "{text} isn't in {prompt}");
+    }
     koda.client.shutdown().await;
 }

@@ -235,16 +235,8 @@ pub(crate) fn load_in(project_root: &Path, config: Option<&Path>) -> Result<Stri
         Ok(())
     };
 
-    if let Some(path) = config.and_then(global_instruction_file) {
-        push(&path, "global instructions")?;
-    }
-    let project_files = project_instruction_files(project_root);
-    if project_files.is_empty() {
-        // Debug, not info: memory reloads every turn.
-        tracing::debug!("No project instruction file found");
-    }
-    for path in &project_files {
-        push(path, "project instructions")?;
+    for path in instruction_files_in(project_root, config) {
+        push(&path, "instructions")?;
     }
     if let Some(config) = config {
         for path in [
@@ -257,6 +249,32 @@ pub(crate) fn load_in(project_root: &Path, config: Option<&Path>) -> Result<Stri
         }
     }
     Ok(parts.join("\n\n"))
+}
+
+/// The instruction files a prompt for `project_root` carries, in the order
+/// it carries them: the global one, then the project's from the git root
+/// down. Empty files are left out, as [`load`] leaves them out. Codex's
+/// `instructionSources`.
+pub fn instruction_sources(project_root: &Path) -> Vec<PathBuf> {
+    instruction_files_in(project_root, crate::db::config_dir().ok().as_deref())
+        .into_iter()
+        .filter(|path| std::fs::read_to_string(path).is_ok_and(|text| !text.trim().is_empty()))
+        .collect()
+}
+
+/// The global instruction file, then the project's from the git root down.
+fn instruction_files_in(project_root: &Path, config: Option<&Path>) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = config
+        .and_then(global_instruction_file)
+        .into_iter()
+        .collect();
+    let project_files = project_instruction_files(project_root);
+    if project_files.is_empty() {
+        // Debug, not info: memory reloads every turn.
+        tracing::debug!("No project instruction file found");
+    }
+    files.extend(project_files);
+    files
 }
 
 /// Save `entry` to Koda's notes for this project, outside the project.

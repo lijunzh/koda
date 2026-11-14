@@ -9,6 +9,7 @@
 mod events;
 mod idle_ui_events;
 mod mcp;
+mod memory;
 mod menus;
 pub(crate) mod settings;
 
@@ -154,6 +155,9 @@ pub struct TuiSession {
     /// The session's sub-agents, from the host
     /// ([`koda_client::InProcessClient::session_handles`]).
     pub bg_agents: Arc<koda_core::child_agent::ChildAgentRegistry>,
+    /// The instruction files the host loaded for it, in order, as of its
+    /// opening (`instructionSources`), for `/memory`.
+    pub instruction_sources: Vec<String>,
 }
 
 /// Open session `resume`, or a new one, on the host, with what `named`
@@ -176,12 +180,18 @@ pub(crate) async fn open_host_session(
         })
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let instruction_sources = started.session.instruction_sources.unwrap_or_default();
     let id = started.session.id;
     let bg_agents = client
         .session_handles(&id)
         .map(|handles| handles.bg_agents)
         .unwrap_or_else(koda_core::child_agent::new_shared);
-    Ok(TuiSession { id, db, bg_agents })
+    Ok(TuiSession {
+        id,
+        db,
+        bg_agents,
+        instruction_sources,
+    })
 }
 
 /// What a turn starts with, and what to give back if it can't start.
@@ -857,6 +867,10 @@ impl TuiContext {
             SlashAction::ChangeModel(model) => {
                 self.change_model(&model, settings::ModelScope::Default)
                     .await;
+                CommandOutcome::Handled
+            }
+            SlashAction::Memory(arg) => {
+                self.memory_command(arg.as_deref()).await;
                 CommandOutcome::Handled
             }
             SlashAction::Compact => CommandOutcome::Compact,

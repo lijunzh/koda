@@ -275,6 +275,20 @@ impl Host {
                 )));
                 return;
             }
+            ClientRequest::SessionMemoryRead { params, .. } => {
+                let notes = self
+                    .project_root(&params.session_id)
+                    .and_then(|root| crate::memory::read(&root));
+                let _ = reply.send(notes.and_then(to_json));
+                return;
+            }
+            ClientRequest::SessionMemoryAdd { params, .. } => {
+                let added = self
+                    .project_root(&params.session_id)
+                    .and_then(|root| crate::memory::add(&root, params.scope, &params.text));
+                let _ = reply.send(added.and_then(to_json));
+                return;
+            }
             ClientRequest::SessionList { params, .. } => {
                 let _ = reply.send(self.list_sessions(params).await.and_then(to_json));
                 return;
@@ -332,6 +346,16 @@ impl Host {
 
     /// `mcpServerStatus/list`: a session's servers, or without one the
     /// configured servers, none started.
+    /// The project an open session works in.
+    fn project_root(&self, id: &str) -> Result<PathBuf, ErrorObject> {
+        self.handles
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .map(|handles| handles.project_root.clone())
+            .ok_or_else(|| invalid(format!("no open session {id:?}")))
+    }
+
     async fn mcp_status(
         &self,
         params: koda_protocol::mcp::ListMcpServerStatusParams,

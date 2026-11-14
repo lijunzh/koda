@@ -109,10 +109,10 @@ Session IDs are UUIDs; you only need 6–8 characters to be unambiguous.
 On resume, Koda shows an away-summary: idle time, message count, token
 usage, and a banner if the previous turn was interrupted mid-inference.
 
-## `/memory [save]`
+## `/memory [add|global <text>]`
 
 ```text
-/memory        ← show the instruction file and where Koda's notes are
+/memory                 ← show the instruction files the session reads, and where Koda's notes are
 /memory add <text>      ← add to Koda's notes for this project
 /memory global <text>   ← add to Koda's global notes
 ```

@@ -63,7 +63,7 @@ matters only now and then. If you work with a small or local model, keep it
 to a page.
 
 ```text
-/memory                 ← show the instruction file and where the notes are
+/memory                 ← show the instruction files the session reads, and where the notes are
 /memory add <text>      ← add to Koda's notes for this project
 /memory global <text>   ← add to Koda's global notes
 ```
