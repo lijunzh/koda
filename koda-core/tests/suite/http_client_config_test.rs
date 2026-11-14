@@ -251,7 +251,8 @@ async fn read_timeout_aborts_silent_servers_quickly() {
     // Regression: previously the reqwest client had no read_timeout, so a
     // server that accepted the connection but then went silent (or a
     // half-open socket a NAT box quietly dropped) would hang the agent
-    // forever. Now KODA_READ_TIMEOUT_SECS bounds idle time between reads.
+    // forever. Now a read timeout bounds idle time between reads: the
+    // config file's `stream_idle_timeout_ms`, here 1s.
     let _g = ENV_MUTEX.lock().await;
 
     let upstream = FakeLlmServer::spawn().await;
@@ -262,9 +263,11 @@ async fn read_timeout_aborts_silent_servers_quickly() {
 
     let mut env = EnvGuard::new();
     env.mask_all_proxy_env();
-    env.set("KODA_READ_TIMEOUT_SECS", "1");
 
-    let provider = OpenAiCompatProvider::new(&upstream.url(), Some("sk-test".into()));
+    let mut config = koda_core::config::KodaConfig::default_for_testing(ProviderType::OpenAI);
+    config.base_url = upstream.url();
+    config.stream_idle_timeout_ms = Some(1_000);
+    let provider = koda_core::providers::create_provider(&config);
 
     let started = std::time::Instant::now();
     let result = provider.chat(&[user_msg()], &[], &settings()).await;

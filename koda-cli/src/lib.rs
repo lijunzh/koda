@@ -38,6 +38,7 @@ pub(crate) mod md_render;
 pub(crate) mod mouse_select;
 pub(crate) mod onboarding;
 pub(crate) mod panic_log;
+pub(crate) mod retired_env;
 pub(crate) mod scroll_buffer;
 pub(crate) mod sink;
 pub(crate) mod startup;

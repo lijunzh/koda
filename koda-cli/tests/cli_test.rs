@@ -163,8 +163,8 @@ fn the_removed_server_command_says_so() {
     }
 }
 
-/// A bad context-window pin is an error at parse time, from the flag or the
-/// env var, never a silent fall-back to the server's answer or the table.
+/// A bad context-window pin is an error at parse time, never a silent
+/// fall-back to the server's answer or the table.
 #[test]
 fn test_cli_max_context_tokens_rejects_zero_and_non_numbers() {
     for bad in ["0", "abc", "64k"] {
@@ -177,18 +177,6 @@ fn test_cli_max_context_tokens_rejects_zero_and_non_numbers() {
         assert!(
             stderr.contains("--max-context-tokens") && stderr.contains("context window"),
             "flag {bad}: {stderr}"
-        );
-
-        let env = Command::new(koda_bin())
-            .env("KODA_MAX_CONTEXT_TOKENS", bad)
-            .args(["exec", "test"])
-            .output()
-            .expect("Failed to run koda");
-        assert!(!env.status.success(), "KODA_MAX_CONTEXT_TOKENS={bad}");
-        let stderr = String::from_utf8_lossy(&env.stderr);
-        assert!(
-            stderr.contains("--max-context-tokens") && stderr.contains("context window"),
-            "env {bad}: {stderr}"
         );
     }
 }
@@ -229,28 +217,6 @@ fn test_cli_refuses_effort_a_claude_model_does_not_take() {
             && stderr.contains("low, medium, high, xhigh, max"),
         "{stderr}"
     );
-
-    let from_env = Command::new(koda_bin())
-        .args([
-            "exec",
-            "test",
-            "--provider",
-            "anthropic",
-            "--model",
-            "claude-haiku-5-5",
-        ])
-        .args(["--base-url", "http://127.0.0.1:9"])
-        .arg("--project-root")
-        .arg(&project)
-        .env("HOME", tmp.path())
-        .env("XDG_CONFIG_HOME", tmp.path())
-        .env("KODA_REASONING_EFFORT", "ultra")
-        .env_remove("ANTHROPIC_API_KEY")
-        .output()
-        .expect("Failed to run koda");
-    assert!(!from_env.status.success());
-    let stderr = String::from_utf8_lossy(&from_env.stderr);
-    assert!(stderr.contains("doesn't take effort \"ultra\""), "{stderr}");
 
     let budget = run(&["--thinking-budget", "8000"]);
     assert!(!budget.status.success());

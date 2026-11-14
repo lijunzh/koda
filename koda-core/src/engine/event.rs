@@ -545,7 +545,7 @@ pub enum CompactionTrigger {
     /// The client asked for it (`/compact`, `session/compact/start`).
     Manual,
     /// The turn's final reply left the context past the after-turn
-    /// threshold (`KODA_POST_TURN_COMPACT_PERCENT`).
+    /// threshold (`model_post_turn_compact_threshold_percent`).
     PostTurn,
 }
 

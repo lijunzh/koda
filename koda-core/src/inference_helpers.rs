@@ -468,31 +468,6 @@ pub const DEFAULT_STREAM_MAX_RETRIES: u32 = 5;
 /// The most retries either setting can ask for, as in Codex.
 pub const MAX_RETRIES_SETTING: u32 = 100;
 
-/// A retry setting from the environment: a whole number up to
-/// [`MAX_RETRIES_SETTING`], else `default`. Like `KODA_READ_TIMEOUT_SECS`,
-/// a value that isn't a number is ignored.
-pub fn retries_from(setting: Option<&str>, default: u32) -> u32 {
-    setting
-        .and_then(|v| v.trim().parse::<u32>().ok())
-        .unwrap_or(default)
-        .min(MAX_RETRIES_SETTING)
-}
-
-/// Read a percent setting: a whole number from 0 to 100. Anything else is
-/// 0, off, with a warning.
-pub fn percent_from(setting: Option<&str>) -> u8 {
-    let Some(raw) = setting.map(str::trim).filter(|v| !v.is_empty()) else {
-        return 0;
-    };
-    match raw.parse::<u8>() {
-        Ok(percent) if percent <= 100 => percent,
-        _ => {
-            tracing::warn!("ignoring {raw:?}: a percent from 0 to 100 was expected");
-            0
-        }
-    }
-}
-
 /// The longest wait a server can ask for. Past it the limit won't lift
 /// within a turn, so the request fails instead of sitting silent.
 pub const MAX_SERVER_DELAY: std::time::Duration = std::time::Duration::from_secs(300);
@@ -519,16 +494,6 @@ pub fn rate_limit_backoff(attempt: u32) -> std::time::Duration {
 mod tests {
     use super::*;
 
-    #[test]
-    fn percent_settings_are_0_to_100_and_anything_else_is_off() {
-        assert_eq!(percent_from(None), 0);
-        assert_eq!(percent_from(Some("")), 0);
-        assert_eq!(percent_from(Some(" 85 ")), 85);
-        assert_eq!(percent_from(Some("100")), 100);
-        assert_eq!(percent_from(Some("101")), 0);
-        assert_eq!(percent_from(Some("-5")), 0);
-        assert_eq!(percent_from(Some("85%")), 0);
-    }
     use crate::persistence::{Message, Role};
 
     /// Every provider sees one `system` message and the summary ahead of the
@@ -812,16 +777,6 @@ mod tests {
         let out = assemble_messages(&system(), &history, "m");
         assert_eq!(out.len(), 2); // system + user
         assert_eq!(out[1].role, "user");
-    }
-
-    #[test]
-    fn retry_settings_take_a_number_and_cap_it() {
-        assert_eq!(retries_from(None, 4), 4);
-        assert_eq!(retries_from(Some("0"), 4), 0);
-        assert_eq!(retries_from(Some(" 2 "), 4), 2);
-        assert_eq!(retries_from(Some("many"), 4), 4);
-        assert_eq!(retries_from(Some("-1"), 4), 4);
-        assert_eq!(retries_from(Some("1000"), 4), MAX_RETRIES_SETTING);
     }
 
     #[test]

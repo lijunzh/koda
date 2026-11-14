@@ -121,7 +121,7 @@ impl CodeHighlighter {
     /// so multiline strings, comments, and heredocs highlight correctly.
     /// Use `highlight_spans()` for one-off single-line highlighting.
     ///
-    /// Honors `KODA_SYNTAX_HIGHLIGHT=off` — when disabled the returned
+    /// Honors `[tui] syntax_highlight = false` — when disabled the returned
     /// highlighter is a no-op (every line passes through as plain text).
     pub fn new(lang: &str) -> Self {
         if !crate::theme::syntax_highlight_enabled() {
@@ -184,7 +184,7 @@ impl CodeHighlighter {
 /// (`\\\n`) collapse the same way so `git commit -m "x" \\\n  && cargo test`
 /// reads as `git commit -m "x"   && cargo test` in the header.
 ///
-/// Honors `KODA_SYNTAX_HIGHLIGHT=off` (returns a single plain span).
+/// Honors `[tui] syntax_highlight = false` (returns a single plain span).
 /// Unknown languages also pass through as a single plain span.
 pub fn highlight_inline(snippet: &str, lang: &str) -> Vec<ratatui::text::Span<'static>> {
     let flat = flatten_for_inline(snippet);

@@ -84,10 +84,8 @@ pub(crate) fn mode(loaded: &Loaded) -> Option<koda_core::trust::TrustMode> {
 }
 
 /// Fill what a session runs with from the file (with `-c` over it), for
-/// what nothing above it set: a flag, or the agent's JSON. The variables
-/// earlier versions read still win until they're retired (CF-3b). Call
-/// once the session's provider is known; `ptype`'s `[model_providers]`
-/// entry applies.
+/// what nothing above it set: a flag, or the agent's JSON. Call once the
+/// session's provider is known; its `[model_providers]` entry applies.
 pub(crate) fn apply_settings(config: &mut KodaConfig, loaded: &Loaded) {
     let file = &loaded.config;
     if config.model_settings.reasoning_effort.is_none() {
@@ -101,26 +99,20 @@ pub(crate) fn apply_settings(config: &mut KodaConfig, loaded: &Loaded) {
         config.max_context_tokens = tokens;
         config.model_settings.max_context_tokens = tokens;
     }
-    let unset = |name: &str| koda_core::runtime_env::get(name).is_none();
-    if unset("KODA_POST_TURN_COMPACT_PERCENT")
-        && let Some(percent) = file.model_post_turn_compact_threshold_percent
-    {
+    if let Some(percent) = file.model_post_turn_compact_threshold_percent {
         config.post_turn_compact_percent = percent.min(100);
     }
+    // Retries are capped as Codex caps them.
+    let retries =
+        |n: u64| n.min(u64::from(koda_core::inference_helpers::MAX_RETRIES_SETTING)) as u32;
     if let Some(provider) = file.model_providers.get(&config.provider_type.to_string()) {
-        if unset("KODA_REQUEST_MAX_RETRIES")
-            && let Some(n) = provider.request_max_retries
-        {
-            config.request_max_retries = n.min(u64::from(u32::MAX)) as u32;
+        if let Some(n) = provider.request_max_retries {
+            config.request_max_retries = retries(n);
         }
-        if unset("KODA_STREAM_MAX_RETRIES")
-            && let Some(n) = provider.stream_max_retries
-        {
-            config.stream_max_retries = n.min(u64::from(u32::MAX)) as u32;
+        if let Some(n) = provider.stream_max_retries {
+            config.stream_max_retries = retries(n);
         }
-        if unset("KODA_READ_TIMEOUT_SECS") {
-            config.stream_idle_timeout_ms = provider.stream_idle_timeout_ms;
-        }
+        config.stream_idle_timeout_ms = provider.stream_idle_timeout_ms;
     }
     koda_core::sandbox::set_local_binding_configured(
         file.sandbox.allow_local_binding.unwrap_or(false),
@@ -724,14 +716,6 @@ mod tests {
     /// a value; a flag or the agent's JSON keeps its own.
     #[tokio::test]
     async fn the_file_fills_what_nothing_named() {
-        for name in [
-            "KODA_POST_TURN_COMPACT_PERCENT",
-            "KODA_REQUEST_MAX_RETRIES",
-            "KODA_STREAM_MAX_RETRIES",
-            "KODA_READ_TIMEOUT_SECS",
-        ] {
-            koda_core::runtime_env::mask(name);
-        }
         let (_dir, _db, file) = scratch().await;
         std::fs::write(
             file.path(),

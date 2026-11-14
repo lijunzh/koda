@@ -182,7 +182,7 @@ impl FakeLlmServer {
     /// Used by the inference-loop retry regression test (#1123) to
     /// prove that `try_with_rate_limit` actually retries on a transient
     /// network timeout instead of bubbling "connection broken" up to
-    /// the user. Pair with `KODA_READ_TIMEOUT_SECS` set well below
+    /// the user. Pair with a `stream_idle_timeout_ms` well below
     /// `silent_for` so the client gives up on the first attempt.
     ///
     /// SSE framing matches [`Self::mount_chat_sse`]: each chunk is

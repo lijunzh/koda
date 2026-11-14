@@ -372,7 +372,7 @@ pub(crate) fn network_open_rules() -> String {
 ///   Localhost-only, no security implication.
 /// - **Bind on `localhost:*`** — always allowed for the same reason.
 /// - **Any local port, both ways** — only when `allow_local_binding` is
-///   true (`KODA_ALLOW_LOCAL_BINDING`), with the rules Codex and Claude
+///   true (`[sandbox] allow_local_binding`), with the rules Codex and Claude
 ///   Code's sandbox-runtime use for the same setting: bind and inbound on
 ///   `*:*`, since a dual-stack socket bound to 127.0.0.1 is
 ///   `::ffff:127.0.0.1`, which `localhost` doesn't match; outbound only to

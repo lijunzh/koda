@@ -27,7 +27,7 @@
 //! - **Tool-call tokens** — [`tool_dot`] for the bullet, plus accent colors
 //!   for paths/line numbers/match highlights.
 //! - **Code highlight kill-switch** — [`syntax_highlight_enabled`] honors
-//!   the `KODA_SYNTAX_HIGHLIGHT=off` env var (steals Claude Code's pattern).
+//!   `[tui] syntax_highlight = false` in the config file.
 
 use koda_core::tools::{ToolCatalog, ToolEffect};
 use ratatui::style::{Color, Modifier, Style};
@@ -213,32 +213,18 @@ fn configured_syntax_highlight() -> Option<bool> {
     None
 }
 
-/// Returns `false` when the user has set `KODA_SYNTAX_HIGHLIGHT=off`, or
-/// `[tui] syntax_highlight = false` in the config file.
+/// Returns `false` when the config file has `[tui] syntax_highlight =
+/// false` (or `-c tui.syntax_highlight=false`).
 ///
-/// Steals the pattern from Claude Code's `CLAUDE_CODE_SYNTAX_HIGHLIGHT`.
 /// Cheap insurance against terminals where ANSI-RGB output looks awful
-/// (e.g. monochrome themes) — users get a one-flag escape hatch instead
-/// of having to file a bug.
+/// (e.g. monochrome themes): one line instead of a bug report.
 ///
-/// Memoized after the first call — the env var is read once via a
-/// `OnceLock` so subsequent invocations are a load+branch with zero
-/// allocation. Process restarts pick up env-var changes.
+/// Memoized after the first call: the file is read once, via a `OnceLock`,
+/// so later calls are a load and a branch. A restart picks up a change.
 pub fn syntax_highlight_enabled() -> bool {
     use std::sync::OnceLock;
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        std::env::var("KODA_SYNTAX_HIGHLIGHT")
-            .map(|v| {
-                !matches!(
-                    v.to_ascii_lowercase().as_str(),
-                    "off" | "0" | "false" | "no"
-                )
-            })
-            .ok()
-            .or_else(configured_syntax_highlight)
-            .unwrap_or(true)
-    })
+    *ENABLED.get_or_init(|| configured_syntax_highlight().unwrap_or(true))
 }
 
 #[cfg(test)]
@@ -318,14 +304,8 @@ mod tests {
     }
 
     #[test]
-    fn syntax_kill_switch_default_is_on() {
-        // We can't safely mutate env in a unit test (other tests would
-        // race), so just confirm the default path works. Integration
-        // coverage for the off path lives in highlight.rs tests.
-        // Note: this asserts the *cached* value, so if some other test
-        // poisoned the env this would catch it.
-        if std::env::var("KODA_SYNTAX_HIGHLIGHT").is_err() {
-            assert!(syntax_highlight_enabled());
-        }
+    fn syntax_highlighting_is_on_by_default() {
+        // Unit tests never read the user's config file.
+        assert!(syntax_highlight_enabled());
     }
 }
