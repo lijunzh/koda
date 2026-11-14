@@ -599,6 +599,8 @@ impl EventProjector {
             EngineCompactionTrigger::Overflow => CompactionTrigger::Overflow,
             EngineCompactionTrigger::Window => CompactionTrigger::Window,
             EngineCompactionTrigger::Idle => CompactionTrigger::Idle,
+            EngineCompactionTrigger::Manual => CompactionTrigger::Manual,
+            EngineCompactionTrigger::PostTurn => CompactionTrigger::PostTurn,
         };
         let item =
             |open: &OpenCompaction, status, removed, tokens, reason| Item::ContextCompaction {

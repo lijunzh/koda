@@ -142,6 +142,16 @@
           "const": "idle",
           "description": "A session idle long enough had its old tool results cleared.",
           "type": "string"
+        },
+        {
+          "const": "manual",
+          "description": "The client asked for it with `session/compact/start`.",
+          "type": "string"
+        },
+        {
+          "const": "postTurn",
+          "description": "The turn's final reply left the context past the after-turn\nthreshold; it ran before `turn/completed`.",
+          "type": "string"
         }
       ]
     },
@@ -1093,6 +1103,24 @@
       ],
       "type": "object"
     },
+    "SessionCompactStartParams": {
+      "additionalProperties": false,
+      "description": "`session/compact/start`: compact an open session's history now, as\nCodex's `thread/compact/start`. Answered at once; the compaction runs as\na turn of its own (`turn/started`, a `contextCompaction` item with the\n`manual` trigger, `turn/completed`). A running turn is stopped first and\nends interrupted. The compaction's turn can be interrupted, not steered.",
+      "properties": {
+        "sessionId": {
+          "description": "The session.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "type": "object"
+    },
+    "SessionCompactStartResponse": {
+      "description": "The answer to `session/compact/start`.",
+      "type": "object"
+    },
     "SessionDeleteParams": {
       "additionalProperties": false,
       "description": "`session/delete`: delete a stored session. An open one is closed first,\nits running turn stopped, as Codex's `thread/delete` does.",
@@ -2010,6 +2038,14 @@
       },
       "result": {
         "$ref": "#/$defs/InitializeResponse"
+      }
+    },
+    "session/compact/start": {
+      "params": {
+        "$ref": "#/$defs/SessionCompactStartParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionCompactStartResponse"
       }
     },
     "session/delete": {

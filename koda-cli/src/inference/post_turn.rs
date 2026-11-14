@@ -1,14 +1,13 @@
-//! Post-turn cleanup: unsent steering text, dialogs, auto-compact.
+//! Post-turn cleanup: unsent steering text, dialogs, the learned window.
 //!
 //! Runs once per turn after the inner select loop in
-//! [`super::select_loop::TuiContext::run_inference_turn`] breaks. Lives
-//! in its own file so the auto-compact policy is easy to find and pin
-//! independently of the (much larger) select-loop machinery.
+//! [`super::select_loop::TuiContext::run_inference_turn`] breaks. Compacting
+//! after a turn is the host's (`KODA_POST_TURN_COMPACT_PERCENT`), as in
+//! Codex, and runs inside the turn.
 
 use crate::tui_context::TuiContext;
 use crate::tui_types::TuiState;
 
-use koda_core::persistence::Persistence;
 use ratatui::{
     style::{Color, Style},
     text::{Line, Span},
@@ -16,9 +15,8 @@ use ratatui::{
 
 impl TuiContext {
     /// After `turn/completed`, with the turn's events all shown: back to
-    /// idle, any dialog closed, unsent steering text back in the input box,
-    /// and auto-compaction if the context is full.
-    pub(super) async fn post_turn_cleanup(&mut self, unsent: Vec<String>) {
+    /// idle, any dialog closed, unsent steering text back in the input box.
+    pub(super) fn post_turn_cleanup(&mut self, unsent: Vec<String>) {
         self.tui_state = TuiState::Idle;
         self.inference_start = None;
 
@@ -50,82 +48,11 @@ impl TuiContext {
         }
 
         // Keep the server's real window for the rest of the session, so
-        // the meter, auto-compact and the next turns use it. Not saved:
+        // the meter and the next turns use it. Not saved:
         // the server may be restarted with another size.
         if let Some(tokens) = self.learned_context_window.take() {
             self.config.max_context_tokens = tokens;
             self.config.model_settings.max_context_tokens = tokens;
-        }
-
-        // Auto-compact
-        self.maybe_auto_compact().await;
-    }
-
-    async fn maybe_auto_compact(&mut self) {
-        let ctx_pct = self.context_pct as usize;
-        if ctx_pct < koda_core::inference_helpers::AUTO_COMPACT_THRESHOLD {
-            return;
-        }
-
-        let pending = self
-            .session
-            .db
-            .has_pending_tool_calls(&self.session.id)
-            .await
-            .unwrap_or(false);
-
-        if pending {
-            if !self.silent_compact_deferred {
-                self.scroll_buffer.push(
-                    Line::from(vec![
-                        Span::raw("  "),
-                        Span::styled(
-                            format!(
-                                "\u{1f43b} Context at {ctx_pct}% \u{2014} deferring compact (tool calls pending)"
-                            ),
-                            Style::default().fg(Color::Yellow),
-                        ),
-                    ]),
-                );
-                self.silent_compact_deferred = true;
-            }
-            return;
-        }
-
-        self.silent_compact_deferred = false;
-        self.scroll_buffer.push(Line::from(vec![
-            Span::raw("  "),
-            Span::styled(
-                format!("\u{1f43b} Context at {ctx_pct}% \u{2014} auto-compacting..."),
-                Style::default().fg(Color::Cyan),
-            ),
-        ]));
-
-        match koda_core::compact::compact_session(
-            &self.session.db,
-            &self.session.id,
-            self.config.max_context_tokens,
-            &self.config.model_settings,
-            &self.provider,
-        )
-        .await
-        {
-            Ok(Ok(result)) => {
-                self.scroll_buffer.push(Line::styled(
-                    format!(
-                        "  \u{2713} Compacted {} messages \u{2192} ~{} tokens",
-                        result.deleted, result.summary_tokens
-                    ),
-                    Style::default().fg(Color::Green),
-                ));
-            }
-            Ok(Err(_skip)) => {} // silently skip
-            Err(e) => {
-                self.scroll_buffer.push(Line::styled(
-                    format!("  \u{2717} Auto-compact failed: {e:#}"),
-                    Style::default().fg(Color::Red),
-                ));
-            }
         }
     }
 }

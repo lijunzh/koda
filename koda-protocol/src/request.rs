@@ -140,6 +140,12 @@ client_requests! {
         params: crate::storage::StoragePurgeParams,
         response: crate::storage::StoragePurgeResponse,
     },
+    /// Compact a session's history now. Answered at once; the compaction
+    /// runs as a turn of its own, replacing a running turn.
+    SessionCompactStart => "session/compact/start" {
+        params: crate::session::SessionCompactStartParams,
+        response: crate::session::SessionCompactStartResponse,
+    },
     /// Close a session the client is done with, stopping its running turn.
     SessionUnsubscribe => "session/unsubscribe" {
         params: crate::session::SessionUnsubscribeParams,

@@ -8,9 +8,8 @@
 //!   bounded drain, the `run_inference_turn` entry point. Hottest and
 //!   most subtle piece (rotating biased select + frame coalescing +
 //!   per-turn cancel cascade).
-//! - [`post_turn`] — `post_turn_cleanup` + `maybe_auto_compact`. Runs
-//!   once per turn after the select loop breaks. Lives in its own file
-//!   so the auto-compact policy is easy to find and pin.
+//! - [`post_turn`] — `post_turn_cleanup`. Runs once per turn after the
+//!   select loop breaks.
 //! - [`crossterm_handler`] — terminal input routing during inference
 //!   (resize, mouse, paste, key dispatch) plus the giant
 //!   `handle_inference_key_inline` (approval / loop-cap / ask-user /

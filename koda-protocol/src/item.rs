@@ -123,6 +123,11 @@ pub enum CompactionTrigger {
     Window,
     /// A session idle long enough had its old tool results cleared.
     Idle,
+    /// The client asked for it with `session/compact/start`.
+    Manual,
+    /// The turn's final reply left the context past the after-turn
+    /// threshold; it ran before `turn/completed`.
+    PostTurn,
 }
 
 /// Where a compaction stands.
