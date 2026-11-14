@@ -304,15 +304,14 @@ See also: [Keybindings → Vim mode](./keybindings.md#vim-mode).
 
 Quit Koda. Equivalent to `Ctrl+D`. `/quit` works too.
 
-## `/mcp <sub-command>`
+## `/mcp`
 
-Manage external MCP (Model Context Protocol) servers. See [MCP servers](./mcp.md)
-for the full reference.
+The session's MCP (Model Context Protocol) servers. Servers are added and
+removed from a terminal with `koda mcp`, as Codex's are with `codex mcp`. See
+[MCP servers](./mcp.md) for the full reference.
 
 ```text
-/mcp list                                  ← list configured servers + status
-/mcp add <name> <command> [args...]        ← add a stdio server
-/mcp add-http <name> <url> [--bearer-token-env-var <VAR>] ← add an HTTP server
-/mcp reconnect <name>                      ← reconnect without restart
-/mcp remove <name>                         ← permanently delete a server
+/mcp              ← this session's servers, their status and tools
+/mcp verbose      ← the same, with each server's config and tool descriptions
+/mcp reconnect    ← take servers added or removed with `koda mcp`; retry failed ones
 ```

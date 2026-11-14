@@ -234,9 +234,17 @@ impl Host {
             }
             ClientRequest::McpServerRefresh { .. } => {
                 // Each open session takes the stored servers now when idle,
-                // or once its turn has ended.
+                // or once its turn has ended. Answered once the idle ones
+                // have, so a list that follows shows the change.
+                let mut taken = Vec::new();
                 for session in self.sessions.lock().await.values() {
-                    let _ = session.send(SessionCommand::ReloadMcp);
+                    let (done, rx) = oneshot::channel();
+                    if session.send(SessionCommand::ReloadMcp { done }).is_ok() {
+                        taken.push(rx);
+                    }
+                }
+                for rx in taken {
+                    let _ = tokio::time::timeout(SESSION_STOP, rx).await;
                 }
                 let _ = reply.send(to_json(koda_protocol::mcp::McpServerRefreshResponse {}));
                 return;

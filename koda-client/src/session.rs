@@ -75,8 +75,9 @@ pub(crate) enum SessionCommand {
     /// The client's answer to one of this session's server requests.
     Respond { id: RequestId, result: Answer },
     /// `config/mcpServer/reload`: take the stored MCP servers again, now
-    /// when idle or once the running turn has ended.
-    ReloadMcp,
+    /// when idle or once the running turn has ended. `done` is dropped once
+    /// the session has taken them, or, during a turn, queued them.
+    ReloadMcp { done: oneshot::Sender<()> },
     /// In process only: what the session's next turns run with. Applied
     /// at once when idle, or once the running turn has ended.
     Configure {
@@ -100,7 +101,7 @@ impl SessionCommand {
             | Self::Configure { done: reply, .. } => {
                 let _ = reply.send(Err(error));
             }
-            Self::Respond { .. } | Self::ReloadMcp | Self::Shutdown { .. } => {}
+            Self::Respond { .. } | Self::ReloadMcp { .. } | Self::Shutdown { .. } => {}
         }
     }
 }
@@ -373,7 +374,10 @@ impl SessionTask {
                 SessionCommand::Respond { id, .. } => {
                     tracing::debug!("an answer to request {id} arrived after its turn");
                 }
-                SessionCommand::ReloadMcp => self.reload_mcp_now().await,
+                SessionCommand::ReloadMcp { done } => {
+                    self.reload_mcp_now().await;
+                    drop(done);
+                }
                 SessionCommand::Configure { config, done } => {
                     self.configure(*config);
                     let _ = done.send(to_json(serde_json::Value::Null));
@@ -703,7 +707,10 @@ impl SessionTask {
                             }
                         }
                         // The running turn keeps its servers.
-                        Some(SessionCommand::ReloadMcp) => *reload_mcp = true,
+                        Some(SessionCommand::ReloadMcp { done }) => {
+                            *reload_mcp = true;
+                            drop(done);
+                        }
                         // The running turn keeps what it started with.
                         Some(SessionCommand::Configure { config: next, done }) => {
                             let mut waiting = configured.take().map(|(_, d)| d).unwrap_or_default();

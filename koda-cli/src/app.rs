@@ -156,7 +156,7 @@ struct Cli {
     /// Add MCP servers for this run only, from a JSON file or inline JSON
     /// in the `{"mcpServers": {...}}` shape of Claude Code's `.mcp.json`.
     /// Repeatable; later servers win a name clash, and all of them win over
-    /// servers stored with `/mcp add`. Nothing is saved.
+    /// servers stored with `koda mcp add`. Nothing is saved.
     #[arg(long, value_name = "FILE|JSON", action = clap::ArgAction::Append, global = true)]
     mcp_config: Vec<String>,
 }
@@ -171,6 +171,10 @@ enum Command {
     /// to stderr. With --json, stdout carries the client protocol's
     /// notifications instead, one JSON-RPC message per line.
     Exec(ExecArgs),
+    /// Manage the MCP servers every session starts: list, get, add, remove.
+    ///
+    /// Open TUI sessions take a change on `/mcp reconnect`.
+    Mcp(crate::mcp_cmd::McpCli),
     // Without this, `server` would be read as a prompt and sent to the model.
     /// Removed: Koda no longer has a server mode
     #[command(hide = true)]
@@ -251,8 +255,13 @@ pub(crate) async fn run() -> Result<()> {
     }
 
     // A one-shot run is `koda exec`, as in Codex. `koda` alone opens the TUI.
+    let mut mcp_cli = None;
     let headless_run = match cli.command.take() {
         Some(Command::Exec(args)) => Some(exec_run(args)?),
+        Some(Command::Mcp(mcp)) => {
+            mcp_cli = Some(mcp);
+            None
+        }
         _ => {
             if cli.prompt.is_some() || cli.output_format.is_some() {
                 eprintln!("{ONE_SHOT_REMOVED}");
@@ -307,6 +316,12 @@ pub(crate) async fn run() -> Result<()> {
 
     // Initialize database early — keys and last-provider recall live here (#693)
     let db = koda_core::db::Database::init(&koda_core::db::config_dir()?).await?;
+
+    // `koda mcp`: the stored servers, through a host, then exit.
+    if let Some(mcp) = mcp_cli {
+        let config = koda_core::config::KodaConfig::load(&project_root, &cli.agent)?;
+        return mcp.run(config, project_root, db).await;
+    }
 
     // Load and inject stored API keys (env vars take precedence)
     if let Err(e) = koda_core::keystore::inject_into_env(&db).await {

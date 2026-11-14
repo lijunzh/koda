@@ -117,6 +117,7 @@ impl TuiContext {
         .await?;
         self.host_session = opened.id.clone();
         self.session = opened;
+        self.mcp_stale = true;
         // The resumed session's own model, and the TUI's mode for it.
         self.sync_settings(true).await
     }
@@ -301,7 +302,7 @@ impl TuiContext {
 
                     let mode = trust::read_trust(&self.shared_mode);
                     let ctx = self.context_pct;
-                    let mcp_info = self.agent.mcp_status_bar_info();
+                    let mcp_info = self.mcp.status_bar();
                     // #1210: the overlay above the status bar shows what
                     // the sub-agents and background processes do now.
                     let agent_snaps = bg_agents_for_status.snapshot();
@@ -377,6 +378,7 @@ impl TuiContext {
                 }
                 SelectArm::Host(None) => break true,
                 SelectArm::Host(Some(message)) => {
+                    self.mcp.observe(&self.session.id, &message);
                     tracker.observe_message(message);
                     // An answer given before its request was read goes now.
                     self.send_ready_answers(&mut tracker).await;

@@ -176,110 +176,11 @@ pub async fn handle_slash_command(
             SlashAction::Continue
         }
 
-        "/mcp" => {
-            dispatch_mcp(buffer, session, agent, arg).await;
-            SlashAction::Continue
-        }
-
         _ => {
             tui_output::warn_msg(buffer, format!("Unknown command: {cmd}. Try /help."));
             SlashAction::Continue
         }
     }
-}
-
-// ── MCP dispatch ────────────────────────────────────────
-
-async fn dispatch_mcp(
-    buffer: &mut ScrollBuffer,
-    session: &TuiSession,
-    agent: &Arc<koda_core::agent::KodaAgent>,
-    arg: Option<&str>,
-) {
-    let arg = match arg.filter(|s| !s.is_empty()) {
-        Some(a) => a,
-        None => {
-            crate::tui_mcp::handle_mcp_list(buffer, session, agent).await;
-            return;
-        }
-    };
-
-    let mut tokens = arg.split_whitespace();
-    let sub = tokens.next().unwrap_or("");
-
-    match sub {
-        "list" | "status" => {
-            crate::tui_mcp::handle_mcp_list(buffer, session, agent).await;
-        }
-        "add" => {
-            let name = match tokens.next() {
-                Some(n) => n.to_string(),
-                None => {
-                    crate::tui_mcp::handle_mcp_list(buffer, session, agent).await;
-                    return;
-                }
-            };
-            let command = match tokens.next() {
-                Some(c) => c.to_string(),
-                None => {
-                    crate::tui_mcp::handle_mcp_list(buffer, session, agent).await;
-                    return;
-                }
-            };
-            let args: Vec<String> = tokens.map(String::from).collect();
-            crate::tui_mcp::handle_mcp_add(buffer, session, agent, name, command, args).await;
-        }
-        "add-http" | "add_http" => {
-            let name = match tokens.next() {
-                Some(n) => n.to_string(),
-                None => {
-                    crate::tui_mcp::handle_mcp_list(buffer, session, agent).await;
-                    return;
-                }
-            };
-            let url = match tokens.next() {
-                Some(u) => u.to_string(),
-                None => {
-                    crate::tui_mcp::handle_mcp_list(buffer, session, agent).await;
-                    return;
-                }
-            };
-            let token_var = parse_optional_flag(&mut tokens, "--bearer-token-env-var");
-            crate::tui_mcp::handle_mcp_add_http(buffer, session, agent, name, url, token_var).await;
-        }
-        "remove" | "rm" | "delete" => match tokens.next() {
-            Some(n) => {
-                crate::tui_mcp::handle_mcp_remove(buffer, session, agent, n.to_string()).await;
-            }
-            None => {
-                crate::tui_mcp::handle_mcp_list(buffer, session, agent).await;
-            }
-        },
-        "reconnect" | "retry" | "restart" => match tokens.next() {
-            Some(n) => {
-                crate::tui_mcp::handle_mcp_reconnect(buffer, agent, n.to_string()).await;
-            }
-            None => {
-                crate::tui_mcp::handle_mcp_list(buffer, session, agent).await;
-            }
-        },
-        _ => {
-            crate::tui_mcp::handle_mcp_list(buffer, session, agent).await;
-        }
-    }
-}
-
-/// Parse `--flag <value>` from remaining tokens. Consumes both if found.
-fn parse_optional_flag(tokens: &mut std::str::SplitWhitespace<'_>, flag: &str) -> Option<String> {
-    let remaining: Vec<&str> = tokens.collect();
-    let mut i = 0;
-    while i < remaining.len() {
-        if remaining[i] == flag && i + 1 < remaining.len() {
-            return Some(remaining[i + 1].to_string());
-        }
-        i += 1;
-    }
-    None
 }
 
 /// Get the full git diff (unstaged + staged), capped for context window safety.

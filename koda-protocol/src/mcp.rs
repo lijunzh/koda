@@ -122,7 +122,9 @@ pub enum McpServerConnectionStatus {
 
 /// `config/mcpServer/reload`: every open session takes the stored servers
 /// again, starting new ones, stopping removed ones and restarting changed
-/// or failed ones, before its next turn.
+/// or failed ones, before its next turn. Answered once the idle sessions
+/// have taken them, so a `mcpServerStatus/list` that follows shows the
+/// change; new servers are then still starting.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct McpServerRefreshParams {}
