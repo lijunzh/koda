@@ -2,6 +2,7 @@
 //!
 //! All methods are `impl TuiContext` extensions for menu/wizard interaction.
 
+use super::settings::ModelScope;
 use super::*;
 
 /// Available providers for the interactive picker.
@@ -82,7 +83,8 @@ impl TuiContext {
 
     /// `/model`: the session's provider's models, from `model/list`, as
     /// Codex's `/model` lists its thread's provider's. Another provider's
-    /// model is a new session (`/provider`).
+    /// model is a new session (`/provider`). Enter makes the pick the
+    /// default too; `s` changes only this session, as in Codex.
     pub(crate) async fn open_model_picker(&mut self) {
         let ptype = self.config.provider_type;
         let models = self.list_models(ptype, &self.config.base_url.clone()).await;
@@ -97,7 +99,8 @@ impl TuiContext {
         let mut dd = crate::widgets::dropdown::DropdownState::new(
             items,
             "\u{1f43b} Select a model (/provider for another provider)",
-        );
+        )
+        .with_select_hint("enter default \u{00b7} s session");
         if let Some(idx) = dd.filtered.iter().position(|m| m.is_current) {
             dd.selected = idx;
             let max_vis = crate::widgets::dropdown::MAX_VISIBLE;
@@ -366,6 +369,22 @@ impl TuiContext {
             return Some(true);
         }
 
+        // `s` in `/model`: this session only, as Codex's `s`. The picker
+        // doesn't filter, so a typed `s` has nothing else to do there.
+        if matches!(self.menu, MenuContent::Model(_))
+            && key.code == KeyCode::Char('s')
+            && key.modifiers.difference(KeyModifiers::SHIFT).is_empty()
+        {
+            if let MenuContent::Model(dd) = &self.menu
+                && let Some(item) = dd.selected_item()
+            {
+                let choice = item.label.clone();
+                self.menu = MenuContent::None;
+                self.change_model(&choice, ModelScope::Session).await;
+            }
+            return Some(true);
+        }
+
         match key.code {
             // The wizard trail only shows which wizard is asking: Enter
             // answers the input box under it. Taking Enter here closed the
@@ -444,7 +463,7 @@ impl TuiContext {
                 if let Some(item) = dd.selected_item() {
                     // An alias is picked by name, so it follows its line.
                     let choice = item.label.clone();
-                    self.change_model(&choice).await;
+                    self.change_model(&choice, ModelScope::Default).await;
                 }
             }
             MenuContent::Provider(dd) => {

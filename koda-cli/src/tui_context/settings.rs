@@ -20,6 +20,16 @@ use koda_core::config::{KodaConfig, ProviderType};
 
 use super::{TuiContext, TuiSession};
 
+/// Where a `/model` choice applies, as in Codex's picker: Enter sets the
+/// default (the session and `config.toml`), `s` the session only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ModelScope {
+    /// This session, and saved for the next start.
+    Default,
+    /// This session only; `config.toml` is left as it is.
+    Session,
+}
+
 /// How long the host gets to report settings after a change.
 const SETTINGS_WAIT: Duration = Duration::from_secs(15);
 
@@ -123,19 +133,29 @@ impl TuiContext {
         }
     }
 
-    /// `/model`: the session's model, within its provider.
-    pub(crate) async fn change_model(&mut self, model: &str) {
+    /// `/model`: the session's model, within its provider, and with
+    /// [`ModelScope::Default`] the next start's choice too.
+    pub(crate) async fn change_model(&mut self, model: &str, scope: ModelScope) {
         match self
             .update_settings(Some(model.to_string()), false, true)
             .await
         {
             Ok(alias) => {
-                save_choice(&self.client, &self.config, alias.as_deref()).await;
+                if scope == ModelScope::Default {
+                    save_choice(&self.client, &self.config, alias.as_deref()).await;
+                }
                 let shown = match &alias {
                     Some(alias) => format!("{alias} ({})", self.config.model),
                     None => self.config.model.clone(),
                 };
-                crate::tui_output::ok_msg(&mut self.scroll_buffer, format!("Model: {shown}"));
+                let scope = match scope {
+                    ModelScope::Default => "default",
+                    ModelScope::Session => "this session",
+                };
+                crate::tui_output::ok_msg(
+                    &mut self.scroll_buffer,
+                    format!("Model: {shown} \u{00b7} {scope}"),
+                );
             }
             Err(e) => {
                 let mut why = format!("{e:#}");
@@ -173,7 +193,7 @@ impl TuiContext {
         let same = ptype == self.config.provider_type && base_url == self.config.base_url;
         if same {
             match model {
-                Some(model) => self.change_model(&model).await,
+                Some(model) => self.change_model(&model, ModelScope::Default).await,
                 None => crate::tui_output::dim_msg(
                     &mut self.scroll_buffer,
                     format!("Already on {ptype}."),

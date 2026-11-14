@@ -1109,9 +1109,10 @@ async fn a_model_choice_is_the_next_starts_choice() {
     let mut tui = Tui::start_with_model(home.path(), &server.url());
     run_command(&mut tui, "/model");
     tui.wait_for_screen("Select a model");
+    tui.wait_for_screen("enter default \u{00b7} s session");
     highlight(&mut tui, "stub-local");
     tui.type_text("\r");
-    tui.wait_for_screen("Model: stub-local");
+    tui.wait_for_screen("Model: stub-local \u{00b7} default");
     quit_and_read_session_id(&mut tui);
 
     // Only `--base-url`, LM Studio's like the saved one: the saved model.
@@ -1119,6 +1120,37 @@ async fn a_model_choice_is_the_next_starts_choice() {
     tui.submit("which model");
     let sent = wait_for_model_call(&server, 1).await;
     assert!(sent.contains(r#""model":"stub-local""#), "{sent}");
+}
+
+/// `s` in `/model` changes only this session, as Codex's does: its next
+/// request asks for the model, and `config.toml` doesn't name it.
+#[tokio::test(flavor = "multi_thread")]
+async fn s_in_the_model_picker_is_this_session_only() {
+    let server = scripted_model(vec![]).await;
+    let models = json!({"object": "list", "data": [
+        {"id": "stub-local", "object": "model", "type": "llm", "state": "loaded"}
+    ]});
+    server.mount_ok("GET", r".*/models$", models).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    run_command(&mut tui, "/model");
+    tui.wait_for_screen("Select a model");
+    highlight(&mut tui, "stub-local");
+    tui.type_text("s");
+    tui.wait_for_screen("Model: stub-local \u{00b7} this session");
+    // The composer is still empty: the `s` was the picker's.
+    tui.wait_for_screen(IDLE_HINT);
+
+    tui.submit("which model");
+    let sent = wait_for_model_call(&server, 1).await;
+    assert!(sent.contains(r#""model":"stub-local""#), "{sent}");
+    quit_and_read_session_id(&mut tui);
+    let config = home.path().join(".config/koda/config.toml");
+    let saved = std::fs::read_to_string(&config).unwrap_or_default();
+    assert!(
+        !saved.contains("stub-local"),
+        "a session choice was saved: {saved}"
+    );
 }
 
 /// Flags are for one run, as Codex's are: a `--base-url` and `--model` given

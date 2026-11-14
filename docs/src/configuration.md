@@ -39,8 +39,9 @@ ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_KEY }} koda exec "check types"
 ## The config file
 
 `~/.config/koda/config.toml` holds the settings a new session starts with,
-as Codex keeps `~/.codex/config.toml`. `/model`, `/provider` and `koda mcp`
-write it, and you can edit it by hand:
+as Codex keeps `~/.codex/config.toml`. `/model` (Enter, not `s`, which
+changes only the session), `/provider` and `koda mcp` write it, and you can
+edit it by hand:
 
 ```toml
 # The model a new session starts with: an alias such as claude-opus follows
