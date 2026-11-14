@@ -1,6 +1,6 @@
 //! Session picker dropdown — thin wrapper around the generic dropdown.
 //!
-//! Appears when the user types `/sessions` with no args.
+//! Appears when the user types `/resume` with no args.
 
 use super::dropdown::DropdownItem;
 

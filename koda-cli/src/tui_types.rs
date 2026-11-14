@@ -62,7 +62,7 @@ pub enum MenuContent {
     ProviderModels(ModelDropdown, koda_core::config::ProviderType),
     /// Key management — pick a provider to set its API key (`/key`).
     Key(ProviderDropdown),
-    /// Session picker dropdown (`/sessions` with no args).
+    /// Session picker dropdown (`/resume` with no args).
     Session(SessionDropdown),
     /// File picker dropdown (auto-appears when the user types `@`).
     File {

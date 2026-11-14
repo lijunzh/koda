@@ -9,6 +9,7 @@
 mod events;
 mod idle_ui_events;
 mod menus;
+mod settings;
 
 use crate::input;
 use crate::scroll_buffer::ScrollBuffer;
@@ -24,7 +25,6 @@ use futures_util::StreamExt;
 use koda_core::agent::KodaAgent;
 use koda_core::config::KodaConfig;
 use koda_core::engine::EngineCommand;
-use koda_core::persistence::Persistence;
 use koda_core::providers::LlmProvider;
 use koda_core::trust::{self, TrustMode};
 use ratatui::{
@@ -589,7 +589,7 @@ impl TuiContext {
         // `frame_requester` to fire-and-forget redraw requests.
         let (frame_requester, draw_rx) = crate::frame_requester::spawn_frame_scheduler();
 
-        Ok(Self {
+        let mut ctx = Self {
             terminal,
             textarea,
             renderer,
@@ -642,7 +642,12 @@ impl TuiContext {
             frame_requester,
             draw_rx,
             child_activity: crate::child_activity::ChildActivityTracker::default(),
-        })
+        };
+        // The host owns the session's settings: give it the mode, checked
+        // against the sandbox above, and mirror what the session runs with,
+        // which a resumed one brings back from its last run.
+        ctx.sync_settings(false).await?;
+        Ok(ctx)
     }
 
     /// Draw the fullscreen viewport.
@@ -888,19 +893,21 @@ impl TuiContext {
                         Style::default().fg(Color::Red),
                     ));
                 } else {
-                    if let Some(source) = self
-                        .apply_provider(ptype, arg.trim_end_matches('/').to_string())
-                        .await
-                    {
-                        self.show_context_notice(source);
-                    }
+                    self.switch_provider(ptype, arg.trim_end_matches('/').to_string(), None)
+                        .await;
                 }
             } else {
                 self.start_provider_wizard(arg);
             }
             return CommandOutcome::Handled;
         }
-        if input.trim() == "/sessions" {
+        if matches!(input.trim(), "/resume" | "/sessions") {
+            if input.trim() == "/sessions" {
+                crate::tui_output::dim_msg(
+                    &mut self.scroll_buffer,
+                    "/sessions is now /resume.".into(),
+                );
+            }
             self.open_session_picker().await;
             return CommandOutcome::Handled;
         }
@@ -929,6 +936,10 @@ impl TuiContext {
             }
             SlashAction::OpenKeyMenu => {
                 self.open_key_picker().await;
+                CommandOutcome::Handled
+            }
+            SlashAction::ChangeModel(model) => {
+                self.change_model(&model).await;
                 CommandOutcome::Handled
             }
             SlashAction::Compact => CommandOutcome::Compact,

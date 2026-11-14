@@ -40,7 +40,7 @@ Get the session ID from `exec/summary`, or list the newest with
 
 - Compaction never deletes rows. It sets `compacted_at` on the rows it replaced
   and adds the summary as a `role = 'system'` row, which carries the usage of
-  the summary call. Rows stay until `/purge` or `/sessions delete`.
+  the summary call. Rows stay until `/purge` or `/resume delete`.
 - `compacted_at IS NULL` is close to what the next request will send, but a
   load can still hide some of those rows. See `history edited` below.
 - `content` is what the model gets. For a tool result, `full_content` can hold

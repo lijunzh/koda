@@ -8,7 +8,7 @@
 | Flag | Env var | Description |
 |------|---------|-------------|
 | `-a`, `--agent <NAME>` | | Agent definition to use (JSON in `agents/`, default: `default`) |
-| `-s`, `--resume <ID>` | | Resume a previous session by its full ID. `/sessions resume` in the TUI takes a prefix. |
+| `-s`, `--resume <ID>` | | Resume a previous session by its full ID. `/resume` in the TUI takes a prefix. |
 | `--model <NAME>` | `KODA_MODEL` | Model ID (e.g. `claude-sonnet-5-5`) or alias (e.g. `claude-sonnet`); an alias also picks its provider. |
 | `--provider <NAME>` | `KODA_PROVIDER` | LLM provider (`anthropic`, `gemini`, `openai`, `ollama`, …) |
 | `--base-url <URL>` | `KODA_BASE_URL` | Override the provider's API base URL |

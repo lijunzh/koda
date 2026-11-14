@@ -27,6 +27,8 @@ pub enum SlashAction {
     Continue,
     Quit,
     OpenKeyMenu,
+    /// `/model <name>`: the host changes the session's model.
+    ChangeModel(String),
     /// Compact the session on the host, as a turn the TUI follows.
     Compact,
 }
@@ -56,72 +58,11 @@ pub async fn handle_slash_command(
     let arg = parts.get(1).map(|s| s.trim());
 
     match cmd {
-        "/exit" => SlashAction::Quit,
+        "/exit" | "/quit" => SlashAction::Quit,
 
+        // The host changes the model, within the session's provider.
         "/model" => match arg {
-            Some(model) => {
-                // Claude aliases follow the Models API once per run (see
-                // `model_alias::ensure_live_claude_ids`).
-                koda_core::model_alias::ensure_live_claude_ids().await;
-                if let Some(resolved) = koda_core::model_alias::resolve(model) {
-                    let ptype = resolved.provider;
-                    if ptype.requires_api_key()
-                        && !koda_core::runtime_env::is_set(ptype.env_key_name())
-                    {
-                        tui_output::err_msg(
-                            buffer,
-                            format!("{} not set. Run /key to configure.", ptype.env_key_name()),
-                        );
-                    } else if resolved.needs_auto_detect() {
-                        tui_output::warn_msg(
-                            buffer,
-                            "Use /model to pick local models interactively.".to_string(),
-                        );
-                    } else {
-                        config.provider_type = ptype;
-                        config.base_url = ptype.default_base_url().to_string();
-                        config.model = resolved.model_id.to_string();
-                        config.model_settings.model = config.model.clone();
-                        config.recalculate_model_derived();
-                        *provider.write().await = koda_core::providers::create_provider(config);
-                        let source = {
-                            let prov = provider.read().await;
-                            config.query_and_apply_capabilities(prov.as_ref()).await
-                        };
-                        if let Some(notice) = config.assumed_context_notice(source) {
-                            tui_output::warn_msg(buffer, notice);
-                        }
-                        crate::tui_wizards::save_provider(
-                            config,
-                            &session.db,
-                            Some(resolved.alias),
-                        )
-                        .await;
-                        tui_output::ok_msg(
-                            buffer,
-                            format!(
-                                "Model: {} ({}, {})",
-                                resolved.alias, resolved.model_id, ptype
-                            ),
-                        );
-                    }
-                } else {
-                    // Literal model ID — switch on current provider.
-                    config.model = model.to_string();
-                    config.model_settings.model = model.to_string();
-                    config.recalculate_model_derived();
-                    let source = {
-                        let prov = provider.read().await;
-                        config.query_and_apply_capabilities(prov.as_ref()).await
-                    };
-                    if let Some(notice) = config.assumed_context_notice(source) {
-                        tui_output::warn_msg(buffer, notice);
-                    }
-                    crate::tui_wizards::save_provider(config, &session.db, None).await;
-                    tui_output::ok_msg(buffer, format!("Model set to: {model}"));
-                }
-                SlashAction::Continue
-            }
+            Some(model) => SlashAction::ChangeModel(model.to_string()),
             None => SlashAction::Continue, // opens model picker via TUI context
         },
 
@@ -185,7 +126,10 @@ pub async fn handle_slash_command(
             SlashAction::Continue
         }
 
-        "/sessions" => {
+        "/resume" | "/sessions" => {
+            if cmd == "/sessions" {
+                tui_output::dim_msg(buffer, "/sessions is now /resume.".into());
+            }
             match arg {
                 Some(sub) if sub.starts_with("delete ") => {
                     let id = sub.strip_prefix("delete ").unwrap().trim().to_string();
@@ -195,7 +139,7 @@ pub async fn handle_slash_command(
                     let id = sub.strip_prefix("resume ").unwrap().trim().to_string();
                     handle_resume_session(buffer, session, client, &id, shared_mode).await;
                 }
-                // Bare ID shorthand: /sessions <hex-id>
+                // Bare ID shorthand: /resume <hex-id>
                 Some(id)
                     if !id.is_empty() && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') =>
                 {
@@ -427,7 +371,7 @@ async fn handle_delete_session(
 
 /// The session `id` or an id prefix names, or why it can't be deleted.
 ///
-/// The running session is checked after the prefix resolves, since `/sessions`
+/// The running session is checked after the prefix resolves, since `/resume`
 /// shows short ids and that's what people type.
 fn session_to_delete<'a>(id: &str, known: &[&'a str], current: &str) -> Result<&'a str, String> {
     let matches: Vec<&'a str> = known

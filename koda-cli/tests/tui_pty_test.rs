@@ -75,11 +75,6 @@ impl Tui {
         Self::start_full(home, base_url, flags, &[], ready)
     }
 
-    /// [`Self::start_with_model`] with extra environment variables.
-    fn start_with_env(home: &Path, base_url: &str, env: &[(&str, &str)]) -> Self {
-        Self::start_full(home, base_url, &["--provider", "lmstudio"], env, IDLE_HINT)
-    }
-
     fn start_full(
         home: &Path,
         base_url: &str,
@@ -1087,11 +1082,48 @@ async fn the_provider_picker_uses_the_running_address() {
     tui.type_text("\r");
     tui.wait_for_screen("stub-picked");
     tui.type_text("\r");
-    tui.wait_for_screen("Model set to: stub-picked");
+    tui.wait_for_screen("Model: stub-picked");
 
     tui.submit("hi");
     let sent = wait_for_model_call(&server, 1).await;
     assert!(sent.contains(r#""model":"stub-picked""#), "{sent}");
+}
+
+/// Shift+Tab changes the mode on the host, which records it with the
+/// session (`session/settings/update`); the TUI no longer writes it. Safe
+/// goes to Auto, which needs the sandbox.
+#[tokio::test(flavor = "multi_thread")]
+async fn shift_tab_sends_the_mode_to_the_host() {
+    use koda_core::persistence::Persistence;
+    if !koda_core::sandbox::is_available() {
+        eprintln!("skipped: Auto needs the sandbox, which isn't here");
+        return;
+    }
+    let server = scripted_model(vec![]).await;
+    let home = home();
+    let tui_project = std::fs::canonicalize(home.path()).unwrap();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    let db = koda_core::db::Database::open(&home.path().join(".config/koda/db/koda.db"))
+        .await
+        .unwrap();
+    let session = db.list_sessions(10, &tui_project).await.unwrap()[0]
+        .id
+        .clone();
+    assert_eq!(
+        db.get_session_mode(&session).await.unwrap().as_deref(),
+        Some("safe")
+    );
+
+    tui.type_text("\x1b[Z");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let mode = db.get_session_mode(&session).await.unwrap();
+        if mode.as_deref() == Some("auto") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the mode stayed {mode:?}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 /// A message that can't be saved isn't sent. The turn reads the conversation
@@ -1235,25 +1267,24 @@ async fn enter_during_a_held_paste_does_not_reach_the_slash_popup() {
     tui.wait_for_screen("/memory add the code word is zebrafish");
 }
 
-/// `/model` with no name opens a picker of the aliases plus a "local" entry
-/// for the model a local server has loaded; Esc closes it and changes
-/// nothing.
+/// `/model` lists the session's provider's models, as Codex's `/model`
+/// lists its thread's: the local server's, and no other provider's alias.
+/// Esc changes nothing.
 #[tokio::test(flavor = "multi_thread")]
-async fn model_picker_lists_the_local_model_and_esc_changes_nothing() {
+async fn model_picker_lists_the_sessions_provider_and_esc_changes_nothing() {
     let server = scripted_model(vec![]).await;
     let models = json!({"object": "list", "data": [
         {"id": "stub-local", "object": "model", "type": "llm", "state": "loaded"}
     ]});
     server.mount_ok("GET", r".*/models$", models).await;
     let home = home();
-    let url = server.url();
-    let mut tui = Tui::start_with_env(home.path(), &url, &[("KODA_LOCAL_URL", &url)]);
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
 
     run_command(&mut tui, "/model");
     tui.wait_for_screen("Select a model");
     highlight(&mut tui, "stub-local");
     let listed = picker_lines(&tui.screen(), "Select a model");
-    assert!(listed.contains("claude-haiku"), "{listed}");
+    assert!(!listed.contains("claude-haiku"), "{listed}");
     tui.type_text(ESC);
     tui.wait_for_screen_without("Select a model");
 
@@ -1262,38 +1293,32 @@ async fn model_picker_lists_the_local_model_and_esc_changes_nothing() {
     assert!(sent.contains(r#""model":"stub-model""#), "{sent}");
 }
 
-/// Picking the "local" entry moves the session to the server it was found
-/// at (`KODA_LOCAL_URL`) and that server's model. Switching used to go to
-/// LM Studio's default address instead, so a pick reached whatever LM
-/// Studio ran on the machine; the test's own servers are the only ones
-/// here, and the one Koda started with must get nothing.
+/// Picking a model in `/model` changes it on the host, for the same
+/// session and server; another provider's model is refused with the way to
+/// switch provider.
 #[tokio::test(flavor = "multi_thread")]
-async fn model_picker_local_pick_moves_the_next_turn_to_that_server() {
-    let first = scripted_model(vec![]).await;
-    let local = scripted_model(vec![text_reply("From the local server.")]).await;
+async fn model_picker_pick_changes_the_model_on_the_host() {
+    let server = scripted_model(vec![text_reply("From stub-local.")]).await;
     let models = json!({"object": "list", "data": [
         {"id": "stub-local", "object": "model", "type": "llm", "state": "loaded"}
     ]});
-    local.mount_ok("GET", r".*/models$", models).await;
+    server.mount_ok("GET", r".*/models$", models).await;
     let home = home();
-    let local_url = local.url();
-    let mut tui = Tui::start_with_env(home.path(), &first.url(), &[("KODA_LOCAL_URL", &local_url)]);
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
 
     run_command(&mut tui, "/model");
     tui.wait_for_screen("Select a model");
     highlight(&mut tui, "stub-local");
     tui.type_text("\r");
-    tui.wait_for_screen("Model: local (stub-local)");
+    tui.wait_for_screen("Model: stub-local");
 
-    tui.submit("where are you");
-    let sent = wait_for_model_call(&local, 1).await;
+    run_command(&mut tui, "/model gemini-flash");
+    tui.wait_for_screen("(/provider)");
+
+    tui.submit("which model");
+    let sent = wait_for_model_call(&server, 1).await;
     assert!(sent.contains(r#""model":"stub-local""#), "{sent}");
-    assert!(sent.contains("where are you"), "{sent}");
-    tui.wait_for_screen("From the local server.");
-    assert!(
-        model_calls(&first).await.is_empty(),
-        "the server Koda started with got the turn"
-    );
+    tui.wait_for_screen("From stub-local.");
 }
 
 /// `/provider <url>` moves the session to the server at that address: the
@@ -1310,7 +1335,8 @@ async fn provider_with_an_address_moves_the_next_turn_there() {
     let mut tui = Tui::start_with_model(home.path(), &first.url());
 
     run_command(&mut tui, &format!("/provider {}", second.url()));
-    tui.wait_for_screen_without(BUSY_PROMPT);
+    // A session's provider and server don't change: this is a new one.
+    tui.wait_for_screen("New session on");
     tui.submit("where are you");
     let sent = wait_for_model_call(&second, 1).await;
     assert!(sent.contains("where are you"), "{sent}");
@@ -1321,7 +1347,7 @@ async fn provider_with_an_address_moves_the_next_turn_there() {
     );
 }
 
-/// `/sessions` lists earlier sessions; picking one resumes it, and the model
+/// `/resume` lists earlier sessions; picking one resumes it, and the model
 /// gets its history.
 #[tokio::test(flavor = "multi_thread")]
 async fn sessions_picker_resumes_an_earlier_session() {
@@ -1333,7 +1359,9 @@ async fn sessions_picker_resumes_an_earlier_session() {
     quit_and_read_session_id(&mut tui);
 
     let mut tui = Tui::start_with_model(home.path(), &server.url());
+    // The old name still works, and says the new one.
     run_command(&mut tui, "/sessions");
+    tui.wait_for_screen("/sessions is now /resume.");
     tui.wait_for_screen("Sessions");
     highlight(&mut tui, "alpha topic");
     tui.type_text("\r");
@@ -1345,7 +1373,7 @@ async fn sessions_picker_resumes_an_earlier_session() {
     assert!(sent.contains("continue it"), "{sent}");
 }
 
-/// `/sessions resume <id>` resumes by id; `/sessions delete <id>` removes a
+/// `/resume <id>` resumes by id; `/resume delete <id>` removes a
 /// session, and the picker no longer offers it.
 #[tokio::test(flavor = "multi_thread")]
 async fn sessions_resume_and_delete_by_id() {
@@ -1361,16 +1389,16 @@ async fn sessions_resume_and_delete_by_id() {
     let charlie = quit_and_read_session_id(&mut tui);
 
     let mut tui = Tui::start_with_model(home.path(), &server.url());
-    run_command(&mut tui, &format!("/sessions resume {bravo}"));
+    run_command(&mut tui, &format!("/resume {bravo}"));
     tui.wait_for_screen("bravo session words");
     tui.submit_and_finish("bravo again", "All done.");
     let sent = wait_for_model_call(&server, 3).await;
     assert!(sent.contains("bravo session words"), "{sent}");
     assert!(!sent.contains("charlie session words"), "{sent}");
 
-    run_command(&mut tui, &format!("/sessions delete {charlie}"));
+    run_command(&mut tui, &format!("/resume delete {charlie}"));
     tui.wait_for_screen_without(BUSY_PROMPT);
-    run_command(&mut tui, "/sessions");
+    run_command(&mut tui, "/resume");
     tui.wait_for_screen("Sessions");
     let listed = picker_lines(&tui.screen(), "Sessions");
     assert!(

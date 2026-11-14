@@ -5,17 +5,17 @@ project root. Each session gets a UUID that you can use to resume it.
 
 ```bash
 # List and pick a session interactively
-/sessions
+/resume
 
 # Resume by ID prefix from the TUI
-/sessions resume a3f8bc
+/resume a3f8bc
 
 # Resume from the command line, with the full ID: in the TUI, or headless
 koda -s a3f8bc12-1587-4c6d-a855-46183ca84fba
 koda exec -s a3f8bc12-1587-4c6d-a855-46183ca84fba "continue where we left off"
 
 # Delete a session permanently
-/sessions delete a3f8bc
+/resume delete a3f8bc
 ```
 
 ## Away summary
@@ -30,4 +30,4 @@ When you resume a session that was idle, Koda shows:
 ## Session title
 
 In the TUI, the first 50 characters of your first message become the session's
-title, shown in `/sessions`.
+title, shown in `/resume`.

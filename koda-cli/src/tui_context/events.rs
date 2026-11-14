@@ -264,13 +264,8 @@ impl TuiContext {
                     &self.shared_mode,
                     koda_core::sandbox::is_available(),
                 ) {
-                    Ok(new_mode) => {
-                        let _ = self
-                            .session
-                            .db
-                            .set_session_mode(&self.session.id, new_mode.as_str())
-                            .await;
-                    }
+                    // The host applies the mode and records it with the session.
+                    Ok(_) => self.send_mode().await,
                     Err(msg) => {
                         self.scroll_buffer.push(ratatui::text::Line::styled(
                             format!("\u{26a0} {msg}"),

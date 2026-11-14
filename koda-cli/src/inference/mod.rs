@@ -56,4 +56,26 @@ impl TurnStop {
             }
         });
     }
+
+    /// Send the mode Shift+Tab chose during the turn; the host applies it
+    /// once the turn has ended. Not waited for.
+    pub(crate) fn set_mode(&self, mode: koda_core::trust::TrustMode) {
+        use koda_client::protocol::state::TrustMode as P;
+        let requests = self.requests.clone();
+        let params = koda_client::protocol::session::SessionSettingsUpdateParams {
+            session_id: self.session_id.clone(),
+            mode: Some(match mode {
+                koda_core::trust::TrustMode::Plan => P::Plan,
+                koda_core::trust::TrustMode::Safe => P::Safe,
+                koda_core::trust::TrustMode::Auto => P::Auto,
+            }),
+            ..Default::default()
+        };
+        tokio::spawn(async move {
+            use koda_client::protocol::methods::SessionSettingsUpdate;
+            if let Err(e) = requests.request::<SessionSettingsUpdate>(params).await {
+                tracing::warn!("session/settings/update: {e}");
+            }
+        });
+    }
 }
