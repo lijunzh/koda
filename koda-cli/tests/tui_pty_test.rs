@@ -354,6 +354,13 @@ fn sse(chunks: &[Value]) -> ResponseTemplate {
 
 /// A reply that makes these tool calls, each a `(name, arguments)` pair.
 fn tool_calls(calls: &[(&str, Value)]) -> ResponseTemplate {
+    sse(&[
+        tool_call_delta(calls),
+        json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+    ])
+}
+
+fn tool_call_delta(calls: &[(&str, Value)]) -> Value {
     let calls: Vec<Value> = calls
         .iter()
         .enumerate()
@@ -366,10 +373,7 @@ fn tool_calls(calls: &[(&str, Value)]) -> ResponseTemplate {
             })
         })
         .collect();
-    sse(&[
-        json!({"choices": [{"delta": {"tool_calls": calls}}]}),
-        json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
-    ])
+    json!({"choices": [{"delta": {"tool_calls": calls}}]})
 }
 
 fn write_file(name: &str) -> (&'static str, Value) {
@@ -1439,4 +1443,188 @@ async fn compact_replaces_earlier_turns_with_the_summary() {
         .any(|m| m["content"] == "turn one oldest");
     assert!(!as_message, "the oldest turn survived as a message: {sent}");
     assert!(sent.contains("after compaction"), "{sent}");
+}
+
+/// No more model calls come within a couple of seconds: nothing started a
+/// turn on its own.
+async fn assert_no_more_calls(server: &FakeLlmServer, calls: usize) {
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(
+        model_calls(server).await.len(),
+        calls,
+        "a turn started that nobody asked for"
+    );
+}
+
+/// Text sent while the model works reaches it at the next call of the same
+/// turn, after the tool result it was waiting on. It isn't handed back or
+/// run again as a turn of its own.
+#[tokio::test(flavor = "multi_thread")]
+async fn steering_text_reaches_the_next_call_of_the_turn() {
+    let read =
+        tool_calls(&[("Read", json!({"file_path": "notes.md"}))]).set_delay(Duration::from_secs(3));
+    let server = scripted_model(vec![read]).await;
+    let home = home();
+    std::fs::write(home.path().join("notes.md"), "alpha line\n").unwrap();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.submit("first prompt");
+    wait_for_model_call(&server, 1).await;
+    tui.submit("steering text");
+
+    let sent = wait_for_model_call(&server, 2).await;
+    let body: Value = serde_json::from_str(&sent).unwrap();
+    let messages = body["messages"].as_array().unwrap();
+    let result = messages
+        .iter()
+        .position(|m| m["role"] == "tool")
+        .unwrap_or_else(|| panic!("no tool result: {sent}"));
+    let steer = messages
+        .iter()
+        .position(|m| m["role"] == "user" && m.to_string().contains("steering text"))
+        .unwrap_or_else(|| panic!("no steering text: {sent}"));
+    assert!(steer > result, "steering text before the result: {sent}");
+
+    tui.wait_for_screen("All done.");
+    tui.wait_for_screen_without(BUSY_PROMPT);
+    let screen = tui.screen();
+    assert!(!screen.contains("Not sent to the model"), "{screen}");
+    assert!(!input_box(&screen).contains("steeringtext"), "{screen}");
+    assert_no_more_calls(&server, 2).await;
+}
+
+/// About 9,000 characters of text that doesn't repeat, each line starting
+/// with `marker`.
+fn long_text(marker: &str, seed: u64) -> String {
+    let mut x = seed;
+    (0..120)
+        .map(|i| {
+            let mut words = String::new();
+            for _ in 0..3 {
+                // splitmix64
+                x = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
+                let mut z = x;
+                z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+                words.push_str(&format!(" {:016x}", z ^ (z >> 31)));
+            }
+            format!("{marker} {i}:{words}\n")
+        })
+        .collect()
+}
+
+/// A turn whose context passes the compaction threshold compacts before its
+/// next call and goes on: the summary call gets the oldest reply, the call
+/// after it carries the summary and the user's prompt instead of it, and
+/// the turn ends on its own.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_compaction_during_a_turn_lets_the_turn_go_on() {
+    let summary = "<summary>SUMMARY-MARKER-WOMBAT covers the replies.</summary>";
+    let home = home();
+    // Six replies of about 9,000 characters, each with a small read: past a
+    // fifth of the 64,000-token window, so there is history enough to
+    // compact. The bulk is the model's own text because Koda shortens older
+    // reads during a turn, and one call per reply because compaction keeps a
+    // call with its results.
+    let mut replies: Vec<ResponseTemplate> = (0..6u64)
+        .map(|n| {
+            let name = format!("part{n}.txt");
+            std::fs::write(home.path().join(&name), "a line\n").unwrap();
+            let marker = if n == 0 {
+                "OLDEST-REPLY-MARKER"
+            } else {
+                "later"
+            };
+            let mut chunks = vec![
+                json!({"choices": [{"delta": {"content": long_text(marker, n)}}]}),
+                tool_call_delta(&[("Read", json!({ "file_path": name }))]),
+                json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+            ];
+            // The provider counts far more than Koda's estimate at the last
+            // reply, so the call after it starts past the threshold.
+            if n == 5 {
+                chunks.push(json!({"choices": [], "usage": {
+                    "prompt_tokens": 56_000, "completion_tokens": 10, "total_tokens": 56_010,
+                }}));
+            }
+            sse(&chunks)
+        })
+        .collect();
+    replies.push(json_reply(summary));
+    let server = scripted_model(replies).await;
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.submit("first prompt");
+    // The replies scroll it off the screen; it is in the output.
+    tui.wait_for_output("compacting before sending");
+    let sent = wait_for_model_call(&server, 7).await;
+    assert!(
+        sent.contains("OLDEST-REPLY-MARKER"),
+        "the summary call lacks the oldest reply: {sent}"
+    );
+
+    let sent = wait_for_model_call(&server, 8).await;
+    assert!(sent.contains("SUMMARY-MARKER-WOMBAT"), "no summary: {sent}");
+    assert!(sent.contains("first prompt"), "the prompt was lost: {sent}");
+    assert!(
+        !sent.contains("OLDEST-REPLY-MARKER"),
+        "the oldest reply survived the compaction: {sent}"
+    );
+
+    tui.wait_for_screen("All done.");
+    tui.wait_for_screen_without(BUSY_PROMPT);
+    assert_no_more_calls(&server, 8).await;
+}
+
+/// Esc while a sub-agent works stops the turn and the sub-agent, and nothing
+/// starts another turn. The sub-agent's last status reaches the TUI after
+/// the turn has stopped, which the TUI reads at idle; a finished
+/// background agent used to start a turn there (#1349).
+#[tokio::test(flavor = "multi_thread")]
+async fn esc_during_a_sub_agent_starts_no_other_turn() {
+    let invoke = tool_calls(&[(
+        "InvokeAgent",
+        json!({"agent_name": "explore", "prompt": "look around"}),
+    )]);
+    // Sub-agents call the model without streaming.
+    let slow = json_reply("too late").set_delay(Duration::from_secs(10));
+    let server = scripted_model(vec![invoke, slow]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.submit("first prompt");
+    let sent = wait_for_model_call(&server, 2).await;
+    assert!(
+        sent.contains("look around"),
+        "not the sub-agent's call: {sent}"
+    );
+    tui.stop_turn(ESC);
+    tui.wait_for_screen_without(BUSY_PROMPT);
+
+    assert_no_more_calls(&server, 2).await;
+    assert_stopped(&mut tui, &server, 2).await;
+}
+
+/// A sub-agent that finishes hands its answer to the turn, and the turn ends
+/// after its last reply; nothing starts another turn.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_finished_sub_agent_starts_no_other_turn() {
+    let invoke = tool_calls(&[(
+        "InvokeAgent",
+        json!({"agent_name": "explore", "prompt": "look around"}),
+    )]);
+    // Sub-agents call the model without streaming.
+    let server = scripted_model(vec![invoke, json_reply("SUB-AGENT-ANSWER")]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.submit("first prompt");
+    let sent = wait_for_model_call(&server, 3).await;
+    assert!(
+        sent.contains("SUB-AGENT-ANSWER"),
+        "no sub-agent answer: {sent}"
+    );
+    tui.wait_for_screen("All done.");
+    tui.wait_for_screen_without(BUSY_PROMPT);
+    assert_no_more_calls(&server, 3).await;
 }
