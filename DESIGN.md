@@ -310,7 +310,8 @@ the two can't disagree. `docs/src/protocol-schema.json` is generated from the
 types, and a test fails when it's stale.
 
 The protocol grows with the code that serves it. It has `initialize`,
-`state/read`, `session/start`, `turn/start`, `turn/interrupt` and `turn/steer`,
+`state/read`, `session/start`, `session/unsubscribe`, `turn/start`,
+`turn/interrupt` and `turn/steer`,
 a session's notifications (session, turn, items, errors and warnings) and the
 server requests for approvals, questions and the loop cap. `koda exec` runs
 through the client in process: it opens its session with `approvalPolicy:
@@ -320,7 +321,12 @@ what the host sends, so the eval harness reads the same messages any client
 gets. The TUI drives the engine directly until its turns go through the
 client. Until then the client also hands out the engine's own events in
 process, for the renderers that still read them, as Codex's TUI read its old
-events while it moved onto its app-server.
+events while it moved onto its app-server. For the same move, three more
+things stay in process only, each until the protocol has requests for it: a
+front end that builds its own agent hands it to the host, which every session
+then uses; a session's sub-agent registry, for showing and stopping
+sub-agents; and `configure_session`, which sets the model, provider and the
+rest of a session's config for its next turns.
 
 On the host, each open session has a task that owns it and runs its turns, as
 Codex's turn requests behave: `turn/start` is answered at once with the turn in
@@ -328,7 +334,11 @@ progress, before its first notification, and a second one is refused while it
 runs; `turn/interrupt` is answered once the turn has stopped, after its
 `turn/completed`; `turn/steer` names the turn it is for, and the text shows up
 as a `userMessage` item when the model receives it, so text a turn ends without
-delivering simply has no item. Requests a stopped turn left open are resolved
+delivering simply has no item, and a client that wants it back keeps its own
+copy until the item arrives, as Codex's TUI does. `session/unsubscribe`
+(Codex's `thread/unsubscribe`) closes a session, stopping its running turn.
+Sub-agents' status goes out as it changes, through each session's forwarder,
+not only between the turn's model calls. Requests a stopped turn left open are resolved
 before its `turn/completed`. Everything a session produces goes on one ordered
 queue to the client, unbounded so unread events never hold up a response. A
 server request's id is unique across the host's sessions, so a client's answer

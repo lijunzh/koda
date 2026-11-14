@@ -20,7 +20,9 @@ use koda_core::config::KodaConfig;
 use koda_core::db::Database;
 use koda_protocol::initialize::{ClientInfo, InitializeResponse, ServerInfo};
 use koda_protocol::rpc::{self, ErrorObject, RequestId, codes};
-use koda_protocol::session::{SessionStartParams, SessionStartResponse};
+use koda_protocol::session::{
+    SessionStartParams, SessionStartResponse, SessionUnsubscribeResponse, SessionUnsubscribeStatus,
+};
 use koda_protocol::state::{SandboxState, StateReadResponse, TrustMode};
 use koda_protocol::{ClientRequest, PROTOCOL_VERSION};
 use serde_json::Value;
@@ -28,7 +30,12 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::{JoinHandle, JoinSet};
 
 use crate::events::Outgoing;
-use crate::session::{self, OpenRequests, SessionCommand, SessionContext, internal, invalid};
+use crate::session::{
+    self, OpenRequests, SessionCommand, SessionContext, SessionHandles, internal, invalid,
+};
+
+/// Open sessions' in-process handles, by id; shared with the client.
+pub(crate) type HandleMap = Arc<std::sync::Mutex<HashMap<String, SessionHandles>>>;
 
 /// How long shutdown waits for sessions to stop their turns. A turn bounds
 /// its own wind-down at five seconds; the client stops the host by force
@@ -47,6 +54,12 @@ pub(crate) enum HostCommand {
     },
     /// The client's answer to the server request `id`.
     Response { id: RequestId, result: Answer },
+    /// In process only: what session `session_id`'s next turns run with.
+    Configure {
+        session_id: String,
+        config: Box<KodaConfig>,
+        done: oneshot::Sender<Answer>,
+    },
     /// Stop every session and the host; say so on `done`.
     Shutdown { done: oneshot::Sender<()> },
 }
@@ -63,6 +76,10 @@ pub(crate) struct HostArgs {
     pub events: mpsc::UnboundedSender<Outgoing>,
     /// Where engine events go as they are, if the client asked for them.
     pub raw: Option<mpsc::UnboundedSender<crate::RawEvent>>,
+    /// In process only: the agent every session uses, if the client built it.
+    pub agent: Option<Arc<koda_core::agent::KodaAgent>>,
+    /// Where open sessions' handles go, for the client.
+    pub handles: HandleMap,
 }
 
 /// Start a host on its own task.
@@ -77,7 +94,9 @@ pub(crate) fn spawn(args: HostArgs) -> (mpsc::Sender<HostCommand>, JoinHandle<()
             request_ids: Arc::new(AtomicI64::new(0)),
             open_requests: OpenRequests::default(),
             raw: args.raw,
+            agent: args.agent,
         },
+        handles: args.handles,
         client: OnceLock::new(),
         sessions: Mutex::new(HashMap::new()),
         tasks: Mutex::new(JoinSet::new()),
@@ -92,6 +111,8 @@ struct Host {
     client: OnceLock<ClientInfo>,
     /// Open sessions' command channels, by id.
     sessions: Mutex<HashMap<String, mpsc::UnboundedSender<SessionCommand>>>,
+    /// Open sessions' in-process handles, by id.
+    handles: HandleMap,
     /// Their tasks. Dropping the host stops them.
     tasks: Mutex<JoinSet<()>>,
 }
@@ -106,6 +127,12 @@ async fn run(host: Arc<Host>, mut commands: mpsc::Receiver<HostCommand>) {
                     running.spawn(async move { host.handle(request, reply).await });
                 }
                 Some(HostCommand::Response { id, result }) => host.route(id, result).await,
+                // In the order it was sent, so it reaches the session before a
+                // turn the client starts next.
+                Some(HostCommand::Configure { session_id, config, done }) => {
+                    let command = SessionCommand::Configure { config, done };
+                    host.to_session(&session_id, command).await;
+                }
                 Some(HostCommand::Shutdown { done }) => {
                     running.shutdown().await;
                     host.stop_sessions().await;
@@ -155,6 +182,11 @@ impl Host {
                 let _ = reply.send(self.start_session(params).await.and_then(to_json));
                 return;
             }
+            ClientRequest::SessionUnsubscribe { params, .. } => {
+                let status = self.unsubscribe(&params.session_id).await;
+                let _ = reply.send(to_json(SessionUnsubscribeResponse { status }));
+                return;
+            }
             // The session's task answers these, a turn's start before its
             // first notification and an interrupt once the turn has stopped.
             ClientRequest::TurnStart { params, .. } => (
@@ -170,14 +202,32 @@ impl Host {
                 SessionCommand::Steer { params, reply },
             ),
         };
+        self.to_session(&session_id, command).await;
+    }
+
+    /// Hand `command` to session `session_id`, or refuse it.
+    async fn to_session(&self, session_id: &str, command: SessionCommand) {
         let sessions = self.sessions.lock().await;
-        let Some(session) = sessions.get(&session_id) else {
+        let Some(session) = sessions.get(session_id) else {
             command.refuse(invalid(format!("no open session {session_id:?}")));
             return;
         };
         if let Err(mpsc::error::SendError(command)) = session.send(command) {
             command.refuse(internal(format!("session {session_id} has stopped")));
         }
+    }
+
+    /// Close session `id`: its task stops its turn, if one runs, and ends.
+    async fn unsubscribe(&self, id: &str) -> SessionUnsubscribeStatus {
+        let Some(session) = self.sessions.lock().await.remove(id) else {
+            return SessionUnsubscribeStatus::NotLoaded;
+        };
+        self.handles
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(id);
+        let _ = session.send(SessionCommand::Shutdown);
+        SessionUnsubscribeStatus::Unsubscribed
     }
 
     fn initialize(&self, client_info: ClientInfo) -> Answer {
@@ -211,6 +261,10 @@ impl Host {
         if sessions.contains_key(&id) {
             return Err(invalid(format!("session {id} is already open")));
         }
+        self.handles
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(id.clone(), opened.handles);
         sessions.insert(id, opened.commands);
         self.tasks.lock().await.spawn(opened.task.run());
         Ok(SessionStartResponse {
@@ -239,6 +293,10 @@ impl Host {
     /// Tell every session to stop, wait a while for their turns to wind
     /// down, then stop what's left.
     async fn stop_sessions(&self) {
+        self.handles
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
         for session in self.sessions.lock().await.drain().map(|(_, s)| s) {
             let _ = session.send(SessionCommand::Shutdown);
         }
@@ -300,6 +358,8 @@ mod tests {
             db,
             events,
             raw: None,
+            agent: None,
+            handles: HandleMap::default(),
         });
         (tx, handle, dir)
     }

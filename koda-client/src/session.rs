@@ -63,6 +63,12 @@ pub(crate) enum SessionCommand {
     },
     /// The client's answer to one of this session's server requests.
     Respond { id: RequestId, result: Answer },
+    /// In process only: what the session's next turns run with. Applied
+    /// at once when idle, or once the running turn has ended.
+    Configure {
+        config: Box<KodaConfig>,
+        done: oneshot::Sender<Answer>,
+    },
     /// Stop the turn, if one runs, and end the task.
     Shutdown,
 }
@@ -73,7 +79,8 @@ impl SessionCommand {
         match self {
             Self::StartTurn { reply, .. }
             | Self::Interrupt { reply, .. }
-            | Self::Steer { reply, .. } => {
+            | Self::Steer { reply, .. }
+            | Self::Configure { done: reply, .. } => {
                 let _ = reply.send(Err(error));
             }
             Self::Respond { .. } | Self::Shutdown => {}
@@ -92,12 +99,16 @@ pub(crate) struct SessionContext {
     pub open_requests: OpenRequests,
     /// Where engine events go as they are, for a front end that asked.
     pub raw: Option<mpsc::UnboundedSender<RawEvent>>,
+    /// In process only: the agent every session uses, when the front end
+    /// built it. Without one, each session builds its own.
+    pub agent: Option<Arc<KodaAgent>>,
 }
 
 /// A session, open and ready for a turn.
 pub(crate) struct OpenSession {
     pub session: Session,
     pub commands: mpsc::UnboundedSender<SessionCommand>,
+    pub handles: SessionHandles,
     pub task: SessionTask,
 }
 
@@ -115,6 +126,7 @@ pub(crate) async fn open(
         request_ids,
         open_requests,
         raw,
+        agent,
     } = context;
 
     // Ask the provider for the model's window first. A guess is said once
@@ -135,12 +147,17 @@ pub(crate) async fn open(
             .map_err(|e| internal(format!("couldn't create the session: {e:#}")))?,
     };
 
-    let mut agent = KodaAgent::new(&config, project_root, &[])
-        .await
-        .map_err(|e| internal(format!("couldn't build the agent: {e:#}")))?;
-    crate::builtin_skills::inject_builtin_skills(&mut agent);
-    agent.rebuild_system_prompt(&config, &[]);
-    let agent = Arc::new(agent);
+    let agent = match agent {
+        Some(agent) => agent,
+        None => {
+            let mut agent = KodaAgent::new(&config, project_root, &[])
+                .await
+                .map_err(|e| internal(format!("couldn't build the agent: {e:#}")))?;
+            crate::builtin_skills::inject_builtin_skills(&mut agent);
+            agent.rebuild_system_prompt(&config, &[]);
+            Arc::new(agent)
+        }
+    };
     let mut session = KodaSession::new(id.clone(), agent, db, &config, config.trust).await;
     // A resumed session already has its title.
     session.title_set = resumed;
@@ -191,9 +208,15 @@ pub(crate) async fn open(
             pending_end: None,
         }),
     });
+    // Sub-agents' status goes out as it changes, not only between the
+    // turn's model calls.
+    session.attach_event_sink(Arc::clone(&sink) as Arc<dyn EngineSink>);
     Ok(OpenSession {
         session: described,
         commands: commands_tx,
+        handles: SessionHandles {
+            bg_agents: Arc::clone(&session.bg_agents),
+        },
         task: SessionTask {
             session,
             config,
@@ -234,9 +257,18 @@ impl SessionTask {
                 SessionCommand::Respond { id, .. } => {
                     tracing::debug!("an answer to request {id} arrived after its turn");
                 }
+                SessionCommand::Configure { config, done } => {
+                    self.configure(*config);
+                    let _ = done.send(to_json(serde_json::Value::Null));
+                }
                 SessionCommand::Shutdown => return,
             }
         }
+    }
+
+    fn configure(&mut self, config: KodaConfig) {
+        self.session.update_provider(&config);
+        self.config = config;
     }
 
     /// Run one turn. Returns whether the task goes on.
@@ -297,6 +329,7 @@ impl SessionTask {
 
         let cancel = self.session.cancel_token().child_token();
         let mut interrupts = Vec::new();
+        let mut configured: Option<(KodaConfig, Vec<oneshot::Sender<Answer>>)> = None;
         let mut keep_running = true;
         let Self {
             session,
@@ -363,6 +396,12 @@ impl SessionTask {
                                 tracing::warn!("the turn's input is full; an answer was lost");
                             }
                         }
+                        // The running turn keeps what it started with.
+                        Some(SessionCommand::Configure { config: next, done }) => {
+                            let mut waiting = configured.take().map(|(_, d)| d).unwrap_or_default();
+                            waiting.push(done);
+                            configured = Some((*next, waiting));
+                        }
                         // Told to stop, or the host is gone: stop the turn and
                         // let it wind down. It bounds that itself.
                         Some(SessionCommand::Shutdown) | None => {
@@ -384,8 +423,23 @@ impl SessionTask {
         for reply in interrupts {
             let _ = reply.send(to_json(TurnInterruptResponse {}));
         }
+        if let Some((next, waiting)) = configured {
+            session.update_provider(&next);
+            *config = next;
+            for done in waiting {
+                let _ = done.send(to_json(serde_json::Value::Null));
+            }
+        }
         keep_running
     }
+}
+
+/// In process only: a session's parts a front end still reaches directly
+/// while it moves onto the protocol.
+#[derive(Clone)]
+pub struct SessionHandles {
+    /// The session's sub-agents, for showing what they do and stopping them.
+    pub bg_agents: Arc<koda_core::child_agent::ChildAgentRegistry>,
 }
 
 /// What kind of server request is open, to read the client's answer.

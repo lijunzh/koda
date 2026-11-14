@@ -1111,6 +1111,48 @@
       ],
       "type": "object"
     },
+    "SessionUnsubscribeParams": {
+      "additionalProperties": false,
+      "description": "`session/unsubscribe`: the client is done with a session. Its running\nturn, if any, stops, and the session is closed; `session/start` with its\nid opens it again. Codex's `thread/unsubscribe`.",
+      "properties": {
+        "sessionId": {
+          "description": "The session.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "type": "object"
+    },
+    "SessionUnsubscribeResponse": {
+      "description": "The answer to `session/unsubscribe`.",
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/SessionUnsubscribeStatus",
+          "description": "What happened."
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "type": "object"
+    },
+    "SessionUnsubscribeStatus": {
+      "description": "What `session/unsubscribe` did. Codex also has `notSubscribed`, for a\nsession other clients still hold; a Koda host has one client.",
+      "oneOf": [
+        {
+          "const": "unsubscribed",
+          "description": "The session was open, and now isn't.",
+          "type": "string"
+        },
+        {
+          "const": "notLoaded",
+          "description": "No session with that id was open.",
+          "type": "string"
+        }
+      ]
+    },
     "StateReadParams": {
       "additionalProperties": false,
       "description": "No parameters yet.",
@@ -1788,6 +1830,14 @@
       },
       "result": {
         "$ref": "#/$defs/SessionStartResponse"
+      }
+    },
+    "session/unsubscribe": {
+      "params": {
+        "$ref": "#/$defs/SessionUnsubscribeParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionUnsubscribeResponse"
       }
     },
     "state/read": {

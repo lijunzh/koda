@@ -6,8 +6,9 @@
 //! form on the way, exactly as it would over stdio or a socket; one contract
 //! by construction. Codex's `app-server-client` is the model.
 //!
-//! A session opens with `session/start`; `turn/start`, `turn/interrupt` and
-//! `turn/steer` drive its turns. What a turn does arrives on one ordered
+//! A session opens with `session/start` and closes with
+//! `session/unsubscribe`; `turn/start`, `turn/interrupt` and `turn/steer`
+//! drive its turns. What a turn does arrives on one ordered
 //! queue, [`InProcessClient::next_event`]: notifications, and the server
 //! requests (approvals, questions, the loop cap) the client answers with
 //! [`InProcessClient::resolve_server_request`] or
@@ -20,7 +21,10 @@
 //! In process only, and only for now, a front end whose renderer still
 //! reads engine events can ask for them as they are
 //! ([`StartArgs::raw_events`]), as Codex's TUI read its old events while it
-//! moved onto its app-server. They go when the TUI renders items.
+//! moved onto its app-server. They go when the TUI renders items. For the same
+//! move, a front end can hand the host its own agent ([`StartArgs::agent`]),
+//! reach a session's sub-agents ([`InProcessClient::session_handles`]) and set
+//! what its next turns run with ([`InProcessClient::configure_session`]).
 
 pub mod builtin_skills;
 pub mod events;
@@ -45,6 +49,7 @@ pub use koda_protocol as protocol;
 
 use events::Outgoing;
 use host::{HostArgs, HostCommand};
+pub use session::SessionHandles;
 
 /// How long [`InProcessClient::shutdown`] waits before stopping the host by force.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -62,6 +67,10 @@ pub struct StartArgs {
     pub raw_events: bool,
     /// Who the client is, sent in `initialize`.
     pub client_info: ClientInfo,
+    /// In process only: the agent every session uses, for a front end that
+    /// builds its own (its tools, MCP servers and system prompt). Without
+    /// one, each session builds an agent from `config`.
+    pub agent: Option<Arc<koda_core::agent::KodaAgent>>,
 }
 
 /// A client with Koda's host running in this process.
@@ -70,6 +79,7 @@ pub struct InProcessClient {
     host: JoinHandle<()>,
     events: mpsc::UnboundedReceiver<Outgoing>,
     raw_events: Option<mpsc::UnboundedReceiver<RawEvent>>,
+    handles: host::HandleMap,
     server: InitializeResponse,
 }
 
@@ -132,12 +142,15 @@ impl InProcessClient {
         } else {
             (None, None)
         };
+        let handles = host::HandleMap::default();
         let (commands, host) = host::spawn(HostArgs {
             config: args.config,
             project_root: args.project_root,
             db: args.db,
             events: events_tx,
             raw: raw_tx,
+            agent: args.agent,
+            handles: Arc::clone(&handles),
         });
         let mut client = Self {
             requests: RequestHandle {
@@ -147,6 +160,7 @@ impl InProcessClient {
             host,
             events,
             raw_events,
+            handles,
             server: InitializeResponse {
                 server_info: koda_protocol::initialize::ServerInfo {
                     name: String::new(),
@@ -182,6 +196,46 @@ impl InProcessClient {
     /// for them. Only the first call gets them.
     pub fn take_raw_events(&mut self) -> Option<mpsc::UnboundedReceiver<RawEvent>> {
         self.raw_events.take()
+    }
+
+    /// In process only: open session `session_id`'s handles, for a front end
+    /// that still reaches into a session while it moves onto the protocol.
+    pub fn session_handles(&self, session_id: &str) -> Option<SessionHandles> {
+        self.handles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(session_id)
+            .cloned()
+    }
+
+    /// In process only: what session `session_id`'s next turns run with
+    /// (model, provider, address and the rest), until the protocol has
+    /// requests for them. A running turn keeps what it started with; the
+    /// answer comes once the change has taken effect.
+    pub async fn configure_session(
+        &self,
+        session_id: &str,
+        config: KodaConfig,
+    ) -> Result<(), RequestError> {
+        const METHOD: &str = "configure";
+        let (done, answer) = oneshot::channel();
+        self.requests
+            .commands
+            .send(HostCommand::Configure {
+                session_id: session_id.to_string(),
+                config: Box::new(config),
+                done,
+            })
+            .await
+            .map_err(|_| RequestError::Closed { method: METHOD })?;
+        answer
+            .await
+            .map_err(|_| RequestError::Closed { method: METHOD })?
+            .map(|_| ())
+            .map_err(|error| RequestError::Server {
+                method: METHOD,
+                error,
+            })
     }
 
     /// The next notification or server request, in the order Koda produced
@@ -326,6 +380,7 @@ mod tests {
                 name: "koda-client-test".to_string(),
                 version: "0".to_string(),
             },
+            agent: None,
         };
         (args, dir)
     }

@@ -119,6 +119,11 @@ client_requests! {
         params: crate::session::SessionStartParams,
         response: crate::session::SessionStartResponse,
     },
+    /// Close a session the client is done with, stopping its running turn.
+    SessionUnsubscribe => "session/unsubscribe" {
+        params: crate::session::SessionUnsubscribeParams,
+        response: crate::session::SessionUnsubscribeResponse,
+    },
     /// Start a turn. Answered at once with the turn in progress, before its
     /// first notification; everything after arrives as notifications, ending
     /// with `turn/completed`. Refused while a turn is running.

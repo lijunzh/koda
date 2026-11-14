@@ -71,3 +71,32 @@ pub struct SessionStartedNotification {
     /// [`crate::PROTOCOL_VERSION`]. A reader that can't read it should stop.
     pub protocol_version: u32,
 }
+
+/// `session/unsubscribe`: the client is done with a session. Its running
+/// turn, if any, stops, and the session is closed; `session/start` with its
+/// id opens it again. Codex's `thread/unsubscribe`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionUnsubscribeParams {
+    /// The session.
+    pub session_id: String,
+}
+
+/// The answer to `session/unsubscribe`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionUnsubscribeResponse {
+    /// What happened.
+    pub status: SessionUnsubscribeStatus,
+}
+
+/// What `session/unsubscribe` did. Codex also has `notSubscribed`, for a
+/// session other clients still hold; a Koda host has one client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum SessionUnsubscribeStatus {
+    /// The session was open, and now isn't.
+    Unsubscribed,
+    /// No session with that id was open.
+    NotLoaded,
+}
