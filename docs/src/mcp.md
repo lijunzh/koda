@@ -127,9 +127,14 @@ their own and Koda uses it. Koda doesn't use the stateless
 
 ## Persistence
 
-MCP server configs are stored in the local SQLite keystore (`~/.config/koda/db/koda.db`)
-under the `mcp:` key prefix. They survive session restarts and are loaded
-automatically on each startup.
+Servers live in `~/.config/koda/config.toml` as `[mcp_servers.<name>]`
+tables, as in Codex's `config.toml`. `koda mcp add` and `koda mcp remove`
+write them there, keeping the file's comments, and you can edit them by
+hand; every new session reads the file, and `/mcp reconnect` brings open
+sessions in line. `/mcp verbose` names the file each server comes from. A
+server Koda can't start (both a `command` and a `url`, say) is reported at
+startup and skipped. Servers that earlier versions stored in the database
+move into the file on the first start.
 
 ## Startup
 

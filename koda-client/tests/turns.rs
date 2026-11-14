@@ -121,6 +121,7 @@ async fn client_with(
     let db = Database::init(&dir.path().join("config")).await.unwrap();
     InProcessClient::start(StartArgs {
         config,
+        config_file: koda_client::ConfigFile::in_dir(&dir.path().join("config")),
         project_root: project,
         db,
         raw_events: false,
@@ -1406,6 +1407,7 @@ impl Koda {
                         merge_strategy: MergeStrategy::Replace,
                     })
                     .collect(),
+                expected_version: None,
             })
             .await
     }
@@ -1422,7 +1424,7 @@ impl Koda {
     }
 }
 
-/// A new session that names nothing starts from the saved choice, as a
+/// A new session that names nothing starts from config.toml's choice, as a
 /// Codex thread starts from `config.toml`; what a session names wins, and a
 /// named provider other than the saved one takes nothing from it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1433,7 +1435,7 @@ async fn a_new_session_starts_from_the_saved_choice() {
     let written = koda
         .write_config(&[
             ("model_provider", json!("lm-studio")),
-            ("base_url", json!(saved.url())),
+            ("model_providers.lm-studio.base_url", json!(saved.url())),
             ("model", json!("saved-model")),
         ])
         .await

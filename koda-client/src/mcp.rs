@@ -1,13 +1,13 @@
 //! MCP servers on the host: `mcpServerStatus/list`, `config/mcpServer/reload`,
 //! the `mcp_servers.<name>` config key and the startup notification, in
 //! Codex's shapes ([`koda_protocol::mcp`]). Each session runs its own
-//! servers ([`koda_core::mcp::McpManager`]); the host keeps the stored ones.
+//! servers ([`koda_core::mcp::McpManager`]); the config file keeps the
+//! configured ones ([`crate::config_file`]).
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use koda_core::config::KodaConfig;
-use koda_core::db::Database;
 use koda_core::mcp::McpServerConfig;
 use koda_core::mcp::client::McpClientStatus;
 use koda_core::mcp::config::{
@@ -25,31 +25,30 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 use crate::events::Outgoing;
-use crate::session::{internal, invalid};
+use crate::session::invalid;
 
-/// The stored servers, in the config's shape, for `config/read`.
-pub(crate) async fn stored(db: &Database) -> BTreeMap<String, McpServerConfigValue> {
-    match core_config::load_mcp_configs(db).await {
-        Ok(configs) => configs
-            .into_iter()
-            .map(|(name, config)| (name, to_value(&config)))
-            .collect(),
-        Err(e) => {
-            tracing::warn!("couldn't read the MCP servers: {e:#}");
-            BTreeMap::new()
-        }
-    }
-}
-
-/// The servers a session on this host starts: the stored ones and this
-/// run's `--mcp-config` ones.
-pub(crate) async fn configured(
-    db: &Database,
+/// The servers a session on this host starts: the config file's and this
+/// run's `--mcp-config` ones. A server in the file that can't run is
+/// skipped (the host warned about it after `initialize`).
+pub(crate) fn configured(
+    file: &koda_config::ConfigFile,
     config: &KodaConfig,
 ) -> Result<HashMap<String, McpServerConfig>, ErrorObject> {
-    koda_core::mcp::McpManager::configured(db, &config.session_mcp_servers)
-        .await
-        .map_err(|e| internal(format!("couldn't read the MCP servers: {e:#}")))
+    let loaded = crate::config_file::load(file)?;
+    let configured = crate::config_file::servers(&loaded)
+        .into_iter()
+        .filter_map(|(name, value)| match to_core(&name, value) {
+            Ok(server) => Some((name, server)),
+            Err(e) => {
+                tracing::warn!("skipping MCP server: {}", e.message);
+                None
+            }
+        })
+        .collect();
+    Ok(koda_core::mcp::McpManager::configured(
+        configured,
+        &config.session_mcp_servers,
+    ))
 }
 
 /// If `key_path` is `mcp_servers.<name>`, the name.
@@ -59,40 +58,18 @@ pub(crate) fn server_key(key_path: &str) -> Option<&str> {
         .and_then(|rest| rest.strip_prefix('.'))
 }
 
-/// One `mcp_servers.<name>` edit, checked: the server to save, or `None`
-/// to remove it.
-pub(crate) struct ServerEdit {
-    pub name: String,
-    pub config: Option<McpServerConfig>,
-}
-
-/// Check an `mcp_servers.<name>` edit as `/mcp add` checks a server.
-pub(crate) fn check_edit(name: &str, value: Value) -> Result<ServerEdit, ErrorObject> {
+/// Check an `mcp_servers.<name>` edit as `koda mcp add` checks a server:
+/// the server to save, or `None` to remove it.
+pub(crate) fn check_edit(name: &str, value: Value) -> Result<Option<McpServerConfig>, ErrorObject> {
     core_config::validate_server_name(name).map_err(|e| invalid(format!("{e:#}")))?;
-    let config = match value {
-        Value::Null => None,
+    match value {
+        Value::Null => Ok(None),
         value => {
             let value: McpServerConfigValue = serde_json::from_value(value)
                 .map_err(|e| invalid(format!("{SERVERS_KEY}.{name}: {e}")))?;
-            Some(to_core(name, value)?)
+            to_core(name, value).map(Some)
         }
-    };
-    Ok(ServerEdit {
-        name: name.to_string(),
-        config,
-    })
-}
-
-/// Save or remove the checked servers.
-pub(crate) async fn apply_edits(db: &Database, edits: Vec<ServerEdit>) -> Result<(), ErrorObject> {
-    for edit in edits {
-        let saved = match &edit.config {
-            Some(config) => core_config::save_mcp_config(db, &edit.name, config).await,
-            None => core_config::remove_mcp_config(db, &edit.name).await,
-        };
-        saved.map_err(|e| internal(format!("couldn't save MCP server {}: {e:#}", edit.name)))?;
     }
-    Ok(())
 }
 
 /// A server in the config's shape as the engine keeps it.
@@ -155,7 +132,7 @@ fn to_core(name: &str, value: McpServerConfigValue) -> Result<McpServerConfig, E
 
 /// A server as the engine keeps it, in the config's shape. Default
 /// timeouts are left out.
-fn to_value(config: &McpServerConfig) -> McpServerConfigValue {
+pub(crate) fn to_value(config: &McpServerConfig) -> McpServerConfigValue {
     let mut value = McpServerConfigValue {
         startup_timeout_sec: (config.startup_timeout_sec != DEFAULT_STARTUP_TIMEOUT_SEC)
             .then_some(config.startup_timeout_sec),
@@ -289,7 +266,7 @@ mod tests {
             json!({"command": "notes-mcp", "args": ["--quiet"], "env": {"A": "1"}, "required": true}),
         )
         .unwrap();
-        let config = edit.config.unwrap();
+        let config = edit.unwrap();
         assert!(config.required);
         assert_eq!(config.startup_timeout_sec, DEFAULT_STARTUP_TIMEOUT_SEC);
         let value = to_value(&config);
@@ -302,7 +279,7 @@ mod tests {
             json!({"url": "https://mail.example/mcp", "bearer_token_env_var": "MAIL_TOKEN"}),
         )
         .unwrap();
-        let value = to_value(&http.config.unwrap());
+        let value = to_value(&http.unwrap());
         assert_eq!(value.bearer_token_env_var.as_deref(), Some("MAIL_TOKEN"));
     }
 
@@ -319,7 +296,7 @@ mod tests {
         ] {
             assert!(check_edit(name, value.clone()).is_err(), "{name} {value}");
         }
-        assert!(check_edit("ok", Value::Null).unwrap().config.is_none());
+        assert!(check_edit("ok", Value::Null).unwrap().is_none());
     }
 
     #[test]

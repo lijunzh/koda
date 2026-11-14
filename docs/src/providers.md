@@ -60,9 +60,10 @@ koda --base-url http://127.0.0.1:8080/v1
 - **Give llama-server enough context.** Koda's system prompt and tool schemas
   are about 8K tokens, so start it with `-c 16384` or more. The llama-server
   default of 4096 fails with a 400.
-- Inside the TUI, `/provider http://127.0.0.1:8080/v1` switches to a URL, and
-  a URL passed with `--base-url` or `KODA_BASE_URL` is remembered for the
-  next session. Headless runs (`koda exec`) never save anything.
+- Inside the TUI, `/provider http://127.0.0.1:8080/v1` switches to a URL and
+  remembers it for the next session, as `[model_providers.llama-cpp] base_url`
+  in `~/.config/koda/config.toml`. You can also write that line yourself. A
+  URL passed with `--base-url` or `KODA_BASE_URL` applies to that run only.
 - [mistral.rs](https://github.com/EricLBuehler/mistral.rs) serves the same
   API, so the same route should work. It hasn't been tested.
 

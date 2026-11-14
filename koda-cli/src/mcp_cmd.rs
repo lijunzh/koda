@@ -1,9 +1,9 @@
-//! `koda mcp list|get|add|remove`: manage the stored MCP servers from the
-//! shell, as `codex mcp` does (`codex-rs/cli/src/mcp_cmd.rs`): the same
-//! subcommands, flags and output. Codex's CLI writes `config.toml` itself;
-//! Koda's store is the host's database, so these go through the host's
-//! `config/read` and `config/batchWrite`. Open sessions take a change on
-//! `/mcp reconnect`.
+//! `koda mcp list|get|add|remove`: manage the MCP servers in
+//! `~/.config/koda/config.toml` from the shell, as `codex mcp` does
+//! (`codex-rs/cli/src/mcp_cmd.rs`): the same subcommands, flags and output.
+//! These go through the host's `config/read` and `config/batchWrite`, which
+//! keep the file's comments; the file can also be edited by hand. Open
+//! sessions take a change on `/mcp reconnect`.
 //!
 //! Left out: `login` and `logout`, until Koda has MCP OAuth.
 
@@ -134,6 +134,7 @@ impl McpCli {
     ) -> Result<()> {
         let client = InProcessClient::start(StartArgs {
             config,
+            config_file: koda_client::ConfigFile::in_dir(&koda_core::db::config_dir()?),
             project_root,
             db,
             raw_events: false,
@@ -171,6 +172,7 @@ async fn write(client: &InProcessClient, name: &str, value: Value) -> Result<()>
                 value,
                 merge_strategy: MergeStrategy::Replace,
             }],
+            expected_version: None,
         })
         .await
         .map_err(|e| anyhow!("{e}"))?;

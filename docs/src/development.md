@@ -34,7 +34,7 @@ koda/
 │   │   ├── inference_helpers.rs # Token estimation, message assembly, overflow detection
 │   │   ├── instructions.md # Behavioral instructions in the system prompt
 │   │   ├── keystore.rs     # Secure API key storage (SQLite KV store, apikey: prefix)
-│   │   ├── last_provider.rs # Last-used provider recall (SQLite KV, not a config file)
+│   │   ├── last_provider.rs # The model choice earlier versions saved in the database, moved once into config.toml
 │   │   ├── loop_guard.rs   # Loop detection + iteration hard-cap
 │   │   ├── mcp/            # MCP client: config, manager, tool bridge
 │   │   ├── memory.rs       # Semantic memory (global + project tiers → first user message)
@@ -153,6 +153,9 @@ koda/
 │   │       ├── shortcuts_overlay.rs # Keybinding reference overlay
 │   │       └── status_bar.rs# Model, mode, context meter, elapsed time
 │   └── tests/              # CLI integration tests
+├── koda-protocol/          # The client protocol: JSON-RPC messages and their types
+├── koda-client/            # The client API and Koda's host: sessions, config, MCP
+├── koda-config/            # config.toml: reading, checking and editing it, keeping comments
 ├── koda-sandbox/           # Sandbox runtime: kernel-level FS, network and exec policies
 ├── koda-test-utils/        # Shared test helpers
 ├── DESIGN.md               # Architecture decisions

@@ -376,13 +376,17 @@ restores a thread's; an alias then moves to its line's newest model. `model/list
 gives a provider's models (for Anthropic, the newest of each line) and
 `modelProvider/list` the providers, with whether a key is set. Config is the
 channel between client and host, as Codex's TUI and app-server use it: the host
-owns Koda's config, which nobody maintains by hand, and clients read it with
-`config/read` and change it with `config/batchWrite` (Codex's edit shape). For
-now it holds the choice a new session starts from, `model` (an alias kept as an
-alias), `model_provider` and `base_url`, kept in the database. A new session
+keeps Koda's config in `~/.config/koda/config.toml` (the `koda-config` crate),
+which a person can also edit, and clients read it with `config/read` (with each
+value's origin and the file's `sha256:` version) and change it with
+`config/batchWrite` (Codex's edit shape, `expectedVersion` included), which
+keeps the file's comments. It holds the choice a new session starts from,
+`model` (an alias kept as an alias) and `model_provider`, each provider's
+endpoint (`model_providers.<id>.base_url`) and the MCP servers. A new session
 that names nothing starts from it, as a Codex thread starts from
-`config.toml`; what a session names wins, and a named provider other than the
-saved one takes nothing from it. API keys go through
+`config.toml`; what a session names wins, a named provider other than the
+saved one takes none of the saved model, and a provider's endpoint applies
+whenever a session runs on it. API keys go through
 `modelProvider/apiKey/set` and `remove`, Koda's own requests, since Koda keeps a
 key per provider and Codex's `account/login/start` signs in one OpenAI
 account; no response carries a key. `session/compact/start`

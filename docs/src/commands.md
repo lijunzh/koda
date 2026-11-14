@@ -45,9 +45,11 @@ With an argument: jumps straight to that provider's model list.
 
 A URL sets the endpoint directly. Koda detects the provider type from it
 (`http://localhost:8080/v1` is llama.cpp, other local ports are LM Studio),
-picks up the loaded model and remembers the choice. Starting the TUI with
-`--base-url` or `KODA_BASE_URL` is remembered the same way; headless runs
-(`koda exec`) never save anything.
+picks up the loaded model and remembers the choice in
+`~/.config/koda/config.toml`, the endpoint as the provider's
+`[model_providers.<id>] base_url`. Flags such as `--base-url` or `--model`, and
+`KODA_BASE_URL`, apply to that run only and are never saved, as Codex's
+aren't; headless runs (`koda exec`) never save anything.
 
 ## `/key`
 

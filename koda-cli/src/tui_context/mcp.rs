@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use koda_client::events::Outgoing;
 use koda_client::protocol::ServerNotification;
-use koda_client::protocol::config::ConfigReadParams;
+use koda_client::protocol::config::{ConfigLayerSource, ConfigReadParams, ConfigReadResponse};
 use koda_client::protocol::mcp::{
     ListMcpServerStatusParams, McpServerConfigValue, McpServerConnectionStatus,
     McpServerStartupState, McpServerStatus,
@@ -148,21 +148,41 @@ impl TuiContext {
             );
             return;
         }
-        let configs = if verbose {
+        let read = if verbose {
             self.client
                 .request::<methods::ConfigRead>(ConfigReadParams::default())
                 .await
-                .map(|read| read.config.mcp_servers)
-                .unwrap_or_default()
+                .ok()
         } else {
-            BTreeMap::new()
+            None
         };
+        let configs = read
+            .as_ref()
+            .map(|read| read.config.mcp_servers.clone())
+            .unwrap_or_default();
         let mut lines = vec!["MCP Servers:".to_string(), String::new()];
         for server in &listed {
-            lines.extend(server_lines(server, configs.get(&server.name), verbose));
+            let mut server_lines = server_lines(server, configs.get(&server.name), verbose);
+            if let Some(read) = &read {
+                server_lines.insert(1, format!("     from {}", origin(read, &server.name)));
+            }
+            lines.extend(server_lines);
         }
         tui_output::dim_msg(&mut self.scroll_buffer, lines.join("\n"));
     }
+}
+
+/// Where server `name` comes from: the config file, or this run's
+/// `--mcp-config`, which `config/read` doesn't list.
+fn origin(read: &ConfigReadResponse, name: &str) -> String {
+    let prefix = format!("mcp_servers.{name}.");
+    read.origins
+        .iter()
+        .find(|(key, _)| key.starts_with(&prefix))
+        .map(|(_, origin)| match &origin.name {
+            ConfigLayerSource::User { file } => file.clone(),
+        })
+        .unwrap_or_else(|| "--mcp-config (this run only)".to_string())
 }
 
 fn server_lines(

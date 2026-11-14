@@ -108,6 +108,7 @@ pub async fn run_headless(
     let provider = config.provider_type.meta().name;
     let mut client = InProcessClient::start(StartArgs {
         config,
+        config_file: koda_client::ConfigFile::in_dir(&koda_core::db::config_dir()?),
         project_root,
         db: db.clone(),
         raw_events: true,
@@ -386,6 +387,9 @@ impl View {
             (Output::Events { .. }, _) => self.print(message),
             (Output::Text, Outgoing::Notification(ServerNotification::Warning(w))) => {
                 eprintln!("\x1b[33m  \u{26a0} {}\x1b[0m", w.message);
+            }
+            (Output::Text, Outgoing::Notification(ServerNotification::ConfigWarning(w))) => {
+                eprintln!("\x1b[33m  \u{26a0} {}\x1b[0m", w.summary);
             }
             (Output::Text, _) => {}
         }

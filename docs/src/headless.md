@@ -218,8 +218,10 @@ koda exec -s a3f8bc12-1587-4c6d-a855-46183ca84fba "run the failing tests and fix
 ```
 
 A new run without `--provider`, `--base-url` or `--model` starts from the
-choice the TUI last saved, as `codex exec` starts from `config.toml`; one flag
-alone keeps the rest of it (a different `--provider` takes none of it).
+choice in `~/.config/koda/config.toml`, as `codex exec` starts from
+`config.toml`; one flag alone keeps the rest of it (a different `--provider`
+takes none of the saved model). Whichever provider runs, its endpoint comes
+from `[model_providers.<id>] base_url` unless `--base-url` names one.
 
 A resumed run keeps the session's own provider, endpoint and model, as
 `codex exec resume` does: a model chosen by alias (`claude-opus`) moves to its

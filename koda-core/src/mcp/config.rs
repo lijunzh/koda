@@ -1,8 +1,9 @@
-//! MCP server configuration types and database persistence.
+//! MCP server configuration types.
 //!
-//! Configs are stored in the SQLite `kv_store` table under `mcp:<server_name>`
-//! keys as JSON blobs. This is consistent with how Koda stores settings
-//! (`setting:*`) and API keys (`apikey:*`).
+//! Servers are config: `[mcp_servers.<name>]` in `~/.config/koda/config.toml`
+//! (`koda-config`), which the host reads. Earlier versions kept them in the
+//! database's `kv_store` under `mcp:<name>`; [`load_legacy`](crate::mcp::config::load_legacy) and
+//! [`delete_legacy`](crate::mcp::config::delete_legacy) read those rows once, to move them into the file.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -180,10 +181,11 @@ impl McpServerConfig {
     }
 }
 
-// ── Database persistence ──────────────────────────────────────────────────
+// ── Servers earlier versions stored in the database ───────────────────────
 
-/// Load all MCP server configs from the database.
-pub async fn load_mcp_configs(db: &Database) -> Result<HashMap<String, McpServerConfig>> {
+/// The servers earlier versions stored in the database, to move them into
+/// the config file. A row that doesn't parse is skipped with a warning.
+pub async fn load_legacy(db: &Database) -> Result<HashMap<String, McpServerConfig>> {
     let rows = db
         .kv_list_prefix(MCP_KEY_PREFIX)
         .await
@@ -219,39 +221,19 @@ pub async fn load_mcp_configs(db: &Database) -> Result<HashMap<String, McpServer
     Ok(configs)
 }
 
-/// Save an MCP server config to the database.
-pub async fn save_mcp_config(db: &Database, name: &str, config: &McpServerConfig) -> Result<()> {
-    config.validate()?;
-    let key = format!("{MCP_KEY_PREFIX}{name}");
-    let value = serde_json::to_string(config).context("failed to serialize MCP config")?;
-    db.kv_set(&key, &value)
-        .await
-        .context("failed to save MCP config to kv_store")
-}
-
-/// Remove an MCP server config from the database.
-pub async fn remove_mcp_config(db: &Database, name: &str) -> Result<()> {
-    let key = format!("{MCP_KEY_PREFIX}{name}");
-    db.kv_delete(&key)
-        .await
-        .context("failed to remove MCP config from kv_store")
-}
-
-/// List all configured MCP server names.
-pub async fn list_mcp_server_names(db: &Database) -> Result<Vec<String>> {
+/// Delete every server row earlier versions stored, once they are in the
+/// config file.
+pub async fn delete_legacy(db: &Database) -> Result<()> {
     let rows = db
         .kv_list_prefix(MCP_KEY_PREFIX)
         .await
-        .context("failed to list MCP servers from kv_store")?;
-
-    Ok(rows
-        .into_iter()
-        .filter_map(|(key, _)| {
-            key.strip_prefix(MCP_KEY_PREFIX)
-                .filter(|s| !s.is_empty())
-                .map(String::from)
-        })
-        .collect())
+        .context("failed to list MCP configs in kv_store")?;
+    for (key, _) in rows {
+        db.kv_delete(&key)
+            .await
+            .context("failed to delete an MCP config from kv_store")?;
+    }
+    Ok(())
 }
 
 // ── Per-run servers (`--mcp-config`) ──────────────────────────────────────

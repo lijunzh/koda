@@ -147,6 +147,9 @@ server_notifications! {
     Error => "error" (ErrorNotification),
     /// Something a person should know.
     Warning => "warning" (WarningNotification),
+    /// Something in the config file needs a look, such as a key Koda
+    /// doesn't know. Sent after `initialize`, as Codex's is.
+    ConfigWarning => "configWarning" (crate::config::ConfigWarningNotification),
     /// `koda exec`'s last line: the run as a whole.
     ExecSummary => "exec/summary" (ExecSummary),
 }

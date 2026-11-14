@@ -12,6 +12,7 @@ keywords = ["ai", "coding-agent", "json-rpc", "client"]
 categories = ["development-tools", "api-bindings"]
 
 [dependencies]
+koda-config = { path = "../koda-config", version = "0.6.4" }
 koda-core = { path = "../koda-core", version = "0.6.4" }
 koda-protocol = { path = "../koda-protocol", version = "0.6.4" }
 serde = { workspace = true }

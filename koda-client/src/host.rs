@@ -73,6 +73,10 @@ pub(crate) enum HostCommand {
 pub(crate) struct HostArgs {
     /// What new sessions start with.
     pub config: KodaConfig,
+    /// `~/.config/koda/config.toml`.
+    pub config_file: koda_config::ConfigFile,
+    /// What the client is told about the config file after `initialize`.
+    pub config_warnings: Vec<koda_protocol::config::ConfigWarningNotification>,
     /// The project sessions work in.
     pub project_root: PathBuf,
     /// Where sessions are stored.
@@ -93,6 +97,7 @@ pub(crate) fn spawn(args: HostArgs) -> (mpsc::Sender<HostCommand>, JoinHandle<()
     let host = Arc::new(Host {
         context: SessionContext {
             config: args.config,
+            config_file: args.config_file,
             project_root: args.project_root,
             db: args.db,
             events: args.events,
@@ -103,6 +108,7 @@ pub(crate) fn spawn(args: HostArgs) -> (mpsc::Sender<HostCommand>, JoinHandle<()
         },
         handles: args.handles,
         client: OnceLock::new(),
+        config_warnings: std::sync::Mutex::new(args.config_warnings),
         sessions: Mutex::new(HashMap::new()),
         tasks: Mutex::new(JoinSet::new()),
     });
@@ -114,6 +120,8 @@ struct Host {
     context: SessionContext,
     /// Set by `initialize`; until then every other request is refused.
     client: OnceLock<ClientInfo>,
+    /// Sent once, right after `initialize` is answered.
+    config_warnings: std::sync::Mutex<Vec<koda_protocol::config::ConfigWarningNotification>>,
     /// Open sessions' command channels, by id.
     sessions: Mutex<HashMap<String, mpsc::UnboundedSender<SessionCommand>>>,
     /// Open sessions' in-process handles, by id.
@@ -172,7 +180,23 @@ impl Host {
         };
         let (session_id, command) = match request {
             ClientRequest::Initialize { params, .. } => {
-                let _ = reply.send(self.initialize(params.client_info));
+                let answer = self.initialize(params.client_info);
+                let initialized = answer.is_ok();
+                let _ = reply.send(answer);
+                // After the answer, as Codex sends its config warnings.
+                if initialized {
+                    let warnings = std::mem::take(
+                        &mut *self
+                            .config_warnings
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner),
+                    );
+                    for warning in warnings {
+                        let _ = self.context.events.send(Outgoing::Notification(
+                            koda_protocol::ServerNotification::ConfigWarning(warning),
+                        ));
+                    }
+                }
                 return;
             }
             _ if self.client.get().is_none() => {
@@ -192,16 +216,13 @@ impl Host {
                 let _ = reply.send(answer.and_then(to_json));
                 return;
             }
-            ClientRequest::ConfigRead { .. } => {
-                let _ = reply.send(to_json(
-                    crate::settings::read_config(&self.context.db).await,
-                ));
+            ClientRequest::ConfigRead { params, .. } => {
+                let read = crate::config_file::read(&self.context.config_file, &params);
+                let _ = reply.send(read.and_then(to_json));
                 return;
             }
             ClientRequest::ConfigBatchWrite { params, .. } => {
-                let written =
-                    crate::settings::write_config(&self.context.db, &self.context.config, params)
-                        .await;
+                let written = crate::config_file::write(&self.context.config_file, params);
                 let _ = reply.send(written.and_then(to_json));
                 return;
             }
@@ -316,7 +337,8 @@ impl Host {
         params: koda_protocol::mcp::ListMcpServerStatusParams,
     ) -> Result<koda_protocol::mcp::ListMcpServerStatusResponse, ErrorObject> {
         let Some(id) = &params.session_id else {
-            let configured = crate::mcp::configured(&self.context.db, &self.context.config).await?;
+            let configured =
+                crate::mcp::configured(&self.context.config_file, &self.context.config)?;
             return Ok(crate::mcp::configured_status(configured, &params));
         };
         let mcp = self
@@ -528,6 +550,8 @@ mod tests {
         let (events, _) = mpsc::unbounded_channel();
         let (tx, handle) = spawn(HostArgs {
             config: KodaConfig::default_for_testing(ProviderType::LMStudio),
+            config_file: koda_config::ConfigFile::in_dir(dir.path()),
+            config_warnings: Vec::new(),
             project_root: dir.path().to_path_buf(),
             db,
             events,

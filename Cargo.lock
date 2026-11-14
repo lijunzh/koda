@@ -1869,6 +1869,7 @@ dependencies = [
  "crossterm",
  "futures-util",
  "koda-client",
+ "koda-config",
  "koda-core",
  "koda-test-utils",
  "libc",
@@ -1899,6 +1900,7 @@ dependencies = [
 name = "koda-client"
 version = "0.6.4"
 dependencies = [
+ "koda-config",
  "koda-core",
  "koda-protocol",
  "koda-test-utils",
