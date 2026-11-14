@@ -52,6 +52,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **Koda tidies `~/.koda/clones`, unused since 0.6.0.** Sub-agents on macOS used to work in copies of the project there, and folders were left behind, most of them empty. At TUI start Koda now removes the empty ones, and `~/.koda` once nothing is left in it. A folder that still holds a copy is kept, and a startup warning names it so you can check it and delete it yourself.
+- **Running Koda's tests no longer writes to your `panic.log`.** A panic-hook test appended a deliberate panic to `~/.config/koda/logs/panic.log` on every run.
+
 - **The system prompt names the model a turn runs on.** It named the model Koda started with, so after `/model` (or a saved choice the host restores) the model was told it was another one. The environment section now names the turn's own model.
 
 - **A model's reasoning goes back only to that model, and a Claude model gets the earlier Claude reasoning it can read.** After switching models in a session, Koda sent the previous model's reasoning text to the new one, which read it as its own; a strict server such as OpenAI's may reject the field outright. Reasoning text now goes back only to the model that wrote it (Koda records the model with it; replies from before this change aren't resent their reasoning). Between Claude models it went the other way: Koda sent signed thinking only to the exact model that wrote it, so moving a conversation up, from Sonnet 5.5 to Opus 5.5 say, lost its reasoning. Every Claude model now gets every stored block, and the API keeps the ones the model can read.

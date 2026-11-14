@@ -379,6 +379,9 @@ impl TuiContext {
             startup_lines.push(crate::startup::warning_line(warning));
         }
         startup_lines.extend(crate::startup::home_dir_warning_lines(&project_root));
+        if let Some(warning) = crate::legacy_clones::tidy_home() {
+            startup_lines.push(crate::startup::warning_line(warning));
+        }
         if let Ok(Some(latest)) = version_check.await
             && let Some((current, latest)) = koda_core::version::update_available(&latest)
         {
