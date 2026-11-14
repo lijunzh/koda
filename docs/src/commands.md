@@ -12,9 +12,15 @@ This docs site is the full reference; `/help` is the in-session reminder.
 Without an argument: opens a picker of the session's provider's models,
 its aliases first (for Anthropic, the newest model of each line). As in
 Codex, a session keeps its provider: another provider's model is
-`/provider`, which opens a new session on it.
+`/provider`, which opens a new session on it. In the picker, as in Codex's:
 
-With an argument: switches immediately, for the session's next turns.
+| Key | Switches | Saved as the default in config.toml |
+|---|---|---|
+| Enter | this session | yes |
+| `s` | this session | no |
+
+With an argument: switches immediately, for the session's next turns, and
+saves it as the default, as Enter does.
 
 ```text
 /model claude-opus         ← switch by alias (an Anthropic session)
@@ -22,8 +28,8 @@ With an argument: switches immediately, for the session's next turns.
 /model llama3.2            ← any model name your provider understands
 ```
 
-The session records its model, so resuming it brings it back, and the choice
-is remembered for new sessions until changed again. See
+The session records its model, so resuming it brings it back, whichever key
+picked it. A default is remembered for new sessions until changed again. See
 [Providers & model aliases](./providers.md).
 
 ## `/provider [<name or URL>]`

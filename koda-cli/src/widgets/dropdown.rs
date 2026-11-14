@@ -84,6 +84,8 @@ pub struct DropdownState<T: DropdownItem> {
     pub scroll_offset: usize,
     /// Title shown above the dropdown.
     pub title: String,
+    /// What Enter does, and any other key the menu takes, for the hint line.
+    pub select_hint: &'static str,
 }
 
 impl<T: DropdownItem> DropdownState<T> {
@@ -96,7 +98,15 @@ impl<T: DropdownItem> DropdownState<T> {
             selected: 0,
             scroll_offset: 0,
             title: title.into(),
+            select_hint: "enter select",
         }
+    }
+
+    /// Name what Enter does, and any other key the menu takes, in the hint
+    /// line in place of "enter select".
+    pub fn with_select_hint(mut self, hint: &'static str) -> Self {
+        self.select_hint = hint;
+        self
     }
 
     /// Apply a filter string. Resets selection to 0.
@@ -162,7 +172,8 @@ impl<T: DropdownItem> DropdownState<T> {
 // ── Rendering ─────────────────────────────────────────
 
 /// Build dropdown lines for rendering in the viewport.
-/// Always returns exactly `MAX_VISIBLE + 2` lines (fixed height).
+/// Always returns exactly `MAX_VISIBLE + 2` lines (fixed height): the
+/// title, the visible items, the hint, then padding.
 pub fn build_dropdown_lines<T: DropdownItem>(state: &DropdownState<T>) -> Vec<Line<'static>> {
     let visible = MAX_VISIBLE.min(state.filtered.len());
     let end = (state.scroll_offset + visible).min(state.filtered.len());
@@ -205,18 +216,20 @@ pub fn build_dropdown_lines<T: DropdownItem>(state: &DropdownState<T>) -> Vec<Li
         lines.push(Line::from(spans));
     }
 
-    // Pad empty slots to maintain fixed height
+    // Hint with scroll indicator, right under the items: the menu area is
+    // sized to them (`visible_count`), so a hint below the padding was cut
+    // off whenever fewer than MAX_VISIBLE items showed.
+    let more = if has_below { "  \u{25bc} more" } else { "" };
+    let hint = format!(
+        "  \u{2191}/\u{2193} navigate \u{00b7} {} \u{00b7} esc cancel{more}",
+        state.select_hint
+    );
+    lines.push(Line::from(Span::styled(hint, HINT)));
+
+    // Pad to a fixed height.
     for _ in visible..MAX_VISIBLE {
         lines.push(Line::from(""));
     }
-
-    // Hint with scroll indicator
-    let hint = if has_below {
-        "  \u{2191}/\u{2193} navigate \u{00b7} enter select \u{00b7} esc cancel  \u{25bc} more"
-    } else {
-        "  \u{2191}/\u{2193} navigate \u{00b7} enter select \u{00b7} esc cancel"
-    };
-    lines.push(Line::from(Span::styled(hint, HINT)));
 
     lines
 }
@@ -307,11 +320,29 @@ mod tests {
         assert!(hint.contains('\u{25bc}'), "should show scroll-down: {hint}");
     }
 
+    /// The hint follows the items, so a short list's menu area, which is
+    /// sized to its items, still shows it.
+    #[test]
+    fn a_short_list_shows_its_hint() {
+        let dd = DropdownState::new(vec![SimpleItem::new("one", "")], "Test")
+            .with_select_hint("enter default \u{00b7} s session");
+        let lines = build_dropdown_lines(&dd);
+        let rows = dd.visible_count() + 1; // as tui_viewport sizes the area
+        let shown: String = lines[..rows]
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|s| s.content.to_string()))
+            .collect();
+        assert!(
+            shown.contains("enter default \u{00b7} s session"),
+            "{shown}"
+        );
+    }
+
     #[test]
     fn fixed_height() {
         let dd = DropdownState::new(test_items(), "Test");
         let lines = build_dropdown_lines(&dd);
-        assert_eq!(lines.len(), 8); // title + 6 slots + hint
+        assert_eq!(lines.len(), 8); // title + 6 slots and hint, padded
 
         // Filtered to 2 items — still 8 lines
         let mut dd2 = DropdownState::new(test_items(), "Test");

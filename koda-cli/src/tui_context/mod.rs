@@ -855,7 +855,8 @@ impl TuiContext {
                 CommandOutcome::Handled
             }
             SlashAction::ChangeModel(model) => {
-                self.change_model(&model).await;
+                self.change_model(&model, settings::ModelScope::Default)
+                    .await;
                 CommandOutcome::Handled
             }
             SlashAction::Compact => CommandOutcome::Compact,
