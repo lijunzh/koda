@@ -742,17 +742,19 @@ pub(crate) fn restore_terminal(_terminal: &mut Term) {
 /// Pattern lifted from `codex-rs/tui/src/tui.rs`; see issue #1119 for the
 /// comparative analysis.
 fn set_panic_hook() {
-    // Production callers always restore the real terminal. The inner
-    // helper takes the restore callback as a parameter so the regression
-    // test in #1124 can substitute a spy without depending on a real TTY.
-    install_panic_hook(restore_terminal_modes);
+    // Production callers always restore the real terminal and write the
+    // real panic.log. The inner helper takes both as parameters so the
+    // regression test in #1124 can substitute spies without depending on
+    // a real TTY or writing to the user's `~/.config/koda/logs`.
+    install_panic_hook(restore_terminal_modes, crate::panic_log::write_panic_log);
 }
 
-/// Install a panic hook that calls `restore` (best-effort) before chaining
-/// to whatever hook was previously installed. Extracted from
-/// [`set_panic_hook`] purely so the chain-integrity contract can be
-/// asserted under `#[cfg(test)]` without touching real terminal state.
-fn install_panic_hook(restore: fn()) {
+/// Install a panic hook that calls `restore` (best-effort) and records the
+/// panic with `log` before chaining to whatever hook was previously
+/// installed. Extracted from [`set_panic_hook`] purely so the
+/// chain-integrity contract can be asserted under `#[cfg(test)]` without
+/// touching real terminal state or the real panic log.
+fn install_panic_hook(restore: fn(), log: fn(&std::panic::PanicHookInfo<'_>)) {
     let original = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         // Best-effort: ignore errors here, we're already failing.
@@ -769,7 +771,7 @@ fn install_panic_hook(restore: fn()) {
         // Forensic record for post-mortem debugging (#1122). Wrapped
         // in a `let _ =` chain inside the helper so any I/O error here
         // cannot turn into panic-in-panic-hook.
-        crate::panic_log::write_panic_log(info);
+        log(info);
         original(info);
     }));
 }
@@ -979,10 +981,17 @@ mod panic_hook_tests {
     // live in `static`s rather than locals. `#[serial]` keeps these
     // single-writer-at-a-time across the whole crate's test suite.
     static RESTORE_CALLED: AtomicBool = AtomicBool::new(false);
+    static LOGGED: AtomicBool = AtomicBool::new(false);
     static ORIGINAL_RAN: AtomicUsize = AtomicUsize::new(0);
 
     fn spy_restore() {
         RESTORE_CALLED.store(true, Ordering::SeqCst);
+    }
+
+    /// Stands in for `panic_log::write_panic_log`, which would append
+    /// this deliberate panic to the user's real `panic.log`.
+    fn spy_log(_: &panic::PanicHookInfo<'_>) {
+        LOGGED.store(true, Ordering::SeqCst);
     }
 
     #[test]
@@ -990,6 +999,7 @@ mod panic_hook_tests {
     fn panic_hook_restores_terminal_then_chains_to_original() {
         // Reset spy state from any previous test run.
         RESTORE_CALLED.store(false, Ordering::SeqCst);
+        LOGGED.store(false, Ordering::SeqCst);
         ORIGINAL_RAN.store(0, Ordering::SeqCst);
 
         // Snapshot whatever hook the test harness installed so we can
@@ -1003,7 +1013,7 @@ mod panic_hook_tests {
         }));
 
         // Now layer the chain under test on top.
-        install_panic_hook(spy_restore);
+        install_panic_hook(spy_restore, spy_log);
 
         // Trigger a panic; `catch_unwind` swallows it but the hook still
         // fires synchronously before the unwind propagates.
@@ -1019,6 +1029,10 @@ mod panic_hook_tests {
         assert!(
             RESTORE_CALLED.load(Ordering::SeqCst),
             "spy_restore should have been invoked by the panic hook"
+        );
+        assert!(
+            LOGGED.load(Ordering::SeqCst),
+            "the panic should have been handed to the log writer"
         );
 
         // Contract 2: the previously-installed hook ran exactly once.
