@@ -338,9 +338,13 @@ fn home() -> tempfile::TempDir {
 /// A home whose agent file caps a turn at one model call.
 fn home_with_a_loop_cap_of_one() -> tempfile::TempDir {
     let home = home();
-    std::fs::create_dir(home.path().join("agents")).unwrap();
+    std::fs::create_dir_all(home.path().join(".koda/agents")).unwrap();
     let agent = json!({"name": "default", "system_prompt": "Test.", "max_iterations": 1});
-    std::fs::write(home.path().join("agents/default.json"), agent.to_string()).unwrap();
+    std::fs::write(
+        home.path().join(".koda/agents/default.json"),
+        agent.to_string(),
+    )
+    .unwrap();
     home
 }
 

@@ -532,9 +532,13 @@ async fn the_loop_guard_is_typed() {
 async fn an_agent_file_sets_the_loop_cap() {
     let server = stub(vec![tool_call("one", "List", json!({}))], no_other_calls).await;
     let tmp = tempfile::tempdir().unwrap();
-    std::fs::create_dir(tmp.path().join("agents")).unwrap();
+    std::fs::create_dir_all(tmp.path().join(".koda/agents")).unwrap();
     let agent = json!({"name": "default", "system_prompt": "Test.", "max_iterations": 1});
-    std::fs::write(tmp.path().join("agents/default.json"), agent.to_string()).unwrap();
+    std::fs::write(
+        tmp.path().join(".koda/agents/default.json"),
+        agent.to_string(),
+    )
+    .unwrap();
 
     let run = finish(command(&server, tmp.path())).await;
 

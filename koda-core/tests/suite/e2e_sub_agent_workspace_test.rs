@@ -38,7 +38,7 @@ fn write_agent(env: &Env, isolation: Option<&str>) {
 }
 
 fn write_agent_denying(env: &Env, isolation: Option<&str>, denied: &[&str]) {
-    let agents_dir = env.root.join("agents");
+    let agents_dir = env.root.join(".koda/agents");
     std::fs::create_dir_all(&agents_dir).unwrap();
     let mut agent = serde_json::json!({
         "name": "writer",

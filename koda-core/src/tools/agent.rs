@@ -38,7 +38,7 @@
 use crate::providers::ToolDefinition;
 use serde_json::json;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Return tool definitions for the LLM.
 pub fn definitions() -> Vec<ToolDefinition> {
@@ -198,14 +198,11 @@ pub fn discover_all_agents(project_root: &Path) -> Vec<AgentInfo> {
         );
     }
 
-    // 2. User agents (~/.config/koda/agents/) — overrides built-ins
-    if let Ok(user_dir) = user_agents_dir() {
-        load_agents_from_dir(&user_dir, "user", &mut agents);
+    // 2. The user's, then the project's, each overriding what came before
+    //    (`KodaConfig::agent_file` looks them up in the opposite order).
+    for (dir, source) in crate::config::agent_dirs(project_root) {
+        load_agents_from_dir(&dir, source, &mut agents);
     }
-
-    // 3. Project agents (<project>/agents/) — highest priority
-    let project_dir = project_root.join("agents");
-    load_agents_from_dir(&project_dir, "project", &mut agents);
 
     let mut result: Vec<AgentInfo> = agents.into_values().collect();
     result.sort_by(|a, b| a.name.cmp(&b.name));
@@ -260,12 +257,6 @@ fn load_agents_from_dir(dir: &Path, source: &'static str, agents: &mut HashMap<S
             },
         );
     }
-}
-
-/// Return the user-level agents directory path, in Koda's config directory
-/// ([`crate::db::config_dir`]).
-fn user_agents_dir() -> anyhow::Result<PathBuf> {
-    Ok(crate::db::config_dir()?.join("agents"))
 }
 
 /// Return agent list data for display (used by /agent command and ListAgents tool).
@@ -653,8 +644,8 @@ mod tests {
     #[test]
     fn test_list_agents_project_overrides_builtin() {
         let dir = TempDir::new().unwrap();
-        let agents_dir = dir.path().join("agents");
-        std::fs::create_dir(&agents_dir).unwrap();
+        let agents_dir = dir.path().join(".koda/agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
         std::fs::write(
             agents_dir.join("reviewer.json"),
             r#"{"name":"reviewer","system_prompt":"You are a custom project reviewer. Your job is to do project-specific reviews."}"#,

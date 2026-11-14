@@ -20,6 +20,8 @@
 //! KODA_UPDATE_PROTOCOL_SCHEMA=1 cargo test -p koda-protocol --lib schema
 //! ```
 
+pub mod agent;
+pub mod background;
 pub mod config;
 pub mod initialize;
 pub mod item;

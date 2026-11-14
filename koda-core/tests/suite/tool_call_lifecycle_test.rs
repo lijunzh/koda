@@ -188,7 +188,7 @@ async fn a_sub_agent_s_calls_end_too() {
     use koda_test_utils::ENV_MUTEX;
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::builder().trust(TrustMode::Auto).build().await;
-    let agents = env.root.join("agents");
+    let agents = env.root.join(".koda/agents");
     std::fs::create_dir_all(&agents).unwrap();
     std::fs::write(
         agents.join("helper.json"),

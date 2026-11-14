@@ -25,7 +25,7 @@ use koda_test_utils::{ENV_MUTEX, Env, MockProvider, MockResponse};
 /// Helper: write a sub-agent JSON declaring `trust: "safe"`,
 /// matching the post-#1250 built-in `task` agent shape.
 fn write_safe_trust_sub_agent(env: &Env, name: &str) {
-    let agents_dir = env.root.join("agents");
+    let agents_dir = env.root.join(".koda/agents");
     std::fs::create_dir_all(&agents_dir).unwrap();
     std::fs::write(
         agents_dir.join(format!("{name}.json")),

@@ -289,6 +289,34 @@ impl Host {
                 let _ = reply.send(added.and_then(to_json));
                 return;
             }
+            ClientRequest::SessionBackgroundTerminalsList { params, .. } => {
+                let listed = self
+                    .agent(&params.session_id)
+                    .map(|agent| crate::background::list(&agent));
+                let _ = reply.send(listed.and_then(to_json));
+                return;
+            }
+            ClientRequest::SessionBackgroundTerminalsTerminate { params, .. } => {
+                let stopped = self
+                    .agent(&params.session_id)
+                    .and_then(|agent| crate::background::terminate(&agent, &params.process_id));
+                let _ = reply.send(stopped.and_then(to_json));
+                return;
+            }
+            ClientRequest::SessionBackgroundTerminalsClean { params, .. } => {
+                let cleaned = self
+                    .agent(&params.session_id)
+                    .map(|agent| crate::background::clean(&agent));
+                let _ = reply.send(cleaned.and_then(to_json));
+                return;
+            }
+            ClientRequest::AgentList { params, .. } => {
+                let listed = self
+                    .agent(&params.session_id)
+                    .map(|agent| crate::background::list_agents(&agent));
+                let _ = reply.send(listed.and_then(to_json));
+                return;
+            }
             ClientRequest::SessionList { params, .. } => {
                 let _ = reply.send(self.list_sessions(params).await.and_then(to_json));
                 return;
@@ -348,11 +376,20 @@ impl Host {
     /// configured servers, none started.
     /// The project an open session works in.
     fn project_root(&self, id: &str) -> Result<PathBuf, ErrorObject> {
+        self.open_handles(id).map(|handles| handles.project_root)
+    }
+
+    /// The agent an open session runs.
+    fn agent(&self, id: &str) -> Result<Arc<koda_core::agent::KodaAgent>, ErrorObject> {
+        self.open_handles(id).map(|handles| handles.agent)
+    }
+
+    fn open_handles(&self, id: &str) -> Result<crate::session::SessionHandles, ErrorObject> {
         self.handles
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .get(id)
-            .map(|handles| handles.project_root.clone())
+            .cloned()
             .ok_or_else(|| invalid(format!("no open session {id:?}")))
     }
 

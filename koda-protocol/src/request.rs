@@ -194,6 +194,26 @@ client_requests! {
         params: crate::memory::SessionMemoryAddParams,
         response: crate::memory::SessionMemoryAddResponse,
     },
+    /// A session's background processes that are still running.
+    SessionBackgroundTerminalsList => "session/backgroundTerminals/list" {
+        params: crate::background::BackgroundTerminalsListParams,
+        response: crate::background::BackgroundTerminalsListResponse,
+    },
+    /// Stop one of a session's background processes.
+    SessionBackgroundTerminalsTerminate => "session/backgroundTerminals/terminate" {
+        params: crate::background::BackgroundTerminalsTerminateParams,
+        response: crate::background::BackgroundTerminalsTerminateResponse,
+    },
+    /// Stop all of a session's background processes.
+    SessionBackgroundTerminalsClean => "session/backgroundTerminals/clean" {
+        params: crate::background::BackgroundTerminalsCleanParams,
+        response: crate::background::BackgroundTerminalsCleanResponse,
+    },
+    /// The sub-agents a session's model can call.
+    AgentList => "agent/list" {
+        params: crate::agent::AgentListParams,
+        response: crate::agent::AgentListResponse,
+    },
     /// Close a session the client is done with, stopping its running turn.
     SessionUnsubscribe => "session/unsubscribe" {
         params: crate::session::SessionUnsubscribeParams,
