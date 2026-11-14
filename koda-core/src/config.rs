@@ -221,6 +221,11 @@ pub struct KodaConfig {
     /// Retries for a reply whose stream failed partway
     /// (`KODA_STREAM_MAX_RETRIES`; default 5, as in Codex).
     pub stream_max_retries: u32,
+    /// Context used, in percent, past which a turn compacts after its final
+    /// reply (`KODA_POST_TURN_COMPACT_PERCENT`, 1–100). 0, the default, turns
+    /// it off, as Codex's `model_post_turn_compact_threshold_percent` does;
+    /// the next turn still compacts before its first call when it must.
+    pub post_turn_compact_percent: u8,
     /// Skip injecting project/global memory into the system prompt.
     /// Set by `skip_memory: true` in agent JSON. Default: `false`.
     pub skip_memory: bool,
@@ -412,6 +417,9 @@ impl KodaConfig {
             stream_max_retries: crate::inference_helpers::retries_from(
                 crate::runtime_env::get("KODA_STREAM_MAX_RETRIES").as_deref(),
                 crate::inference_helpers::DEFAULT_STREAM_MAX_RETRIES,
+            ),
+            post_turn_compact_percent: crate::inference_helpers::percent_from(
+                crate::runtime_env::get("KODA_POST_TURN_COMPACT_PERCENT").as_deref(),
             ),
             skip_memory: agent.skip_memory,
             trust: declared_trust,
@@ -708,6 +716,7 @@ impl KodaConfig {
             max_iterations: crate::loop_guard::MAX_ITERATIONS_DEFAULT,
             request_max_retries: crate::inference_helpers::DEFAULT_REQUEST_MAX_RETRIES,
             stream_max_retries: crate::inference_helpers::DEFAULT_STREAM_MAX_RETRIES,
+            post_turn_compact_percent: 0,
             skip_memory: false,
             trust: crate::trust::TrustMode::Auto,
             session_mcp_servers: Default::default(),

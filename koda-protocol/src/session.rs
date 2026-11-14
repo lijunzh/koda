@@ -155,6 +155,23 @@ pub struct SessionDeleteParams {
 #[serde(rename_all = "camelCase")]
 pub struct SessionDeleteResponse {}
 
+/// `session/compact/start`: compact an open session's history now, as
+/// Codex's `thread/compact/start`. Answered at once; the compaction runs as
+/// a turn of its own (`turn/started`, a `contextCompaction` item with the
+/// `manual` trigger, `turn/completed`). A running turn is stopped first and
+/// ends interrupted. The compaction's turn can be interrupted, not steered.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionCompactStartParams {
+    /// The session.
+    pub session_id: String,
+}
+
+/// The answer to `session/compact/start`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCompactStartResponse {}
+
 /// `session/deleted`: a session was deleted. Codex's `thread/deleted`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]

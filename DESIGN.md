@@ -311,7 +311,8 @@ types, and a test fails when it's stale.
 
 The protocol grows with the code that serves it. It has `initialize`,
 `state/read`, `session/start`, `session/list`, `session/delete`,
-`session/unsubscribe`, `storage/read`, `storage/purge`, `turn/start`,
+`session/compact/start`, `session/unsubscribe`, `storage/read`,
+`storage/purge`, `turn/start`,
 `turn/interrupt` and `turn/steer`,
 a session's notifications (session, turn, items, errors and warnings) and the
 server requests for approvals, questions and the loop cap. `koda exec` runs
@@ -324,8 +325,8 @@ host's requests from its dialogs, steers with `turn/steer` and stops with
 `turn/interrupt`. Its renderer still reads the engine's own events, which the
 client hands out in process until the TUI renders items, as Codex's TUI read
 its old events while it moved onto its app-server. While idle, the TUI still
-writes the database itself for `/compact`, resume and history; the host
-writes it only during turns, so the two never write at once. For the same
+writes the database itself for its input history; the host writes it only
+during turns, so the two never write at once. For the same
 move, three more things stay in process only, each until the protocol has
 requests for it: a front end that builds its own agent hands it to the host,
 which every session then uses; a session's sub-agent registry, for showing
@@ -339,7 +340,17 @@ runs; `turn/interrupt` is answered once the turn has stopped, after its
 `turn/completed`; `turn/steer` names the turn it is for, and the text shows up
 as a `userMessage` item when the model receives it, so text a turn ends without
 delivering simply has no item, and a client that wants it back keeps its own
-copy until the item arrives, as Codex's TUI does. `session/unsubscribe`
+copy until the item arrives, as Codex's TUI does. `session/compact/start`
+(Codex's `thread/compact/start`) is answered at once and compacts as a turn of
+its own, with a `contextCompaction` item whose trigger is `manual`; a running
+turn is stopped first and ends interrupted, and the compaction's turn can be
+interrupted but not steered. Compacting after a turn is the engine's too: with
+`KodaConfig::post_turn_compact_percent` set (`KODA_POST_TURN_COMPACT_PERCENT`),
+a final reply that leaves the context past it compacts inside the turn, before
+`turn/completed`, as Codex's `model_post_turn_compact_threshold_percent` does,
+and like Codex's it is off by default. The TUI used to compact after a turn
+itself at 85%; without it, the next turn's pre-flight compaction catches a full
+context. `session/unsubscribe`
 (Codex's `thread/unsubscribe`) closes a session, stopping its running turn.
 Sub-agents' status goes out as it changes, through each session's forwarder,
 not only between the turn's model calls. Requests a stopped turn left open are resolved
@@ -552,7 +563,7 @@ thresholds and have different costs:
 | Layer | Trigger | Cost | Mechanism |
 |---|---|---|---|
 | **Microcompact** (`microcompact.rs`) | Time gap since last assistant msg > 5min, AND old tool results exist | Zero LLM tokens — SQL `UPDATE` only | Replaces stale tool result bodies with `[Old tool result content cleared]` stub. Reversible by `RecallContext`. |
-| **Full compact** (`compact.rs`) | Context usage ≥ 85% (auto), or `/compact` (manual) | One LLM call on the session's model | Summarizes everything but the newest 30% into a single synthesis message; archives originals in DB. The summarizer sees user and assistant messages whole, as Codex does, and each tool result's first 2,000 characters. Stored as a `system` row and sent as the first user message, as Codex carries its summary. |
+| **Full compact** (`compact.rs`) | Context usage ≥ 85% before a model call (auto), past `KODA_POST_TURN_COMPACT_PERCENT` after a final reply (off by default), or `/compact` (manual) | One LLM call on the session's model | Summarizes everything but the newest 30% into a single synthesis message; archives originals in DB. The summarizer sees user and assistant messages whole, as Codex does, and each tool result's first 2,000 characters. Stored as a `system` row and sent as the first user message, as Codex carries its summary. |
 
 Both are inspired by Claude Code's identically-named layers. We adopt the
 two-layer approach because:

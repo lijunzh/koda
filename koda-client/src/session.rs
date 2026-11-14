@@ -28,7 +28,9 @@ use koda_core::session::KodaSession;
 use koda_protocol::item::{self, ToolCallApprovalResponse, UserInputResponse};
 use koda_protocol::rpc::{ErrorObject, RequestId, codes};
 use koda_protocol::server::WarningNotification;
-use koda_protocol::session::{ApprovalPolicy, Session, SessionStartedNotification};
+use koda_protocol::session::{
+    ApprovalPolicy, Session, SessionCompactStartResponse, SessionStartedNotification,
+};
 use koda_protocol::turn::{
     LoopCapDecision, LoopCapResponse, Turn, TurnError, TurnInterruptParams, TurnInterruptResponse,
     TurnStartParams, TurnStartResponse, TurnStatus, TurnSteerParams, TurnSteerResponse,
@@ -61,6 +63,8 @@ pub(crate) enum SessionCommand {
         params: TurnSteerParams,
         reply: oneshot::Sender<Answer>,
     },
+    /// `session/compact/start`.
+    Compact { reply: oneshot::Sender<Answer> },
     /// The client's answer to one of this session's server requests.
     Respond { id: RequestId, result: Answer },
     /// In process only: what the session's next turns run with. Applied
@@ -81,6 +85,7 @@ impl SessionCommand {
             Self::StartTurn { reply, .. }
             | Self::Interrupt { reply, .. }
             | Self::Steer { reply, .. }
+            | Self::Compact { reply }
             | Self::Configure { done: reply, .. } => {
                 let _ = reply.send(Err(error));
             }
@@ -253,7 +258,14 @@ impl SessionTask {
         while let Some(command) = self.commands.recv().await {
             match command {
                 SessionCommand::StartTurn { params, reply } => {
-                    if !self.turn(params, reply).await {
+                    let next = self.turn(params, reply).await;
+                    if !self.follow(next).await {
+                        return;
+                    }
+                }
+                SessionCommand::Compact { reply } => {
+                    let next = self.compact(reply).await;
+                    if !self.follow(next).await {
                         return;
                     }
                 }
@@ -280,8 +292,27 @@ impl SessionTask {
         self.config = config;
     }
 
-    /// Run one turn. Returns whether the task goes on.
-    async fn turn(&mut self, params: TurnStartParams, reply: oneshot::Sender<Answer>) -> bool {
+    /// Run the compactions that turns ended asking for. Returns whether the
+    /// task goes on.
+    async fn follow(&mut self, mut next: Next) -> bool {
+        loop {
+            next = match next {
+                Next::Idle => return true,
+                Next::Stop => return false,
+                Next::Compact(reply) => self.compact(reply).await,
+            };
+        }
+    }
+
+    /// Compact the session as a turn of its own, answering `reply` first.
+    async fn compact(&mut self, reply: oneshot::Sender<Answer>) -> Next {
+        let _ = reply.send(to_json(SessionCompactStartResponse {}));
+        let turn_id = uuid::Uuid::new_v4().to_string();
+        self.run_turn(turn_id, Work::Compact).await
+    }
+
+    /// Start a turn on `params`, answering `reply` once it has started.
+    async fn turn(&mut self, params: TurnStartParams, reply: oneshot::Sender<Answer>) -> Next {
         let TurnStartParams {
             input,
             images,
@@ -314,7 +345,7 @@ impl SessionTask {
             let _ = reply.send(Err(internal(format!(
                 "couldn't save your message, so it wasn't sent: {e:#}"
             ))));
-            return true;
+            return Next::Idle;
         }
         if !self.session.title_set {
             self.session.title_set = true;
@@ -335,8 +366,16 @@ impl SessionTask {
         }));
         self.sink
             .begin_turn(input, client_message_id.into_iter().collect());
+        self.run_turn(turn_id, Work::Prompt(images)).await
+    }
 
+    /// Run a turn to its end, reading the client's commands meanwhile.
+    async fn run_turn(&mut self, turn_id: String, work: Work) -> Next {
+        let steerable = matches!(work, Work::Prompt(_));
         let cancel = self.session.cancel_token().child_token();
+        // `session/compact/start` during the turn: it stops, and the
+        // compaction runs once it has.
+        let mut compact_next: Option<oneshot::Sender<Answer>> = None;
         let mut interrupts = Vec::new();
         let mut configured: Option<(KodaConfig, Vec<oneshot::Sender<Answer>>)> = None;
         // Told when the turn has stopped: dropped as this returns.
@@ -351,15 +390,31 @@ impl SessionTask {
             commands,
         } = self;
         let result = {
-            let turn = session.run_turn_as(
-                turn_id.clone(),
-                config,
-                images,
-                sink.as_ref(),
-                engine_rx,
-                Some(cancel.clone()),
-            );
-            tokio::pin!(turn);
+            // The turn's error, if it returned one, as text.
+            let mut turn: std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>,
+            > = match work {
+                Work::Prompt(images) => {
+                    let run = session.run_turn_as(
+                        turn_id.clone(),
+                        config,
+                        images,
+                        sink.as_ref(),
+                        engine_rx,
+                        Some(cancel.clone()),
+                    );
+                    Box::pin(async move { run.await.map_err(|e| format!("{e:#}")) })
+                }
+                Work::Compact => {
+                    let run = session.compact_as(
+                        turn_id.clone(),
+                        config,
+                        sink.as_ref(),
+                        Some(cancel.clone()),
+                    );
+                    Box::pin(async move { run.await.map_err(|e| format!("{e:#}")) })
+                }
+            };
             loop {
                 tokio::select! {
                     result = &mut turn => break result,
@@ -379,6 +434,10 @@ impl SessionTask {
                             }
                         }
                         Some(SessionCommand::Steer { params, reply }) => {
+                            if !steerable {
+                                let _ = reply.send(Err(invalid("cannot steer a compact turn")));
+                                continue;
+                            }
                             if params.expected_turn_id != turn_id {
                                 let _ = reply.send(Err(invalid(format!(
                                     "expected active turn id {} but found {turn_id}",
@@ -399,6 +458,16 @@ impl SessionTask {
                                 }),
                                 Err(_) => Err(internal("the turn's input is full; try again")),
                             });
+                        }
+                        // Replaces the running turn, as Codex's
+                        // `thread/compact/start` does.
+                        Some(SessionCommand::Compact { reply }) => {
+                            if !steerable || compact_next.is_some() {
+                                let _ = reply.send(Err(invalid("a compaction is already running")));
+                            } else {
+                                cancel.cancel();
+                                compact_next = Some(reply);
+                            }
                         }
                         Some(SessionCommand::Respond { id, result }) => {
                             if let Some(command) = sink.answer(&id, result)
@@ -428,9 +497,8 @@ impl SessionTask {
                 }
             }
         };
-        let error = result.err().map(|e| {
-            tracing::warn!("turn {turn_id} ended with an error: {e:#}");
-            format!("{e:#}")
+        let error = result.err().inspect(|e| {
+            tracing::warn!("turn {turn_id} ended with an error: {e}");
         });
         // Steering text the turn didn't deliver: the client sees no item for
         // it. Left in the channel, it would go out with the next prompt.
@@ -446,8 +514,30 @@ impl SessionTask {
                 let _ = done.send(to_json(serde_json::Value::Null));
             }
         }
-        keep_running
+        match compact_next {
+            _ if !keep_running => Next::Stop,
+            Some(reply) => Next::Compact(reply),
+            None => Next::Idle,
+        }
     }
+}
+
+/// What a turn does.
+enum Work {
+    /// Answer the prompt just saved, with these images.
+    Prompt(Option<Vec<ImageData>>),
+    /// Compact the history (`session/compact/start`).
+    Compact,
+}
+
+/// What the task does once a turn has ended.
+enum Next {
+    /// Wait for the client.
+    Idle,
+    /// Compact, as the client asked during the turn.
+    Compact(oneshot::Sender<Answer>),
+    /// End: told to stop, or the host is gone.
+    Stop,
 }
 
 /// In process only: a session's parts a front end still reaches directly

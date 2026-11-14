@@ -3,7 +3,8 @@
 //!
 //! Koda's host runs the turn (PR 5c); the TUI is its client:
 //!
-//!   - `turn/start` starts it, and `turn/completed` ends this loop.
+//!   - `turn/start` starts it, or `session/compact/start` for `/compact`,
+//!     and `turn/completed` ends this loop.
 //!   - The renderer reads the engine's own events, which the client hands
 //!     out in process ([`koda_client::StartArgs::raw_events`]) until the TUI
 //!     renders items. They arrive in order, and all of a turn's before its
@@ -28,14 +29,16 @@
 
 use super::turn_tracker::TurnTracker;
 use crate::sink::UiEvent;
-use crate::tui_context::{TuiContext, TurnInput};
+use crate::tui_context::{TuiContext, TurnInput, TurnRequest};
 use crate::tui_types::TuiState;
 use crate::tui_viewport::draw_viewport;
 
 use futures_util::StreamExt;
 use koda_client::RawEvent;
 use koda_client::events::Outgoing;
+use koda_client::protocol::ServerNotification;
 use koda_client::protocol::methods;
+use koda_client::protocol::session::SessionCompactStartParams;
 use koda_client::protocol::turn::{ImageInput, TurnStartParams, TurnSteerParams};
 use koda_core::engine::{EngineCommand, EngineEvent};
 use koda_core::trust;
@@ -131,17 +134,26 @@ impl TuiContext {
     /// stop it from the keyboard.
     pub(crate) async fn run_inference_turn(
         &mut self,
-        input: TurnInput,
+        request: TurnRequest,
         ui_rx: &mut mpsc::UnboundedReceiver<RawEvent>,
         cmd_tx: &mpsc::Sender<EngineCommand>,
         cmd_rx: &mut mpsc::Receiver<EngineCommand>,
     ) -> anyhow::Result<()> {
-        let TurnInput {
-            message,
-            images,
-            typed,
-            paste_blocks,
-        } = input;
+        // The prompt, and what goes back to the input box if it can't start.
+        let (prompt, restore) = match request {
+            TurnRequest::Prompt(TurnInput {
+                message,
+                images,
+                typed,
+                paste_blocks,
+            }) => (Some((message, images)), Some((typed, paste_blocks))),
+            TurnRequest::Compact => (None, None),
+        };
+        // The host's own words say what went wrong.
+        let host_error = |e: koda_client::RequestError| match e {
+            koda_client::RequestError::Server { error, .. } => anyhow::anyhow!(error.message),
+            other => anyhow::anyhow!(other),
+        };
 
         // What the turn runs with: the session a command switched to, this
         // model and provider, this mode.
@@ -153,6 +165,27 @@ impl TuiContext {
             // Messages from before this turn (session notices, resolved
             // requests) are no business of it.
             while self.client.try_next_event().is_some() {}
+            let Some((message, images)) = prompt else {
+                self.client
+                    .request::<methods::SessionCompactStart>(SessionCompactStartParams {
+                        session_id: self.session.id.clone(),
+                    })
+                    .await
+                    .map_err(host_error)?;
+                // The compaction's turn is named by its `turn/started`,
+                // which comes before anything else of it.
+                loop {
+                    match self.client.next_event().await {
+                        Some(Outgoing::Notification(ServerNotification::TurnStarted(started)))
+                            if started.session_id == self.session.id =>
+                        {
+                            return anyhow::Ok(started.turn.id);
+                        }
+                        Some(_) => {}
+                        None => anyhow::bail!("Koda's host stopped"),
+                    }
+                }
+            };
             let response = self
                 .client
                 .request::<methods::TurnStart>(TurnStartParams {
@@ -169,13 +202,7 @@ impl TuiContext {
                     mode: Some(protocol_mode(trust::read_trust(&self.shared_mode))),
                 })
                 .await
-                // The host's own words say what went wrong.
-                .map_err(|e| match e {
-                    koda_client::RequestError::Server { error, .. } => {
-                        anyhow::anyhow!(error.message)
-                    }
-                    other => anyhow::anyhow!(other),
-                })?;
+                .map_err(host_error)?;
             anyhow::Ok(response.turn.id)
         }
         .await;
@@ -188,8 +215,10 @@ impl TuiContext {
                     first.make_ascii_uppercase();
                 }
                 crate::tui_output::err_msg(&mut self.scroll_buffer, why);
-                self.textarea.set_text_clearing_elements(&typed);
-                self.paste_blocks = paste_blocks;
+                if let Some((typed, paste_blocks)) = restore {
+                    self.textarea.set_text_clearing_elements(&typed);
+                    self.paste_blocks = paste_blocks;
+                }
                 return Ok(());
             }
         };
@@ -392,7 +421,7 @@ impl TuiContext {
             ]));
         }
 
-        self.post_turn_cleanup(tracker.take_unsent_steers()).await;
+        self.post_turn_cleanup(tracker.take_unsent_steers());
         if quit_requested || host_stopped {
             self.should_quit = true;
         }

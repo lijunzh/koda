@@ -544,6 +544,11 @@ pub enum CompactionTrigger {
     Window,
     /// A session idle long enough had its old tool results cleared.
     Idle,
+    /// The client asked for it (`/compact`, `session/compact/start`).
+    Manual,
+    /// The turn's final reply left the context past the after-turn
+    /// threshold (`KODA_POST_TURN_COMPACT_PERCENT`).
+    PostTurn,
 }
 
 /// How far a compaction got.

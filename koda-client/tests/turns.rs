@@ -9,11 +9,11 @@ use std::time::{Duration, Instant};
 
 use koda_client::events::Outgoing;
 use koda_client::protocol::initialize::ClientInfo;
-use koda_client::protocol::item::Item;
+use koda_client::protocol::item::{CompactionStatus, CompactionTrigger, Item};
 use koda_client::protocol::rpc::{ErrorObject, RequestId, codes};
 use koda_client::protocol::session::{
-    SessionDeleteParams, SessionListParams, SessionStartParams, SessionUnsubscribeParams,
-    SessionUnsubscribeStatus,
+    SessionCompactStartParams, SessionDeleteParams, SessionListParams, SessionStartParams,
+    SessionUnsubscribeParams, SessionUnsubscribeStatus,
 };
 use koda_client::protocol::state::TrustMode;
 use koda_client::protocol::storage::{StoragePurgeParams, StorageReadParams};
@@ -970,4 +970,198 @@ async fn storage_counts_and_purges_compacted_messages() {
         .unwrap();
     assert_eq!(purged.deleted, compacted as u64);
     assert_eq!(koda.storage().await.compacted_messages, 0);
+}
+
+// ── Compaction ──────────────────────────────────────────────────────────
+
+/// A reply to a streamed call, with the prompt size the provider reports.
+fn text_using(reply: &str, prompt_tokens: u64) -> ResponseTemplate {
+    sse(&[
+        json!({"choices": [{"delta": {"content": reply}}]}),
+        json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+        json!({"choices": [], "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": 20}}),
+    ])
+}
+
+/// The summary call's reply: compaction doesn't stream.
+fn summary(text: &str) -> ResponseTemplate {
+    ResponseTemplate::new(200)
+        .insert_header("content-type", "application/json")
+        .set_body_string(
+            json!({
+                "id": "c", "object": "chat.completion", "model": "stub",
+                "choices": [{"index": 0, "finish_reason": "stop",
+                             "message": {"role": "assistant", "content": text}}],
+                "usage": {"prompt_tokens": 300, "completion_tokens": 30},
+            })
+            .to_string(),
+        )
+}
+
+impl Koda {
+    async fn compact(&self) -> Result<(), RequestError> {
+        self.client
+            .request::<methods::SessionCompactStart>(SessionCompactStartParams {
+                session_id: self.session.clone(),
+            })
+            .await
+            .map(|_| ())
+    }
+
+    /// The id of the next turn to start.
+    async fn next_turn(&mut self) -> String {
+        match self.until("turn/started").await.pop() {
+            Some(Outgoing::Notification(ServerNotification::TurnStarted(started))) => {
+                started.turn.id
+            }
+            other => panic!("expected turn/started, got {other:?}"),
+        }
+    }
+}
+
+/// The turn's compaction item, as it completed.
+fn compaction(messages: &[Outgoing]) -> (CompactionTrigger, CompactionStatus, Option<String>) {
+    let found = completed(messages).into_iter().find_map(|item| match item {
+        Item::ContextCompaction {
+            trigger,
+            status,
+            reason,
+            ..
+        } => Some((*trigger, *status, reason.clone())),
+        _ => None,
+    });
+    found.unwrap_or_else(|| panic!("no compaction in {}", names(messages)))
+}
+
+/// `session/compact/start` stops the running turn, then compacts as a turn
+/// of its own, which can be stopped but not steered, as in Codex.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_compaction_replaces_the_running_turn_and_runs_as_its_own() {
+    let server = model(vec![
+        text("One."),
+        text("Two."),
+        text("Three."),
+        text("Too late.").set_delay(Duration::from_secs(20)),
+        summary("<summary>SUMMARY-MARKER covers the turns.</summary>")
+            .set_delay(Duration::from_secs(2)),
+        text("Four."),
+    ])
+    .await;
+    let mut koda = Koda::start(config(&server)).await;
+    for prompt in ["first", "second", "third"] {
+        koda.turn(prompt).await;
+        koda.until("turn/completed").await;
+    }
+    let running = koda.turn("slow").await;
+    koda.until("turn/started").await;
+    // Its call is out, so the summary call gets the summary.
+    let deadline = Instant::now() + WAIT;
+    while chat_requests(&server).await.len() < 4 {
+        assert!(Instant::now() < deadline, "the slow turn's call never came");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let asked = Instant::now();
+    koda.compact().await.unwrap();
+    assert!(asked.elapsed() < Duration::from_secs(5), "answered at once");
+    let replaced = koda.until("turn/completed").await;
+    assert_eq!(turn_completed(&replaced).status, TurnStatus::Interrupted);
+
+    let compacting = koda.next_turn().await;
+    assert_ne!(compacting, running);
+    let refused = server_error(koda.steer(&compacting, "and also", "s1").await);
+    assert_eq!(refused.message, "cannot steer a compact turn");
+    let again = server_error(koda.compact().await);
+    assert_eq!(again.message, "a compaction is already running");
+
+    let seen = koda.until("turn/completed").await;
+    assert_eq!(
+        turn_completed(&seen).status,
+        TurnStatus::Completed,
+        "{:?}",
+        turn_completed(&seen).error
+    );
+    let (trigger, status, _) = compaction(&seen);
+    assert_eq!(trigger, CompactionTrigger::Manual);
+    assert_eq!(status, CompactionStatus::Completed);
+
+    koda.turn("after").await;
+    koda.until("turn/completed").await;
+    let sent = chat_requests(&server).await.last().unwrap().to_string();
+    assert!(sent.contains("SUMMARY-MARKER"), "no summary: {sent}");
+    assert!(
+        !sent.contains("\"first\""),
+        "the oldest turn survived: {sent}"
+    );
+    koda.client.shutdown().await;
+}
+
+/// A compaction with too little to compact completes its turn and says why.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_compaction_with_nothing_to_do_completes() {
+    let server = model(vec![text("One.")]).await;
+    let mut koda = Koda::start(config(&server)).await;
+    koda.turn("only").await;
+    koda.until("turn/completed").await;
+
+    koda.compact().await.unwrap();
+    let seen = koda.until("turn/completed").await;
+    assert_eq!(turn_completed(&seen).status, TurnStatus::Completed);
+    let (trigger, status, reason) = compaction(&seen);
+    assert_eq!(trigger, CompactionTrigger::Manual);
+    assert_eq!(status, CompactionStatus::Skipped);
+    assert_eq!(reason.as_deref(), Some("too_short"));
+    assert_eq!(chat_requests(&server).await.len(), 1, "no summary call");
+    koda.client.shutdown().await;
+}
+
+/// With `post_turn_compact_percent` set, a final reply that leaves the
+/// context past it compacts inside the turn, before `turn/completed`, as
+/// Codex's `model_post_turn_compact_threshold_percent` does. Off, it doesn't.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_full_context_compacts_after_the_reply_when_turned_on() {
+    for percent in [0, 50] {
+        let server = model(vec![
+            text("One."),
+            text("Two."),
+            text("Three."),
+            text_using("Big.", 60_000),
+            summary("<summary>SUMMARY-MARKER covers the turns.</summary>"),
+        ])
+        .await;
+        let mut config = config(&server);
+        config.post_turn_compact_percent = percent;
+        let mut koda = Koda::start(config).await;
+        for prompt in ["first", "second", "third", "fourth"] {
+            koda.turn(prompt).await;
+            let seen = koda.until("turn/completed").await;
+            assert_eq!(turn_completed(&seen).status, TurnStatus::Completed);
+            if prompt != "fourth" {
+                continue;
+            }
+            let compacted = completed(&seen)
+                .iter()
+                .any(|item| matches!(item, Item::ContextCompaction { .. }));
+            if percent == 0 {
+                assert!(!compacted, "compacted with the setting off");
+                assert_eq!(chat_requests(&server).await.len(), 4);
+                continue;
+            }
+            let (trigger, status, _) = compaction(&seen);
+            assert_eq!(trigger, CompactionTrigger::PostTurn);
+            assert_eq!(status, CompactionStatus::Completed);
+            // The reply came first; the compaction ran before the turn ended.
+            let reply = seen
+                .iter()
+                .position(|m| matches!(m, Outgoing::Notification(ServerNotification::ItemCompleted(n)) if matches!(n.item, Item::AgentMessage { .. })))
+                .unwrap();
+            let compaction_at = seen
+                .iter()
+                .position(|m| matches!(m, Outgoing::Notification(ServerNotification::ItemStarted(n)) if matches!(n.item, Item::ContextCompaction { .. })))
+                .unwrap();
+            assert!(reply < compaction_at, "{}", names(&seen));
+            assert_eq!(chat_requests(&server).await.len(), 5);
+        }
+        koda.client.shutdown().await;
+    }
 }

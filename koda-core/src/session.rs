@@ -640,6 +640,52 @@ impl KodaSession {
         }
     }
 
+    /// Compact the session as a turn of its own, as Codex's `CompactTask`
+    /// runs: `TurnStart`, a `manual` compaction, `TurnEnd`. A compaction
+    /// that fails ends the turn with its error; one that had nothing to do
+    /// completes it. `turn_cancel` stops it, leaving the history as it was.
+    pub async fn compact_as(
+        &mut self,
+        turn_id: String,
+        config: &KodaConfig,
+        sink: &dyn EngineSink,
+        turn_cancel: Option<CancellationToken>,
+    ) -> Result<()> {
+        use crate::engine::event::{CompactionTrigger, TurnEndReason};
+        use crate::inference::CompactOutcome;
+
+        sink.emit(crate::engine::EngineEvent::TurnStart {
+            turn_id: turn_id.clone(),
+        });
+        let started = std::time::Instant::now();
+        let meter = crate::engine::sink::TurnMeter::new(sink);
+        let cancel = turn_cancel.unwrap_or_else(|| self.cancel_token());
+        let outcome = crate::inference::compact_now(
+            &self.db,
+            &self.id,
+            config,
+            config.max_context_tokens,
+            self.provider.as_ref(),
+            &meter,
+            CompactionTrigger::Manual,
+            None,
+            &cancel,
+        )
+        .await;
+        let reason = match outcome {
+            CompactOutcome::Done => TurnEndReason::Complete,
+            CompactOutcome::Cancelled => TurnEndReason::Cancelled,
+            CompactOutcome::Failed(message) => TurnEndReason::Error { message },
+        };
+        meter.emit(crate::engine::EngineEvent::TurnSummary {
+            turn_id: turn_id.clone(),
+            usage: meter.usage(),
+            elapsed_ms: started.elapsed().as_millis() as u64,
+        });
+        meter.emit(crate::engine::EngineEvent::TurnEnd { turn_id, reason });
+        Ok(())
+    }
+
     /// Take the steering text that didn't reach the model, oldest first.
     ///
     /// A client that sends [`EngineCommand::QueueNext`] calls this after each

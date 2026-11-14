@@ -1454,6 +1454,45 @@ async fn compact_replaces_earlier_turns_with_the_summary() {
     assert!(sent.contains("after compaction"), "{sent}");
 }
 
+/// Esc stops `/compact` as it stops a turn (the host runs it as one), and
+/// the history stays as it was.
+#[tokio::test(flavor = "multi_thread")]
+async fn esc_stops_a_compaction_and_keeps_the_history() {
+    let server = scripted_model(vec![
+        final_text(),
+        final_text(),
+        final_text(),
+        json_reply("<summary>NEVER-SEEN</summary>").set_delay(Duration::from_secs(30)),
+        final_text(),
+    ])
+    .await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    for (n, prompt) in ["turn one oldest", "turn two", "turn three"]
+        .iter()
+        .enumerate()
+    {
+        tui.submit(prompt);
+        wait_for_model_call(&server, n + 1).await;
+        tui.wait_for_screen_without(BUSY_PROMPT);
+    }
+
+    run_command(&mut tui, "/compact");
+    wait_for_model_call(&server, 4).await;
+    tui.stop_turn(ESC);
+
+    tui.submit("after the stop");
+    let sent = wait_for_model_call(&server, 5).await;
+    let body: Value = serde_json::from_str(&sent).unwrap();
+    let kept = body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|m| m["content"] == "turn one oldest");
+    assert!(kept, "the oldest turn is gone: {sent}");
+    assert!(!sent.contains("NEVER-SEEN"), "{sent}");
+}
+
 /// No more model calls come within a couple of seconds: nothing started a
 /// turn on its own.
 async fn assert_no_more_calls(server: &FakeLlmServer, calls: usize) {

@@ -2,7 +2,6 @@
 //!
 //! ## Wizards
 //!
-//! - **`/compact`** — summarize old context, show token savings
 //! - **`/provider`** — provider selection menu (Anthropic, Gemini, etc.)
 //! - **`/trust`** — set approval mode for the session
 //! - **`/key`** — API key entry (masked input)
@@ -14,74 +13,10 @@ use crate::tui_output;
 
 use crate::tui_types::MenuContent;
 
-use crate::tui_context::TuiSession;
 use koda_core::config::KodaConfig;
-use koda_core::providers::LlmProvider;
 use ratatui::text::{Line, Span};
-use std::sync::Arc;
-use tokio::sync::RwLock;
 
 use tui_output::{BOLD, CYAN, DIM};
-
-// ── Compact (native TUI) ────────────────────────────
-
-pub(crate) async fn handle_compact(
-    buffer: &mut ScrollBuffer,
-    session: &TuiSession,
-    config: &KodaConfig,
-    provider: &Arc<RwLock<Box<dyn LlmProvider>>>,
-) {
-    use koda_core::compact::{self, CompactSkip};
-
-    tui_output::emit_line(buffer, Line::styled("  \u{1f43b} Compacting...", CYAN));
-
-    match compact::compact_session(
-        &session.db,
-        &session.id,
-        config.max_context_tokens,
-        &config.model_settings,
-        provider,
-    )
-    .await
-    {
-        Ok(Ok(result)) => {
-            tui_output::ok_msg(
-                buffer,
-                format!(
-                    "Compacted {} messages \u{2192} ~{} tokens",
-                    result.deleted, result.summary_tokens
-                ),
-            );
-            tui_output::dim_msg(
-                buffer,
-                "Conversation context has been summarized. Continue as normal!".into(),
-            );
-        }
-        Ok(Err(CompactSkip::PendingToolCalls)) => {
-            tui_output::warn_msg(
-                buffer,
-                "Tool calls are still pending \u{2014} deferring compact.".into(),
-            );
-        }
-        Ok(Err(CompactSkip::TooShort(n))) => {
-            tui_output::dim_msg(
-                buffer,
-                format!("Conversation is too short to compact ({n} messages)."),
-            );
-        }
-        Ok(Err(CompactSkip::HistoryTooLarge)) => {
-            tui_output::warn_msg(
-                buffer,
-                "History is too large for this model to summarize without data loss.".into(),
-            );
-            tui_output::dim_msg(
-                buffer,
-                "Switch to a model with a larger context window, or start a new session.".into(),
-            );
-        }
-        Err(e) => tui_output::err_msg(buffer, format!("Compact failed: {e:#}")),
-    }
-}
 
 // ── Purge (native TUI) ───────────────────────────────
 

@@ -19,13 +19,29 @@ so the percentage can jump after a reply.
 Auto-compact is skipped if there are pending tool calls (it waits for the
 turn to finish cleanly).
 
+### Compacting after a turn
+
+Auto-compact runs before a model call, so a reply that fills the context is
+compacted when the next turn starts. To compact as soon as the reply is in,
+set `KODA_POST_TURN_COMPACT_PERCENT` to the usage, from 1 to 100, past which a
+turn compacts after its final reply, before it ends:
+
+```bash
+export KODA_POST_TURN_COMPACT_PERCENT=85
+```
+
+It is off by default, as Codex's `model_post_turn_compact_threshold_percent`
+is. It doesn't run when the turn was stopped or you typed while the reply
+streamed, and a failure keeps the reply.
+
 After a pause of 5 minutes or more, Koda also clears old tool results from the
 context. This makes no model call.
 
 ## Manual compact
 
 Run `/compact` at any time to compact early, e.g. before starting a large
-refactor so you have the full context window available.
+refactor so you have the full context window available. It runs like a turn:
+Esc stops it and leaves the history as it was.
 
 ## Purging archived history
 

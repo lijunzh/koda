@@ -27,6 +27,8 @@ pub enum SlashAction {
     Continue,
     Quit,
     OpenKeyMenu,
+    /// Compact the session on the host, as a turn the TUI follows.
+    Compact,
 }
 
 use tui_output::{BOLD, CYAN, DIM};
@@ -154,10 +156,7 @@ pub async fn handle_slash_command(
             SlashAction::Continue
         }
 
-        "/compact" => {
-            crate::tui_wizards::handle_compact(buffer, session, config, provider).await;
-            SlashAction::Continue
-        }
+        "/compact" => SlashAction::Compact,
 
         "/purge" => {
             crate::tui_wizards::handle_purge(buffer, client, arg, menu).await;

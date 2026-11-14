@@ -64,7 +64,8 @@ in your shell or `.envrc` is always a clean override.
 
 Summarises old conversation history to free context tokens. Koda
 auto-compacts when the context window hits **85%** full, but you can
-trigger it manually at any time:
+trigger it manually at any time. It runs like a turn: Esc stops it, leaving
+the history as it was.
 
 - The newest **30% of the history by size** stays as it is (at least 4 messages)
 - The rest is summarised by the model, and your own messages from that part

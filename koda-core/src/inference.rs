@@ -371,6 +371,129 @@ fn compaction_completed(result: &crate::compact::CompactResult) -> CompactionSta
     }
 }
 
+/// How a compaction outside a model call ended.
+pub(crate) enum CompactOutcome {
+    /// History was replaced, or a precondition left it as it was.
+    Done,
+    /// The turn was cancelled first; nothing changed.
+    Cancelled,
+    /// The summary call failed; nothing changed.
+    Failed(String),
+}
+
+/// Compact now, outside a model call: for `/compact` (`manual`) and after a
+/// turn's final reply (`post_turn`). Says how it went with
+/// [`EngineEvent::Compaction`] events, and stops if `cancel` fires.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn compact_now(
+    db: &Database,
+    session_id: &str,
+    config: &KodaConfig,
+    max_context_tokens: usize,
+    provider: &dyn LlmProvider,
+    sink: &dyn EngineSink,
+    trigger: CompactionTrigger,
+    context_percent: Option<usize>,
+    cancel: &CancellationToken,
+) -> CompactOutcome {
+    let manual = trigger == CompactionTrigger::Manual;
+    let started = match context_percent {
+        Some(pct) => format!("\u{1f4e6} Context at {pct}% \u{2014} compacting..."),
+        None => "\u{1f4e6} Compacting...".to_string(),
+    };
+    sink.emit(EngineEvent::Compaction {
+        trigger,
+        status: CompactionStatus::Started { context_percent },
+        notice: Some(Notice::Info(started)),
+    });
+    let compacted = tokio::select! {
+        result = crate::compact::compact_session_with_provider(
+            db,
+            session_id,
+            max_context_tokens,
+            &config.model_settings,
+            provider,
+        ) => result,
+        // Dropping the compaction rolls back its transaction, if it got
+        // that far: the history stays as it was.
+        _ = cancel.cancelled() => {
+            sink.emit(EngineEvent::Warn {
+                message: "Interrupted".into(),
+            });
+            return CompactOutcome::Cancelled;
+        }
+    };
+    match compacted {
+        Ok(Ok(result)) => {
+            crate::compact::reset_compact_failures(session_id);
+            let notice = if result.no_summary {
+                Notice::Warn(format!(
+                    "\u{26a0}\u{fe0f} The model returned no summary; dropped {} older messages",
+                    result.deleted
+                ))
+            } else {
+                Notice::Info(format!(
+                    "\u{2705} Compacted {} messages (~{} token summary)",
+                    result.deleted, result.summary_tokens
+                ))
+            };
+            sink.emit(EngineEvent::ModelUsage {
+                usage: result.usage.clone(),
+            });
+            sink.emit(EngineEvent::Compaction {
+                trigger,
+                status: compaction_completed(&result),
+                notice: Some(notice),
+            });
+            CompactOutcome::Done
+        }
+        Ok(Err(skip)) => {
+            use crate::compact::CompactSkip;
+            tracing::info!("{trigger:?} compact skipped: {skip:?}");
+            // Only what the user asked for says why it did nothing.
+            let notice = match &skip {
+                _ if !manual => None,
+                CompactSkip::PendingToolCalls => Some(Notice::Warn(
+                    "Tool calls are still pending \u{2014} not compacting.".into(),
+                )),
+                CompactSkip::TooShort(n) => Some(Notice::Info(format!(
+                    "Conversation is too short to compact ({n} messages)."
+                ))),
+                CompactSkip::HistoryTooLarge => Some(Notice::Warn(
+                    "History is too large for this model to summarize without data loss. \
+                     Switch to a model with a larger context window, or start a new session."
+                        .into(),
+                )),
+            };
+            sink.emit(EngineEvent::Compaction {
+                trigger,
+                status: CompactionStatus::Skipped {
+                    reason: skip.reason().to_string(),
+                },
+                notice,
+            });
+            CompactOutcome::Done
+        }
+        Err(e) => {
+            tracing::warn!("{trigger:?} compact failed: {e:#}");
+            let error = format!("{e:#}");
+            sink.emit(EngineEvent::Compaction {
+                trigger,
+                status: CompactionStatus::Failed {
+                    error: error.clone(),
+                },
+                // A manual one fails its turn, which says why.
+                notice: (!manual).then(|| {
+                    Notice::Warn(format!(
+                        "Compact failed: {error}. The turn's reply is kept."
+                    ))
+                }),
+            });
+            CompactOutcome::Failed(format!("Compact failed: {error}"))
+        }
+    }
+}
+
 /// Last line of defence before a send: if the estimate is at or past the
 /// window, drop the oldest history without a summary until it is back under
 /// the auto-compact threshold (at most a few rounds, each halving the history).
@@ -1801,6 +1924,34 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
                 rate,
                 context,
             });
+
+            // Compact now if the reply left the context past the after-turn
+            // threshold, as Codex does (`model_post_turn_compact_threshold_percent`):
+            // inside the turn, before it ends. Off by default. A failure
+            // keeps the reply and the turn completes.
+            let after_turn = usize::from(config.post_turn_compact_percent);
+            if after_turn > 0 && !cancel.is_cancelled() && !cmd_rx.has_steers() {
+                let used =
+                    last_prompt_tokens.max(0) as usize + usage.completion_tokens.max(0) as usize;
+                let pct = crate::context::percent_of(used, max_context);
+                if pct >= after_turn && !crate::compact::is_compact_circuit_broken(session_id) {
+                    let outcome = compact_now(
+                        db,
+                        session_id,
+                        config,
+                        max_context,
+                        provider,
+                        sink,
+                        CompactionTrigger::PostTurn,
+                        Some(pct),
+                        &cancel,
+                    )
+                    .await;
+                    if let CompactOutcome::Failed(_) = outcome {
+                        crate::compact::record_compact_failure(session_id);
+                    }
+                }
+            }
 
             return Ok(());
         }

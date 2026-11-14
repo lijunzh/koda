@@ -227,6 +227,10 @@ impl Host {
                 params.session_id.clone(),
                 SessionCommand::Steer { params, reply },
             ),
+            // Answered at once; the compaction runs as a turn.
+            ClientRequest::SessionCompactStart { params, .. } => {
+                (params.session_id, SessionCommand::Compact { reply })
+            }
         };
         self.to_session(&session_id, command).await;
     }

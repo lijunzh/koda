@@ -71,7 +71,6 @@ pub(crate) struct TuiContext {
     /// here and show a hint; a second Ctrl+C within
     /// [`QUIT_ARM_WINDOW`] confirms exit. Reset on any other action.
     pub quit_armed_at: Option<std::time::Instant>,
-    pub silent_compact_deferred: bool,
     pub inference_start: Option<std::time::Instant>,
     /// Context window usage percentage (0-100), updated via EngineEvent::ContextUsage.
     pub context_pct: u32,
@@ -179,6 +178,14 @@ pub(crate) struct TurnInput {
     pub paste_blocks: Vec<crate::input::PasteBlock>,
 }
 
+/// What a turn on the host does.
+pub(crate) enum TurnRequest {
+    /// Answer a prompt.
+    Prompt(TurnInput),
+    /// Compact the session (`/compact`).
+    Compact,
+}
+
 /// Outcome of dispatching a single command.
 pub(crate) enum CommandOutcome {
     /// No input was available to dispatch.
@@ -187,6 +194,8 @@ pub(crate) enum CommandOutcome {
     Handled,
     /// Non-slash input — ready to start an inference turn.
     StartInference(TurnInput),
+    /// `/compact`: the host compacts the session as a turn.
+    Compact,
     /// /quit was invoked.
     Quit,
 }
@@ -582,7 +591,6 @@ impl TuiContext {
             pending_command: None,
             should_quit: false,
             quit_armed_at: None,
-            silent_compact_deferred: false,
             inference_start: None,
             context_pct: 0,
             learned_context_window: None,
@@ -731,7 +739,12 @@ impl TuiContext {
                         continue;
                     }
                     CommandOutcome::StartInference(input) => {
-                        self.run_inference_turn(input, ui_rx, cmd_tx, cmd_rx)
+                        self.run_inference_turn(TurnRequest::Prompt(input), ui_rx, cmd_tx, cmd_rx)
+                            .await?;
+                        continue;
+                    }
+                    CommandOutcome::Compact => {
+                        self.run_inference_turn(TurnRequest::Compact, ui_rx, cmd_tx, cmd_rx)
                             .await?;
                         continue;
                     }
@@ -888,6 +901,7 @@ impl TuiContext {
                 self.open_key_picker().await;
                 CommandOutcome::Handled
             }
+            SlashAction::Compact => CommandOutcome::Compact,
             SlashAction::Quit => {
                 self.scroll_buffer.push(Line::styled(
                     "\u{1f43b} Goodbye!",
