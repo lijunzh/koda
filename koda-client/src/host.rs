@@ -18,12 +18,15 @@ use std::time::Duration;
 
 use koda_core::config::KodaConfig;
 use koda_core::db::Database;
+use koda_protocol::ServerNotification;
 use koda_protocol::initialize::{ClientInfo, InitializeResponse, ServerInfo};
 use koda_protocol::rpc::{self, ErrorObject, RequestId, codes};
 use koda_protocol::session::{
+    SessionDeleteResponse, SessionDeletedNotification, SessionListParams, SessionListResponse,
     SessionStartParams, SessionStartResponse, SessionUnsubscribeResponse, SessionUnsubscribeStatus,
 };
 use koda_protocol::state::{SandboxState, StateReadResponse, TrustMode};
+use koda_protocol::storage::{StoragePurgeParams, StoragePurgeResponse, StorageReadResponse};
 use koda_protocol::{ClientRequest, PROTOCOL_VERSION};
 use serde_json::Value;
 use tokio::sync::{Mutex, mpsc, oneshot};
@@ -41,6 +44,9 @@ pub(crate) type HandleMap = Arc<std::sync::Mutex<HashMap<String, SessionHandles>
 /// its own wind-down at five seconds; the client stops the host by force
 /// after its own five.
 const SESSION_STOP: Duration = Duration::from_secs(4);
+
+/// How many sessions `session/list` gives without a limit.
+const DEFAULT_LIST_LIMIT: u32 = 50;
 
 /// A request's answer: the method's response as JSON, or an error.
 pub(crate) type Answer = Result<Value, ErrorObject>;
@@ -182,6 +188,26 @@ impl Host {
                 let _ = reply.send(self.start_session(params).await.and_then(to_json));
                 return;
             }
+            ClientRequest::SessionList { params, .. } => {
+                let _ = reply.send(self.list_sessions(params).await.and_then(to_json));
+                return;
+            }
+            ClientRequest::SessionDelete { params, .. } => {
+                let _ = reply.send(
+                    self.delete_session(params.session_id)
+                        .await
+                        .and_then(to_json),
+                );
+                return;
+            }
+            ClientRequest::StorageRead { .. } => {
+                let _ = reply.send(self.read_storage().await.and_then(to_json));
+                return;
+            }
+            ClientRequest::StoragePurge { params, .. } => {
+                let _ = reply.send(self.purge_storage(params).await.and_then(to_json));
+                return;
+            }
             ClientRequest::SessionUnsubscribe { params, .. } => {
                 let status = self.unsubscribe(&params.session_id).await;
                 let _ = reply.send(to_json(SessionUnsubscribeResponse { status }));
@@ -217,6 +243,93 @@ impl Host {
         }
     }
 
+    async fn list_sessions(
+        &self,
+        params: SessionListParams,
+    ) -> Result<SessionListResponse, ErrorObject> {
+        use koda_core::persistence::Persistence;
+        let root = params
+            .cwd
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.context.project_root.clone());
+        let limit = params.limit.unwrap_or(DEFAULT_LIST_LIMIT);
+        let stored = self
+            .context
+            .db
+            .list_sessions(i64::from(limit), &root)
+            .await
+            .map_err(|e| internal(format!("couldn't list sessions: {e:#}")))?;
+        Ok(SessionListResponse {
+            data: stored.iter().map(session::describe).collect(),
+        })
+    }
+
+    /// Delete session `id`, closing it first if it is open, as Codex's
+    /// `thread/delete` does, and say so with `session/deleted`.
+    async fn delete_session(&self, id: String) -> Result<SessionDeleteResponse, ErrorObject> {
+        use koda_core::persistence::Persistence;
+        let open = self.sessions.lock().await.remove(&id);
+        if let Some(session) = open {
+            self.handles
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove(&id);
+            let (done, stopped) = oneshot::channel();
+            let _ = session.send(SessionCommand::Shutdown { done: Some(done) });
+            // Dropped once the session's task has ended, its turn stopped.
+            let _ = tokio::time::timeout(SESSION_STOP, stopped).await;
+        }
+        let deleted = self
+            .context
+            .db
+            .delete_session(&id)
+            .await
+            .map_err(|e| internal(format!("couldn't delete the session: {e:#}")))?;
+        if !deleted {
+            return Err(invalid(format!("no session {id:?}")));
+        }
+        let _ =
+            self.context
+                .events
+                .send(Outgoing::Notification(ServerNotification::SessionDeleted(
+                    SessionDeletedNotification { session_id: id },
+                )));
+        Ok(SessionDeleteResponse {})
+    }
+
+    async fn read_storage(&self) -> Result<StorageReadResponse, ErrorObject> {
+        use koda_core::persistence::Persistence;
+        let stats = self
+            .context
+            .db
+            .compacted_stats()
+            .await
+            .map_err(|e| internal(format!("couldn't read the store: {e:#}")))?;
+        let count = |n: i64| u64::try_from(n).unwrap_or(0);
+        Ok(StorageReadResponse {
+            compacted_messages: count(stats.message_count),
+            sessions: count(stats.session_count),
+            size_bytes: count(stats.size_bytes),
+            oldest_compacted_at: stats.oldest_unix,
+        })
+    }
+
+    async fn purge_storage(
+        &self,
+        params: StoragePurgeParams,
+    ) -> Result<StoragePurgeResponse, ErrorObject> {
+        use koda_core::persistence::Persistence;
+        let deleted = self
+            .context
+            .db
+            .purge_compacted(params.min_age_days.unwrap_or(0))
+            .await
+            .map_err(|e| internal(format!("couldn't purge: {e:#}")))?;
+        Ok(StoragePurgeResponse {
+            deleted: deleted as u64,
+        })
+    }
+
     /// Close session `id`: its task stops its turn, if one runs, and ends.
     async fn unsubscribe(&self, id: &str) -> SessionUnsubscribeStatus {
         let Some(session) = self.sessions.lock().await.remove(id) else {
@@ -226,7 +339,7 @@ impl Host {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(id);
-        let _ = session.send(SessionCommand::Shutdown);
+        let _ = session.send(SessionCommand::Shutdown { done: None });
         SessionUnsubscribeStatus::Unsubscribed
     }
 
@@ -298,7 +411,7 @@ impl Host {
             .unwrap_or_else(PoisonError::into_inner)
             .clear();
         for session in self.sessions.lock().await.drain().map(|(_, s)| s) {
-            let _ = session.send(SessionCommand::Shutdown);
+            let _ = session.send(SessionCommand::Shutdown { done: None });
         }
         let mut tasks = self.tasks.lock().await;
         let _ = tokio::time::timeout(SESSION_STOP, async {

@@ -265,18 +265,17 @@ impl TuiContext {
     }
 
     pub(crate) async fn open_session_picker(&mut self) {
-        match self.session.db.list_sessions(10, &self.project_root).await {
+        match crate::tui_commands::list_sessions(&self.client, 10).await {
             Ok(sessions) if !sessions.is_empty() => {
                 let items: Vec<crate::widgets::session_menu::SessionItem> = sessions
                     .iter()
                     .map(|s| crate::widgets::session_menu::SessionItem {
                         id: s.id.clone(),
                         short_id: s.id[..8.min(s.id.len())].to_string(),
-                        created_at: s.created_at.clone(),
-                        message_count: s.message_count,
-                        total_tokens: s.total_tokens,
+                        updated: crate::util::unix_minutes(s.updated_at),
                         is_current: s.id == self.session.id,
-                        title: s.title.clone(),
+                        title: s.name.clone(),
+                        preview: s.preview.clone(),
                     })
                     .collect();
                 let mut dd =
@@ -395,7 +394,7 @@ impl TuiContext {
             let days = *min_age_days;
             match key.code {
                 KeyCode::Char('y' | 'Y') => {
-                    crate::tui_wizards::execute_purge(&mut self.scroll_buffer, &self.session, days)
+                    crate::tui_wizards::execute_purge(&mut self.scroll_buffer, &self.client, days)
                         .await;
                     self.menu = MenuContent::None;
                 }

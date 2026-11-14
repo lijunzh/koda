@@ -425,7 +425,7 @@ impl TuiContext {
         .map_err(|e| anyhow::anyhow!("couldn't start Koda's host: {e}"))?;
         let session = open_host_session(&client, resume, db.clone()).await?;
 
-        crate::startup::purge_nudge(&db, &mut startup_lines).await;
+        crate::startup::purge_nudge(&client, &mut startup_lines).await;
 
         // Restore persisted approval mode on resume (#590).
         // Fallback to the user's current CLI/config trust mode (not a hardcoded
@@ -875,6 +875,7 @@ impl TuiContext {
             &mut self.pending_command,
             &mut self.menu,
             &mut self.child_activity,
+            &self.client,
         )
         .await;
 

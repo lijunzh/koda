@@ -4,16 +4,18 @@
 
 use super::dropdown::DropdownItem;
 
-/// A session item for the dropdown.
+/// A session item for the dropdown: its title, or first prompt, and when it
+/// was last used, as Codex's session picker shows them.
 #[derive(Clone, Debug)]
 pub struct SessionItem {
     pub id: String,
     pub short_id: String,
-    pub created_at: String,
-    pub message_count: i64,
-    pub total_tokens: i64,
+    /// When its last message was stored, formatted.
+    pub updated: String,
     pub is_current: bool,
     pub title: Option<String>,
+    /// The first prompt, for a session without a title.
+    pub preview: String,
 }
 
 impl DropdownItem for SessionItem {
@@ -21,17 +23,9 @@ impl DropdownItem for SessionItem {
         &self.short_id
     }
     fn description(&self) -> String {
-        let mut desc = if let Some(title) = &self.title {
-            let t: String = title.chars().take(30).collect();
-            format!("{t}  {} msgs", self.message_count)
-        } else {
-            format!(
-                "{}  {} msgs  {}k tok",
-                self.created_at,
-                self.message_count,
-                self.total_tokens / 1000
-            )
-        };
+        let name = self.title.as_deref().unwrap_or(&self.preview);
+        let name: String = name.chars().take(30).collect();
+        let mut desc = format!("{name}  {}", self.updated);
         if self.is_current {
             desc.push_str(" \u{25c0} current");
         }
@@ -40,7 +34,8 @@ impl DropdownItem for SessionItem {
     fn matches_filter(&self, filter: &str) -> bool {
         let f = filter.to_lowercase();
         self.id.to_lowercase().contains(&f)
-            || self.created_at.to_lowercase().contains(&f)
+            || self.updated.to_lowercase().contains(&f)
+            || self.preview.to_lowercase().contains(&f)
             || self
                 .title
                 .as_deref()
@@ -52,34 +47,36 @@ impl DropdownItem for SessionItem {
 mod tests {
     use super::*;
 
-    #[test]
-    fn current_shows_marker() {
-        let item = SessionItem {
+    fn item(title: Option<&str>, current: bool) -> SessionItem {
+        SessionItem {
             id: "abc12345".into(),
             short_id: "abc12345".into(),
-            created_at: "2026-03-08".into(),
-            message_count: 5,
-            total_tokens: 12000,
-            is_current: true,
-            title: None,
-        };
-        assert!(item.description().contains('\u{25c0}'));
+            updated: "2026-03-08 14:30".into(),
+            is_current: current,
+            title: title.map(str::to_string),
+            preview: "fix the login bug".into(),
+        }
     }
 
     #[test]
-    fn filter_by_id_and_date() {
-        let item = SessionItem {
-            id: "abc12345".into(),
-            short_id: "abc12345".into(),
-            created_at: "2026-03-08".into(),
-            message_count: 5,
-            total_tokens: 12000,
-            is_current: false,
-            title: Some("refactor auth module".into()),
-        };
+    fn current_shows_marker() {
+        assert!(item(None, true).description().contains('\u{25c0}'));
+    }
+
+    #[test]
+    fn a_session_without_a_title_shows_its_first_prompt() {
+        let desc = item(None, false).description();
+        assert!(desc.starts_with("fix the login bug"), "{desc}");
+        assert!(desc.contains("2026-03-08 14:30"), "{desc}");
+    }
+
+    #[test]
+    fn filter_by_id_date_title_and_prompt() {
+        let item = item(Some("refactor auth module"), false);
         assert!(item.matches_filter("abc"));
         assert!(item.matches_filter("2026"));
         assert!(item.matches_filter("refactor"));
+        assert!(item.matches_filter("login"));
         assert!(!item.matches_filter("xyz"));
     }
 }

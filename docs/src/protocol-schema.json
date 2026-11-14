@@ -1006,45 +1006,160 @@
       "type": "object"
     },
     "Session": {
-      "description": "A session as it starts.",
+      "description": "A session: one stored conversation. Codex's `Thread`. What it's running\nwith (`model` through `tools`) is there only while it is open, as from\n`session/start`; `session/list` gives stored sessions without it.",
       "properties": {
         "contextWindow": {
           "description": "The context window in tokens.",
           "format": "uint64",
           "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "createdAt": {
+          "description": "When it was created, in Unix seconds.",
+          "format": "int64",
           "type": "integer"
+        },
+        "cwd": {
+          "description": "The project it works in; absent for sessions too old to record it.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "id": {
           "description": "The session's id, for resuming it.",
           "type": "string"
         },
         "mode": {
-          "$ref": "#/$defs/TrustMode",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TrustMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "description": "What Koda may do without asking."
         },
         "model": {
           "description": "The model id, such as `claude-sonnet-5-5`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Its title, set from the first prompt.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "preview": {
+          "default": "",
+          "description": "The first user message; empty before there is one.",
           "type": "string"
         },
         "provider": {
           "description": "The provider, such as `lm-studio` or `anthropic`.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "tools": {
           "description": "The tools the model is offered.",
           "items": {
             "type": "string"
           },
-          "type": "array"
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "updatedAt": {
+          "description": "When its last message was stored, in Unix seconds.",
+          "format": "int64",
+          "type": "integer"
         }
       },
       "required": [
         "id",
-        "model",
-        "provider",
-        "contextWindow",
-        "mode",
-        "tools"
+        "createdAt",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "SessionDeleteParams": {
+      "additionalProperties": false,
+      "description": "`session/delete`: delete a stored session. An open one is closed first,\nits running turn stopped, as Codex's `thread/delete` does.",
+      "properties": {
+        "sessionId": {
+          "description": "The session, by its full id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "type": "object"
+    },
+    "SessionDeleteResponse": {
+      "description": "The answer to `session/delete`.",
+      "type": "object"
+    },
+    "SessionDeletedNotification": {
+      "description": "`session/deleted`: a session was deleted. Codex's `thread/deleted`.",
+      "properties": {
+        "sessionId": {
+          "description": "The session.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "type": "object"
+    },
+    "SessionListParams": {
+      "additionalProperties": false,
+      "description": "`session/list`: stored sessions, newest first. Codex's `thread/list`.",
+      "properties": {
+        "cwd": {
+          "description": "The project whose sessions to list; without one, the host's.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "How many at most; without one, 50.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "SessionListResponse": {
+      "description": "The answer to `session/list`.",
+      "properties": {
+        "data": {
+          "description": "The sessions, without what open ones are running with.",
+          "items": {
+            "$ref": "#/$defs/Session"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "data"
       ],
       "type": "object"
     },
@@ -1195,6 +1310,79 @@
         "contextWindow",
         "mode",
         "sandbox"
+      ],
+      "type": "object"
+    },
+    "StoragePurgeParams": {
+      "additionalProperties": false,
+      "description": "`storage/purge`: delete compacted messages for good.",
+      "properties": {
+        "minAgeDays": {
+          "description": "Only those compacted at least this many days ago; without it, all.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "StoragePurgeResponse": {
+      "description": "The answer to `storage/purge`.",
+      "properties": {
+        "deleted": {
+          "description": "How many messages were deleted.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "deleted"
+      ],
+      "type": "object"
+    },
+    "StorageReadParams": {
+      "additionalProperties": false,
+      "description": "`storage/read`: what compacted messages the store keeps.",
+      "type": "object"
+    },
+    "StorageReadResponse": {
+      "description": "The answer to `storage/read`.",
+      "properties": {
+        "compactedMessages": {
+          "description": "Messages a compaction replaced, kept until purged.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "oldestCompactedAt": {
+          "description": "When the oldest was compacted, in Unix seconds; absent with none.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "sessions": {
+          "description": "Sessions with any.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sizeBytes": {
+          "description": "Their size, roughly, in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "compactedMessages",
+        "sessions",
+        "sizeBytes"
       ],
       "type": "object"
     },
@@ -1824,6 +2012,22 @@
         "$ref": "#/$defs/InitializeResponse"
       }
     },
+    "session/delete": {
+      "params": {
+        "$ref": "#/$defs/SessionDeleteParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionDeleteResponse"
+      }
+    },
+    "session/list": {
+      "params": {
+        "$ref": "#/$defs/SessionListParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionListResponse"
+      }
+    },
     "session/start": {
       "params": {
         "$ref": "#/$defs/SessionStartParams"
@@ -1846,6 +2050,22 @@
       },
       "result": {
         "$ref": "#/$defs/StateReadResponse"
+      }
+    },
+    "storage/purge": {
+      "params": {
+        "$ref": "#/$defs/StoragePurgeParams"
+      },
+      "result": {
+        "$ref": "#/$defs/StoragePurgeResponse"
+      }
+    },
+    "storage/read": {
+      "params": {
+        "$ref": "#/$defs/StorageReadParams"
+      },
+      "result": {
+        "$ref": "#/$defs/StorageReadResponse"
       }
     },
     "turn/interrupt": {
@@ -1912,6 +2132,11 @@
     "serverRequest/resolved": {
       "params": {
         "$ref": "#/$defs/ServerRequestResolvedNotification"
+      }
+    },
+    "session/deleted": {
+      "params": {
+        "$ref": "#/$defs/SessionDeletedNotification"
       }
     },
     "session/started": {

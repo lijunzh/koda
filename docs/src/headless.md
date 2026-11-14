@@ -108,7 +108,7 @@ may stream, and complete. [`protocol-schema.json`](protocol-schema.json) is
 generated from the protocol's types, and CI fails if the two differ.
 
 ```json
-{"jsonrpc":"2.0","method":"session/started","params":{"session":{"id":"a3f8bc12-…","model":"claude-haiku-5-5","provider":"anthropic","contextWindow":200000,"mode":"auto","tools":["Read","Grep","…"]},"kodaVersion":"0.7.0","protocolVersion":2}}
+{"jsonrpc":"2.0","method":"session/started","params":{"session":{"id":"a3f8bc12-…","preview":"","createdAt":1794700000,"updatedAt":1794700000,"cwd":"/home/me/project","model":"claude-haiku-5-5","provider":"anthropic","contextWindow":200000,"mode":"auto","tools":["Read","Grep","…"]},"kodaVersion":"0.7.0","protocolVersion":2}}
 {"jsonrpc":"2.0","method":"turn/started","params":{"sessionId":"a3f8bc12-…","turn":{"id":"7d1e…","status":"inProgress","error":null,"usage":null,"durationMs":null}}}
 {"jsonrpc":"2.0","method":"item/started","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"userMessage","id":"user-1","text":"Why does the test fail?","clientMessageIds":[]}}}
 {"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"userMessage","id":"user-1","text":"Why does the test fail?","clientMessageIds":[]}}}
@@ -134,7 +134,7 @@ below as described, and Ctrl+C sends `turn/interrupt`.
 
 | Method | Carries | Notes |
 |--------|---------|-------|
-| `session/started` | `session` (`id`, `model`, `provider`, `contextWindow`, `mode`, `tools`), `kodaVersion`, `protocolVersion` | Always first. Stop on a `protocolVersion` you don't support |
+| `session/started` | `session` (`id`, `name`, `preview`, `createdAt`, `updatedAt`, `cwd`, and while open `model`, `provider`, `contextWindow`, `mode`, `tools`), `kodaVersion`, `protocolVersion` | Always first. Stop on a `protocolVersion` you don't support. Times are Unix seconds; `name` is the title, `preview` the first prompt |
 | `turn/started` | `turn`, in progress | |
 | `item/started`, `item/completed` | `item`, `parentItemId` on a sub-agent's items | Every item that starts completes, once |
 | `item/agentMessage/delta` | `itemId`, `delta` | Only with `--json-deltas` |

@@ -69,8 +69,9 @@ pub(crate) enum SessionCommand {
         config: Box<KodaConfig>,
         done: oneshot::Sender<Answer>,
     },
-    /// Stop the turn, if one runs, and end the task.
-    Shutdown,
+    /// Stop the turn, if one runs, and end the task. `done`, if given, is
+    /// dropped once the task has ended.
+    Shutdown { done: Option<oneshot::Sender<()>> },
 }
 
 impl SessionCommand {
@@ -83,7 +84,7 @@ impl SessionCommand {
             | Self::Configure { done: reply, .. } => {
                 let _ = reply.send(Err(error));
             }
-            Self::Respond { .. } | Self::Shutdown => {}
+            Self::Respond { .. } | Self::Shutdown { .. } => {}
         }
     }
 }
@@ -162,18 +163,26 @@ pub(crate) async fn open(
     // A resumed session already has its title.
     session.title_set = resumed;
 
+    let stored = session
+        .db
+        .get_session(&id)
+        .await
+        .map_err(|e| internal(format!("couldn't read the session: {e:#}")))?
+        .ok_or_else(|| internal(format!("session {id} isn't stored")))?;
     let described = Session {
-        id: id.clone(),
-        model: config.model.clone(),
-        provider: config.provider_type.meta().name.to_string(),
-        context_window: config.max_context_tokens as u64,
-        mode: protocol_mode(config.trust),
-        tools: session
-            .agent
-            .turn_tool_defs(&config)
-            .iter()
-            .map(|tool| tool.name.clone())
-            .collect(),
+        model: Some(config.model.clone()),
+        provider: Some(config.provider_type.meta().name.to_string()),
+        context_window: Some(config.max_context_tokens as u64),
+        mode: Some(protocol_mode(config.trust)),
+        tools: Some(
+            session
+                .agent
+                .turn_tool_defs(&config)
+                .iter()
+                .map(|tool| tool.name.clone())
+                .collect(),
+        ),
+        ..describe(&stored)
     };
     let _ = events.send(Outgoing::Notification(ServerNotification::SessionStarted(
         SessionStartedNotification {
@@ -261,7 +270,7 @@ impl SessionTask {
                     self.configure(*config);
                     let _ = done.send(to_json(serde_json::Value::Null));
                 }
-                SessionCommand::Shutdown => return,
+                SessionCommand::Shutdown { .. } => return,
             }
         }
     }
@@ -330,6 +339,8 @@ impl SessionTask {
         let cancel = self.session.cancel_token().child_token();
         let mut interrupts = Vec::new();
         let mut configured: Option<(KodaConfig, Vec<oneshot::Sender<Answer>>)> = None;
+        // Told when the turn has stopped: dropped as this returns.
+        let mut closing: Vec<oneshot::Sender<()>> = Vec::new();
         let mut keep_running = true;
         let Self {
             session,
@@ -404,7 +415,12 @@ impl SessionTask {
                         }
                         // Told to stop, or the host is gone: stop the turn and
                         // let it wind down. It bounds that itself.
-                        Some(SessionCommand::Shutdown) | None => {
+                        Some(SessionCommand::Shutdown { done }) => {
+                            cancel.cancel();
+                            keep_running = false;
+                            closing.extend(done);
+                        }
+                        None => {
                             cancel.cancel();
                             keep_running = false;
                         }
@@ -440,6 +456,24 @@ impl SessionTask {
 pub struct SessionHandles {
     /// The session's sub-agents, for showing what they do and stopping them.
     pub bg_agents: Arc<koda_core::child_agent::ChildAgentRegistry>,
+}
+
+/// A stored session as the protocol describes it, without what an open one
+/// runs with.
+pub(crate) fn describe(stored: &koda_core::persistence::SessionInfo) -> Session {
+    Session {
+        id: stored.id.clone(),
+        name: stored.title.clone(),
+        preview: stored.preview.clone().unwrap_or_default(),
+        created_at: stored.created_unix,
+        updated_at: stored.updated_unix,
+        cwd: stored.project_root.clone(),
+        model: None,
+        provider: None,
+        context_window: None,
+        mode: None,
+        tools: None,
+    }
 }
 
 /// What kind of server request is open, to read the client's answer.

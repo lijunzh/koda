@@ -117,6 +117,8 @@ macro_rules! server_requests {
 server_notifications! {
     /// A session is ready.
     SessionStarted => "session/started" (crate::session::SessionStartedNotification),
+    /// A session was deleted.
+    SessionDeleted => "session/deleted" (crate::session::SessionDeletedNotification),
     /// A turn began.
     TurnStarted => "turn/started" (crate::turn::TurnStartedNotification),
     /// A turn is over, however it ended.

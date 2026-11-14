@@ -401,6 +401,10 @@ pub(crate) struct SessionInfoRow {
     pub total_tokens: i64,
     pub title: Option<String>,
     pub mode: Option<String>,
+    pub created_unix: i64,
+    pub updated_unix: i64,
+    pub preview: Option<String>,
+    pub project_root: Option<String>,
 }
 
 impl From<SessionInfoRow> for SessionInfo {
@@ -413,6 +417,10 @@ impl From<SessionInfoRow> for SessionInfo {
             total_tokens: r.total_tokens,
             title: r.title,
             mode: r.mode,
+            created_unix: r.created_unix,
+            updated_unix: r.updated_unix,
+            preview: r.preview,
+            project_root: r.project_root,
         }
     }
 }
