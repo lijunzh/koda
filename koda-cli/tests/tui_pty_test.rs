@@ -248,6 +248,22 @@ impl Tui {
         self.type_text("\r");
     }
 
+    /// Submit `prompt` and wait for its turn to end, which shows `reply`.
+    ///
+    /// Waiting only for the busy prompt to go isn't enough: on a slow machine
+    /// the model can have the call before the screen shows the busy prompt,
+    /// and keys typed then go to the running turn. A frame that shows the
+    /// reply one more time was drawn during the turn or after it, so the
+    /// prompt it shows says whether the turn has ended.
+    fn submit_and_finish(&mut self, prompt: &str, reply: &str) {
+        let before = self.screen().matches(reply).count();
+        self.submit(prompt);
+        self.wait_for_screen_that(
+            |screen| screen.matches(reply).count() > before && !screen.contains(BUSY_PROMPT),
+            &format!("finish the turn for {prompt:?}"),
+        );
+    }
+
     /// Press `key` and wait for the turn to stop: the engine says so, and
     /// the turn ends a moment later, when its `turn/completed` reaches the
     /// TUI. Keys typed before that still go to the turn.
@@ -1342,11 +1358,10 @@ async fn sessions_resume_and_delete_by_id() {
     let mut tui = Tui::start_with_model(home.path(), &server.url());
     run_command(&mut tui, &format!("/sessions resume {bravo}"));
     tui.wait_for_screen("bravo session words");
-    tui.submit("bravo again");
+    tui.submit_and_finish("bravo again", "All done.");
     let sent = wait_for_model_call(&server, 3).await;
     assert!(sent.contains("bravo session words"), "{sent}");
     assert!(!sent.contains("charlie session words"), "{sent}");
-    tui.wait_for_screen_without(BUSY_PROMPT);
 
     run_command(&mut tui, &format!("/sessions delete {charlie}"));
     tui.wait_for_screen_without(BUSY_PROMPT);
@@ -1448,9 +1463,8 @@ async fn compact_replaces_earlier_turns_with_the_summary() {
         .iter()
         .enumerate()
     {
-        tui.submit(prompt);
+        tui.submit_and_finish(prompt, "All done.");
         wait_for_model_call(&server, n + 1).await;
-        tui.wait_for_screen_without(BUSY_PROMPT);
     }
 
     run_command(&mut tui, "/compact");
@@ -1493,9 +1507,8 @@ async fn esc_stops_a_compaction_and_keeps_the_history() {
         .iter()
         .enumerate()
     {
-        tui.submit(prompt);
+        tui.submit_and_finish(prompt, "All done.");
         wait_for_model_call(&server, n + 1).await;
-        tui.wait_for_screen_without(BUSY_PROMPT);
     }
 
     run_command(&mut tui, "/compact");
