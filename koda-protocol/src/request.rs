@@ -156,6 +156,17 @@ client_requests! {
         params: crate::config::ConfigBatchWriteParams,
         response: crate::config::ConfigWriteResponse,
     },
+    /// MCP servers and where each stands: a session's, or the stored ones.
+    McpServerStatusList => "mcpServerStatus/list" {
+        params: crate::mcp::ListMcpServerStatusParams,
+        response: crate::mcp::ListMcpServerStatusResponse,
+    },
+    /// Every open session takes the stored MCP servers again before its
+    /// next turn.
+    McpServerRefresh => "config/mcpServer/reload" {
+        params: crate::mcp::McpServerRefreshParams,
+        response: crate::mcp::McpServerRefreshResponse,
+    },
     /// Store a provider's API key.
     ModelProviderApiKeySet => "modelProvider/apiKey/set" {
         params: crate::config::ModelProviderApiKeySetParams,

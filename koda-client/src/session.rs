@@ -42,6 +42,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::RawEvent;
 use crate::events::{EventProjector, Outgoing};
 use crate::host::{Answer, protocol_mode, to_json};
+use koda_core::mcp::manager::SharedMcpManager;
 
 /// Open server requests, by id: the session each belongs to. Shared by the
 /// host, which routes a client's answer, and every session's sink.
@@ -73,6 +74,9 @@ pub(crate) enum SessionCommand {
     },
     /// The client's answer to one of this session's server requests.
     Respond { id: RequestId, result: Answer },
+    /// `config/mcpServer/reload`: take the stored MCP servers again, now
+    /// when idle or once the running turn has ended.
+    ReloadMcp,
     /// In process only: what the session's next turns run with. Applied
     /// at once when idle, or once the running turn has ended.
     Configure {
@@ -96,7 +100,7 @@ impl SessionCommand {
             | Self::Configure { done: reply, .. } => {
                 let _ = reply.send(Err(error));
             }
-            Self::Respond { .. } | Self::Shutdown { .. } => {}
+            Self::Respond { .. } | Self::ReloadMcp | Self::Shutdown { .. } => {}
         }
     }
 }
@@ -220,6 +224,21 @@ pub(crate) async fn open(
     // A resumed session already has its title.
     session.title_set = resumed;
 
+    // Its MCP servers start in the background; opening waits only for the
+    // required ones, and fails when one of them does, as Codex's does.
+    let mcp = session.mcp();
+    let servers = crate::mcp::configured(&session.db, &config).await?;
+    let on_status = crate::mcp::status_fn(&id, &events);
+    if let Err(e) = session.start_mcp(servers, Some(on_status)).await {
+        if let Some(mcp) = &mcp {
+            mcp.write().await.shutdown().await;
+        }
+        if !resumed {
+            let _ = session.db.delete_session(&id).await;
+        }
+        return Err(internal(format!("{e:#}")));
+    }
+
     let stored = session
         .db
         .get_session(&id)
@@ -283,12 +302,15 @@ pub(crate) async fn open(
         commands: commands_tx,
         handles: SessionHandles {
             bg_agents: Arc::clone(&session.bg_agents),
+            mcp: mcp.clone(),
         },
         task: SessionTask {
             session,
             config,
             alias: alias.map(str::to_string),
             pending_settings: Vec::new(),
+            mcp,
+            reload_mcp: false,
             sink,
             engine_tx,
             engine_rx,
@@ -306,6 +328,11 @@ pub(crate) struct SessionTask {
     /// `session/settings/update`s that arrived during the turn, applied
     /// once it has ended.
     pending_settings: Vec<SessionSettingsUpdateParams>,
+    /// The session's MCP servers. Kept here, not read from the agent, which
+    /// a front end may share with a later session.
+    mcp: Option<SharedMcpManager>,
+    /// A `config/mcpServer/reload` arrived during the turn.
+    reload_mcp: bool,
     sink: Arc<HostSink>,
     engine_tx: mpsc::Sender<EngineCommand>,
     engine_rx: mpsc::Receiver<EngineCommand>,
@@ -313,8 +340,16 @@ pub(crate) struct SessionTask {
 }
 
 impl SessionTask {
-    /// Read commands until told to stop or the host is gone.
+    /// Read commands until told to stop or the host is gone, then stop the
+    /// session's MCP servers.
     pub(crate) async fn run(mut self) {
+        self.serve().await;
+        if let Some(mcp) = &self.mcp {
+            mcp.write().await.shutdown().await;
+        }
+    }
+
+    async fn serve(&mut self) {
         while let Some(command) = self.commands.recv().await {
             match command {
                 SessionCommand::StartTurn { params, reply } => {
@@ -338,6 +373,7 @@ impl SessionTask {
                 SessionCommand::Respond { id, .. } => {
                     tracing::debug!("an answer to request {id} arrived after its turn");
                 }
+                SessionCommand::ReloadMcp => self.reload_mcp_now().await,
                 SessionCommand::Configure { config, done } => {
                     self.configure(*config);
                     let _ = done.send(to_json(serde_json::Value::Null));
@@ -368,6 +404,9 @@ impl SessionTask {
     async fn follow(&mut self, mut next: Next) -> bool {
         loop {
             self.apply_pending_settings().await;
+            if std::mem::take(&mut self.reload_mcp) {
+                self.reload_mcp_now().await;
+            }
             next = match next {
                 Next::Idle => return true,
                 Next::Stop => return false,
@@ -432,6 +471,17 @@ impl SessionTask {
         self.config = next;
         self.alias = alias;
         Ok(())
+    }
+
+    /// Bring the session's MCP servers in line with the stored ones.
+    async fn reload_mcp_now(&mut self) {
+        let Some(mcp) = &self.mcp else {
+            return;
+        };
+        match crate::mcp::configured(&self.session.db, &self.config).await {
+            Ok(servers) => koda_core::mcp::McpManager::reconcile(mcp, servers).await,
+            Err(error) => tracing::warn!("MCP reload: {}", error.message),
+        }
     }
 
     /// Apply the updates that arrived during the turn. They were checked
@@ -546,6 +596,7 @@ impl SessionTask {
             engine_rx,
             commands,
             pending_settings,
+            reload_mcp,
             ..
         } = self;
         let result = {
@@ -651,6 +702,8 @@ impl SessionTask {
                                 }
                             }
                         }
+                        // The running turn keeps its servers.
+                        Some(SessionCommand::ReloadMcp) => *reload_mcp = true,
                         // The running turn keeps what it started with.
                         Some(SessionCommand::Configure { config: next, done }) => {
                             let mut waiting = configured.take().map(|(_, d)| d).unwrap_or_default();
@@ -727,6 +780,8 @@ enum Next {
 pub struct SessionHandles {
     /// The session's sub-agents, for showing what they do and stopping them.
     pub bg_agents: Arc<koda_core::child_agent::ChildAgentRegistry>,
+    /// The session's MCP servers, for `mcpServerStatus/list`.
+    pub mcp: Option<SharedMcpManager>,
 }
 
 /// A stored session as the protocol describes it, without what an open one

@@ -45,6 +45,7 @@ fn dummy_config() -> McpServerConfig {
         tool_timeout_sec: 1,
         enabled_tools: None,
         disabled_tools: None,
+        required: false,
     }
 }
 

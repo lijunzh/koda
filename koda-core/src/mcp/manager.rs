@@ -1,13 +1,15 @@
 //! Multi-server connection manager — owns all MCP clients.
 //!
 //! `McpManager` is the single entry point for the rest of koda-core.
-//! It loads configs from the DB, connects to servers in parallel,
-//! discovers tools, and routes tool calls to the right server.
+//! It starts servers in the background, discovers tools, and routes tool
+//! calls to the right server. Each session has its own.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use serde_json::Value;
+use tokio::sync::watch;
 
 use super::client::{McpClient, McpClientStatus};
 use super::config::{self, McpServerConfig};
@@ -16,17 +18,68 @@ use crate::db::Database;
 use crate::providers::ToolDefinition;
 use crate::tools::ToolEffect;
 
+/// A session's MCP manager, shared by its turns and the host that reports on
+/// it.
+pub type SharedMcpManager = Arc<tokio::sync::RwLock<McpManager>>;
+
+/// Told when a server's startup changes, for the
+/// `mcpServer/startupStatus/updated` notification.
+pub type McpStatusFn = Arc<dyn Fn(McpStartupUpdate) + Send + Sync>;
+
+/// One server's startup, as it changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpStartupUpdate {
+    /// The server.
+    pub server: String,
+    /// Where its startup stands.
+    pub status: McpStartupStatus,
+}
+
+/// Where a server's startup stands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpStartupStatus {
+    /// Starting.
+    Starting,
+    /// Started; its tools are offered.
+    Ready,
+    /// It failed to start, for this reason.
+    Failed(String),
+    /// Stopped before it had started.
+    Cancelled,
+}
+
 /// Manager for all MCP server connections.
 ///
 /// Owns the set of `McpClient` instances and provides a unified interface
-/// for tool discovery and execution.
+/// for tool discovery and execution. Servers start in the background, as
+/// Codex's do ([`Self::start_server`]): a turn waits for those still
+/// starting ([`Self::wait_for_startup`]), and opening a session waits only
+/// for the required ones.
 pub struct McpManager {
-    /// Connected (or attempted) clients, keyed by server name.
+    /// Connected (or attempted) clients, keyed by server name. A server
+    /// still starting has a stand-in with no tools.
     clients: HashMap<String, McpClient>,
 
     /// Cached tool annotations for classify_tool lookups.
     /// Keyed by qualified tool name (`server__tool`).
     annotations: HashMap<String, McpToolAnnotations>,
+
+    /// The servers' configs, to tell what a reload changes.
+    configs: HashMap<String, McpServerConfig>,
+
+    /// Servers whose startup is under way, with the startup's number. A
+    /// startup that finishes after a newer one began, or after its server
+    /// was stopped, is discarded.
+    startups: HashMap<String, u64>,
+
+    /// The last startup's number.
+    generation: u64,
+
+    /// Bumped whenever a startup ends, for those waiting on one.
+    changed: watch::Sender<u64>,
+
+    /// Told when a server's startup changes.
+    on_status: Option<McpStatusFn>,
 }
 
 impl Default for McpManager {
@@ -41,88 +94,222 @@ impl McpManager {
         Self {
             clients: HashMap::new(),
             annotations: HashMap::new(),
+            configs: HashMap::new(),
+            startups: HashMap::new(),
+            generation: 0,
+            changed: watch::channel(0).0,
+            on_status: None,
         }
     }
 
-    /// Load configs from the database, add this run's servers from
-    /// `--mcp-config`, and connect to all of them in parallel. A run's server
-    /// replaces a stored one of the same name for this run only; nothing is
-    /// written back.
-    ///
-    /// Errors from individual servers are logged but don't fail the whole
-    /// startup — the manager connects what it can and reports status.
-    pub async fn start_from_db(
+    /// The servers a session starts: the stored ones, plus this run's from
+    /// `--mcp-config`. A run's server replaces a stored one of the same name
+    /// for this run only; nothing is written back.
+    pub async fn configured(
         db: &Database,
         session_servers: &HashMap<String, McpServerConfig>,
-    ) -> Result<Self> {
+    ) -> Result<HashMap<String, McpServerConfig>> {
         let mut configs = config::load_mcp_configs(db).await?;
         for (name, server) in session_servers {
             if configs.insert(name.clone(), server.clone()).is_some() {
                 tracing::info!(server = %name, "--mcp-config replaces the stored server for this run");
             }
         }
-
-        if configs.is_empty() {
-            tracing::debug!("no MCP servers configured");
-            return Ok(Self::new());
-        }
-
-        tracing::info!(
-            count = configs.len(),
-            servers = ?configs.keys().collect::<Vec<_>>(),
-            "starting MCP servers"
-        );
-
-        let mut manager = Self::new();
-        manager.connect_all(configs).await;
-        Ok(manager)
+        Ok(configs)
     }
 
-    /// Connect to all servers in parallel.
-    async fn connect_all(&mut self, configs: HashMap<String, McpServerConfig>) {
-        // Spawn connect tasks in parallel.
-        let handles: Vec<_> = configs
-            .into_iter()
-            .map(|(name, config)| {
-                tokio::spawn(async move {
-                    let mut client = McpClient::new(name.clone(), config);
-                    let result = client.connect().await;
-                    (name, client, result)
+    /// Who is told when a server's startup changes.
+    pub fn set_status_fn(&mut self, on_status: McpStatusFn) {
+        self.on_status = Some(on_status);
+    }
+
+    fn report(&self, server: &str, status: McpStartupStatus) {
+        if let Some(on_status) = &self.on_status {
+            on_status(McpStartupUpdate {
+                server: server.to_string(),
+                status,
+            });
+        }
+    }
+
+    fn purge_annotations(&mut self, name: &str) {
+        self.annotations.retain(|k, _| {
+            parse_mcp_tool_name(k)
+                .map(|(s, _)| s != name)
+                .unwrap_or(true)
+        });
+    }
+
+    /// Start every server in `configs` in the background.
+    pub async fn start_all(this: &SharedMcpManager, configs: HashMap<String, McpServerConfig>) {
+        if !configs.is_empty() {
+            tracing::info!(
+                count = configs.len(),
+                servers = ?configs.keys().collect::<Vec<_>>(),
+                "starting MCP servers"
+            );
+        }
+        for (name, config) in configs {
+            Self::start_server(this, name, config).await;
+        }
+    }
+
+    /// Start server `name` in the background, replacing one of that name.
+    /// Until it has started it is listed as starting, with no tools.
+    pub async fn start_server(this: &SharedMcpManager, name: String, config: McpServerConfig) {
+        let (generation, old) = {
+            let mut manager = this.write().await;
+            manager.generation += 1;
+            let generation = manager.generation;
+            manager.startups.insert(name.clone(), generation);
+            manager.configs.insert(name.clone(), config.clone());
+            manager.purge_annotations(&name);
+            let old = manager.clients.insert(
+                name.clone(),
+                McpClient::starting(name.clone(), config.clone()),
+            );
+            manager.report(&name, McpStartupStatus::Starting);
+            (generation, old)
+        };
+        if let Some(mut old) = old {
+            old.disconnect().await;
+        }
+        let this = Arc::clone(this);
+        tokio::spawn(async move {
+            let mut client = McpClient::new(name.clone(), config);
+            let result = client.connect().await;
+            let mut manager = this.write().await;
+            if manager.startups.get(&name) != Some(&generation) {
+                // Stopped or restarted meanwhile.
+                drop(manager);
+                client.disconnect().await;
+                return;
+            }
+            manager.startups.remove(&name);
+            for tool in client.tools() {
+                manager
+                    .annotations
+                    .insert(tool.definition.name.clone(), tool.annotations.clone());
+            }
+            let status = match result {
+                Ok(()) => McpStartupStatus::Ready,
+                Err(e) => McpStartupStatus::Failed(format!("{e:#}")),
+            };
+            manager.clients.insert(name.clone(), client);
+            manager.report(&name, status);
+            manager.changed.send_modify(|n| *n += 1);
+        });
+    }
+
+    /// Stop server `name` and forget it. Returns whether there was one.
+    pub async fn stop_server(this: &SharedMcpManager, name: &str) -> bool {
+        let client = {
+            let mut manager = this.write().await;
+            manager.configs.remove(name);
+            let was_starting = manager.startups.remove(name).is_some();
+            manager.purge_annotations(name);
+            let client = manager.clients.remove(name);
+            if was_starting {
+                manager.report(name, McpStartupStatus::Cancelled);
+                manager.changed.send_modify(|n| *n += 1);
+            }
+            client
+        };
+        match client {
+            Some(mut client) => {
+                client.disconnect().await;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Bring the servers in line with `desired`, as Codex's
+    /// `config/mcpServer/reload` does: stop those no longer configured,
+    /// start new ones, and restart those whose config changed. Koda also
+    /// restarts those that failed, so a reload is how a failed server is
+    /// tried again.
+    pub async fn reconcile(this: &SharedMcpManager, desired: HashMap<String, McpServerConfig>) {
+        let (stop, start) = {
+            let manager = this.read().await;
+            let stop: Vec<String> = manager
+                .configs
+                .keys()
+                .filter(|name| !desired.contains_key(*name))
+                .cloned()
+                .collect();
+            let start: Vec<(String, McpServerConfig)> = desired
+                .into_iter()
+                .filter(|(name, config)| {
+                    manager.configs.get(name) != Some(config)
+                        || manager
+                            .clients
+                            .get(name)
+                            .is_some_and(|c| c.status() == McpClientStatus::Failed)
+                })
+                .collect();
+            (stop, start)
+        };
+        for name in stop {
+            Self::stop_server(this, &name).await;
+        }
+        for (name, config) in start {
+            Self::start_server(this, name, config).await;
+        }
+    }
+
+    /// Wait until no server is starting, or, with `only`, none of those.
+    /// Each startup is bounded by its server's `startup_timeout_sec`.
+    pub async fn wait_for_startup(this: &SharedMcpManager, only: Option<&[String]>) {
+        let mut changed = this.read().await.changed.subscribe();
+        loop {
+            {
+                let manager = this.read().await;
+                let waiting = manager
+                    .startups
+                    .keys()
+                    .any(|name| only.is_none_or(|only| only.contains(name)));
+                if !waiting {
+                    return;
+                }
+            }
+            if changed.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+
+    /// Wait for the required servers, then say which failed: `name: why`
+    /// for each. Codex's session start waits for these the same way.
+    pub async fn required_failures(this: &SharedMcpManager) -> Vec<String> {
+        let required: Vec<String> = {
+            let manager = this.read().await;
+            manager
+                .configs
+                .iter()
+                .filter(|(_, config)| config.required)
+                .map(|(name, _)| name.clone())
+                .collect()
+        };
+        if required.is_empty() {
+            return Vec::new();
+        }
+        Self::wait_for_startup(this, Some(&required)).await;
+        let manager = this.read().await;
+        let mut failed: Vec<String> = required
+            .iter()
+            .filter_map(|name| {
+                let client = manager.clients.get(name)?;
+                (client.status() != McpClientStatus::Connected).then(|| {
+                    format!(
+                        "{name}: {}",
+                        client.last_error().unwrap_or("it didn't start")
+                    )
                 })
             })
             .collect();
-
-        // Collect results.
-        for handle in handles {
-            match handle.await {
-                Ok((name, client, result)) => {
-                    if let Err(e) = &result {
-                        tracing::warn!(
-                            server = %name,
-                            error = %e,
-                            "MCP server failed to connect (non-fatal)"
-                        );
-                    }
-                    // Register tools from successful connections.
-                    for tool in client.tools() {
-                        self.annotations
-                            .insert(tool.definition.name.clone(), tool.annotations.clone());
-                    }
-                    self.clients.insert(name, client);
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "MCP server connect task panicked");
-                }
-            }
-        }
-
-        let connected = self
-            .clients
-            .values()
-            .filter(|c| c.status() == McpClientStatus::Connected)
-            .count();
-        let total = self.clients.len();
-        tracing::info!(connected, total, "MCP server startup complete");
+        failed.sort();
+        failed
     }
 
     /// Get all discovered tool definitions across all connected servers.
@@ -206,6 +393,14 @@ impl McpManager {
                 name: c.name().to_string(),
                 status: c.status(),
                 tool_count: c.tools().len(),
+                tools: c
+                    .tools()
+                    .iter()
+                    .map(|t| McpToolSummary {
+                        name: t.original_name.clone(),
+                        description: server_description(c.name(), &t.definition.description),
+                    })
+                    .collect(),
                 error: c.last_error().map(String::from),
             })
             .collect()
@@ -270,6 +465,11 @@ impl McpManager {
         for client in self.clients.values_mut() {
             client.disconnect().await;
         }
+        self.clients.clear();
+        self.configs.clear();
+        // A startup still under way is discarded when it ends.
+        self.startups.clear();
+        self.changed.send_modify(|n| *n += 1);
         self.annotations.clear();
         tracing::info!("all MCP servers disconnected");
     }
@@ -290,6 +490,8 @@ impl McpManager {
             });
         }
 
+        self.startups.remove(&name);
+        self.configs.insert(name.clone(), config.clone());
         let mut client = McpClient::new(name.clone(), config);
         client.connect().await?;
 
@@ -307,6 +509,8 @@ impl McpManager {
     ///
     /// Returns `true` if a server was found and removed.
     pub async fn remove_server(&mut self, name: &str) -> bool {
+        self.configs.remove(name);
+        self.startups.remove(name);
         if let Some(mut client) = self.clients.remove(name) {
             client.disconnect().await;
             self.annotations.retain(|k, _| {
@@ -357,8 +561,19 @@ pub struct McpServerStatus {
     pub status: McpClientStatus,
     /// Number of discovered tools.
     pub tool_count: usize,
+    /// The tools, by their names on the server.
+    pub tools: Vec<McpToolSummary>,
     /// Last error message (if failed).
     pub error: Option<String>,
+}
+
+/// One of a server's tools.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpToolSummary {
+    /// Its name on the server.
+    pub name: String,
+    /// What it does, as the server says.
+    pub description: Option<String>,
 }
 
 /// Compact MCP status for the TUI status bar.
@@ -370,6 +585,16 @@ pub struct McpStatusBarInfo {
     pub failed: usize,
     /// Total configured servers.
     pub total: usize,
+}
+
+/// A tool's description as its server gave it: without the `[MCP:<server>]`
+/// mark Koda adds for the model, and `None` when the server gave none.
+fn server_description(server: &str, description: &str) -> Option<String> {
+    let description = description
+        .strip_prefix(&format!("[MCP:{server}] "))
+        .unwrap_or(description);
+    (description != "MCP tool (no description)" && !description.is_empty())
+        .then(|| description.to_string())
 }
 
 /// Convert MCP CallToolResult content into a plain string.
@@ -421,6 +646,7 @@ mod tests {
             tool_timeout_sec: 1,
             enabled_tools: None,
             disabled_tools: None,
+            required: false,
         }
     }
 

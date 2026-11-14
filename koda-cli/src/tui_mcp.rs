@@ -37,14 +37,14 @@ pub async fn handle_mcp_list(
              \n\
              Usage:\n  \
              /mcp add <name> <command> [args...]\n  \
-             /mcp add-http <name> <url> [--token <bearer>]\n  \
+             /mcp add-http <name> <url> [--bearer-token-env-var <VAR>]\n  \
              /mcp remove <name>\n  \
              /mcp reconnect <name>\n  \
              /mcp list\n\
              \n\
              Examples:\n  \
              /mcp add playwright npx -y @anthropic/mcp-playwright\n  \
-             /mcp add-http myapi http://localhost:8080/mcp --token secret123"
+             /mcp add-http myapi https://api.example.com/mcp --bearer-token-env-var MYAPI_TOKEN"
                 .to_string(),
         );
         return;
@@ -139,6 +139,7 @@ pub async fn handle_mcp_add(
         tool_timeout_sec: 120,
         enabled_tools: None,
         disabled_tools: None,
+        required: false,
     };
 
     // Validate name, then config.
@@ -193,25 +194,27 @@ pub async fn handle_mcp_add(
     }
 }
 
-/// Handle `/mcp add-http <name> <url> [--token <bearer>]`.
+/// Handle `/mcp add-http <name> <url> [--bearer-token-env-var <VAR>]`. The
+/// token stays in the environment; only the variable's name is stored.
 pub async fn handle_mcp_add_http(
     buffer: &mut ScrollBuffer,
     session: &TuiSession,
     agent: &Arc<KodaAgent>,
     name: String,
     url: String,
-    bearer_token: Option<String>,
+    token_var: Option<String>,
 ) {
     let config = McpServerConfig {
         transport: McpTransport::Http {
             url: url.clone(),
-            bearer_token: bearer_token.clone(),
+            bearer_token_env_var: token_var.clone(),
             headers: HashMap::new(),
         },
         startup_timeout_sec: 30,
         tool_timeout_sec: 120,
         enabled_tools: None,
         disabled_tools: None,
+        required: false,
     };
 
     // Validate name, then config.
@@ -233,10 +236,9 @@ pub async fn handle_mcp_add_http(
     // Hot-reload: connect immediately if we have a manager.
     let connect_result = try_add_to_live_manager(agent, name.clone(), config).await;
 
-    let token_hint = if bearer_token.is_some() {
-        " (with auth)"
-    } else {
-        ""
+    let token_hint = match &token_var {
+        Some(var) => format!(" (token from ${var})"),
+        None => String::new(),
     };
 
     match connect_result {

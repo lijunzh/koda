@@ -312,7 +312,7 @@ for the full reference.
 ```text
 /mcp list                                  ← list configured servers + status
 /mcp add <name> <command> [args...]        ← add a stdio server
-/mcp add-http <name> <url> [--token <tok>] ← add an HTTP server
+/mcp add-http <name> <url> [--bearer-token-env-var <VAR>] ← add an HTTP server
 /mcp reconnect <name>                      ← reconnect without restart
 /mcp remove <name>                         ← permanently delete a server
 ```

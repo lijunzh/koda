@@ -1,13 +1,15 @@
 //! Koda's config between client and host: `config/read` and
 //! `config/batchWrite`, as Codex's TUI and app-server use them. The host
-//! owns the config and keeps it; nobody edits it by hand. For now it holds
-//! the model choice a new session starts with.
+//! owns the config and keeps it; nobody edits it by hand. It holds the
+//! model choice a new session starts with and the MCP servers sessions
+//! start ([`crate::mcp`]).
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// The config keys Koda takes. Any other is refused.
+/// The config keys Koda takes, besides `mcp_servers.<name>`. Any other is
+/// refused.
 pub const KEYS: [&str; 3] = ["model", "model_provider", "base_url"];
 
 /// `config/read`.
@@ -37,6 +39,9 @@ pub struct KodaConfigValues {
     /// The provider's endpoint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
+    /// The MCP servers every new session starts, by name.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub mcp_servers: std::collections::BTreeMap<String, crate::mcp::McpServerConfigValue>,
 }
 
 /// `config/batchWrite`: change several keys at once, as Codex's does.
@@ -51,9 +56,10 @@ pub struct ConfigBatchWriteParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigEdit {
-    /// The key, one of [`KEYS`].
+    /// The key: one of [`KEYS`], or `mcp_servers.<name>`.
     pub key_path: String,
-    /// The value: a string, or `null` to remove the key.
+    /// The value: a string, or for `mcp_servers.<name>` a server
+    /// ([`crate::mcp::McpServerConfigValue`]); `null` removes the key.
     pub value: Value,
     /// How the value merges; for Koda's keys, both replace it.
     pub merge_strategy: MergeStrategy,
