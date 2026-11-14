@@ -6,8 +6,9 @@ use serde::{Deserialize, Serialize};
 use crate::state::TrustMode;
 
 /// A session: one stored conversation. Codex's `Thread`. What it's running
-/// with (`model` through `tools`) is there only while it is open, as from
-/// `session/start`; `session/list` gives stored sessions without it.
+/// with (`model` through `instruction_sources`) is there only while it is
+/// open, as from `session/start`; `session/list` gives stored sessions
+/// without it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Session {
@@ -41,6 +42,11 @@ pub struct Session {
     /// The tools the model is offered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<String>>,
+    /// The instruction files (`AGENTS.md` and the like) its prompt carries,
+    /// in that order: the global one, then the project's from the git root
+    /// down. Codex's `instructionSources`, as of the session's opening.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instruction_sources: Option<Vec<String>>,
 }
 
 /// `session/start`.

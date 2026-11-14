@@ -1586,16 +1586,26 @@ async fn a_stored_server_starts_with_the_tui() {
     tui.wait_for_screen("\u{26a1}1/1");
 }
 
-/// `/memory add` saves a note for this project, and the next request
-/// carries it, with no restart. Memory used to load once, when the agent
-/// started, so the note arrived only after a restart.
+/// `/memory add` saves a note for this project through the host
+/// (`session/memory/add`), and the next request carries it, with no
+/// restart. Memory used to load once, when the agent started, so the note
+/// arrived only after a restart. `/memory` lists the session's instruction
+/// files and where the notes are, from the host.
 #[tokio::test(flavor = "multi_thread")]
 async fn memory_add_reaches_the_next_request() {
     let server = scripted_model(vec![]).await;
     let home = home();
+    std::fs::write(home.path().join("AGENTS.md"), "Project rule.").unwrap();
     let mut tui = Tui::start_with_model(home.path(), &server.url());
     run_command(&mut tui, "/memory add the code word is zebrafish");
     tui.wait_for_screen("Saved to Koda's notes for this project");
+    run_command(&mut tui, "/memory");
+    tui.wait_for_screen("Instructions: AGENTS.md");
+    tui.wait_for_screen("Global notes:");
+    let notes = std::fs::read_dir(home.path().join(".config/koda/memories"))
+        .unwrap()
+        .count();
+    assert_eq!(notes, 1, "one project's notes folder");
 
     tui.submit("what is the code word");
     let sent = wait_for_model_call(&server, 1).await;

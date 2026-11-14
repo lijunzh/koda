@@ -31,6 +31,7 @@ mod config_file;
 pub mod events;
 mod host;
 mod mcp;
+mod memory;
 mod session;
 mod settings;
 

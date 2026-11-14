@@ -233,6 +233,7 @@ impl TuiContext {
             .client
             .request::<methods::SessionUnsubscribe>(SessionUnsubscribeParams { session_id: left })
             .await;
+        let instruction_sources = started.session.instruction_sources.unwrap_or_default();
         let id = started.session.id;
         let bg_agents = self
             .client
@@ -243,6 +244,7 @@ impl TuiContext {
             id,
             db: self.session.db.clone(),
             bg_agents,
+            instruction_sources,
         };
         if let Err(e) = self.sync_settings(true).await {
             crate::tui_output::warn_msg(&mut self.scroll_buffer, format!("{e:#}"));

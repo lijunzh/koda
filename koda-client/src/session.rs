@@ -273,6 +273,12 @@ pub(crate) async fn open(
                 .map(|tool| tool.name.clone())
                 .collect(),
         ),
+        instruction_sources: Some(
+            koda_core::memory::instruction_sources(&session.agent.project_root)
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect(),
+        ),
         ..describe(&stored)
     };
     let _ = events.send(Outgoing::Notification(ServerNotification::SessionStarted(
@@ -316,6 +322,7 @@ pub(crate) async fn open(
         session: described,
         commands: commands_tx,
         handles: SessionHandles {
+            project_root: session.agent.project_root.clone(),
             bg_agents: Arc::clone(&session.bg_agents),
             mcp: mcp.clone(),
         },
@@ -802,6 +809,9 @@ enum Next {
 /// while it moves onto the protocol.
 #[derive(Clone)]
 pub struct SessionHandles {
+    /// The project the session works in, whose notes `session/memory/*`
+    /// read and write.
+    pub project_root: PathBuf,
     /// The session's sub-agents, for showing what they do and stopping them.
     pub bg_agents: Arc<koda_core::child_agent::ChildAgentRegistry>,
     /// The session's MCP servers, for `mcpServerStatus/list`.
@@ -823,6 +833,7 @@ pub(crate) fn describe(stored: &koda_core::persistence::SessionInfo) -> Session 
         context_window: None,
         mode: None,
         tools: None,
+        instruction_sources: None,
     }
 }
 

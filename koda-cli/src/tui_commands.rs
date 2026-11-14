@@ -31,6 +31,8 @@ pub enum SlashAction {
     ChangeModel(String),
     /// Compact the session on the host, as a turn the TUI follows.
     Compact,
+    /// `/memory`, with what follows it: the host reads and saves the notes.
+    Memory(Option<String>),
 }
 
 use tui_output::{BOLD, CYAN, DIM};
@@ -145,10 +147,7 @@ pub async fn handle_slash_command(
             SlashAction::Continue
         }
 
-        "/memory" => {
-            crate::tui_wizards::handle_memory(buffer, arg, project_root);
-            SlashAction::Continue
-        }
+        "/memory" => SlashAction::Memory(arg.map(str::to_string)),
 
         "/skills" => {
             crate::tui_wizards::handle_list_skills(buffer, arg, &agent.tools);

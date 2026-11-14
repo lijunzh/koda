@@ -183,6 +183,17 @@ client_requests! {
         params: crate::session::SessionCompactStartParams,
         response: crate::session::SessionCompactStartResponse,
     },
+    /// Koda's notes the session's model reads: its project's and the
+    /// global ones.
+    SessionMemoryRead => "session/memory/read" {
+        params: crate::memory::SessionMemoryReadParams,
+        response: crate::memory::SessionMemoryReadResponse,
+    },
+    /// Save to Koda's notes; the session's next turn reads them.
+    SessionMemoryAdd => "session/memory/add" {
+        params: crate::memory::SessionMemoryAddParams,
+        response: crate::memory::SessionMemoryAddResponse,
+    },
     /// Close a session the client is done with, stopping its running turn.
     SessionUnsubscribe => "session/unsubscribe" {
         params: crate::session::SessionUnsubscribeParams,
