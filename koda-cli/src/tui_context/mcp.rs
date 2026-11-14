@@ -181,6 +181,7 @@ fn origin(read: &ConfigReadResponse, name: &str) -> String {
         .find(|(key, _)| key.starts_with(&prefix))
         .map(|(_, origin)| match &origin.name {
             ConfigLayerSource::User { file } => file.clone(),
+            ConfigLayerSource::SessionFlags => "-c (this run only)".to_string(),
         })
         .unwrap_or_else(|| "--mcp-config (this run only)".to_string())
 }

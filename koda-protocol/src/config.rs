@@ -11,9 +11,18 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// The config keys Koda takes, besides `model_providers.<id>.base_url`
-/// ([`PROVIDERS_KEY`]) and `mcp_servers.<name>`. Any other is refused.
-pub const KEYS: [&str; 2] = ["model", "model_provider"];
+/// The top-level config keys that hold a single value. Besides these,
+/// Koda takes `model_providers.<id>.<key>` ([`PROVIDERS_KEY`]),
+/// `mcp_servers.<name>`, `tui.<key>` and `sandbox.<key>`; any other is
+/// refused.
+pub const KEYS: [&str; 6] = [
+    "model",
+    "model_provider",
+    "model_reasoning_effort",
+    "model_context_window",
+    "model_post_turn_compact_threshold_percent",
+    "mode",
+];
 
 /// The config key that holds per-provider settings:
 /// `model_providers.<id>.base_url`.
@@ -44,8 +53,8 @@ pub struct ConfigReadResponse {
     pub layers: Option<Vec<ConfigLayer>>,
 }
 
-/// Where a value comes from. Koda has one layer so far, the user's file;
-/// Codex also has managed, project and `-c` layers.
+/// Where a value comes from: the user's file, or this run's `-c` values
+/// over it. Codex also has managed and project layers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ConfigLayerSource {
@@ -55,6 +64,9 @@ pub enum ConfigLayerSource {
         /// The file's path.
         file: String,
     },
+    /// `-c key=value` on the command line that started the host, for this
+    /// run only.
+    SessionFlags,
 }
 
 /// A layer and its version.
@@ -90,12 +102,61 @@ pub struct KodaConfigValues {
     /// The provider's id, such as `anthropic`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_provider: Option<String>,
+    /// The reasoning effort a new session asks for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_reasoning_effort: Option<String>,
+    /// The context window to assume, in tokens, for a server that doesn't
+    /// report its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_context_window: Option<u64>,
+    /// Context used, in percent, past which a turn compacts after its
+    /// final reply; 0 or none turns it off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_post_turn_compact_threshold_percent: Option<u8>,
+    /// The mode a new session starts in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<crate::state::TrustMode>,
     /// Settings per provider, by provider id.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub model_providers: BTreeMap<String, ModelProviderConfigValue>,
     /// The MCP servers every new session starts, by name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub mcp_servers: BTreeMap<String, crate::mcp::McpServerConfigValue>,
+    /// The TUI's own settings.
+    #[serde(default, skip_serializing_if = "TuiConfigValue::is_empty")]
+    pub tui: TuiConfigValue,
+    /// What sandboxed commands may do beyond Koda's defaults.
+    #[serde(default, skip_serializing_if = "SandboxConfigValue::is_empty")]
+    pub sandbox: SandboxConfigValue,
+}
+
+/// `[tui]`: settings a TUI reads from its own machine's file.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TuiConfigValue {
+    /// Colour code blocks and diffs; `false` for plain text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub syntax_highlight: Option<bool>,
+}
+
+impl TuiConfigValue {
+    fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+/// `[sandbox]`: what sandboxed commands may do beyond Koda's defaults.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SandboxConfigValue {
+    /// macOS: let commands use any local port, not only the servers Koda
+    /// started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_local_binding: Option<bool>,
+}
+
+impl SandboxConfigValue {
+    fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
 }
 
 /// One provider's settings: `[model_providers.<id>]`.
@@ -105,6 +166,16 @@ pub struct ModelProviderConfigValue {
     /// names none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
+    /// Retries a failed request gets after the first try.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_max_retries: Option<u64>,
+    /// Retries for a reply whose stream failed partway.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_max_retries: Option<u64>,
+    /// Milliseconds a reply may go silent before the connection counts as
+    /// lost; 0 turns the limit off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_idle_timeout_ms: Option<u64>,
 }
 
 /// `configWarning`: something in a config file needs a look, such as a key
@@ -169,8 +240,23 @@ pub struct ConfigWriteResponse {
     pub version: String,
     /// The file written.
     pub file_path: String,
-    /// The settings as saved now.
+    /// The settings as saved now, `-c` values included.
     pub config: KodaConfigValues,
+    /// With `okOverridden`: a `-c` value wins over what was written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overridden_metadata: Option<OverriddenMetadata>,
+}
+
+/// What wins over a write, as Codex reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OverriddenMetadata {
+    /// One sentence for a person.
+    pub message: String,
+    /// The layer whose value is in force.
+    pub overriding_layer: ConfigLayerMetadata,
+    /// The value in force, for the first overridden key.
+    pub effective_value: Value,
 }
 
 /// Why `config/batchWrite` was refused, in the error's `data` as
@@ -192,6 +278,9 @@ pub enum ConfigWriteErrorCode {
 pub enum WriteStatus {
     /// Saved.
     Ok,
+    /// Saved, but a `-c` value for this run wins over it until Koda
+    /// restarts.
+    OkOverridden,
 }
 
 /// `modelProvider/apiKey/set`: store a provider's API key. Koda keeps a key

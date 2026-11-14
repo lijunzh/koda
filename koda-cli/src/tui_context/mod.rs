@@ -305,7 +305,7 @@ impl TuiContext {
         // the agent it built (slash commands in the prompt, its MCP servers).
         let mut client = koda_client::InProcessClient::start(koda_client::StartArgs {
             config: config.clone(),
-            config_file: koda_client::ConfigFile::in_dir(&koda_core::db::config_dir()?),
+            config_file: crate::user_config::file()?,
             project_root: project_root.clone(),
             db: db.clone(),
             raw_events: true,

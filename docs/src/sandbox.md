@@ -191,19 +191,24 @@ server, then curl it" works without leaving the sandbox. Every other local
 port stays closed, including servers you started yourself, databases, and a
 server a test starts and then connects to.
 
-To open every local port on macOS, both ways, set
-`KODA_ALLOW_LOCAL_BINDING=1` in the environment you start Koda from:
+To open every local port on macOS, both ways, set it in your config file,
+as Codex keeps `allow_local_binding` in its config:
 
-```bash
-export KODA_ALLOW_LOCAL_BINDING=1
+```toml
+# ~/.config/koda/config.toml
+[sandbox]
+allow_local_binding = true
 ```
+
+`KODA_ALLOW_LOCAL_BINDING=1` in the environment you start Koda from does the
+same, for now.
 
 A command can then reach any server listening on your machine, such as a
 database or LM Studio, and accept connections on any port, from other
 machines too if it listens on more than loopback. Connections beyond your
 machine still go only through Koda's proxy. It is off by default, as
-Codex's and Claude Code's `allow_local_binding` are, and only your
-environment can turn it on: Koda reads no project settings. On Linux each
+Codex's and Claude Code's `allow_local_binding` are, and only your own config
+file or environment can turn it on: Koda reads no project settings. On Linux each
 command has a loopback of its own that it can always use, so the setting
 changes nothing there.
 

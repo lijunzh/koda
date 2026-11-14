@@ -134,7 +134,7 @@ impl McpCli {
     ) -> Result<()> {
         let client = InProcessClient::start(StartArgs {
             config,
-            config_file: koda_client::ConfigFile::in_dir(&koda_core::db::config_dir()?),
+            config_file: crate::user_config::file()?,
             project_root,
             db,
             raw_events: false,

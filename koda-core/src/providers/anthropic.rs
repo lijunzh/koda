@@ -211,12 +211,22 @@ impl AnthropicProvider {
     /// Cache diagnostics are on for Anthropic's own API and off elsewhere: a
     /// proxy or gateway may reject the field.
     pub fn new(api_key: String, base_url: Option<&str>) -> Self {
+        let client = super::build_http_client(base_url.or(Some("https://api.anthropic.com")));
+        Self::with_http_client(api_key, base_url, client)
+    }
+
+    /// [`Self::new`] with the HTTP client to use.
+    pub fn with_http_client(
+        api_key: String,
+        base_url: Option<&str>,
+        client: reqwest::Client,
+    ) -> Self {
         let base_url = base_url
             .unwrap_or("https://api.anthropic.com")
             .trim_end_matches('/')
             .to_string();
         Self {
-            client: super::build_http_client(Some(&base_url)),
+            client,
             diagnostics: (base_url == "https://api.anthropic.com")
                 .then(|| Arc::new(DiagnosticsChain::default())),
             base_url,

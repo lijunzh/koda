@@ -435,6 +435,19 @@ impl Host {
         })
     }
 
+    /// The mode a new session starts in: the one this run named, else the
+    /// config file's, else the host's default.
+    fn new_session_mode(&self) -> koda_core::trust::TrustMode {
+        let config = &self.context.config;
+        if config.trust_named {
+            return config.trust;
+        }
+        crate::config_file::load(&self.context.config_file)
+            .ok()
+            .and_then(|loaded| crate::config_file::mode(&loaded))
+            .unwrap_or(config.trust)
+    }
+
     async fn start_session(
         &self,
         params: SessionStartParams,
@@ -515,7 +528,7 @@ impl Host {
             provider: config.provider_type.to_string(),
             base_url: config.base_url.clone(),
             context_window: config.max_context_tokens as u64,
-            mode: protocol_mode(config.trust),
+            mode: protocol_mode(self.new_session_mode()),
             sandbox: SandboxState {
                 backend: report.backend.to_string(),
                 available: report.available,

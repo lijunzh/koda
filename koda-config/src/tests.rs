@@ -342,3 +342,108 @@ fn servers_written_inline_by_hand_take_an_edit() {
         .unwrap();
     assert_eq!(saved.config.mcp_servers.keys().collect::<Vec<_>>(), ["b"]);
 }
+
+#[test]
+fn the_settings_keys_load() {
+    let (_dir, file) = file_with(
+        r#"
+model_reasoning_effort = "high"
+model_context_window = 131072
+model_post_turn_compact_threshold_percent = 80
+mode = "safe"
+
+[model_providers.anthropic]
+request_max_retries = 6
+stream_max_retries = 3
+stream_idle_timeout_ms = 600000
+
+[tui]
+syntax_highlight = false
+
+[sandbox]
+allow_local_binding = true
+"#,
+    );
+    let config = file.load().unwrap().config;
+    assert_eq!(config.model_reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(config.model_context_window, Some(131_072));
+    assert_eq!(config.model_post_turn_compact_threshold_percent, Some(80));
+    assert_eq!(config.mode, Some(Mode::Safe));
+    let anthropic = &config.model_providers["anthropic"];
+    assert_eq!(anthropic.request_max_retries, Some(6));
+    assert_eq!(anthropic.stream_max_retries, Some(3));
+    assert_eq!(anthropic.stream_idle_timeout_ms, Some(600_000));
+    assert_eq!(config.tui.syntax_highlight, Some(false));
+    assert_eq!(config.sandbox.allow_local_binding, Some(true));
+
+    let (_dir2, bad) = file_with("mode = \"yolo\"\n");
+    let err = bad.load().unwrap_err().to_string();
+    assert!(err.contains("line 1"), "{err}");
+}
+
+#[test]
+fn overrides_parse_as_toml_or_as_text() {
+    let o = parse_override("model_context_window=65536").unwrap();
+    assert_eq!(o.value, toml::Value::Integer(65_536));
+    let o = parse_override("model=claude-opus").unwrap();
+    assert_eq!(o.value, toml::Value::String("claude-opus".into()));
+    let o = parse_override("model=\"claude-opus\"").unwrap();
+    assert_eq!(o.value, toml::Value::String("claude-opus".into()));
+    let o = parse_override("sandbox.allow_local_binding=true").unwrap();
+    assert_eq!(o.key_path, "sandbox.allow_local_binding");
+    assert_eq!(o.value, toml::Value::Boolean(true));
+    assert!(parse_override("model").is_err());
+    assert!(parse_override("=x").is_err());
+    assert!(parse_override("a..b=x").is_err());
+}
+
+#[test]
+fn overrides_sit_over_the_file_and_are_never_written() {
+    let (_dir, file) = file_with(
+        "# mine\nmodel = \"claude-sonnet\"\n\n[model_providers.lm-studio]\nbase_url = \"http://a\"\n",
+    );
+    let file = file.with_overrides(vec![
+        parse_override("model=claude-opus").unwrap(),
+        parse_override("model_providers.lm-studio.request_max_retries=9").unwrap(),
+    ]);
+    let loaded = file.load().unwrap();
+    assert_eq!(loaded.config.model.as_deref(), Some("claude-opus"));
+    let lm = &loaded.config.model_providers["lm-studio"];
+    assert_eq!(
+        lm.base_url.as_deref(),
+        Some("http://a"),
+        "the file's sibling stays"
+    );
+    assert_eq!(lm.request_max_retries, Some(9));
+    assert_eq!(
+        loaded.flag_key_paths(),
+        ["model", "model_providers.lm-studio.request_max_retries"]
+    );
+    // The file's own version and values are the file's alone.
+    assert_eq!(loaded.values["model"].as_str(), Some("claude-sonnet"));
+
+    // An edit writes the file only; the flags still win in what it returns.
+    let saved = file
+        .edit(None, &[edit("model", json!("claude-haiku"))])
+        .unwrap();
+    assert_eq!(saved.config.model.as_deref(), Some("claude-opus"));
+    assert!(text(&file).contains("model = \"claude-haiku\""));
+    assert!(!text(&file).contains("request_max_retries"));
+}
+
+#[test]
+fn an_unknown_or_mistyped_override_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let unknown = ConfigFile::in_dir(dir.path())
+        .with_overrides(vec![parse_override("modle=x").unwrap()])
+        .load()
+        .unwrap_err();
+    assert!(matches!(unknown, ConfigError::Override(_)), "{unknown:?}");
+    assert!(unknown.to_string().contains("`modle`"), "{unknown}");
+
+    let mistyped = ConfigFile::in_dir(dir.path())
+        .with_overrides(vec![parse_override("model_context_window=lots").unwrap()])
+        .load()
+        .unwrap_err();
+    assert!(matches!(mistyped, ConfigError::Override(_)), "{mistyped:?}");
+}

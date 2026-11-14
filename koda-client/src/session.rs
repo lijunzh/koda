@@ -152,6 +152,13 @@ pub(crate) async fn open(
     } = context;
 
     let resumed = resume.is_some();
+    let loaded = crate::config_file::load(&context_file)?;
+    // A new session starts in the file's mode unless this run named one.
+    if !config.trust_named
+        && let Some(file_mode) = crate::config_file::mode(&loaded)
+    {
+        config.trust = file_mode;
+    }
     // A resumed session keeps its own provider, endpoint, model choice and
     // mode unless the client names others, as Codex's `thread/resume` does.
     let mut mode = config.trust;
@@ -182,12 +189,15 @@ pub(crate) async fn open(
     }
     // A new session takes the saved choice where the client named nothing,
     // as a Codex thread starts from `config.toml`'s defaults.
-    let saved = crate::config_file::values(&crate::config_file::load(&context_file)?);
+    let saved = crate::config_file::values(&loaded);
     if !resumed {
         choice = crate::settings::with_saved(choice, &saved);
     }
     let alias = crate::settings::apply_start(&mut config, &choice, &saved.model_providers).await?;
     crate::settings::detect_model(&mut config).await;
+    // The file's effort, window, retries and timeouts, now that the
+    // provider is known, before the provider is asked for its window.
+    crate::config_file::apply_settings(&mut config, &loaded);
 
     // Ask the provider for the model's window first. A guess is said once
     // the session has started.

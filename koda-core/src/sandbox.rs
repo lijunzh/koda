@@ -413,7 +413,8 @@ pub fn policy_for_agent(trust: crate::trust::TrustMode, project_root: &Path) -> 
     }
 
     policy.net.allow_local_binding =
-        local_binding_allowed(crate::runtime_env::get(LOCAL_BINDING_ENV).as_deref());
+        local_binding_allowed(crate::runtime_env::get(LOCAL_BINDING_ENV).as_deref())
+            || LOCAL_BINDING_CONFIGURED.load(std::sync::atomic::Ordering::Relaxed);
 
     policy
 }
@@ -422,10 +423,23 @@ pub fn policy_for_agent(trust: crate::trust::TrustMode, project_root: &Path) -> 
 /// test that starts a server and connects to it, a database, a dev server
 /// started outside Koda. Off by default, as Codex's and Claude Code's
 /// `allow_local_binding` are, since it exposes every service listening on
-/// the machine. It comes from the user's environment only: Koda reads no
-/// project settings, so a repository can't turn it on. macOS only; on
+/// the machine. It comes from the user's environment or the user's config
+/// file (`[sandbox] allow_local_binding`), never a project's, so a
+/// repository can't turn it on. macOS only; on
 /// Linux each command has its own loopback, which it can always use.
 pub const LOCAL_BINDING_ENV: &str = "KODA_ALLOW_LOCAL_BINDING";
+
+/// `[sandbox] allow_local_binding` from the config file, which the host
+/// sets ([`set_local_binding_configured`]).
+static LOCAL_BINDING_CONFIGURED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Take `[sandbox] allow_local_binding` from the user's config file for the
+/// commands started from now on. Only the host calls this, from the user's
+/// own file; a project still can't turn it on.
+pub fn set_local_binding_configured(allowed: bool) {
+    LOCAL_BINDING_CONFIGURED.store(allowed, std::sync::atomic::Ordering::Relaxed);
+}
 
 fn local_binding_allowed(value: Option<&str>) -> bool {
     matches!(value, Some("1" | "true"))

@@ -870,3 +870,78 @@ async fn a_run_without_flags_uses_the_saved_choice() {
         .collect();
     assert_eq!(models, ["saved-model", "flag-model"]);
 }
+
+/// `-c key=value` sits over config.toml for one run, as Codex's does: it
+/// beats the file, `--model` beats it, and an unknown key stops the run
+/// before anything starts.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_config_override_beats_the_file_and_a_flag_beats_it() {
+    let server = stub(vec![], no_other_calls).await;
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join("koda")).unwrap();
+    std::fs::write(
+        tmp.path().join("koda/config.toml"),
+        format!(
+            "model_provider = \"lm-studio\"\nmodel = \"file-model\"\n\n\
+             [model_providers.lm-studio]\nbase_url = \"{}\"\n",
+            server.url()
+        ),
+    )
+    .unwrap();
+    let exec = |flags: &[&str]| {
+        let mut command = tokio::process::Command::new(koda_bin());
+        command
+            .args(["exec", "Go on", "--json"])
+            .args(flags)
+            .arg("--project-root")
+            .arg(tmp.path())
+            .env("XDG_CONFIG_HOME", tmp.path())
+            .env_remove("KODA_PROVIDER")
+            .env_remove("KODA_MODEL")
+            .env_remove("KODA_BASE_URL")
+            .kill_on_drop(true);
+        command
+    };
+
+    let overridden = finish(exec(&["-c", "model=c-model"])).await;
+    assert!(overridden.output.status.success(), "{}", overridden.stdout);
+    assert_eq!(overridden.lines[0]["params"]["session"]["model"], "c-model");
+
+    let flagged = finish(exec(&["-c", "model=c-model", "--model", "flag-model"])).await;
+    assert!(flagged.output.status.success(), "{}", flagged.stdout);
+    assert_eq!(flagged.lines[0]["params"]["session"]["model"], "flag-model");
+
+    let unknown = finish(exec(&["-c", "modle=x"])).await;
+    assert!(!unknown.output.status.success());
+    let stderr = String::from_utf8_lossy(&unknown.output.stderr);
+    assert!(
+        stderr.contains("unknown configuration field `modle`"),
+        "{stderr}"
+    );
+
+    // Nothing from -c reached the file.
+    let file = std::fs::read_to_string(tmp.path().join("koda/config.toml")).unwrap();
+    assert!(!file.contains("c-model"), "{file}");
+}
+
+/// A new session starts in the config file's `mode`, and `-c mode=` beats
+/// it, as `--mode` does.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_starts_in_the_files_mode() {
+    let server = stub(vec![], no_other_calls).await;
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join("koda")).unwrap();
+    std::fs::write(tmp.path().join("koda/config.toml"), "mode = \"safe\"\n").unwrap();
+
+    let mut plain = command(&server, tmp.path());
+    plain.env_remove("KODA_MODE");
+    let run = finish(plain).await;
+    assert!(run.output.status.success(), "{}", run.stdout);
+    assert_eq!(run.lines[0]["params"]["session"]["mode"], "safe");
+
+    let mut flagged = command(&server, tmp.path());
+    flagged.env_remove("KODA_MODE").args(["-c", "mode=plan"]);
+    let run = finish(flagged).await;
+    assert!(run.output.status.success(), "{}", run.stdout);
+    assert_eq!(run.lines[0]["params"]["session"]["mode"], "plan");
+}

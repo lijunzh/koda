@@ -201,7 +201,20 @@ pub const WARM_INFO: Style = Style::new().fg(Color::Rgb(198, 165, 106));
 
 // ── Syntax highlighting kill switch ─────────────────────────────────
 
-/// Returns `false` when the user has set `KODA_SYNTAX_HIGHLIGHT=off`.
+/// `[tui] syntax_highlight` in this machine's config file. Unit tests
+/// never read the user's real file.
+#[cfg(not(test))]
+fn configured_syntax_highlight() -> Option<bool> {
+    crate::user_config::tui().syntax_highlight
+}
+
+#[cfg(test)]
+fn configured_syntax_highlight() -> Option<bool> {
+    None
+}
+
+/// Returns `false` when the user has set `KODA_SYNTAX_HIGHLIGHT=off`, or
+/// `[tui] syntax_highlight = false` in the config file.
 ///
 /// Steals the pattern from Claude Code's `CLAUDE_CODE_SYNTAX_HIGHLIGHT`.
 /// Cheap insurance against terminals where ANSI-RGB output looks awful
@@ -222,6 +235,8 @@ pub fn syntax_highlight_enabled() -> bool {
                     "off" | "0" | "false" | "no"
                 )
             })
+            .ok()
+            .or_else(configured_syntax_highlight)
             .unwrap_or(true)
     })
 }

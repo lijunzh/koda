@@ -384,9 +384,10 @@ mod tests {
                 "lm-studio".into(),
                 ModelProviderConfigValue {
                     base_url: Some("http://127.0.0.1:1234/v1".into()),
+                    ..Default::default()
                 },
             )]),
-            mcp_servers: Default::default(),
+            ..Default::default()
         }
     }
 

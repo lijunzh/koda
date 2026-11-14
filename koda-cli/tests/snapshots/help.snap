@@ -80,11 +80,13 @@ Options:
           [env: KODA_REASONING_EFFORT=]
 
       --mode <MODE>
-          Trust mode: auto (default), safe, or plan (`koda exec` only). "auto" auto-approves mutating actions; the kernel sandbox contains them. Destructive ops (rm -rf, git reset --hard, git push --force) and outside-project writes still confirm. Auto requires the kernel sandbox; on unsandboxed platforms koda refuses to start with an actionable error (use --mode safe or install the platform sandbox backend). "safe" confirms every mutation before executing — use this in CI, locked-down workstations, or any context where you want a human in every approval loop. "plan" is read-only, for a `koda exec` run that should only look: reads, searches, read-only commands and MCP tools marked read-only run; everything else is refused, and the kernel sandbox keeps the project read-only. Sandbox with credential protection is always active
+          Trust mode: auto (the default, unless config.toml sets `mode`), safe, or plan (`koda exec` only). "auto" auto-approves mutating actions; the kernel sandbox contains them. Destructive ops (rm -rf, git reset --hard, git push --force) and outside-project writes still confirm. Auto requires the kernel sandbox; on unsandboxed platforms koda refuses to start with an actionable error (use --mode safe or install the platform sandbox backend). "safe" confirms every mutation before executing — use this in CI, locked-down workstations, or any context where you want a human in every approval loop. "plan" is read-only, for a `koda exec` run that should only look: reads, searches, read-only commands and MCP tools marked read-only run; everything else is refused, and the kernel sandbox keeps the project read-only. Sandbox with credential protection is always active
           
           [env: KODA_MODE=]
-          [default: auto]
           [possible values: safe, auto, plan]
+
+  -c, --config <KEY=VALUE>
+          Override a config.toml value for this run: `-c key=value`, with a dotted key (`-c model_providers.lm-studio.base_url=http://...`). The value is read as TOML, else taken as text, as Codex's `-c` is. Repeatable; never saved. Flags such as --model win over it
 
       --mcp-config <FILE|JSON>
           Add MCP servers for this run only, from a JSON file or inline JSON in the `{"mcpServers": {...}}` shape of Claude Code's `.mcp.json`. Repeatable; later servers win a name clash, and all of them win over servers stored with `koda mcp add`. Nothing is saved
