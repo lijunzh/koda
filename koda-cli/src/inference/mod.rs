@@ -17,6 +17,9 @@
 //!   feedback / general keys) and the #1211 slash-guard.
 //! - [`ui_handler`] — engine→UI rendering during inference (approval
 //!   prompts, ask-user, loop cap, fall-through to `TuiRenderer`).
+//! - [`turn_tracker`] — links the TUI's answers to the host's requests and
+//!   keeps steering text until the model receives it (PR 5c: the host runs
+//!   the turn, the TUI is its client).
 //!
 //! Multiple `impl TuiContext` blocks (one in `select_loop.rs`, one in
 //! `post_turn.rs`) are stitched together by rustc — same type, same
@@ -27,4 +30,31 @@
 mod crossterm_handler;
 mod post_turn;
 mod select_loop;
+mod turn_tracker;
 mod ui_handler;
+
+/// Stops the running turn: sends `turn/interrupt` without waiting, since
+/// the host answers once the turn has stopped and the TUI keeps drawing
+/// meanwhile. Pressing it again sends another, which the host refuses
+/// harmlessly once the turn has ended.
+pub(crate) struct TurnStop {
+    requests: koda_client::RequestHandle,
+    session_id: String,
+    turn_id: String,
+}
+
+impl TurnStop {
+    pub(crate) fn interrupt(&self) {
+        let requests = self.requests.clone();
+        let params = koda_client::protocol::turn::TurnInterruptParams {
+            session_id: self.session_id.clone(),
+            turn_id: self.turn_id.clone(),
+        };
+        tokio::spawn(async move {
+            use koda_client::protocol::methods::TurnInterrupt;
+            if let Err(e) = requests.request::<TurnInterrupt>(params).await {
+                tracing::debug!("turn/interrupt: {e}");
+            }
+        });
+    }
+}

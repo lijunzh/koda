@@ -248,11 +248,14 @@ impl Tui {
         self.type_text("\r");
     }
 
-    /// Press `key` and wait for the engine to say the turn stopped.
+    /// Press `key` and wait for the turn to stop: the engine says so, and
+    /// the turn ends a moment later, when its `turn/completed` reaches the
+    /// TUI. Keys typed before that still go to the turn.
     fn stop_turn(&mut self, key: &str) {
         let start = self.output_len();
         self.type_text(key);
         self.wait_for_output_after(start, INTERRUPTED);
+        self.wait_for_screen_without(BUSY_PROMPT);
     }
 
     /// Whether `koda` exits within a few seconds.
@@ -653,6 +656,12 @@ async fn a_stop_hands_steering_text_back() {
     tui.stop_turn(CTRL_C);
 
     assert_eq!(model_calls(&server).await.len(), 1);
+    tui.wait_for_screen("Not sent to the model");
+    assert!(
+        input_box(&tui.screen()).contains("steeringtext"),
+        "{}",
+        tui.screen()
+    );
     tui.type_text("\r");
     let sent = wait_for_model_call(&server, 2).await;
     assert!(sent.contains("steering text"), "{sent}");
@@ -1627,4 +1636,21 @@ async fn a_finished_sub_agent_starts_no_other_turn() {
     tui.wait_for_screen("All done.");
     tui.wait_for_screen_without(BUSY_PROMPT);
     assert_no_more_calls(&server, 3).await;
+}
+
+/// `koda "prompt"` opens the TUI and sends the prompt, as `codex "prompt"`
+/// does.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_prompt_given_to_koda_is_sent_when_the_tui_opens() {
+    let server = scripted_model(vec![]).await;
+    let home = home();
+    let tui = Tui::start_with_args(
+        home.path(),
+        &server.url(),
+        &["say hello from the command line"],
+        IDLE_HINT,
+    );
+    let sent = wait_for_model_call(&server, 1).await;
+    assert!(sent.contains("say hello from the command line"), "{sent}");
+    tui.wait_for_screen("All done.");
 }

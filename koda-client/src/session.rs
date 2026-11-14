@@ -303,7 +303,7 @@ impl SessionTask {
             .await
         {
             let _ = reply.send(Err(internal(format!(
-                "couldn't save the message, so it wasn't sent: {e:#}"
+                "couldn't save your message, so it wasn't sent: {e:#}"
             ))));
             return true;
         }

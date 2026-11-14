@@ -1,59 +1,26 @@
-//! Post-turn cleanup: deferred-queue housekeeping, residual UI-event
-//! drain, auto-compact.
+//! Post-turn cleanup: unsent steering text, dialogs, auto-compact.
 //!
 //! Runs once per turn after the inner select loop in
 //! [`super::select_loop::TuiContext::run_inference_turn`] breaks. Lives
 //! in its own file so the auto-compact policy is easy to find and pin
 //! independently of the (much larger) select-loop machinery.
 
-use crate::sink::UiEvent;
 use crate::tui_context::TuiContext;
 use crate::tui_types::TuiState;
 
-use koda_core::engine::{EngineCommand, EngineEvent};
 use koda_core::persistence::Persistence;
 use ratatui::{
     style::{Color, Style},
     text::{Line, Span},
 };
-use tokio::sync::mpsc;
 
 impl TuiContext {
-    pub(super) async fn post_turn_cleanup(
-        &mut self,
-        ui_rx: &mut mpsc::UnboundedReceiver<UiEvent>,
-        cmd_rx: &mut mpsc::Receiver<EngineCommand>,
-    ) {
+    /// After `turn/completed`, with the turn's events all shown: back to
+    /// idle, any dialog closed, unsent steering text back in the input box,
+    /// and auto-compaction if the context is full.
+    pub(super) async fn post_turn_cleanup(&mut self, unsent: Vec<String>) {
         self.tui_state = TuiState::Idle;
         self.inference_start = None;
-        // #1200: do NOT replace `session.cancel`. The session root is
-        // session-lifetime stable now; per-turn cancellation is on a
-        // child token that's dropped when the turn future ends. This
-        // fixes the cascade-broken-across-turns bug where bg agents
-        // reserved during turn N were orphaned the moment turn N
-        // finished and `session.cancel` was swapped out from under them.
-
-        // Drain remaining UI events
-        while let Ok(UiEvent::Engine(e)) = ui_rx.try_recv() {
-            if let EngineEvent::ContextUsage { used, max } = &e {
-                self.context_pct = if *max > 0 {
-                    (used * 100 / max) as u32
-                } else {
-                    0
-                };
-            }
-            if let EngineEvent::ContextWindowChanged { tokens } = &e {
-                self.learned_context_window = Some(*tokens);
-            }
-            // Tap activity events into the bg-activity tracker even
-            // during post-turn drain — a fan-out agent emitting a
-            // ToolStart milliseconds before the turn future resolves
-            // would otherwise vanish from the overlay forever (#1210).
-            if let EngineEvent::ChildAgentActivity { task_id, kind, .. } = &e {
-                self.child_activity.record_activity(*task_id, kind);
-            }
-            self.renderer.render_to_buffer(e, &mut self.scroll_buffer);
-        }
 
         // A dialog that reached the screen as the turn stopped has no one
         // waiting for its answer.
@@ -69,7 +36,6 @@ impl TuiContext {
         // runs until the user presses Enter: they may have stopped the turn
         // on purpose, and a new turn can block on a single-slot local server
         // that is still busy with the cancelled one (#825).
-        let unsent = self.session.take_queued_steers(cmd_rx);
         if !unsent.is_empty() {
             let has_draft = !self.textarea.text().is_empty();
             let draft = unsent_steers_as_draft(&unsent, has_draft);
@@ -166,7 +132,7 @@ impl TuiContext {
 
 /// What to put in front of the composer when queued text comes back unsent.
 ///
-/// `steers` is oldest first, as from `KodaSession::take_queued_steers`. A draft
+/// `steers` is oldest first, as `TurnTracker::take_unsent_steers` gives them. A draft
 /// already in the composer stays after it, one blank line down.
 fn unsent_steers_as_draft(steers: &[String], has_draft: bool) -> String {
     let joined = steers.join("\n\n");

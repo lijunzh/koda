@@ -6,16 +6,16 @@
 use crate::scroll_buffer::ScrollBuffer;
 use crate::tui_output;
 
+use crate::tui_context::TuiSession;
 use koda_core::agent::KodaAgent;
 use koda_core::mcp::config::{self, McpServerConfig, McpTransport, validate_server_name};
-use koda_core::session::KodaSession;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Handle `/mcp list` — show all configured servers and their status.
 pub async fn handle_mcp_list(
     buffer: &mut ScrollBuffer,
-    session: &KodaSession,
+    session: &TuiSession,
     agent: &Arc<KodaAgent>,
 ) {
     // Show status from live McpManager (if attached).
@@ -122,7 +122,7 @@ pub async fn handle_mcp_list(
 /// Handle `/mcp add <name> <command> [args...]`.
 pub async fn handle_mcp_add(
     buffer: &mut ScrollBuffer,
-    session: &KodaSession,
+    session: &TuiSession,
     agent: &Arc<KodaAgent>,
     name: String,
     command: String,
@@ -196,7 +196,7 @@ pub async fn handle_mcp_add(
 /// Handle `/mcp add-http <name> <url> [--token <bearer>]`.
 pub async fn handle_mcp_add_http(
     buffer: &mut ScrollBuffer,
-    session: &KodaSession,
+    session: &TuiSession,
     agent: &Arc<KodaAgent>,
     name: String,
     url: String,
@@ -269,7 +269,7 @@ pub async fn handle_mcp_add_http(
 /// Handle `/mcp remove <name>`.
 pub async fn handle_mcp_remove(
     buffer: &mut ScrollBuffer,
-    session: &KodaSession,
+    session: &TuiSession,
     agent: &Arc<KodaAgent>,
     name: String,
 ) {
@@ -382,8 +382,6 @@ mod tests {
     use crate::scroll_buffer::ScrollBuffer;
     use koda_core::config::{KodaConfig, ProviderType};
     use koda_core::db::Database;
-    use koda_core::session::KodaSession;
-    use koda_core::trust::TrustMode;
     use tempfile::TempDir;
 
     // ── Helpers ───────────────────────────────────────────────────
@@ -401,9 +399,8 @@ mod tests {
     }
 
     /// Build a minimal test agent + session (no API key needed — mock provider).
-    async fn make_agent_and_session(tmp: &TempDir) -> (Arc<KodaAgent>, KodaSession) {
+    async fn make_agent_and_session(tmp: &TempDir) -> (Arc<KodaAgent>, TuiSession) {
         let mut config = KodaConfig::load(tmp.path(), "default").unwrap();
-        // Swap to mock so KodaSession::new() doesn’t warn about missing API key.
         config.provider_type = ProviderType::Mock;
 
         let agent = Arc::new(
@@ -412,14 +409,11 @@ mod tests {
                 .unwrap(),
         );
         let db = Database::open(&tmp.path().join("koda.db")).await.unwrap();
-        let session = KodaSession::new(
-            "test-session".into(),
-            Arc::clone(&agent),
+        let session = TuiSession {
+            id: "test-session".into(),
             db,
-            &config,
-            TrustMode::Safe,
-        )
-        .await;
+            bg_agents: koda_core::child_agent::new_shared(),
+        };
         (agent, session)
     }
 

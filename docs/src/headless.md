@@ -28,9 +28,10 @@ koda exec --json "fix the failing test"
 Every `koda` flag (`--model`, `--provider`, `--mode`, `-s`, `--mcp-config`, …)
 works with it.
 
-`koda` without `exec` opens the TUI. `koda -p`, `--output-format` and a prompt
-given to `koda` itself (`koda "..."`) were removed in 0.7.0 and stop with a
-pointer here; `koda` with stdin piped stops too, as `codex` does.
+`koda` without `exec` opens the TUI, and `koda "prompt"` opens it with that
+prompt, as `codex "prompt"` does. `koda -p` and `--output-format` were removed
+in 0.7.0 and stop with a pointer here; `koda` with stdin piped stops too, as
+`codex` does.
 
 ## Exit codes
 

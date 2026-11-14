@@ -7,8 +7,8 @@ data on your machine, and connects to any LLM provider you choose.
 
 | Mode | How to invoke | Best for |
 |------|--------------|----------|
-| **Interactive TUI** | `koda` (no args) | Long sessions, iterative coding |
-| **Headless** | `koda "prompt"` or `echo … \| koda` | Scripts, CI, one-shot tasks |
+| **Interactive TUI** | `koda`, or `koda "prompt"` to start with one | Long sessions, iterative coding |
+| **Headless** | `koda exec "prompt"` or `echo … \| koda exec` | Scripts, CI, one-shot tasks |
 
 ## Quick start
 

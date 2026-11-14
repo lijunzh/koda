@@ -7,7 +7,6 @@ use crate::*;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use koda_core::persistence::Persistence;
 use std::path::{Path, PathBuf};
 
 const LONG_ABOUT: &str = "Koda runs in two modes:
@@ -36,6 +35,7 @@ vars always win over stored keys.";
 
 const AFTER_HELP: &str = "Examples:
   koda                                     # interactive TUI (type /help inside)
+  koda \"fix the failing test\"              # the TUI, starting with that prompt
   koda -s abc123                           # resume a saved session
   koda exec \"explain this codebase\"       # one-shot question, then exit
   koda exec - < prompt.txt                 # read the prompt from stdin
@@ -67,8 +67,9 @@ struct Cli {
     )]
     prompt: Option<String>,
 
-    /// Removed in 0.7.0: a prompt here no longer runs; `koda exec` does.
-    #[arg(value_name = "PROMPT", hide = true)]
+    /// Open the TUI and send this prompt, as `codex "prompt"` does. A
+    /// one-shot run is `koda exec "prompt"`.
+    #[arg(value_name = "PROMPT")]
     positional_prompt: Option<String>,
 
     /// Removed in 0.7.0, with `koda -p`.
@@ -204,8 +205,7 @@ struct ExecArgs {
     output_last_message: Option<PathBuf>,
 }
 
-const ONE_SHOT_REMOVED: &str = "`koda -p`, `--output-format` and `koda \"<prompt>\"` were \
-removed in 0.7.0.
+const ONE_SHOT_REMOVED: &str = "`koda -p` and `--output-format` were removed in 0.7.0.
 Run a prompt with `koda exec \"<prompt>\"`, or `koda exec --json` for the client \
 protocol's notifications, one JSON-RPC message per line (`exec/summary` last).
 See https://lijunzh.github.io/koda/headless.html";
@@ -255,10 +255,7 @@ pub(crate) async fn run() -> Result<()> {
     let headless_run = match cli.command.take() {
         Some(Command::Exec(args)) => Some(exec_run(args)?),
         _ => {
-            if cli.prompt.is_some()
-                || cli.positional_prompt.is_some()
-                || cli.output_format.is_some()
-            {
+            if cli.prompt.is_some() || cli.output_format.is_some() {
                 eprintln!("{ONE_SHOT_REMOVED}");
                 std::process::exit(2);
             }
@@ -412,12 +409,12 @@ pub(crate) async fn run() -> Result<()> {
         std::process::exit(1);
     }
 
-    // Load or create session
     // A mistyped id (once, a llama-server pid) used to run a session that
     // didn't exist: nothing could be saved, and the model got no messages.
-    let session_id = match cli.session {
-        Some(id) => db.resolve_session_id(&id).await?,
-        None => db.create_session(&config.agent_name, &project_root).await?,
+    // Without one, Koda's host creates the session.
+    let resume = match cli.session {
+        Some(id) => Some(db.resolve_session_id(&id).await?),
+        None => None,
     };
 
     // Run the main event loop
@@ -426,7 +423,8 @@ pub(crate) async fn run() -> Result<()> {
         config,
         overrides,
         db,
-        session_id,
+        resume,
+        cli.positional_prompt,
         version_check,
         first_run,
     )

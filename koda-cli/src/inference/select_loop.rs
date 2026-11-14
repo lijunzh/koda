@@ -1,6 +1,19 @@
-//! Inner inference loop — `tokio::select!` over input/UI/draw/turn-done.
+//! Inner inference loop — `tokio::select!` over input, engine events, the
+//! host's messages, the TUI's answers and the draw timer.
 //!
-//! This is the hottest, most subtle piece of the inference lifecycle:
+//! Koda's host runs the turn (PR 5c); the TUI is its client:
+//!
+//!   - `turn/start` starts it, and `turn/completed` ends this loop.
+//!   - The renderer reads the engine's own events, which the client hands
+//!     out in process ([`koda_client::StartArgs::raw_events`]) until the TUI
+//!     renders items. They arrive in order, and all of a turn's before its
+//!     `turn/completed`.
+//!   - Dialog answers and steering text leave the key handlers as
+//!     [`EngineCommand`]s, as before, and go to the host as answers to its
+//!     requests and `turn/steer` ([`super::turn_tracker`]).
+//!   - Esc, Ctrl+C and Ctrl+D send `turn/interrupt` ([`super::TurnStop`]).
+//!
+//! What stays from before:
 //!
 //!   - Rotates which arm is preferred each iteration (`prefer_input`)
 //!     so neither terminal input nor engine events can monopolise the
@@ -8,20 +21,22 @@
 //!   - The `Draw` arm is the *only* place `terminal.draw()` is called;
 //!     every other arm calls `frame_requester.schedule_frame()` so the
 //!     coalescing scheduler caps redraws at ~120 FPS (#1138).
-//!   - Per-turn `cancel_token` is a child of `session.cancel` so Esc
-//!     fires only the foreground turn, not the bg agents derived from
-//!     the session root (#1200, #1216).
 //!
 //! `drain_bounded` and the regression tests for #1137 live here too,
 //! since the bounded drain only has one production caller and unit
 //! tests are easier to wire when they share the file.
 
+use super::turn_tracker::TurnTracker;
 use crate::sink::UiEvent;
-use crate::tui_context::TuiContext;
+use crate::tui_context::{TuiContext, TurnInput};
 use crate::tui_types::TuiState;
 use crate::tui_viewport::draw_viewport;
 
 use futures_util::StreamExt;
+use koda_client::RawEvent;
+use koda_client::events::Outgoing;
+use koda_client::protocol::methods;
+use koda_client::protocol::turn::{ImageInput, TurnStartParams, TurnSteerParams};
 use koda_core::engine::{EngineCommand, EngineEvent};
 use koda_core::trust;
 use ratatui::{
@@ -37,10 +52,13 @@ use tokio::sync::mpsc;
 /// iteration without duplicating the (large) handler bodies (#1137, #1139).
 enum SelectArm {
     Crossterm(crossterm::event::Event),
-    Ui(UiEvent),
+    Ui(RawEvent),
     /// The frame scheduler granted us a draw slot (#1138). Render once.
     Draw,
-    TurnDone(anyhow::Result<()>),
+    /// A message from the host; `None` once it has stopped.
+    Host(Option<Outgoing>),
+    /// An answer or steering text from the key handlers.
+    Command(EngineCommand),
 }
 
 /// Drain up to `cap` items from an `mpsc::UnboundedReceiver` synchronously,
@@ -73,62 +91,123 @@ fn drain_bounded<T, F: FnMut(T)>(
     n
 }
 
+/// The protocol's name for a trust mode.
+fn protocol_mode(mode: trust::TrustMode) -> koda_client::protocol::state::TrustMode {
+    use koda_client::protocol::state::TrustMode as P;
+    match mode {
+        trust::TrustMode::Plan => P::Plan,
+        trust::TrustMode::Safe => P::Safe,
+        trust::TrustMode::Auto => P::Auto,
+    }
+}
+
 impl TuiContext {
-    /// Run a full inference turn: start the turn future, handle events
-    /// inside the inner `tokio::select!` loop, and perform post-turn
-    /// cleanup (event drain, auto-compact).
+    /// Open the session a command switched to, if one did, and close the
+    /// one it left.
+    async fn sync_host_session(&mut self) -> anyhow::Result<()> {
+        if self.session.id == self.host_session {
+            return Ok(());
+        }
+        let left = std::mem::take(&mut self.host_session);
+        let _ = self
+            .client
+            .request::<methods::SessionUnsubscribe>(
+                koda_client::protocol::session::SessionUnsubscribeParams { session_id: left },
+            )
+            .await;
+        let opened = crate::tui_context::open_host_session(
+            &self.client,
+            Some(self.session.id.clone()),
+            self.session.db.clone(),
+        )
+        .await?;
+        self.host_session = opened.id.clone();
+        self.session = opened;
+        Ok(())
+    }
+
+    /// Start a turn on the host and follow it until `turn/completed`:
+    /// render its events, answer its requests from the dialogs, steer and
+    /// stop it from the keyboard.
     pub(crate) async fn run_inference_turn(
         &mut self,
-        pending_images: Option<Vec<koda_core::providers::ImageData>>,
-        ui_tx: &mpsc::UnboundedSender<UiEvent>,
-        ui_rx: &mut mpsc::UnboundedReceiver<UiEvent>,
+        input: TurnInput,
+        ui_rx: &mut mpsc::UnboundedReceiver<RawEvent>,
         cmd_tx: &mpsc::Sender<EngineCommand>,
         cmd_rx: &mut mpsc::Receiver<EngineCommand>,
     ) -> anyhow::Result<()> {
-        let cli_sink = crate::sink::CliSink::channel(ui_tx.clone());
-        // #1321: spawn the bg-agent event forwarder on first turn.
-        // Idempotent across the session lifetime — the registry's
-        // receiver moves out exactly once, so subsequent calls are
-        // cheap no-ops returning `false`. We attach a dedicated
-        // long-lived `CliSink` (sharing the same `ui_tx`) so bg-task
-        // status flows continuously to the TUI regardless of what
-        // tool the foreground turn is currently inside. Replaces
-        // the per-iteration `drain_status_events()` poll and the
-        // 200 ms `with_status_pump` hotfix — mirrors Codex's
-        // `forward_events` shape.
-        let _ = self
-            .session
-            .attach_event_sink(std::sync::Arc::new(crate::sink::CliSink::channel(
-                ui_tx.clone(),
-            )));
-        // #1200: derive a per-turn child token instead of cloning the
-        // session-lifetime root. This keeps `session.cancel` stable
-        // across turn boundaries so bg agents (which call
-        // `ChildAgentRegistry::reserve(&session.cancel, …)`) keep their
-        // cancel-token cascade pointing at a live parent. Cancelling
-        // the child fires only the foreground turn; bg agents are
-        // explicitly cancelled by the Ctrl+C path further down.
-        let cancel_token = self.session.cancel_token().child_token();
-        // #1216: clone the cloneable session-cancel handle BEFORE the
-        // run_turn future borrows `&mut self.session`. The Esc/Ctrl+C
-        // arm of the inference loop's select! needs to call
-        // `session.interrupt()` mid-turn for the Gemini-style cascade,
-        // but it can't reach `self.session` while the turn future
-        // holds a mutable borrow. The handle is internally `Arc`-backed
-        // so this clone is cheap and aliases the same root.
-        let session_cancel = self.session.cancel_handle();
+        let TurnInput {
+            message,
+            images,
+            typed,
+            paste_blocks,
+        } = input;
+
+        // What the turn runs with: the session a command switched to, this
+        // model and provider, this mode.
+        let started = async {
+            self.sync_host_session().await?;
+            self.client
+                .configure_session(&self.session.id, self.config.clone())
+                .await?;
+            // Messages from before this turn (session notices, resolved
+            // requests) are no business of it.
+            while self.client.try_next_event().is_some() {}
+            let response = self
+                .client
+                .request::<methods::TurnStart>(TurnStartParams {
+                    session_id: self.session.id.clone(),
+                    input: message,
+                    images: images
+                        .into_iter()
+                        .map(|image| ImageInput {
+                            media_type: image.media_type,
+                            data: image.base64,
+                        })
+                        .collect(),
+                    client_message_id: None,
+                    mode: Some(protocol_mode(trust::read_trust(&self.shared_mode))),
+                })
+                .await
+                // The host's own words say what went wrong.
+                .map_err(|e| match e {
+                    koda_client::RequestError::Server { error, .. } => {
+                        anyhow::anyhow!(error.message)
+                    }
+                    other => anyhow::anyhow!(other),
+                })?;
+            anyhow::Ok(response.turn.id)
+        }
+        .await;
+        let turn_id = match started {
+            Ok(turn_id) => turn_id,
+            // Nothing was sent: the text goes back to the input box.
+            Err(e) => {
+                let mut why = format!("{e:#}");
+                if let Some(first) = why.get_mut(..1) {
+                    first.make_ascii_uppercase();
+                }
+                crate::tui_output::err_msg(&mut self.scroll_buffer, why);
+                self.textarea.set_text_clearing_elements(&typed);
+                self.paste_blocks = paste_blocks;
+                return Ok(());
+            }
+        };
+
+        let stop = super::TurnStop {
+            requests: self.client.request_handle(),
+            session_id: self.session.id.clone(),
+            turn_id: turn_id.clone(),
+        };
+        let mut tracker = TurnTracker::new(turn_id);
         let db_handle = self.session.db.clone();
 
         self.tui_state = TuiState::Inferring;
         self.inference_start = Some(std::time::Instant::now());
         self.renderer.last_turn_stats = None;
 
-        // #1158 (b): clone the bg-task registry handles BEFORE pinning
-        // the turn future. The future borrows `self.session` mutably for
-        // its entire lifetime, so `self.session.bg_agents` becomes
-        // unreachable inside the streaming loop. The agent registry is
-        // an `Arc` (cheap clone); the process registry isn't, so we
-        // clone the enclosing `Arc<KodaAgent>` and reach through it.
+        // #1158 (b): the overlay reads the session's sub-agents and the
+        // agent's background processes each frame.
         let bg_agents_for_status = self.session.bg_agents.clone();
         let agent_for_status = self.agent.clone();
 
@@ -136,269 +215,250 @@ impl TuiContext {
         // once it has.
         let mut quit_requested = false;
 
-        // Run the inference turn as a pinned future
-        {
-            let turn = self.session.run_turn(
-                &self.config,
-                pending_images,
-                &cli_sink,
-                cmd_rx,
-                // #1208: pass the per-turn child token so Ctrl+C / Esc
-                // stops *this* turn without firing session.cancel
-                // (which bg agents derive from — see #1200).
-                Some(cancel_token.clone()),
-            );
-            tokio::pin!(turn);
+        // Rotate which select arm is preferred each iteration so neither
+        // terminal input nor engine events can monopolise the executor
+        // under sustained load (#1137, #1139). `biased` alone only chooses
+        // priority *within* one select point — it does not prevent one arm
+        // from winning N times in a row when both are constantly ready.
+        let mut prefer_input = true;
 
-            // Rotate which select arm is preferred each iteration so neither
-            // terminal input nor engine events can monopolise the executor
-            // under sustained load (#1137, #1139). `biased` alone only chooses
-            // priority *within* one select point — it does not prevent one arm
-            // from winning N times in a row when both are constantly ready.
-            let mut prefer_input = true;
+        // Schedule the initial frame so the user sees state immediately
+        // when the turn starts. From here on, every event-handling arm
+        // calls `schedule_frame()` to request the next coalesced redraw
+        // (#1138). The Draw arm of the select is the *only* place that
+        // actually calls `terminal.draw()` — the rate limiter inside the
+        // frame scheduler caps that at ~120 FPS.
+        self.frame_requester.schedule_frame();
 
-            // Schedule the initial frame so the user sees state immediately
-            // when the turn starts. From here on, every event-handling arm
-            // calls `schedule_frame()` to request the next coalesced redraw
-            // (#1138). The Draw arm of the select is the *only* place that
-            // actually calls `terminal.draw()` — the rate limiter inside the
-            // frame scheduler caps that at ~120 FPS.
-            self.frame_requester.schedule_frame();
+        let host_stopped = loop {
+            prefer_input = !prefer_input;
 
-            loop {
-                // Round-robin: alternate which arm is preferred so a flood of
-                // engine events can't starve terminal input (and vice versa).
-                // Combined with the bounded drain below, this guarantees that
-                // keystrokes / Ctrl+C / scroll events get serviced within a
-                // small bounded number of inference-loop iterations even when
-                // sub-agents fan out or streaming is firing TextDeltas at
-                // line rate (#1137, #1139, regression of #540).
-                prefer_input = !prefer_input;
+            // Maximum number of engine events to drain in one iteration.
+            // The original drain loop was unbounded, which under sustained
+            // event pressure (sub-agent fan-out, fast streaming) let the
+            // ui_rx arm monopolise the executor — terminal events queued
+            // up in the OS buffer until the crossterm parser mis-framed
+            // partial mouse-report sequences as individual key events,
+            // and Ctrl+C took seconds to propagate (#1137).
+            const MAX_DRAIN: usize = 64;
 
-                // Maximum number of engine events to drain in one iteration.
-                // The original drain loop was unbounded, which under sustained
-                // event pressure (sub-agent fan-out, fast streaming) let the
-                // ui_rx arm monopolise the executor — terminal events queued
-                // up in the OS buffer until the crossterm parser mis-framed
-                // partial mouse-report sequences as individual key events,
-                // and Ctrl+C took seconds to propagate (#1137).
-                const MAX_DRAIN: usize = 64;
+            // The Draw arm is *always* polled first within each iteration.
+            // It only fires when the frame scheduler has emitted a
+            // notification (rate-limited to ~120 FPS), so it cannot
+            // starve the other arms in practice.
+            let select_result = if prefer_input {
+                tokio::select! {
+                    biased;
 
-                // The Draw arm is *always* polled first within each iteration.
-                // It only fires when the frame scheduler has emitted a
-                // notification (rate-limited to ~120 FPS), so it cannot
-                // starve the other arms in practice.
-                let select_result = if prefer_input {
-                    tokio::select! {
-                        biased;
+                    Some(()) = self.draw_rx.recv() => SelectArm::Draw,
+                    Some(Ok(ev)) = self.crossterm_events.next() => SelectArm::Crossterm(ev),
+                    Some(raw) = ui_rx.recv() => SelectArm::Ui(raw),
+                    Some(command) = cmd_rx.recv() => SelectArm::Command(command),
+                    message = self.client.next_event() => SelectArm::Host(message),
+                }
+            } else {
+                tokio::select! {
+                    biased;
 
-                        Some(()) = self.draw_rx.recv() => SelectArm::Draw,
-                        Some(Ok(ev)) = self.crossterm_events.next() => {
-                            SelectArm::Crossterm(ev)
-                        }
-                        Some(ui_event) = ui_rx.recv() => {
-                            SelectArm::Ui(ui_event)
-                        }
-                        result = &mut turn => SelectArm::TurnDone(result),
-                    }
-                } else {
-                    tokio::select! {
-                        biased;
+                    Some(()) = self.draw_rx.recv() => SelectArm::Draw,
+                    Some(raw) = ui_rx.recv() => SelectArm::Ui(raw),
+                    Some(Ok(ev)) = self.crossterm_events.next() => SelectArm::Crossterm(ev),
+                    Some(command) = cmd_rx.recv() => SelectArm::Command(command),
+                    message = self.client.next_event() => SelectArm::Host(message),
+                }
+            };
 
-                        Some(()) = self.draw_rx.recv() => SelectArm::Draw,
-                        Some(ui_event) = ui_rx.recv() => {
-                            SelectArm::Ui(ui_event)
-                        }
-                        Some(Ok(ev)) = self.crossterm_events.next() => {
-                            SelectArm::Crossterm(ev)
-                        }
-                        result = &mut turn => SelectArm::TurnDone(result),
-                    }
-                };
+            match select_result {
+                SelectArm::Draw => {
+                    tracing::debug!(
+                        target: "koda_cli::diag::child_activity",
+                        stage = "inference_draw_arm",
+                        "SelectArm::Draw -> terminal.draw()"
+                    );
+                    let (term_w, _) = crossterm::terminal::size()
+                        .map(|(c, r)| (c as usize, r as usize))
+                        .unwrap_or((80, 24));
+                    let hist_viewport = (self.history_area_height as usize).max(1);
+                    self.scroll_buffer.clamp_offset(term_w, hist_viewport);
 
-                match select_result {
-                    SelectArm::Draw => {
-                        tracing::debug!(
-                            target: "koda_cli::diag::child_activity",
-                            stage = "inference_draw_arm",
-                            "SelectArm::Draw -> terminal.draw()"
+                    let mode = trust::read_trust(&self.shared_mode);
+                    let ctx = self.context_pct;
+                    let mcp_info = self.agent.mcp_status_bar_info();
+                    // #1210: the overlay above the status bar shows what
+                    // the sub-agents and background processes do now.
+                    let agent_snaps = bg_agents_for_status.snapshot();
+                    let process_snaps = agent_for_status.tools.bg_registry.snapshot();
+                    let (child_activity_rows, child_activity_total) =
+                        self.child_activity.build_rows(&agent_snaps, &process_snaps);
+                    let _ = self.terminal.draw(|f| {
+                        draw_viewport(
+                            f,
+                            &self.textarea,
+                            &self.config.model,
+                            mode,
+                            ctx,
+                            self.tui_state,
+                            &self.prompt_mode,
+                            self.inference_start
+                                .map(|s| s.elapsed().as_secs())
+                                .unwrap_or(0),
+                            self.renderer.last_turn_stats.as_ref(),
+                            &self.menu,
+                            &self.scroll_buffer,
+                            self.mouse_selection.as_ref(),
+                            mcp_info,
+                            &self.project_root,
+                            &child_activity_rows,
+                            child_activity_total,
                         );
-                        // The actual `terminal.draw()` happens here — nowhere
-                        // else in the inference loop. We can't call
-                        // `self.draw()` directly because `turn` holds a
-                        // `&mut self.session` borrow for its full lifetime,
-                        // so we use disjoint field access just like the old
-                        // synchronous draw block did.
-                        let (term_w, _) = crossterm::terminal::size()
-                            .map(|(c, r)| (c as usize, r as usize))
-                            .unwrap_or((80, 24));
-                        let hist_viewport = (self.history_area_height as usize).max(1);
-                        self.scroll_buffer.clamp_offset(term_w, hist_viewport);
-
-                        let mode = trust::read_trust(&self.shared_mode);
-                        let ctx = self.context_pct;
-                        let mcp_info = self.agent.mcp_status_bar_info();
-                        // #1158 (b): keep status pill alive during streaming turns.
-                        // #1210: snapshot + project bg-activity rows for the
-                        // overlay above the status bar. `bg_agents_for_status`
-                        // and `agent_for_status` are session-lifetime `Arc`
-                        // clones grabbed once at run() entry (see ~line 100),
-                        // so this works inside the turn future's `&mut
-                        // self.session` borrow window.
-                        //
-                        // Replaces the #1158 ambient `bg_counts` status pill:
-                        // the overlay shows what's running, what each task
-                        // is doing right now, and the cancel keybindings.
-                        let agent_snaps = bg_agents_for_status.snapshot();
-                        let process_snaps = agent_for_status.tools.bg_registry.snapshot();
-                        let (child_activity_rows, child_activity_total) =
-                            self.child_activity.build_rows(&agent_snaps, &process_snaps);
-                        let _ = self.terminal.draw(|f| {
-                            draw_viewport(
-                                f,
-                                &self.textarea,
-                                &self.config.model,
-                                mode,
-                                ctx,
-                                self.tui_state,
-                                &self.prompt_mode,
-                                self.inference_start
-                                    .map(|s| s.elapsed().as_secs())
-                                    .unwrap_or(0),
-                                self.renderer.last_turn_stats.as_ref(),
-                                &self.menu,
-                                &self.scroll_buffer,
-                                self.mouse_selection.as_ref(),
-                                mcp_info,
-                                &self.project_root,
-                                &child_activity_rows,
-                                child_activity_total,
-                            );
-                        });
-                        // #1354: self-perpetuating draw loop. While any
-                        // non-terminal bg agent or process exists, schedule
-                        // the next frame ~1 s out so the age column ticks
-                        // and the activity pill stays live without
-                        // depending on user keystrokes or new engine
-                        // events. `child_activity_total` is already
-                        // computed only over non-terminal entries (see
-                        // `ChildActivityTracker::build_rows`), so the
-                        // ticker auto-stops the moment work drains.
-                        if child_activity_total > 0 {
-                            self.frame_requester
-                                .schedule_frame_in(std::time::Duration::from_secs(1));
-                        }
-                    }
-                    SelectArm::Crossterm(ev) => {
-                        quit_requested |= super::crossterm_handler::handle_crossterm_event_inline(
-                            ev,
-                            &session_cancel,
-                            cmd_tx,
-                            &mut self.scroll_buffer,
-                            self.history_area_height as usize,
-                            &mut self.menu,
-                            &mut self.prompt_mode,
-                            &mut self.pending_approval_id,
-                            &mut self.textarea,
-                            &self.shared_mode,
-                            &mut self.completer,
-                            &mut self.history,
-                            &mut self.history_idx,
-                            &mut self.paste_blocks,
-                            &db_handle,
-                            &bg_agents_for_status,
-                            &agent_for_status.tools.bg_registry,
-                            &mut self.child_activity,
-                        )
-                        .await;
-                        // Request a redraw to reflect the new state. The
-                        // frame scheduler coalesces this with any other
-                        // requests in the same window (#1138).
-                        self.frame_requester.schedule_frame();
-                    }
-                    SelectArm::Ui(ui_event) => {
-                        // Extract context usage before rendering
-                        if let UiEvent::Engine(EngineEvent::ContextUsage { used, max }) = &ui_event
-                        {
-                            self.context_pct = if *max > 0 {
-                                (used * 100 / max) as u32
-                            } else {
-                                0
-                            };
-                        }
-                        if let UiEvent::Engine(EngineEvent::ContextWindowChanged { tokens }) =
-                            &ui_event
-                        {
-                            self.learned_context_window = Some(*tokens);
-                        }
-                        super::ui_handler::handle_inference_ui_inline(
-                            ui_event,
-                            &mut self.scroll_buffer,
-                            &mut self.menu,
-                            &mut self.prompt_mode,
-                            &mut self.renderer,
-                            &mut self.child_activity,
-                        );
-                        // Bounded drain — at most MAX_DRAIN extra events per
-                        // iteration so we yield back to the select for input
-                        // and the turn future. The drain still amortises N
-                        // events into 1 redraw (the original optimisation),
-                        // but cannot monopolise the executor anymore.
-                        let _ = drain_bounded(ui_rx, MAX_DRAIN, |extra| {
-                            if let UiEvent::Engine(EngineEvent::ContextUsage { used, max }) = &extra
-                            {
-                                self.context_pct = if *max > 0 {
-                                    (used * 100 / max) as u32
-                                } else {
-                                    0
-                                };
-                            }
-                            if let UiEvent::Engine(EngineEvent::ContextWindowChanged { tokens }) =
-                                &extra
-                            {
-                                self.learned_context_window = Some(*tokens);
-                            }
-                            super::ui_handler::handle_inference_ui_inline(
-                                extra,
-                                &mut self.scroll_buffer,
-                                &mut self.menu,
-                                &mut self.prompt_mode,
-                                &mut self.renderer,
-                                &mut self.child_activity,
-                            );
-                        });
-                        // One coalesced redraw per drain batch — not per
-                        // event — keeps redraw cost bounded under streaming
-                        // floods (#1138).
-                        tracing::debug!(
-                            target: "koda_cli::diag::child_activity",
-                            stage = "ui_arm_schedule_frame",
-                            "Ui arm completed -> schedule_frame()"
-                        );
-                        self.frame_requester.schedule_frame();
-                    }
-                    SelectArm::TurnDone(result) => {
-                        if let Err(e) = result {
-                            self.scroll_buffer.push(Line::from(vec![
-                                Span::raw("  "),
-                                Span::styled(
-                                    format!("\u{2717} Turn failed: {e:#}"),
-                                    Style::default().fg(Color::Red),
-                                ),
-                            ]));
-                        }
-                        break;
+                    });
+                    // #1354: while any sub-agent or background process runs,
+                    // draw again in a second so the overlay's ages tick.
+                    if child_activity_total > 0 {
+                        self.frame_requester
+                            .schedule_frame_in(std::time::Duration::from_secs(1));
                     }
                 }
+                SelectArm::Crossterm(ev) => {
+                    quit_requested |= super::crossterm_handler::handle_crossterm_event_inline(
+                        ev,
+                        &stop,
+                        cmd_tx,
+                        &mut self.scroll_buffer,
+                        self.history_area_height as usize,
+                        &mut self.menu,
+                        &mut self.prompt_mode,
+                        &mut self.pending_approval_id,
+                        &mut self.textarea,
+                        &self.shared_mode,
+                        &mut self.completer,
+                        &mut self.history,
+                        &mut self.history_idx,
+                        &mut self.paste_blocks,
+                        &db_handle,
+                        &bg_agents_for_status,
+                        &agent_for_status.tools.bg_registry,
+                        &mut self.child_activity,
+                    )
+                    .await;
+                    self.frame_requester.schedule_frame();
+                }
+                SelectArm::Ui(raw) => {
+                    self.absorb_turn_event(raw.event, &mut tracker);
+                    // Bounded drain — at most MAX_DRAIN extra events per
+                    // iteration so we yield back to the select for input.
+                    // The drain still amortises N events into 1 redraw, but
+                    // cannot monopolise the executor anymore.
+                    let _ = drain_bounded(ui_rx, MAX_DRAIN, |extra| {
+                        self.absorb_turn_event(extra.event, &mut tracker);
+                    });
+                    self.frame_requester.schedule_frame();
+                }
+                SelectArm::Command(command) => {
+                    self.send_turn_command(command, &mut tracker).await;
+                }
+                SelectArm::Host(None) => break true,
+                SelectArm::Host(Some(message)) => {
+                    tracker.observe_message(message);
+                    // An answer given before its request was read goes now.
+                    self.send_ready_answers(&mut tracker).await;
+                }
             }
+            if tracker.completed().is_some() {
+                break false;
+            }
+        };
+
+        // The turn's events all arrived before its `turn/completed`.
+        while let Ok(raw) = ui_rx.try_recv() {
+            self.absorb_turn_event(raw.event, &mut tracker);
+        }
+        let failed = if host_stopped {
+            Some("Koda's host stopped".to_string())
+        } else {
+            tracker
+                .completed()
+                .and_then(|turn| turn.error.as_ref())
+                .filter(|_| !tracker.error_shown())
+                .map(|error| error.message.clone())
+        };
+        if let Some(error) = failed {
+            self.scroll_buffer.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    format!("\u{2717} Turn failed: {error}"),
+                    Style::default().fg(Color::Red),
+                ),
+            ]));
         }
 
-        // Post-turn cleanup
-        self.post_turn_cleanup(ui_rx, cmd_rx).await;
-        if quit_requested {
+        self.post_turn_cleanup(tracker.take_unsent_steers()).await;
+        if quit_requested || host_stopped {
             self.should_quit = true;
         }
         Ok(())
+    }
+
+    /// Take note of one of the turn's engine events, then show it.
+    fn absorb_turn_event(&mut self, event: EngineEvent, tracker: &mut TurnTracker) {
+        tracker.observe_event(&event);
+        if let EngineEvent::ContextUsage { used, max } = &event {
+            self.context_pct = if *max > 0 {
+                (used * 100 / max) as u32
+            } else {
+                0
+            };
+        }
+        if let EngineEvent::ContextWindowChanged { tokens } = &event {
+            self.learned_context_window = Some(*tokens);
+        }
+        super::ui_handler::handle_inference_ui_inline(
+            UiEvent::Engine(event),
+            &mut self.scroll_buffer,
+            &mut self.menu,
+            &mut self.prompt_mode,
+            &mut self.renderer,
+            &mut self.child_activity,
+        );
+    }
+
+    /// Send what a key handler asked for: steering text as `turn/steer`, an
+    /// answer as the response to its request.
+    async fn send_turn_command(&mut self, command: EngineCommand, tracker: &mut TurnTracker) {
+        let EngineCommand::QueueNext { text } = command else {
+            tracker.answer(command);
+            // Its request was sent with the event the dialog showed, so it
+            // is on the queue already if it isn't read yet.
+            while let Some(message) = self.client.try_next_event() {
+                tracker.observe_message(message);
+            }
+            self.send_ready_answers(tracker).await;
+            return;
+        };
+        // Kept until the model receives it. If the turn has just ended the
+        // host refuses it, and it comes back to the input box with the rest.
+        tracker.steer_sent(text.clone());
+        let turn = tracker.turn_id().to_string();
+        let steered = self
+            .client
+            .request::<methods::TurnSteer>(TurnSteerParams {
+                session_id: self.session.id.clone(),
+                expected_turn_id: turn,
+                input: text,
+                client_message_id: None,
+            })
+            .await;
+        if let Err(e) = steered {
+            tracing::debug!("turn/steer: {e}");
+        }
+    }
+
+    async fn send_ready_answers(&mut self, tracker: &mut TurnTracker) {
+        for (id, response) in tracker.ready_answers() {
+            if let Err(e) = self.client.resolve_server_request(id, response).await {
+                tracing::warn!("an answer didn't reach Koda's host: {e}");
+            }
+        }
     }
 }
 

@@ -349,15 +349,15 @@ fn exec_writes_the_last_reply_to_a_file() {
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "I read the file.");
 }
 
-/// `koda -p`, `--output-format` (`stream-json` included) and a bare prompt
-/// were removed in 0.7.0: each stops before any run and names `koda exec`.
+/// `koda -p` and `--output-format` (`stream-json` included) were removed in
+/// 0.7.0: each stops before any run and names `koda exec`. (`koda "prompt"`
+/// opens the TUI with it; `tui_pty_test` covers that.)
 #[test]
 fn removed_one_shot_forms_are_refused_with_their_replacement() {
     for args in [
         &["-p", "say hi"][..],
         &["--prompt", "say hi"],
         &["-p", "-"],
-        &["say hi"],
         &["--output-format", "json"],
         &["--output-format", "stream-json"],
     ] {

@@ -137,7 +137,7 @@ koda/
 │   │   ├── startup.rs      # Startup banner rendering
 │   │   ├── input.rs        # @file reference processing + image loading
 │   │   ├── headless.rs     # Single-prompt headless mode
-│   │   ├── sink.rs         # CliSink (unbounded channel forwarding for TUI)
+│   │   ├── sink.rs         # UiEvent: the engine events the TUI renders
 │   │   ├── onboarding.rs   # First-run wizard (provider + API key setup)
 │   │   ├── tool_history.rs # Tool output history for /expand
 │   │   ├── util.rs         # Shared utilities
@@ -203,9 +203,8 @@ The engine communicates through `EngineEvent` (output) and `EngineCommand`
 ### Key types
 
 - **`KodaAgent`** — Shared resources (tools, system prompt). `Arc`-shareable.
-- **`KodaSession`** — Per-conversation state (DB, provider, settings). Has `run_turn()`.
-- **`EngineSink`** — Trait with single method: `fn emit(&self, event: EngineEvent)`.
-- **`CliSink`** — Channel-forwarding sink. Sends events to the TUI event loop via `UiEvent`.
+- **`KodaSession`** — Per-conversation state (DB, provider, settings). Has `run_turn()`. Koda's host (`koda-client`) owns one per open session and runs its turns, for the TUI and `koda exec` alike.
+- **`EngineSink`** — Trait with single method: `fn emit(&self, event: EngineEvent)`. The host's sink turns events into protocol messages and, in process, hands them out as they are for the TUI's renderer.
 
 All providers implement the `LlmProvider` trait (`chat_stream` returning
 `Receiver<StreamChunk>`). Tools use PascalCase names.
