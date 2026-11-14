@@ -682,9 +682,9 @@ pub(crate) fn stored_thinking(model: &str, blocks: Vec<serde_json::Value>) -> Re
 /// model after another. Any other model gets only its own blocks.
 ///
 /// Limits:
-/// - "The table" is the test, not the model's age. A Claude model missing
-///   from it gets only its own blocks: the older line, which takes a thinking
-///   budget, and a newer model until it is added (Claude Fable 5.2 today).
+/// - The table is the test, not the model's age. A Claude model missing from
+///   it gets only its own blocks: the older line, which takes a thinking
+///   budget, and any newer model until it is added to the table.
 /// - The older line keeps the exact-model rule because nothing documents
 ///   how it treats another model's signature; Koda hasn't tested it (that
 ///   would take paid calls). It may refuse the request, so Koda doesn't risk it.
@@ -1357,10 +1357,11 @@ mod tests {
 
         // Another adaptive-thinking model gets it too: the API keeps it if
         // that model reads it. An older model, or a one-off request, doesn't.
-        let sent =
-            serde_json::to_value(provider.convert_messages(&messages, Some("claude-opus-5-5")))
-                .unwrap();
-        assert_eq!(sent[0]["content"][0]["signature"], "sig");
+        for model in ["claude-opus-5-5", "claude-fable-5-2"] {
+            let sent =
+                serde_json::to_value(provider.convert_messages(&messages, Some(model))).unwrap();
+            assert_eq!(sent[0]["content"][0]["signature"], "sig", "{model}");
+        }
         for model in [Some("claude-sonnet-4-5"), None] {
             let sent = serde_json::to_value(provider.convert_messages(&messages, model)).unwrap();
             assert_eq!(sent[0]["content"], "done", "{model:?}");

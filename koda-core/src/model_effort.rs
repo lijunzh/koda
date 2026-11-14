@@ -34,9 +34,17 @@ pub struct ModelEffort {
 const CLAUDE_LADDER: &[&str] = &LEVELS;
 
 /// Claude models whose effort Koda sets, by API id. Claude Code 2.1.296's
-/// choices, captured against a local stub on 2026-11-03. These models also
-/// reject a `budget_tokens` thinking budget.
+/// choices, captured against a local stub on 2026-11-03 (Fable 5.2 on
+/// 2026-11-14, with Fable 5.1 as the control). These models also reject a
+/// `budget_tokens` thinking budget.
 const TABLE: &[(&str, ModelEffort)] = &[
+    (
+        "claude-fable-5-2",
+        ModelEffort {
+            levels: CLAUDE_LADDER,
+            default: "high",
+        },
+    ),
     (
         "claude-haiku-5-5",
         ModelEffort {
@@ -197,6 +205,7 @@ mod tests {
             ("claude-haiku-5-5", "medium"),
             ("claude-sonnet-5-5", "medium"),
             ("claude-opus-5-5", "medium"),
+            ("claude-fable-5-2", "high"),
             ("claude-fable-5-1", "high"),
             ("claude-opus-5", "high"),
             ("claude-sonnet-5", "high"),
