@@ -469,6 +469,15 @@ impl AnthropicProvider {
         let page = self.fetch_models().await?;
         Ok(latest_by_line(&page.data))
     }
+
+    /// [`Self::latest_claude_ids`], with the line of every model listed.
+    pub async fn claude_lines(&self) -> Result<crate::model_alias::ClaudeLines> {
+        let page = self.fetch_models().await?;
+        Ok(crate::model_alias::ClaudeLines {
+            newest: latest_by_line(&page.data),
+            line_of: lines_by_id(&page.data),
+        })
+    }
 }
 
 /// Pick the newest `created_at` in each Claude line.
@@ -497,6 +506,19 @@ fn latest_by_line(entries: &[ModelsListEntry]) -> ClaudeLineIds {
     newest
         .into_iter()
         .map(|(line, entry)| (line, entry.id.clone()))
+        .collect()
+}
+
+/// The line of every listed model that has one Koda offers, retired ones
+/// left out, as [`latest_by_line`] does.
+fn lines_by_id(entries: &[ModelsListEntry]) -> HashMap<String, ClaudeLine> {
+    entries
+        .iter()
+        .filter(|entry| entry.lifecycle.as_deref() != Some("retired"))
+        .filter_map(|entry| {
+            let line = entry.line.as_deref().and_then(ClaudeLine::parse)?;
+            Some((entry.id.clone(), line))
+        })
         .collect()
 }
 
@@ -2016,6 +2038,22 @@ mod tests {
             let key = seen[0].get("x-api-key").unwrap().to_str().unwrap();
             assert_eq!(key, "sk-ant-test");
             drop(seen);
+            ct.cancel();
+        }
+
+        /// The answer also says each listed model's line, as the API reports
+        /// it: an older Haiku is a Haiku, an unlined model has none.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn claude_lines_knows_each_models_line() {
+            let (provider, _fixture, ct) = spawn((200, LIST), (404, "{}")).await;
+            let lines = provider.claude_lines().await.expect("ok");
+            assert_eq!(lines.newest[&ClaudeLine::Haiku], "claude-haiku-5-5");
+            assert_eq!(
+                lines.line_of["claude-haiku-4-5-20251001"],
+                ClaudeLine::Haiku
+            );
+            assert_eq!(lines.line_of["claude-sonnet-5-5"], ClaudeLine::Sonnet);
+            assert!(!lines.line_of.contains_key("claude-3-7-sonnet-20250219"));
             ct.cancel();
         }
 

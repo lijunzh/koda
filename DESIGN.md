@@ -568,6 +568,14 @@ notice goes away when Koda is updated for it, which is the reminder. Codex
 does the like with its catalog's upgrade info, shown once at startup;
 Koda shows it until it's handled. `koda exec` only logs it.
 
+**A choice that goes stale.** A session keeps no model of its own: resuming
+one runs it on today's choice, as latest-first wants. A model picked from a
+list, or set as a provider's default, is saved as its line's alias when it
+is that line's newest, so it follows the line. Only an id typed by hand
+stays pinned, and when its line has a newer model Koda supports, the TUI
+says so at every start, with the alias that follows the newest. The line of
+each model comes from the Models API, never from the id.
+
 ### Provider Retries (P2, P3)
 
 An HTTP failure is classified once, in `providers/error.rs`, from its status, headers and body. The inference loop matches on the kind and never reads the message. Text matching stays only where a provider states something no other way, overflow and image rejection, and it stays in that file.

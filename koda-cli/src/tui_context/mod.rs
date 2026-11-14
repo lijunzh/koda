@@ -425,6 +425,12 @@ impl TuiContext {
             for notice in koda_core::model_alias::new_model_notices(ids) {
                 startup_lines.push(crate::startup::warning_line(notice));
             }
+            // A model pinned by id while its line has moved on.
+            if config.provider_type == koda_core::config::ProviderType::Anthropic
+                && let Some(notice) = koda_core::model_alias::pinned_older_notice(&config.model)
+            {
+                startup_lines.push(crate::startup::warning_line(notice));
+            }
         }
 
         // Command names from SLASH_COMMANDS for the system prompt.
