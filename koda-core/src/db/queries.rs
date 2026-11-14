@@ -804,21 +804,6 @@ impl Persistence for Database {
         Ok(rows)
     }
 
-    /// Load recent user messages across all sessions (for the startup banner).
-    /// Returns up to `limit` messages, newest first.
-    async fn recent_user_messages(&self, limit: i64) -> Result<Vec<String>> {
-        let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT content FROM messages
-             WHERE role = 'user' AND content IS NOT NULL AND content != ''
-             ORDER BY id DESC LIMIT ?",
-        )
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(rows.into_iter().map(|r| r.0).collect())
-    }
-
     /// Get token usage totals for a session.
     async fn session_token_usage(&self, session_id: &str) -> Result<SessionUsage> {
         let row: (i64, i64, i64, i64, i64, i64) = sqlx::query_as(

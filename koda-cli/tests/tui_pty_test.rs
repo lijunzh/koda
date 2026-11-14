@@ -849,6 +849,27 @@ fn resume_hint_session_id(tui: &Tui) -> String {
         .unwrap_or_else(|| panic!("no resume hint in:\n{text}"))
 }
 
+/// What you typed comes back with Up after a restart. The TUI keeps it in
+/// its own `history.jsonl`, in Codex's record shape, not in the database.
+#[tokio::test(flavor = "multi_thread")]
+async fn typed_prompts_come_back_with_up_after_a_restart() {
+    let server = scripted_model(vec![final_text()]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    tui.submit("remember this prompt");
+    wait_for_model_call(&server, 1).await;
+    let session = quit_and_read_session_id(&mut tui);
+
+    let text = std::fs::read_to_string(home.path().join(".config/koda/history.jsonl")).unwrap();
+    let entry: Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
+    assert_eq!(entry["text"], "remember this prompt");
+    assert_eq!(entry["session_id"], session.as_str());
+
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    tui.type_text("\x1b[A");
+    tui.wait_for_screen("remember this prompt");
+}
+
 /// A resumed session shows the earlier conversation, folded as it was live,
 /// and the model gets that history with the next prompt.
 #[tokio::test(flavor = "multi_thread")]

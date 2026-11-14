@@ -305,8 +305,6 @@ pub trait Persistence: Send + Sync {
     async fn load_context(&self, session_id: &str) -> Result<Vec<Message>>;
     /// Load all messages in a session (no token limit).
     async fn load_all_messages(&self, session_id: &str) -> Result<Vec<Message>>;
-    /// Recent user messages across all sessions (for startup hints).
-    async fn recent_user_messages(&self, limit: i64) -> Result<Vec<String>>;
     /// The model's final text answer since the last user message, or empty.
     async fn last_assistant_message(&self, session_id: &str) -> Result<String>;
     /// Last user message in a session.

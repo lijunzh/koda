@@ -60,7 +60,8 @@ Everything lives in `~/.config/koda/`:
 
 | Path | Content |
 |------|---------|
-| `db/koda.db` | SQLite — sessions, messages, settings, API keys, input history |
+| `db/koda.db` | SQLite — sessions, messages, settings, API keys |
+| `history.jsonl` | What you typed in the TUI, for ↑ / ↓: the newest 500 entries, one JSON object per line, readable by you only |
 | `logs/koda-<pid>.log` | Tracing log, one per process; `logs/latest` links to the newest (see [Debugging a run](./debugging.md)) |
 | `agents/` | Global custom agent JSON definitions |
 | `skills/` | Global custom skill markdown files |

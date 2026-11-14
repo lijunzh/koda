@@ -12,12 +12,7 @@ use ratatui::{
 
 // ── Banner ───────────────────────────────────────────
 
-pub fn build_banner_lines(
-    model: &str,
-    provider: &str,
-    cwd: &str,
-    _recent_activity: &[String],
-) -> Vec<Line<'static>> {
+pub fn build_banner_lines(model: &str, provider: &str, cwd: &str) -> Vec<Line<'static>> {
     let ver = env!("CARGO_PKG_VERSION");
 
     const BEAR: [&str; 3] = [
@@ -61,17 +56,9 @@ pub fn build_banner_lines(
 }
 
 /// Collect all startup lines (banner + warnings + notices).
-pub fn collect_startup_lines(
-    config: &KodaConfig,
-    recent_activity: &[String],
-) -> Vec<Line<'static>> {
+pub fn collect_startup_lines(config: &KodaConfig) -> Vec<Line<'static>> {
     let cwd = pretty_cwd();
-    let mut lines = build_banner_lines(
-        &config.model,
-        &config.provider_type.to_string(),
-        &cwd,
-        recent_activity,
-    );
+    let mut lines = build_banner_lines(&config.model, &config.provider_type.to_string(), &cwd);
 
     // Model warnings
     if config.model == "(no model loaded)" {
@@ -261,28 +248,28 @@ mod tests {
 
     #[test]
     fn banner_contains_model_name() {
-        let lines = build_banner_lines("gpt-4o", "openai", "~/projects/koda", &[]);
+        let lines = build_banner_lines("gpt-4o", "openai", "~/projects/koda");
         let text = lines_to_text(&lines);
         assert!(text.contains("gpt-4o"));
     }
 
     #[test]
     fn banner_contains_provider() {
-        let lines = build_banner_lines("claude-sonnet", "anthropic", "~/repo", &[]);
+        let lines = build_banner_lines("claude-sonnet", "anthropic", "~/repo");
         let text = lines_to_text(&lines);
         assert!(text.contains("anthropic"));
     }
 
     #[test]
     fn banner_contains_cwd() {
-        let lines = build_banner_lines("m", "p", "/tmp/test", &[]);
+        let lines = build_banner_lines("m", "p", "/tmp/test");
         let text = lines_to_text(&lines);
         assert!(text.contains("/tmp/test"));
     }
 
     #[test]
     fn banner_contains_version() {
-        let lines = build_banner_lines("m", "p", "~", &[]);
+        let lines = build_banner_lines("m", "p", "~");
         let text = lines_to_text(&lines);
         let ver = env!("CARGO_PKG_VERSION");
         assert!(text.contains(ver));
@@ -290,7 +277,7 @@ mod tests {
 
     #[test]
     fn banner_is_compact() {
-        let lines = build_banner_lines("gpt-4o", "openai", "~/repo", &[]);
+        let lines = build_banner_lines("gpt-4o", "openai", "~/repo");
         // Blank top + 3 bear lines + blank trailing = 5. The hint
         // (`? for shortcuts`) shares the cwd line with a `·` separator
         // so the bear glyph (3 rows) gets a clean 3-row info partner

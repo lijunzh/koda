@@ -32,6 +32,9 @@ SQLite browser or the `sqlite3` CLI.
 # Delete all sessions
 rm ~/.config/koda/db/koda.db
 
+# Delete what you typed (the TUI's ↑ / ↓ history)
+rm ~/.config/koda/history.jsonl
+
 # Or selectively from the TUI
 /sessions delete <id>
 ```

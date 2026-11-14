@@ -136,6 +136,7 @@ koda/
 │   │   ├── highlight.rs    # Syntax highlighting via syntect
 │   │   ├── startup.rs      # Startup banner rendering
 │   │   ├── input.rs        # @file reference processing + image loading
+│   │   ├── input_history.rs # ↑ / ↓ history, kept in history.jsonl as Codex's TUI keeps it
 │   │   ├── headless.rs     # Single-prompt headless mode
 │   │   ├── sink.rs         # UiEvent: the engine events the TUI renders
 │   │   ├── onboarding.rs   # First-run wizard (provider + API key setup)
