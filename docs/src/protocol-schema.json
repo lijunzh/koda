@@ -351,6 +351,37 @@
       "description": "A part of a turn.",
       "oneOf": [
         {
+          "description": "What the user said: a turn's prompt, or steering text added while it\nran, as the model received it. Steering texts that reached the model\ntogether are one item.",
+          "properties": {
+            "clientMessageIds": {
+              "description": "The client's ids for the messages it carries, where it gave them.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "id": {
+              "description": "The item's id.",
+              "type": "string"
+            },
+            "text": {
+              "description": "The text.",
+              "type": "string"
+            },
+            "type": {
+              "const": "userMessage",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "text",
+            "clientMessageIds"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Text from the model. Complete text on `item/completed`.",
           "properties": {
             "id": {
@@ -984,6 +1015,33 @@
       ],
       "type": "object"
     },
+    "SessionStartParams": {
+      "additionalProperties": false,
+      "description": "`session/start`.",
+      "properties": {
+        "sessionId": {
+          "description": "An earlier session to resume, by its full id. Without one, a new\nsession starts.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "SessionStartResponse": {
+      "description": "The answer to `session/start`.",
+      "properties": {
+        "session": {
+          "$ref": "#/$defs/Session",
+          "description": "The session, ready for a turn."
+        }
+      },
+      "required": [
+        "session"
+      ],
+      "type": "object"
+    },
     "SessionStartedNotification": {
       "description": "`session/started`: a session is ready for its first turn.",
       "properties": {
@@ -1326,6 +1384,29 @@
       ],
       "type": "object"
     },
+    "TurnInterruptParams": {
+      "additionalProperties": false,
+      "description": "`turn/interrupt`.",
+      "properties": {
+        "sessionId": {
+          "description": "The session.",
+          "type": "string"
+        },
+        "turnId": {
+          "description": "The turn to stop. Refused when it isn't the one running.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "turnId"
+      ],
+      "type": "object"
+    },
+    "TurnInterruptResponse": {
+      "description": "The answer to `turn/interrupt`, sent once the turn has stopped.",
+      "type": "object"
+    },
     "TurnLoopGuardNotification": {
       "description": "`turn/loopGuard`: the model kept repeating itself. Koda's own; Codex has\nnone.",
       "properties": {
@@ -1380,6 +1461,56 @@
       ],
       "type": "object"
     },
+    "TurnStartParams": {
+      "additionalProperties": false,
+      "description": "`turn/start`.",
+      "properties": {
+        "clientMessageId": {
+          "description": "The client's id for the message, echoed on its `userMessage` item.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "input": {
+          "description": "What the user said.",
+          "type": "string"
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TrustMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The trust mode from this turn on. Without one, the session keeps\nits own."
+        },
+        "sessionId": {
+          "description": "The session.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "input"
+      ],
+      "type": "object"
+    },
+    "TurnStartResponse": {
+      "description": "The answer to `turn/start`.",
+      "properties": {
+        "turn": {
+          "$ref": "#/$defs/Turn",
+          "description": "The turn, in progress."
+        }
+      },
+      "required": [
+        "turn"
+      ],
+      "type": "object"
+    },
     "TurnStartedNotification": {
       "description": "`turn/started`.",
       "properties": {
@@ -1422,6 +1553,50 @@
           "type": "string"
         }
       ]
+    },
+    "TurnSteerParams": {
+      "additionalProperties": false,
+      "description": "`turn/steer`.",
+      "properties": {
+        "clientMessageId": {
+          "description": "The client's id for the text, echoed on the `userMessage` item that\ndelivers it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expectedTurnId": {
+          "description": "The turn the text is for. Refused when it isn't the one running.",
+          "type": "string"
+        },
+        "input": {
+          "description": "What the user said.",
+          "type": "string"
+        },
+        "sessionId": {
+          "description": "The session.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "expectedTurnId",
+        "input"
+      ],
+      "type": "object"
+    },
+    "TurnSteerResponse": {
+      "description": "The answer to `turn/steer`: the text is queued for the turn.",
+      "properties": {
+        "turnId": {
+          "description": "The turn it was queued for.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "turnId"
+      ],
+      "type": "object"
     },
     "Usage": {
       "description": "Tokens and model calls.",
@@ -1556,12 +1731,44 @@
         "$ref": "#/$defs/InitializeResponse"
       }
     },
+    "session/start": {
+      "params": {
+        "$ref": "#/$defs/SessionStartParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionStartResponse"
+      }
+    },
     "state/read": {
       "params": {
         "$ref": "#/$defs/StateReadParams"
       },
       "result": {
         "$ref": "#/$defs/StateReadResponse"
+      }
+    },
+    "turn/interrupt": {
+      "params": {
+        "$ref": "#/$defs/TurnInterruptParams"
+      },
+      "result": {
+        "$ref": "#/$defs/TurnInterruptResponse"
+      }
+    },
+    "turn/start": {
+      "params": {
+        "$ref": "#/$defs/TurnStartParams"
+      },
+      "result": {
+        "$ref": "#/$defs/TurnStartResponse"
+      }
+    },
+    "turn/steer": {
+      "params": {
+        "$ref": "#/$defs/TurnSteerParams"
+      },
+      "result": {
+        "$ref": "#/$defs/TurnSteerResponse"
       }
     }
   },

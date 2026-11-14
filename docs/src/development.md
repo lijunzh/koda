@@ -102,7 +102,6 @@ koda/
 │   │   ├── lib.rs          # Crate root
 │   │   ├── tui_app.rs      # Main TUI event loop (ratatui Viewport::Fullscreen)
 │   │   ├── app.rs          # App struct: aggregated TUI state + lifecycle
-│   │   ├── builtin_skills.rs # Built-in skill definitions (URL index)
 │   │   ├── child_activity.rs # Live tracker for background-work activity
 │   │   ├── clipboard.rs    # Clipboard abstraction
 │   │   ├── composer/       # Input box: textarea, paste bursts, history, slash popup (SLASH_COMMANDS)

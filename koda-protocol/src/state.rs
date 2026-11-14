@@ -1,8 +1,8 @@
 //! `state/read`: what a new session starts with.
 //!
-//! Sessions aren't on the protocol yet. When they are, this request takes a
-//! session id and reads that session; without one it keeps reading the
-//! defaults a new session gets.
+//! It reads the defaults a new session gets. Reading an open session's own
+//! state comes with the request areas that change it (model, provider,
+//! mode).
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

@@ -508,6 +508,21 @@ impl KodaSession {
         turn_cancel: Option<CancellationToken>,
     ) -> Result<()> {
         let turn_id = uuid::Uuid::new_v4().to_string();
+        self.run_turn_as(turn_id, config, pending_images, sink, cmd_rx, turn_cancel)
+            .await
+    }
+
+    /// [`Self::run_turn`] with the caller's turn id, for a host that names
+    /// the turn before it starts (`turn/start` answers with it).
+    pub async fn run_turn_as(
+        &mut self,
+        turn_id: String,
+        config: &KodaConfig,
+        pending_images: Option<Vec<ImageData>>,
+        sink: &dyn EngineSink,
+        cmd_rx: &mut mpsc::Receiver<EngineCommand>,
+        turn_cancel: Option<CancellationToken>,
+    ) -> Result<()> {
         sink.emit(crate::engine::EngineEvent::TurnStart {
             turn_id: turn_id.clone(),
         });

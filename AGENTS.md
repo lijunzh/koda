@@ -73,7 +73,8 @@ and `EngineCommand` (input); approval flows through async channels.
 Workspace: `koda-core` (library, pure engine, zero terminal deps), `koda-cli`
 (binary `koda`, ratatui TUI), `koda-sandbox` (kernel sandbox runtime),
 `koda-protocol` (the client protocol's messages and schema), `koda-client`
-(the client API, and engine events projected onto the protocol),
+(the client API, the host and its session tasks, and engine events projected
+onto the protocol),
 `koda-test-utils`.
 
 ### Where things are
@@ -100,7 +101,8 @@ In `koda-cli/src/`:
   (slash commands), `tui_render.rs`, `tui_viewport.rs`, `scroll_buffer.rs`,
   `composer/` (input box, `SLASH_COMMANDS`), `widgets/`
 - **Other frontends:** `headless.rs`
-- **Startup:** `main.rs`, `onboarding.rs`, `builtin_skills.rs`
+- **Startup:** `main.rs`, `onboarding.rs` (the built-in skills are in
+  `koda-client/src/builtin_skills.rs`)
 
 ### Approval
 

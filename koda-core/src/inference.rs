@@ -1237,6 +1237,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
             });
             db.insert_message(session_id, &Role::User, Some(&combined), None, None, None)
                 .await?;
+            sink.emit(EngineEvent::SteerDelivered { texts: next_texts });
         }
 
         // Build system prompt with git context.

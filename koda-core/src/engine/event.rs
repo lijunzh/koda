@@ -418,6 +418,15 @@ pub enum EngineEvent {
         turn_id: String,
     },
 
+    /// Steering text sent with [`EngineCommand::QueueNext`] reached the
+    /// model: it was saved as one user message ahead of the next call.
+    /// Text a turn ends without delivering gets no such event.
+    SteerDelivered {
+        /// Each text, oldest first, as the client sent it. The message
+        /// joins them with a blank line.
+        texts: Vec<String>,
+    },
+
     /// An inference turn has ended.
     ///
     /// Emitted when `inference_loop()` completes. Clients can use this to

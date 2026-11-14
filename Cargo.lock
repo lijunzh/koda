@@ -1901,10 +1901,13 @@ version = "0.6.4"
 dependencies = [
  "koda-core",
  "koda-protocol",
+ "koda-test-utils",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

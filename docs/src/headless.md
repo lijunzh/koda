@@ -143,6 +143,7 @@ carries `turnId`.
 
 | `type` | Fields | Notes |
 |--------|--------|-------|
+| `userMessage` | `id`, `text`, `clientMessageIds` | What the user said, as the model received it: a turn's prompt, or steering text sent during it (texts that arrived together are one item). Sent to clients that start turns themselves; `koda exec` doesn't send it yet |
 | `agentMessage` | `id`, `text` | Text is empty when it starts and complete when it completes |
 | `reasoning` | `id`, `text` | Where the provider shows reasoning |
 | `toolCall` | `id`, `tool`, `arguments`, `status`, `output`, `detail` | One item for every tool, named by `tool`. `status` ends as `completed`, `failed` (it ran and failed, or a command exited non-zero), `declined` (refused at an approval, by `--mode plan` or by a sub-agent's limits) or `cancelled`. `output` is what the model read. `detail` is the one-line description Koda showed when it asked about or blocked the call |

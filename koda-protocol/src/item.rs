@@ -14,6 +14,18 @@ use serde_json::Value;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Item {
+    /// What the user said: a turn's prompt, or steering text added while it
+    /// ran, as the model received it. Steering texts that reached the model
+    /// together are one item.
+    #[serde(rename_all = "camelCase")]
+    UserMessage {
+        /// The item's id.
+        id: String,
+        /// The text.
+        text: String,
+        /// The client's ids for the messages it carries, where it gave them.
+        client_message_ids: Vec<String>,
+    },
     /// Text from the model. Complete text on `item/completed`.
     #[serde(rename_all = "camelCase")]
     AgentMessage {
@@ -72,7 +84,8 @@ impl Item {
     /// The item's id.
     pub fn id(&self) -> &str {
         match self {
-            Self::AgentMessage { id, .. }
+            Self::UserMessage { id, .. }
+            | Self::AgentMessage { id, .. }
             | Self::Reasoning { id, .. }
             | Self::ToolCall { id, .. }
             | Self::ContextCompaction { id, .. } => id,
