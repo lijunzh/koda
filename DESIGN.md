@@ -324,12 +324,12 @@ host's requests from its dialogs, steers with `turn/steer` and stops with
 client hands out in process until the TUI renders items, as Codex's TUI read
 its old events while it moved onto its app-server. While idle, the TUI still
 writes the database itself for `/compact`, resume and history; the host
-writes it only during turns, so the two never write at once. For the same move, three more
-things stay in process only, each until the protocol has requests for it: a
-front end that builds its own agent hands it to the host, which every session
-then uses; a session's sub-agent registry, for showing and stopping
-sub-agents; and `configure_session`, which sets the model, provider and the
-rest of a session's config for its next turns.
+writes it only during turns, so the two never write at once. For the same
+move, three more things stay in process only, each until the protocol has
+requests for it: a front end that builds its own agent hands it to the host,
+which every session then uses; a session's sub-agent registry, for showing
+and stopping sub-agents; and `configure_session`, which sets the model,
+provider and the rest of a session's config for its next turns.
 
 On the host, each open session has a task that owns it and runs its turns, as
 Codex's turn requests behave: `turn/start` is answered at once with the turn in
