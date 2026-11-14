@@ -248,11 +248,14 @@ impl Tui {
         self.type_text("\r");
     }
 
-    /// Press `key` and wait for the engine to say the turn stopped.
+    /// Press `key` and wait for the turn to stop: the engine says so, and
+    /// the turn ends a moment later, when its `turn/completed` reaches the
+    /// TUI. Keys typed before that still go to the turn.
     fn stop_turn(&mut self, key: &str) {
         let start = self.output_len();
         self.type_text(key);
         self.wait_for_output_after(start, INTERRUPTED);
+        self.wait_for_screen_without(BUSY_PROMPT);
     }
 
     /// Whether `koda` exits within a few seconds.
@@ -653,6 +656,12 @@ async fn a_stop_hands_steering_text_back() {
     tui.stop_turn(CTRL_C);
 
     assert_eq!(model_calls(&server).await.len(), 1);
+    tui.wait_for_screen("Not sent to the model");
+    assert!(
+        input_box(&tui.screen()).contains("steeringtext"),
+        "{}",
+        tui.screen()
+    );
     tui.type_text("\r");
     let sent = wait_for_model_call(&server, 2).await;
     assert!(sent.contains("steering text"), "{sent}");
