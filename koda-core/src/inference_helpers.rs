@@ -266,9 +266,16 @@ fn compaction_message(history: &[crate::db::Message]) -> Option<String> {
 /// All three providers (Anthropic, Gemini, OpenAI-compat) require alternating
 /// roles; Anthropic and Gemini remap `tool` → user-role internally, so the
 /// `tool → user` case is equally broken without the sentinel (#875).
+///
+/// A reply's reasoning text goes back only to `model`, the one that wrote it.
+/// Another model would read it as its own thinking, so pi drops it too (its
+/// `transform-messages.ts`), and a strict server such as OpenAI's rejects the
+/// field. Signed thinking blocks are left to the provider, which knows which
+/// models read whose ([`crate::providers::anthropic`]).
 pub fn assemble_messages(
     system_message: &ChatMessage,
     history: &[crate::db::Message],
+    model: &str,
 ) -> Vec<ChatMessage> {
     let mut messages = vec![system_message.clone()];
     let mut summary = compaction_message(history);
@@ -303,7 +310,10 @@ pub fn assemble_messages(
             tool_calls,
             tool_call_id: msg.tool_call_id.clone(),
             images: None,
-            reasoning: msg.thinking_content.clone(),
+            reasoning: msg
+                .thinking_content
+                .clone()
+                .filter(|_| msg.thinking_model.as_deref() == Some(model)),
             thinking_blocks: msg.thinking_blocks.clone(),
         });
     }
@@ -530,7 +540,7 @@ mod tests {
             msg("user", Some("next"), None),
             msg("system", Some("SUMMARY"), None),
         ];
-        let out = assemble_messages(&system(), &history);
+        let out = assemble_messages(&system(), &history, "m");
         let roles: Vec<_> = out.iter().map(|m| m.role.as_str()).collect();
         assert_eq!(roles, ["system", "user", "assistant", "user"]);
         let text = out[1].content.as_deref().unwrap();
@@ -547,17 +557,18 @@ mod tests {
             msg("assistant", Some("reply"), None),
             msg("user", Some("second"), None),
         ];
-        let mut out = assemble_messages(&system(), &history);
+        let mut out = assemble_messages(&system(), &history, "m");
         prepend_project_memory(&mut out, Some("MEMORY"));
         assert_eq!(out[1].content.as_deref(), Some("MEMORY\n\nfirst"));
         assert_eq!(out[3].content.as_deref(), Some("second"));
 
-        let mut summarised = assemble_messages(&system(), &[msg("system", Some("SUMMARY"), None)]);
+        let mut summarised =
+            assemble_messages(&system(), &[msg("system", Some("SUMMARY"), None)], "m");
         prepend_project_memory(&mut summarised, Some("MEMORY"));
         let text = summarised[1].content.as_deref().unwrap();
         assert!(text.starts_with("MEMORY\n\nSUMMARY"), "{text}");
 
-        let mut untouched = assemble_messages(&system(), &history);
+        let mut untouched = assemble_messages(&system(), &history, "m");
         prepend_project_memory(&mut untouched, None);
         assert_eq!(untouched[1].content.as_deref(), Some("first"));
     }
@@ -570,7 +581,7 @@ mod tests {
             msg("user", Some("the request"), None),
             msg("system", Some("SUMMARY"), None),
         ];
-        let out = assemble_messages(&system(), &history);
+        let out = assemble_messages(&system(), &history, "m");
         let roles: Vec<_> = out.iter().map(|m| m.role.as_str()).collect();
         assert_eq!(roles, ["system", "user"]);
         let text = out[1].content.as_deref().unwrap();
@@ -580,7 +591,7 @@ mod tests {
 
     #[test]
     fn compaction_summary_alone_and_repeated_summaries() {
-        let out = assemble_messages(&system(), &[msg("system", Some("ONLY"), None)]);
+        let out = assemble_messages(&system(), &[msg("system", Some("ONLY"), None)], "m");
         assert_eq!(out.len(), 2);
         assert_eq!(out[1].role, "user");
 
@@ -589,7 +600,7 @@ mod tests {
             msg("assistant", Some("kept"), None),
             msg("system", Some("NEWER"), None),
         ];
-        let out = assemble_messages(&system(), &history);
+        let out = assemble_messages(&system(), &history, "m");
         assert_eq!(out.len(), 3);
         let text = out[1].content.as_deref().unwrap();
         assert!(text.starts_with("OLDER\n\nNEWER"), "{text}");
@@ -611,6 +622,7 @@ mod tests {
             cache_creation_tokens: None,
             thinking_tokens: None,
             thinking_content: None,
+            thinking_model: None,
             thinking_blocks: None,
             created_at: None,
         }
@@ -621,15 +633,31 @@ mod tests {
     }
 
     /// The persisted reasoning of an assistant turn rides along on the rebuilt
-    /// history, so the OpenAI-compatible path can send it back.
+    /// history, so the OpenAI-compatible path can send it back, but only to
+    /// the model that wrote it: another model would take it as its own, and
+    /// a row from before Koda recorded the model has no owner to send it to.
     #[test]
-    fn assistant_thinking_content_becomes_reasoning() {
+    fn reasoning_goes_back_only_to_the_model_that_wrote_it() {
         let mut assistant = msg("assistant", Some("hi!"), None);
         assistant.thinking_content = Some("greet the user".into());
-        let history = vec![msg("user", Some("hello"), None), assistant];
-        let out = assemble_messages(&system(), &history);
+        assistant.thinking_model = Some("qwen3".into());
+        let history = vec![msg("user", Some("hello"), None), assistant.clone()];
+        let out = assemble_messages(&system(), &history, "qwen3");
         assert_eq!(out[1].reasoning, None);
         assert_eq!(out[2].reasoning.as_deref(), Some("greet the user"));
+
+        let out = assemble_messages(&system(), &history, "gpt-oss");
+        assert_eq!(out[2].reasoning, None, "another model's reasoning");
+        assert_eq!(
+            out[2].content.as_deref(),
+            Some("hi!"),
+            "the reply still goes"
+        );
+
+        assistant.thinking_model = None;
+        let history = vec![msg("user", Some("hello"), None), assistant];
+        let out = assemble_messages(&system(), &history, "qwen3");
+        assert_eq!(out[2].reasoning, None, "no recorded model");
     }
 
     /// Replayed reasoning takes up context, so the estimate must count it.
@@ -698,7 +726,7 @@ mod tests {
             msg("user", Some("refactor X"), None),
             msg("assistant", Some("done"), None),
         ];
-        let out = assemble_messages(&system(), &history);
+        let out = assemble_messages(&system(), &history, "m");
         // system + 4 history messages — sentinel would make it 6
         assert_eq!(out.len(), 5, "no sentinel expected; got {out:?}");
         assert!(
@@ -717,7 +745,7 @@ mod tests {
             // no assistant reply (Ctrl+C filtered it out)
             msg("user", Some("continue"), None),
         ];
-        let out = assemble_messages(&system(), &history);
+        let out = assemble_messages(&system(), &history, "m");
         // system + user + sentinel + user(continue)
         assert_eq!(out.len(), 4, "expected sentinel; got {out:?}");
         assert_eq!(out[2].role, "assistant");
@@ -737,7 +765,7 @@ mod tests {
             // assistant never processed the result (Ctrl+C)
             msg("user", Some("continue"), None),
         ];
-        let out = assemble_messages(&system(), &history);
+        let out = assemble_messages(&system(), &history, "m");
         // system + user + assistant + tool + sentinel + user(continue)
         assert_eq!(
             out.len(),
@@ -756,7 +784,7 @@ mod tests {
             msg("assistant", Some("ok"), None),
             msg("tool", Some("contents"), Some("tc_1")),
         ];
-        let out = assemble_messages(&system(), &history);
+        let out = assemble_messages(&system(), &history, "m");
         assert_eq!(out.len(), 4);
         assert!(
             out.iter().all(|m| m.role != "assistant"
@@ -773,7 +801,7 @@ mod tests {
             msg("tool", Some("r1"), Some("tc_1")),
             msg("tool", Some("r2"), Some("tc_2")),
         ];
-        let out = assemble_messages(&system(), &history);
+        let out = assemble_messages(&system(), &history, "m");
         assert_eq!(out.len(), 5); // system + 4 messages, no sentinel
     }
 
@@ -781,7 +809,7 @@ mod tests {
     #[test]
     fn no_sentinel_for_first_user_message() {
         let history = vec![msg("user", Some("hello"), None)];
-        let out = assemble_messages(&system(), &history);
+        let out = assemble_messages(&system(), &history, "m");
         assert_eq!(out.len(), 2); // system + user
         assert_eq!(out[1].role, "user");
     }

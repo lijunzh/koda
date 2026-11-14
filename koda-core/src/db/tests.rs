@@ -399,6 +399,7 @@ fn test_prune_mismatched_tool_calls_unit() {
             cache_creation_tokens: None,
             thinking_tokens: None,
             thinking_content: None,
+            thinking_model: None,
             thinking_blocks: None,
             created_at: None,
         }
@@ -474,6 +475,7 @@ fn msg_with_id(id: i64, role: &str, content: Option<&str>, tool_call_id: Option<
         cache_creation_tokens: None,
         thinking_tokens: None,
         thinking_content: None,
+        thinking_model: None,
         thinking_blocks: None,
         created_at: None,
     }
@@ -958,6 +960,7 @@ fn test_prune_null_content_drops_ghost_assistant() {
             cache_creation_tokens: None,
             thinking_tokens: None,
             thinking_content: None,
+            thinking_model: None,
             thinking_blocks: None,
             created_at: None,
         }
@@ -1015,6 +1018,7 @@ fn test_prune_whitespace_only_drops_blank_assistant() {
             cache_creation_tokens: None,
             thinking_tokens: None,
             thinking_content: None,
+            thinking_model: None,
             thinking_blocks: None,
             created_at: None,
         }
@@ -1100,6 +1104,7 @@ fn msg(role: Role, content: &str) -> Message {
         cache_creation_tokens: None,
         thinking_tokens: None,
         thinking_content: None,
+        thinking_model: None,
         thinking_blocks: None,
         created_at: None,
     }
@@ -1254,28 +1259,6 @@ async fn test_load_all_messages_includes_compacted() {
         all.len(),
         active.len()
     );
-}
-
-#[tokio::test]
-async fn test_recent_user_messages() {
-    let (db, _tmp) = setup().await;
-    let session = db.create_session("default", _tmp.path()).await.unwrap();
-
-    db.insert_message(&session, &Role::User, Some("first"), None, None, None)
-        .await
-        .unwrap();
-    db.insert_message(&session, &Role::User, Some("second"), None, None, None)
-        .await
-        .unwrap();
-    db.insert_message(&session, &Role::User, Some("third"), None, None, None)
-        .await
-        .unwrap();
-
-    let recent = db.recent_user_messages(2).await.unwrap();
-    assert_eq!(recent.len(), 2);
-    // Most recent first.
-    assert_eq!(recent[0], "third");
-    assert_eq!(recent[1], "second");
 }
 
 #[tokio::test]
@@ -1619,7 +1602,7 @@ async fn thinking_content_round_trip() {
         .unwrap();
     db.mark_message_complete(id).await.unwrap();
 
-    db.update_message_thinking_content(id, "I should think carefully about this…")
+    db.update_message_thinking_content(id, "m", "I should think carefully about this…")
         .await
         .unwrap();
 
@@ -1685,7 +1668,7 @@ async fn thinking_content_persists_and_is_loaded_in_context() {
         .unwrap();
     db.mark_message_complete(assistant_id).await.unwrap();
 
-    db.update_message_thinking_content(assistant_id, "2+2=4 trivially")
+    db.update_message_thinking_content(assistant_id, "m", "2+2=4 trivially")
         .await
         .unwrap();
 

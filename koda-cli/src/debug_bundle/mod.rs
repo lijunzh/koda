@@ -382,6 +382,7 @@ mod tests {
             cache_creation_tokens: None,
             thinking_tokens: None,
             thinking_content: None,
+            thinking_model: None,
             thinking_blocks: None,
             created_at: Some("2026-04-30T10:00:00Z".to_string()),
         }

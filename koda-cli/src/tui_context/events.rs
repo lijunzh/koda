@@ -376,8 +376,7 @@ impl TuiContext {
         if !text.trim().is_empty() {
             self.textarea.set_text_clearing_elements("");
             self.history.push(text.clone());
-            // Persist to DB (fire-and-forget)
-            let _ = self.session.db.history_push(&text).await;
+            self.input_history.push(&self.session.id, &text);
             self.history_idx = None;
             let mode = trust::read_trust(&self.shared_mode);
             let icon = match mode {
@@ -723,34 +722,6 @@ mod tests {
         burst.begin_with_retro_grabbed("is it ok".into(), std::time::Instant::now());
         assert!(textarea.text().is_empty());
         assert!(!composer_is_empty(&textarea, &burst));
-    }
-
-    // ── History DB persistence ───────────────────────────────────
-    //
-    // Pure index-math tests live in `crate::composer::history_nav` (#1187).
-    // What stays here is the integration with `koda_core::db::Database`,
-    // which the index helpers don't touch.
-
-    #[tokio::test]
-    async fn test_history_round_trip() {
-        let tmp = tempfile::tempdir().unwrap();
-        let db = koda_core::db::Database::init(tmp.path()).await.unwrap();
-
-        db.history_push("hello").await.unwrap();
-        db.history_push("world").await.unwrap();
-        db.history_push("/model gpt-4").await.unwrap();
-
-        let loaded = db.history_load().await.unwrap();
-        assert_eq!(loaded, vec!["hello", "world", "/model gpt-4"]);
-    }
-
-    #[tokio::test]
-    async fn test_history_empty_db() {
-        let tmp = tempfile::tempdir().unwrap();
-        let db = koda_core::db::Database::init(tmp.path()).await.unwrap();
-
-        let loaded = db.history_load().await.unwrap();
-        assert!(loaded.is_empty());
     }
 
     // ── @-mention named-element wiring (PR 5 of #1178) ───────────────────

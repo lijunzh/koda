@@ -31,6 +31,7 @@ pub(crate) mod history_render;
 pub(crate) mod hyperlink;
 pub(crate) mod inference;
 pub(crate) mod input;
+pub(crate) mod input_history;
 pub(crate) mod md_render;
 pub(crate) mod mouse_select;
 pub(crate) mod onboarding;

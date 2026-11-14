@@ -78,8 +78,12 @@ pub(crate) struct TuiContext {
     /// error (`EngineEvent::ContextWindowChanged`). The turn borrows
     /// `config`, so it is adopted after the turn (`post_turn_cleanup`).
     pub learned_context_window: Option<usize>,
+    /// What was typed, oldest first, for Up and Down.
     pub history: Vec<String>,
     pub history_idx: Option<usize>,
+    /// Where [`Self::history`] is kept: a file the TUI owns, as Codex's TUI
+    /// keeps `history.jsonl`.
+    pub input_history: crate::input_history::InputHistory,
     pub completer: crate::completer::InputCompleter,
     pub mouse_selection: Option<crate::mouse_select::Selection>,
     /// Y-coordinate of the history area top edge (for mouse mapping).
@@ -391,9 +395,20 @@ impl TuiContext {
             crate::tui_wizards::save_provider(&config, &db, restored_alias.as_deref()).await;
         }
 
+        // Input history is the TUI's own file. The first time, what Koda kept
+        // in its database before comes over.
+        let input_history = crate::input_history::InputHistory::in_dir(
+            &koda_core::db::config_dir().unwrap_or_else(|_| std::env::temp_dir()),
+        );
+        if !input_history.exists() {
+            let earlier = db.history_load().await.unwrap_or_default();
+            if let Err(e) = input_history.import(earlier) {
+                tracing::warn!("couldn't bring the input history over: {e}");
+            }
+        }
+
         // Collect startup lines (will be pushed into scroll buffer after init)
-        let recent = db.recent_user_messages(3).await.unwrap_or_default();
-        let mut startup_lines = crate::startup::collect_startup_lines(&config, &recent);
+        let mut startup_lines = crate::startup::collect_startup_lines(&config);
         if let Some(notice) = context_source.and_then(|s| config.assumed_context_notice(s)) {
             startup_lines.push(crate::startup::warning_line(notice));
         }
@@ -594,7 +609,8 @@ impl TuiContext {
             inference_start: None,
             context_pct: 0,
             learned_context_window: None,
-            history: db.history_load().await.unwrap_or_default(),
+            history: input_history.load(),
+            input_history,
             history_idx: None,
             completer,
             mouse_selection: None,

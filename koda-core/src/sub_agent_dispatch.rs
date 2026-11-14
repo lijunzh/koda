@@ -804,6 +804,7 @@ pub(crate) fn execute_sub_agent<'a>(
                 let mut messages = crate::inference_helpers::assemble_messages(
                     &ChatMessage::text("system", &system_prompt),
                     &history,
+                    &sub_config.model,
                 );
                 crate::inference_helpers::prepend_project_memory(
                     &mut messages,
@@ -898,7 +899,11 @@ pub(crate) fn execute_sub_agent<'a>(
                     .await?;
                 db.mark_message_complete(assistant_msg_id).await?;
                 if let Some(reasoning) = response.reasoning.as_deref() {
-                    db.update_message_thinking_content(assistant_msg_id, reasoning)
+                    db.update_message_thinking_content(
+                        assistant_msg_id,
+                        &sub_config.model,
+                        reasoning,
+                    )
                         .await?;
                 }
 

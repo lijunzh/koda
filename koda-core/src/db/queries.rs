@@ -667,9 +667,15 @@ impl Persistence for Database {
     /// Called after `insert_message` so the INSERT signature stays lean —
     /// only assistant messages from Claude with extended thinking enabled will
     /// ever call this. All other callers of `insert_message` are unaffected.
-    async fn update_message_thinking_content(&self, message_id: i64, content: &str) -> Result<()> {
-        sqlx::query("UPDATE messages SET thinking_content = ? WHERE id = ?")
+    async fn update_message_thinking_content(
+        &self,
+        message_id: i64,
+        model: &str,
+        content: &str,
+    ) -> Result<()> {
+        sqlx::query("UPDATE messages SET thinking_content = ?, thinking_model = ? WHERE id = ?")
             .bind(content)
+            .bind(model)
             .bind(message_id)
             .execute(&self.pool)
             .await?;
@@ -722,7 +728,7 @@ impl Persistence for Database {
                 let new_rows: Vec<Message> = sqlx::query_as::<_, MessageRow>(
                     "SELECT id, session_id, role, content, full_content, tool_calls, tool_call_id,
                             prompt_tokens, completion_tokens,
-                            cache_read_tokens, cache_creation_tokens, thinking_tokens, thinking_content, thinking_blocks,
+                            cache_read_tokens, cache_creation_tokens, thinking_tokens, thinking_content, thinking_model, thinking_blocks,
                             created_at
                      FROM messages
                      WHERE session_id = ? AND id > ? AND compacted_at IS NULL
@@ -746,7 +752,7 @@ impl Persistence for Database {
                 let rows: Vec<Message> = sqlx::query_as::<_, MessageRow>(
                     "SELECT id, session_id, role, content, full_content, tool_calls, tool_call_id,
                             prompt_tokens, completion_tokens,
-                            cache_read_tokens, cache_creation_tokens, thinking_tokens, thinking_content, thinking_blocks,
+                            cache_read_tokens, cache_creation_tokens, thinking_tokens, thinking_content, thinking_model, thinking_blocks,
                             created_at
                      FROM messages
                      WHERE session_id = ? AND compacted_at IS NULL
@@ -789,7 +795,7 @@ impl Persistence for Database {
         let rows: Vec<Message> = sqlx::query_as::<_, MessageRow>(
             "SELECT id, session_id, role, content, full_content, tool_calls, tool_call_id,
                     prompt_tokens, completion_tokens,
-                    cache_read_tokens, cache_creation_tokens, thinking_tokens, thinking_content, thinking_blocks,
+                    cache_read_tokens, cache_creation_tokens, thinking_tokens, thinking_content, thinking_model, thinking_blocks,
                     created_at
              FROM messages
              WHERE session_id = ?
@@ -802,21 +808,6 @@ impl Persistence for Database {
         .map(|r| r.into())
         .collect();
         Ok(rows)
-    }
-
-    /// Load recent user messages across all sessions (for the startup banner).
-    /// Returns up to `limit` messages, newest first.
-    async fn recent_user_messages(&self, limit: i64) -> Result<Vec<String>> {
-        let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT content FROM messages
-             WHERE role = 'user' AND content IS NOT NULL AND content != ''
-             ORDER BY id DESC LIMIT ?",
-        )
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(rows.into_iter().map(|r| r.0).collect())
     }
 
     /// Get token usage totals for a session.

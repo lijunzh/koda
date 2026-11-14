@@ -351,6 +351,7 @@ mod tests {
             cache_creation_tokens: None,
             thinking_tokens: None,
             thinking_content: None,
+            thinking_model: None,
             thinking_blocks: None,
             created_at: None,
         }

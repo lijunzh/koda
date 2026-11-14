@@ -330,9 +330,15 @@ gets. The TUI is a client too: the host runs its turns, and it answers the
 host's requests from its dialogs, steers with `turn/steer` and stops with
 `turn/interrupt`. Its renderer still reads the engine's own events, which the
 client hands out in process until the TUI renders items, as Codex's TUI read
-its old events while it moved onto its app-server. While idle, the TUI still
-writes the database itself for its input history; the host writes it only
-during turns, so the two never write at once. For the same
+its old events while it moved onto its app-server. Input history is the
+TUI's own, as it is Codex's TUI's: a `history.jsonl` beside the database, in
+Codex's record shape (`session_id`, `ts`, `text`), written whole under a lock
+and readable by its owner only, which the host never reads. Codex caps its file
+by bytes, off by default, because its TUI reads entries as you scroll; Koda's
+reads the file at startup, so it keeps the newest 500 entries, as the database
+table did. While idle, the TUI still writes the database itself for its
+settings (provider, model, keys, mode) until they move behind requests; the
+host writes it only during turns, so the two never write at once. For the same
 move, three more things stay in process only, each until the protocol has
 requests for it: a front end that builds its own agent hands it to the host,
 which every session then uses; a session's sub-agent registry, for showing
