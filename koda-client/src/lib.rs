@@ -29,6 +29,7 @@
 pub mod builtin_skills;
 pub mod events;
 mod host;
+mod mcp;
 mod session;
 mod settings;
 

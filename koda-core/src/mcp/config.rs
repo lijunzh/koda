@@ -15,10 +15,10 @@ use crate::db::Database;
 const MCP_KEY_PREFIX: &str = "mcp:";
 
 /// Default timeout (seconds) for MCP server startup.
-const DEFAULT_STARTUP_TIMEOUT_SEC: u64 = 30;
+pub const DEFAULT_STARTUP_TIMEOUT_SEC: u64 = 30;
 
 /// Default timeout (seconds) for individual tool calls.
-const DEFAULT_TOOL_TIMEOUT_SEC: u64 = 120;
+pub const DEFAULT_TOOL_TIMEOUT_SEC: u64 = 120;
 
 /// Transport type for connecting to an MCP server.
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
@@ -42,9 +42,11 @@ pub enum McpTransport {
     Http {
         /// Server URL (e.g. `http://localhost:8080/mcp`).
         url: String,
-        /// Optional bearer token for `Authorization: Bearer <token>`.
-        #[serde(default)]
-        bearer_token: Option<String>,
+        /// The environment variable holding the bearer token for
+        /// `Authorization: Bearer <token>`, as Codex's
+        /// `bearer_token_env_var`. The token itself is never stored.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bearer_token_env_var: Option<String>,
         /// Custom HTTP headers included with every request.
         #[serde(default)]
         headers: HashMap<String, String>,
@@ -68,12 +70,12 @@ impl fmt::Debug for McpTransport {
                 .finish(),
             McpTransport::Http {
                 url,
-                bearer_token,
+                bearer_token_env_var,
                 headers,
             } => f
                 .debug_struct("Http")
                 .field("url", url)
-                .field("bearer_token", &bearer_token.as_ref().map(|_| "[redacted]"))
+                .field("bearer_token_env_var", bearer_token_env_var)
                 .field("headers", &headers.keys().collect::<Vec<_>>())
                 .finish(),
         }
@@ -106,6 +108,11 @@ pub struct McpServerConfig {
     /// If set, hide these tools (denylist). `enabled_tools` takes priority.
     #[serde(default)]
     pub disabled_tools: Option<Vec<String>>,
+
+    /// A session doesn't start without this server: opening one fails
+    /// when it fails to start, as Codex's `required`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub required: bool,
 }
 
 fn default_startup_timeout() -> u64 {
@@ -190,6 +197,14 @@ pub async fn load_mcp_configs(db: &Database) -> Result<HashMap<String, McpServer
         }
         match serde_json::from_str::<McpServerConfig>(&value) {
             Ok(config) => {
+                if value.contains("\"bearer_token\"") {
+                    tracing::warn!(
+                        server = %server_name,
+                        "this MCP server has a stored bearer token, which Koda no longer \
+                         reads; put the token in an environment variable and name it with \
+                         `bearer_token_env_var`"
+                    );
+                }
                 configs.insert(server_name, config);
             }
             Err(e) => {
@@ -289,7 +304,7 @@ impl McpJsonEntry {
                 Some(url),
             ) => McpTransport::Http {
                 url,
-                bearer_token: None,
+                bearer_token_env_var: None,
                 headers: self.headers,
             },
             (Some("sse"), ..) => {
@@ -317,6 +332,7 @@ impl McpJsonEntry {
             tool_timeout_sec: self.tool_timeout_sec.unwrap_or(DEFAULT_TOOL_TIMEOUT_SEC),
             enabled_tools: self.enabled_tools,
             disabled_tools: self.disabled_tools,
+            required: false,
         };
         config
             .validate()
@@ -371,6 +387,7 @@ mod tests {
             tool_timeout_sec: 120,
             enabled_tools: None,
             disabled_tools: None,
+            required: false,
         }
     }
 
@@ -379,13 +396,14 @@ mod tests {
         McpServerConfig {
             transport: McpTransport::Http {
                 url: url.into(),
-                bearer_token: None,
+                bearer_token_env_var: None,
                 headers: HashMap::new(),
             },
             startup_timeout_sec: 30,
             tool_timeout_sec: 120,
             enabled_tools: None,
             disabled_tools: None,
+            required: false,
         }
     }
 
@@ -448,6 +466,7 @@ mod tests {
             tool_timeout_sec: 60,
             enabled_tools: Some(vec!["navigate".into()]),
             disabled_tools: None,
+            required: true,
         };
         let json = serde_json::to_string(&config).unwrap();
         let parsed: McpServerConfig = serde_json::from_str(&json).unwrap();
@@ -459,13 +478,14 @@ mod tests {
         let config = McpServerConfig {
             transport: McpTransport::Http {
                 url: "http://localhost:8080/mcp".into(),
-                bearer_token: Some("my-secret".into()),
+                bearer_token_env_var: Some("MY_TOKEN".into()),
                 headers: HashMap::from([("X-Custom".into(), "value".into())]),
             },
             startup_timeout_sec: 15,
             tool_timeout_sec: 90,
             enabled_tools: None,
             disabled_tools: None,
+            required: false,
         };
         let json = serde_json::to_string(&config).unwrap();
         let parsed: McpServerConfig = serde_json::from_str(&json).unwrap();
@@ -519,38 +539,37 @@ mod tests {
         assert!(validate_server_name("MyServer123").is_ok());
     }
 
-    // ── McpTransport Debug redaction ─────────────────────────────────────
+    // ── Bearer tokens ────────────────────────────────────────────────────
 
     #[test]
-    fn debug_redacts_bearer_token() {
-        let t = McpTransport::Http {
-            url: "https://example.com/mcp".into(),
-            bearer_token: Some("super-secret-token".into()),
-            headers: HashMap::new(),
+    fn a_stored_server_keeps_the_variable_not_the_token() {
+        let config = http_config("https://example.com/mcp");
+        let McpTransport::Http { url, headers, .. } = config.transport else {
+            unreachable!()
         };
-        let debug_output = format!("{t:?}");
-        assert!(
-            !debug_output.contains("super-secret-token"),
-            "bearer token must not appear in Debug output: {debug_output}"
-        );
-        assert!(
-            debug_output.contains("[redacted]"),
-            "expected '[redacted]' in Debug output: {debug_output}"
-        );
+        let with_var = McpServerConfig {
+            transport: McpTransport::Http {
+                url,
+                bearer_token_env_var: Some("EXAMPLE_TOKEN".into()),
+                headers,
+            },
+            ..http_config("x")
+        };
+        let json = serde_json::to_value(&with_var).unwrap();
+        assert_eq!(json["bearer_token_env_var"], "EXAMPLE_TOKEN");
+        // A record from before keeps loading; its token is dropped.
+        let old =
+            r#"{"transport": "http", "url": "https://example.com/mcp", "bearer_token": "secret"}"#;
+        let parsed: McpServerConfig = serde_json::from_str(old).unwrap();
+        assert!(!serde_json::to_string(&parsed).unwrap().contains("secret"));
     }
 
     #[test]
-    fn debug_shows_none_when_no_token() {
-        let t = McpTransport::Http {
-            url: "https://example.com/mcp".into(),
-            bearer_token: None,
-            headers: HashMap::new(),
-        };
-        let debug_output = format!("{t:?}");
-        assert!(
-            !debug_output.contains("[redacted]"),
-            "no token → should not show [redacted]: {debug_output}"
-        );
+    fn required_is_off_unless_set() {
+        let json = r#"{"transport": "stdio", "command": "npx"}"#;
+        let config: McpServerConfig = serde_json::from_str(json).unwrap();
+        assert!(!config.required);
+        assert!(!serde_json::to_string(&config).unwrap().contains("required"));
     }
 
     // ── --mcp-config ─────────────────────────────────────────────────────

@@ -271,6 +271,7 @@ use koda_protocol::config::{
 
 /// The saved choice, as config keys: the model as chosen (an alias or an
 /// id), its provider's id and endpoint.
+/// The saved model choice; [`read_config`] adds the MCP servers.
 pub(crate) async fn saved(db: &koda_core::db::Database) -> KodaConfigValues {
     match koda_core::last_provider::load_last_provider(db).await {
         Ok(Some(last)) => {
@@ -279,6 +280,7 @@ pub(crate) async fn saved(db: &koda_core::db::Database) -> KodaConfigValues {
                 model: Some(last.alias.unwrap_or(last.model)),
                 model_provider: Some(ptype.to_string()),
                 base_url: Some(last.base_url),
+                mcp_servers: Default::default(),
             }
         }
         Ok(None) => KodaConfigValues::default(),
@@ -317,28 +319,41 @@ pub(crate) fn with_saved(mut choice: ModelChoice, saved: &KodaConfigValues) -> M
 /// `config/read`.
 pub(crate) async fn read_config(db: &koda_core::db::Database) -> ConfigReadResponse {
     ConfigReadResponse {
-        config: saved(db).await,
+        config: KodaConfigValues {
+            mcp_servers: crate::mcp::stored(db).await,
+            ..saved(db).await
+        },
     }
 }
 
-/// `config/batchWrite`: apply the edits to the saved choice, all or none,
-/// and save it. A key Koda doesn't take, or a value that isn't a string or
-/// `null`, refuses the whole batch. A removed key falls back to the host's.
+/// `config/batchWrite`: apply the edits, all or none, and save them. A key
+/// Koda doesn't take, or a value that doesn't fit its key, refuses the
+/// whole batch. A removed model key falls back to the host's; an
+/// `mcp_servers.<name>` edit saves or removes that server, which open
+/// sessions take on `config/mcpServer/reload`.
 pub(crate) async fn write_config(
     db: &koda_core::db::Database,
     host: &KodaConfig,
     params: ConfigBatchWriteParams,
 ) -> Result<ConfigWriteResponse, ErrorObject> {
     let mut values = saved(db).await;
+    let mut servers = Vec::new();
+    let mut model_edited = false;
     for edit in params.edits {
+        if let Some(name) = crate::mcp::server_key(&edit.key_path) {
+            servers.push(crate::mcp::check_edit(name, edit.value)?);
+            continue;
+        }
+        model_edited = true;
         let slot = match edit.key_path.as_str() {
             "model" => &mut values.model,
             "model_provider" => &mut values.model_provider,
             "base_url" => &mut values.base_url,
             other => {
                 return Err(invalid(format!(
-                    "unknown config key {other:?}; Koda takes {}",
-                    koda_protocol::config::KEYS.join(", ")
+                    "unknown config key {other:?}; Koda takes {} and {}.<name>",
+                    koda_protocol::config::KEYS.join(", "),
+                    koda_protocol::mcp::SERVERS_KEY,
                 )));
             }
         };
@@ -353,6 +368,22 @@ pub(crate) async fn write_config(
             }
         };
     }
+    if model_edited {
+        save_choice(db, host, &values).await?;
+    }
+    crate::mcp::apply_edits(db, servers).await?;
+    Ok(ConfigWriteResponse {
+        status: WriteStatus::Ok,
+        config: read_config(db).await.config,
+    })
+}
+
+/// Check the model choice and save it.
+async fn save_choice(
+    db: &koda_core::db::Database,
+    host: &KodaConfig,
+    values: &KodaConfigValues,
+) -> Result<(), ErrorObject> {
     let ptype = match &values.model_provider {
         Some(id) => provider(id)?,
         None => host.provider_type,
@@ -373,11 +404,7 @@ pub(crate) async fn write_config(
     let (model, alias) = resolve_model(&choice, ptype)?;
     koda_core::last_provider::save_last_provider(db, &ptype.to_string(), &base_url, &model, alias)
         .await
-        .map_err(|e| internal(format!("couldn't save the config: {e:#}")))?;
-    Ok(ConfigWriteResponse {
-        status: WriteStatus::Ok,
-        config: saved(db).await,
-    })
+        .map_err(|e| internal(format!("couldn't save the config: {e:#}")))
 }
 
 // ── API keys ────────────────────────────────────────────────────────────
@@ -456,6 +483,7 @@ mod tests {
             model: Some("saved-model".into()),
             model_provider: Some("lm-studio".into()),
             base_url: Some("http://127.0.0.1:1234/v1".into()),
+            mcp_servers: Default::default(),
         }
     }
 

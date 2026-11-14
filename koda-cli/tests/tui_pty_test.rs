@@ -1453,9 +1453,11 @@ const MCP_SERVER: &str = r#"while IFS= read -r line; do
 done
 "#;
 
-/// `/mcp add` saves a server; with none running when Koda started there's
-/// no MCP manager yet, so it connects at the next start. Then `/mcp` lists
-/// it, its tools reach the model, and `/mcp remove` takes them away.
+/// `/mcp add` saves a server and connects it at once, even with none
+/// running when Koda started: every session has its MCP manager. The next
+/// start starts it again in the background, and the first turn waits for
+/// it, so its tools reach the model; `/mcp` lists it, and `/mcp remove`
+/// takes its tools away.
 #[tokio::test(flavor = "multi_thread")]
 async fn mcp_add_list_and_remove_change_the_tools_the_model_gets() {
     let server = scripted_model(vec![]).await;
@@ -1464,13 +1466,10 @@ async fn mcp_add_list_and_remove_change_the_tools_the_model_gets() {
     std::fs::write(&script, MCP_SERVER).unwrap();
     let mut tui = Tui::start_with_model(home.path(), &server.url());
     run_command(&mut tui, &format!("/mcp add notes sh {}", script.display()));
-    tui.wait_for_screen("MCP server 'notes' saved");
+    tui.wait_for_screen("MCP server 'notes' added and connected (1 tools)");
     quit_and_read_session_id(&mut tui);
 
     let mut tui = Tui::start_with_model(home.path(), &server.url());
-    run_command(&mut tui, "/mcp list");
-    tui.wait_for_screen("notes (1 tools)");
-
     tui.submit("use your tools");
     let sent = wait_for_model_call(&server, 1).await;
     assert!(
@@ -1479,6 +1478,8 @@ async fn mcp_add_list_and_remove_change_the_tools_the_model_gets() {
     );
     tui.wait_for_screen("All done.");
     tui.wait_for_screen_without(BUSY_PROMPT);
+    run_command(&mut tui, "/mcp list");
+    tui.wait_for_screen("notes (1 tools)");
 
     run_command(&mut tui, "/mcp remove notes");
     tui.wait_for_screen("MCP server 'notes' removed");

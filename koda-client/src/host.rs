@@ -228,6 +228,19 @@ impl Host {
                     }));
                 return;
             }
+            ClientRequest::McpServerStatusList { params, .. } => {
+                let _ = reply.send(self.mcp_status(params).await.and_then(to_json));
+                return;
+            }
+            ClientRequest::McpServerRefresh { .. } => {
+                // Each open session takes the stored servers now when idle,
+                // or once its turn has ended.
+                for session in self.sessions.lock().await.values() {
+                    let _ = session.send(SessionCommand::ReloadMcp);
+                }
+                let _ = reply.send(to_json(koda_protocol::mcp::McpServerRefreshResponse {}));
+                return;
+            }
             ClientRequest::ModelProviderList { .. } => {
                 let _ = reply.send(to_json(crate::settings::list_providers(
                     &self.context.config,
@@ -295,6 +308,29 @@ impl Host {
         if let Err(mpsc::error::SendError(command)) = session.send(command) {
             command.refuse(internal(format!("session {session_id} has stopped")));
         }
+    }
+
+    /// `mcpServerStatus/list`: a session's servers, or without one the
+    /// configured servers, none started.
+    async fn mcp_status(
+        &self,
+        params: koda_protocol::mcp::ListMcpServerStatusParams,
+    ) -> Result<koda_protocol::mcp::ListMcpServerStatusResponse, ErrorObject> {
+        let Some(id) = &params.session_id else {
+            let configured = crate::mcp::configured(&self.context.db, &self.context.config).await?;
+            return Ok(crate::mcp::configured_status(configured, &params));
+        };
+        let mcp = self
+            .handles
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .map(|handles| handles.mcp.clone())
+            .ok_or_else(|| invalid(format!("no open session {id:?}")))?;
+        Ok(match mcp {
+            Some(mcp) => crate::mcp::session_status(&mcp, &params).await,
+            None => koda_protocol::mcp::ListMcpServerStatusResponse::default(),
+        })
     }
 
     async fn list_sessions(

@@ -194,17 +194,24 @@ fn redirect_router(status: StatusCode, location: String) -> Router {
     }))
 }
 
+/// The variable the test servers' bearer token is read from.
+const TOKEN_VAR: &str = "KODA_MCP_COMPAT_TEST_TOKEN";
+
 fn http_config(url: String) -> McpServerConfig {
+    // Every test sets the same value, so tests running at once agree.
+    // SAFETY: nothing else reads or writes this variable.
+    unsafe { std::env::set_var(TOKEN_VAR, TOKEN) };
     McpServerConfig {
         transport: McpTransport::Http {
             url,
-            bearer_token: Some(TOKEN.into()),
+            bearer_token_env_var: Some(TOKEN_VAR.into()),
             headers: HashMap::from([("x-api-key".to_string(), API_KEY.to_string())]),
         },
         startup_timeout_sec: 5,
         tool_timeout_sec: 5,
         enabled_tools: None,
         disabled_tools: None,
+        required: false,
     }
 }
 
@@ -331,6 +338,7 @@ async fn legacy_stdio_server_2024_11_05() {
         tool_timeout_sec: 10,
         enabled_tools: None,
         disabled_tools: None,
+        required: false,
     };
     let mut client = McpClient::new("legacy".into(), config);
     client
@@ -365,6 +373,7 @@ async fn mcp_results_reach_the_model_marked_as_external_content() {
         tool_timeout_sec: 10,
         enabled_tools: None,
         disabled_tools: None,
+        required: false,
     };
     let mut client = McpClient::new("legacy".into(), config);
     client.connect().await.expect("stdio server should connect");

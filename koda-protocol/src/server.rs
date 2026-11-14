@@ -120,6 +120,8 @@ server_notifications! {
     /// A session was deleted.
     SessionDeleted => "session/deleted" (crate::session::SessionDeletedNotification),
     SessionSettingsUpdated => "session/settings/updated" (crate::session::SessionSettingsUpdatedNotification),
+    /// A session's MCP server started, failed or was stopped while starting.
+    McpServerStatusUpdated => "mcpServer/startupStatus/updated" (crate::mcp::McpServerStatusUpdatedNotification),
     /// A turn began.
     TurnStarted => "turn/started" (crate::turn::TurnStartedNotification),
     /// A turn is over, however it ended.

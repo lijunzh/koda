@@ -1637,3 +1637,363 @@ async fn auto_detect_takes_the_servers_loaded_model() {
     assert_eq!(started.model.as_deref(), Some("loaded-model"));
     koda.client.shutdown().await;
 }
+
+// ── MCP servers ─────────────────────────────────────────────────────────
+
+use koda_client::protocol::mcp::{
+    ListMcpServerStatusParams, McpServerConnectionStatus, McpServerStartupState, McpServerStatus,
+    McpServerStatusUpdatedNotification,
+};
+
+/// A stdio MCP server with one tool, `lookup`, written to `dir`. It waits
+/// `delay` seconds before it answers, and with a `gate` it exits at once
+/// unless that file exists.
+fn mcp_server(dir: &std::path::Path, delay: &str, gate: Option<&std::path::Path>) -> String {
+    let gate = gate
+        .map(|g| format!("[ -e '{}' ] || exit 1\n", g.display()))
+        .unwrap_or_default();
+    let script = format!(
+        r#"{gate}sleep {delay}
+while IFS= read -r line; do
+  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"protocolVersion":"2024-11-05","capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"notes","version":"0.1.0"}}}}}}\n' "$id" ;;
+    *'"method":"tools/list"'*)
+      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"tools":[{{"name":"lookup","description":"Look a note up","inputSchema":{{"type":"object","properties":{{}}}}}}]}}}}\n' "$id" ;;
+    *'"method":"tools/call"'*)
+      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"content":[{{"type":"text","text":"lookup-ran"}}]}}}}\n' "$id" ;;
+  esac
+done
+"#
+    );
+    let path = dir.join(format!("mcp-{}.sh", uuid_like()));
+    std::fs::write(&path, script).unwrap();
+    path.display().to_string()
+}
+
+/// A name no other script in the directory has.
+fn uuid_like() -> String {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    NEXT.fetch_add(1, Ordering::Relaxed).to_string()
+}
+
+/// Whether the model was offered the tool `name` in request `n` (from 0).
+async fn offered(server: &FakeLlmServer, n: usize, name: &str) -> bool {
+    let requests = chat_requests(server).await;
+    requests[n]["tools"]
+        .as_array()
+        .is_some_and(|tools| tools.iter().any(|t| t["function"]["name"] == name))
+}
+
+impl Koda {
+    async fn mcp_status(&self, session: Option<&str>) -> Vec<McpServerStatus> {
+        self.client
+            .request::<methods::McpServerStatusList>(ListMcpServerStatusParams {
+                session_id: session.map(str::to_string),
+                server_name: None,
+            })
+            .await
+            .unwrap()
+            .data
+    }
+
+    async fn reload_mcp(&self) {
+        self.client
+            .request::<methods::McpServerRefresh>(Default::default())
+            .await
+            .unwrap();
+    }
+
+    /// Open a session and make it the one turns go to.
+    async fn switch_to_new_session(&mut self) {
+        self.session = self.new_session(SessionStartParams::default()).await.id;
+    }
+
+    /// The current session's next startup report for `server` with `status`.
+    async fn until_mcp(
+        &mut self,
+        server: &str,
+        status: McpServerStartupState,
+    ) -> McpServerStatusUpdatedNotification {
+        loop {
+            let message = tokio::time::timeout(WAIT, self.client.next_event())
+                .await
+                .unwrap_or_else(|_| panic!("{server} not {status:?} within {WAIT:?}"))
+                .expect("the host stopped");
+            if let Outgoing::Notification(ServerNotification::McpServerStatusUpdated(update)) =
+                message
+                && update.session_id == self.session
+                && update.name == server
+                && update.status == status
+            {
+                return update;
+            }
+        }
+    }
+
+    /// The session's servers, once `done` holds for them.
+    async fn mcp_status_when(
+        &self,
+        done: impl Fn(&[McpServerStatus]) -> bool,
+    ) -> Vec<McpServerStatus> {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            let listed = self.mcp_status(Some(&self.session)).await;
+            if done(&listed) {
+                return listed;
+            }
+            assert!(Instant::now() < deadline, "never as expected: {listed:?}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+}
+
+/// A stored server is listed as not started; a session starts it, says so
+/// as it goes, and lists it connected with its tools.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_session_starts_the_stored_servers_and_reports_them() {
+    let server = model(vec![]).await;
+    let mut koda = Koda::start(config(&server)).await;
+    let script = mcp_server(koda._dir.path(), "0", None);
+    koda.write_config(&[(
+        "mcp_servers.notes",
+        json!({"command": "sh", "args": [script]}),
+    )])
+    .await
+    .unwrap();
+
+    let stored = koda.mcp_status(None).await;
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].name, "notes");
+    assert_eq!(
+        stored[0].runtime_status,
+        McpServerConnectionStatus::NotStarted
+    );
+    // The session opened before has none until a reload.
+    assert!(koda.mcp_status(Some(&koda.session)).await.is_empty());
+
+    koda.switch_to_new_session().await;
+    koda.until_mcp("notes", McpServerStartupState::Starting)
+        .await;
+    let ready = koda.until_mcp("notes", McpServerStartupState::Ready).await;
+    assert_eq!(ready.session_id, koda.session);
+    let listed = koda.mcp_status(Some(&koda.session)).await;
+    assert_eq!(
+        listed[0].runtime_status,
+        McpServerConnectionStatus::Connected
+    );
+    let tool = &listed[0].tools["lookup"];
+    assert_eq!(tool.description.as_deref(), Some("Look a note up"));
+    koda.client.shutdown().await;
+}
+
+/// Opening a session doesn't wait for a slow server, but its first turn
+/// does, so the server's tools reach the model, as Codex's tool listing
+/// waits for servers still starting.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_slow_server_holds_the_first_turn_not_the_session_start() {
+    let server = model(vec![text("Done.")]).await;
+    let mut koda = Koda::start(config(&server)).await;
+    let script = mcp_server(koda._dir.path(), "2", None);
+    koda.write_config(&[(
+        "mcp_servers.notes",
+        json!({"command": "sh", "args": [script]}),
+    )])
+    .await
+    .unwrap();
+
+    let opening = Instant::now();
+    koda.switch_to_new_session().await;
+    assert!(
+        opening.elapsed() < Duration::from_secs(2),
+        "the start waited"
+    );
+    let listed = koda.mcp_status(Some(&koda.session)).await;
+    assert_eq!(
+        listed[0].runtime_status,
+        McpServerConnectionStatus::Starting
+    );
+
+    koda.turn("use your tools").await;
+    koda.until("turn/completed").await;
+    assert!(offered(&server, 0, "notes__lookup").await);
+    koda.client.shutdown().await;
+}
+
+/// A required server that fails stops the session from opening, with the
+/// reason; one that isn't required fails on its own and is listed so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_required_server_that_fails_stops_the_session_from_opening() {
+    let server = model(vec![]).await;
+    let mut koda = Koda::start(config(&server)).await;
+    let broken = json!({"command": "sh", "args": ["-c", "exit 1"], "required": true});
+    koda.write_config(&[("mcp_servers.broken", broken)])
+        .await
+        .unwrap();
+    let refused = server_error(
+        koda.client
+            .request::<methods::SessionStart>(SessionStartParams::default())
+            .await,
+    );
+    assert!(
+        refused.message.contains("required MCP server") && refused.message.contains("broken"),
+        "{refused:?}"
+    );
+
+    koda.write_config(&[(
+        "mcp_servers.broken",
+        json!({"command": "sh", "args": ["-c", "exit 1"]}),
+    )])
+    .await
+    .unwrap();
+    koda.switch_to_new_session().await;
+    let failed = koda
+        .until_mcp("broken", McpServerStartupState::Failed)
+        .await;
+    assert!(failed.error.is_some());
+    let listed = koda.mcp_status(Some(&koda.session)).await;
+    assert_eq!(listed[0].runtime_status, McpServerConnectionStatus::Failed);
+    assert!(listed[0].tools_error.is_some());
+    koda.client.shutdown().await;
+}
+
+/// A server added while a session is open reaches it on a reload, and one
+/// removed leaves it, each by the next turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reload_brings_an_open_session_in_line_with_the_stored_servers() {
+    let server = model(vec![text("One."), text("Two.")]).await;
+    let mut koda = Koda::start(config(&server)).await;
+    let script = mcp_server(koda._dir.path(), "0", None);
+    koda.write_config(&[(
+        "mcp_servers.notes",
+        json!({"command": "sh", "args": [script]}),
+    )])
+    .await
+    .unwrap();
+    koda.reload_mcp().await;
+    koda.until_mcp("notes", McpServerStartupState::Ready).await;
+    koda.turn("first").await;
+    koda.until("turn/completed").await;
+    assert!(offered(&server, 0, "notes__lookup").await);
+
+    koda.write_config(&[("mcp_servers.notes", Value::Null)])
+        .await
+        .unwrap();
+    koda.reload_mcp().await;
+    koda.mcp_status_when(|listed| listed.is_empty()).await;
+    koda.turn("second").await;
+    koda.until("turn/completed").await;
+    assert!(!offered(&server, 1, "notes__lookup").await);
+    koda.client.shutdown().await;
+}
+
+/// A reload during a turn waits for the turn to end: the running turn
+/// keeps its servers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reload_during_a_turn_waits_for_it_to_end() {
+    let server = model(vec![
+        tool_call(
+            "call_1",
+            "Write",
+            json!({"file_path": "a.txt", "content": "hi"}),
+        ),
+        text("Done."),
+    ])
+    .await;
+    let mut config = config(&server);
+    config.trust = koda_core::trust::TrustMode::Safe;
+    let mut koda = Koda::start(config).await;
+    koda.turn("write a file").await;
+    let ServerRequest::ToolCallApproval { id, .. } = koda.request().await else {
+        panic!("expected an approval");
+    };
+
+    let script = mcp_server(koda._dir.path(), "0", None);
+    koda.write_config(&[(
+        "mcp_servers.notes",
+        json!({"command": "sh", "args": [script]}),
+    )])
+    .await
+    .unwrap();
+    koda.reload_mcp().await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(koda.mcp_status(Some(&koda.session)).await.is_empty());
+
+    koda.answer(&id, json!({"decision": {"type": "reject"}}))
+        .await;
+    koda.until("turn/completed").await;
+    koda.until_mcp("notes", McpServerStartupState::Ready).await;
+    koda.client.shutdown().await;
+}
+
+/// A reload starts a failed server again, so a server that wasn't ready
+/// when the session opened can join without a restart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reload_tries_a_failed_server_again() {
+    let server = model(vec![]).await;
+    let mut koda = Koda::start(config(&server)).await;
+    let gate = koda._dir.path().join("ready");
+    let script = mcp_server(koda._dir.path(), "0", Some(&gate));
+    koda.write_config(&[(
+        "mcp_servers.notes",
+        json!({"command": "sh", "args": [script]}),
+    )])
+    .await
+    .unwrap();
+    koda.switch_to_new_session().await;
+    koda.until_mcp("notes", McpServerStartupState::Failed).await;
+
+    std::fs::write(&gate, "").unwrap();
+    koda.reload_mcp().await;
+    koda.until_mcp("notes", McpServerStartupState::Ready).await;
+    let listed = koda.mcp_status(Some(&koda.session)).await;
+    assert_eq!(
+        listed[0].runtime_status,
+        McpServerConnectionStatus::Connected
+    );
+    koda.client.shutdown().await;
+}
+
+/// Servers are config in Codex's shape: a bearer token is named by its
+/// environment variable, never stored, and a bad server refuses the whole
+/// batch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn servers_are_config_in_codexs_shape() {
+    let server = model(vec![]).await;
+    let koda = Koda::start(config(&server)).await;
+    let mail = json!({"url": "https://mail.example/mcp", "bearer_token_env_var": "MAIL_TOKEN"});
+    let written = koda
+        .write_config(&[("mcp_servers.mail", mail)])
+        .await
+        .unwrap();
+    let saved = &written.config.mcp_servers["mail"];
+    assert_eq!(saved.url.as_deref(), Some("https://mail.example/mcp"));
+    assert_eq!(saved.bearer_token_env_var.as_deref(), Some("MAIL_TOKEN"));
+    // Writing a server leaves the model choice alone.
+    assert_eq!(written.config.model, None);
+
+    for bad in [
+        json!({"url": "https://x.example/mcp", "bearer_token": "secret"}),
+        json!({"command": "x", "url": "https://x.example/mcp"}),
+        json!("x"),
+    ] {
+        let refused = server_error(
+            koda.write_config(&[
+                ("mcp_servers.other", json!({"command": "ok"})),
+                ("mcp_servers.bad", bad.clone()),
+            ])
+            .await,
+        );
+        assert_eq!(refused.code, codes::INVALID_REQUEST, "{bad}: {refused:?}");
+    }
+    let read = koda
+        .client
+        .request::<methods::ConfigRead>(Default::default())
+        .await
+        .unwrap();
+    let names: Vec<&String> = read.config.mcp_servers.keys().collect();
+    assert_eq!(names, ["mail"], "a refused batch saved nothing");
+    koda.client.shutdown().await;
+}

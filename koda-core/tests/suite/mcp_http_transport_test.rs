@@ -238,17 +238,18 @@ async fn transport_no_token_omits_auth_header() {
 // McpClient::connect() must reject loopback/private URLs before opening
 // any socket, even when a real server is listening there.
 
-fn loopback_config(port: u16, bearer: Option<String>) -> McpServerConfig {
+fn loopback_config(port: u16, bearer_token_env_var: Option<String>) -> McpServerConfig {
     McpServerConfig {
         transport: McpTransport::Http {
             url: format!("http://127.0.0.1:{port}/mcp"),
-            bearer_token: bearer,
+            bearer_token_env_var,
             headers: Default::default(),
         },
         startup_timeout_sec: 5,
         tool_timeout_sec: 5,
         enabled_tools: None,
         disabled_tools: None,
+        required: false,
     }
 }
 
@@ -292,13 +293,14 @@ async fn mcp_client_connect_rejects_metadata_endpoint() {
     let config = McpServerConfig {
         transport: McpTransport::Http {
             url: "http://169.254.169.254/latest/meta-data".into(),
-            bearer_token: None,
+            bearer_token_env_var: None,
             headers: Default::default(),
         },
         startup_timeout_sec: 5,
         tool_timeout_sec: 5,
         enabled_tools: None,
         disabled_tools: None,
+        required: false,
     };
     let mut client = McpClient::new("test".into(), config);
     let result = client.connect().await;

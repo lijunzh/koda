@@ -244,9 +244,8 @@ async fn dispatch_mcp(
                     return;
                 }
             };
-            let bearer_token = parse_optional_flag(&mut tokens, "--token");
-            crate::tui_mcp::handle_mcp_add_http(buffer, session, agent, name, url, bearer_token)
-                .await;
+            let token_var = parse_optional_flag(&mut tokens, "--bearer-token-env-var");
+            crate::tui_mcp::handle_mcp_add_http(buffer, session, agent, name, url, token_var).await;
         }
         "remove" | "rm" | "delete" => match tokens.next() {
             Some(n) => {

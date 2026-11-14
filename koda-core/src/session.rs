@@ -294,27 +294,14 @@ impl KodaSession {
         // Wire db+session into ToolRegistry for RecallContext
         agent.tools.set_session(Arc::new(db.clone()), id.clone());
 
-        // Start MCP servers from DB config (#662), plus this run's
-        // `--mcp-config` servers.
-        //
-        // Per-session ownership is intentional, not pending refactor (see #959).
-        // Codex (closest peer agent) chose the same shape: per-session
-        // `McpConnectionManager` in `SessionServices`, not app-level. App-level
-        // ownership would complicate config-change semantics and lifecycle
-        // management for an unmeasured startup-cost optimization. Reopen #959
-        // if a real bug surfaces (e.g. multi-session resume becomes slow with
-        // many configured servers).
-        match crate::mcp::McpManager::start_from_db(&db, &config.session_mcp_servers).await {
-            Ok(manager) => {
-                if !manager.is_empty() {
-                    let mgr = Arc::new(tokio::sync::RwLock::new(manager));
-                    agent.tools.set_mcp_manager(mgr);
-                }
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to start MCP servers (non-fatal)");
-            }
-        }
+        // Each session has its own MCP manager (#959), as each Codex thread
+        // has its own MCP runtime. Its servers start when the host opens the
+        // session ([`Self::start_mcp`]), in the background.
+        agent
+            .tools
+            .set_mcp_manager(Arc::new(tokio::sync::RwLock::new(
+                crate::mcp::McpManager::new(),
+            )));
 
         // Spawn the per-session HTTP CONNECT proxy with the default dev
         // allowlist. Fail-open: on spawn failure, log + run unfiltered.
@@ -472,6 +459,37 @@ impl KodaSession {
         self.cancel.clone()
     }
 
+    /// The session's MCP manager.
+    pub fn mcp(&self) -> Option<crate::mcp::manager::SharedMcpManager> {
+        self.agent.tools.mcp_manager()
+    }
+
+    /// Start `servers` in the background, telling `on_status` as each one's
+    /// startup changes, and wait for the required ones, as Codex's session
+    /// start does. An error names each required server that failed.
+    pub async fn start_mcp(
+        &self,
+        servers: std::collections::HashMap<String, crate::mcp::McpServerConfig>,
+        on_status: Option<crate::mcp::manager::McpStatusFn>,
+    ) -> Result<()> {
+        use crate::mcp::McpManager;
+        let Some(mgr) = self.mcp() else {
+            return Ok(());
+        };
+        if let Some(on_status) = on_status {
+            mgr.write().await.set_status_fn(on_status);
+        }
+        McpManager::start_all(&mgr, servers).await;
+        let failed = McpManager::required_failures(&mgr).await;
+        if !failed.is_empty() {
+            anyhow::bail!(
+                "a required MCP server failed to start: {}",
+                failed.join("; ")
+            );
+        }
+        Ok(())
+    }
+
     /// Cascade-cancel everything in this session and arm a fresh root (#1216).
     ///
     /// Fires the *current* root token — which propagates to every
@@ -537,6 +555,16 @@ impl KodaSession {
         // built and the agent is wrapped in `Arc`. Composing here picks up
         // both the initial-connect case and any mid-session `/mcp add`
         // hot-reloads automatically (#922).
+        // The turn's tools include every server's: wait for those still
+        // starting, as Codex's tool listing does. Each startup has its own
+        // time limit; stopping the turn stops the wait.
+        if let Some(mgr) = self.mcp() {
+            let stop = turn_cancel.clone().unwrap_or_else(|| self.cancel_token());
+            tokio::select! {
+                () = crate::mcp::McpManager::wait_for_startup(&mgr, None) => {}
+                () = stop.cancelled() => {}
+            }
+        }
         let mcp_section = if let Some(mgr) = self.agent.tools.mcp_manager() {
             // Bind the Arc to extend its lifetime past the read guard
             // (try_read() returns a guard that borrows the lock).

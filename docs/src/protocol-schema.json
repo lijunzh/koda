@@ -177,7 +177,7 @@
       "description": "One change: a key, its new value (`null` removes it) and how to merge.",
       "properties": {
         "keyPath": {
-          "description": "The key, one of [`KEYS`].",
+          "description": "The key: one of [`KEYS`], or `mcp_servers.<name>`.",
           "type": "string"
         },
         "mergeStrategy": {
@@ -185,7 +185,7 @@
           "description": "How the value merges; for Koda's keys, both replace it."
         },
         "value": {
-          "description": "The value: a string, or `null` to remove the key."
+          "description": "The value: a string, or for `mcp_servers.<name>` a server\n([`crate::mcp::McpServerConfigValue`]); `null` removes the key."
         }
       },
       "required": [
@@ -730,6 +730,13 @@
             "null"
           ]
         },
+        "mcp_servers": {
+          "additionalProperties": {
+            "$ref": "#/$defs/McpServerConfigValue"
+          },
+          "description": "The MCP servers every new session starts, by name.",
+          "type": "object"
+        },
         "model": {
           "description": "The model a new session starts with: an alias such as `claude-opus`,\nwhich follows its line, or an id.",
           "type": [
@@ -745,6 +752,43 @@
           ]
         }
       },
+      "type": "object"
+    },
+    "ListMcpServerStatusParams": {
+      "additionalProperties": false,
+      "description": "`mcpServerStatus/list`.",
+      "properties": {
+        "serverName": {
+          "description": "Only this server.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sessionId": {
+          "description": "The session whose servers to list. Without one, the stored servers,\nnone of them started.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ListMcpServerStatusResponse": {
+      "description": "The answer to `mcpServerStatus/list`.",
+      "properties": {
+        "data": {
+          "description": "The servers, by name.",
+          "items": {
+            "$ref": "#/$defs/McpServerStatus"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "data"
+      ],
       "type": "object"
     },
     "LoopCapDecision": {
@@ -827,6 +871,246 @@
           "type": "string"
         }
       ]
+    },
+    "McpServerConfigValue": {
+      "additionalProperties": false,
+      "description": "One MCP server's config, in Codex's `[mcp_servers.<name>]` shape: a\n`command` for a server Koda starts, or a `url` for one it reaches over\nstreamable HTTP.",
+      "properties": {
+        "args": {
+          "description": "Its arguments.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "bearer_token_env_var": {
+          "description": "The environment variable that holds the bearer token. The token\nitself is never stored.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "command": {
+          "description": "The command that starts the server.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cwd": {
+          "description": "The directory it starts in.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "disabled_tools": {
+          "description": "These tools are never offered.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "enabled_tools": {
+          "description": "Only these tools are offered.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Environment variables set for it.",
+          "type": "object"
+        },
+        "http_headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Headers sent with every HTTP request.",
+          "type": "object"
+        },
+        "required": {
+          "description": "A session doesn't start without it: `session/start` fails when it\nfails to start.",
+          "type": "boolean"
+        },
+        "startup_timeout_sec": {
+          "description": "Seconds the server has to start (default 30).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "tool_timeout_sec": {
+          "description": "Seconds a tool call has (default 120).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "url": {
+          "description": "The server's URL, for streamable HTTP.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "McpServerConnectionStatus": {
+      "description": "Where a server's connection stands; Codex's values that Koda produces.",
+      "oneOf": [
+        {
+          "const": "notStarted",
+          "description": "Not started: stored, but no session has it.",
+          "type": "string"
+        },
+        {
+          "const": "starting",
+          "description": "Starting.",
+          "type": "string"
+        },
+        {
+          "const": "connected",
+          "description": "Connected; its tools are offered.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "It failed to start.",
+          "type": "string"
+        }
+      ]
+    },
+    "McpServerRefreshParams": {
+      "additionalProperties": false,
+      "description": "`config/mcpServer/reload`: every open session takes the stored servers\nagain, starting new ones, stopping removed ones and restarting changed\nor failed ones, before its next turn.",
+      "type": "object"
+    },
+    "McpServerRefreshResponse": {
+      "description": "The answer to `config/mcpServer/reload`.",
+      "type": "object"
+    },
+    "McpServerStartupState": {
+      "description": "Where a server's startup stands.",
+      "oneOf": [
+        {
+          "const": "starting",
+          "description": "Starting.",
+          "type": "string"
+        },
+        {
+          "const": "ready",
+          "description": "Started; its tools are offered.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "It failed to start.",
+          "type": "string"
+        },
+        {
+          "const": "cancelled",
+          "description": "Stopped before it had started.",
+          "type": "string"
+        }
+      ]
+    },
+    "McpServerStatus": {
+      "description": "One server as a session has it.",
+      "properties": {
+        "name": {
+          "description": "The server's name.",
+          "type": "string"
+        },
+        "runtimeStatus": {
+          "$ref": "#/$defs/McpServerConnectionStatus",
+          "description": "Where its connection stands."
+        },
+        "tools": {
+          "additionalProperties": {
+            "$ref": "#/$defs/McpTool"
+          },
+          "description": "Its tools, by name.",
+          "type": "object"
+        },
+        "toolsError": {
+          "description": "Why it has no tools, when it failed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "runtimeStatus",
+        "tools"
+      ],
+      "type": "object"
+    },
+    "McpServerStatusUpdatedNotification": {
+      "description": "`mcpServer/startupStatus/updated`: a session's server started, failed\nor was stopped while starting.",
+      "properties": {
+        "error": {
+          "description": "Why it failed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "The server.",
+          "type": "string"
+        },
+        "sessionId": {
+          "description": "The session.",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/McpServerStartupState",
+          "description": "Where its startup stands."
+        }
+      },
+      "required": [
+        "sessionId",
+        "name",
+        "status"
+      ],
+      "type": "object"
+    },
+    "McpTool": {
+      "description": "One of a server's tools.",
+      "properties": {
+        "description": {
+          "description": "What it does, as the server says.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Its name on the server.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
     },
     "MergeStrategy": {
       "description": "How an edit's value merges with what's there.",
@@ -2452,6 +2736,14 @@
         "$ref": "#/$defs/ConfigWriteResponse"
       }
     },
+    "config/mcpServer/reload": {
+      "params": {
+        "$ref": "#/$defs/McpServerRefreshParams"
+      },
+      "result": {
+        "$ref": "#/$defs/McpServerRefreshResponse"
+      }
+    },
     "config/read": {
       "params": {
         "$ref": "#/$defs/ConfigReadParams"
@@ -2466,6 +2758,14 @@
       },
       "result": {
         "$ref": "#/$defs/InitializeResponse"
+      }
+    },
+    "mcpServerStatus/list": {
+      "params": {
+        "$ref": "#/$defs/ListMcpServerStatusParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ListMcpServerStatusResponse"
       }
     },
     "model/list": {
@@ -2631,6 +2931,11 @@
     "item/toolCall/outputDelta": {
       "params": {
         "$ref": "#/$defs/ToolCallOutputDeltaNotification"
+      }
+    },
+    "mcpServer/startupStatus/updated": {
+      "params": {
+        "$ref": "#/$defs/McpServerStatusUpdatedNotification"
       }
     },
     "serverRequest/resolved": {

@@ -78,6 +78,19 @@ impl McpClient {
         }
     }
 
+    /// A stand-in for a server whose startup is under way: it has no tools
+    /// until the real client replaces it.
+    pub(crate) fn starting(name: String, config: McpServerConfig) -> Self {
+        let mut client = Self::new(name, config);
+        client.status = McpClientStatus::Connecting;
+        client
+    }
+
+    /// The server's config.
+    pub fn config(&self) -> &McpServerConfig {
+        &self.config
+    }
+
     /// Server name.
     pub fn name(&self) -> &str {
         &self.name
@@ -164,11 +177,11 @@ impl McpClient {
             } => self.connect_stdio(command, args, env, cwd.as_deref()).await,
             McpTransport::Http {
                 ref url,
-                ref bearer_token,
+                ref bearer_token_env_var,
                 ref headers,
             } => {
-                self.connect_http(url, bearer_token.as_deref(), headers)
-                    .await
+                let token = bearer_token(bearer_token_env_var.as_deref())?;
+                self.connect_http(url, token.as_deref(), headers).await
             }
         }
     }
@@ -408,13 +421,14 @@ impl McpClient {
     pub async fn connect_http_without_ssrf_guard_for_test(&mut self) -> Result<()> {
         let McpTransport::Http {
             url,
-            bearer_token,
+            bearer_token_env_var,
             headers,
         } = self.config.transport.clone()
         else {
             anyhow::bail!("not an HTTP MCP server config");
         };
-        self.connect_http_unchecked(&url, bearer_token.as_deref(), &headers)
+        let token = bearer_token(bearer_token_env_var.as_deref())?;
+        self.connect_http_unchecked(&url, token.as_deref(), &headers)
             .await?;
         self.status = McpClientStatus::Connected;
         Ok(())
@@ -471,6 +485,19 @@ fn mcp_http_client() -> Result<reqwest::Client> {
         .redirect(policy)
         .build()
         .context("failed to build MCP HTTP client")
+}
+
+/// The bearer token from the environment variable `var` names, as Codex's
+/// `bearer_token_env_var`. A named variable that is unset or empty is an
+/// error, so the server fails with the reason instead of an unexplained 401.
+fn bearer_token(var: Option<&str>) -> Result<Option<String>> {
+    let Some(var) = var else {
+        return Ok(None);
+    };
+    match std::env::var(var) {
+        Ok(token) if !token.is_empty() => Ok(Some(token)),
+        _ => anyhow::bail!("the environment variable {var} for the bearer token isn't set"),
+    }
 }
 
 impl Drop for McpClient {

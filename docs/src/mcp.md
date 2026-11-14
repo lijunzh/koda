@@ -13,8 +13,8 @@ database drivers, Slack, internal APIs, and more.
 # Add an HTTP server
 /mcp add-http my-api https://api.example.com/mcp
 
-# Add an HTTP server with bearer-token auth
-/mcp add-http my-api https://api.example.com/mcp --token sk-mytoken
+# Add an HTTP server whose bearer token is in $MY_API_TOKEN
+/mcp add-http my-api https://api.example.com/mcp --bearer-token-env-var MY_API_TOKEN
 
 # List all configured servers and their status
 /mcp list
@@ -47,14 +47,20 @@ arguments and communicates over stdin/stdout.
 Double-underscore (`__`) is reserved as Koda's internal tool-routing separator
 and is not allowed.
 
-### `/mcp add-http <name> <url> [--token <bearer>]`
+### `/mcp add-http <name> <url> [--bearer-token-env-var <VAR>]`
 
 Add an **HTTP** MCP server using the MCP 2025-03-26 Streamable HTTP transport.
 
 ```text
 /mcp add-http my-api  https://api.example.com/mcp
-/mcp add-http my-api  https://api.example.com/mcp --token sk-abc123
+/mcp add-http my-api  https://api.example.com/mcp --bearer-token-env-var MY_API_TOKEN
 ```
+
+The token stays in the environment: Koda stores only the variable's name, as
+Codex's `bearer_token_env_var` does, and reads it when the server starts. A
+named variable that isn't set fails the server with that reason. Tokens stored
+by earlier versions (`--token`) are no longer read; Koda logs a warning for
+such a server.
 
 > **Security note:** Bearer tokens sent over plaintext `http://` are logged as
 > a warning. Use `https://` in production. Koda also blocks connections to
@@ -122,6 +128,15 @@ their own and Koda uses it. Koda doesn't use the stateless
 MCP server configs are stored in the local SQLite keystore (`~/.config/koda/db/koda.db`)
 under the `mcp:` key prefix. They survive session restarts and are loaded
 automatically on each startup.
+
+## Startup
+
+Each session starts its servers in the background when it opens, as Codex
+does. A turn waits for any server still starting (each for up to its
+`startup_timeout_sec`), so its tools include every server that connects. A
+server whose config has `required: true` must start: opening the session fails
+when it doesn't, so `koda exec` exits with the reason. Clients follow each
+startup through the `mcpServer/startupStatus/updated` notification.
 
 ## Servers for one run (`--mcp-config`)
 
