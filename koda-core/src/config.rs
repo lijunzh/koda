@@ -231,6 +231,14 @@ pub struct KodaConfig {
     pub skip_memory: bool,
     /// Trust mode for this session. Default: `TrustMode::Auto` (#1241).
     pub trust: crate::trust::TrustMode,
+    /// Whether the mode was named for this run (`--mode`): then the
+    /// config file's `mode` doesn't apply.
+    pub trust_named: bool,
+    /// Milliseconds a reply may go silent before the connection counts as
+    /// lost, from the config file's `[model_providers.<id>]
+    /// stream_idle_timeout_ms`; 0 turns the limit off. `None` keeps the
+    /// provider's default.
+    pub stream_idle_timeout_ms: Option<u64>,
     /// MCP servers from `--mcp-config`, for this run only. Added to the
     /// stored servers at session start and never written to the database.
     pub session_mcp_servers: std::collections::HashMap<String, crate::mcp::McpServerConfig>,
@@ -423,6 +431,8 @@ impl KodaConfig {
             ),
             skip_memory: agent.skip_memory,
             trust: declared_trust,
+            trust_named: false,
+            stream_idle_timeout_ms: None,
             session_mcp_servers: Default::default(),
         })
     }
@@ -551,6 +561,15 @@ impl KodaConfig {
     /// Override the trust mode (e.g. from `--mode safe` on the CLI).
     pub fn with_trust(mut self, mode: crate::trust::TrustMode) -> Self {
         self.trust = mode;
+        self
+    }
+
+    /// Mark the mode as settled for this run, so a host doesn't take the
+    /// config file's `mode` over it: `koda` resolves `--mode`, the file's
+    /// `mode` and the default itself, since Auto needs the sandbox checked
+    /// before start.
+    pub fn with_trust_named(mut self) -> Self {
+        self.trust_named = true;
         self
     }
 
@@ -719,6 +738,8 @@ impl KodaConfig {
             post_turn_compact_percent: 0,
             skip_memory: false,
             trust: crate::trust::TrustMode::Auto,
+            trust_named: false,
+            stream_idle_timeout_ms: None,
             session_mcp_servers: Default::default(),
         }
     }

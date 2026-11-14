@@ -108,7 +108,7 @@ pub async fn run_headless(
     let provider = config.provider_type.meta().name;
     let mut client = InProcessClient::start(StartArgs {
         config,
-        config_file: koda_client::ConfigFile::in_dir(&koda_core::db::config_dir()?),
+        config_file: crate::user_config::file()?,
         project_root,
         db: db.clone(),
         raw_events: true,

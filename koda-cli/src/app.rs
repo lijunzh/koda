@@ -134,7 +134,8 @@ struct Cli {
     )]
     reasoning_effort: Option<String>,
 
-    /// Trust mode: auto (default), safe, or plan (`koda exec` only).
+    /// Trust mode: auto (the default, unless config.toml sets `mode`), safe,
+    /// or plan (`koda exec` only).
     /// "auto" auto-approves mutating actions; the kernel sandbox
     /// contains them. Destructive ops (rm -rf, git reset --hard,
     /// git push --force) and outside-project writes still
@@ -149,9 +150,23 @@ struct Cli {
     /// read-only run; everything else is refused, and the kernel
     /// sandbox keeps the project read-only.
     /// Sandbox with credential protection is always active.
-    #[arg(long, env = "KODA_MODE", default_value = "auto",
+    #[arg(long, env = "KODA_MODE",
           value_parser = ["safe", "auto", "plan"], global = true)]
-    mode: String,
+    mode: Option<String>,
+
+    /// Override a config.toml value for this run: `-c key=value`, with a
+    /// dotted key (`-c model_providers.lm-studio.base_url=http://...`).
+    /// The value is read as TOML, else taken as text, as Codex's `-c` is.
+    /// Repeatable; never saved. Flags such as --model win over it.
+    #[arg(
+        short = 'c',
+        long = "config",
+        value_name = "KEY=VALUE",
+        value_parser = koda_config::parse_override,
+        action = clap::ArgAction::Append,
+        global = true
+    )]
+    config: Vec<koda_config::Override>,
 
     /// Add MCP servers for this run only, from a JSON file or inline JSON
     /// in the `{"mcpServers": {...}}` shape of Claude Code's `.mcp.json`.
@@ -248,6 +263,7 @@ pub(crate) async fn run() -> Result<()> {
     }
 
     let mut cli = Cli::parse();
+    crate::user_config::set_overrides(cli.config.clone());
 
     if matches!(cli.command, Some(Command::Server { .. })) {
         eprintln!("{SERVER_REMOVED}");
@@ -313,6 +329,19 @@ pub(crate) async fn run() -> Result<()> {
         .init();
 
     tracing::info!("Koda starting. Project root: {:?}", project_root);
+
+    // The config file, with this run's `-c` values: a broken file or an
+    // unknown `-c` key stops the start here, before any terminal setup.
+    let user_config = crate::user_config::file()?
+        .load()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    // The mode: --mode, else the file's (or `-c mode=`), else auto. Resolved
+    // here because Auto needs the sandbox, which is checked before start.
+    let mode = cli
+        .mode
+        .clone()
+        .or_else(|| user_config.config.mode.map(|m| m.as_str().to_string()))
+        .unwrap_or_else(|| "auto".to_string());
 
     // Initialize database early — keys and last-provider recall live here (#693)
     let db = koda_core::db::Database::init(&koda_core::db::config_dir()?).await?;
@@ -380,8 +409,9 @@ pub(crate) async fn run() -> Result<()> {
                 cli.reasoning_effort,
             )
             .with_context_override(cli.max_context_tokens)
-            .with_trust(parse_top_level_trust_mode(&cli.mode, true))
-            .with_session_mcp_servers(session_mcp);
+            .with_trust(parse_top_level_trust_mode(&mode, true))
+            .with_session_mcp_servers(session_mcp)
+            .with_trust_named();
         check_typed_reasoning(typed.0.as_deref(), typed.1, &config)?;
         // An unknown id stops here, before anything runs. A new session is
         // the host's to create.
@@ -421,8 +451,9 @@ pub(crate) async fn run() -> Result<()> {
             cli.reasoning_effort,
         )
         .with_context_override(cli.max_context_tokens)
-        .with_trust(parse_top_level_trust_mode(&cli.mode, false))
-        .with_session_mcp_servers(session_mcp);
+        .with_trust(parse_top_level_trust_mode(&mode, false))
+        .with_session_mcp_servers(session_mcp)
+        .with_trust_named();
     check_typed_reasoning(typed.0.as_deref(), typed.1, &config)?;
 
     // Onboarding asks which provider to use. A start that names one already

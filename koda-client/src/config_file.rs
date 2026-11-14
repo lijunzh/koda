@@ -5,21 +5,24 @@
 //!
 //! The file is read again for each `config/read`, `session/start` and MCP
 //! reload, so a hand edit reaches the next session without a restart.
-//! Codex's TUI does the same with `config.toml`. One layer so far, the
-//! user's file.
+//! Codex's TUI does the same with `config.toml`. Two layers: the user's
+//! file, and this run's `-c key=value` values over it (the session flags),
+//! which are never written to the file.
 
 use std::collections::BTreeMap;
 
 use koda_config::{ConfigError, ConfigFile, Edit, Loaded};
-use koda_core::config::ProviderType;
+use koda_core::config::{KodaConfig, ProviderType};
 use koda_core::db::Database;
 use koda_protocol::config::{
     ConfigBatchWriteParams, ConfigLayer, ConfigLayerMetadata, ConfigLayerSource, ConfigReadParams,
     ConfigReadResponse, ConfigWarningNotification, ConfigWriteErrorCode, ConfigWriteResponse, KEYS,
-    KodaConfigValues, ModelProviderConfigValue, PROVIDERS_KEY, WriteStatus,
+    KodaConfigValues, ModelProviderConfigValue, OverriddenMetadata, PROVIDERS_KEY,
+    SandboxConfigValue, TuiConfigValue, WriteStatus,
 };
 use koda_protocol::mcp::{McpServerConfigValue, SERVERS_KEY};
 use koda_protocol::rpc::{ErrorObject, codes};
+use koda_protocol::state::TrustMode as ProtocolMode;
 use serde_json::{Value, json};
 
 use crate::session::internal;
@@ -36,18 +39,92 @@ pub(crate) fn values(loaded: &Loaded) -> KodaConfigValues {
     KodaConfigValues {
         model: config.model.clone(),
         model_provider: config.model_provider.clone(),
+        model_reasoning_effort: config.model_reasoning_effort.clone(),
+        model_context_window: config.model_context_window,
+        model_post_turn_compact_threshold_percent: config.model_post_turn_compact_threshold_percent,
+        mode: config.mode.map(protocol_mode),
         model_providers: config
             .model_providers
             .iter()
             .map(|(id, provider)| {
                 let value = ModelProviderConfigValue {
                     base_url: provider.base_url.clone(),
+                    request_max_retries: provider.request_max_retries,
+                    stream_max_retries: provider.stream_max_retries,
+                    stream_idle_timeout_ms: provider.stream_idle_timeout_ms,
                 };
                 (id.clone(), value)
             })
             .collect(),
         mcp_servers: servers(loaded),
+        tui: TuiConfigValue {
+            syntax_highlight: config.tui.syntax_highlight,
+        },
+        sandbox: SandboxConfigValue {
+            allow_local_binding: config.sandbox.allow_local_binding,
+        },
     }
+}
+
+fn protocol_mode(mode: koda_config::Mode) -> ProtocolMode {
+    match mode {
+        koda_config::Mode::Auto => ProtocolMode::Auto,
+        koda_config::Mode::Safe => ProtocolMode::Safe,
+        koda_config::Mode::Plan => ProtocolMode::Plan,
+    }
+}
+
+/// The mode the file gives a new session, if any.
+pub(crate) fn mode(loaded: &Loaded) -> Option<koda_core::trust::TrustMode> {
+    loaded.config.mode.map(|mode| match mode {
+        koda_config::Mode::Auto => koda_core::trust::TrustMode::Auto,
+        koda_config::Mode::Safe => koda_core::trust::TrustMode::Safe,
+        koda_config::Mode::Plan => koda_core::trust::TrustMode::Plan,
+    })
+}
+
+/// Fill what a session runs with from the file (with `-c` over it), for
+/// what nothing above it set: a flag, or the agent's JSON. The variables
+/// earlier versions read still win until they're retired (CF-3b). Call
+/// once the session's provider is known; `ptype`'s `[model_providers]`
+/// entry applies.
+pub(crate) fn apply_settings(config: &mut KodaConfig, loaded: &Loaded) {
+    let file = &loaded.config;
+    if config.model_settings.reasoning_effort.is_none() {
+        config.model_settings.reasoning_effort = file.model_reasoning_effort.clone();
+    }
+    if config.context_override.is_none()
+        && let Some(tokens) = file.model_context_window.filter(|n| *n > 0)
+    {
+        let tokens = tokens as usize;
+        config.context_override = Some(tokens);
+        config.max_context_tokens = tokens;
+        config.model_settings.max_context_tokens = tokens;
+    }
+    let unset = |name: &str| koda_core::runtime_env::get(name).is_none();
+    if unset("KODA_POST_TURN_COMPACT_PERCENT")
+        && let Some(percent) = file.model_post_turn_compact_threshold_percent
+    {
+        config.post_turn_compact_percent = percent.min(100);
+    }
+    if let Some(provider) = file.model_providers.get(&config.provider_type.to_string()) {
+        if unset("KODA_REQUEST_MAX_RETRIES")
+            && let Some(n) = provider.request_max_retries
+        {
+            config.request_max_retries = n.min(u64::from(u32::MAX)) as u32;
+        }
+        if unset("KODA_STREAM_MAX_RETRIES")
+            && let Some(n) = provider.stream_max_retries
+        {
+            config.stream_max_retries = n.min(u64::from(u32::MAX)) as u32;
+        }
+        if unset("KODA_READ_TIMEOUT_SECS") {
+            config.stream_idle_timeout_ms = provider.stream_idle_timeout_ms;
+        }
+    }
+    koda_core::sandbox::set_local_binding_configured(
+        file.sandbox.allow_local_binding.unwrap_or(false),
+    );
 }
 
 /// The endpoint the file gives provider `ptype`, if any.
@@ -71,27 +148,47 @@ pub(crate) fn read(
     params: &ConfigReadParams,
 ) -> Result<ConfigReadResponse, ErrorObject> {
     let loaded = load(file)?;
-    let metadata = ConfigLayerMetadata {
+    let user = ConfigLayerMetadata {
         name: user_layer(file),
         version: loaded.version.clone(),
     };
-    let origins = loaded
+    let flags = flags_layer(&loaded);
+    // A `-c` value wins over the file's for the same key.
+    let mut origins: BTreeMap<String, ConfigLayerMetadata> = loaded
         .key_paths()
         .into_iter()
-        .map(|path| (path, metadata.clone()))
+        .map(|path| (path, user.clone()))
         .collect();
+    for path in loaded.flag_key_paths() {
+        origins.insert(path, flags.clone());
+    }
     let layers = params.include_layers.then(|| {
-        vec![ConfigLayer {
+        let mut layers = vec![ConfigLayer {
             name: user_layer(file),
             version: loaded.version.clone(),
             config: serde_json::to_value(&loaded.values).unwrap_or(Value::Null),
-        }]
+        }];
+        if !loaded.flags.is_empty() {
+            layers.push(ConfigLayer {
+                name: ConfigLayerSource::SessionFlags,
+                version: loaded.flags_version(),
+                config: serde_json::to_value(&loaded.flags).unwrap_or(Value::Null),
+            });
+        }
+        layers
     });
     Ok(ConfigReadResponse {
         config: values(&loaded),
         origins,
         layers,
     })
+}
+
+fn flags_layer(loaded: &Loaded) -> ConfigLayerMetadata {
+    ConfigLayerMetadata {
+        name: ConfigLayerSource::SessionFlags,
+        version: loaded.flags_version(),
+    }
 }
 
 fn write_error(code: ConfigWriteErrorCode, message: impl Into<String>) -> ErrorObject {
@@ -123,10 +220,14 @@ pub(crate) fn write(
                     .map_err(|e| invalid(format!("{key_path}: {e}")))?,
                 None => Value::Null,
             }
-        } else if let Some(id) = provider_endpoint_key(&key_path) {
+        } else if let Some((id, field)) = provider_key(&key_path) {
             crate::settings::provider(id)?;
-            string_or_null(&key_path, edit.value).map_err(invalid)?
-        } else if KEYS.contains(&key_path.as_str()) {
+            if field == "base_url" {
+                string_or_null(&key_path, edit.value).map_err(invalid)?
+            } else {
+                edit.value
+            }
+        } else if key_path == "model" || key_path == "model_provider" {
             let value = string_or_null(&key_path, edit.value).map_err(invalid)?;
             let slot = if key_path == "model" {
                 &mut model
@@ -135,15 +236,19 @@ pub(crate) fn write(
             };
             *slot = value.as_str().map(str::to_string);
             value
+        } else if KEYS.contains(&key_path.as_str())
+            || key_path.starts_with("tui.")
+            || key_path.starts_with("sandbox.")
+        {
+            // The file's schema checks the type; a window must be positive.
+            if key_path == "model_context_window" && edit.value.as_u64() == Some(0) {
+                return Err(invalid(
+                    "model_context_window must be a positive number of tokens".into(),
+                ));
+            }
+            edit.value
         } else {
-            return Err(write_error(
-                ConfigWriteErrorCode::ConfigSchemaUnknownKey,
-                format!(
-                    "unknown config key {key_path:?}; Koda takes {}, \
-                     {PROVIDERS_KEY}.<id>.base_url and {SERVERS_KEY}.<name>",
-                    KEYS.join(", "),
-                ),
-            ));
+            return Err(unknown_key(&key_path));
         };
         edits.push(Edit { key_path, value });
     }
@@ -162,23 +267,63 @@ pub(crate) fn write(
                 write_error(ConfigWriteErrorCode::ConfigVersionConflict, e.to_string())
             }
             ConfigError::Edit(message) => invalid(message),
+            ConfigError::UnknownKey(key) => unknown_key(&key),
             other => internal(format!("couldn't save the config: {other}")),
         })?;
+    // A `-c` value for a written key wins until Koda restarts, as Codex
+    // reports with `okOverridden`.
+    let flagged = saved.flag_key_paths();
+    let overridden = edits.iter().find_map(|edit| {
+        flagged.iter().find(|flag| {
+            *flag == &edit.key_path || flag.starts_with(&format!("{}.", edit.key_path))
+        })
+    });
+    let (status, overridden_metadata) = match overridden {
+        Some(flag) => (
+            WriteStatus::OkOverridden,
+            Some(OverriddenMetadata {
+                message: format!(
+                    "Saved, but `-c {flag}` given to this run wins over it until Koda restarts."
+                ),
+                overriding_layer: flags_layer(&saved),
+                effective_value: flag_value(&saved, flag),
+            }),
+        ),
+        None => (WriteStatus::Ok, None),
+    };
     Ok(ConfigWriteResponse {
-        status: WriteStatus::Ok,
+        status,
         version: saved.version.clone(),
         file_path: file.path().display().to_string(),
         config: values(&saved),
+        overridden_metadata,
     })
 }
 
-/// If `key_path` is `model_providers.<id>.base_url`, the id.
-fn provider_endpoint_key(key_path: &str) -> Option<&str> {
-    key_path
-        .strip_prefix(PROVIDERS_KEY)?
-        .strip_prefix('.')?
-        .strip_suffix(".base_url")
-        .filter(|id| !id.is_empty() && !id.contains('.'))
+fn unknown_key(key_path: &str) -> ErrorObject {
+    write_error(
+        ConfigWriteErrorCode::ConfigSchemaUnknownKey,
+        format!(
+            "unknown config key {key_path:?}; Koda takes {}, {PROVIDERS_KEY}.<id>.<key>, \
+             {SERVERS_KEY}.<name>, tui.<key> and sandbox.<key>",
+            KEYS.join(", "),
+        ),
+    )
+}
+
+/// The `-c` value at the dotted `path`, as JSON.
+fn flag_value(loaded: &Loaded, path: &str) -> Value {
+    loaded
+        .flag_value(path)
+        .and_then(|value| serde_json::to_value(value).ok())
+        .unwrap_or(Value::Null)
+}
+
+/// If `key_path` is `model_providers.<id>.<key>`, the id and the key.
+fn provider_key(key_path: &str) -> Option<(&str, &str)> {
+    let rest = key_path.strip_prefix(PROVIDERS_KEY)?.strip_prefix('.')?;
+    let (id, field) = rest.split_once('.')?;
+    (!id.is_empty() && !field.is_empty() && !field.contains('.')).then_some((id, field))
 }
 
 fn string_or_null(key_path: &str, value: Value) -> Result<Value, String> {
@@ -573,5 +718,141 @@ mod tests {
             summaries[1].starts_with("MCP server `both` won't start"),
             "{summaries:?}"
         );
+    }
+
+    /// The file fills what a session runs with where nothing above it set
+    /// a value; a flag or the agent's JSON keeps its own.
+    #[tokio::test]
+    async fn the_file_fills_what_nothing_named() {
+        for name in [
+            "KODA_POST_TURN_COMPACT_PERCENT",
+            "KODA_REQUEST_MAX_RETRIES",
+            "KODA_STREAM_MAX_RETRIES",
+            "KODA_READ_TIMEOUT_SECS",
+        ] {
+            koda_core::runtime_env::mask(name);
+        }
+        let (_dir, _db, file) = scratch().await;
+        std::fs::write(
+            file.path(),
+            "model_reasoning_effort = \"high\"\nmodel_context_window = 50000\n\
+             model_post_turn_compact_threshold_percent = 85\n\n\
+             [model_providers.lm-studio]\nrequest_max_retries = 7\nstream_max_retries = 2\n\
+             stream_idle_timeout_ms = 90000\n\n[model_providers.anthropic]\nrequest_max_retries = 1\n",
+        )
+        .unwrap();
+        let loaded = file.load().unwrap();
+
+        let mut config = KodaConfig::default_for_testing(ProviderType::LMStudio);
+        apply_settings(&mut config, &loaded);
+        assert_eq!(
+            config.model_settings.reasoning_effort.as_deref(),
+            Some("high")
+        );
+        assert_eq!(config.context_override, Some(50_000));
+        assert_eq!(config.max_context_tokens, 50_000);
+        assert_eq!(config.post_turn_compact_percent, 85);
+        // The session's provider's table, not another's.
+        assert_eq!(config.request_max_retries, 7);
+        assert_eq!(config.stream_max_retries, 2);
+        assert_eq!(config.stream_idle_timeout_ms, Some(90_000));
+
+        // A flag (or the agent's JSON) keeps its value.
+        let mut named = KodaConfig::default_for_testing(ProviderType::LMStudio);
+        named.model_settings.reasoning_effort = Some("low".into());
+        named.context_override = Some(8_192);
+        apply_settings(&mut named, &loaded);
+        assert_eq!(
+            named.model_settings.reasoning_effort.as_deref(),
+            Some("low")
+        );
+        assert_eq!(named.context_override, Some(8_192));
+    }
+
+    /// A `-c` value wins over the file's, `config/read` names it as the
+    /// session flags' value, and a write it overrides says so.
+    #[tokio::test]
+    async fn flags_sit_over_the_file_in_reads_and_writes() {
+        let (dir, _db, _) = scratch().await;
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "model = \"claude-sonnet\"\n",
+        )
+        .unwrap();
+        let file = ConfigFile::in_dir(dir.path()).with_overrides(vec![
+            koda_config::parse_override("model=claude-opus").unwrap(),
+        ]);
+        let read = read(
+            &file,
+            &ConfigReadParams {
+                include_layers: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(read.config.model.as_deref(), Some("claude-opus"));
+        assert_eq!(read.origins["model"].name, ConfigLayerSource::SessionFlags);
+        let layers = read.layers.unwrap();
+        assert_eq!(layers.len(), 2);
+        assert_eq!(layers[0].config["model"], "claude-sonnet");
+        assert_eq!(layers[1].name, ConfigLayerSource::SessionFlags);
+
+        let written = write(&file, batch(&[("model", json!("claude-haiku"))], None)).unwrap();
+        assert_eq!(written.status, WriteStatus::OkOverridden);
+        let meta = written.overridden_metadata.unwrap();
+        assert_eq!(meta.effective_value, "claude-opus");
+        assert!(
+            std::fs::read_to_string(file.path())
+                .unwrap()
+                .contains("claude-haiku")
+        );
+
+        let other = write(
+            &file,
+            batch(&[("model_reasoning_effort", json!("high"))], None),
+        )
+        .unwrap();
+        assert_eq!(other.status, WriteStatus::Ok);
+        assert_eq!(other.overridden_metadata, None);
+    }
+
+    #[tokio::test]
+    async fn the_new_keys_are_written_and_checked() {
+        let (_dir, _db, file) = scratch().await;
+        write(
+            &file,
+            batch(
+                &[
+                    ("model_context_window", json!(65536)),
+                    ("mode", json!("safe")),
+                    ("model_providers.anthropic.request_max_retries", json!(6)),
+                    ("tui.syntax_highlight", json!(false)),
+                    ("sandbox.allow_local_binding", json!(true)),
+                ],
+                None,
+            ),
+        )
+        .unwrap();
+        let config = file.load().unwrap().config;
+        assert_eq!(config.model_context_window, Some(65_536));
+        assert_eq!(config.mode, Some(koda_config::Mode::Safe));
+        assert_eq!(
+            config.model_providers["anthropic"].request_max_retries,
+            Some(6)
+        );
+        assert_eq!(config.tui.syntax_highlight, Some(false));
+        assert_eq!(config.sandbox.allow_local_binding, Some(true));
+
+        let zero = write(&file, batch(&[("model_context_window", json!(0))], None)).unwrap_err();
+        assert_eq!(code(&zero), "configValidationError");
+        let bad_mode = write(&file, batch(&[("mode", json!("yolo"))], None)).unwrap_err();
+        assert_eq!(code(&bad_mode), "configValidationError");
+        let unknown = write(&file, batch(&[("tui.theme", json!("dark"))], None)).unwrap_err();
+        assert_eq!(code(&unknown), "configSchemaUnknownKey");
+        let provider_field = write(
+            &file,
+            batch(&[("model_providers.anthropic.colour", json!(1))], None),
+        )
+        .unwrap_err();
+        assert_eq!(code(&provider_field), "configSchemaUnknownKey");
     }
 }

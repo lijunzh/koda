@@ -490,6 +490,24 @@ pub trait LlmProvider: Send + Sync {
 
 use crate::config::{KodaConfig, ProviderType};
 
+/// The HTTP client a provider uses: the read timeout is
+/// `KODA_READ_TIMEOUT_SECS` if set, else the config file's
+/// `stream_idle_timeout_ms` for the provider, else `default_secs`.
+fn provider_http_client(config: &KodaConfig, default_secs: u64) -> reqwest::Client {
+    let default_secs = match config.stream_idle_timeout_ms {
+        Some(0) => 0,
+        Some(ms) => ms.div_ceil(1000).max(1),
+        None => default_secs,
+    };
+    client_builder(
+        Some(&config.base_url),
+        reqwest::redirect::Policy::default(),
+        default_secs,
+    )
+    .build()
+    .unwrap_or_else(|_| reqwest::Client::new())
+}
+
 /// Create an LLM provider from the given configuration.
 pub fn create_provider(config: &KodaConfig) -> Box<dyn LlmProvider + Send + Sync> {
     let api_key = crate::runtime_env::get(config.provider_type.env_key_name());
@@ -499,9 +517,10 @@ pub fn create_provider(config: &KodaConfig) -> Box<dyn LlmProvider + Send + Sync
                 tracing::warn!("No ANTHROPIC_API_KEY set");
                 String::new()
             });
-            Box::new(anthropic::AnthropicProvider::new(
+            Box::new(anthropic::AnthropicProvider::with_http_client(
                 key,
                 Some(&config.base_url),
+                provider_http_client(config, READ_TIMEOUT_SECS),
             ))
         }
         ProviderType::Gemini => {
@@ -509,14 +528,22 @@ pub fn create_provider(config: &KodaConfig) -> Box<dyn LlmProvider + Send + Sync
                 tracing::warn!("No GEMINI_API_KEY set");
                 String::new()
             });
-            Box::new(gemini::GeminiProvider::new(key, Some(&config.base_url)))
+            Box::new(gemini::GeminiProvider::with_http_client(
+                key,
+                Some(&config.base_url),
+                provider_http_client(config, READ_TIMEOUT_SECS),
+            ))
         }
         #[cfg(any(test, feature = "test-support"))]
         ProviderType::Mock => Box::new(mock::MockProvider::from_env()),
         _ => {
             let url = &config.base_url;
             Box::new(if config.provider_type.requires_api_key() {
-                openai_compat::OpenAiCompatProvider::new(url, api_key)
+                openai_compat::OpenAiCompatProvider::with_http_client(
+                    url,
+                    api_key,
+                    provider_http_client(config, READ_TIMEOUT_SECS),
+                )
             } else {
                 // A server with no key is a local one (LM Studio, Ollama,
                 // vLLM, llama.cpp) or self-hosted: slow to start answering,
@@ -524,7 +551,7 @@ pub fn create_provider(config: &KodaConfig) -> Box<dyn LlmProvider + Send + Sync
                 openai_compat::OpenAiCompatProvider::with_http_client(
                     url,
                     api_key,
-                    build_local_http_client(url),
+                    provider_http_client(config, LOCAL_READ_TIMEOUT_SECS),
                 )
                 .with_default_max_tokens(openai_compat::LOCAL_REPLY_TOKEN_CAP)
             })

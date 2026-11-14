@@ -21,6 +21,7 @@ path = "src/main.rs"
 koda-core = { path = "../koda-core", version = "0.6.4" }
 # The client protocol, and the projection of engine events onto it
 koda-client = { path = "../koda-client", version = "0.6.4" }
+koda-config = { path = "../koda-config", version = "0.6.4" }
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
@@ -105,7 +106,6 @@ harness = false
 
 [dev-dependencies]
 tempfile = { workspace = true }
-koda-config = { path = "../koda-config" }
 koda-core = { path = "../koda-core", version = "0.6.4", features = ["test-support"] }
 koda-test-utils = { path = "../koda-test-utils" }
 serde_json = { workspace = true }

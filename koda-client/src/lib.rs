@@ -149,6 +149,11 @@ impl InProcessClient {
         config_file::migrate(&args.db, &args.config_file).await;
         let loaded = args.config_file.load().map_err(RequestError::Config)?;
         let config_warnings = config_file::warnings(&args.config_file, &loaded);
+        // Commands any session starts may use local ports if the file says
+        // so; each new session takes the file again.
+        koda_core::sandbox::set_local_binding_configured(
+            loaded.config.sandbox.allow_local_binding.unwrap_or(false),
+        );
         // Stored API keys reach the sessions through the environment; one
         // already set there wins.
         if let Err(e) = koda_core::keystore::inject_into_env(&args.db).await {

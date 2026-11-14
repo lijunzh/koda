@@ -10,9 +10,11 @@ When multiple sources specify the model, provider, or API key, the
        ↓
 2. Shell env vars     KODA_MODEL, KODA_PROVIDER, KODA_BASE_URL
        ↓
-3. Config file        ~/.config/koda/config.toml, which /model and /provider write
+3. -c key=value       this run only
        ↓
-4. Built-in defaults  Claude Sonnet via Anthropic              (lowest)
+4. Config file        ~/.config/koda/config.toml, which /model and /provider write
+       ↓
+5. Built-in defaults  Claude Sonnet via Anthropic              (lowest)
 ```
 
 API keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, …) are
@@ -52,6 +54,28 @@ base_url = "http://192.168.1.20:1234/v1"
 command = "notes-mcp"
 args = ["--quiet"]
 ```
+
+Every key, in Codex's names where Codex has one:
+
+| Key | What it sets |
+|-----|--------------|
+| `model_provider`, `model` | The provider and model a new session starts with |
+| `model_reasoning_effort` | The reasoning effort, as `--effort` gives it |
+| `model_context_window` | The context window to assume, in tokens, as `--max-context-tokens` pins it |
+| `model_post_turn_compact_threshold_percent` | Compact after a turn's final reply once this share of the window is used (1–100; 0 turns it off) |
+| `mode` | The mode a new session starts in: `auto`, `safe`, or `plan` (`koda exec` only) |
+| `[model_providers.<id>]` | Per provider: `base_url`, `request_max_retries`, `stream_max_retries`, `stream_idle_timeout_ms` (0 turns the limit off) |
+| `[mcp_servers.<name>]` | An MCP server every new session starts |
+| `[tui] syntax_highlight` | `false` shows code and diffs without colour. Read by the TUI from its own machine's file |
+| `[sandbox] allow_local_binding` | `true` lets sandboxed commands on macOS use any local port (see [Sandbox](./sandbox.md#when-a-command-needs-to-leave-the-sandbox)) |
+
+**`-c key=value` overrides a key for one run,** as Codex's `-c` does, and is
+never saved: `koda -c model=claude-opus`, or
+`koda exec -c model_providers.lm-studio.base_url=http://127.0.0.1:1234/v1 "…"`.
+The value is read as TOML (`5`, `true`, `"text"`), and as plain text when it
+isn't. A key Koda doesn't know stops the run. Flags such as `--model` win over
+`-c`. A setting the agent's JSON gives wins over the file and `-c`, for that
+agent.
 
 - **A hand edit applies to the next session,** without a restart. Run
   `/mcp reconnect` for open sessions to take MCP server changes.

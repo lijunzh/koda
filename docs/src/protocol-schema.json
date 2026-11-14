@@ -238,7 +238,7 @@
       "type": "object"
     },
     "ConfigLayerSource": {
-      "description": "Where a value comes from. Koda has one layer so far, the user's file;\nCodex also has managed, project and `-c` layers.",
+      "description": "Where a value comes from: the user's file, or this run's `-c` values\nover it. Codex also has managed and project layers.",
       "oneOf": [
         {
           "description": "`~/.config/koda/config.toml`.",
@@ -255,6 +255,19 @@
           "required": [
             "type",
             "file"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "`-c key=value` on the command line that started the host, for this\nrun only.",
+          "properties": {
+            "type": {
+              "const": "sessionFlags",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
           ],
           "type": "object"
         }
@@ -334,11 +347,22 @@
       "properties": {
         "config": {
           "$ref": "#/$defs/KodaConfigValues",
-          "description": "The settings as saved now."
+          "description": "The settings as saved now, `-c` values included."
         },
         "filePath": {
           "description": "The file written.",
           "type": "string"
+        },
+        "overriddenMetadata": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OverriddenMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "With `okOverridden`: a `-c` value wins over what was written."
         },
         "status": {
           "$ref": "#/$defs/WriteStatus",
@@ -856,10 +880,40 @@
           "description": "The MCP servers every new session starts, by name.",
           "type": "object"
         },
+        "mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TrustMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The mode a new session starts in."
+        },
         "model": {
           "description": "The model a new session starts with: an alias such as `claude-opus`,\nwhich follows its line, or an id.",
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "model_context_window": {
+          "description": "The context window to assume, in tokens, for a server that doesn't\nreport its own.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "model_post_turn_compact_threshold_percent": {
+          "description": "Context used, in percent, past which a turn compacts after its\nfinal reply; 0 or none turns it off.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
             "null"
           ]
         },
@@ -876,6 +930,21 @@
           },
           "description": "Settings per provider, by provider id.",
           "type": "object"
+        },
+        "model_reasoning_effort": {
+          "description": "The reasoning effort a new session asks for.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sandbox": {
+          "$ref": "#/$defs/SandboxConfigValue",
+          "description": "What sandboxed commands may do beyond Koda's defaults."
+        },
+        "tui": {
+          "$ref": "#/$defs/TuiConfigValue",
+          "description": "The TUI's own settings."
         }
       },
       "type": "object"
@@ -1377,6 +1446,33 @@
             "string",
             "null"
           ]
+        },
+        "request_max_retries": {
+          "description": "Retries a failed request gets after the first try.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "stream_idle_timeout_ms": {
+          "description": "Milliseconds a reply may go silent before the connection counts as\nlost; 0 turns the limit off.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "stream_max_retries": {
+          "description": "Retries for a reply whose stream failed partway.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -1476,6 +1572,28 @@
           "type": "string"
         }
       ]
+    },
+    "OverriddenMetadata": {
+      "description": "What wins over a write, as Codex reports it.",
+      "properties": {
+        "effectiveValue": {
+          "description": "The value in force, for the first overridden key."
+        },
+        "message": {
+          "description": "One sentence for a person.",
+          "type": "string"
+        },
+        "overridingLayer": {
+          "$ref": "#/$defs/ConfigLayerMetadata",
+          "description": "The layer whose value is in force."
+        }
+      },
+      "required": [
+        "message",
+        "overridingLayer",
+        "effectiveValue"
+      ],
+      "type": "object"
     },
     "PlanStep": {
       "description": "One step of a plan.",
@@ -1647,6 +1765,19 @@
           "type": "string"
         }
       ]
+    },
+    "SandboxConfigValue": {
+      "description": "`[sandbox]`: what sandboxed commands may do beyond Koda's defaults.",
+      "properties": {
+        "allow_local_binding": {
+          "description": "macOS: let commands use any local port, not only the servers Koda\nstarted.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
     },
     "SandboxState": {
       "description": "The sandbox commands run in.",
@@ -2358,6 +2489,19 @@
         }
       ]
     },
+    "TuiConfigValue": {
+      "description": "`[tui]`: settings a TUI reads from its own machine's file.",
+      "properties": {
+        "syntax_highlight": {
+          "description": "Colour code blocks and diffs; `false` for plain text.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "Turn": {
       "description": "A turn. `turn/started` sends it in progress, `turn/completed` finished.",
       "properties": {
@@ -2784,6 +2928,11 @@
         {
           "const": "ok",
           "description": "Saved.",
+          "type": "string"
+        },
+        {
+          "const": "okOverridden",
+          "description": "Saved, but a `-c` value for this run wins over it until Koda\nrestarts.",
           "type": "string"
         }
       ]

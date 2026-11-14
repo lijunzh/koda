@@ -54,12 +54,21 @@ impl GeminiProvider {
     /// never in the URL, and HTTPS is enforced for `googleapis.com`. Custom
     /// URLs (home-network LLM servers, local proxies, etc.) are left as-is.
     pub fn new(api_key: String, base_url: Option<&str>) -> Self {
+        Self::with_http_client(api_key, base_url, super::build_http_client(base_url))
+    }
+
+    /// [`Self::new`] with the HTTP client to use.
+    pub fn with_http_client(
+        api_key: String,
+        base_url: Option<&str>,
+        client: reqwest::Client,
+    ) -> Self {
         let raw_url = base_url
             .unwrap_or("https://generativelanguage.googleapis.com")
             .trim_end_matches('/');
         let url = Self::enforce_gemini_api_https(raw_url);
         Self {
-            client: super::build_http_client(base_url),
+            client,
             base_url: url,
             api_key,
             cached_content: std::sync::Mutex::new(None),
