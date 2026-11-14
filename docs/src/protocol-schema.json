@@ -155,6 +155,82 @@
         }
       ]
     },
+    "ConfigBatchWriteParams": {
+      "additionalProperties": false,
+      "description": "`config/batchWrite`: change several keys at once, as Codex's does.",
+      "properties": {
+        "edits": {
+          "description": "The changes, applied in order; all or none.",
+          "items": {
+            "$ref": "#/$defs/ConfigEdit"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "edits"
+      ],
+      "type": "object"
+    },
+    "ConfigEdit": {
+      "additionalProperties": false,
+      "description": "One change: a key, its new value (`null` removes it) and how to merge.",
+      "properties": {
+        "keyPath": {
+          "description": "The key, one of [`KEYS`].",
+          "type": "string"
+        },
+        "mergeStrategy": {
+          "$ref": "#/$defs/MergeStrategy",
+          "description": "How the value merges; for Koda's keys, both replace it."
+        },
+        "value": {
+          "description": "The value: a string, or `null` to remove the key."
+        }
+      },
+      "required": [
+        "keyPath",
+        "value",
+        "mergeStrategy"
+      ],
+      "type": "object"
+    },
+    "ConfigReadParams": {
+      "additionalProperties": false,
+      "description": "`config/read`.",
+      "type": "object"
+    },
+    "ConfigReadResponse": {
+      "description": "The answer to `config/read`: the saved settings. A key nothing has\nsaved is absent, and a new session then uses the host's own.",
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/KodaConfigValues",
+          "description": "The settings, by key."
+        }
+      },
+      "required": [
+        "config"
+      ],
+      "type": "object"
+    },
+    "ConfigWriteResponse": {
+      "description": "The answer to `config/batchWrite`.",
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/KodaConfigValues",
+          "description": "The settings as saved now."
+        },
+        "status": {
+          "$ref": "#/$defs/WriteStatus",
+          "description": "How the write went."
+        }
+      },
+      "required": [
+        "status",
+        "config"
+      ],
+      "type": "object"
+    },
     "ErrorNotification": {
       "description": "`error`.",
       "properties": {
@@ -644,6 +720,33 @@
       "const": "2.0",
       "type": "string"
     },
+    "KodaConfigValues": {
+      "description": "Koda's saved settings.",
+      "properties": {
+        "base_url": {
+          "description": "The provider's endpoint.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "description": "The model a new session starts with: an alias such as `claude-opus`,\nwhich follows its line, or an id.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model_provider": {
+          "description": "The provider's id, such as `anthropic`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "LoopCapDecision": {
       "description": "Whether a turn at its cap goes on.",
       "oneOf": [
@@ -725,6 +828,21 @@
         }
       ]
     },
+    "MergeStrategy": {
+      "description": "How an edit's value merges with what's there.",
+      "oneOf": [
+        {
+          "const": "replace",
+          "description": "Replace the value.",
+          "type": "string"
+        },
+        {
+          "const": "upsert",
+          "description": "Merge into it; for a string, the same as replace.",
+          "type": "string"
+        }
+      ]
+    },
     "Message": {
       "anyOf": [
         {
@@ -800,6 +918,43 @@
       },
       "required": [
         "data"
+      ],
+      "type": "object"
+    },
+    "ModelProviderApiKeyRemoveParams": {
+      "additionalProperties": false,
+      "description": "`modelProvider/apiKey/remove`: forget a provider's stored key. One set\nin the environment Koda was started with stays.",
+      "properties": {
+        "providerId": {
+          "description": "The provider's id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "providerId"
+      ],
+      "type": "object"
+    },
+    "ModelProviderApiKeyResponse": {
+      "description": "The answer to `modelProvider/apiKey/set` and `.../remove`.",
+      "type": "object"
+    },
+    "ModelProviderApiKeySetParams": {
+      "additionalProperties": false,
+      "description": "`modelProvider/apiKey/set`: store a provider's API key. Koda keeps a key\nper provider, which Codex, whose `account/login/start` signs in one\nOpenAI account, doesn't. The key never comes back in any response.",
+      "properties": {
+        "apiKey": {
+          "description": "The key.",
+          "type": "string"
+        },
+        "providerId": {
+          "description": "The provider's id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "providerId",
+        "apiKey"
       ],
       "type": "object"
     },
@@ -2272,6 +2427,16 @@
         "message"
       ],
       "type": "object"
+    },
+    "WriteStatus": {
+      "description": "How a write went.",
+      "oneOf": [
+        {
+          "const": "ok",
+          "description": "Saved.",
+          "type": "string"
+        }
+      ]
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2279,6 +2444,22 @@
     "$ref": "#/$defs/Message"
   },
   "methods": {
+    "config/batchWrite": {
+      "params": {
+        "$ref": "#/$defs/ConfigBatchWriteParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ConfigWriteResponse"
+      }
+    },
+    "config/read": {
+      "params": {
+        "$ref": "#/$defs/ConfigReadParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ConfigReadResponse"
+      }
+    },
     "initialize": {
       "params": {
         "$ref": "#/$defs/InitializeParams"
@@ -2293,6 +2474,22 @@
       },
       "result": {
         "$ref": "#/$defs/ModelListResponse"
+      }
+    },
+    "modelProvider/apiKey/remove": {
+      "params": {
+        "$ref": "#/$defs/ModelProviderApiKeyRemoveParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ModelProviderApiKeyResponse"
+      }
+    },
+    "modelProvider/apiKey/set": {
+      "params": {
+        "$ref": "#/$defs/ModelProviderApiKeySetParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ModelProviderApiKeyResponse"
       }
     },
     "modelProvider/list": {

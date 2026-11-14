@@ -172,7 +172,13 @@ pub(crate) async fn open(
             }
         }
     }
+    // A new session takes the saved choice where the client named nothing,
+    // as a Codex thread starts from `config.toml`'s defaults.
+    if !resumed {
+        choice = crate::settings::with_saved(choice, &crate::settings::saved(&db).await);
+    }
     let alias = crate::settings::apply_start(&mut config, &choice).await?;
+    crate::settings::detect_model(&mut config).await;
 
     // Ask the provider for the model's window first. A guess is said once
     // the session has started.

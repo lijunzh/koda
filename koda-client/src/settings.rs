@@ -18,7 +18,7 @@ use koda_protocol::rpc::ErrorObject;
 use koda_protocol::session::SessionSettings;
 use koda_protocol::state::TrustMode;
 
-use crate::session::invalid;
+use crate::session::{internal, invalid};
 
 /// How long a provider gets to list its models.
 const LIST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -260,5 +260,189 @@ pub(crate) fn mode_of(mode: TrustMode) -> koda_core::trust::TrustMode {
         TrustMode::Plan => koda_core::trust::TrustMode::Plan,
         TrustMode::Safe => koda_core::trust::TrustMode::Safe,
         TrustMode::Auto => koda_core::trust::TrustMode::Auto,
+    }
+}
+
+// ── The saved choice (config) ───────────────────────────────────────────
+
+use koda_protocol::config::{
+    ConfigBatchWriteParams, ConfigReadResponse, ConfigWriteResponse, KodaConfigValues, WriteStatus,
+};
+
+/// The saved choice, as config keys: the model as chosen (an alias or an
+/// id), its provider's id and endpoint.
+pub(crate) async fn saved(db: &koda_core::db::Database) -> KodaConfigValues {
+    match koda_core::last_provider::load_last_provider(db).await {
+        Ok(Some(last)) => {
+            let ptype = ProviderType::from_url_or_name("", Some(&last.provider_type));
+            KodaConfigValues {
+                model: Some(last.alias.unwrap_or(last.model)),
+                model_provider: Some(ptype.to_string()),
+                base_url: Some(last.base_url),
+            }
+        }
+        Ok(None) => KodaConfigValues::default(),
+        Err(e) => {
+            tracing::warn!("couldn't read the saved model choice: {e:#}");
+            KodaConfigValues::default()
+        }
+    }
+}
+
+/// A new session's choice with the saved one filling in what the client
+/// didn't name, by the rules the TUI has kept since #1408: what's named
+/// always wins; a named provider or endpoint takes the saved endpoint and
+/// model only when it's the saved provider, since they were picked for it.
+pub(crate) fn with_saved(mut choice: ModelChoice, saved: &KodaConfigValues) -> ModelChoice {
+    let Some(saved_provider) = saved.model_provider.clone() else {
+        return choice;
+    };
+    if choice.provider.is_some() || choice.base_url.is_some() {
+        let named = match (&choice.provider, &choice.base_url) {
+            (Some(id), _) => id.clone(),
+            (None, Some(url)) => ProviderType::from_url_or_name(url, None).to_string(),
+            (None, None) => unreachable!("one is named"),
+        };
+        if named != saved_provider {
+            return choice;
+        }
+    } else {
+        choice.provider = Some(saved_provider);
+    }
+    choice.base_url = choice.base_url.or_else(|| saved.base_url.clone());
+    choice.model = choice.model.or_else(|| saved.model.clone());
+    choice
+}
+
+/// `config/read`.
+pub(crate) async fn read_config(db: &koda_core::db::Database) -> ConfigReadResponse {
+    ConfigReadResponse {
+        config: saved(db).await,
+    }
+}
+
+/// `config/batchWrite`: apply the edits to the saved choice, all or none,
+/// and save it. A key Koda doesn't take, or a value that isn't a string or
+/// `null`, refuses the whole batch. A removed key falls back to the host's.
+pub(crate) async fn write_config(
+    db: &koda_core::db::Database,
+    host: &KodaConfig,
+    params: ConfigBatchWriteParams,
+) -> Result<ConfigWriteResponse, ErrorObject> {
+    let mut values = saved(db).await;
+    for edit in params.edits {
+        let slot = match edit.key_path.as_str() {
+            "model" => &mut values.model,
+            "model_provider" => &mut values.model_provider,
+            "base_url" => &mut values.base_url,
+            other => {
+                return Err(invalid(format!(
+                    "unknown config key {other:?}; Koda takes {}",
+                    koda_protocol::config::KEYS.join(", ")
+                )));
+            }
+        };
+        *slot = match edit.value {
+            serde_json::Value::Null => None,
+            serde_json::Value::String(value) => Some(value),
+            other => {
+                return Err(invalid(format!(
+                    "{} takes a string or null, not {other}",
+                    edit.key_path
+                )));
+            }
+        };
+    }
+    let ptype = match &values.model_provider {
+        Some(id) => provider(id)?,
+        None => host.provider_type,
+    };
+    let base_url = values.base_url.clone().unwrap_or_else(|| {
+        if ptype == host.provider_type {
+            host.base_url.clone()
+        } else {
+            ptype.default_base_url().to_string()
+        }
+    });
+    let choice = values
+        .model
+        .clone()
+        .unwrap_or_else(|| ptype.default_model().to_string());
+    // An alias is kept as an alias, with its id as the fallback a start
+    // without the Models API uses.
+    let (model, alias) = resolve_model(&choice, ptype)?;
+    koda_core::last_provider::save_last_provider(db, &ptype.to_string(), &base_url, &model, alias)
+        .await
+        .map_err(|e| internal(format!("couldn't save the config: {e:#}")))?;
+    Ok(ConfigWriteResponse {
+        status: WriteStatus::Ok,
+        config: saved(db).await,
+    })
+}
+
+// ── API keys ────────────────────────────────────────────────────────────
+
+/// `modelProvider/apiKey/set`: store the key and put it where this host's
+/// sessions read it. A key in the environment Koda started with is
+/// replaced for this run, as the TUI's key wizard did.
+pub(crate) async fn set_api_key(
+    db: &koda_core::db::Database,
+    provider_id: &str,
+    key: &str,
+) -> Result<(), ErrorObject> {
+    let ptype = provider(provider_id)?;
+    if !ptype.requires_api_key() {
+        return Err(invalid(format!("{ptype} takes no API key")));
+    }
+    if key.trim().is_empty() {
+        return Err(invalid("the key is empty"));
+    }
+    let env = ptype.env_key_name();
+    koda_core::keystore::set_key(db, env, key.trim())
+        .await
+        .map_err(|e| internal(format!("couldn't store the key: {e:#}")))?;
+    koda_core::runtime_env::set(env, key.trim());
+    Ok(())
+}
+
+/// `modelProvider/apiKey/remove`: forget the stored key. It leaves this
+/// run's environment only when it came from the store; one from the shell
+/// Koda started in stays.
+pub(crate) async fn remove_api_key(
+    db: &koda_core::db::Database,
+    provider_id: &str,
+) -> Result<(), ErrorObject> {
+    let ptype = provider(provider_id)?;
+    let env = ptype.env_key_name();
+    let stored = koda_core::keystore::get_key(db, env)
+        .await
+        .map_err(|e| internal(format!("couldn't read the key: {e:#}")))?;
+    koda_core::keystore::remove_key(db, env)
+        .await
+        .map_err(|e| internal(format!("couldn't remove the key: {e:#}")))?;
+    if stored.is_some() && stored == koda_core::runtime_env::get(env) {
+        koda_core::runtime_env::remove(env);
+    }
+    Ok(())
+}
+
+/// A local server's model when the choice is `auto-detect`: its first
+/// listed one. The id stays when the server lists none or can't be reached.
+pub(crate) async fn detect_model(config: &mut KodaConfig) {
+    if config.model != "auto-detect" {
+        return;
+    }
+    let listed = tokio::time::timeout(
+        LIST_TIMEOUT,
+        koda_core::providers::create_provider(config).list_models(),
+    )
+    .await;
+    if let Ok(Ok(models)) = listed
+        && let Some(first) = models.first()
+    {
+        config.model = first.id.clone();
+        config.model_settings.model = first.id.clone();
+        config.recalculate_model_derived();
+        tracing::info!("auto-detected model: {}", config.model);
     }
 }

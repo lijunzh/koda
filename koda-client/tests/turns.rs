@@ -1439,3 +1439,201 @@ async fn models_and_providers_are_listed() {
     assert!(!raw.contains("sk-"), "a key leaked: {raw}");
     koda.client.shutdown().await;
 }
+
+// ── Config and keys ─────────────────────────────────────────────────────
+
+impl Koda {
+    async fn write_config(
+        &self,
+        edits: &[(&str, Value)],
+    ) -> Result<koda_client::protocol::config::ConfigWriteResponse, RequestError> {
+        use koda_client::protocol::config::{ConfigBatchWriteParams, ConfigEdit, MergeStrategy};
+        self.client
+            .request::<methods::ConfigBatchWrite>(ConfigBatchWriteParams {
+                edits: edits
+                    .iter()
+                    .map(|(key, value)| ConfigEdit {
+                        key_path: key.to_string(),
+                        value: value.clone(),
+                        merge_strategy: MergeStrategy::Replace,
+                    })
+                    .collect(),
+            })
+            .await
+    }
+
+    async fn new_session(
+        &self,
+        params: SessionStartParams,
+    ) -> koda_client::protocol::session::Session {
+        self.client
+            .request::<methods::SessionStart>(params)
+            .await
+            .unwrap()
+            .session
+    }
+}
+
+/// A new session that names nothing starts from the saved choice, as a
+/// Codex thread starts from `config.toml`; what a session names wins, and a
+/// named provider other than the saved one takes nothing from it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_new_session_starts_from_the_saved_choice() {
+    let first = model(vec![]).await;
+    let saved = model(vec![]).await;
+    let koda = Koda::start(config(&first)).await;
+    let written = koda
+        .write_config(&[
+            ("model_provider", json!("lm-studio")),
+            ("base_url", json!(saved.url())),
+            ("model", json!("saved-model")),
+        ])
+        .await
+        .unwrap();
+    assert_eq!(written.config.model.as_deref(), Some("saved-model"));
+    let read = koda
+        .client
+        .request::<methods::ConfigRead>(Default::default())
+        .await
+        .unwrap();
+    assert_eq!(read.config, written.config);
+
+    let plain = koda.new_session(SessionStartParams::default()).await;
+    assert_eq!(plain.model.as_deref(), Some("saved-model"));
+
+    // A named model keeps the saved provider and endpoint.
+    let named = koda
+        .new_session(SessionStartParams {
+            model: Some("named-model".into()),
+            ..Default::default()
+        })
+        .await;
+    assert_eq!(named.model.as_deref(), Some("named-model"));
+
+    // Another provider takes nothing from the saved choice: its own
+    // default model, not the saved one. (A local one, at the stub, so
+    // nothing leaves the machine.)
+    let other = koda
+        .new_session(SessionStartParams {
+            model_provider: Some("ollama".into()),
+            base_url: Some(first.url()),
+            ..Default::default()
+        })
+        .await;
+    assert_eq!(other.provider.as_deref(), Some("ollama"));
+    assert_ne!(other.model.as_deref(), Some("saved-model"));
+    koda.client.shutdown().await;
+}
+
+/// `config/batchWrite` takes only Koda's keys, as strings or `null`, and
+/// keeps an alias as an alias.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn config_writes_take_koda_keys_and_keep_aliases() {
+    let server = model(vec![]).await;
+    let koda = Koda::start(config(&server)).await;
+    let unknown = server_error(koda.write_config(&[("theme", json!("dark"))]).await);
+    assert!(
+        unknown.message.contains("unknown config key"),
+        "{unknown:?}"
+    );
+    let number = server_error(koda.write_config(&[("model", json!(5))]).await);
+    assert!(number.message.contains("string or null"), "{number:?}");
+
+    let written = koda
+        .write_config(&[
+            ("model_provider", json!("anthropic")),
+            ("model", json!("claude-opus")),
+        ])
+        .await
+        .unwrap();
+    assert_eq!(written.config.model.as_deref(), Some("claude-opus"));
+    assert_eq!(written.config.model_provider.as_deref(), Some("anthropic"));
+    koda.client.shutdown().await;
+}
+
+/// A key set through the host reaches its sessions and shows in
+/// `modelProvider/list`, never in any response; removing it forgets it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_api_key_is_stored_and_never_returned() {
+    use koda_client::protocol::config::{
+        ModelProviderApiKeyRemoveParams, ModelProviderApiKeySetParams,
+    };
+    let server = model(vec![]).await;
+    let koda = Koda::start(config(&server)).await;
+    // Groq, so no other test's provider sees a key appear mid-run.
+    let secret = "gsk-test-not-a-real-key-4242";
+    let set = koda
+        .client
+        .request::<methods::ModelProviderApiKeySet>(ModelProviderApiKeySetParams {
+            provider_id: "groq".into(),
+            api_key: secret.into(),
+        })
+        .await
+        .unwrap();
+    assert!(!serde_json::to_string(&set).unwrap().contains(secret));
+    let has_key = |list: &koda_client::protocol::model::ModelProviderListResponse| {
+        list.data
+            .iter()
+            .find(|p| p.id == "groq")
+            .unwrap()
+            .has_api_key
+    };
+    let list = koda
+        .client
+        .request::<methods::ModelProviderList>(ModelProviderListParams {})
+        .await
+        .unwrap();
+    assert!(has_key(&list));
+    assert!(!serde_json::to_string(&list).unwrap().contains(secret));
+    let db = Database::init(&koda._dir.path().join("config"))
+        .await
+        .unwrap();
+    assert_eq!(
+        koda_core::keystore::get_key(&db, "GROQ_API_KEY")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(secret)
+    );
+
+    koda.client
+        .request::<methods::ModelProviderApiKeyRemove>(ModelProviderApiKeyRemoveParams {
+            provider_id: "groq".into(),
+        })
+        .await
+        .unwrap();
+    let list = koda
+        .client
+        .request::<methods::ModelProviderList>(ModelProviderListParams {})
+        .await
+        .unwrap();
+    assert!(!has_key(&list));
+    let local = server_error(
+        koda.client
+            .request::<methods::ModelProviderApiKeySet>(ModelProviderApiKeySetParams {
+                provider_id: "lm-studio".into(),
+                api_key: "x".into(),
+            })
+            .await,
+    );
+    assert!(local.message.contains("takes no API key"), "{local:?}");
+    koda.client.shutdown().await;
+}
+
+/// `auto-detect` resolves on the host to the local server's loaded model.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_detect_takes_the_servers_loaded_model() {
+    let server = model(vec![]).await;
+    server
+        .mount_fn("GET", r".*/models$", |_| {
+            ResponseTemplate::new(200).set_body_json(json!({"data": [{"id": "loaded-model"}]}))
+        })
+        .await;
+    let mut config = config(&server);
+    config.model = "auto-detect".into();
+    config.model_settings.model = "auto-detect".into();
+    let koda = Koda::start(config).await;
+    let started = koda.new_session(SessionStartParams::default()).await;
+    assert_eq!(started.model.as_deref(), Some("loaded-model"));
+    koda.client.shutdown().await;
+}

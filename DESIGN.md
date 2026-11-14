@@ -318,7 +318,9 @@ types, and a test fails when it's stale.
 The protocol grows with the code that serves it. It has `initialize`,
 `state/read`, `session/start`, `session/list`, `session/delete`,
 `session/compact/start`, `session/settings/update`, `session/unsubscribe`,
-`model/list`, `modelProvider/list`, `storage/read`, `storage/purge`,
+`model/list`, `modelProvider/list`, `modelProvider/apiKey/set`,
+`modelProvider/apiKey/remove`, `config/read`, `config/batchWrite`,
+`storage/read`, `storage/purge`,
 `turn/start`,
 `turn/interrupt` and `turn/steer`,
 a session's notifications (session, turn, items, errors and warnings) and the
@@ -367,7 +369,18 @@ provider, endpoint and model choice, an alias kept as an alias, and a resume
 reopens on them unless the client names others, as Codex's `thread/resume`
 restores a thread's; an alias then moves to its line's newest model. `model/list`
 gives a provider's models (for Anthropic, the newest of each line) and
-`modelProvider/list` the providers, with whether a key is set. `session/compact/start`
+`modelProvider/list` the providers, with whether a key is set. Config is the
+channel between client and host, as Codex's TUI and app-server use it: the host
+owns Koda's config, which nobody maintains by hand, and clients read it with
+`config/read` and change it with `config/batchWrite` (Codex's edit shape). For
+now it holds the choice a new session starts from, `model` (an alias kept as an
+alias), `model_provider` and `base_url`, kept in the database. A new session
+that names nothing starts from it, as a Codex thread starts from
+`config.toml`; what a session names wins, and a named provider other than the
+saved one takes nothing from it. API keys go through
+`modelProvider/apiKey/set` and `remove`, Koda's own requests, since Koda keeps a
+key per provider and Codex's `account/login/start` signs in one OpenAI
+account; no response carries a key. `session/compact/start`
 (Codex's `thread/compact/start`) is answered at once and compacts as a turn of
 its own, with a `contextCompaction` item whose trigger is `manual`; a running
 turn is stopped first and ends interrupted, and the compaction's turn can be

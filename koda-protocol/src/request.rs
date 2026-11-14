@@ -146,6 +146,26 @@ client_requests! {
         params: crate::session::SessionSettingsUpdateParams,
         response: crate::session::SessionSettingsUpdateResponse,
     },
+    /// Koda's saved settings.
+    ConfigRead => "config/read" {
+        params: crate::config::ConfigReadParams,
+        response: crate::config::ConfigReadResponse,
+    },
+    /// Change saved settings, all or none.
+    ConfigBatchWrite => "config/batchWrite" {
+        params: crate::config::ConfigBatchWriteParams,
+        response: crate::config::ConfigWriteResponse,
+    },
+    /// Store a provider's API key.
+    ModelProviderApiKeySet => "modelProvider/apiKey/set" {
+        params: crate::config::ModelProviderApiKeySetParams,
+        response: crate::config::ModelProviderApiKeyResponse,
+    },
+    /// Forget a provider's stored API key.
+    ModelProviderApiKeyRemove => "modelProvider/apiKey/remove" {
+        params: crate::config::ModelProviderApiKeyRemoveParams,
+        response: crate::config::ModelProviderApiKeyResponse,
+    },
     /// The models a provider offers.
     ModelList => "model/list" {
         params: crate::model::ModelListParams,

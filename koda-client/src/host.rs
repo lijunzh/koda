@@ -193,6 +193,41 @@ impl Host {
                 let _ = reply.send(answer.and_then(to_json));
                 return;
             }
+            ClientRequest::ConfigRead { .. } => {
+                let _ = reply.send(to_json(
+                    crate::settings::read_config(&self.context.db).await,
+                ));
+                return;
+            }
+            ClientRequest::ConfigBatchWrite { params, .. } => {
+                let written =
+                    crate::settings::write_config(&self.context.db, &self.context.config, params)
+                        .await;
+                let _ = reply.send(written.and_then(to_json));
+                return;
+            }
+            ClientRequest::ModelProviderApiKeySet { params, .. } => {
+                let set = crate::settings::set_api_key(
+                    &self.context.db,
+                    &params.provider_id,
+                    &params.api_key,
+                )
+                .await;
+                let _ =
+                    reply.send(set.and_then(|()| {
+                        to_json(koda_protocol::config::ModelProviderApiKeyResponse {})
+                    }));
+                return;
+            }
+            ClientRequest::ModelProviderApiKeyRemove { params, .. } => {
+                let removed =
+                    crate::settings::remove_api_key(&self.context.db, &params.provider_id).await;
+                let _ =
+                    reply.send(removed.and_then(|()| {
+                        to_json(koda_protocol::config::ModelProviderApiKeyResponse {})
+                    }));
+                return;
+            }
             ClientRequest::ModelProviderList { .. } => {
                 let _ = reply.send(to_json(crate::settings::list_providers(
                     &self.context.config,
