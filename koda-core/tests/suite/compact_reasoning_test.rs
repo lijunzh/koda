@@ -5,27 +5,16 @@
 //! (`finish_reason: "length"`), compaction failed, and after three failures
 //! the circuit breaker let requests go out far past the window.
 //!
-//! `compact::CONSECUTIVE_FAILURES` is process-global and an empty summary
-//! records a failure, so every test here holds [`COMPACT_SERIAL`].
+//! The breaker counts failures per session, and every test has a session of
+//! its own, so the tests run in parallel.
 
 use koda_core::compact::{
     self, CompactResult, CompactSkip, is_compact_circuit_broken, record_compact_failure,
-    reset_compact_failures,
 };
 use koda_core::engine::EngineEvent;
 use koda_core::persistence::Persistence;
 use koda_core::persistence::Role;
 use koda_test_utils::{Env, MockProvider, MockResponse};
-use std::sync::LazyLock;
-use tokio::sync::{Mutex, MutexGuard};
-
-static COMPACT_SERIAL: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-
-async fn lock_compact_state() -> MutexGuard<'static, ()> {
-    let guard = COMPACT_SERIAL.lock().await;
-    reset_compact_failures();
-    guard
-}
 
 /// Twenty short messages, enough for a partial compaction (oldest 10 go).
 async fn env_with_history(max_context_tokens: usize) -> Env {
@@ -66,7 +55,6 @@ async fn history_text(env: &Env) -> String {
 
 #[tokio::test]
 async fn compact_summarizes_with_room_for_thinking() {
-    let _serial = lock_compact_state().await;
     let env = env_with_history(100_000).await;
     let provider = MockProvider::new(vec![MockResponse::Text(
         "<analysis>scratch</analysis><summary>The user asked ten questions.</summary>".into(),
@@ -83,7 +71,7 @@ async fn compact_summarizes_with_room_for_thinking() {
     let text = history_text(&env).await;
     assert!(text.contains("The user asked ten questions."));
     assert!(!text.contains("scratch"));
-    assert!(!is_compact_circuit_broken());
+    assert!(!is_compact_circuit_broken(&env.session_id));
 }
 
 /// A summary's row sorts after the tail it was stored with. The next
@@ -91,7 +79,6 @@ async fn compact_summarizes_with_room_for_thinking() {
 /// request in sight and says the request is unknown.
 #[tokio::test]
 async fn the_next_compaction_reads_the_last_summary_and_replaces_it() {
-    let _serial = lock_compact_state().await;
     let env = env_with_task("Fix the parser in lexer.rs").await;
     let provider = MockProvider::new(vec![
         MockResponse::Text("<summary>The task is fixing lexer.rs. MIDDLE END</summary>".into()),
@@ -129,7 +116,6 @@ async fn the_next_compaction_reads_the_last_summary_and_replaces_it() {
 /// A summary can drop or rewrite the task. The user's own words go past it.
 #[tokio::test]
 async fn the_task_survives_summaries_that_lose_it() {
-    let _serial = lock_compact_state().await;
     let task = "Fix the parser in lexer.rs";
     let env = env_with_task(task).await;
     let provider = MockProvider::new(vec![
@@ -156,7 +142,6 @@ async fn the_task_survives_summaries_that_lose_it() {
 /// clipped like a tool result nor the first row to go when the text is too big.
 #[tokio::test]
 async fn an_oversized_compaction_keeps_the_last_summary_whole() {
-    let _serial = lock_compact_state().await;
     let env = env_with_task("Fix the parser in lexer.rs").await;
     let long_summary = format!("{}TAIL OF THE SUMMARY", "detail ".repeat(400));
     let provider = MockProvider::new(vec![
@@ -196,7 +181,6 @@ async fn an_oversized_compaction_keeps_the_last_summary_whole() {
 /// given after a summary told it not to edit.
 #[tokio::test]
 async fn the_summary_prompt_forbids_invented_restrictions() {
-    let _serial = lock_compact_state().await;
     let env = env_with_history(100_000).await;
     let provider = MockProvider::new(vec![MockResponse::Text(
         "<summary>Handed over.</summary>".into(),
@@ -211,7 +195,6 @@ async fn the_summary_prompt_forbids_invented_restrictions() {
 
 #[tokio::test]
 async fn compact_retries_an_empty_length_reply_with_a_larger_cap() {
-    let _serial = lock_compact_state().await;
     let env = env_with_history(100_000).await;
     // Reasoning used the whole cap: no text, stop reason "max_tokens".
     let provider = MockProvider::new(vec![
@@ -227,12 +210,11 @@ async fn compact_retries_an_empty_length_reply_with_a_larger_cap() {
         vec![Some(32_768), Some(65_536)]
     );
     assert!(history_text(&env).await.contains("Recovered summary."));
-    assert!(!is_compact_circuit_broken());
+    assert!(!is_compact_circuit_broken(&env.session_id));
 }
 
 #[tokio::test]
 async fn compact_leaves_a_marker_when_the_retry_is_empty_too() {
-    let _serial = lock_compact_state().await;
     let env = env_with_history(100_000).await;
     let before = env.db.load_context(&env.session_id).await.unwrap().len();
     let provider = MockProvider::new(vec![
@@ -263,7 +245,6 @@ async fn compact_leaves_a_marker_when_the_retry_is_empty_too() {
 
 #[tokio::test]
 async fn compact_retries_a_cut_off_reply_that_has_partial_text() {
-    let _serial = lock_compact_state().await;
     let env = env_with_history(100_000).await;
     // Flint, 2026-10-29: the reply hit the cap inside its <analysis> block,
     // 1,644 chars of preamble and no <summary>. That is not a summary.
@@ -287,12 +268,11 @@ async fn compact_retries_a_cut_off_reply_that_has_partial_text() {
         !text.contains("conversation so far contains"),
         "the preamble is not stored"
     );
-    assert!(!is_compact_circuit_broken());
+    assert!(!is_compact_circuit_broken(&env.session_id));
 }
 
 #[tokio::test]
 async fn compact_stores_the_marker_when_the_retry_is_still_a_preamble() {
-    let _serial = lock_compact_state().await;
     let env = env_with_history(100_000).await;
     let provider = MockProvider::new(vec![
         MockResponse::TextMaxTokens("<analysis>\nstill thinking".into()),
@@ -313,7 +293,6 @@ async fn compact_stores_the_marker_when_the_retry_is_still_a_preamble() {
 
 #[tokio::test]
 async fn compact_keeps_a_cut_off_summary_when_no_room_is_left_to_retry() {
-    let _serial = lock_compact_state().await;
     let env = env_with_history(100_000).await;
     // Both replies stop at the cap inside the <summary> block.
     let provider = MockProvider::new(vec![
@@ -334,7 +313,6 @@ async fn compact_keeps_a_cut_off_summary_when_no_room_is_left_to_retry() {
 
 #[tokio::test]
 async fn compact_accepts_plain_text_without_tags() {
-    let _serial = lock_compact_state().await;
     let env = env_with_history(100_000).await;
     let provider = MockProvider::new(vec![MockResponse::Text(
         "The user asked ten questions and got ten answers.".into(),
@@ -349,7 +327,6 @@ async fn compact_accepts_plain_text_without_tags() {
 
 #[tokio::test]
 async fn compact_caps_the_first_call_by_the_window_when_it_is_small() {
-    let _serial = lock_compact_state().await;
     let env = env_with_history(20_000).await;
     let provider = MockProvider::new(vec![MockResponse::Text(
         "<summary>Short window.</summary>".into(),
@@ -367,7 +344,6 @@ async fn compact_caps_the_first_call_by_the_window_when_it_is_small() {
 
 #[tokio::test]
 async fn compact_does_not_retry_an_empty_reply_that_was_not_cut_off() {
-    let _serial = lock_compact_state().await;
     let env = env_with_history(100_000).await;
     let provider = MockProvider::new(vec![MockResponse::Text(String::new())]);
 
@@ -404,7 +380,6 @@ async fn env_with_task(task: &str) -> Env {
 
 #[tokio::test]
 async fn dropping_without_a_summary_keeps_the_task_through_two_drops() {
-    let _serial = lock_compact_state().await;
     let env = env_with_task("Fix the parser in lexer.rs").await;
 
     for _ in 0..2 {
@@ -425,7 +400,6 @@ async fn dropping_without_a_summary_keeps_the_task_through_two_drops() {
 
 #[tokio::test]
 async fn an_empty_summary_keeps_the_task() {
-    let _serial = lock_compact_state().await;
     let env = env_with_task("Fix the parser in lexer.rs").await;
     let provider = MockProvider::new(vec![
         MockResponse::TextMaxTokens(String::new()),
@@ -503,7 +477,6 @@ async fn assert_each_was_summarized_or_kept(env: &Env, provider: &MockProvider, 
 /// result of batch 1, separated from its call.
 #[tokio::test]
 async fn compaction_never_splits_a_tool_batch() {
-    let _serial = lock_compact_state().await;
     let env = Env::builder().max_context_tokens(100_000).build().await;
     env.insert_message(&Role::User, "Fix the parser").await;
     for batch in 0..3 {
@@ -524,7 +497,6 @@ async fn compaction_never_splits_a_tool_batch() {
 /// A short tail made of one batch stays whole rather than being compacted away.
 #[tokio::test]
 async fn compaction_keeps_a_batch_that_fills_the_tail() {
-    let _serial = lock_compact_state().await;
     let env = Env::builder().max_context_tokens(100_000).build().await;
     env.insert_message(&Role::User, "Fix the parser").await;
     env.insert_message(&Role::Assistant, "Reading.").await;
@@ -544,7 +516,6 @@ async fn compaction_keeps_a_batch_that_fills_the_tail() {
 /// two must agree on where the tail starts.
 #[tokio::test]
 async fn compaction_counts_the_same_rows_it_was_shown() {
-    let _serial = lock_compact_state().await;
     let env = Env::builder().max_context_tokens(100_000).build().await;
     let mut texts = Vec::new();
     for i in 0..10 {
@@ -574,7 +545,6 @@ async fn compaction_counts_the_same_rows_it_was_shown() {
 /// what followed the quote, and the task went with the rest.
 #[tokio::test]
 async fn a_tag_quoted_inside_the_summary_does_not_cut_it() {
-    let _serial = lock_compact_state().await;
     let env = env_with_task("Fix the parser in lexer.rs").await;
     let reply = "<analysis>\nthinking\n</analysis>\n\n<summary>\n\
                  1. Primary Request: fix the parser.\n\
@@ -601,7 +571,6 @@ async fn a_summary_inside_the_analysis_or_after_a_quoted_tag_is_found() {
         "<analysis>it looks for <summary> and </summary> tags</analysis>\
          <summary>The real summary.</summary>",
     ] {
-        let _serial = lock_compact_state().await;
         let env = env_with_task("Fix the parser in lexer.rs").await;
         let provider = MockProvider::new(vec![MockResponse::Text(reply.into())]);
 
@@ -617,7 +586,6 @@ async fn a_summary_inside_the_analysis_or_after_a_quoted_tag_is_found() {
 /// <summary> tag, and all of that text was thrown away for the marker.
 #[tokio::test]
 async fn a_finished_reply_with_no_summary_tag_keeps_its_analysis() {
-    let _serial = lock_compact_state().await;
     let env = env_with_task("Fix the parser in lexer.rs").await;
     let provider = MockProvider::new(vec![MockResponse::Text(
         "<analysis>The user wants the parser fixed in lexer.rs.</analysis>".into(),
@@ -636,7 +604,6 @@ async fn a_finished_reply_with_no_summary_tag_keeps_its_analysis() {
 /// and the task went with the messages it replaced.
 #[tokio::test]
 async fn a_summary_too_short_to_mean_anything_keeps_the_task() {
-    let _serial = lock_compact_state().await;
     let env = env_with_task("Fix the parser in lexer.rs").await;
     let provider = MockProvider::new(vec![MockResponse::Text("OK".into())]);
 
@@ -649,7 +616,6 @@ async fn a_summary_too_short_to_mean_anything_keeps_the_task() {
 
 #[tokio::test]
 async fn carried_text_stays_within_the_cap() {
-    let _serial = lock_compact_state().await;
     let env = env_with_task(&"é".repeat(20_000)).await;
 
     let result = compact::compact_without_summary(&env.db, &env.session_id)
@@ -662,7 +628,6 @@ async fn carried_text_stays_within_the_cap() {
 
 #[tokio::test]
 async fn compact_without_summary_skips_a_short_history() {
-    let _serial = lock_compact_state().await;
     let env = Env::new().await;
     env.insert_user_message("hello").await;
 
@@ -678,7 +643,6 @@ async fn compact_without_summary_skips_a_short_history() {
 /// as it is.
 #[tokio::test]
 async fn preflight_shrinks_history_past_the_window_when_the_breaker_is_tripped() {
-    let _serial = lock_compact_state().await;
     // 15 messages of ~2200 chars come to about 9,600 estimated tokens: 120%
     // of an 8,000-token window. Halving them lands near 64%.
     let env = Env::builder().max_context_tokens(8_000).build().await;
@@ -692,9 +656,9 @@ async fn preflight_shrinks_history_past_the_window_when_the_breaker_is_tripped()
     env.insert_user_message("now answer the real question")
         .await;
     for _ in 0..3 {
-        record_compact_failure();
+        record_compact_failure(&env.session_id);
     }
-    assert!(is_compact_circuit_broken());
+    assert!(is_compact_circuit_broken(&env.session_id));
 
     let provider = MockProvider::new(vec![MockResponse::Text("the real answer".into())]);
     let (result, events) = env.run_inference_result(&provider).await;

@@ -32,52 +32,16 @@
 //!   [2] Text("answer")      ← retried .chat_stream()
 //! ```
 //!
-//! ## Global-state hazard
+//! ## The compaction breaker
 //!
-//! `compact::CONSECUTIVE_FAILURES` is a process-global `AtomicU32`
-//! (the auto-compact circuit breaker — three failures in a row trips
-//! it). Cargo runs tests in parallel inside one process, so any test
-//! that triggers compaction must (a) call [`reset_compact_failures`]
-//! at the top to neutralize state left behind by a prior failure AND
-//! (b) hold [`COMPACT_SERIAL`] for the duration so a *concurrent*
-//! test can't trip the breaker between the reset and the assertion.
-//! The `compact.rs` test module already had to delete duplicate
-//! breaker tests for this exact reason — see the comment near
-//! `compact.rs:723`. We do *not* test the breaker tripping here for
-//! the same reason; the existing `compact::test_circuit_breaker`
-//! covers the state machine adequately.
+//! The auto-compact circuit breaker (three failures in a row trip it) counts
+//! per session, and every test builds its own, so the tests run in parallel.
+//! `compact::test_circuit_breaker` covers the breaker's state machine.
 
-use koda_core::compact::reset_compact_failures;
 use koda_core::engine::{CompactionStatus, CompactionTrigger, EngineEvent};
 use koda_core::persistence::Persistence;
 use koda_core::persistence::Role;
 use koda_test_utils::{Env, MockProvider, MockResponse};
-use std::sync::LazyLock;
-use tokio::sync::{Mutex, MutexGuard};
-
-// ── Helpers ──────────────────────────────────────────────────
-
-/// File-scoped serialization mutex. Every test that exercises a code
-/// path touching `compact::CONSECUTIVE_FAILURES` (i.e. anything that
-/// can call `record_compact_failure` or `is_compact_circuit_broken`)
-/// must hold this lock for its full duration. See the module-level
-/// "Global-state hazard" note for the why.
-///
-/// Uses `tokio::sync::Mutex` (not `std::sync::Mutex`) because the
-/// guard is held across `.await` points — clippy's
-/// `await_holding_lock` lint correctly forbids the std variant in
-/// that situation. Implemented inline rather than via the
-/// `serial_test` crate to avoid pulling in a dev-dependency for one
-/// file.
-static COMPACT_SERIAL: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-
-/// Acquire [`COMPACT_SERIAL`] and reset the circuit breaker. Returns
-/// the guard so the caller's test holds the lock for its whole body.
-async fn lock_compact_state() -> MutexGuard<'static, ()> {
-    let guard = COMPACT_SERIAL.lock().await;
-    reset_compact_failures();
-    guard
-}
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -155,7 +119,6 @@ async fn preflight_compact_sends_summary_as_user_and_keeps_final_reply() {
         ("Here is the real answer.", "Here is the real answer."),
         ("", ""),
     ] {
-        let _serial = lock_compact_state().await;
         // Same sizing as the test below.
         let env = Env::builder().max_context_tokens(8_000).build().await;
         fill_history_with_pairs(&env, 7, &"x".repeat(1700)).await;
@@ -206,8 +169,6 @@ async fn preflight_compact_sends_summary_as_user_and_keeps_final_reply() {
 /// - The chat-stream call eventually completes successfully.
 #[tokio::test]
 async fn preflight_compact_fires_above_85pct_threshold() {
-    let _serial = lock_compact_state().await;
-
     // ── Sizing ───────────────────────────────────────────────
     // `compact_session_with_provider` reserves 4096 tokens for the
     // summary output (`available = max - 4096`), so `max` has to
@@ -268,8 +229,6 @@ async fn preflight_compact_fires_above_85pct_threshold() {
 /// threshold; a generous max stays safe.
 #[tokio::test]
 async fn preflight_compact_skipped_below_85pct_threshold() {
-    let _serial = lock_compact_state().await;
-
     // Same shape as the trigger test (7 pairs + 1 trailing user, ~1700
     // chars each ≈ 7440 estimated tokens) but max=200_000 → ~4% usage,
     // far below threshold.
@@ -317,8 +276,6 @@ async fn preflight_compact_skipped_below_85pct_threshold() {
 ///   user got an answer instead of a hard failure).
 #[tokio::test]
 async fn overflow_recovery_compacts_and_retries_successfully() {
-    let _serial = lock_compact_state().await;
-
     // Need ≥4 messages for compaction to do anything. Pad enough that
     // the partial-compact path has work to do without forcing
     // HistoryTooLarge (which would short-circuit recovery).
@@ -363,8 +320,6 @@ async fn overflow_recovery_compacts_and_retries_successfully() {
 /// arm.
 #[tokio::test]
 async fn overflow_recovery_propagates_when_session_too_short_to_compact() {
-    let _serial = lock_compact_state().await;
-
     let env = Env::builder().max_context_tokens(8_000).build().await;
     // Only the single trailing user message — total history = 1, well
     // below the compaction floor of 4.

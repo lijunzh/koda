@@ -1,8 +1,10 @@
 //! Performance tests — validate that hot paths stay fast.
 //!
 //! These aren't benchmarks (no criterion), but they assert that
-//! operations complete within reasonable time bounds.
-//! Run with: cargo test -p koda-core --test perf_test
+//! operations complete within reasonable time bounds. Under nextest they run
+//! alone (`.config/nextest.toml`): beside other tests on a small CI runner,
+//! their wall-clock bounds failed.
+//! Run with: cargo test -p koda-core --test all -- perf_test
 
 use koda_core::persistence::Persistence;
 use std::time::Instant;

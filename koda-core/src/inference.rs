@@ -272,7 +272,7 @@ async fn preflight_compact_if_needed(
 
     // Circuit breaker: stop wasting API calls after repeated failures. It only
     // stops the summary call; a context past the window is still shrunk below.
-    if crate::compact::is_compact_circuit_broken() {
+    if crate::compact::is_compact_circuit_broken(turn.session_id) {
         tracing::warn!("Pre-flight: context at {ctx_pct}% but circuit breaker tripped — skipping");
         return shrink_if_over_window(turn, messages, context_used).await;
     }
@@ -325,7 +325,7 @@ async fn preflight_compact_if_needed(
             tracing::info!("Pre-flight compact skipped: {skip:?}");
             let too_large = matches!(skip, crate::compact::CompactSkip::HistoryTooLarge);
             if too_large {
-                crate::compact::record_compact_failure();
+                crate::compact::record_compact_failure(turn.session_id);
             }
             turn.sink.emit(EngineEvent::Compaction {
                 trigger: CompactionTrigger::Threshold,
@@ -345,7 +345,7 @@ async fn preflight_compact_if_needed(
         }
         Err(e) => {
             tracing::warn!("Pre-flight compact failed: {e:#}");
-            let tripped = crate::compact::record_compact_failure();
+            let tripped = crate::compact::record_compact_failure(turn.session_id);
             let suffix = if tripped {
                 " Auto-compact disabled after repeated failures."
             } else {
