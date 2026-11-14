@@ -75,6 +75,7 @@ Workspace: `koda-core` (library, pure engine, zero terminal deps), `koda-cli`
 `koda-protocol` (the client protocol's messages and schema), `koda-client`
 (the client API, the host and its session tasks, and engine events projected
 onto the protocol),
+`koda-config` (the config file `config.toml`: reading, checking and editing it),
 `koda-test-utils`.
 
 ### Where things are
