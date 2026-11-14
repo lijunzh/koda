@@ -383,13 +383,16 @@ async fn handle_inference_key_inline(
             // Sandbox-aware cycle (#860 hard refusal). Keep the user
             // in the current mode and surface a visible warning if
             // Auto isn't safe to enter on this system.
-            if let Err(msg) =
-                trust::cycle_trust_checked(shared_mode, koda_core::sandbox::is_available())
-            {
-                scroll_buffer.push(Line::styled(
-                    format!("\u{26a0} {msg}"),
-                    Style::default().fg(Color::Yellow),
-                ));
+            match trust::cycle_trust_checked(shared_mode, koda_core::sandbox::is_available()) {
+                // The host applies it once this turn ends, as Codex's
+                // settings update does.
+                Ok(mode) => stop.set_mode(mode),
+                Err(msg) => {
+                    scroll_buffer.push(Line::styled(
+                        format!("\u{26a0} {msg}"),
+                        Style::default().fg(Color::Yellow),
+                    ));
+                }
             }
         }
         (KeyCode::Tab, KeyModifiers::NONE) => {

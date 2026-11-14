@@ -80,16 +80,24 @@ impl TuiContext {
         }
     }
 
+    /// `/model`: the session's provider's models, from `model/list`, as
+    /// Codex's `/model` lists its thread's provider's. Another provider's
+    /// model is a new session (`/provider`).
     pub(crate) async fn open_model_picker(&mut self) {
-        // Try to auto-detect local model for the "local" alias
-        let local_model = self.detect_local_model().await;
-        // Resolve the Claude line aliases against the Models API (once per
-        // run, only with an Anthropic key) so the picker shows the live ids.
-        koda_core::model_alias::ensure_live_claude_ids().await;
-        let items =
-            crate::widgets::model_menu::build_items(&self.config.model, local_model.as_deref());
-        let mut dd =
-            crate::widgets::dropdown::DropdownState::new(items, "\u{1f43b} Select a model");
+        let ptype = self.config.provider_type;
+        let models = self.list_models(ptype, &self.config.base_url.clone()).await;
+        if models.is_empty() {
+            crate::tui_output::warn_msg(
+                &mut self.scroll_buffer,
+                format!("{} lists no models. Is it running?", ptype.display_name()),
+            );
+            return;
+        }
+        let items = model_items(&models, ptype, &self.config.model);
+        let mut dd = crate::widgets::dropdown::DropdownState::new(
+            items,
+            "\u{1f43b} Select a model (/provider for another provider)",
+        );
         if let Some(idx) = dd.filtered.iter().position(|m| m.is_current) {
             dd.selected = idx;
             let max_vis = crate::widgets::dropdown::MAX_VISIBLE;
@@ -98,16 +106,6 @@ impl TuiContext {
             }
         }
         self.menu = MenuContent::Model(dd);
-    }
-
-    /// The model the "local" entry's server has loaded, if it answers.
-    async fn detect_local_model(&self) -> Option<String> {
-        let mut temp_config = self.config.clone();
-        temp_config.provider_type = koda_core::config::ProviderType::LMStudio;
-        temp_config.base_url = self.local_base_url();
-        let temp_provider = koda_core::providers::create_provider(&temp_config);
-        let models = temp_provider.list_models().await.ok()?;
-        models.first().map(|m| m.id.clone())
     }
 
     pub(crate) fn open_provider_picker(&mut self) {
@@ -191,16 +189,6 @@ impl TuiContext {
         }
     }
 
-    /// Where the "local" entry's server is: `KODA_LOCAL_URL`, else where
-    /// LM Studio is reached now (see [`Self::base_url_for`]). Finding the
-    /// local model and switching to it both use this, so a pick lands on
-    /// the server the picker listed; switching used LM Studio's default
-    /// address, a different server when `KODA_LOCAL_URL` named another.
-    fn local_base_url(&self) -> String {
-        koda_core::runtime_env::get("KODA_LOCAL_URL")
-            .unwrap_or_else(|| self.base_url_for(koda_core::config::ProviderType::LMStudio))
-    }
-
     /// Where to reach `ptype`: the address Koda is running with when that's
     /// the provider in use (`--base-url`, or one saved earlier), else the
     /// provider's default. Always taking the default listed and switched to
@@ -213,57 +201,31 @@ impl TuiContext {
         }
     }
 
-    /// List all models from a specific provider (power-user path).
+    /// List a provider's models (`model/list`) to pick one from.
     async fn open_provider_model_list(&mut self, ptype: koda_core::config::ProviderType) {
         let base_url = self.base_url_for(ptype);
-
-        // Temporarily create a provider to list its models
-        let temp_config = {
-            let mut c = self.config.clone();
-            c.provider_type = ptype;
-            c.base_url = base_url;
-            c
-        };
-        let temp_provider = koda_core::providers::create_provider(&temp_config);
-
-        match temp_provider.list_models().await {
-            Ok(models) if !models.is_empty() => {
-                let items: Vec<crate::widgets::model_menu::ModelItem> = models
-                    .iter()
-                    .map(|m| crate::widgets::model_menu::ModelItem {
-                        label: m.id.clone(),
-                        model_id: m.id.clone(),
-                        provider: ptype.to_string(),
-                        is_current: m.id == self.config.model,
-                        is_local: false,
-                    })
-                    .collect();
-                let title = format!("\u{1f43b} {} models", ptype);
-                let mut dd = crate::widgets::dropdown::DropdownState::new(items, &title);
-                if let Some(idx) = dd.filtered.iter().position(|m| m.is_current) {
-                    dd.selected = idx;
-                    let max_vis = crate::widgets::dropdown::MAX_VISIBLE;
-                    if idx >= max_vis {
-                        dd.scroll_offset = idx + 1 - max_vis;
-                    }
-                }
-                self.menu = MenuContent::ProviderModels(dd, ptype);
-            }
-            Ok(_) => {
-                self.scroll_buffer.push(Line::styled(
-                    format!("  \u{26a0} No models available from {ptype}"),
-                    Style::default().fg(Color::Yellow),
-                ));
-            }
-            Err(e) => {
-                self.scroll_buffer.push(Line::styled(
-                    format!("  \u{2717} Failed to list models from {ptype}: {e}"),
-                    Style::default().fg(Color::Red),
-                ));
+        let models = self.list_models(ptype, &base_url).await;
+        if models.is_empty() {
+            self.scroll_buffer.push(Line::styled(
+                format!("  \u{26a0} No models available from {ptype}"),
+                Style::default().fg(Color::Yellow),
+            ));
+            return;
+        }
+        let items = model_items(&models, ptype, &self.config.model);
+        let title = format!("\u{1f43b} {} models", ptype.display_name());
+        let mut dd = crate::widgets::dropdown::DropdownState::new(items, &title);
+        if let Some(idx) = dd.filtered.iter().position(|m| m.is_current) {
+            dd.selected = idx;
+            let max_vis = crate::widgets::dropdown::MAX_VISIBLE;
+            if idx >= max_vis {
+                dd.scroll_offset = idx + 1 - max_vis;
             }
         }
+        self.menu = MenuContent::ProviderModels(dd, ptype);
     }
 
+    /// The `/resume` picker.
     pub(crate) async fn open_session_picker(&mut self) {
         match crate::tui_commands::list_sessions(&self.client, 10).await {
             Ok(sessions) if !sessions.is_empty() => {
@@ -499,75 +461,9 @@ impl TuiContext {
             }
             MenuContent::Model(dd) => {
                 if let Some(item) = dd.selected_item() {
-                    if item.is_local && item.model_id == "(not running)" {
-                        self.scroll_buffer.push(Line::styled(
-                            "  \u{26a0} LM Studio is not running. Start it and try again.",
-                            Style::default().fg(Color::Yellow),
-                        ));
-                    } else {
-                        let model_id = item.model_id.clone();
-                        let label = item.label.clone();
-
-                        // Resolve alias to get provider type
-                        if let Some(resolved) = koda_core::model_alias::resolve(&label) {
-                            let ptype = resolved.provider;
-                            // Check API key for cloud providers
-                            if ptype.requires_api_key()
-                                && !koda_core::runtime_env::is_set(ptype.env_key_name())
-                            {
-                                self.scroll_buffer.push(Line::styled(
-                                    format!(
-                                        "  \u{2716} {} not set. Run /key to configure.",
-                                        ptype.env_key_name()
-                                    ),
-                                    Style::default().fg(Color::Red),
-                                ));
-                            } else {
-                                let actual_model = if resolved.needs_auto_detect() {
-                                    model_id.clone()
-                                } else {
-                                    resolved.model_id.to_string()
-                                };
-                                let base_url = if resolved.needs_auto_detect() {
-                                    self.local_base_url()
-                                } else {
-                                    ptype.default_base_url().to_string()
-                                };
-                                self.apply_provider(ptype, base_url).await;
-                                self.config.model = actual_model.clone();
-                                self.config.model_settings.model = actual_model.clone();
-                                self.config.recalculate_model_derived();
-                                self.query_model_capabilities().await;
-                                // `local` names no model; its detected id is the choice.
-                                let alias =
-                                    (!resolved.needs_auto_detect()).then_some(resolved.alias);
-                                crate::tui_wizards::save_provider(
-                                    &self.config,
-                                    &self.session.db,
-                                    alias,
-                                )
-                                .await;
-                                self.renderer.model = actual_model.clone();
-                                self.scroll_buffer.push(Line::styled(
-                                    format!("  \u{2714} Model: {label} ({actual_model})"),
-                                    Style::default().fg(Color::Green),
-                                ));
-                            }
-                        } else {
-                            // Not an alias — use model_id directly
-                            self.config.model = model_id.clone();
-                            self.config.model_settings.model = model_id.clone();
-                            self.config.recalculate_model_derived();
-                            self.query_model_capabilities().await;
-                            crate::tui_wizards::save_provider(&self.config, &self.session.db, None)
-                                .await;
-                            self.renderer.model = model_id.clone();
-                            self.scroll_buffer.push(Line::styled(
-                                format!("  \u{2714} Model set to: {model_id}"),
-                                Style::default().fg(Color::Green),
-                            ));
-                        }
-                    }
+                    // An alias is picked by name, so it follows its line.
+                    let choice = item.label.clone();
+                    self.change_model(&choice).await;
                 }
             }
             MenuContent::Provider(dd) => {
@@ -629,23 +525,10 @@ impl TuiContext {
             }
             MenuContent::ProviderModels(dd, ptype) => {
                 if let Some(item) = dd.selected_item() {
-                    let model_id = item.model_id.clone();
+                    let choice = item.label.clone();
                     let ptype = *ptype;
                     let base_url = self.base_url_for(ptype);
-                    self.apply_provider(ptype, base_url).await;
-                    self.config.model = model_id.clone();
-                    self.config.model_settings.model = model_id.clone();
-                    self.config.recalculate_model_derived();
-                    self.query_model_capabilities().await;
-                    // A line's newest model is saved as its alias, so the
-                    // choice follows the line to its next release.
-                    let alias = koda_core::model_alias::following_alias(&model_id);
-                    crate::tui_wizards::save_provider(&self.config, &self.session.db, alias).await;
-                    self.renderer.model = model_id.clone();
-                    self.scroll_buffer.push(Line::styled(
-                        format!("  \u{2714} Model set to: {model_id} ({ptype})"),
-                        Style::default().fg(Color::Green),
-                    ));
+                    self.switch_provider(ptype, base_url, Some(choice)).await;
                 }
             }
             MenuContent::File { dropdown, prefix } => {
@@ -699,9 +582,7 @@ impl TuiContext {
                             Style::default().fg(Color::Green),
                         ));
                     }
-                    if let Some(source) = self.apply_provider(provider_type, base_url).await {
-                        self.show_context_notice(source);
-                    }
+                    self.switch_provider(provider_type, base_url, None).await;
                 }
                 ProviderWizard::ApiKeyOnly { env_name } => {
                     if value.is_empty() && !koda_core::runtime_env::is_set(&env_name) {
@@ -727,86 +608,30 @@ impl TuiContext {
                     } else {
                         value
                     };
-                    if let Some(source) = self.apply_provider(provider_type, url).await {
-                        self.show_context_notice(source);
-                    }
+                    self.switch_provider(provider_type, url, None).await;
                 }
             }
         }
         self.prompt_mode = PromptMode::Chat;
         self.menu = MenuContent::None;
     }
+}
 
-    /// Switch to `provider_type` at `base_url` and save the choice.
-    ///
-    /// Returns where the context window came from, or `None` when the
-    /// server didn't answer and nothing was queried. Callers that switch
-    /// the model again afterwards ignore it; the rest pass it to
-    /// [`Self::show_context_notice`].
-    pub(crate) async fn apply_provider(
-        &mut self,
-        provider_type: koda_core::config::ProviderType,
-        base_url: String,
-    ) -> Option<koda_core::config::ContextSource> {
-        self.config.provider_type = provider_type;
-        self.config.base_url = base_url;
-        self.config.model = provider_type.default_model().to_string();
-        self.config.model_settings.model = self.config.model.clone();
-        self.config.recalculate_model_derived();
-        *self.provider.write().await = koda_core::providers::create_provider(&self.config);
-        let alias = koda_core::model_alias::following_alias(&self.config.model);
-        crate::tui_wizards::save_provider(&self.config, &self.session.db, alias).await;
-
-        let prov = self.provider.read().await;
-        let mut source = None;
-        if let Ok(models) = prov.list_models().await {
-            if let Some(first) = models.first() {
-                self.config.model = first.id.clone();
-                self.config.model_settings.model = self.config.model.clone();
-                self.config.recalculate_model_derived();
-            }
-            source = Some(
-                self.config
-                    .query_and_apply_capabilities(prov.as_ref())
-                    .await,
-            );
-            self.completer
-                .set_model_names(models.iter().map(|m| m.id.clone()).collect());
-        }
-        drop(prov);
-        self.renderer.model = self.config.model.clone();
-        self.scroll_buffer.push(Line::styled(
-            format!(
-                "  \u{2714} Provider: {} ({})",
-                self.config.provider_type, self.config.model
-            ),
-            Style::default().fg(Color::Green),
-        ));
-        source
-    }
-
-    /// Tell the user when the context window is a guess the server didn't
-    /// confirm (`KodaConfig::assumed_context_notice`).
-    pub(crate) fn show_context_notice(&mut self, source: koda_core::config::ContextSource) {
-        if let Some(notice) = self.config.assumed_context_notice(source) {
-            crate::tui_output::warn_msg(&mut self.scroll_buffer, notice);
-        }
-    }
-
-    /// Query the provider API for context window and apply it.
-    ///
-    /// Called after `recalculate_model_derived()` on model switch so local
-    /// providers (LM Studio, Ollama) report their actual configured context
-    /// window instead of using the lookup table.
-    async fn query_model_capabilities(&mut self) {
-        let prov = self.provider.read().await;
-        let source = self
-            .config
-            .query_and_apply_capabilities(prov.as_ref())
-            .await;
-        drop(prov);
-        self.show_context_notice(source);
-    }
+/// Picker items for `models`: an alias by its name, a model by its id.
+fn model_items(
+    models: &[koda_client::protocol::model::Model],
+    ptype: koda_core::config::ProviderType,
+    current: &str,
+) -> Vec<crate::widgets::model_menu::ModelItem> {
+    models
+        .iter()
+        .map(|m| crate::widgets::model_menu::ModelItem {
+            label: m.alias.clone().unwrap_or_else(|| m.id.clone()),
+            model_id: m.id.clone(),
+            provider: ptype.display_name().to_string(),
+            is_current: m.id == current,
+        })
+        .collect()
 }
 
 #[cfg(test)]

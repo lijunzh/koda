@@ -36,7 +36,7 @@ rm ~/.config/koda/db/koda.db
 rm ~/.config/koda/history.jsonl
 
 # Or selectively from the TUI
-/sessions delete <id>
+/resume delete <id>
 ```
 
 There is no cloud backup. Deleted data is gone.

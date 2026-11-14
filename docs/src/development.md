@@ -117,7 +117,7 @@ koda/
 │   │   │   ├── idle_ui_events.rs # UI events while no turn is running
 │   │   │   └── menus.rs    # Model/provider/session pickers, provider wizard
 │   │   ├── tui_render.rs   # EngineEvent → ratatui Line/Span rendering
-│   │   ├── tui_commands.rs # Slash command dispatch (/help, /model, /sessions, etc.)
+│   │   ├── tui_commands.rs # Slash command dispatch (/help, /model, /resume, etc.)
 │   │   ├── tui_bg_tasks.rs # Esc / Ctrl+C cancel-all for background work
 │   │   ├── tui_mcp.rs      # /mcp slash commands
 │   │   ├── tui_wizards.rs  # Interactive wizards (/provider, /compact, /agent)

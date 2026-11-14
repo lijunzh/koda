@@ -9,26 +9,30 @@ This docs site is the full reference; `/help` is the in-session reminder.
 
 ## `/model [<alias-or-id>]`
 
-Without an argument: opens an interactive picker listing all model aliases
-and any locally running models detected via LM Studio or Ollama.
+Without an argument: opens a picker of the session's provider's models,
+its aliases first (for Anthropic, the newest model of each line). As in
+Codex, a session keeps its provider: another provider's model is
+`/provider`, which opens a new session on it.
 
-With an argument: switches immediately.
+With an argument: switches immediately, for the session's next turns.
 
 ```text
-/model gemini-flash        ← switch by alias
-/model claude-opus         ← switch by alias
-/model local               ← auto-detect from LM Studio
-/model gpt-4o              ← literal model ID (no alias needed)
+/model claude-opus         ← switch by alias (an Anthropic session)
+/model gpt-4o              ← literal model ID (an OpenAI session)
 /model llama3.2            ← any model name your provider understands
 ```
 
-The new model is persisted to the keystore and used for all future
-sessions until changed again. See [Providers & model aliases](./providers.md).
+The session records its model, so resuming it brings it back, and the choice
+is remembered for new sessions until changed again. See
+[Providers & model aliases](./providers.md).
 
 ## `/provider [<name or URL>]`
 
 Without an argument: opens a two-step picker — choose provider, then
-browse and pick one of its available models.
+browse and pick one of its available models. Another provider, or another
+address, starts a new session on it, as switching provider does in Codex;
+the session you left stays in `/resume`. A model of the session's own
+provider just switches the model.
 
 With an argument: jumps straight to that provider's model list.
 
@@ -95,13 +99,16 @@ Shows a summary of uncommitted `git diff` in the project root. Then offers:
 - **Commit** — asks the model to write a conventional commit message and
   runs `git commit -m "…"`
 
-## `/sessions [<sub-command>]`
+## `/resume [<id> | delete <id>]`
 
 ```text
-/sessions              ← open the session picker (shows last 100 sessions)
-/sessions resume abc   ← resume the session whose ID starts with "abc"
-/sessions delete abc   ← permanently delete that session
+/resume                ← open the session picker (shows last 100 sessions)
+/resume abc            ← resume the session whose ID starts with "abc"
+/resume delete abc     ← permanently delete that session
 ```
+
+Named `/sessions` before; that name still works and says the new one. A
+resumed session reopens on its own provider and model, as in Codex.
 
 Session IDs are UUIDs; you only need 6–8 characters to be unambiguous.
 On resume, Koda shows an away-summary: idle time, message count, token
@@ -295,7 +302,7 @@ See also: [Keybindings → Vim mode](./keybindings.md#vim-mode).
 
 ## `/exit`
 
-Quit Koda. Equivalent to `Ctrl+D`.
+Quit Koda. Equivalent to `Ctrl+D`. `/quit` works too.
 
 ## `/mcp <sub-command>`
 

@@ -94,16 +94,6 @@ fn drain_bounded<T, F: FnMut(T)>(
     n
 }
 
-/// The protocol's name for a trust mode.
-fn protocol_mode(mode: trust::TrustMode) -> koda_client::protocol::state::TrustMode {
-    use koda_client::protocol::state::TrustMode as P;
-    match mode {
-        trust::TrustMode::Plan => P::Plan,
-        trust::TrustMode::Safe => P::Safe,
-        trust::TrustMode::Auto => P::Auto,
-    }
-}
-
 impl TuiContext {
     /// Open the session a command switched to, if one did, and close the
     /// one it left.
@@ -126,7 +116,8 @@ impl TuiContext {
         .await?;
         self.host_session = opened.id.clone();
         self.session = opened;
-        Ok(())
+        // The resumed session's own model, and the TUI's mode for it.
+        self.sync_settings(true).await
     }
 
     /// Start a turn on the host and follow it until `turn/completed`:
@@ -155,13 +146,11 @@ impl TuiContext {
             other => anyhow::anyhow!(other),
         };
 
-        // What the turn runs with: the session a command switched to, this
-        // model and provider, this mode.
+        // The session a command switched to. What it runs with, the model and
+        // the mode, is the host's: `/model`, `/provider` and Shift+Tab change
+        // it with `session/settings/update` (`tui_context::settings`).
         let started = async {
             self.sync_host_session().await?;
-            self.client
-                .configure_session(&self.session.id, self.config.clone())
-                .await?;
             // Messages from before this turn (session notices, resolved
             // requests) are no business of it.
             while self.client.try_next_event().is_some() {}
@@ -199,7 +188,7 @@ impl TuiContext {
                         })
                         .collect(),
                     client_message_id: None,
-                    mode: Some(protocol_mode(trust::read_trust(&self.shared_mode))),
+                    mode: None,
                 })
                 .await
                 .map_err(host_error)?;
