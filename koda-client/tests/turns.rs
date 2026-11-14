@@ -11,7 +11,9 @@ use koda_client::events::Outgoing;
 use koda_client::protocol::initialize::ClientInfo;
 use koda_client::protocol::item::Item;
 use koda_client::protocol::rpc::{ErrorObject, RequestId, codes};
-use koda_client::protocol::session::SessionStartParams;
+use koda_client::protocol::session::{
+    SessionStartParams, SessionUnsubscribeParams, SessionUnsubscribeStatus,
+};
 use koda_client::protocol::state::TrustMode;
 use koda_client::protocol::turn::{
     TurnInterruptParams, TurnStartParams, TurnStatus, TurnSteerParams,
@@ -102,6 +104,14 @@ fn config(server: &FakeLlmServer) -> KodaConfig {
 }
 
 async fn client(config: KodaConfig, dir: &tempfile::TempDir) -> InProcessClient {
+    client_with(config, dir, None).await
+}
+
+async fn client_with(
+    config: KodaConfig,
+    dir: &tempfile::TempDir,
+    agent: Option<std::sync::Arc<koda_core::agent::KodaAgent>>,
+) -> InProcessClient {
     let project = dir.path().join("project");
     std::fs::create_dir_all(&project).unwrap();
     let db = Database::init(&dir.path().join("config")).await.unwrap();
@@ -114,6 +124,7 @@ async fn client(config: KodaConfig, dir: &tempfile::TempDir) -> InProcessClient 
             name: "turns-test".to_string(),
             version: "0".to_string(),
         },
+        agent,
     })
     .await
     .unwrap()
@@ -672,4 +683,136 @@ async fn a_resumed_session_keeps_its_history() {
     );
     assert_eq!(error.code, codes::INVALID_PARAMS);
     koda.client.shutdown().await;
+}
+
+// ── In-process handles and closing a session (TUI, PR 5c) ───────────────
+
+impl Koda {
+    async fn unsubscribe(&self) -> SessionUnsubscribeStatus {
+        self.client
+            .request::<methods::SessionUnsubscribe>(SessionUnsubscribeParams {
+                session_id: self.session.clone(),
+            })
+            .await
+            .unwrap()
+            .status
+    }
+}
+
+/// `session/unsubscribe` closes a session: its handles go, a turn on it is
+/// refused, and it opens again by id.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unsubscribe_closes_a_session_and_it_opens_again() {
+    let server = model(vec![text("Hello.")]).await;
+    let mut koda = Koda::start(config(&server)).await;
+    koda.turn("hi").await;
+    koda.until("turn/completed").await;
+    assert!(koda.client.session_handles(&koda.session).is_some());
+
+    assert_eq!(
+        koda.unsubscribe().await,
+        SessionUnsubscribeStatus::Unsubscribed
+    );
+    assert!(koda.client.session_handles(&koda.session).is_none());
+    let refused = server_error(koda.turn_with("again", None).await);
+    assert!(refused.message.contains("no open session"), "{refused:?}");
+    assert_eq!(
+        koda.unsubscribe().await,
+        SessionUnsubscribeStatus::NotLoaded
+    );
+
+    let reopened = koda
+        .client
+        .request::<methods::SessionStart>(SessionStartParams {
+            session_id: Some(koda.session.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(reopened.session.id, koda.session);
+}
+
+/// Unsubscribing stops the session's running turn, which still ends with
+/// its `turn/completed`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unsubscribe_stops_the_running_turn() {
+    let slow = text("Too late.").set_delay(Duration::from_secs(20));
+    let server = model(vec![slow]).await;
+    let mut koda = Koda::start(config(&server)).await;
+    koda.turn("hi").await;
+    koda.until("turn/started").await;
+
+    let asked = Instant::now();
+    assert_eq!(
+        koda.unsubscribe().await,
+        SessionUnsubscribeStatus::Unsubscribed
+    );
+    let seen = koda.until("turn/completed").await;
+    assert_eq!(turn_completed(&seen).status, TurnStatus::Interrupted);
+    assert!(
+        asked.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        asked.elapsed()
+    );
+}
+
+/// `configure_session` changes what the next turn runs with: here the
+/// server it goes to.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn configure_moves_the_next_turn_to_another_server() {
+    let first = model(vec![]).await;
+    let second = model(vec![text("From the second server.")]).await;
+    let mut koda = Koda::start(config(&first)).await;
+
+    koda.client
+        .configure_session(&koda.session, config(&second))
+        .await
+        .unwrap();
+    koda.turn("where are you").await;
+    koda.until("turn/completed").await;
+    assert_eq!(chat_requests(&second).await.len(), 1);
+    assert!(chat_requests(&first).await.is_empty());
+
+    let error = koda
+        .client
+        .configure_session("no-such-session", config(&second))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("no open session"), "{error}");
+}
+
+/// A front end that builds its own agent has every session use it: the
+/// model gets that agent's system prompt.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_shared_agent_is_what_sessions_run_with() {
+    let server = model(vec![text("Hello.")]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let config = config(&server);
+    let project = dir.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let mut agent = koda_core::agent::KodaAgent::new(&config, project, &["/zebra-command"])
+        .await
+        .unwrap();
+    agent.rebuild_system_prompt(&config, &["/zebra-command"]);
+    let client = client_with(config, &dir, Some(std::sync::Arc::new(agent))).await;
+    let session = client
+        .request::<methods::SessionStart>(SessionStartParams::default())
+        .await
+        .unwrap()
+        .session
+        .id;
+    let mut koda = Koda {
+        client,
+        session,
+        project: dir.path().join("project"),
+        _dir: dir,
+    };
+    koda.turn("hi").await;
+    koda.until("turn/completed").await;
+    let sent = chat_requests(&server).await;
+    assert!(
+        sent[0].to_string().contains("/zebra-command"),
+        "not the shared agent's prompt: {}",
+        sent[0]
+    );
 }

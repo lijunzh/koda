@@ -102,6 +102,7 @@ pub async fn run_headless(
             name: "koda-exec".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
         },
+        agent: None,
     })
     .await?;
     let mut raw = client
