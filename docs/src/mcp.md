@@ -6,61 +6,60 @@ database drivers, Slack, internal APIs, and more.
 
 ## Quick start
 
-```text
-# Add a stdio server (spawns a child process)
-/mcp add playwright npx -y @playwright/mcp
+Servers are managed from a terminal with `koda mcp`, as Codex's are with
+`codex mcp`. Every new session starts the stored servers; an open TUI session
+takes a change on `/mcp reconnect`.
 
-# Add an HTTP server
-/mcp add-http my-api https://api.example.com/mcp
+```text
+# Add a stdio server (Koda starts the command)
+koda mcp add playwright -- npx -y @playwright/mcp
+
+# Add a stdio server with environment variables
+koda mcp add db-tools --env DSN=postgresql://localhost/mydb -- uvx koda-db
 
 # Add an HTTP server whose bearer token is in $MY_API_TOKEN
-/mcp add-http my-api https://api.example.com/mcp --bearer-token-env-var MY_API_TOKEN
+koda mcp add my-api --url https://api.example.com/mcp --bearer-token-env-var MY_API_TOKEN
 
-# List all configured servers and their status
-/mcp list
-
-# Reconnect a server without restarting Koda
-/mcp reconnect playwright
+# List the stored servers, or show one (both take --json)
+koda mcp list
+koda mcp get playwright
 
 # Remove a server
-/mcp remove playwright
+koda mcp remove playwright
 ```
 
-## Slash commands
-
-### `/mcp list`
-
-Shows every configured MCP server, its transport (stdio / http), and
-its current connection status (connected / failed / disconnected).
-
-### `/mcp add <name> <command> [args...]`
-
-Add a **stdio** MCP server. Koda spawns `<command>` with the given
-arguments and communicates over stdin/stdout.
+In the TUI:
 
 ```text
-/mcp add playwright  npx -y @playwright/mcp
-/mcp add db-tools    uvx koda-db --dsn postgresql://localhost/mydb
+/mcp              # this session's servers, their status and tools
+/mcp verbose      # the same, with each server's config and tool descriptions
+/mcp reconnect    # take added, removed and changed servers; retry failed ones
 ```
+
+## `koda mcp`
+
+`koda mcp add <name> -- <command> [args...]` adds a **stdio** server: Koda
+spawns `<command>` with the arguments and talks to it over stdin/stdout.
+`--env KEY=VALUE` (repeatable) sets environment variables for it.
+
+`koda mcp add <name> --url <url>` adds an **HTTP** server (MCP Streamable
+HTTP). `--bearer-token-env-var <VAR>` names the environment variable holding
+its bearer token.
+
+Adding a name that exists replaces that server. `list` hides environment
+values (`KEY=*****`); `--json` shows the stored config.
 
 **Name rules:** letters, digits, hyphens, and underscores only (`[a-zA-Z0-9_-]`).
 Double-underscore (`__`) is reserved as Koda's internal tool-routing separator
 and is not allowed.
 
-### `/mcp add-http <name> <url> [--bearer-token-env-var <VAR>]`
-
-Add an **HTTP** MCP server using the MCP 2025-03-26 Streamable HTTP transport.
-
-```text
-/mcp add-http my-api  https://api.example.com/mcp
-/mcp add-http my-api  https://api.example.com/mcp --bearer-token-env-var MY_API_TOKEN
-```
+### Bearer tokens
 
 The token stays in the environment: Koda stores only the variable's name, as
 Codex's `bearer_token_env_var` does, and reads it when the server starts. A
 named variable that isn't set fails the server with that reason. Tokens stored
-by earlier versions (`--token`) are no longer read; Koda logs a warning for
-such a server.
+by earlier versions (`/mcp add-http --token`) are no longer read; Koda logs a
+warning for such a server.
 
 > **Security note:** Bearer tokens sent over plaintext `http://` are logged as
 > a warning. Use `https://` in production. Koda also blocks connections to
@@ -68,15 +67,20 @@ such a server.
 > `307`/`308` redirects. A redirect to another host, port or scheme fails the
 > connection instead of sending the token and custom headers there.
 
-### `/mcp reconnect <name>`
+## `/mcp` in the TUI
 
-Disconnect and re-connect a running server without restarting Koda. Useful
-after updating the server binary or rotating credentials.
+`/mcp` lists the session's servers: connected, starting, failed (with the
+reason) or not started, each with its tools. `/mcp verbose` adds the server's
+command or URL and what each tool does. The status bar's `⚡connected/total`
+pill follows the servers as they start.
 
-### `/mcp remove <name>`
+`/mcp reconnect` has the open session take the stored servers again: it starts
+servers added with `koda mcp add`, stops removed ones, restarts changed ones,
+and retries ones that failed. During a turn, the turn keeps its servers and
+the change applies when it ends. Codex's TUI has no reconnect; it gets fresh
+servers from a new chat (`/new`), which Koda's TUI doesn't have.
 
-Permanently delete the server config from the local keystore and disconnect it
-immediately. The server process (if stdio) is cleaned up automatically.
+`/mcp add` and `/mcp remove` are gone; they print the `koda mcp` commands.
 
 ## Tool naming
 
@@ -87,17 +91,15 @@ The model can call these tools directly. No extra configuration is required.
 
 ## Tool filtering
 
-A server's stored config can limit which tools it exposes. No `/mcp` command
-sets these fields yet. The shape:
+A server's stored config can limit which tools it exposes. No command sets
+these fields yet; a client sets them with `config/batchWrite` at
+`mcp_servers.<name>`, in Codex's shape:
 
 ```json
 {
-  "playwright": {
-    "transport": "stdio",
-    "command": "npx",
-    "args": ["-y", "@playwright/mcp"],
-    "enabled_tools": ["navigate", "click", "screenshot"]
-  }
+  "command": "npx",
+  "args": ["-y", "@playwright/mcp"],
+  "enabled_tools": ["navigate", "click", "screenshot"]
 }
 ```
 
@@ -164,8 +166,8 @@ koda exec "Anything in my inbox?" --mcp-config mcp.json
   Fields Koda doesn't know are ignored.
 - The flag is repeatable. A later server wins a name clash, and a flag's
   server replaces a stored one of the same name for this run.
-- Nothing is written to the database, and `/mcp list` shows the servers
-  only while the run lasts.
+- Nothing is written to the database, and `/mcp` shows the servers only
+  while the run lasts; `koda mcp list` doesn't show them.
 - A value Koda can't read or use stops the start with an error, rather
   than running without the servers you asked for.
 
@@ -201,10 +203,10 @@ Always use parameterized queries.
 
 - **Zero token cost when no MCP servers are configured.** The block is
   omitted entirely.
-- **No config required.** If you've added a server with `/mcp add`, its
+- **No config required.** If you've added a server with `koda mcp add`, its
   instructions surface automatically the next turn after it connects.
-- **Hot-reload friendly.** Adding or removing a server mid-session via
-  `/mcp add` / `/mcp remove` updates the block in the next turn — there's
+- **Hot-reload friendly.** A server added or removed mid-session, then
+  taken with `/mcp reconnect`, updates the block in the next turn — there's
   no stale-prompt window.
 
 ### What this means for MCP server authors
@@ -239,7 +241,7 @@ before granting `Auto` mode.
 
 | Symptom | Fix |
 |---------|-----|
-| Server shows **failed** on `/mcp list` | Check the command/URL, then `/mcp reconnect <name>` |
-| Tools not appearing after add | The server may have taken longer than `startup_timeout_sec` to start — `/mcp reconnect` or restart Koda |
+| Server shows **failed** on `/mcp` | Check the command/URL (`koda mcp get <name>`), then `/mcp reconnect` |
+| Tools not appearing after `koda mcp add` | An open session takes it on `/mcp reconnect`; a server slower than `startup_timeout_sec` fails — `/mcp reconnect` retries it |
 | `__` in server name rejected | Use `-` instead: `my-server` not `my__server` |
 | HTTP server SSRF error | Private/loopback URLs are blocked — use a public or VPN-accessible URL |

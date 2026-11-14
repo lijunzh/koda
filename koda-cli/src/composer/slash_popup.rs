@@ -62,10 +62,12 @@ pub const SLASH_COMMANDS: &[(&str, &str, Option<&str>)] = &[
     ("/expand", "Show full output of last tool call", None),
     ("/help", "Show commands and shortcuts", None),
     ("/key", "Manage API keys", None),
+    // No arg hint: with one, Enter on a bare `/mcp` completes instead of
+    // running it, as it did for `/resume`.
     (
         "/mcp",
-        "Manage MCP servers (add, remove, list)",
-        Some("[add|remove|list]"),
+        "List MCP servers (/mcp verbose, /mcp reconnect)",
+        None,
     ),
     ("/memory", "View/save project & global memory", None),
     ("/model", "Pick a model (aliases + local)", None),

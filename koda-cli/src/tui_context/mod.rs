@@ -8,6 +8,7 @@
 
 mod events;
 mod idle_ui_events;
+mod mcp;
 mod menus;
 pub(crate) mod settings;
 
@@ -134,6 +135,11 @@ pub(crate) struct TuiContext {
     /// `widgets::child_activity_overlay` rendered above the status bar.
     /// See [`crate::child_activity::ChildActivityTracker`].
     pub child_activity: crate::child_activity::ChildActivityTracker,
+    /// The session's MCP servers as the host reports them, for the status
+    /// bar.
+    pub(crate) mcp: mcp::McpView,
+    /// The MCP view is for a session no longer open: list again.
+    pub(crate) mcp_stale: bool,
 }
 
 /// The TUI's view of its session. The host owns the session and runs its
@@ -542,6 +548,8 @@ impl TuiContext {
             frame_requester,
             draw_rx,
             child_activity: crate::child_activity::ChildActivityTracker::default(),
+            mcp: mcp::McpView::default(),
+            mcp_stale: true,
         };
         Ok(ctx)
     }
@@ -575,7 +583,7 @@ impl TuiContext {
         let textarea = &self.textarea;
         let config = &self.config;
         let selection = self.mouse_selection.as_ref();
-        let mcp_info = self.agent.mcp_status_bar_info();
+        let mcp_info = self.mcp.status_bar();
         let project_root = self.project_root.clone();
         // #1210: project bg-agent + bg-process snapshots through the
         // activity tracker into renderable rows for the live overlay
@@ -657,6 +665,9 @@ impl TuiContext {
             if self.should_quit {
                 break;
             }
+            if self.mcp_stale {
+                self.refresh_mcp().await;
+            }
 
             // ── Dispatch pending commands ────────────────────
             if self.tui_state == TuiState::Idle
@@ -704,6 +715,12 @@ impl TuiContext {
                 }
                 Some(raw) = ui_rx.recv() => {
                     self.handle_idle_ui_event(UiEvent::Engine(raw.event));
+                }
+                // The host's notifications while idle: MCP startups move
+                // the status bar; the rest are no turn's business, as a
+                // turn drops them when it starts.
+                Some(message) = self.client.next_event() => {
+                    self.mcp.observe(&self.session.id, &message);
                 }
                 // #1354: bg-activity overlay self-perpetuating tick.
                 // `TuiContext::draw()` calls `schedule_frame_in(1 s)`
@@ -795,6 +812,14 @@ impl TuiContext {
             } else {
                 self.start_provider_wizard(arg);
             }
+            return CommandOutcome::Handled;
+        }
+        if let Some(arg) = input
+            .trim()
+            .strip_prefix("/mcp")
+            .filter(|rest| rest.is_empty() || rest.starts_with(' '))
+        {
+            self.handle_mcp(arg.trim()).await;
             return CommandOutcome::Handled;
         }
         if matches!(input.trim(), "/resume" | "/sessions") {

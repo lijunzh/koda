@@ -1453,23 +1453,41 @@ const MCP_SERVER: &str = r#"while IFS= read -r line; do
 done
 "#;
 
-/// `/mcp add` saves a server and connects it at once, even with none
-/// running when Koda started: every session has its MCP manager. The next
-/// start starts it again in the background, and the first turn waits for
-/// it, so its tools reach the model; `/mcp` lists it, and `/mcp remove`
-/// takes its tools away.
+/// `koda mcp` in `home`, as a second process beside the TUI. Returns stdout.
+fn koda_mcp(home: &Path, args: &[&str]) -> String {
+    let out = Command::new(env!("CARGO_BIN_EXE_koda"))
+        .arg("mcp")
+        .args(args)
+        .current_dir(home)
+        .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .output()
+        .expect("koda mcp");
+    assert!(out.status.success(), "koda mcp {args:?}: {out:?}");
+    String::from_utf8(out.stdout).unwrap()
+}
+
+/// Servers are added and removed with `koda mcp` from a terminal, as with
+/// `codex mcp`; `/mcp reconnect` has the open session take the change, the
+/// next turn waits for a server still starting so its tools reach the
+/// model, `/mcp` lists it, and the status bar counts it.
 #[tokio::test(flavor = "multi_thread")]
-async fn mcp_add_list_and_remove_change_the_tools_the_model_gets() {
+async fn koda_mcp_and_reconnect_change_the_tools_the_model_gets() {
     let server = scripted_model(vec![]).await;
     let home = home();
     let script = home.path().join("notes-server.sh");
     std::fs::write(&script, MCP_SERVER).unwrap();
     let mut tui = Tui::start_with_model(home.path(), &server.url());
-    run_command(&mut tui, &format!("/mcp add notes sh {}", script.display()));
-    tui.wait_for_screen("MCP server 'notes' added and connected (1 tools)");
-    quit_and_read_session_id(&mut tui);
+    run_command(&mut tui, "/mcp");
+    tui.wait_for_screen("No MCP servers configured");
 
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    let added = koda_mcp(
+        home.path(),
+        &["add", "notes", "--", "sh", &script.display().to_string()],
+    );
+    assert!(added.contains("Added MCP server 'notes'"), "{added}");
+    run_command(&mut tui, "/mcp reconnect");
+    tui.wait_for_screen("Reloaded MCP servers");
     tui.submit("use your tools");
     let sent = wait_for_model_call(&server, 1).await;
     assert!(
@@ -1478,17 +1496,44 @@ async fn mcp_add_list_and_remove_change_the_tools_the_model_gets() {
     );
     tui.wait_for_screen("All done.");
     tui.wait_for_screen_without(BUSY_PROMPT);
-    run_command(&mut tui, "/mcp list");
+    run_command(&mut tui, "/mcp");
     tui.wait_for_screen("notes (1 tools)");
+    tui.wait_for_screen("\u{26a1}1/1");
 
-    run_command(&mut tui, "/mcp remove notes");
-    tui.wait_for_screen("MCP server 'notes' removed");
+    run_command(&mut tui, "/mcp add other sh x");
+    tui.wait_for_screen("koda mcp add <name>");
+
+    koda_mcp(home.path(), &["remove", "notes"]);
+    run_command(&mut tui, "/mcp reconnect");
+    tui.wait_for_screen("No MCP servers configured");
     tui.submit("and now");
     let sent = wait_for_model_call(&server, 2).await;
     assert!(
         !sent.contains("notes__lookup"),
         "removed tool still offered: {sent}"
     );
+}
+
+/// A server stored before the TUI starts starts with its session, and the
+/// first turn waits for it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stored_server_starts_with_the_tui() {
+    let server = scripted_model(vec![]).await;
+    let home = home();
+    let script = home.path().join("notes-server.sh");
+    std::fs::write(&script, MCP_SERVER).unwrap();
+    koda_mcp(
+        home.path(),
+        &["add", "notes", "--", "sh", &script.display().to_string()],
+    );
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    tui.submit("use your tools");
+    let sent = wait_for_model_call(&server, 1).await;
+    assert!(
+        sent.contains("notes__lookup"),
+        "MCP tool not offered: {sent}"
+    );
+    tui.wait_for_screen("\u{26a1}1/1");
 }
 
 /// `/memory add` saves a note for this project, and the next request

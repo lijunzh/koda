@@ -162,7 +162,7 @@ client_requests! {
         response: crate::mcp::ListMcpServerStatusResponse,
     },
     /// Every open session takes the stored MCP servers again before its
-    /// next turn.
+    /// next turn. Answered once the idle ones have.
     McpServerRefresh => "config/mcpServer/reload" {
         params: crate::mcp::McpServerRefreshParams,
         response: crate::mcp::McpServerRefreshResponse,

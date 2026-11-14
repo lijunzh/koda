@@ -997,7 +997,7 @@
     },
     "McpServerRefreshParams": {
       "additionalProperties": false,
-      "description": "`config/mcpServer/reload`: every open session takes the stored servers\nagain, starting new ones, stopping removed ones and restarting changed\nor failed ones, before its next turn.",
+      "description": "`config/mcpServer/reload`: every open session takes the stored servers\nagain, starting new ones, stopping removed ones and restarting changed\nor failed ones, before its next turn. Answered once the idle sessions\nhave taken them, so a `mcpServerStatus/list` that follows shows the\nchange; new servers are then still starting.",
       "type": "object"
     },
     "McpServerRefreshResponse": {

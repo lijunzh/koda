@@ -12,7 +12,6 @@
 //! the codex / gemini-cli status lines also omit cwd for the same
 //! reason.
 
-use koda_core::mcp::manager::McpStatusBarInfo;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -20,6 +19,17 @@ use ratatui::{
     text::{Line, Span},
     widgets::Widget,
 };
+
+/// The MCP pill: the session's servers, from the host's reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct McpStatusBarInfo {
+    /// Connected servers.
+    pub connected: usize,
+    /// Servers that failed to start.
+    pub failed: usize,
+    /// All the session's servers, those still starting included.
+    pub total: usize,
+}
 
 pub struct StatusBar<'a> {
     model: &'a str,

@@ -30,4 +30,5 @@ needs a terminal.
 | Command | Description |
 |---------|-------------|
 | `koda exec [PROMPT]` | Run one prompt and exit, as `codex exec` does. `--json` prints the [client protocol](headless.md#the-client-protocol) on stdout, one JSON-RPC message per line; `--json-deltas` adds streaming text and command output; `-o FILE` writes the last reply to a file. `-` or no prompt reads stdin. Takes every flag above |
+| `koda mcp list\|get\|add\|remove` | Manage the MCP servers every session starts, as `codex mcp` does: `add <name> -- <command> [args]` (with `--env KEY=VALUE`) or `add <name> --url <url>` (with `--bearer-token-env-var VAR`); `list` and `get` take `--json`. Open TUI sessions take a change on `/mcp reconnect`. See [MCP servers](./mcp.md) |
 | `koda --version` | Print version + kernel sandbox availability (one line, paste-friendly for bug reports) |

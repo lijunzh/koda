@@ -7,8 +7,8 @@
 
 use crate::scroll_buffer::ScrollBuffer;
 use crate::tui_types::{MenuContent, PromptMode, Term, TuiState};
+use crate::widgets::status_bar::McpStatusBarInfo;
 use crate::widgets::status_bar::StatusBar;
-use koda_core::mcp::manager::McpStatusBarInfo;
 
 use crate::composer::textarea::TextArea;
 use anyhow::Result;
