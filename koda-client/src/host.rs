@@ -61,6 +61,8 @@ pub(crate) struct HostArgs {
     pub db: Database,
     /// The client's queue of notifications and server requests.
     pub events: mpsc::UnboundedSender<Outgoing>,
+    /// Where engine events go as they are, if the client asked for them.
+    pub raw: Option<mpsc::UnboundedSender<crate::RawEvent>>,
 }
 
 /// Start a host on its own task.
@@ -74,6 +76,7 @@ pub(crate) fn spawn(args: HostArgs) -> (mpsc::Sender<HostCommand>, JoinHandle<()
             events: args.events,
             request_ids: Arc::new(AtomicI64::new(0)),
             open_requests: OpenRequests::default(),
+            raw: args.raw,
         },
         client: OnceLock::new(),
         sessions: Mutex::new(HashMap::new()),
@@ -200,7 +203,8 @@ impl Host {
         {
             return Err(invalid(format!("session {id} is already open")));
         }
-        let opened = session::open(self.context.clone(), params.session_id).await?;
+        let policy = params.approval_policy.unwrap_or_default();
+        let opened = session::open(self.context.clone(), params.session_id, policy).await?;
         let id = opened.session.id.clone();
         let mut sessions = self.sessions.lock().await;
         // A prefix may have resolved to a session opened meanwhile.
@@ -295,6 +299,7 @@ mod tests {
             project_root: dir.path().to_path_buf(),
             db,
             events,
+            raw: None,
         });
         (tx, handle, dir)
     }

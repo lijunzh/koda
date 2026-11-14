@@ -360,11 +360,13 @@ pub(crate) async fn run() -> Result<()> {
             .with_trust(parse_top_level_trust_mode(&cli.mode, true))
             .with_session_mcp_servers(session_mcp);
         check_typed_reasoning(typed.0.as_deref(), typed.1, &config)?;
-        let session_id = match cli.session {
-            Some(id) => db.resolve_session_id(&id).await?,
-            None => db.create_session(&config.agent_name, &project_root).await?,
+        // An unknown id stops here, before anything runs. A new session is
+        // the host's to create.
+        let resume = match cli.session {
+            Some(id) => Some(db.resolve_session_id(&id).await?),
+            None => None,
         };
-        let exit_code = headless::run_headless(project_root, config, db, session_id, run).await?;
+        let exit_code = headless::run_headless(project_root, config, db, resume, run).await?;
         // `exit` runs no destructors, and the guard's drop is what writes out
         // the buffered lines, the last of which say how the run ended.
         drop(log_guard);

@@ -23,17 +23,20 @@ use koda_core::db::{Database, Role};
 use koda_core::engine::{ApprovalDecision, EngineCommand, EngineEvent, EngineSink};
 use koda_core::loop_guard::LoopContinuation;
 use koda_core::persistence::Persistence;
+use koda_core::providers::ImageData;
 use koda_core::session::KodaSession;
 use koda_protocol::item::{self, ToolCallApprovalResponse, UserInputResponse};
 use koda_protocol::rpc::{ErrorObject, RequestId, codes};
-use koda_protocol::session::{Session, SessionStartedNotification};
+use koda_protocol::server::WarningNotification;
+use koda_protocol::session::{ApprovalPolicy, Session, SessionStartedNotification};
 use koda_protocol::turn::{
-    LoopCapDecision, LoopCapResponse, Turn, TurnInterruptParams, TurnInterruptResponse,
+    LoopCapDecision, LoopCapResponse, Turn, TurnError, TurnInterruptParams, TurnInterruptResponse,
     TurnStartParams, TurnStartResponse, TurnStatus, TurnSteerParams, TurnSteerResponse,
 };
 use koda_protocol::{PROTOCOL_VERSION, ServerNotification, ServerRequest};
 use tokio::sync::{mpsc, oneshot};
 
+use crate::RawEvent;
 use crate::events::{EventProjector, Outgoing};
 use crate::host::{Answer, protocol_mode, to_json};
 
@@ -87,6 +90,8 @@ pub(crate) struct SessionContext {
     pub events: mpsc::UnboundedSender<Outgoing>,
     pub request_ids: Arc<AtomicI64>,
     pub open_requests: OpenRequests,
+    /// Where engine events go as they are, for a front end that asked.
+    pub raw: Option<mpsc::UnboundedSender<RawEvent>>,
 }
 
 /// A session, open and ready for a turn.
@@ -100,6 +105,7 @@ pub(crate) struct OpenSession {
 pub(crate) async fn open(
     context: SessionContext,
     resume: Option<String>,
+    policy: ApprovalPolicy,
 ) -> Result<OpenSession, ErrorObject> {
     let SessionContext {
         mut config,
@@ -108,14 +114,14 @@ pub(crate) async fn open(
         events,
         request_ids,
         open_requests,
+        raw,
     } = context;
 
-    // As `koda exec` does: ask the provider for the model's window first.
+    // Ask the provider for the model's window first. A guess is said once
+    // the session has started.
     let probe = koda_core::providers::create_provider(&config);
     let source = config.query_and_apply_capabilities(probe.as_ref()).await;
-    if let Some(notice) = config.assumed_context_notice(source) {
-        tracing::warn!("{notice}");
-    }
+    let notice = config.assumed_context_notice(source);
 
     let resumed = resume.is_some();
     let id = match resume {
@@ -159,6 +165,14 @@ pub(crate) async fn open(
             protocol_version: PROTOCOL_VERSION,
         },
     )));
+    if let Some(message) = notice {
+        let _ = events.send(Outgoing::Notification(ServerNotification::Warning(
+            WarningNotification {
+                session_id: Some(id.clone()),
+                message,
+            },
+        )));
+    }
 
     let (commands_tx, commands) = mpsc::unbounded_channel();
     let (engine_tx, engine_rx) = mpsc::channel(32);
@@ -166,11 +180,15 @@ pub(crate) async fn open(
         session_id: id.clone(),
         events,
         open_requests,
+        raw,
+        // Koda answers itself only when nobody is there to ask.
+        answers: (policy == ApprovalPolicy::Never).then(|| engine_tx.clone()),
         state: Mutex::new(SinkState {
             projector: EventProjector::with_request_ids(&id, request_ids),
             prompt: None,
             steers: VecDeque::new(),
             kinds: HashMap::new(),
+            pending_end: None,
         }),
     });
     Ok(OpenSession {
@@ -225,10 +243,20 @@ impl SessionTask {
     async fn turn(&mut self, params: TurnStartParams, reply: oneshot::Sender<Answer>) -> bool {
         let TurnStartParams {
             input,
+            images,
             client_message_id,
             mode,
             ..
         } = params;
+        let images = (!images.is_empty()).then(|| {
+            images
+                .into_iter()
+                .map(|image| ImageData {
+                    media_type: image.media_type,
+                    base64: image.data,
+                })
+                .collect()
+        });
         if let Some(mode) = mode {
             self.session.mode = core_mode(mode);
         }
@@ -282,7 +310,7 @@ impl SessionTask {
             let turn = session.run_turn_as(
                 turn_id.clone(),
                 config,
-                None,
+                images,
                 sink.as_ref(),
                 engine_rx,
                 Some(cancel.clone()),
@@ -345,13 +373,14 @@ impl SessionTask {
                 }
             }
         };
-        if let Err(e) = result {
+        let error = result.err().map(|e| {
             tracing::warn!("turn {turn_id} ended with an error: {e:#}");
-        }
+            format!("{e:#}")
+        });
         // Steering text the turn didn't deliver: the client sees no item for
         // it. Left in the channel, it would go out with the next prompt.
         let _ = session.take_queued_steers(engine_rx);
-        sink.end_turn();
+        sink.end_turn(error);
         for reply in interrupts {
             let _ = reply.send(to_json(TurnInterruptResponse {}));
         }
@@ -375,6 +404,9 @@ struct SinkState {
     /// first; `None` where the client gave none.
     steers: VecDeque<Option<String>>,
     kinds: HashMap<RequestId, RequestKind>,
+    /// The turn's end, held until the turn has returned, so an error it
+    /// returned with goes on `turn/completed`.
+    pending_end: Option<EngineEvent>,
 }
 
 /// The session's [`EngineSink`]: engine events become protocol messages on
@@ -383,6 +415,9 @@ pub(crate) struct HostSink {
     session_id: String,
     events: mpsc::UnboundedSender<Outgoing>,
     open_requests: OpenRequests,
+    raw: Option<mpsc::UnboundedSender<RawEvent>>,
+    /// Set under [`ApprovalPolicy::Never`]: where Koda's own answers go.
+    answers: Option<mpsc::Sender<EngineCommand>>,
     state: Mutex<SinkState>,
 }
 
@@ -401,10 +436,30 @@ impl HostSink {
         self.lock().steers.push_back(client_message_id);
     }
 
-    fn end_turn(&self) {
+    /// The turn has returned: send its `turn/completed`, with `error` on it
+    /// when the turn returned one and its end didn't already say why.
+    fn end_turn(&self, error: Option<String>) {
         let mut state = self.lock();
         state.prompt = None;
         state.steers.clear();
+        let Some(end) = state.pending_end.take() else {
+            return;
+        };
+        // Requests still open when the turn ends need no answer.
+        let mut out = state.projector.resolve_all();
+        out.extend(state.projector.project(None, end));
+        if let Some(message) = error {
+            for message_out in &mut out {
+                if let Outgoing::Notification(ServerNotification::TurnCompleted(done)) = message_out
+                    && done.turn.error.is_none()
+                {
+                    done.turn.error = Some(TurnError {
+                        message: message.clone(),
+                    });
+                }
+            }
+        }
+        self.send(&mut state, out);
     }
 
     /// The engine command the client's answer to `id` stands for, once
@@ -423,6 +478,14 @@ impl HostSink {
 
     fn handle(&self, parent: Option<&str>, event: EngineEvent) {
         let mut state = self.lock();
+        if let Some(raw) = &self.raw {
+            let _ = raw.send(RawEvent {
+                session_id: self.session_id.clone(),
+                parent: parent.map(str::to_string),
+                event: event.clone(),
+            });
+        }
+        let own_answer = self.answers.as_ref().and_then(|_| policy_answer(&event));
         let out = match (parent, event) {
             (None, EngineEvent::SteerDelivered { texts }) => {
                 let ids = (0..texts.len())
@@ -437,15 +500,24 @@ impl HostSink {
                 }
                 out
             }
-            // Requests still open when the turn ends need no answer.
+            // Sent once the turn has returned ([`Self::end_turn`]).
             (None, event @ EngineEvent::TurnEnd { .. }) => {
-                let mut out = state.projector.resolve_all();
-                out.extend(state.projector.project(None, event));
-                out
+                state.pending_end = Some(event);
+                Vec::new()
             }
             (parent, event) => state.projector.project(parent, event),
         };
         self.send(&mut state, out);
+        // Nobody is there to ask: answer at once and say so, as a server
+        // does when another client answers.
+        if let (Some((engine_id, command)), Some(answers)) = (own_answer, &self.answers) {
+            if answers.try_send(command).is_err() {
+                tracing::warn!("the turn's input is full; Koda's own answer was lost");
+            }
+            if let Some(resolved) = state.projector.resolved(&engine_id) {
+                self.send(&mut state, vec![resolved]);
+            }
+        }
     }
 
     /// Put `out` on the client's queue, keeping the open-request tables in
@@ -489,9 +561,10 @@ impl EngineSink for HostSink {
         self.handle(Some(parent_id), event);
     }
 
-    /// The client answers approvals.
+    /// Whether a person can answer an approval: not when Koda answers its
+    /// own, so a tool doesn't point the model at a way out it can't take.
     fn can_ask(&self) -> bool {
-        true
+        self.answers.is_none()
     }
 }
 
@@ -541,6 +614,70 @@ fn engine_command(kind: RequestKind, id: String, result: Answer) -> EngineComman
     }
 }
 
+/// Koda's own answer to a request when nobody is there to ask
+/// ([`ApprovalPolicy::Never`]), with the engine's id for it: approve what the
+/// mode let through to an approval, refuse destructive actions and anything
+/// outside the sandbox, answer a question with nothing, go on at the loop
+/// cap. What `koda exec` has always done.
+fn policy_answer(event: &EngineEvent) -> Option<(String, EngineCommand)> {
+    let command = match event {
+        EngineEvent::ApprovalRequest {
+            id,
+            effect,
+            tool_name,
+            detail,
+            ..
+        } => {
+            let decision = if *effect == koda_core::tools::ToolEffect::Destructive
+                && detail.starts_with(koda_core::tools::OUTSIDE_SANDBOX_TAG)
+            {
+                ApprovalDecision::RejectAuto {
+                    reason: format!(
+                        "running '{tool_name}' outside the sandbox auto-rejected (headless \
+                         mode has no human to approve it). Do without it, or tell the \
+                         operator which command to run themselves."
+                    ),
+                }
+            } else if *effect == koda_core::tools::ToolEffect::Destructive {
+                // #1022 B15: `RejectAuto`, so the model can tell a structural
+                // block from a person's no. With "User rejected this action."
+                // it kept asking a user who wasn't there.
+                ApprovalDecision::RejectAuto {
+                    reason: format!(
+                        "destructive action '{tool_name}' auto-rejected (headless mode \
+                         refuses destructive ops by policy; no human is available to \
+                         approve). Adapt your plan: avoid this kind of action for the \
+                         rest of this session, or ask the operator to re-run \
+                         interactively."
+                    ),
+                }
+            } else {
+                ApprovalDecision::Approve
+            };
+            EngineCommand::ApprovalResponse {
+                id: id.clone(),
+                decision,
+            }
+        }
+        EngineEvent::AskUserRequest { id, .. } => EngineCommand::AskUserResponse {
+            id: id.clone(),
+            answer: String::new(),
+        },
+        EngineEvent::LoopCapReached { id, .. } => EngineCommand::LoopDecision {
+            id: id.clone(),
+            action: LoopContinuation::Continue200,
+        },
+        _ => return None,
+    };
+    let id = match &command {
+        EngineCommand::ApprovalResponse { id, .. }
+        | EngineCommand::AskUserResponse { id, .. }
+        | EngineCommand::LoopDecision { id, .. } => id.clone(),
+        _ => unreachable!("only answers are built above"),
+    };
+    Some((id, command))
+}
+
 fn core_mode(mode: koda_protocol::state::TrustMode) -> koda_core::trust::TrustMode {
     use koda_core::trust::TrustMode as C;
     use koda_protocol::state::TrustMode as P;
@@ -557,4 +694,154 @@ pub(crate) fn invalid(message: impl Into<String>) -> ErrorObject {
 
 pub(crate) fn internal(message: impl Into<String>) -> ErrorObject {
     ErrorObject::new(codes::INTERNAL_ERROR, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use koda_core::engine::TurnEndReason;
+    use koda_core::tools::{OUTSIDE_SANDBOX_TAG, ToolEffect};
+
+    fn sink(
+        answers: Option<mpsc::Sender<EngineCommand>>,
+    ) -> (HostSink, mpsc::UnboundedReceiver<Outgoing>) {
+        let (events, rx) = mpsc::unbounded_channel();
+        let sink = HostSink {
+            session_id: "s1".to_string(),
+            events,
+            open_requests: OpenRequests::default(),
+            raw: None,
+            answers,
+            state: Mutex::new(SinkState {
+                projector: EventProjector::with_request_ids("s1", Arc::default()),
+                prompt: None,
+                steers: VecDeque::new(),
+                kinds: HashMap::new(),
+                pending_end: None,
+            }),
+        };
+        (sink, rx)
+    }
+
+    fn approval(id: &str, effect: ToolEffect, detail: &str) -> EngineEvent {
+        EngineEvent::ApprovalRequest {
+            id: id.into(),
+            tool_call_id: format!("call-{id}"),
+            tool_name: "Bash".into(),
+            detail: detail.into(),
+            preview: None,
+            effect,
+            allow_for_session: false,
+        }
+    }
+
+    fn drain(rx: &mut mpsc::UnboundedReceiver<Outgoing>) -> Vec<Outgoing> {
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    /// What `koda exec` has always answered, now answered by the host.
+    #[test]
+    fn with_nobody_to_ask_koda_answers_by_its_policy() {
+        let (tx, mut commands) = mpsc::channel(8);
+        let (sink, mut events) = sink(Some(tx));
+        assert!(!sink.can_ask(), "nobody can approve a way out");
+
+        sink.emit(approval("a1", ToolEffect::LocalMutation, "write a.txt"));
+        sink.emit(approval("a2", ToolEffect::Destructive, "rm -rf build"));
+        let outside = format!("{OUTSIDE_SANDBOX_TAG} cargo test");
+        sink.emit(approval("a3", ToolEffect::Destructive, &outside));
+        sink.emit(EngineEvent::AskUserRequest {
+            id: "q1".into(),
+            tool_call_id: "call-q1".into(),
+            question: "which file?".into(),
+            options: vec![],
+        });
+        sink.emit(EngineEvent::LoopCapReached {
+            id: "c1".into(),
+            cap: 200,
+            recent_tools: vec![],
+        });
+
+        let decision = |command| match command {
+            Ok(EngineCommand::ApprovalResponse { decision, .. }) => decision,
+            other => panic!("expected an approval, got {other:?}"),
+        };
+        assert_eq!(decision(commands.try_recv()), ApprovalDecision::Approve);
+        assert!(matches!(
+            decision(commands.try_recv()),
+            ApprovalDecision::RejectAuto { reason } if reason.contains("destructive action")
+        ));
+        assert!(matches!(
+            decision(commands.try_recv()),
+            ApprovalDecision::RejectAuto { reason } if reason.contains("outside the sandbox")
+        ));
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(EngineCommand::AskUserResponse { ref id, ref answer }) if id == "q1" && answer.is_empty()
+        ));
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(EngineCommand::LoopDecision { ref id, action: LoopContinuation::Continue200 })
+                if id == "c1"
+        ));
+        assert!(commands.try_recv().is_err(), "no extra commands");
+
+        // Each request is still sent, and resolved straight after.
+        let sent: Vec<_> = drain(&mut events)
+            .into_iter()
+            .map(|m| match m {
+                Outgoing::Request(r) => r.method(),
+                Outgoing::Notification(n) => n.method(),
+            })
+            .collect();
+        let pairs = ["item/toolCall/requestApproval", "serverRequest/resolved"];
+        assert_eq!(sent[..2], pairs);
+        assert_eq!(sent.len(), 10, "{sent:?}");
+        assert!(sink.open_requests.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn with_a_client_to_ask_the_request_waits() {
+        let (sink, mut events) = sink(None);
+        assert!(sink.can_ask());
+        sink.emit(approval("a1", ToolEffect::LocalMutation, "write a.txt"));
+        let sent = drain(&mut events);
+        assert!(
+            matches!(sent.as_slice(), [Outgoing::Request(_)]),
+            "{sent:?}"
+        );
+        assert_eq!(sink.open_requests.lock().unwrap().len(), 1);
+    }
+
+    /// A turn dropped where it stood after a cancel ends `interrupted`, and
+    /// says on `turn/completed` that it didn't stop cleanly.
+    #[test]
+    fn a_turn_that_returns_an_error_says_so_on_turn_completed() {
+        let (sink, mut events) = sink(None);
+        sink.emit(EngineEvent::TurnStart {
+            turn_id: "t1".into(),
+        });
+        sink.emit(EngineEvent::TurnEnd {
+            turn_id: "t1".into(),
+            reason: TurnEndReason::Cancelled,
+        });
+        // Held until the turn has returned.
+        assert!(drain(&mut events).iter().all(|m| !matches!(
+            m,
+            Outgoing::Notification(ServerNotification::TurnCompleted(_))
+        )));
+        sink.end_turn(Some(
+            "the turn did not stop within 5s of being cancelled".into(),
+        ));
+        let sent = drain(&mut events);
+        let [Outgoing::Notification(ServerNotification::TurnCompleted(done))] = sent.as_slice()
+        else {
+            panic!("expected turn/completed, got {sent:?}");
+        };
+        assert_eq!(done.turn.status, TurnStatus::Interrupted);
+        assert_eq!(
+            done.turn.error.as_ref().unwrap().message,
+            "the turn did not stop within 5s of being cancelled"
+        );
+    }
 }

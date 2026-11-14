@@ -1,39 +1,45 @@
 //! One-shot runs: one prompt, one turn, then exit: `koda exec`.
 //!
-//! Koda answers its own requests: it approves what the mode allows,
-//! refuses destructive actions, answers a question with nothing and keeps
-//! going at the loop cap. Exit code 0 is success, 1 failure.
+//! The run goes through the client API, as every Koda front end will: it
+//! starts Koda's host in process, opens a session whose requests Koda
+//! answers itself (`approvalPolicy: never`), starts one turn and reads what
+//! comes back. Koda approves what the mode allows, refuses destructive
+//! actions and anything outside the sandbox, answers a question with nothing
+//! and keeps going at the loop cap. Ctrl+C sends `turn/interrupt`. Exit code
+//! 0 is success, 1 failure.
 //!
 //! ## Output
 //!
 //! - [`Output::Text`] (`koda exec`): the streamed reply on stdout,
-//!   progress (tool calls, footer) on stderr.
+//!   progress (tool calls, footer) on stderr. Rendered from the engine's
+//!   own events, which the client hands out in process until the front ends
+//!   render the protocol's items.
 //! - [`Output::Events`] (`koda exec --json`): stdout carries only JSON-RPC
 //!   notifications from the client protocol (`koda-protocol`), one per
-//!   line: `session/started`, the turn and its items, each server request
-//!   followed by `serverRequest/resolved` with the answer Koda took, and
-//!   `exec/summary` last. Deltas only with `--json-deltas`.
+//!   line, as the host sends them: `session/started`, the turn and its
+//!   items, each server request followed by `serverRequest/resolved` with
+//!   the answer Koda took, and `exec/summary` last. Deltas only with
+//!   `--json-deltas`.
 
 use crate::input;
-use koda_client::events::{EventProjector, Outgoing, usage_of};
+use koda_client::events::{Outgoing, usage_of};
+use koda_client::protocol::initialize::ClientInfo;
 use koda_client::protocol::server::ExecSummary;
-use koda_client::protocol::session::{Session, SessionStartedNotification};
-use koda_client::protocol::turn::TurnStatus;
-use koda_client::protocol::{PROTOCOL_VERSION, ServerNotification};
-use koda_core::agent::KodaAgent;
-use koda_core::config::KodaConfig;
-use koda_core::db::{Database, Role};
-use koda_core::engine::{
-    ApprovalDecision, EngineCommand, EngineEvent, EngineSink, TurnEndReason, UsageTotals,
+use koda_client::protocol::session::{ApprovalPolicy, SessionStartParams};
+use koda_client::protocol::turn::{
+    ImageInput, Turn, TurnInterruptParams, TurnStartParams, TurnStatus,
 };
+use koda_client::protocol::{ServerNotification, methods};
+use koda_client::{InProcessClient, RawEvent, StartArgs};
+use koda_core::config::KodaConfig;
+use koda_core::db::Database;
+use koda_core::engine::{EngineEvent, TurnEndReason, UsageTotals};
 use koda_core::persistence::{Persistence, SessionUsage};
-use koda_core::session::KodaSession;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 /// What a one-shot run writes to stdout. See the module docs.
@@ -59,31 +65,16 @@ pub struct Run {
     pub last_message: Option<PathBuf>,
 }
 
-/// Run a single prompt and exit. Returns process exit code (0 = success).
+/// Run a single prompt and exit. `resume` is an earlier session's full id;
+/// without one a new session starts. Returns the process exit code (0 =
+/// success).
 pub async fn run_headless(
     project_root: PathBuf,
-    mut config: KodaConfig,
+    config: KodaConfig,
     db: Database,
-    session_id: String,
+    resume: Option<String>,
     run: Run,
 ) -> Result<i32> {
-    // Query actual model capabilities from the provider API before building agent.
-    let tmp_provider = koda_core::providers::create_provider(&config);
-    let source = config
-        .query_and_apply_capabilities(tmp_provider.as_ref())
-        .await;
-    // stderr, like every other notice: stdout carries only the answer or JSON.
-    if let Some(notice) = config.assumed_context_notice(source) {
-        eprintln!("\x1b[33m  \u{26a0} {notice}\x1b[0m");
-    }
-
-    let mut agent = KodaAgent::new(&config, project_root.clone(), &[]).await?;
-    koda_client::builtin_skills::inject_builtin_skills(&mut agent);
-    agent.rebuild_system_prompt(&config, &[]);
-    let agent = Arc::new(agent);
-    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel::<koda_core::engine::EngineCommand>(32);
-    let mut session = KodaSession::new(session_id, agent, db, &config, config.trust).await;
-
     // Process @file references and images
     let processed = input::process_input(&run.prompt, &project_root);
     let user_message = if let Some(context) = input::format_context_files(&processed.context_files)
@@ -92,70 +83,97 @@ pub async fn run_headless(
     } else {
         processed.prompt.clone()
     };
+    let images = processed
+        .images
+        .into_iter()
+        .map(|image| ImageInput {
+            media_type: image.media_type,
+            data: image.base64,
+        })
+        .collect();
 
-    let pending_images = if processed.images.is_empty() {
-        None
-    } else {
-        Some(processed.images)
-    };
+    let provider = config.provider_type.meta().name;
+    let mut client = InProcessClient::start(StartArgs {
+        config,
+        project_root,
+        db: db.clone(),
+        raw_events: true,
+        client_info: ClientInfo {
+            name: "koda-exec".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+        },
+    })
+    .await?;
+    let mut raw = client
+        .take_raw_events()
+        .context("the client gave no engine events")?;
+    let mut view = View::new(run.output);
 
-    session
-        .db
-        .insert_message(
-            &session.id,
-            &Role::User,
-            Some(&user_message),
-            None,
-            None,
-            None,
-        )
+    let opened = client
+        .request::<methods::SessionStart>(SessionStartParams {
+            session_id: resume,
+            approval_policy: Some(ApprovalPolicy::Never),
+        })
         .await?;
-
-    let cli_sink = HeadlessSink::new(cmd_tx, run.output, &session.id);
-    if let Output::Events { .. } = run.output {
-        cli_sink.print(&Outgoing::Notification(ServerNotification::SessionStarted(
-            SessionStartedNotification {
-                session: Session {
-                    id: session.id.clone(),
-                    model: config.model.clone(),
-                    provider: config.provider_type.meta().name.to_string(),
-                    context_window: config.max_context_tokens as u64,
-                    mode: protocol_mode(config.trust),
-                    tools: session
-                        .agent
-                        .turn_tool_defs(&config)
-                        .iter()
-                        .map(|tool| tool.name.clone())
-                        .collect(),
-                },
-                koda_version: env!("CARGO_PKG_VERSION").to_string(),
-                protocol_version: PROTOCOL_VERSION,
-            },
-        )));
+    let session_id = opened.session.id;
+    let model = opened.session.model;
+    // What starting the session said: `session/started`, and the context
+    // window Koda assumed when the server didn't report one.
+    while let Some(message) = client.try_next_event() {
+        view.before_turn(&message);
     }
 
-    let cancel = session.cancel_token();
+    // From here a Ctrl+C asks the turn to stop instead of killing Koda.
+    let mut ctrl_c = CtrlC::listen()?;
     let started = Instant::now();
-    let result = {
-        let turn = session.run_turn(&config, pending_images, &cli_sink, &mut cmd_rx, None);
-        tokio::pin!(turn);
+    let turn = client
+        .request::<methods::TurnStart>(TurnStartParams {
+            session_id: session_id.clone(),
+            input: user_message,
+            images,
+            client_message_id: None,
+            mode: None,
+        })
+        .await?
+        .turn;
+    let requests = client.request_handle();
+    let mut interrupt = None;
+    let completed: Turn = loop {
         tokio::select! {
-            r = &mut turn => r,
-            _ = tokio::signal::ctrl_c() => {
-                cancel.cancel();
+            // Engine events first, so text keeps up with the protocol.
+            biased;
+            Some(event) = raw.recv() => view.raw(event),
+            message = client.next_event() => match message {
+                Some(message) => {
+                    if let Some(turn) = view.protocol(message) {
+                        break turn;
+                    }
+                }
+                None => anyhow::bail!("Koda's host stopped during the turn"),
+            },
+            () = ctrl_c.recv(), if interrupt.is_none() => {
                 eprintln!("\n\x1b[33m\u{26a0} Interrupted\x1b[0m");
-                // Let the turn wind down so it reports how it ended. It
-                // bounds that itself, so it can't hang here.
-                turn.await
+                // Answered once the turn has stopped. The turn bounds its
+                // own wind-down, so this can't hang the run.
+                let requests = requests.clone();
+                let params = TurnInterruptParams {
+                    session_id: session_id.clone(),
+                    turn_id: turn.id.clone(),
+                };
+                interrupt = Some(tokio::spawn(async move {
+                    requests.request::<methods::TurnInterrupt>(params).await
+                }));
             }
         }
     };
-
+    // The engine's events for the turn were all sent before its end.
+    while let Ok(event) = raw.try_recv() {
+        view.raw(event);
+    }
     let elapsed_ms = started.elapsed().as_millis() as u64;
 
-    let response = session
-        .db
-        .last_assistant_message(&session.id)
+    let response = db
+        .last_assistant_message(&session_id)
         .await
         .unwrap_or_default();
     if let Some(path) = &run.last_message
@@ -167,43 +185,47 @@ pub async fn run_headless(
         );
     }
 
-    if run.output != Output::Text {
+    // A turn that returned an error, such as one dropped where it stood
+    // after a cancel, says so on `turn/completed`.
+    let result: Result<()> = match &completed.error {
+        Some(error) if completed.status != TurnStatus::Failed => {
+            Err(anyhow::anyhow!(error.message.clone()))
+        }
+        _ => Ok(()),
+    };
+    if let Output::Events { .. } = run.output {
         // Usage comes from the DB rather than the `Footer` event: the
         // footer only fires on a clean finish, while every persisted
         // assistant message (sub-agents included) carries its tokens,
         // so the totals stay right for errored and cancelled turns too.
-        let usage = session
-            .db
-            .session_token_usage(&session.id)
+        let usage = db
+            .session_token_usage(&session_id)
             .await
             .unwrap_or_default();
-        let usage_by_agent = session
-            .db
-            .session_usage_by_agent(&session.id)
+        let usage_by_agent = db
+            .session_usage_by_agent(&session_id)
             .await
             .unwrap_or_default();
         let outcome = RunOutcome {
             result: &result,
-            session_id: &session.id,
-            provider: config.provider_type.meta().name,
-            model: &config.model,
+            session_id: &session_id,
+            provider,
+            model: &model,
             response: &response,
             elapsed_ms,
             usage: &usage,
             usage_by_agent: &usage_by_agent,
-            stats: &cli_sink.stats(),
+            stats: &view.stats,
         };
-        match run.output {
-            Output::Events { .. } => cli_sink.print(&Outgoing::Notification(
-                ServerNotification::ExecSummary(exec_summary(outcome)),
-            )),
-            Output::Text => {}
-        }
+        view.print(&Outgoing::Notification(ServerNotification::ExecSummary(
+            exec_summary(outcome),
+        )));
     }
+    client.shutdown().await;
 
     match result {
         // An early stop already printed its warning; just fail the exit code.
-        Ok(()) => Ok(i32::from(run_failure(&Ok(()), &cli_sink.stats()).is_some())),
+        Ok(()) => Ok(i32::from(run_failure(&Ok(()), &view.stats).is_some())),
         Err(e) => {
             eprintln!("Error: {e}");
             Ok(1)
@@ -211,13 +233,31 @@ pub async fn run_headless(
     }
 }
 
-fn protocol_mode(mode: koda_core::trust::TrustMode) -> koda_client::protocol::state::TrustMode {
-    use koda_client::protocol::state::TrustMode as P;
-    use koda_core::trust::TrustMode as T;
-    match mode {
-        T::Plan => P::Plan,
-        T::Safe => P::Safe,
-        T::Auto => P::Auto,
+/// Ctrl+C, listened for from the moment it is made, so a signal that comes
+/// before the first wait is kept instead of killing the process.
+struct CtrlC {
+    #[cfg(unix)]
+    signal: tokio::signal::unix::Signal,
+}
+
+impl CtrlC {
+    fn listen() -> Result<Self> {
+        Ok(Self {
+            #[cfg(unix)]
+            signal: tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+                .context("couldn't listen for Ctrl+C")?,
+        })
+    }
+
+    async fn recv(&mut self) {
+        #[cfg(unix)]
+        {
+            self.signal.recv().await;
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+        }
     }
 }
 
@@ -289,27 +329,19 @@ fn exec_summary(outcome: RunOutcome<'_>) -> ExecSummary {
 }
 
 // ---------------------------------------------------------------------------
-// HeadlessSink — answers engine requests, renders or streams events
+// View — what the run prints, and the counts its summary reports
 // ---------------------------------------------------------------------------
 
-struct HeadlessSink {
-    cmd_tx: tokio::sync::mpsc::Sender<EngineCommand>,
+struct View {
     output: Output,
-    events: Mutex<EventProjector>,
-    stats: Mutex<RunStats>,
+    stats: RunStats,
 }
 
-impl HeadlessSink {
-    fn new(
-        cmd_tx: tokio::sync::mpsc::Sender<EngineCommand>,
-        output: Output,
-        session_id: &str,
-    ) -> Self {
+impl View {
+    fn new(output: Output) -> Self {
         Self {
-            cmd_tx,
             output,
-            events: Mutex::new(EventProjector::new(session_id)),
-            stats: Mutex::new(RunStats::default()),
+            stats: RunStats::default(),
         }
     }
 
@@ -327,15 +359,45 @@ impl HeadlessSink {
         }
     }
 
-    fn stats(&self) -> RunStats {
-        self.stats
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+    /// What starting the session said. Text shows its warnings on stderr,
+    /// like every other notice: stdout carries only the answer.
+    fn before_turn(&self, message: &Outgoing) {
+        match (self.output, message) {
+            (Output::Events { .. }, _) => self.print(message),
+            (Output::Text, Outgoing::Notification(ServerNotification::Warning(w))) => {
+                eprintln!("\x1b[33m  \u{26a0} {}\x1b[0m", w.message);
+            }
+            (Output::Text, _) => {}
+        }
     }
 
-    fn record(&self, parent_id: Option<&str>, event: &EngineEvent) {
-        let mut stats = self.stats.lock().unwrap_or_else(PoisonError::into_inner);
+    /// One protocol message during the turn: printed for `--json`. Returns
+    /// the turn once it has completed.
+    fn protocol(&self, message: Outgoing) -> Option<Turn> {
+        if let Output::Events { .. } = self.output {
+            self.print(&message);
+        }
+        match message {
+            Outgoing::Notification(ServerNotification::TurnCompleted(done)) => Some(done.turn),
+            _ => None,
+        }
+    }
+
+    /// One engine event: counted for the summary, and rendered for text.
+    fn raw(&mut self, raw: RawEvent) {
+        let RawEvent { parent, event, .. } = raw;
+        self.record(parent.as_deref(), &event);
+        match self.output {
+            Output::Events { .. } => {}
+            // A sub-agent's results aren't shown: its answer is.
+            Output::Text
+                if parent.is_some() && matches!(event, EngineEvent::ToolCallResult { .. }) => {}
+            Output::Text => self.render(event),
+        }
+    }
+
+    fn record(&mut self, parent_id: Option<&str>, event: &EngineEvent) {
+        let stats = &mut self.stats;
         match event {
             EngineEvent::ToolCallStart {
                 name, is_sub_agent, ..
@@ -352,73 +414,6 @@ impl HeadlessSink {
             }
             _ => {}
         }
-    }
-
-    /// Answer the engine's blocking requests. Runs in every output
-    /// format: approve non-destructive actions, auto-reject destructive
-    /// ones, skip AskUser, and keep going at the loop cap. Returns the id of
-    /// the request it answered.
-    fn respond(&self, event: &EngineEvent) -> Option<String> {
-        let command = match event {
-            EngineEvent::ApprovalRequest {
-                id,
-                effect,
-                tool_name,
-                detail,
-                ..
-            } => {
-                let decision = if *effect == koda_core::tools::ToolEffect::Destructive
-                    && detail.starts_with(koda_core::tools::OUTSIDE_SANDBOX_TAG)
-                {
-                    ApprovalDecision::RejectAuto {
-                        reason: format!(
-                            "running '{tool_name}' outside the sandbox auto-rejected (headless \
-                             mode has no human to approve it). Do without it, or tell the \
-                             operator which command to run themselves."
-                        ),
-                    }
-                } else if *effect == koda_core::tools::ToolEffect::Destructive {
-                    // #1022 B15: use `RejectAuto` so the model can
-                    // distinguish a structural headless-policy block
-                    // from a real human "no". Pre-fix it saw `"User
-                    // rejected this action."` and would loop asking
-                    // the (nonexistent) user for clarification.
-                    ApprovalDecision::RejectAuto {
-                        reason: format!(
-                            "destructive action '{tool_name}' auto-rejected (headless mode \
-                             refuses destructive ops by policy; no human is available to \
-                             approve). Adapt your plan: avoid this kind of action for the \
-                             rest of this session, or ask the operator to re-run \
-                             interactively."
-                        ),
-                    }
-                } else {
-                    ApprovalDecision::Approve
-                };
-                EngineCommand::ApprovalResponse {
-                    id: id.clone(),
-                    decision,
-                }
-            }
-            // Headless: no user present, answer empty.
-            EngineEvent::AskUserRequest { id, .. } => EngineCommand::AskUserResponse {
-                id: id.clone(),
-                answer: String::new(),
-            },
-            EngineEvent::LoopCapReached { id, .. } => EngineCommand::LoopDecision {
-                id: id.clone(),
-                action: koda_core::loop_guard::LoopContinuation::Continue200,
-            },
-            _ => return None,
-        };
-        let id = match &command {
-            EngineCommand::ApprovalResponse { id, .. }
-            | EngineCommand::AskUserResponse { id, .. }
-            | EngineCommand::LoopDecision { id, .. } => id.clone(),
-            _ => unreachable!("only answers are built above"),
-        };
-        let _ = self.cmd_tx.try_send(command);
-        Some(id)
     }
 
     /// Human-readable rendering for text and summary output. The streamed
@@ -643,66 +638,9 @@ impl HeadlessSink {
     }
 }
 
-impl HeadlessSink {
-    fn handle(&self, parent_id: Option<&str>, event: EngineEvent) {
-        self.record(parent_id, &event);
-        let answered = self.respond(&event);
-        match self.output {
-            Output::Events { .. } => {
-                let mut events = self.events.lock().unwrap_or_else(PoisonError::into_inner);
-                for message in events.project(parent_id, event) {
-                    self.print(&message);
-                }
-                // Koda answered its own request: say so, as a server says
-                // when another client answers.
-                if let Some(resolved) = answered.and_then(|id| events.resolved(&id)) {
-                    self.print(&resolved);
-                }
-            }
-            // A sub-agent's results aren't shown: its answer is.
-            Output::Text
-                if parent_id.is_some() && matches!(event, EngineEvent::ToolCallResult { .. }) => {}
-            Output::Text => self.render(event),
-        }
-    }
-}
-
-impl EngineSink for HeadlessSink {
-    fn can_ask(&self) -> bool {
-        // `respond` answers every approval itself; nobody is there.
-        false
-    }
-
-    fn emit(&self, event: EngineEvent) {
-        self.handle(None, event);
-    }
-
-    fn emit_child(&self, parent_id: &str, event: EngineEvent) {
-        self.handle(Some(parent_id), event);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use koda_core::tools::ToolEffect;
-
-    fn sink(format: Output) -> (HeadlessSink, tokio::sync::mpsc::Receiver<EngineCommand>) {
-        let (tx, rx) = tokio::sync::mpsc::channel(8);
-        (HeadlessSink::new(tx, format, "s1"), rx)
-    }
-
-    fn approval(id: &str, effect: ToolEffect) -> EngineEvent {
-        EngineEvent::ApprovalRequest {
-            id: id.into(),
-            tool_call_id: format!("call-{id}"),
-            tool_name: "Bash".into(),
-            detail: "rm -rf build".into(),
-            preview: None,
-            effect,
-            allow_for_session: false,
-        }
-    }
 
     fn tool_start(name: &str, is_sub_agent: bool) -> EngineEvent {
         EngineEvent::ToolCallStart {
@@ -714,69 +652,24 @@ mod tests {
     }
 
     #[test]
-    fn requests_are_answered_the_same_in_every_format() {
-        for format in [Output::Text, Output::Events { deltas: false }] {
-            let (sink, mut rx) = sink(format);
-            sink.emit(approval("a1", ToolEffect::LocalMutation));
-            sink.emit(approval("a2", ToolEffect::Destructive));
-            sink.emit(EngineEvent::AskUserRequest {
-                id: "q1".into(),
-                tool_call_id: "call-q1".into(),
-                question: "which file?".into(),
-                options: vec![],
-            });
-            sink.emit(EngineEvent::LoopCapReached {
-                id: "c1".into(),
-                cap: 200,
-                recent_tools: vec![],
-            });
-
-            match rx.try_recv() {
-                Ok(EngineCommand::ApprovalResponse { id, decision }) => {
-                    assert_eq!(id, "a1");
-                    assert_eq!(decision, ApprovalDecision::Approve, "{format:?}");
-                }
-                other => panic!("{format:?}: expected approval, got {other:?}"),
-            }
-            match rx.try_recv() {
-                Ok(EngineCommand::ApprovalResponse { id, decision }) => {
-                    assert_eq!(id, "a2");
-                    assert!(
-                        matches!(decision, ApprovalDecision::RejectAuto { .. }),
-                        "{format:?}: destructive must be auto-rejected, got {decision:?}"
-                    );
-                }
-                other => panic!("{format:?}: expected rejection, got {other:?}"),
-            }
-            assert!(
-                matches!(
-                    rx.try_recv(),
-                    Ok(EngineCommand::AskUserResponse { ref id, ref answer })
-                        if id == "q1" && answer.is_empty()
-                ),
-                "{format:?}: AskUser must get an empty answer"
-            );
-            assert!(
-                matches!(rx.try_recv(), Ok(EngineCommand::LoopDecision { ref id, .. }) if id == "c1"),
-                "{format:?}: loop cap must get a continue decision for its request"
-            );
-            assert!(rx.try_recv().is_err(), "{format:?}: no extra commands");
-        }
-    }
-
-    #[test]
     fn stats_split_top_level_and_sub_agent_tool_calls() {
-        let (sink, _rx) = sink(Output::Text);
-        sink.emit(tool_start("Read", false));
-        sink.emit(tool_start("Read", false));
-        sink.emit(tool_start("Edit", false));
-        sink.emit(tool_start("Grep", true));
-        sink.emit(EngineEvent::TurnEnd {
-            turn_id: "t1".into(),
-            reason: TurnEndReason::Complete,
-        });
+        let mut view = View::new(Output::Text);
+        let mut emit = |parent: Option<&str>, event| {
+            view.record(parent, &event);
+        };
+        emit(None, tool_start("Read", false));
+        emit(None, tool_start("Read", false));
+        emit(None, tool_start("Edit", false));
+        emit(Some("call-task"), tool_start("Grep", true));
+        emit(
+            None,
+            EngineEvent::TurnEnd {
+                turn_id: "t1".into(),
+                reason: TurnEndReason::Complete,
+            },
+        );
 
-        let stats = sink.stats();
+        let stats = view.stats;
         assert_eq!(
             stats.tool_calls,
             BTreeMap::from([("Edit".to_string(), 1), ("Read".to_string(), 2)])

@@ -62,6 +62,21 @@
         }
       ]
     },
+    "ApprovalPolicy": {
+      "description": "Who answers a session's approvals, questions and loop-cap decisions.\nCodex's `approvalPolicy` names the same choice.",
+      "oneOf": [
+        {
+          "const": "onRequest",
+          "description": "The client answers each request.",
+          "type": "string"
+        },
+        {
+          "const": "never",
+          "description": "Nobody is there to ask, as in `koda exec`: Koda approves what the\nmode allows, refuses destructive actions and anything outside the\nsandbox, answers a question with nothing and goes on at the loop\ncap. Each request is still sent, followed at once by\n`serverRequest/resolved`, so a reader sees what was decided.",
+          "type": "string"
+        }
+      ]
+    },
     "ClientInfo": {
       "description": "A client's name and version, such as `koda-cli` `0.7.0`.",
       "properties": {
@@ -311,6 +326,24 @@
         "usageByAgent",
         "toolCalls",
         "subAgentToolCalls"
+      ],
+      "type": "object"
+    },
+    "ImageInput": {
+      "description": "An image sent with a turn's input.",
+      "properties": {
+        "data": {
+          "description": "The image's bytes, base64-encoded.",
+          "type": "string"
+        },
+        "mediaType": {
+          "description": "Its MIME type, such as `image/png`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "mediaType",
+        "data"
       ],
       "type": "object"
     },
@@ -1019,6 +1052,17 @@
       "additionalProperties": false,
       "description": "`session/start`.",
       "properties": {
+        "approvalPolicy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApprovalPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Who answers the session's requests. Without one, the client does."
+        },
         "sessionId": {
           "description": "An earlier session to resume, by its full id. Without one, a new\nsession starts.",
           "type": [
@@ -1325,7 +1369,7 @@
               "type": "null"
             }
           ],
-          "description": "Why it failed, when it did."
+          "description": "Why it failed, when it did; and on an interrupted turn, why it\ndidn't stop cleanly, when it was dropped where it stood."
         },
         "id": {
           "description": "The turn's id.",
@@ -1471,6 +1515,13 @@
             "string",
             "null"
           ]
+        },
+        "images": {
+          "description": "Images sent with it.",
+          "items": {
+            "$ref": "#/$defs/ImageInput"
+          },
+          "type": "array"
         },
         "input": {
           "description": "What the user said.",

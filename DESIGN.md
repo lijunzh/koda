@@ -312,11 +312,15 @@ types, and a test fails when it's stale.
 The protocol grows with the code that serves it. It has `initialize`,
 `state/read`, `session/start`, `turn/start`, `turn/interrupt` and `turn/steer`,
 a session's notifications (session, turn, items, errors and warnings) and the
-server requests for approvals, questions and the loop cap. `koda exec --json`
-prints the notifications, answering its own requests and saying so with
-`serverRequest/resolved`, so the eval harness reads the same messages a server
-will send. The TUI drives the engine directly until its turns go through the
-client.
+server requests for approvals, questions and the loop cap. `koda exec` runs
+through the client in process: it opens its session with `approvalPolicy:
+never` (Codex's name), so the host answers each request itself, as one-shot
+runs always have, and says so with `serverRequest/resolved`; `--json` prints
+what the host sends, so the eval harness reads the same messages any client
+gets. The TUI drives the engine directly until its turns go through the
+client. Until then the client also hands out the engine's own events in
+process, for the renderers that still read them, as Codex's TUI read its old
+events while it moved onto its app-server.
 
 On the host, each open session has a task that owns it and runs its turns, as
 Codex's turn requests behave: `turn/start` is answered at once with the turn in

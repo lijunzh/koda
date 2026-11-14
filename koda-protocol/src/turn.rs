@@ -11,7 +11,8 @@ pub struct Turn {
     pub id: String,
     /// Where it stands.
     pub status: TurnStatus,
-    /// Why it failed, when it did.
+    /// Why it failed, when it did; and on an interrupted turn, why it
+    /// didn't stop cleanly, when it was dropped where it stood.
     pub error: Option<TurnError>,
     /// What it used: tokens and model calls, sub-agents and compaction
     /// included. Set when the turn is over.
@@ -68,6 +69,9 @@ pub struct TurnStartParams {
     pub session_id: String,
     /// What the user said.
     pub input: String,
+    /// Images sent with it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImageInput>,
     /// The client's id for the message, echoed on its `userMessage` item.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_message_id: Option<String>,
@@ -75,6 +79,16 @@ pub struct TurnStartParams {
     /// its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<crate::state::TrustMode>,
+}
+
+/// An image sent with a turn's input.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageInput {
+    /// Its MIME type, such as `image/png`.
+    pub media_type: String,
+    /// The image's bytes, base64-encoded.
+    pub data: String,
 }
 
 /// The answer to `turn/start`.

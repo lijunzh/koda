@@ -230,8 +230,10 @@ async fn a_run_opens_with_its_session_and_closes_with_the_summary() {
     let run = run_koda(&server).await;
     assert!(run.output.status.success(), "{}", run.stdout);
 
+    // The session, what starting it said (the stub reports no context
+    // window, so Koda says what it assumed), then the turn.
     let methods = run.methods();
-    assert_eq!(methods[..2], ["session/started", "turn/started"]);
+    assert_eq!(methods[..3], ["session/started", "warning", "turn/started"]);
     assert_eq!(
         methods[methods.len() - 2..],
         ["turn/completed", "exec/summary"]
@@ -263,8 +265,13 @@ async fn every_message_says_which_session_and_turn_it_belongs_to() {
     for line in &run.lines[1..] {
         assert_eq!(line["params"]["sessionId"], session, "{line}");
     }
+    let first = run
+        .methods()
+        .iter()
+        .position(|m| *m == "turn/started")
+        .unwrap();
     let last = run.lines.len() - 2;
-    for line in &run.lines[2..last] {
+    for line in &run.lines[first + 1..last] {
         assert_eq!(line["params"]["turnId"], turn, "{line}");
     }
     assert_eq!(run.turn()["id"], turn);
@@ -442,7 +449,9 @@ async fn a_retry_is_an_error_that_will_retry() {
     assert_eq!(retry["attempt"], 1, "{retry}");
     assert_eq!(retry["maxAttempts"], 5, "{retry}");
     assert_eq!(retry["delayMs"], 1000, "{retry}");
-    assert!(run.of("warning").is_empty(), "{}", run.stdout);
+    // Only the session's start warned (the stub reports no context window).
+    assert_eq!(run.of("warning").len(), 1, "{}", run.stdout);
+    assert_eq!(run.methods()[1], "warning");
     assert_eq!(run.turn()["status"], "completed");
 }
 

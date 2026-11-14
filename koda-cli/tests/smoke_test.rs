@@ -289,7 +289,11 @@ fn exec_json_prints_the_protocol_from_session_to_summary() {
         methods,
         [
             "session/started",
+            // The mock reports no context window, so Koda says what it assumed.
+            "warning",
             "turn/started",
+            "item/started userMessage",
+            "item/completed userMessage",
             "item/started toolCall",
             "item/completed toolCall",
             "item/started agentMessage",
@@ -302,7 +306,9 @@ fn exec_json_prints_the_protocol_from_session_to_summary() {
     let started = &lines[0]["params"];
     assert_eq!(started["protocolVersion"], 2);
     assert_eq!(started["session"]["provider"], "mock");
-    let read = &lines[3]["params"]["item"];
+    let prompt = &lines[4]["params"]["item"];
+    assert_eq!(prompt["text"], "read hello.txt");
+    let read = &lines[6]["params"]["item"];
     assert_eq!(read["tool"], "Read");
     assert_eq!(read["status"], "completed");
     assert!(
@@ -311,9 +317,9 @@ fn exec_json_prints_the_protocol_from_session_to_summary() {
             .unwrap()
             .contains("mock test content")
     );
-    assert_eq!(lines[5]["params"]["item"]["text"], "I read the file.");
-    assert_eq!(lines[6]["params"]["turn"]["status"], "completed");
-    let summary = &lines[7]["params"];
+    assert_eq!(lines[8]["params"]["item"]["text"], "I read the file.");
+    assert_eq!(lines[9]["params"]["turn"]["status"], "completed");
+    let summary = &lines[10]["params"];
     assert_eq!(summary["success"], true);
     assert_eq!(summary["toolCalls"]["Read"], 1);
     assert_eq!(summary["turnStatus"], "completed");
