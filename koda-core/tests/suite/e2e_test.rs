@@ -333,3 +333,47 @@ async fn test_cancel_during_streaming() {
         "should emit Interrupted warning"
     );
 }
+
+/// Koda is built for the current Claude models: an older one runs as if it
+/// were current, with a warning on its first turn, and only the first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_older_claude_model_is_warned_about_once() {
+    let mut env = Env::builder()
+        .provider_type(koda_core::config::ProviderType::Anthropic)
+        .build()
+        .await;
+    let warnings = |events: &[EngineEvent]| -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                EngineEvent::Warn { message } if message.contains("older Claude model") => {
+                    Some(message.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    };
+
+    env.config.model = "claude-sonnet-5-5".into();
+    env.insert_user_message("hi").await;
+    let events = env
+        .run_inference(&MockProvider::new(vec![MockResponse::Text("Hi.".into())]))
+        .await;
+    assert!(warnings(&events).is_empty(), "a current model");
+
+    // A model nothing else in the suite uses, so "once" is this test's.
+    env.config.model = "claude-opus-4-1-20250805".into();
+    for prompt in ["again", "and again"] {
+        env.insert_user_message(prompt).await;
+        let events = env
+            .run_inference(&MockProvider::new(vec![MockResponse::Text("Hi.".into())]))
+            .await;
+        let found = warnings(&events);
+        if prompt == "again" {
+            assert_eq!(found.len(), 1, "{events:?}");
+            assert!(found[0].starts_with("claude-opus-4-1-20250805 is an older"));
+        } else {
+            assert!(found.is_empty(), "warned twice");
+        }
+    }
+}

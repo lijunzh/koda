@@ -22,7 +22,7 @@ fn ok_messages_body() -> Value {
         "id": "msg_test",
         "type": "message",
         "role": "assistant",
-        "model": "claude-sonnet-4-5-20250929",
+        "model": "claude-sonnet-5-5",
         "content": [{ "type": "text", "text": "ok" }],
         "stop_reason": "end_turn",
         "usage": { "input_tokens": 1, "output_tokens": 1 }
@@ -30,7 +30,7 @@ fn ok_messages_body() -> Value {
 }
 
 fn settings() -> ModelSettings {
-    ModelSettings::defaults_for("claude-sonnet-4-5-20250929", &ProviderType::Anthropic)
+    ModelSettings::defaults_for("claude-sonnet-5-5", &ProviderType::Anthropic)
 }
 
 fn user_msg(text: &str) -> ChatMessage {
@@ -492,7 +492,7 @@ async fn streamed_body(settings: &ModelSettings) -> Value {
 }
 
 /// A model in the catalog gets its level sent, the chosen one or Claude
-/// Code's default; another model gets none.
+/// Code's default; a model the catalog doesn't have yet gets none.
 #[tokio::test]
 async fn chat_stream_sends_the_catalog_effort() {
     let mut sonnet = ModelSettings::defaults_for("claude-sonnet-5-5", &ProviderType::Anthropic);
@@ -506,25 +506,25 @@ async fn chat_stream_sends_the_catalog_effort() {
         "high"
     );
 
-    let older = streamed_body(&settings()).await;
-    assert!(older.get("output_config").is_none(), "{older}");
+    let newer = ModelSettings::defaults_for("claude-opus-9", &ProviderType::Anthropic);
+    let body = streamed_body(&newer).await;
+    assert!(body.get("output_config").is_none(), "{body}");
 }
 
-/// Current Claude models refuse a token budget with a 400, so it isn't sent.
+/// Claude models take effort and refuse a token budget with a 400, so a
+/// budget (an agent file's, or one meant for Gemini) is never sent to them.
 #[tokio::test]
-async fn chat_stream_drops_a_thinking_budget_the_model_refuses() {
+async fn chat_stream_never_sends_claude_a_thinking_budget() {
     let mut haiku = ModelSettings::defaults_for("claude-haiku-5-5", &ProviderType::Anthropic);
     haiku.thinking_budget = Some(8000);
     let body = streamed_body(&haiku).await;
     assert!(body.get("thinking").is_none(), "{body}");
     assert_eq!(body["output_config"]["effort"], "medium");
 
-    let mut older = settings();
+    let mut older = ModelSettings::defaults_for("claude-sonnet-4-5", &ProviderType::Anthropic);
     older.thinking_budget = Some(8000);
-    assert_eq!(
-        streamed_body(&older).await["thinking"]["budget_tokens"],
-        8000
-    );
+    let body = streamed_body(&older).await;
+    assert!(body.get("thinking").is_none(), "an older model too: {body}");
 }
 
 #[tokio::test]

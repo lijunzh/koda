@@ -1198,7 +1198,7 @@ mod tests {
             let last = saved(
                 ProviderType::Anthropic,
                 "https://api.anthropic.com",
-                "claude-sonnet-4-6",
+                "claude-sonnet-5",
             )
             .await;
             let (mut config, overrides) = loaded(None, None, None);
@@ -1206,7 +1206,7 @@ mod tests {
 
             apply_last_provider(&mut config, &last, overrides, None);
 
-            assert_eq!(config.model, "claude-sonnet-4-6");
+            assert_eq!(config.model, "claude-sonnet-5");
             assert_eq!(config.max_iterations, 7);
         }
 
@@ -1215,7 +1215,7 @@ mod tests {
             let last = saved(
                 ProviderType::Anthropic,
                 "https://api.anthropic.com",
-                "claude-sonnet-4-6",
+                "claude-sonnet-5",
             )
             .await;
             let (mut config, overrides) = loaded(None, None, None);
@@ -1228,8 +1228,8 @@ mod tests {
 
             assert_eq!(config.provider_type, ProviderType::Anthropic);
             assert_eq!(config.base_url, "https://api.anthropic.com");
-            assert_eq!(config.model, "claude-sonnet-4-6");
-            assert_eq!(config.model_settings.model, "claude-sonnet-4-6");
+            assert_eq!(config.model, "claude-sonnet-5");
+            assert_eq!(config.model_settings.model, "claude-sonnet-5");
             assert_eq!(
                 config.max_context_tokens, 1_000_000,
                 "derived settings follow the restored model (Sonnet 4.6 has a 1M window by default)"
@@ -1300,7 +1300,7 @@ mod tests {
             let last = saved(
                 ProviderType::Anthropic,
                 "https://proxy.example/anthropic",
-                "claude-opus-4-6",
+                "claude-opus-5",
             )
             .await;
             let (mut config, overrides) = loaded(None, None, Some("anthropic"));
@@ -1309,7 +1309,7 @@ mod tests {
 
             assert_eq!(config.provider_type, ProviderType::Anthropic);
             assert_eq!(config.base_url, "https://proxy.example/anthropic");
-            assert_eq!(config.model, "claude-opus-4-6");
+            assert_eq!(config.model, "claude-opus-5");
         }
 
         #[tokio::test]
@@ -1345,7 +1345,7 @@ mod tests {
             let last = saved_as(
                 ProviderType::Anthropic,
                 "https://api.anthropic.com",
-                "claude-haiku-4-5-20251001",
+                "claude-haiku-5-5-20261001",
                 Some("claude-haiku"),
             )
             .await;
@@ -1387,7 +1387,7 @@ mod tests {
             let last = saved(
                 ProviderType::Anthropic,
                 "https://api.anthropic.com",
-                "claude-haiku-4-5-20251001",
+                "claude-haiku-5-5-20261001",
             )
             .await;
             let (mut config, overrides) = loaded(None, None, None);
@@ -1399,7 +1399,7 @@ mod tests {
                 Some(&live_haiku("claude-haiku-5-5")),
             );
 
-            assert_eq!(config.model, "claude-haiku-4-5-20251001");
+            assert_eq!(config.model, "claude-haiku-5-5-20261001");
         }
 
         #[tokio::test]
@@ -1407,7 +1407,7 @@ mod tests {
             let last = saved_as(
                 ProviderType::Anthropic,
                 "https://api.anthropic.com",
-                "claude-haiku-4-5-20251001",
+                "claude-haiku-5-5-20261001",
                 Some("claude-haiku"),
             )
             .await;
@@ -1430,7 +1430,7 @@ mod tests {
             let last = saved_as(
                 ProviderType::Anthropic,
                 "https://api.anthropic.com",
-                "claude-haiku-4-5-20251001",
+                "claude-haiku-5-5-20261001",
                 Some("claude-haiku"),
             )
             .await;

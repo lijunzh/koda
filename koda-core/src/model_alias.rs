@@ -507,7 +507,7 @@ mod tests {
             "gemini-flash-latest"
         );
         assert!(resolve_saved(LOCAL_ALIAS, None).is_none());
-        assert!(resolve_saved("claude-haiku-4-5-20251001", None).is_none());
+        assert!(resolve_saved("claude-haiku-5-5-20261001", None).is_none());
     }
 
     #[test]

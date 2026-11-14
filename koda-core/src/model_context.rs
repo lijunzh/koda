@@ -26,7 +26,6 @@ const MIN_CONTEXT: usize = 4_096;
 /// use koda_core::model_context::context_window_for_model;
 ///
 /// assert_eq!(context_window_for_model("claude-sonnet-5-5"), 1_000_000);
-/// assert_eq!(context_window_for_model("claude-haiku-4-5"), 200_000);
 /// assert_eq!(context_window_for_model("gpt-4o"), 128_000);
 /// assert_eq!(context_window_for_model("gemini-2.5-pro"), 1_048_576);
 ///
@@ -37,48 +36,14 @@ pub fn context_window_for_model(model: &str) -> usize {
     let m = model.to_lowercase();
 
     // ── Anthropic ─────────────────────────────────────
-    // Checked 2026-10-27 against
-    // https://platform.claude.com/docs/en/build-with-claude/context-windows:
-    // every 5.x model (Fable/Mythos 5, Opus 5, Sonnet 5, Haiku 5.5), Opus
-    // 4.6/4.7/4.8 and Sonnet 4.6 have a 1M-token window by default, with
-    // no beta header. Opus 4.5, Haiku 4.5, Sonnet 4.5, Sonnet 4 and
-    // Claude 3.x have 200K.
-    //
-    // The virtual "-1m" suffix predates native 1M: it opts Sonnet 4.5 / 4
-    // into the `context-1m-2025-08-07` beta (see providers/anthropic.rs).
-    // On a natively-1M model the suffix is accepted and means nothing; on
-    // any other model it falls through to that model's 200K.
+    // Every current Claude model, 5.x and Fable, has a 1M-token window
+    // (checked 2026-10-27 against
+    // https://platform.claude.com/docs/en/build-with-claude/context-windows),
+    // and Koda is built for the current models: an older one, which has 200K,
+    // is warned about and otherwise treated as current. The Models API's
+    // `max_input_tokens` replaces this when Koda can read it.
     if m.contains("claude") {
-        let base = m.strip_suffix("-1m").unwrap_or(&m);
-        if has_native_1m_context(base) {
-            return 1_000_000;
-        }
-        if base.len() != m.len() {
-            // "-1m" requested on a model without native 1M. Sonnet 4.5 and
-            // the dated Sonnet 4 snapshots take the beta header.
-            if base.starts_with("claude-sonnet-4") {
-                return 1_000_000;
-            }
-            tracing::warn!(
-                "Model '{}' does not support 1M extended context; using 200K.",
-                model
-            );
-            return 200_000;
-        }
-        if base.starts_with("claude-opus-4")
-            || base.starts_with("claude-sonnet-4")
-            || base.starts_with("claude-haiku-4")
-            || base.starts_with("claude-3")
-        {
-            return 200_000;
-        }
-        // Catch-all for Claude models this table hasn't seen yet.
-        tracing::warn!(
-            "Unknown Claude model '{}' — assuming 200K context. \
-             Update model_context.rs if this model has a different context window.",
-            model
-        );
-        return 200_000;
+        return 1_000_000;
     }
 
     // ── OpenAI ────────────────────────────────────────────
@@ -186,124 +151,26 @@ pub fn context_window_for_model(model: &str) -> usize {
     DEFAULT_CONTEXT
 }
 
-/// Whether a Claude model has a 1M-token context window by default, with
-/// no beta header.
-///
-/// Takes the real API model id, without the virtual `-1m` suffix. The
-/// prefixes were checked on 2026-10-27 against
-/// <https://platform.claude.com/docs/en/build-with-claude/context-windows>;
-/// add one when a new family ships with 1M.
-pub fn has_native_1m_context(model: &str) -> bool {
-    const NATIVE_1M: &[&str] = &[
-        "claude-fable-5",
-        "claude-mythos-5",
-        "claude-opus-5",
-        "claude-sonnet-5",
-        "claude-haiku-5",
-        "claude-opus-4-6",
-        "claude-opus-4-7",
-        "claude-opus-4-8",
-        "claude-sonnet-4-6",
-    ];
-    let m = model.to_lowercase();
-    NATIVE_1M.iter().any(|prefix| m.starts_with(prefix))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_claude_models() {
-        // 5.x, Opus 4.6+ and Sonnet 4.6: 1M by default, no beta header
-        assert_eq!(context_window_for_model("claude-haiku-5-5"), 1_000_000);
-        assert_eq!(context_window_for_model("claude-sonnet-5-5"), 1_000_000);
-        assert_eq!(context_window_for_model("claude-opus-5-5"), 1_000_000);
-        assert_eq!(context_window_for_model("claude-opus-5"), 1_000_000);
-        assert_eq!(context_window_for_model("claude-sonnet-5"), 1_000_000);
-        assert_eq!(context_window_for_model("claude-fable-5-1"), 1_000_000);
-        assert_eq!(context_window_for_model("claude-opus-4-8"), 1_000_000);
-        assert_eq!(context_window_for_model("claude-opus-4-7"), 1_000_000);
-        assert_eq!(context_window_for_model("claude-opus-4-6"), 1_000_000);
-        assert_eq!(context_window_for_model("claude-sonnet-4-6"), 1_000_000);
-        // Older 4.x: 200K
-        assert_eq!(
-            context_window_for_model("claude-opus-4-5-20251101"),
-            200_000
-        );
-        assert_eq!(context_window_for_model("claude-haiku-4-5"), 200_000);
-        assert_eq!(
-            context_window_for_model("claude-haiku-4-5-20251001"),
-            200_000
-        );
-        assert_eq!(
-            context_window_for_model("claude-sonnet-4-5-20250929"),
-            200_000
-        );
-        assert_eq!(context_window_for_model("claude-opus-4-20250514"), 200_000);
-        assert_eq!(
-            context_window_for_model("claude-sonnet-4-20250514"),
-            200_000
-        );
-        // Claude 3.x: 200K context
-        assert_eq!(context_window_for_model("claude-3-opus-20240229"), 200_000);
-        assert_eq!(context_window_for_model("claude-3-haiku-20240307"), 200_000);
-        assert_eq!(
-            context_window_for_model("claude-3-5-sonnet-20240620"),
-            200_000
-        );
-    }
-
-    #[test]
-    fn test_unknown_claude_model_assumes_200k() {
-        // A family this table hasn't seen gets the conservative window.
-        assert_eq!(context_window_for_model("claude-sonnet-7"), 200_000);
-    }
-
-    #[test]
-    fn test_native_1m_prefixes() {
-        assert!(has_native_1m_context("claude-sonnet-5-5"));
-        assert!(has_native_1m_context("claude-haiku-5-5"));
-        assert!(has_native_1m_context("claude-opus-4-6"));
-        assert!(has_native_1m_context("Claude-Sonnet-4-6"));
-        assert!(!has_native_1m_context("claude-haiku-4-5"));
-        assert!(!has_native_1m_context("claude-opus-4-5-20251101"));
-        assert!(!has_native_1m_context("claude-sonnet-4-5-20250929"));
-        assert!(!has_native_1m_context("claude-3-opus-20240229"));
-    }
-
-    #[test]
-    fn test_claude_1m_virtual_models() {
-        // Beta-eligible models with -1m suffix get 1M
-        assert_eq!(
-            context_window_for_model("claude-sonnet-4-5-20250929-1m"),
-            1_000_000
-        );
-        assert_eq!(
-            context_window_for_model("claude-sonnet-4-20250514-1m"),
-            1_000_000
-        );
-        // Natively-1M models accept the suffix as a no-op
-        assert_eq!(context_window_for_model("claude-sonnet-4-6-1m"), 1_000_000);
-        assert_eq!(context_window_for_model("claude-opus-4-6-1m"), 1_000_000);
-        assert_eq!(context_window_for_model("claude-sonnet-5-5-1m"), 1_000_000);
-    }
-
-    #[test]
-    fn test_claude_1m_ineligible_models() {
-        // Ineligible models with -1m suffix stay at 200K
-        assert_eq!(
-            context_window_for_model("claude-opus-4-5-20251101-1m"),
-            200_000
-        );
-        assert_eq!(
-            context_window_for_model("claude-haiku-4-5-20251001-1m"),
-            200_000
-        );
-        assert_eq!(
-            context_window_for_model("claude-3-opus-20240229-1m"),
-            200_000
-        );
+    fn every_claude_model_is_current_with_1m() {
+        for model in [
+            "claude-haiku-5-5",
+            "claude-sonnet-5-5",
+            "claude-opus-5-5",
+            "claude-opus-5",
+            "claude-sonnet-5",
+            "claude-fable-5-2",
+            // A model released after this table, and one from the older
+            // line, which Koda warns about and otherwise treats as current.
+            "claude-sonnet-7",
+            "claude-haiku-4-5",
+        ] {
+            assert_eq!(context_window_for_model(model), 1_000_000, "{model}");
+        }
     }
 
     #[test]
@@ -387,7 +254,6 @@ mod tests {
     #[test]
     fn test_case_insensitive() {
         assert_eq!(context_window_for_model("Claude-Sonnet-5-5"), 1_000_000);
-        assert_eq!(context_window_for_model("Claude-Haiku-4-5"), 200_000);
         assert_eq!(context_window_for_model("GPT-4O"), 128_000);
     }
 }

@@ -120,7 +120,7 @@ mod tests {
         Metadata {
             session_id: "abc-123".to_string(),
             session_title: Some("test session".to_string()),
-            model: Some("claude-sonnet-4-6".to_string()),
+            model: Some("claude-sonnet-5".to_string()),
             provider: Some("anthropic".to_string()),
             context_window: Some(200_000),
             totals: Totals {
@@ -149,7 +149,7 @@ mod tests {
         // Verify every documented field is present and equals fixture.
         assert_eq!(value["session_id"], "abc-123");
         assert_eq!(value["session_title"], "test session");
-        assert_eq!(value["model"], "claude-sonnet-4-6");
+        assert_eq!(value["model"], "claude-sonnet-5");
         assert_eq!(value["provider"], "anthropic");
         assert_eq!(value["context_window"], 200_000);
         assert_eq!(value["totals"]["user_msgs"], 5);

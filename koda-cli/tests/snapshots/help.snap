@@ -71,7 +71,7 @@ Options:
           Sampling temperature (0.0 - 2.0)
 
       --thinking-budget <THINKING_BUDGET>
-          Anthropic thinking budget in tokens, for Claude models that still take one (Haiku 4.5 and older). Current Claude models take --effort instead
+          Gemini thinking budget in tokens. Claude models take --effort instead
 
       --reasoning-effort <LEVEL>
           Reasoning effort. Claude: low, medium, high, xhigh or max; by default the level Claude Code uses for the model. OpenAI-compatible servers: passed through as `reasoning_effort`

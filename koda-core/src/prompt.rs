@@ -35,7 +35,7 @@ const MEMORY_MAX_CHARS: usize = 32_768;
 pub struct EnvironmentInfo<'a> {
     /// Project root / working directory.
     pub project_root: &'a Path,
-    /// Model identifier (e.g. "claude-sonnet-4-6", "gpt-4o").
+    /// Model identifier (e.g. "claude-sonnet-5", "gpt-4o").
     pub model: &'a str,
     /// Platform (e.g. "macos", "linux").
     pub platform: &'a str,
@@ -774,7 +774,7 @@ mod tests {
         // Realistic env
         let env = EnvironmentInfo {
             project_root,
-            model: "claude-sonnet-4-6",
+            model: "claude-sonnet-5",
             platform: "macos",
         };
 
@@ -827,7 +827,7 @@ mod tests {
 
         eprintln!("\n========== SYSTEM PROMPT MEASUREMENT (#920) ==========");
         eprintln!(
-            "Setup: koda default agent, model=claude-sonnet-4-6, {} bundled agents loaded, {} built-in skills, {} tools (sent via API, not in prompt), {} commands",
+            "Setup: koda default agent, model=claude-sonnet-5, {} bundled agents loaded, {} built-in skills, {} tools (sent via API, not in prompt), {} commands",
             std::fs::read_dir(&agents_dir)
                 .map(|d| d.filter_map(|e| e.ok()).count())
                 .unwrap_or(0),

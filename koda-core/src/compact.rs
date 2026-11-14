@@ -985,7 +985,7 @@ mod tests {
             Some("low")
         );
         // Elsewhere nothing is added.
-        assert_eq!(summary_effort("anthropic", "claude-haiku-4-5", None), None);
+        assert_eq!(summary_effort("anthropic", "claude-opus-9", None), None);
         assert_eq!(summary_effort("openai-compat", "flashnext", None), None);
         assert_eq!(summary_effort("gemini", "gemini-x", None), None);
     }
