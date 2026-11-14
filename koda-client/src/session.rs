@@ -29,7 +29,8 @@ use koda_protocol::item::{self, ToolCallApprovalResponse, UserInputResponse};
 use koda_protocol::rpc::{ErrorObject, RequestId, codes};
 use koda_protocol::server::WarningNotification;
 use koda_protocol::session::{
-    ApprovalPolicy, Session, SessionCompactStartResponse, SessionStartedNotification,
+    ApprovalPolicy, Session, SessionCompactStartResponse, SessionSettingsUpdateParams,
+    SessionSettingsUpdateResponse, SessionSettingsUpdatedNotification, SessionStartedNotification,
 };
 use koda_protocol::turn::{
     LoopCapDecision, LoopCapResponse, Turn, TurnError, TurnInterruptParams, TurnInterruptResponse,
@@ -65,6 +66,11 @@ pub(crate) enum SessionCommand {
     },
     /// `session/compact/start`.
     Compact { reply: oneshot::Sender<Answer> },
+    /// `session/settings/update`.
+    UpdateSettings {
+        params: SessionSettingsUpdateParams,
+        reply: oneshot::Sender<Answer>,
+    },
     /// The client's answer to one of this session's server requests.
     Respond { id: RequestId, result: Answer },
     /// In process only: what the session's next turns run with. Applied
@@ -86,6 +92,7 @@ impl SessionCommand {
             | Self::Interrupt { reply, .. }
             | Self::Steer { reply, .. }
             | Self::Compact { reply }
+            | Self::UpdateSettings { reply, .. }
             | Self::Configure { done: reply, .. } => {
                 let _ = reply.send(Err(error));
             }
@@ -123,6 +130,7 @@ pub(crate) async fn open(
     context: SessionContext,
     resume: Option<String>,
     policy: ApprovalPolicy,
+    mut choice: crate::settings::ModelChoice,
 ) -> Result<OpenSession, ErrorObject> {
     let SessionContext {
         mut config,
@@ -135,13 +143,43 @@ pub(crate) async fn open(
         agent,
     } = context;
 
+    let resumed = resume.is_some();
+    // A resumed session keeps its own provider, endpoint, model choice and
+    // mode unless the client names others, as Codex's `thread/resume` does.
+    let mut mode = config.trust;
+    if let Some(id) = &resume {
+        let id = db
+            .resolve_session_id(id)
+            .await
+            .map_err(|e| ErrorObject::new(codes::INVALID_PARAMS, format!("{e:#}")))?;
+        let stored = db
+            .get_session(&id)
+            .await
+            .map_err(|e| internal(format!("couldn't read the session: {e:#}")))?;
+        if let Some(stored) = stored {
+            let overridden = choice.provider.is_some() || choice.model.is_some();
+            if !overridden {
+                choice.provider = stored.provider;
+                choice.base_url = choice.base_url.or(stored.base_url);
+                choice.model = stored.model;
+            }
+            if let Some(saved) = stored
+                .mode
+                .as_deref()
+                .and_then(koda_core::trust::TrustMode::parse)
+            {
+                mode = saved;
+            }
+        }
+    }
+    let alias = crate::settings::apply_start(&mut config, &choice).await?;
+
     // Ask the provider for the model's window first. A guess is said once
     // the session has started.
     let probe = koda_core::providers::create_provider(&config);
     let source = config.query_and_apply_capabilities(probe.as_ref()).await;
     let notice = config.assumed_context_notice(source);
 
-    let resumed = resume.is_some();
     let id = match resume {
         Some(id) => db
             .resolve_session_id(&id)
@@ -152,6 +190,14 @@ pub(crate) async fn open(
             .await
             .map_err(|e| internal(format!("couldn't create the session: {e:#}")))?,
     };
+    db.set_session_model(
+        &id,
+        &config.provider_type.to_string(),
+        &config.base_url,
+        alias.unwrap_or(&config.model),
+    )
+    .await
+    .map_err(|e| internal(format!("couldn't record the session's model: {e:#}")))?;
 
     let agent = match agent {
         Some(agent) => agent,
@@ -164,7 +210,7 @@ pub(crate) async fn open(
             Arc::new(agent)
         }
     };
-    let mut session = KodaSession::new(id.clone(), agent, db, &config, config.trust).await;
+    let mut session = KodaSession::new(id.clone(), agent, db, &config, mode).await;
     // A resumed session already has its title.
     session.title_set = resumed;
 
@@ -178,7 +224,7 @@ pub(crate) async fn open(
         model: Some(config.model.clone()),
         provider: Some(config.provider_type.meta().name.to_string()),
         context_window: Some(config.max_context_tokens as u64),
-        mode: Some(protocol_mode(config.trust)),
+        mode: Some(protocol_mode(mode)),
         tools: Some(
             session
                 .agent
@@ -220,6 +266,7 @@ pub(crate) async fn open(
             steers: VecDeque::new(),
             kinds: HashMap::new(),
             pending_end: None,
+            learned_window: None,
         }),
     });
     // Sub-agents' status goes out as it changes, not only between the
@@ -234,6 +281,8 @@ pub(crate) async fn open(
         task: SessionTask {
             session,
             config,
+            alias: alias.map(str::to_string),
+            pending_settings: Vec::new(),
             sink,
             engine_tx,
             engine_rx,
@@ -246,6 +295,11 @@ pub(crate) async fn open(
 pub(crate) struct SessionTask {
     session: KodaSession,
     config: KodaConfig,
+    /// The alias the model was chosen by, if any.
+    alias: Option<String>,
+    /// `session/settings/update`s that arrived during the turn, applied
+    /// once it has ended.
+    pending_settings: Vec<SessionSettingsUpdateParams>,
     sink: Arc<HostSink>,
     engine_tx: mpsc::Sender<EngineCommand>,
     engine_rx: mpsc::Receiver<EngineCommand>,
@@ -282,6 +336,17 @@ impl SessionTask {
                     self.configure(*config);
                     let _ = done.send(to_json(serde_json::Value::Null));
                 }
+                SessionCommand::UpdateSettings { params, reply } => {
+                    match self.update_settings(params).await {
+                        Ok(()) => {
+                            let _ = reply.send(to_json(SessionSettingsUpdateResponse {}));
+                            self.report_settings();
+                        }
+                        Err(error) => {
+                            let _ = reply.send(Err(error));
+                        }
+                    }
+                }
                 SessionCommand::Shutdown { .. } => return,
             }
         }
@@ -296,12 +361,98 @@ impl SessionTask {
     /// task goes on.
     async fn follow(&mut self, mut next: Next) -> bool {
         loop {
+            self.apply_pending_settings().await;
             next = match next {
                 Next::Idle => return true,
                 Next::Stop => return false,
                 Next::Compact(reply) => self.compact(reply).await,
             };
         }
+    }
+
+    /// Apply a `session/settings/update`: check it, then change the model
+    /// (probing its window), the effort and the mode, and record them with
+    /// the session.
+    async fn update_settings(
+        &mut self,
+        params: SessionSettingsUpdateParams,
+    ) -> Result<(), ErrorObject> {
+        crate::settings::check_update(
+            &self.config,
+            params.model.as_deref(),
+            params.effort.as_deref(),
+        )?;
+        let mut next = self.config.clone();
+        let mut alias = self.alias.clone();
+        let model_changed = match params.model.as_deref() {
+            Some(model) => {
+                let (id, by) = crate::settings::resolve_update(&next, model).await?;
+                next.model = id.clone();
+                next.model_settings.model = id;
+                next.recalculate_model_derived();
+                alias = by.map(str::to_string);
+                true
+            }
+            None => false,
+        };
+        if let Some(effort) = params.effort {
+            next.model_settings.reasoning_effort = Some(effort);
+        }
+        let id = self.session.id.clone();
+        if model_changed {
+            let probe = koda_core::providers::create_provider(&next);
+            next.query_and_apply_capabilities(probe.as_ref()).await;
+            self.session
+                .db
+                .set_session_model(
+                    &id,
+                    &next.provider_type.to_string(),
+                    &next.base_url,
+                    alias.as_deref().unwrap_or(&next.model),
+                )
+                .await
+                .map_err(|e| internal(format!("couldn't record the model: {e:#}")))?;
+            self.session.update_provider(&next);
+        }
+        if let Some(mode) = params.mode {
+            let mode = crate::settings::mode_of(mode);
+            self.session.mode = mode;
+            self.session
+                .db
+                .set_session_mode(&id, mode.as_str())
+                .await
+                .map_err(|e| internal(format!("couldn't record the mode: {e:#}")))?;
+        }
+        self.config = next;
+        self.alias = alias;
+        Ok(())
+    }
+
+    /// Apply the updates that arrived during the turn. They were checked
+    /// when they arrived; one that fails now is logged.
+    async fn apply_pending_settings(&mut self) {
+        let pending = std::mem::take(&mut self.pending_settings);
+        let any = !pending.is_empty();
+        for params in pending {
+            if let Err(error) = self.update_settings(params).await {
+                tracing::warn!("a settings update after the turn failed: {}", error.message);
+            }
+        }
+        if any {
+            self.report_settings();
+        }
+    }
+
+    /// Send `session/settings/updated` with the settings as they are now.
+    fn report_settings(&self) {
+        let settings =
+            crate::settings::report(&self.config, self.alias.as_deref(), self.session.mode);
+        self.sink.notify(ServerNotification::SessionSettingsUpdated(
+            SessionSettingsUpdatedNotification {
+                session_id: self.session.id.clone(),
+                settings,
+            },
+        ));
     }
 
     /// Compact the session as a turn of its own, answering `reply` first.
@@ -388,6 +539,8 @@ impl SessionTask {
             engine_tx,
             engine_rx,
             commands,
+            pending_settings,
+            ..
         } = self;
         let result = {
             // The turn's error, if it returned one, as text.
@@ -476,6 +629,22 @@ impl SessionTask {
                                 tracing::warn!("the turn's input is full; an answer was lost");
                             }
                         }
+                        // Checked now, applied once the turn has ended.
+                        Some(SessionCommand::UpdateSettings { params, reply }) => {
+                            match crate::settings::check_update(
+                                config,
+                                params.model.as_deref(),
+                                params.effort.as_deref(),
+                            ) {
+                                Ok(_) => {
+                                    pending_settings.push(params);
+                                    let _ = reply.send(to_json(SessionSettingsUpdateResponse {}));
+                                }
+                                Err(error) => {
+                                    let _ = reply.send(Err(error));
+                                }
+                            }
+                        }
                         // The running turn keeps what it started with.
                         Some(SessionCommand::Configure { config: next, done }) => {
                             let mut waiting = configured.take().map(|(_, d)| d).unwrap_or_default();
@@ -506,6 +675,12 @@ impl SessionTask {
         sink.end_turn(error);
         for reply in interrupts {
             let _ = reply.send(to_json(TurnInterruptResponse {}));
+        }
+        // A window the server stated in an overflow error holds for the
+        // session's next turns too.
+        if let Some(tokens) = sink.take_learned_window() {
+            config.max_context_tokens = tokens;
+            config.model_settings.max_context_tokens = tokens;
         }
         if let Some((next, waiting)) = configured {
             session.update_provider(&next);
@@ -585,6 +760,8 @@ struct SinkState {
     /// The turn's end, held until the turn has returned, so an error it
     /// returned with goes on `turn/completed`.
     pending_end: Option<EngineEvent>,
+    /// A context window the server stated mid-turn.
+    learned_window: Option<usize>,
 }
 
 /// The session's [`EngineSink`]: engine events become protocol messages on
@@ -608,6 +785,17 @@ impl HostSink {
         let mut state = self.lock();
         state.prompt = Some((prompt, client_message_ids));
         state.steers.clear();
+    }
+
+    /// The window the server stated during the turn, if it did.
+    fn take_learned_window(&self) -> Option<usize> {
+        self.lock().learned_window.take()
+    }
+
+    /// Send a notification of the session's own, in order with its events.
+    fn notify(&self, notification: ServerNotification) {
+        let mut state = self.lock();
+        self.send(&mut state, vec![Outgoing::Notification(notification)]);
     }
 
     fn queue_steer(&self, client_message_id: Option<String>) {
@@ -679,6 +867,10 @@ impl HostSink {
                 out
             }
             // Sent once the turn has returned ([`Self::end_turn`]).
+            (None, event @ EngineEvent::ContextWindowChanged { tokens }) => {
+                state.learned_window = Some(tokens);
+                state.projector.project(None, event)
+            }
             (None, event @ EngineEvent::TurnEnd { .. }) => {
                 state.pending_end = Some(event);
                 Vec::new()
@@ -896,6 +1088,7 @@ mod tests {
                 steers: VecDeque::new(),
                 kinds: HashMap::new(),
                 pending_end: None,
+                learned_window: None,
             }),
         };
         (sink, rx)

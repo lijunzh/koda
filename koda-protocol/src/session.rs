@@ -54,6 +54,79 @@ pub struct SessionStartParams {
     /// Who answers the session's requests. Without one, the client does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval_policy: Option<ApprovalPolicy>,
+    /// The provider, by id (`anthropic`, `lm-studio`, …, as
+    /// `modelProvider/list` gives them). A new session without one uses the
+    /// host's; a resumed one keeps the provider it was started with, as
+    /// Codex's `thread/resume` does. A session's provider never changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_provider: Option<String>,
+    /// The provider's endpoint, for a local server or a gateway. Without
+    /// one, the provider's default, or a resumed session's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    /// The model: an id, or an alias such as `claude-opus`, which follows
+    /// its line's newest model. Without one, the provider's default, or a
+    /// resumed session's own choice, an alias resolved again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+/// `session/settings/update`: what the session's next turns run with, as
+/// Codex's `thread/settings/update`. Only what's given changes. A running
+/// turn keeps its own; `session/settings/updated` follows once applied.
+/// The provider can't change: a model of another provider is refused.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionSettingsUpdateParams {
+    /// The session.
+    pub session_id: String,
+    /// The model: an id, or an alias of the session's provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The reasoning effort, such as `high`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    /// The trust mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<TrustMode>,
+}
+
+/// The answer to `session/settings/update`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSettingsUpdateResponse {}
+
+/// What a session's turns run with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSettings {
+    /// The model's id.
+    pub model: String,
+    /// The alias the model was chosen by, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+    /// The provider's id.
+    pub model_provider: String,
+    /// The provider's endpoint.
+    pub base_url: String,
+    /// The context window, in tokens.
+    pub context_window: u64,
+    /// The reasoning effort sent, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    /// The trust mode.
+    pub mode: TrustMode,
+}
+
+/// `session/settings/updated`: a session's settings changed. Codex's
+/// `thread/settings/updated`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSettingsUpdatedNotification {
+    /// The session.
+    pub session_id: String,
+    /// All of its settings, as they are now.
+    pub settings: SessionSettings,
 }
 
 /// Who answers a session's approvals, questions and loop-cap decisions.

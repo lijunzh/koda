@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **The client protocol carries a session's settings.** `session/start` takes `modelProvider`, `baseUrl` and `model`; `session/settings/update` changes the model (within the session's provider), the effort and the mode for the next turns, as Codex's `thread/settings/update` does, and `session/settings/updated` reports them; `model/list` and `modelProvider/list` give what a client picks from. A session's provider is fixed, as a Codex thread's is: another provider's model is refused.
+- **A resumed session keeps its own provider and model.** Sessions now record the provider, endpoint and model they run with, and resuming one (`koda exec -s`, `session/start` with an id) reopens on them unless flags or the client name others, as `codex exec resume` does. A model chosen by alias moves to its line's newest. Sessions from before this record nothing and resume on today's choice. The TUI moves onto these requests next.
+
 - **Koda tells you when Anthropic releases a model it doesn't support yet.** At every TUI start with an Anthropic key, Koda asks the Models API for the newest model in each line. If one is missing from Koda's tables, a startup notice names it, with a link that opens an issue asking for support (it carries only the model id). The model still runs, as a current one without a tuned effort; `koda exec` only logs the notice.
 - **`claude-fable` follows the newest Fable model,** as `claude-haiku`, `claude-sonnet` and `claude-opus` follow theirs (pinned to `claude-fable-5-2` offline). Picking Anthropic in `/provider` now offers the newest model of each line, not every model the API lists. A model picked there, or set as the provider's default, is remembered as its line's alias, so it moves to the next release on its own; an id typed by hand stays as typed, and once its line has a newer model Koda supports, the TUI says so at every start.
 

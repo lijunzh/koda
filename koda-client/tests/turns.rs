@@ -10,9 +10,11 @@ use std::time::{Duration, Instant};
 use koda_client::events::Outgoing;
 use koda_client::protocol::initialize::ClientInfo;
 use koda_client::protocol::item::{CompactionStatus, CompactionTrigger, Item};
+use koda_client::protocol::model::{ModelListParams, ModelProviderListParams};
 use koda_client::protocol::rpc::{ErrorObject, RequestId, codes};
 use koda_client::protocol::session::{
-    SessionCompactStartParams, SessionDeleteParams, SessionListParams, SessionStartParams,
+    SessionCompactStartParams, SessionDeleteParams, SessionListParams, SessionSettings,
+    SessionSettingsUpdateParams, SessionSettingsUpdateResponse, SessionStartParams,
     SessionUnsubscribeParams, SessionUnsubscribeStatus,
 };
 use koda_client::protocol::state::TrustMode;
@@ -100,6 +102,7 @@ fn config(server: &FakeLlmServer) -> KodaConfig {
     let mut config = KodaConfig::default_for_testing(ProviderType::LMStudio);
     config.base_url = server.url();
     config.model = "stub".to_string();
+    config.model_settings.model = "stub".to_string();
     config.max_context_tokens = 100_000;
     config.model_settings.max_context_tokens = 100_000;
     config
@@ -1232,5 +1235,207 @@ async fn reasoning_goes_back_only_to_the_model_that_wrote_it() {
         sent[2].to_string().contains("Done."),
         "the replies still go"
     );
+    koda.client.shutdown().await;
+}
+
+// ── Settings ────────────────────────────────────────────────────────────
+
+impl Koda {
+    async fn update(
+        &self,
+        model: Option<&str>,
+        mode: Option<TrustMode>,
+    ) -> Result<SessionSettingsUpdateResponse, RequestError> {
+        self.client
+            .request::<methods::SessionSettingsUpdate>(SessionSettingsUpdateParams {
+                session_id: self.session.clone(),
+                model: model.map(str::to_string),
+                effort: None,
+                mode,
+            })
+            .await
+    }
+
+    /// The settings `session/settings/updated` reported.
+    async fn settings_updated(&mut self) -> SessionSettings {
+        match self.until("session/settings/updated").await.pop() {
+            Some(Outgoing::Notification(ServerNotification::SessionSettingsUpdated(n))) => {
+                assert_eq!(n.session_id, self.session);
+                n.settings
+            }
+            other => panic!("expected session/settings/updated, got {other:?}"),
+        }
+    }
+}
+
+/// The model each chat request named.
+async fn models_asked(server: &FakeLlmServer) -> Vec<String> {
+    chat_requests(server)
+        .await
+        .iter()
+        .map(|r| r["model"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+/// `session/settings/update` changes the model for the next turn, and says
+/// so with `session/settings/updated`; the mode is saved with the session.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_settings_update_reaches_the_next_turn() {
+    let server = model(vec![text("One."), text("Two.")]).await;
+    let mut koda = Koda::start(config(&server)).await;
+    koda.turn("first").await;
+    koda.until("turn/completed").await;
+
+    koda.update(Some("other-model"), Some(TrustMode::Plan))
+        .await
+        .unwrap();
+    let settings = koda.settings_updated().await;
+    assert_eq!(settings.model, "other-model");
+    assert_eq!(settings.model_provider, "lm-studio");
+    assert_eq!(settings.mode, TrustMode::Plan);
+
+    koda.turn("second").await;
+    koda.until("turn/completed").await;
+    assert_eq!(models_asked(&server).await, ["stub", "other-model"]);
+
+    let db = Database::init(&koda._dir.path().join("config"))
+        .await
+        .unwrap();
+    use koda_core::persistence::Persistence;
+    let stored = db.get_session(&koda.session).await.unwrap().unwrap();
+    assert_eq!(stored.model.as_deref(), Some("other-model"));
+    assert_eq!(stored.mode.as_deref(), Some("plan"));
+    koda.client.shutdown().await;
+}
+
+/// A turn keeps the settings it started with; an update sent meanwhile is
+/// answered at once and applied once the turn has ended.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_running_turn_keeps_its_settings() {
+    let server = model(vec![
+        text("Slow.").set_delay(Duration::from_millis(800)),
+        text("Next."),
+    ])
+    .await;
+    let mut koda = Koda::start(config(&server)).await;
+    koda.turn("slow").await;
+    koda.until("turn/started").await;
+    koda.update(Some("later-model"), None).await.unwrap();
+    let seen = koda.until("turn/completed").await;
+    assert!(
+        !names(&seen).contains("session/settings/updated"),
+        "applied before the turn ended: {}",
+        names(&seen)
+    );
+    assert_eq!(koda.settings_updated().await.model, "later-model");
+
+    koda.turn("next").await;
+    koda.until("turn/completed").await;
+    assert_eq!(models_asked(&server).await, ["stub", "later-model"]);
+    koda.client.shutdown().await;
+}
+
+/// A session's provider doesn't change: another provider's model is
+/// refused, and so is an unknown provider at the start.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_session_keeps_its_provider() {
+    let server = model(vec![]).await;
+    let koda = Koda::start(config(&server)).await;
+    let refused = server_error(koda.update(Some("gemini-flash"), None).await);
+    assert!(
+        refused.message.contains("start a new session"),
+        "{refused:?}"
+    );
+    let unknown = server_error(
+        koda.client
+            .request::<methods::SessionStart>(SessionStartParams {
+                model_provider: Some("nope".into()),
+                ..Default::default()
+            })
+            .await,
+    );
+    assert!(unknown.message.contains("unknown provider"), "{unknown:?}");
+    koda.client.shutdown().await;
+}
+
+/// `session/start` takes a provider, endpoint and model; a resumed session
+/// reopens on its own unless the client names others, as Codex's
+/// `thread/resume` does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_resumed_session_reopens_on_its_own_model() {
+    let first = model(vec![text("Here.")]).await;
+    let second = model(vec![text("There."), text("Back.")]).await;
+    let mut koda = Koda::start(config(&first)).await;
+    let started = koda
+        .client
+        .request::<methods::SessionStart>(SessionStartParams {
+            model_provider: Some("lm-studio".into()),
+            base_url: Some(second.url()),
+            model: Some("second-model".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let other = started.session.id;
+    assert_eq!(started.session.model.as_deref(), Some("second-model"));
+    koda.session = other.clone();
+    koda.turn("hello").await;
+    koda.until("turn/completed").await;
+    koda.unsubscribe().await;
+
+    let resumed = koda
+        .client
+        .request::<methods::SessionStart>(SessionStartParams {
+            session_id: Some(other),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(resumed.session.model.as_deref(), Some("second-model"));
+    koda.turn("again").await;
+    koda.until("turn/completed").await;
+    assert_eq!(
+        models_asked(&second).await,
+        ["second-model", "second-model"]
+    );
+    assert!(chat_requests(&first).await.is_empty());
+    koda.client.shutdown().await;
+}
+
+/// `model/list` gives a provider's models; `modelProvider/list` the
+/// providers, with whether a key is set, never the key.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn models_and_providers_are_listed() {
+    let server = model(vec![]).await;
+    server
+        .mount_fn("GET", r".*/models$", |_| {
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"data": [{"id": "m-one"}, {"id": "m-two"}]}))
+        })
+        .await;
+    let koda = Koda::start(config(&server)).await;
+    let models = koda
+        .client
+        .request::<methods::ModelList>(ModelListParams {
+            model_provider: Some("lm-studio".into()),
+            base_url: Some(server.url()),
+        })
+        .await
+        .unwrap();
+    let ids: Vec<&str> = models.data.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(ids, ["m-one", "m-two"]);
+
+    let providers = koda
+        .client
+        .request::<methods::ModelProviderList>(ModelProviderListParams {})
+        .await
+        .unwrap();
+    assert_eq!(providers.default_provider_id, "lm-studio");
+    let lm = providers.data.iter().find(|p| p.id == "lm-studio").unwrap();
+    assert_eq!(lm.name, "LM Studio");
+    assert!(!lm.requires_api_key);
+    assert!(providers.data.iter().any(|p| p.id == "anthropic"));
+    let raw = serde_json::to_string(&providers).unwrap();
+    assert!(!raw.contains("sk-"), "a key leaked: {raw}");
     koda.client.shutdown().await;
 }

@@ -161,6 +161,7 @@ pub(crate) async fn open_host_session(
         .request::<methods::SessionStart>(SessionStartParams {
             session_id: resume,
             approval_policy: None,
+            ..Default::default()
         })
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;

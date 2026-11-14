@@ -119,6 +119,7 @@ server_notifications! {
     SessionStarted => "session/started" (crate::session::SessionStartedNotification),
     /// A session was deleted.
     SessionDeleted => "session/deleted" (crate::session::SessionDeletedNotification),
+    SessionSettingsUpdated => "session/settings/updated" (crate::session::SessionSettingsUpdatedNotification),
     /// A turn began.
     TurnStarted => "turn/started" (crate::turn::TurnStartedNotification),
     /// A turn is over, however it ended.

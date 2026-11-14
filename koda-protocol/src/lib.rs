@@ -22,6 +22,7 @@
 
 pub mod initialize;
 pub mod item;
+pub mod model;
 mod request;
 pub mod rpc;
 pub mod server;

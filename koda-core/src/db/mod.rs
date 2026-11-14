@@ -172,7 +172,10 @@ impl Database {
                 project_root TEXT,
                 last_accessed_at TEXT,
                 title TEXT,
-                mode TEXT
+                mode TEXT,
+                provider TEXT,
+                base_url TEXT,
+                model TEXT
             );",
         )
         .execute(pool)
@@ -215,6 +218,22 @@ impl Database {
             sqlx::query("ALTER TABLE messages ADD COLUMN thinking_blocks TEXT")
                 .execute(pool)
                 .await?;
+        }
+        // A session's provider, endpoint and model choice, restored on
+        // resume. Older sessions have none and resume on today's choice.
+        for (column, add) in [
+            ("provider", "ALTER TABLE sessions ADD COLUMN provider TEXT"),
+            ("base_url", "ALTER TABLE sessions ADD COLUMN base_url TEXT"),
+            ("model", "ALTER TABLE sessions ADD COLUMN model TEXT"),
+        ] {
+            let present: Option<(String,)> =
+                sqlx::query_as("SELECT name FROM pragma_table_info('sessions') WHERE name = ?")
+                    .bind(column)
+                    .fetch_optional(pool)
+                    .await?;
+            if present.is_none() {
+                sqlx::query(add).execute(pool).await?;
+            }
         }
         // The model that wrote `thinking_content`, so it goes back to that
         // model only. Older rows have none and their reasoning isn't resent.
@@ -420,6 +439,9 @@ pub(crate) struct SessionInfoRow {
     pub updated_unix: i64,
     pub preview: Option<String>,
     pub project_root: Option<String>,
+    pub provider: Option<String>,
+    pub base_url: Option<String>,
+    pub model: Option<String>,
 }
 
 impl From<SessionInfoRow> for SessionInfo {
@@ -436,6 +458,9 @@ impl From<SessionInfoRow> for SessionInfo {
             updated_unix: r.updated_unix,
             preview: r.preview,
             project_root: r.project_root,
+            provider: r.provider,
+            base_url: r.base_url,
+            model: r.model,
         }
     }
 }
