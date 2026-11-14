@@ -88,8 +88,6 @@ pub mod loop_guard;
 pub mod mcp;
 /// Instruction files (`AGENTS.md`, `CLAUDE.md`) and Koda's own notes.
 pub mod memory;
-/// Microcompact — lightweight tool result aging without full compaction.
-pub mod microcompact;
 /// Hardcoded model aliases for stable, cross-provider model selection.
 pub mod model_alias;
 /// Hardcoded context-window lookup table (fallback when API doesn't report).

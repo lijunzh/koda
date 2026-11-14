@@ -121,8 +121,6 @@ pub enum CompactionTrigger {
     Overflow,
     /// The estimate was past the window, so history was dropped unsummarized.
     Window,
-    /// A session idle long enough had its old tool results cleared.
-    Idle,
     /// The client asked for it with `session/compact/start`.
     Manual,
     /// The turn's final reply left the context past the after-turn

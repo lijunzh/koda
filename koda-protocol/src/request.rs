@@ -130,16 +130,6 @@ client_requests! {
         params: crate::session::SessionDeleteParams,
         response: crate::session::SessionDeleteResponse,
     },
-    /// What compacted messages the store keeps.
-    StorageRead => "storage/read" {
-        params: crate::storage::StorageReadParams,
-        response: crate::storage::StorageReadResponse,
-    },
-    /// Delete compacted messages for good.
-    StoragePurge => "storage/purge" {
-        params: crate::storage::StoragePurgeParams,
-        response: crate::storage::StoragePurgeResponse,
-    },
     /// Change what a session's next turns run with. A running turn keeps
     /// its own; `session/settings/updated` follows once applied.
     SessionSettingsUpdate => "session/settings/update" {

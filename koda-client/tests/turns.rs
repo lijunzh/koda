@@ -18,7 +18,6 @@ use koda_client::protocol::session::{
     SessionUnsubscribeParams, SessionUnsubscribeStatus,
 };
 use koda_client::protocol::state::TrustMode;
-use koda_client::protocol::storage::{StoragePurgeParams, StorageReadParams};
 use koda_client::protocol::turn::{
     TurnInterruptParams, TurnStartParams, TurnStatus, TurnSteerParams,
 };
@@ -825,13 +824,6 @@ async fn a_shared_agent_is_what_sessions_run_with() {
 // ── Sessions (PR 6a) ─────────────────────────────────────────────────────
 
 impl Koda {
-    async fn storage(&self) -> koda_client::protocol::storage::StorageReadResponse {
-        self.client
-            .request::<methods::StorageRead>(StorageReadParams {})
-            .await
-            .unwrap()
-    }
-
     async fn list(&self) -> Vec<koda_client::protocol::session::Session> {
         self.client
             .request::<methods::SessionList>(SessionListParams::default())
@@ -929,50 +921,6 @@ async fn deleting_an_open_session_stops_its_turn_and_deletes_it() {
             .await,
     );
     assert!(gone.message.contains("no session"), "{gone:?}");
-}
-
-/// `storage/read` counts compacted messages and `storage/purge` deletes them.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn storage_counts_and_purges_compacted_messages() {
-    use koda_core::persistence::Persistence;
-    let server = model(vec![text("One."), text("Two.")]).await;
-    let mut koda = Koda::start(config(&server)).await;
-    for prompt in ["first", "second"] {
-        koda.turn(prompt).await;
-        koda.until("turn/completed").await;
-    }
-    assert_eq!(koda.storage().await.compacted_messages, 0);
-    assert!(koda.storage().await.oldest_compacted_at.is_none());
-
-    let db = Database::init(&koda._dir.path().join("config"))
-        .await
-        .unwrap();
-    let compacted = db
-        .compact_session(&koda.session, "summary", 1)
-        .await
-        .unwrap();
-    assert!(compacted > 0);
-    let stats = koda.storage().await;
-    assert_eq!(stats.compacted_messages, compacted as u64);
-    assert_eq!(stats.sessions, 1);
-    assert!(stats.size_bytes > 0);
-    assert!(stats.oldest_compacted_at.is_some_and(|t| t > 1_700_000_000));
-
-    let kept = koda
-        .client
-        .request::<methods::StoragePurge>(StoragePurgeParams {
-            min_age_days: Some(30),
-        })
-        .await
-        .unwrap();
-    assert_eq!(kept.deleted, 0, "nothing is 30 days old");
-    let purged = koda
-        .client
-        .request::<methods::StoragePurge>(StoragePurgeParams::default())
-        .await
-        .unwrap();
-    assert_eq!(purged.deleted, compacted as u64);
-    assert_eq!(koda.storage().await.compacted_messages, 0);
 }
 
 // ── Compaction ──────────────────────────────────────────────────────────

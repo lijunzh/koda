@@ -139,11 +139,6 @@
           "type": "string"
         },
         {
-          "const": "idle",
-          "description": "A session idle long enough had its old tool results cleared.",
-          "type": "string"
-        },
-        {
           "const": "manual",
           "description": "The client asked for it with `session/compact/start`.",
           "type": "string"
@@ -2027,79 +2022,6 @@
       ],
       "type": "object"
     },
-    "StoragePurgeParams": {
-      "additionalProperties": false,
-      "description": "`storage/purge`: delete compacted messages for good.",
-      "properties": {
-        "minAgeDays": {
-          "description": "Only those compacted at least this many days ago; without it, all.",
-          "format": "uint32",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        }
-      },
-      "type": "object"
-    },
-    "StoragePurgeResponse": {
-      "description": "The answer to `storage/purge`.",
-      "properties": {
-        "deleted": {
-          "description": "How many messages were deleted.",
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        }
-      },
-      "required": [
-        "deleted"
-      ],
-      "type": "object"
-    },
-    "StorageReadParams": {
-      "additionalProperties": false,
-      "description": "`storage/read`: what compacted messages the store keeps.",
-      "type": "object"
-    },
-    "StorageReadResponse": {
-      "description": "The answer to `storage/read`.",
-      "properties": {
-        "compactedMessages": {
-          "description": "Messages a compaction replaced, kept until purged.",
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "oldestCompactedAt": {
-          "description": "When the oldest was compacted, in Unix seconds; absent with none.",
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "sessions": {
-          "description": "Sessions with any.",
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "sizeBytes": {
-          "description": "Their size, roughly, in bytes.",
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        }
-      },
-      "required": [
-        "compactedMessages",
-        "sessions",
-        "sizeBytes"
-      ],
-      "type": "object"
-    },
     "TextDeltaNotification": {
       "description": "`item/agentMessage/delta` and `item/reasoning/textDelta`: more text.",
       "properties": {
@@ -2854,22 +2776,6 @@
       },
       "result": {
         "$ref": "#/$defs/StateReadResponse"
-      }
-    },
-    "storage/purge": {
-      "params": {
-        "$ref": "#/$defs/StoragePurgeParams"
-      },
-      "result": {
-        "$ref": "#/$defs/StoragePurgeResponse"
-      }
-    },
-    "storage/read": {
-      "params": {
-        "$ref": "#/$defs/StorageReadParams"
-      },
-      "result": {
-        "$ref": "#/$defs/StorageReadResponse"
       }
     },
     "turn/interrupt": {

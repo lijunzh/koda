@@ -1041,8 +1041,9 @@ impl LlmProvider for AnthropicProvider {
         if settings.thinking_budget.is_some() {
             crate::model_effort::warn_ignored_thinking_budget(api_model);
         }
-        // Compaction and microcompact edit history, and a block replayed after
-        // an edit is a 400 by default. Dropping it loses that reasoning only.
+        // Compaction replaces history with a summary, and a block replayed
+        // after an edit is a 400 by default. Dropping it loses that
+        // reasoning only.
         let binding = replays_thinking;
         if binding {
             body["thinking"] = serde_json::json!({

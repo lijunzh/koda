@@ -30,7 +30,6 @@ pub mod rpc;
 pub mod server;
 pub mod session;
 pub mod state;
-pub mod storage;
 pub mod turn;
 
 pub use request::{ClientRequest, DecodeError, Method, encode, methods};

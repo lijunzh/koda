@@ -10,8 +10,7 @@ use std::path::Path;
 
 use super::{Database, MessageRow, SessionEventRow, SessionInfoRow};
 use crate::persistence::{
-    CompactedStats, InterruptionKind, Message, Persistence, Role, SessionEvent, SessionInfo,
-    SessionUsage,
+    InterruptionKind, Message, Persistence, Role, SessionEvent, SessionInfo, SessionUsage,
 };
 
 // ── Private helpers ─────────────────────────────────────────────────────────
@@ -1088,78 +1087,6 @@ impl Persistence for Database {
         .await?;
 
         Ok(matches!(last_msg, Some((role, Some(_))) if role == "assistant"))
-    }
-
-    async fn clear_message_content(&self, message_ids: &[i64], stub: &str) -> Result<()> {
-        if message_ids.is_empty() {
-            return Ok(());
-        }
-        for chunk in message_ids.chunks(500) {
-            let placeholders: String = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-            let sql = format!("UPDATE messages SET content = ? WHERE id IN ({placeholders})");
-            let mut query = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(stub);
-            for id in chunk {
-                query = query.bind(id);
-            }
-            query.execute(&self.pool).await?;
-        }
-        // (#1166) Microcompact path: rewrites tool-result content in
-        // place. Bump gen to invalidate any cached snapshot that holds
-        // the pre-clear content.
-        self.compaction_gen
-            .fetch_add(1, std::sync::atomic::Ordering::Release);
-        Ok(())
-    }
-
-    /// Stats about compacted (archived) messages across all sessions.
-    async fn compacted_stats(&self) -> Result<CompactedStats> {
-        let row: (i64, i64, i64, Option<String>, Option<i64>) = sqlx::query_as(
-            "SELECT
-                 COUNT(*),
-                 COUNT(DISTINCT session_id),
-                 COALESCE(SUM(LENGTH(content) + LENGTH(COALESCE(tool_calls,''))), 0),
-                 MIN(compacted_at),
-                 CAST(strftime('%s', MIN(compacted_at)) AS INTEGER)
-             FROM messages
-             WHERE compacted_at IS NOT NULL",
-        )
-        .fetch_one(&self.pool)
-        .await?;
-
-        Ok(CompactedStats {
-            message_count: row.0,
-            session_count: row.1,
-            size_bytes: row.2,
-            oldest: row.3,
-            oldest_unix: row.4,
-        })
-    }
-
-    /// Permanently delete compacted messages older than `min_age_days`.
-    /// Pass 0 to delete all compacted messages regardless of age.
-    async fn purge_compacted(&self, min_age_days: u32) -> Result<usize> {
-        let result = if min_age_days == 0 {
-            sqlx::query("DELETE FROM messages WHERE compacted_at IS NOT NULL")
-                .execute(&self.pool)
-                .await?
-        } else {
-            sqlx::query(
-                "DELETE FROM messages
-                 WHERE compacted_at IS NOT NULL
-                   AND compacted_at < datetime('now', ?)",
-            )
-            .bind(format!("-{min_age_days} days"))
-            .execute(&self.pool)
-            .await?
-        };
-
-        let deleted = result.rows_affected() as usize;
-
-        // Reclaim disk space.
-        sqlx::query("VACUUM").execute(&self.pool).await?;
-
-        tracing::info!("Purged {deleted} compacted messages (>{min_age_days} days old)");
-        Ok(deleted)
     }
 
     /// Get a session metadata value by key.

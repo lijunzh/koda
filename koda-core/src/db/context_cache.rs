@@ -46,8 +46,7 @@
 //! before any subsequent rows are inserted (i.e. before the next
 //! tool-result row, before the next iteration's assistant). koda's
 //! inference loop honors this naturally
-//! (see `inference.rs:1081`); sub-agent dispatch and microcompact
-//! likewise.
+//! (see `inference.rs:1081`); sub-agent dispatch likewise.
 //!
 //! Violating the invariant would cause a newly-completed assistant
 //! whose id falls *below* our cached `max_id_returned` to be missed by

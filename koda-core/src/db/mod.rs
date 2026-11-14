@@ -36,9 +36,7 @@ use std::path::Path;
 use std::str::FromStr;
 
 /// Re-export persistence types for backward compatibility.
-pub use crate::persistence::{
-    CompactedStats, Message, Persistence, Role, SessionEvent, SessionInfo, SessionUsage,
-};
+pub use crate::persistence::{Message, Persistence, Role, SessionEvent, SessionInfo, SessionUsage};
 
 /// Wrapper around the SQLite connection pool.
 ///
@@ -382,23 +380,6 @@ impl Database {
         let mut messages: Vec<Message> = rows.into_iter().map(|r| r.into()).collect();
         messages.reverse();
         Ok(messages)
-    }
-
-    /// Seconds since the last assistant message in this session.
-    ///
-    /// Returns `None` if there are no (non-compacted) assistant messages.
-    /// Used by microcompact to decide whether the idle gap threshold is met.
-    pub async fn seconds_since_last_assistant(&self, session_id: &str) -> Result<Option<i64>> {
-        let row: Option<(i64,)> = sqlx::query_as(
-            "SELECT CAST((julianday('now') - julianday(created_at)) * 86400 AS INTEGER) \
-             FROM messages \
-             WHERE session_id = ? AND role = 'assistant' AND compacted_at IS NULL \
-             ORDER BY id DESC LIMIT 1",
-        )
-        .bind(session_id)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(row.map(|(secs,)| secs))
     }
 }
 

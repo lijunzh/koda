@@ -43,12 +43,9 @@ Run `/compact` at any time to compact early, e.g. before starting a large
 refactor so you have the full context window available. It runs like a turn:
 Esc stops it and leaves the history as it was.
 
-## Purging archived history
+## The stored record
 
-`/compact` keeps the replaced messages in the DB, archived. Use `/purge` to
-delete them:
-
-```text
-/purge        ← prompt and delete all archived messages
-/purge 90d    ← delete only archived messages older than 90 days
-```
+`/compact` keeps the replaced messages in the database, marked as compacted,
+and Koda never rewrites a stored message, so a session's record is what the
+model saw and said. Deleting a session from `/resume` removes it with its
+messages.

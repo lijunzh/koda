@@ -1,7 +1,7 @@
 //! Context analysis — per-tool token breakdown and duplicate detection.
 //!
 //! Analyzes conversation history to identify where tokens are being spent.
-//! Used by compaction decisions, `/usage` reporting, and microcompact.
+//! Used by compaction decisions and `/usage` reporting.
 //!
 //! ## What it reports
 //!
@@ -16,7 +16,6 @@
 //!
 //! - **Auto-compact**: triggers compaction when total tokens exceed threshold
 //! - **`/usage` command**: shows the token breakdown to the user
-//! - **Microcompact**: identifies old tool results safe to clear
 //!
 //! Inspired by Claude Code's `contextAnalysis.ts`.
 

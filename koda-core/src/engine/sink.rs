@@ -516,7 +516,7 @@ fn looks_like_tool_error(output: &str) -> bool {
 /// Pre-#1108 these events were sink-only and never reached the DB,
 /// so the markdown transcript export had no record of:
 /// - bg-agent narrative traces (what each task did during the wait window)
-/// - microcompact / loop-detector / rate-limit messages
+/// - loop-detector / rate-limit messages
 /// - bg-task status transitions (`Pending → Running { iter: N } → …`)
 ///
 /// ## Wiring

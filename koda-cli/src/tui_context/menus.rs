@@ -351,24 +351,6 @@ impl TuiContext {
         // live bg-task surface migrated to the always-on activity
         // overlay above the status bar; Esc and Ctrl+C cancel all of it.)
 
-        // Purge confirmation: only y/n/Esc are meaningful.
-        if let MenuContent::PurgeConfirm { min_age_days, .. } = &self.menu {
-            let days = *min_age_days;
-            match key.code {
-                KeyCode::Char('y' | 'Y') => {
-                    crate::tui_wizards::execute_purge(&mut self.scroll_buffer, &self.client, days)
-                        .await;
-                    self.menu = MenuContent::None;
-                }
-                KeyCode::Char('n' | 'N') | KeyCode::Esc => {
-                    crate::tui_output::dim_msg(&mut self.scroll_buffer, "Purge cancelled.".into());
-                    self.menu = MenuContent::None;
-                }
-                _ => {}
-            }
-            return Some(true);
-        }
-
         let is_up = key.code == KeyCode::Up
             || (key.code == KeyCode::Char('k') && key.modifiers.contains(KeyModifiers::CONTROL));
         let is_down = key.code == KeyCode::Down
@@ -427,7 +409,6 @@ impl TuiContext {
             MenuContent::Approval { .. }
             | MenuContent::AskUser { .. }
             | MenuContent::LoopCap { .. }
-            | MenuContent::PurgeConfirm { .. }
             | MenuContent::HistorySearch { .. }
             | MenuContent::WizardTrail(_)
             | MenuContent::ShortcutsOverlay
@@ -544,7 +525,6 @@ impl TuiContext {
             MenuContent::Approval { .. }
             | MenuContent::AskUser { .. }
             | MenuContent::LoopCap { .. }
-            | MenuContent::PurgeConfirm { .. }
             | MenuContent::HistorySearch { .. }
             | MenuContent::WizardTrail(_)
             | MenuContent::ShortcutsOverlay

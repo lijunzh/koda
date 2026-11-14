@@ -140,16 +140,16 @@ async fn typed_state_persists_its_notice() {
     let sink = PersistingSink::new(&inner, db.clone(), session_id.clone(), None);
 
     sink.emit(EngineEvent::Compaction {
-        trigger: CompactionTrigger::Idle,
+        trigger: CompactionTrigger::Manual,
         status: CompactionStatus::Completed {
             messages_removed: 2,
             summary_tokens: None,
         },
-        notice: Some(Notice::Info("cleared old results".into())),
+        notice: Some(Notice::Info("compacted the history".into())),
     });
 
     let events = wait_for_events(&db, &session_id, 1).await;
-    assert_eq!(events[0].payload, "cleared old results");
+    assert_eq!(events[0].payload, "compacted the history");
     assert!(matches!(inner.events()[0], EngineEvent::Compaction { .. }));
 }
 

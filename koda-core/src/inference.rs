@@ -24,7 +24,6 @@
 //! - **Streaming**: tokens are emitted as they arrive via `EngineSink`
 //! - **Loop guard**: detects repeated identical tool calls and prompts the user
 //! - **Auto-compact**: triggers compaction when context usage exceeds threshold
-//! - **Microcompact**: ages old tool results between turns
 //! - **Sub-agents**: `InvokeAgent` calls spawn a nested inference loop
 //! - **Cancellation**: `Ctrl+C` cancels the current inference gracefully
 //!
@@ -158,8 +157,7 @@ async fn assemble_context(turn: &TurnState<'_>) -> Result<(Vec<ChatMessage>, usi
     let history = turn.db.load_context(turn.session_id).await?;
 
     // Run per-tool context analysis for smarter compaction decisions.
-    // Logged at debug level; will be surfaced in `/usage` and used by
-    // microcompact (#636 P1) once that lands.
+    // Logged at debug level.
     let analysis = crate::context_analysis::analyze_context(&history);
     if analysis.total > 0 {
         tracing::debug!(
@@ -1265,23 +1263,6 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
     // Pre-build the base system message (avoids re-cloning 4-8KB per iteration)
     let base_system_prompt = system_prompt.to_string();
     let memory_context = crate::prompt::project_memory_context(project_memory);
-
-    // Microcompact: clear old tool results before the first LLM call.
-    // Time-based trigger — only fires when the idle gap since the last
-    // assistant message exceeds the threshold (not during active tool use).
-    if let Ok(Some(mc)) = crate::microcompact::microcompact_session(db, session_id).await {
-        sink.emit(EngineEvent::Compaction {
-            trigger: CompactionTrigger::Idle,
-            status: CompactionStatus::Completed {
-                messages_removed: mc.cleared,
-                summary_tokens: None,
-            },
-            notice: Some(Notice::Info(format!(
-                "\u{1f9f9} Microcompact: cleared {} old tool results (~{} tokens)",
-                mc.cleared, mc.tokens_saved,
-            ))),
-        });
-    }
 
     loop {
         // #1321: bg-task status events normally flow continuously

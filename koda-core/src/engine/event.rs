@@ -542,8 +542,6 @@ pub enum CompactionTrigger {
     Overflow,
     /// The estimate was past the window, so history was dropped unsummarized.
     Window,
-    /// A session idle long enough had its old tool results cleared.
-    Idle,
     /// The client asked for it (`/compact`, `session/compact/start`).
     Manual,
     /// The turn's final reply left the context past the after-turn
@@ -708,8 +706,8 @@ pub enum ChildAgentActivityKind {
     /// An informational line from inside the child.
     ///
     /// These pass through verbatim from `EngineEvent::Info` so the
-    /// child agent's own status messages (cache hit, microcompact
-    /// fired, etc.) surface in the parent's feed.
+    /// child agent's own status messages (cache hit, rate limit,
+    /// etc.) surface in the parent's feed.
     Info {
         /// The info line, rendered as-is.
         message: String,

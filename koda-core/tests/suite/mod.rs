@@ -55,7 +55,6 @@ mod new_tools_test;
 mod openai_compat_http_test;
 mod perf_test;
 mod persisting_sink_test;
-mod purge_test;
 mod session_allow_test;
 // Needs the mock providers: --features test-support.
 #[cfg(feature = "test-support")]
