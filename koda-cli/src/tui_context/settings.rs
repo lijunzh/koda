@@ -16,7 +16,7 @@ use koda_client::protocol::session::{
     SessionSettings, SessionSettingsUpdateParams, SessionStartParams, SessionUnsubscribeParams,
 };
 use koda_client::protocol::{ServerNotification, methods};
-use koda_core::config::ProviderType;
+use koda_core::config::{KodaConfig, ProviderType};
 
 use super::{TuiContext, TuiSession};
 
@@ -96,14 +96,7 @@ impl TuiContext {
 
     /// Mirror the host's settings into the TUI's own config.
     async fn adopt(&mut self, settings: SessionSettings) {
-        let ptype = ProviderType::from_url_or_name("", Some(&settings.model_provider));
-        let window = settings.context_window as usize;
-        self.config.provider_type = ptype;
-        self.config.base_url = settings.base_url;
-        self.config.model = settings.model.clone();
-        self.config.model_settings.model = settings.model.clone();
-        self.config.max_context_tokens = window;
-        self.config.model_settings.max_context_tokens = window;
+        mirror(&mut self.config, &settings);
         self.renderer.model = settings.model;
         // Still used to list models for the completer.
         *self.provider.write().await = koda_core::providers::create_provider(&self.config);
@@ -137,8 +130,7 @@ impl TuiContext {
             .await
         {
             Ok(alias) => {
-                crate::tui_wizards::save_provider(&self.config, &self.session.db, alias.as_deref())
-                    .await;
+                save_choice(&self.client, &self.config, alias.as_deref()).await;
                 let shown = match &alias {
                     Some(alias) => format!("{alias} ({})", self.config.model),
                     None => self.config.model.clone(),
@@ -236,7 +228,7 @@ impl TuiContext {
             crate::tui_output::warn_msg(&mut self.scroll_buffer, format!("{e:#}"));
         }
         let alias = koda_core::model_alias::following_alias(&self.config.model);
-        crate::tui_wizards::save_provider(&self.config, &self.session.db, alias).await;
+        save_choice(&self.client, &self.config, alias).await;
         crate::tui_output::ok_msg(
             &mut self.scroll_buffer,
             format!(
@@ -246,4 +238,119 @@ impl TuiContext {
             ),
         );
     }
+}
+
+/// What the command line named for a new session: each optional, the rest
+/// left to the host's saved choice (`config/read`), as Codex's TUI passes
+/// only its overrides to `thread/start`.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Named {
+    pub provider: Option<String>,
+    pub base_url: Option<String>,
+    pub model: Option<String>,
+}
+
+impl Named {
+    /// What `overrides` says the command line gave, read from `config`.
+    pub(crate) fn from_flags(config: &KodaConfig, overrides: super::ProviderOverrides) -> Self {
+        Self {
+            provider: overrides.provider.then(|| config.provider_type.to_string()),
+            base_url: overrides.base_url.then(|| config.base_url.clone()),
+            model: overrides.model.then(|| config.model.clone()),
+        }
+    }
+}
+
+/// Give a just-opened session the TUI's `mode`, which it has checked
+/// against the sandbox, and return what the session runs with, with any
+/// warnings the host sent meanwhile (an assumed context window, say).
+pub(crate) async fn fetch_settings(
+    client: &mut koda_client::InProcessClient,
+    session_id: &str,
+    mode: koda_core::trust::TrustMode,
+) -> anyhow::Result<(SessionSettings, Vec<String>)> {
+    client
+        .request::<methods::SessionSettingsUpdate>(SessionSettingsUpdateParams {
+            session_id: session_id.to_string(),
+            model: None,
+            effort: None,
+            mode: Some(protocol_mode(mode)),
+        })
+        .await
+        .map_err(host_error)?;
+    let deadline = tokio::time::Instant::now() + SETTINGS_WAIT;
+    let mut warnings = Vec::new();
+    loop {
+        match tokio::time::timeout_at(deadline, client.next_event()).await {
+            Ok(Some(Outgoing::Notification(ServerNotification::SessionSettingsUpdated(n))))
+                if n.session_id == session_id =>
+            {
+                return Ok((n.settings, warnings));
+            }
+            Ok(Some(Outgoing::Notification(ServerNotification::Warning(w)))) => {
+                warnings.push(w.message);
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => anyhow::bail!("Koda's host stopped"),
+            Err(_) => anyhow::bail!("Koda's host didn't report the session's settings"),
+        }
+    }
+}
+
+/// Copy the host's settings into the TUI's config, which the status bar,
+/// the banner and the completer read.
+pub(crate) fn mirror(config: &mut KodaConfig, settings: &SessionSettings) {
+    let window = settings.context_window as usize;
+    config.provider_type = ProviderType::from_url_or_name("", Some(&settings.model_provider));
+    config.base_url = settings.base_url.clone();
+    config.model = settings.model.clone();
+    config.model_settings.model = settings.model.clone();
+    config.max_context_tokens = window;
+    config.model_settings.max_context_tokens = window;
+}
+
+/// Save `config`'s provider, endpoint and model as the choice a new session
+/// starts from (`config/batchWrite`); the model by `alias` when it was
+/// chosen by one, so it follows its line.
+pub(crate) async fn save_choice(
+    client: &koda_client::InProcessClient,
+    config: &KodaConfig,
+    alias: Option<&str>,
+) {
+    use koda_client::protocol::config::{ConfigBatchWriteParams, ConfigEdit, MergeStrategy};
+    let edit = |key: &str, value: &str| ConfigEdit {
+        key_path: key.to_string(),
+        value: serde_json::Value::String(value.to_string()),
+        merge_strategy: MergeStrategy::Replace,
+    };
+    let saved = client
+        .request::<methods::ConfigBatchWrite>(ConfigBatchWriteParams {
+            edits: vec![
+                edit("model_provider", &config.provider_type.to_string()),
+                edit("base_url", &config.base_url),
+                edit("model", alias.unwrap_or(&config.model)),
+            ],
+        })
+        .await;
+    if let Err(e) = saved {
+        tracing::warn!("couldn't save the model choice: {e}");
+    }
+}
+
+/// Store `ptype`'s API key through the host (`modelProvider/apiKey/set`),
+/// which also makes it the one this run uses. Returns the host's error.
+pub(crate) async fn set_api_key(
+    client: &koda_client::InProcessClient,
+    ptype: ProviderType,
+    key: &str,
+) -> anyhow::Result<()> {
+    use koda_client::protocol::config::ModelProviderApiKeySetParams;
+    client
+        .request::<methods::ModelProviderApiKeySet>(ModelProviderApiKeySetParams {
+            provider_id: ptype.to_string(),
+            api_key: key.to_string(),
+        })
+        .await
+        .map(|_| ())
+        .map_err(host_error)
 }

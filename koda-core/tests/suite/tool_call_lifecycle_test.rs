@@ -59,6 +59,7 @@ async fn run(
         tools: ToolRegistry::new(env.root.clone(), env.config.max_context_tokens),
         tool_defs: ToolCatalog::new().get_definitions(&[], &[]),
         system_prompt: "You are a test assistant.".to_string(),
+        prompt_model: String::new(),
         semantic_memory: String::new(),
     });
     let mut session = KodaSession::new(

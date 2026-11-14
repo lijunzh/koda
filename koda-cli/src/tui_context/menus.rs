@@ -499,7 +499,10 @@ impl TuiContext {
                     // PR 6 of #1178: second API-key entry path (re-enter
                     // an existing key from the /key picker). Also masked.
                     self.prompt_mode = PromptMode::WizardInput { label, mask: true };
-                    self.provider_wizard = Some(ProviderWizard::ApiKeyOnly { env_name });
+                    self.provider_wizard = Some(ProviderWizard::ApiKeyOnly {
+                        provider_type: ptype,
+                        env_name,
+                    });
                     self.textarea.set_text_clearing_elements("");
                 }
                 return;
@@ -552,6 +555,30 @@ impl TuiContext {
 
     // ── Wizard submit ──────────────────────────────────────────
 
+    /// Store `ptype`'s key through the host, which also makes it this run's,
+    /// and say so with the key masked. Returns whether it was stored.
+    async fn store_key(
+        &mut self,
+        ptype: koda_core::config::ProviderType,
+        env_name: &str,
+        value: &str,
+    ) -> bool {
+        match super::settings::set_api_key(&self.client, ptype, value).await {
+            Ok(()) => {
+                let masked = koda_core::keystore::mask_key(value);
+                self.scroll_buffer.push(Line::styled(
+                    format!("  \u{2714} {env_name} set to {masked}"),
+                    Style::default().fg(Color::Green),
+                ));
+                true
+            }
+            Err(e) => {
+                crate::tui_output::err_msg(&mut self.scroll_buffer, format!("{e:#}"));
+                false
+            }
+        }
+    }
+
     pub(crate) async fn handle_wizard_submit(&mut self) {
         let value = self.textarea.text().to_string();
         self.textarea.set_text_clearing_elements("");
@@ -572,33 +599,25 @@ impl TuiContext {
                         self.menu = MenuContent::None;
                         return;
                     }
-                    if !value.is_empty() {
-                        koda_core::runtime_env::set(&env_name, &value);
-                        let _ =
-                            koda_core::keystore::set_key(&self.session.db, &env_name, &value).await;
-                        let masked = koda_core::keystore::mask_key(&value);
-                        self.scroll_buffer.push(Line::styled(
-                            format!("  \u{2714} {env_name} set to {masked}"),
-                            Style::default().fg(Color::Green),
-                        ));
+                    if !value.is_empty() && !self.store_key(provider_type, &env_name, &value).await
+                    {
+                        self.prompt_mode = PromptMode::Chat;
+                        self.menu = MenuContent::None;
+                        return;
                     }
                     self.switch_provider(provider_type, base_url, None).await;
                 }
-                ProviderWizard::ApiKeyOnly { env_name } => {
+                ProviderWizard::ApiKeyOnly {
+                    provider_type,
+                    env_name,
+                } => {
                     if value.is_empty() && !koda_core::runtime_env::is_set(&env_name) {
                         self.scroll_buffer.push(Line::styled(
                             "  \u{2716} No API key provided.",
                             Style::default().fg(Color::Red),
                         ));
                     } else if !value.is_empty() {
-                        koda_core::runtime_env::set(&env_name, &value);
-                        let _ =
-                            koda_core::keystore::set_key(&self.session.db, &env_name, &value).await;
-                        let masked = koda_core::keystore::mask_key(&value);
-                        self.scroll_buffer.push(Line::styled(
-                            format!("  \u{2714} {env_name} set to {masked}"),
-                            Style::default().fg(Color::Green),
-                        ));
+                        self.store_key(provider_type, &env_name, &value).await;
                     }
                     // Key-only mode: just return to chat, no provider switch
                 }

@@ -40,6 +40,7 @@ async fn make_session(env: &Env, provider: Box<dyn LlmProvider>) -> (KodaSession
         // the registry's stateful fields just to list tools.
         tool_defs: koda_core::tools::ToolCatalog::new().get_definitions(&[], &[]),
         system_prompt: "You are a test assistant.".to_string(),
+        prompt_model: String::new(),
         semantic_memory: String::new(),
     });
 

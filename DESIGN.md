@@ -342,9 +342,14 @@ reads the file at startup, so it keeps the newest 500 entries, as the database
 table did. The TUI changes a session's model and mode through the host
 (`session/settings/update`) and mirrors what `session/settings/updated`
 reports; another provider means a new session (`session/start`), as in
-Codex. While idle it still writes the database itself for its remembered
-choice and its keys until they move behind requests; the host writes it only
-during turns, so the two never write at once. For the same move, two more
+Codex. Its remembered choice and keys go through the host too
+(`config/batchWrite`, `modelProvider/apiKey/set`): at startup it names only
+the flags given, the host fills in the saved choice, and the TUI builds its
+banner from what the session reports. The CLI still loads stored keys early,
+to resolve a `--model` alias against the Models API before the host starts;
+that only reads them. Because one agent serves turns on several models, the
+system prompt's model line is the turn's own
+(`KodaAgent::system_prompt_for_model`). For the same move, two more
 things stay in process only, each until the protocol has requests for it: a
 front end that builds its own agent hands it to the host, which every
 session then uses; and a session's sub-agent registry, for showing and

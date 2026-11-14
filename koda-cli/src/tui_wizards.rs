@@ -13,7 +13,6 @@ use crate::tui_output;
 
 use crate::tui_types::MenuContent;
 
-use koda_core::config::KodaConfig;
 use ratatui::text::{Line, Span};
 
 use tui_output::{BOLD, CYAN, DIM};
@@ -367,24 +366,6 @@ pub(crate) fn handle_memory(
             );
         }
     }
-}
-
-/// Remember the current provider and model. `alias` is the `/model` alias
-/// the model was resolved from, so startup can resolve it again; `None` for
-/// a literal model id.
-pub(crate) async fn save_provider(
-    config: &KodaConfig,
-    db: &koda_core::db::Database,
-    alias: Option<&str>,
-) {
-    let _ = koda_core::last_provider::save_last_provider(
-        db,
-        &config.provider_type.to_string(),
-        &config.base_url,
-        &config.model,
-        alias,
-    )
-    .await;
 }
 
 // ── API key management (/key) ─────────────────────────

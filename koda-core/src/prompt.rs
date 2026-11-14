@@ -31,6 +31,11 @@ use crate::skills::SkillRegistry;
 /// on disk and `MemoryRead` returns it.
 const MEMORY_MAX_CHARS: usize = 32_768;
 
+/// The environment section's line naming the model.
+pub fn model_line(model: &str) -> String {
+    format!("- Model: {model}\n")
+}
+
 /// Runtime environment context injected into the system prompt.
 pub struct EnvironmentInfo<'a> {
     /// Project root / working directory.
@@ -81,7 +86,7 @@ pub fn build_system_prompt(
     if let Ok(shell) = std::env::var("SHELL") {
         prompt.push_str(&format!("- Shell: {}\n", shell));
     }
-    prompt.push_str(&format!("- Model: {}\n", env.model));
+    prompt.push_str(&model_line(env.model));
 
     // Quick reference for the REPL. Headless runs and sub-agents pass no
     // commands, and none of this applies to them. Command descriptions live

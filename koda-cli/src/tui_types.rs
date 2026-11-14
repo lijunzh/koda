@@ -144,7 +144,10 @@ pub(crate) enum ProviderWizard {
         env_name: String,
     },
     /// Key-only mode from `/key` — set key and return, no model list.
-    ApiKeyOnly { env_name: String },
+    ApiKeyOnly {
+        provider_type: koda_core::config::ProviderType,
+        env_name: String,
+    },
     /// Step 1 (local): provider selected, now need URL.
     Url {
         provider_type: koda_core::config::ProviderType,

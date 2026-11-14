@@ -549,10 +549,11 @@ impl KodaSession {
         } else {
             String::new()
         };
+        let base_prompt = self.agent.system_prompt_for_model(&config.model);
         let system_prompt = if mcp_section.is_empty() {
-            self.agent.system_prompt.clone()
+            base_prompt
         } else {
-            format!("{}{mcp_section}", self.agent.system_prompt)
+            format!("{base_prompt}{mcp_section}")
         };
 
         // #1216: snapshot the effective cancel token *before* handing
