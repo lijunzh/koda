@@ -18,7 +18,8 @@
 //! Koda is built for the current Claude models: the latest model always
 //! outranks backward compatibility (`DESIGN.md`). A Claude model missing from
 //! the table is treated as current, with no effort sent. The older line
-//! ([`is_older_claude`]) is recognized only to warn ([`older_claude_notice`]).
+//! ([`crate::model_effort::is_older_claude`]) is recognized only to warn
+//! ([`crate::model_effort::older_claude_notice`]).
 
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
