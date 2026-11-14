@@ -1165,3 +1165,72 @@ async fn a_full_context_compacts_after_the_reply_when_turned_on() {
         koda.client.shutdown().await;
     }
 }
+
+// ── Reasoning across models ─────────────────────────────────────────────
+
+/// A local model's reasoning goes back to it on later turns, and to no other
+/// model: a strict server (OpenAI rejects a message field it doesn't know)
+/// would refuse the request, and another model would read it as its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reasoning_goes_back_only_to_the_model_that_wrote_it() {
+    let server = FakeLlmServer::spawn().await;
+    server
+        .mount_fn("POST", r".*/chat/completions$", |request: &Request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            let replayed = body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|m| m.get("reasoning_content").is_some() || m.get("reasoning").is_some());
+            if body["model"] == "strict" && replayed {
+                return ResponseTemplate::new(400).set_body_json(json!({"error": {
+                    "message": "Unrecognized request argument supplied: reasoning_content",
+                    "type": "invalid_request_error",
+                }}));
+            }
+            sse(&[
+                json!({"choices": [{"delta": {"reasoning_content": "LOCAL-THOUGHTS"}}]}),
+                json!({"choices": [{"delta": {"content": "Done."}}]}),
+                json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+                json!({"choices": [], "usage": {"prompt_tokens": 200, "completion_tokens": 20}}),
+            ])
+        })
+        .await;
+    let mut koda = Koda::start(config(&server)).await;
+    let using = |model: &str| {
+        let mut config = config(&server);
+        config.model = model.to_string();
+        config
+    };
+
+    for (model, prompt) in [("stub", "first"), ("stub", "second"), ("strict", "third")] {
+        koda.client
+            .configure_session(&koda.session, using(model))
+            .await
+            .unwrap();
+        koda.turn(prompt).await;
+        let seen = koda.until("turn/completed").await;
+        assert_eq!(
+            turn_completed(&seen).status,
+            TurnStatus::Completed,
+            "{model}: {:?}",
+            turn_completed(&seen).error
+        );
+    }
+    let sent = chat_requests(&server).await;
+    assert!(
+        sent[1].to_string().contains("LOCAL-THOUGHTS"),
+        "the same model gets its reasoning back: {}",
+        sent[1]
+    );
+    assert!(
+        !sent[2].to_string().contains("LOCAL-THOUGHTS"),
+        "another model doesn't: {}",
+        sent[2]
+    );
+    assert!(
+        sent[2].to_string().contains("Done."),
+        "the replies still go"
+    );
+    koda.client.shutdown().await;
+}

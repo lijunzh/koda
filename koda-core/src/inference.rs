@@ -173,7 +173,7 @@ async fn assemble_context(turn: &TurnState<'_>) -> Result<(Vec<ChatMessage>, usi
         }
     }
 
-    let mut messages = assemble_messages(turn.system_message, &history);
+    let mut messages = assemble_messages(turn.system_message, &history, &turn.config.model);
     crate::inference_helpers::prepend_project_memory(&mut messages, turn.memory_context);
 
     // Attach pending images to the last user message (first iteration only)
@@ -1623,8 +1623,12 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
                     )
                     .await?;
                 if has_thinking {
-                    db.update_message_thinking_content(mid, &stream_result.thinking_content)
-                        .await?;
+                    db.update_message_thinking_content(
+                        mid,
+                        &config.model,
+                        &stream_result.thinking_content,
+                    )
+                    .await?;
                 }
             }
             return Ok(());
@@ -1801,11 +1805,10 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
         // completions from interrupted/in-progress turns on session resume.
         db.mark_message_complete(msg_id).await?;
 
-        // Persist thinking content produced by Claude extended thinking.
-        // Only set for assistant messages from models with thinking enabled;
-        // all other providers leave this empty and we skip the UPDATE.
+        // Persist the reply's reasoning text, with the model that wrote it.
+        // Providers that return none leave it empty and we skip the UPDATE.
         if !stream_thinking.is_empty() {
-            db.update_message_thinking_content(msg_id, &stream_thinking)
+            db.update_message_thinking_content(msg_id, &config.model, &stream_thinking)
                 .await?;
         }
 

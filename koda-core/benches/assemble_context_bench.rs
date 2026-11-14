@@ -64,9 +64,9 @@ async fn main() {
             std::hint::black_box(analyze_context(&history));
         });
         let assemble_p50 = bench_sync(ITERATIONS_PER_SIZE, || {
-            std::hint::black_box(assemble_messages(&system_msg, &history));
+            std::hint::black_box(assemble_messages(&system_msg, &history, "bench-model"));
         });
-        let messages = assemble_messages(&system_msg, &history);
+        let messages = assemble_messages(&system_msg, &history, "bench-model");
         let estimate_p50 = bench_sync(ITERATIONS_PER_SIZE, || {
             std::hint::black_box(estimate_tokens(&messages));
         });

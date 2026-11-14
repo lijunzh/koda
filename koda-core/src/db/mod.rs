@@ -193,6 +193,7 @@ impl Database {
                 cache_creation_tokens INTEGER,
                 thinking_tokens INTEGER,
                 thinking_content TEXT,
+                thinking_model TEXT,
                 thinking_blocks TEXT,
                 agent_name TEXT,
                 compacted_at TEXT,
@@ -212,6 +213,18 @@ impl Database {
         .await?;
         if has_thinking_blocks.is_none() {
             sqlx::query("ALTER TABLE messages ADD COLUMN thinking_blocks TEXT")
+                .execute(pool)
+                .await?;
+        }
+        // The model that wrote `thinking_content`, so it goes back to that
+        // model only. Older rows have none and their reasoning isn't resent.
+        let has_thinking_model: Option<(String,)> = sqlx::query_as(
+            "SELECT name FROM pragma_table_info('messages') WHERE name = 'thinking_model'",
+        )
+        .fetch_optional(pool)
+        .await?;
+        if has_thinking_model.is_none() {
+            sqlx::query("ALTER TABLE messages ADD COLUMN thinking_model TEXT")
                 .execute(pool)
                 .await?;
         }
@@ -332,7 +345,7 @@ impl Database {
         let rows: Vec<MessageRow> = sqlx::query_as(
             "SELECT id, session_id, role, content, full_content, tool_calls, tool_call_id,
                     prompt_tokens, completion_tokens,
-                    cache_read_tokens, cache_creation_tokens, thinking_tokens, thinking_content, thinking_blocks,
+                    cache_read_tokens, cache_creation_tokens, thinking_tokens, thinking_content, thinking_model, thinking_blocks,
                     created_at
              FROM messages
              WHERE session_id = ? AND id < ? AND compacted_at IS NULL
@@ -387,6 +400,7 @@ pub(crate) struct MessageRow {
     pub cache_creation_tokens: Option<i64>,
     pub thinking_tokens: Option<i64>,
     pub thinking_content: Option<String>,
+    pub thinking_model: Option<String>,
     pub thinking_blocks: Option<String>,
     pub created_at: Option<String>,
 }
@@ -441,6 +455,7 @@ impl From<MessageRow> for Message {
             cache_creation_tokens: r.cache_creation_tokens,
             thinking_tokens: r.thinking_tokens,
             thinking_content: r.thinking_content,
+            thinking_model: r.thinking_model,
             thinking_blocks: r.thinking_blocks,
             created_at: r.created_at,
         }

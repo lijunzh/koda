@@ -671,12 +671,21 @@ pub(crate) fn stored_thinking(model: &str, blocks: Vec<serde_json::Value>) -> Re
     Ok(serde_json::to_string(&StoredThinking { model, blocks })?)
 }
 
-/// Blocks to replay on a turn. A block means nothing to another model.
+/// Blocks to replay on a turn to `model`.
+///
+/// The adaptive-thinking models ([`crate::model_effort::rejects_thinking_budget`])
+/// get every stored block, whichever Claude model wrote it. The API keeps the
+/// ones the model reads (a newer model reads most older ones: Haiku 5.5 and
+/// Sonnet 5.5 blocks go up to Opus 5.5, Opus 5.5 blocks up to Fable 5.1) and
+/// leaves out the rest, unbilled. A model switch never fails a request. So
+/// moving up a conversation keeps its reasoning, as does coming back to a
+/// model after another. Older models get only their own blocks: nothing
+/// documents how they treat another model's signature.
 fn replayable_thinking(stored: Option<&str>, model: &str) -> Vec<ContentBlock> {
     let Some(stored) = stored.and_then(|s| serde_json::from_str::<StoredThinking>(s).ok()) else {
         return Vec::new();
     };
-    if stored.model != model {
+    if stored.model != model && !crate::model_effort::rejects_thinking_budget(model) {
         return Vec::new();
     }
     stored
@@ -1321,7 +1330,7 @@ mod tests {
     }
 
     #[test]
-    fn thinking_goes_back_first_and_only_to_the_model_that_wrote_it() {
+    fn thinking_goes_back_first_to_the_models_that_may_read_it() {
         let provider = AnthropicProvider::new("k".into(), None);
         let block = serde_json::json!({"type": "thinking", "thinking": "", "signature": "sig"});
         let stored = stored_thinking("claude-haiku-5-5", vec![block]).unwrap();
@@ -1336,7 +1345,13 @@ mod tests {
         assert_eq!(sent[0]["content"][0]["signature"], "sig");
         assert_eq!(sent[0]["content"][1]["text"], "done");
 
-        for model in [Some("claude-sonnet-5-5"), None] {
+        // Another adaptive-thinking model gets it too: the API keeps it if
+        // that model reads it. An older model, or a one-off request, doesn't.
+        let sent =
+            serde_json::to_value(provider.convert_messages(&messages, Some("claude-opus-5-5")))
+                .unwrap();
+        assert_eq!(sent[0]["content"][0]["signature"], "sig");
+        for model in [Some("claude-sonnet-4-5"), None] {
             let sent = serde_json::to_value(provider.convert_messages(&messages, model)).unwrap();
             assert_eq!(sent[0]["content"], "done", "{model:?}");
         }
