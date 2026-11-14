@@ -985,10 +985,11 @@ async fn model_switches_the_model_for_the_next_turn() {
     let home = home();
     let mut tui = Tui::start_with_model(home.path(), &server.url());
 
-    tui.submit("first");
+    // Slash commands are refused until the turn has ended, which can be after
+    // its reply is on screen.
+    tui.submit_and_finish("first", "All done.");
     let sent = wait_for_model_call(&server, 1).await;
     assert!(sent.contains(r#""model":"stub-model""#), "{sent}");
-    tui.wait_for_screen("All done.");
 
     // Esc would close the slash popup but also clear the line, so Enter goes
     // straight to the typed command.

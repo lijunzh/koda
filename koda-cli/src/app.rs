@@ -22,10 +22,10 @@ const LONG_ABOUT: &str = "Koda runs in two modes:
                   koda exec --json \"fix the failing tests\"
 
 Configuration precedence (highest wins):
-  1. CLI flags     --model, --provider, --base-url
-  2. Env vars      KODA_MODEL, KODA_PROVIDER, KODA_BASE_URL
-  3. Saved config  set interactively with /model, /provider, /key
-                   (a --base-url used in the TUI is remembered too)
+  1. CLI flags     --model, --provider, --base-url, --mode, ...
+  2. -c key=value  a config.toml key, for this run only
+  3. Config file   ~/.config/koda/config.toml, which /model and
+                   /provider write and you can edit
   4. Built-in defaults
 
 API keys (ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, …)
@@ -89,15 +89,15 @@ struct Cli {
     project_root: Option<PathBuf>,
 
     /// LLM provider base URL override
-    #[arg(long, env = "KODA_BASE_URL", global = true)]
+    #[arg(long, global = true)]
     base_url: Option<String>,
 
     /// Model name override
-    #[arg(long, env = "KODA_MODEL", global = true)]
+    #[arg(long, global = true)]
     model: Option<String>,
 
     /// LLM provider (openai, anthropic, lmstudio, llama-cpp, gemini, groq, grok, ollama)
-    #[arg(long, env = "KODA_PROVIDER", global = true)]
+    #[arg(long, global = true)]
     provider: Option<String>,
 
     /// Maximum output tokens
@@ -108,7 +108,6 @@ struct Cli {
     /// Beats the agent config, the server's answer and the model table.
     #[arg(
         long,
-        env = "KODA_MAX_CONTEXT_TOKENS",
         value_name = "TOKENS",
         value_parser = koda_core::config::parse_max_context_tokens
     , global = true)]
@@ -125,13 +124,7 @@ struct Cli {
     /// Reasoning effort. Claude: low, medium, high, xhigh or max; by default
     /// the level Claude Code uses for the model. OpenAI-compatible servers:
     /// passed through as `reasoning_effort`.
-    #[arg(
-        long,
-        alias = "effort",
-        env = "KODA_REASONING_EFFORT",
-        value_name = "LEVEL",
-        global = true
-    )]
+    #[arg(long, alias = "effort", value_name = "LEVEL", global = true)]
     reasoning_effort: Option<String>,
 
     /// Trust mode: auto (the default, unless config.toml sets `mode`), safe,
@@ -150,8 +143,7 @@ struct Cli {
     /// read-only run; everything else is refused, and the kernel
     /// sandbox keeps the project read-only.
     /// Sandbox with credential protection is always active.
-    #[arg(long, env = "KODA_MODE",
-          value_parser = ["safe", "auto", "plan"], global = true)]
+    #[arg(long, value_parser = ["safe", "auto", "plan"], global = true)]
     mode: Option<String>,
 
     /// Override a config.toml value for this run: `-c key=value`, with a
@@ -387,6 +379,10 @@ pub(crate) async fn run() -> Result<()> {
 
     // Headless mode: skip onboarding, banner, version check
     if let Some(mut run) = headless_run {
+        // Stderr, so `--json` stdout stays the protocol.
+        for warning in crate::retired_env::warnings() {
+            eprintln!("warning: {warning}");
+        }
         run.named = headless::Named {
             // The catalog's own id, which the host reads (`lmstudio` is
             // `lm-studio`).

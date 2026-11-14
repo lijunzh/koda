@@ -11,10 +11,10 @@ Koda runs in two modes:
                   koda exec --json "fix the failing tests"
 
 Configuration precedence (highest wins):
-  1. CLI flags     --model, --provider, --base-url
-  2. Env vars      KODA_MODEL, KODA_PROVIDER, KODA_BASE_URL
-  3. Saved config  set interactively with /model, /provider, /key
-                   (a --base-url used in the TUI is remembered too)
+  1. CLI flags     --model, --provider, --base-url, --mode, ...
+  2. -c key=value  a config.toml key, for this run only
+  3. Config file   ~/.config/koda/config.toml, which /model and
+                   /provider write and you can edit
   4. Built-in defaults
 
 API keys (ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, …)
@@ -47,26 +47,18 @@ Options:
 
       --base-url <BASE_URL>
           LLM provider base URL override
-          
-          [env: KODA_BASE_URL=]
 
       --model <MODEL>
           Model name override
-          
-          [env: KODA_MODEL=]
 
       --provider <PROVIDER>
           LLM provider (openai, anthropic, lmstudio, llama-cpp, gemini, groq, grok, ollama)
-          
-          [env: KODA_PROVIDER=]
 
       --max-tokens <MAX_TOKENS>
           Maximum output tokens
 
       --max-context-tokens <TOKENS>
           Context window in tokens, for servers that don't report theirs. Beats the agent config, the server's answer and the model table
-          
-          [env: KODA_MAX_CONTEXT_TOKENS=]
 
       --temperature <TEMPERATURE>
           Sampling temperature (0.0 - 2.0)
@@ -76,13 +68,10 @@ Options:
 
       --reasoning-effort <LEVEL>
           Reasoning effort. Claude: low, medium, high, xhigh or max; by default the level Claude Code uses for the model. OpenAI-compatible servers: passed through as `reasoning_effort`
-          
-          [env: KODA_REASONING_EFFORT=]
 
       --mode <MODE>
           Trust mode: auto (the default, unless config.toml sets `mode`), safe, or plan (`koda exec` only). "auto" auto-approves mutating actions; the kernel sandbox contains them. Destructive ops (rm -rf, git reset --hard, git push --force) and outside-project writes still confirm. Auto requires the kernel sandbox; on unsandboxed platforms koda refuses to start with an actionable error (use --mode safe or install the platform sandbox backend). "safe" confirms every mutation before executing — use this in CI, locked-down workstations, or any context where you want a human in every approval loop. "plan" is read-only, for a `koda exec` run that should only look: reads, searches, read-only commands and MCP tools marked read-only run; everything else is refused, and the kernel sandbox keeps the project read-only. Sandbox with credential protection is always active
           
-          [env: KODA_MODE=]
           [possible values: safe, auto, plan]
 
   -c, --config <KEY=VALUE>

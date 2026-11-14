@@ -553,7 +553,7 @@ pub(crate) fn tool_output_view(
     let output = &collapsed;
 
     // Syntax highlighting for Read tool output. Honors the global
-    // KODA_SYNTAX_HIGHLIGHT=off kill switch (see [`theme`]).
+    // `[tui] syntax_highlight = false` kill switch (see [`theme`]).
     let use_highlight = name == "Read" && file_ext.is_some() && theme::syntax_highlight_enabled();
     let is_diff_tool = matches!(name, "Edit" | "Write");
     let mut highlighter = if use_highlight {

@@ -78,7 +78,7 @@ and a recompile.
   change, change the code.
   
   *Documented exceptions* (each justified by a non-interactive scenario):
-  - `--mode safe|auto|plan` (`KODA_MODE`) — trust mode for headless runs
+  - `--mode safe|auto|plan` (or `mode` in config.toml) — trust mode for headless runs
     where `/safe` and `/auto` slash commands aren't reachable mid-session.
     `plan` (read-only) exists only for headless runs.
   - `--mcp-config` — the MCP servers for one run, for scripts and evals that
@@ -394,7 +394,7 @@ account; no response carries a key. `session/compact/start`
 its own, with a `contextCompaction` item whose trigger is `manual`; a running
 turn is stopped first and ends interrupted, and the compaction's turn can be
 interrupted but not steered. Compacting after a turn is the engine's too: with
-`KodaConfig::post_turn_compact_percent` set (`KODA_POST_TURN_COMPACT_PERCENT`),
+`KodaConfig::post_turn_compact_percent` set (`model_post_turn_compact_threshold_percent`),
 a final reply that leaves the context past it compacts inside the turn, before
 `turn/completed`, as Codex's `model_post_turn_compact_threshold_percent` does,
 and like Codex's it is off by default. The TUI used to compact after a turn
@@ -617,7 +617,7 @@ each model comes from the Models API, never from the id.
 
 An HTTP failure is classified once, in `providers/error.rs`, from its status, headers and body. The inference loop matches on the kind and never reads the message. Text matching stays only where a provider states something no other way, overflow and image rejection, and it stays in that file.
 
-Koda follows Codex's limits rather than inventing its own: four retries of a request on a 429, 5xx or network failure, and five of a reply whose stream failed. A wait the server names replaces the backoff. Past five minutes the limit won't lift within a turn, so the request fails. Both counts are settings, `KodaConfig::request_max_retries` and `stream_max_retries`, as they are in Codex's provider config, capped at 100 like Codex's. Koda has no per-provider config file, so they're set with `KODA_REQUEST_MAX_RETRIES` and `KODA_STREAM_MAX_RETRIES`, as the read timeout is. They're for users first: on a local server whose errors a retry won't fix, such as LM Studio's 500 for an oversized prompt, `0` shows the error at once instead of after 15 seconds. Tests about what a failure leaves behind set them to zero or one, instead of waiting out up to 31 seconds of real backoff each.
+Koda follows Codex's limits rather than inventing its own: four retries of a request on a 429, 5xx or network failure, and five of a reply whose stream failed. A wait the server names replaces the backoff. Past five minutes the limit won't lift within a turn, so the request fails. Both counts are settings, `KodaConfig::request_max_retries` and `stream_max_retries`, as they are in Codex's provider config, capped at 100 like Codex's. They're set per provider in config.toml, `[model_providers.<id>] request_max_retries` and `stream_max_retries`, as the read timeout is (`stream_idle_timeout_ms`). They're for users first: on a local server whose errors a retry won't fix, such as LM Studio's 500 for an oversized prompt, `0` shows the error at once instead of after 15 seconds. Tests about what a failure leaves behind set them to zero or one, instead of waiting out up to 31 seconds of real backoff each.
 
 **Local servers get the same retries.** No peer we checked retries less on a local server, and Goose retries Ollama more. The cost is LM Studio's bare 500, which can mean overflow: it now waits up to 15 seconds before the turn ends. It is still not read as overflow, because the same page comes back for failures unrelated to size.
 
@@ -631,7 +631,7 @@ thresholds and have different costs:
 | Layer | Trigger | Cost | Mechanism |
 |---|---|---|---|
 | **Microcompact** (`microcompact.rs`) | Time gap since last assistant msg > 5min, AND old tool results exist | Zero LLM tokens — SQL `UPDATE` only | Replaces stale tool result bodies with `[Old tool result content cleared]` stub. Reversible by `RecallContext`. |
-| **Full compact** (`compact.rs`) | Context usage ≥ 85% before a model call (auto), past `KODA_POST_TURN_COMPACT_PERCENT` after a final reply (off by default), or `/compact` (manual) | One LLM call on the session's model | Summarizes everything but the newest 30% into a single synthesis message; archives originals in DB. The summarizer sees user and assistant messages whole, as Codex does, and each tool result's first 2,000 characters. Stored as a `system` row and sent as the first user message, as Codex carries its summary. |
+| **Full compact** (`compact.rs`) | Context usage ≥ 85% before a model call (auto), past `model_post_turn_compact_threshold_percent` after a final reply (off by default), or `/compact` (manual) | One LLM call on the session's model | Summarizes everything but the newest 30% into a single synthesis message; archives originals in DB. The summarizer sees user and assistant messages whole, as Codex does, and each tool result's first 2,000 characters. Stored as a `system` row and sent as the first user message, as Codex carries its summary. |
 
 Both are inspired by Claude Code's identically-named layers. We adopt the
 two-layer approach because:
@@ -953,7 +953,8 @@ refuses `&` inside a background call. Gemini CLI records `jobs -p` in an
 exit trap.
 
 **Every local port opens only on the user's word** (2026-11, following Codex
-and Claude Code's sandbox-runtime). `KODA_ALLOW_LOCAL_BINDING=1` sets
+and Claude Code's sandbox-runtime). `[sandbox] allow_local_binding = true` in
+the user's config file (it was `KODA_ALLOW_LOCAL_BINDING=1` until CF-3b) sets
 `NetPolicy::allow_local_binding`, which on macOS allows bind and inbound on
 `*:*` and outbound to `localhost:*`, sandbox-runtime's rules for its setting
 of the same name. Before, the flag added only the wildcard bind and nothing

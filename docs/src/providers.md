@@ -43,13 +43,15 @@ one reply and these servers set no limit of their own:
 ## Any OpenAI-compatible server
 
 A server that speaks the OpenAI chat-completions API works with no provider
-entry and no config file: point Koda at its `/v1` URL with `--base-url` or
-`KODA_BASE_URL`.
+entry: point Koda at its `/v1` URL with `--base-url`, or set it once as the
+provider's `base_url` in your config file.
 
 ```bash
 llama-server -m model.gguf -c 32768 --port 8080
 koda --base-url http://127.0.0.1:8080/v1
-# or: export KODA_BASE_URL=http://127.0.0.1:8080/v1
+# or, in ~/.config/koda/config.toml:
+#   [model_providers.llama-cpp]
+#   base_url = "http://127.0.0.1:8080/v1"
 ```
 
 - Koda lists the server's models and picks the loaded one, and reads the
@@ -63,14 +65,14 @@ koda --base-url http://127.0.0.1:8080/v1
 - Inside the TUI, `/provider http://127.0.0.1:8080/v1` switches to a URL and
   remembers it for the next session, as `[model_providers.llama-cpp] base_url`
   in `~/.config/koda/config.toml`. You can also write that line yourself. A
-  URL passed with `--base-url` or `KODA_BASE_URL` applies to that run only.
+  URL passed with `--base-url` applies to that run only.
 - [mistral.rs](https://github.com/EricLBuehler/mistral.rs) serves the same
   API, so the same route should work. It hasn't been tested.
 
 ## Model aliases
 
 Aliases let you switch models without memorising exact IDs. They're shown
-in the `/model` picker and accepted by `/model`, `--model` and `KODA_MODEL`.
+in the `/model` picker and accepted by `/model`, `--model` and `model` in the config file.
 On the command line an alias also picks its provider, unless `--provider` or
 `--base-url` names a different one; then the name goes to that provider as
 given. A Claude alias resolves to the newest model in its line, as `/model`
@@ -110,14 +112,16 @@ are just shortcuts. `koda --model gpt-4o-mini` or `/model o3` both work.
 
 ## HTTP timeouts and retries
 
-All providers use a shared HTTP client with the following defaults:
+All providers use a shared HTTP client with the following defaults. Each
+setting is per provider, under `[model_providers.<id>]` in your config file,
+with Codex's names:
 
-| Setting | Default | Env override | Description |
-|---------|---------|--------------|-------------|
-| Connect timeout | 30 s | `KODA_CONNECT_TIMEOUT_SECS` | Time allowed to establish the TCP/TLS connection |
-| Read timeout | 300 s (5 min); 1,800 s (30 min) for a provider with no API key | `KODA_READ_TIMEOUT_SECS` | Time allowed between bytes from the server (per-byte, not total); `0` turns it off |
-| Request retries | 4 | `KODA_REQUEST_MAX_RETRIES` | Retries after a request fails with a rate limit, server error or network error; at most 100, `0` turns them off |
-| Stream retries | 5 | `KODA_STREAM_MAX_RETRIES` | Retries for a reply whose stream fails partway; at most 100, `0` turns them off |
+| Setting | Default | Config key | Description |
+|---------|---------|------------|-------------|
+| Connect timeout | 30 s | (fixed) | Time allowed to establish the TCP/TLS connection |
+| Read timeout | 300 s (5 min); 1,800 s (30 min) for a provider with no API key | `stream_idle_timeout_ms` | Time allowed between bytes from the server (per-byte, not total), in milliseconds; `0` turns it off |
+| Request retries | 4 | `request_max_retries` | Retries after a request fails with a rate limit, server error or network error; at most 100, `0` turns them off |
+| Stream retries | 5 | `stream_max_retries` | Retries for a reply whose stream fails partway; at most 100, `0` turns them off |
 
 The read timeout is **per-byte, not total**. A long streaming response is
 fine as long as bytes keep arriving — the timer resets on each chunk.
@@ -126,29 +130,31 @@ but a stalled connection (server hung after last byte) will fail fast.
 
 ### When to tune these
 
-- **Behind a slow corporate proxy?** Bump `KODA_CONNECT_TIMEOUT_SECS` to
-  60 or 90. Connection-phase timeouts often manifest as "request timed out"
-  with no usage data, which is the giveaway.
-- **Long-running model on a flaky link?** Bump `KODA_READ_TIMEOUT_SECS` to
-  600+. Read-phase timeouts manifest as a partial response cut short
-  partway through generation. (Koda also retries transient network errors,
-  waiting 1 second before the first retry and twice as long before each
-  next one, up to 32; the retry settings above set how many.)
+- **Long-running model on a flaky link?** Raise `stream_idle_timeout_ms` to
+  600000 or more. Read-phase timeouts manifest as a partial response cut
+  short partway through generation. (Koda also retries transient network
+  errors, waiting 1 second before the first retry and twice as long before
+  each next one, up to 32; the retry settings above set how many.)
 - **Provider with no API key (LM Studio, Ollama, vLLM, llama.cpp, or a
   self-hosted server)?** The default is 30 minutes, because such a server
   sends nothing until it has read the whole prompt, and a 150K-token prompt
-  can take a local model more than five minutes. A server that has died refuses the connection at once, so the long
-  wait only covers one that is alive but stuck. Set `KODA_READ_TIMEOUT_SECS`
-  lower if you'd rather fail fast.
+  can take a local model more than five minutes. A server that has died
+  refuses the connection at once, so the long wait only covers one that is
+  alive but stuck. Lower `stream_idle_timeout_ms` if you'd rather fail fast.
 - **Local server whose errors won't go away on a retry?** LM Studio answers a
   prompt too large for its loaded context window with a bare 500, which Koda
   retries like any server error: four more tries and 15 seconds before the
-  turn ends. Set `KODA_REQUEST_MAX_RETRIES=0` to see the error at once, or `1`
-  to still ride out a single hiccup. `KODA_STREAM_MAX_RETRIES` does the same
-  for a reply that breaks off partway.
+  turn ends. Set `request_max_retries = 0` to see the error at once, or `1`
+  to still ride out a single hiccup. `stream_max_retries` does the same for a
+  reply that breaks off partway.
 
 ### Example
 
-```bash
-KODA_CONNECT_TIMEOUT_SECS=60 KODA_READ_TIMEOUT_SECS=300 koda
+```toml
+# ~/.config/koda/config.toml
+[model_providers.lm-studio]
+stream_idle_timeout_ms = 600000
+request_max_retries = 1
 ```
+
+Or for one run: `koda -c model_providers.lm-studio.request_max_retries=0`.

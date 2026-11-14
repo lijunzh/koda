@@ -553,7 +553,7 @@ fn retry_delay(err: &anyhow::Error, attempt: u32) -> Option<std::time::Duration>
 /// - Network failures — idle read timeouts, connection resets, broken pipes,
 ///   DNS hiccups, etc. These are the dominant failure mode on long reasoning
 ///   turns where the model server goes silent past the read timeout
-///   (`KODA_READ_TIMEOUT_SECS`; 5 minutes, or 30 for a server with no API
+///   (`stream_idle_timeout_ms`; 5 minutes, or 30 for a server with no API
 ///   key). On a local server a retry starts the prompt's reading over, so
 ///   the long default is what keeps a slow first answer from costing five
 ///   tries. See #1119.

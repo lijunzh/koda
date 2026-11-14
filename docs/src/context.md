@@ -23,11 +23,13 @@ turn to finish cleanly).
 
 Auto-compact runs before a model call, so a reply that fills the context is
 compacted when the next turn starts. To compact as soon as the reply is in,
-set `KODA_POST_TURN_COMPACT_PERCENT` to the usage, from 1 to 100, past which a
-turn compacts after its final reply, before it ends:
+set `model_post_turn_compact_threshold_percent` in your config file to the
+usage, from 1 to 100, past which a turn compacts after its final reply, before
+it ends:
 
-```bash
-export KODA_POST_TURN_COMPACT_PERCENT=85
+```toml
+# ~/.config/koda/config.toml
+model_post_turn_compact_threshold_percent = 85
 ```
 
 It is off by default, as Codex's `model_post_turn_compact_threshold_percent`

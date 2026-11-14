@@ -206,7 +206,7 @@ fn run_mock_compacted_session(final_response: &str) -> (serde_json::Value, Strin
         .arg(tmp.path())
         .env("XDG_CONFIG_HOME", tmp.path())
         .env("KODA_MOCK_RESPONSES", responses.to_string())
-        .env("KODA_MAX_CONTEXT_TOKENS", "16000")
+        .args(["--max-context-tokens", "16000"])
         .output()
         .expect("Failed to run koda");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();

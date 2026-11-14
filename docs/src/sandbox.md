@@ -200,15 +200,14 @@ as Codex keeps `allow_local_binding` in its config:
 allow_local_binding = true
 ```
 
-`KODA_ALLOW_LOCAL_BINDING=1` in the environment you start Koda from does the
-same, for now.
+`-c sandbox.allow_local_binding=true` does the same for one run.
 
 A command can then reach any server listening on your machine, such as a
 database or LM Studio, and accept connections on any port, from other
 machines too if it listens on more than loopback. Connections beyond your
 machine still go only through Koda's proxy. It is off by default, as
 Codex's and Claude Code's `allow_local_binding` are, and only your own config
-file or environment can turn it on: Koda reads no project settings. On Linux each
+file or `-c` can turn it on: Koda reads no project settings. On Linux each
 command has a loopback of its own that it can always use, so the setting
 changes nothing there.
 

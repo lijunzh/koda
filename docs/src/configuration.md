@@ -6,16 +6,19 @@ When multiple sources specify the model, provider, or API key, the
 **highest-priority source wins**:
 
 ```text
-1. CLI flags          --model, --provider, --base-url        (highest)
+1. CLI flags          --model, --provider, --base-url, --mode, …  (highest)
        ↓
-2. Shell env vars     KODA_MODEL, KODA_PROVIDER, KODA_BASE_URL
+2. -c key=value       this run only
        ↓
-3. -c key=value       this run only
+3. Config file        ~/.config/koda/config.toml, which /model and /provider write
        ↓
-4. Config file        ~/.config/koda/config.toml, which /model and /provider write
-       ↓
-5. Built-in defaults  Claude Sonnet via Anthropic              (lowest)
+4. Built-in defaults  Claude Sonnet via Anthropic                 (lowest)
 ```
+
+Settings don't come from environment variables, as Codex's don't. The ones
+earlier versions read (`KODA_MODEL`, `KODA_MODE`, `KODA_READ_TIMEOUT_SECS`
+and others) are ignored, with a warning at startup that names each one's
+replacement.
 
 API keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, …) are
 never in the config file. Keys saved with `/key` are kept in Koda's database
@@ -26,8 +29,8 @@ precedence and is never overwritten.
 # Per-call override (doesn't change saved config)
 koda exec --model o3 "review auth.rs"
 
-# Per-project via direnv (.envrc)
-export KODA_MODEL=gemini-2.5-pro
+# One run on another setting, without touching config.toml
+koda exec -c model_reasoning_effort=high "review auth.rs"
 
 # CI / GitHub Actions
 ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_KEY }} koda exec "check types"
@@ -99,13 +102,14 @@ Koda needs the model's context window to show the footer percentage, warn
 before a request overflows, and auto-compact. It takes the first of these:
 
 ```text
-1. --max-context-tokens N, then KODA_MAX_CONTEXT_TOKENS=N
+1. --max-context-tokens N
 2. "max_context_tokens" in the agent JSON
-3. What the server reports (LM Studio, llama-server, Ollama, Anthropic, Gemini)
-4. Koda's built-in model table
+3. model_context_window in config.toml (or -c model_context_window=N)
+4. What the server reports (LM Studio, llama-server, Ollama, Anthropic, Gemini)
+5. Koda's built-in model table
 ```
 
-Use 1 when the server loaded a different size than Koda assumed, or can't
+Use 1 or 3 when the server loaded a different size than Koda assumed, or can't
 say (an OpenAI-compatible engine such as `rec` falls to the table, which
 assumes 128,000 for most local models). A pinned value also stays when you
 switch models with `/model`. It must be a positive whole number; `0` or
@@ -113,7 +117,7 @@ text stops Koda at startup with an error rather than being ignored. Startup
 logs `Context window from override: N tokens for <model>`.
 
 ```bash
-KODA_MAX_CONTEXT_TOKENS=65536 koda exec "say hi" --provider lm-studio --base-url http://127.0.0.1:11500/v1
+koda exec --max-context-tokens 65536 "say hi" --provider lm-studio --base-url http://127.0.0.1:11500/v1
 ```
 
 ## Config files
@@ -142,22 +146,17 @@ priority over global config:
 
 ## Display
 
-Koda's TUI ships ANSI-colored syntax highlighting by default. Disable
-with one flag for environments where the output looks awful (monochrome
-themes, non-RGB-aware terminals).
+Koda's TUI colours code and diffs by default. Turn it off for a monochrome
+theme or a terminal where RGB colour looks washed out:
 
-| Env var | Default | Disable with |
-|---------|---------|--------------|
-| `KODA_SYNTAX_HIGHLIGHT` | on | `off`, `0`, `false`, or `no` |
+```toml
+# ~/.config/koda/config.toml
+[tui]
+syntax_highlight = false
+```
 
-- **`KODA_SYNTAX_HIGHLIGHT`** controls TUI syntax highlighting for
-  `Read`, `Bash` headers, and inline code. Disable for monochrome
-  terminals or terminals where ANSI-RGB output looks washed out.
-  Memoized on first call — restart koda after changing.
-
-The negative values above (`off`, `0`, `false`, `no`) are
-case-insensitive; everything else (including empty string and `on`)
-keeps the feature enabled.
+It covers `Read` output, `Bash` headers and inline code, and is read when the
+TUI starts; restart Koda after changing it.
 
 > **Removed in v0.2.26**: `KODA_TRANSCRIPT_HYPERLINKS` and
 > `KODA_EXPORT_VERBOSE` previously controlled `/export` output

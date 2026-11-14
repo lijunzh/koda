@@ -2,7 +2,7 @@
 //!
 //! Runs once per turn after the inner select loop in
 //! [`super::select_loop::TuiContext::run_inference_turn`] breaks. Compacting
-//! after a turn is the host's (`KODA_POST_TURN_COMPACT_PERCENT`), as in
+//! after a turn is the host's (`model_post_turn_compact_threshold_percent`), as in
 //! Codex, and runs inside the turn.
 
 use crate::tui_context::TuiContext;

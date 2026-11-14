@@ -845,9 +845,6 @@ async fn a_run_without_flags_uses_the_saved_choice() {
             .arg("--project-root")
             .arg(tmp.path())
             .env("XDG_CONFIG_HOME", tmp.path())
-            .env_remove("KODA_PROVIDER")
-            .env_remove("KODA_MODEL")
-            .env_remove("KODA_BASE_URL")
             .kill_on_drop(true);
         command
     };
@@ -896,9 +893,6 @@ async fn a_config_override_beats_the_file_and_a_flag_beats_it() {
             .arg("--project-root")
             .arg(tmp.path())
             .env("XDG_CONFIG_HOME", tmp.path())
-            .env_remove("KODA_PROVIDER")
-            .env_remove("KODA_MODEL")
-            .env_remove("KODA_BASE_URL")
             .kill_on_drop(true);
         command
     };
@@ -933,15 +927,35 @@ async fn a_run_starts_in_the_files_mode() {
     std::fs::create_dir_all(tmp.path().join("koda")).unwrap();
     std::fs::write(tmp.path().join("koda/config.toml"), "mode = \"safe\"\n").unwrap();
 
-    let mut plain = command(&server, tmp.path());
-    plain.env_remove("KODA_MODE");
+    let plain = command(&server, tmp.path());
     let run = finish(plain).await;
     assert!(run.output.status.success(), "{}", run.stdout);
     assert_eq!(run.lines[0]["params"]["session"]["mode"], "safe");
 
     let mut flagged = command(&server, tmp.path());
-    flagged.env_remove("KODA_MODE").args(["-c", "mode=plan"]);
+    flagged.args(["-c", "mode=plan"]);
     let run = finish(flagged).await;
     assert!(run.output.status.success(), "{}", run.stdout);
     assert_eq!(run.lines[0]["params"]["session"]["mode"], "plan");
+}
+
+/// A setting variable Koda no longer reads changes nothing, and the run
+/// says so on stderr, naming what replaced it (CF-3b).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_retired_variable_is_named_and_ignored() {
+    let server = stub(vec![], no_other_calls).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut run = command(&server, tmp.path());
+    run.env("KODA_MODEL", "from-env").env("KODA_MODE", "safe");
+    let run = finish(run).await;
+    assert!(run.output.status.success(), "{}", run.stdout);
+    let session = &run.lines[0]["params"]["session"];
+    assert_eq!(session["model"], "stub");
+    assert_eq!(session["mode"], "auto");
+    let stderr = String::from_utf8_lossy(&run.output.stderr);
+    assert!(
+        stderr.contains("KODA_MODEL is no longer read; use --model"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("KODA_MODE is no longer read"), "{stderr}");
 }

@@ -205,7 +205,7 @@ pub struct KodaConfig {
     pub model: String,
     /// Max context window tokens.
     pub max_context_tokens: usize,
-    /// A window the user pinned (`--max-context-tokens`, `KODA_MAX_CONTEXT_TOKENS`
+    /// A window the user pinned (`--max-context-tokens`, `model_context_window`
     /// or the agent JSON's `max_context_tokens`). When set it wins over the
     /// model table and the provider probe, and survives model switches.
     pub context_override: Option<usize>,
@@ -216,13 +216,13 @@ pub struct KodaConfig {
     /// Max inference iterations per turn.
     pub max_iterations: u32,
     /// Retries a failed request gets after the first try
-    /// (`KODA_REQUEST_MAX_RETRIES`; default 4, as in Codex).
+    /// (`[model_providers.<id>] request_max_retries`; default 4, as in Codex).
     pub request_max_retries: u32,
     /// Retries for a reply whose stream failed partway
-    /// (`KODA_STREAM_MAX_RETRIES`; default 5, as in Codex).
+    /// (`[model_providers.<id>] stream_max_retries`; default 5, as in Codex).
     pub stream_max_retries: u32,
     /// Context used, in percent, past which a turn compacts after its final
-    /// reply (`KODA_POST_TURN_COMPACT_PERCENT`, 1–100). 0, the default, turns
+    /// reply (`model_post_turn_compact_threshold_percent`, 1–100). 0, the default, turns
     /// it off, as Codex's `model_post_turn_compact_threshold_percent` does;
     /// the next turn still compacts before its first call when it must.
     pub post_turn_compact_percent: u8,
@@ -244,18 +244,18 @@ pub struct KodaConfig {
     pub session_mcp_servers: std::collections::HashMap<String, crate::mcp::McpServerConfig>,
 }
 
-/// Parse `--max-context-tokens` / `KODA_MAX_CONTEXT_TOKENS`: a positive whole
+/// Parse `--max-context-tokens`: a positive whole
 /// number. Anything else is an error, never a silent fallback to the probe or
 /// the model table, since a mistyped pin would otherwise go unnoticed.
 pub fn parse_max_context_tokens(raw: &str) -> std::result::Result<usize, String> {
     match raw.trim().replace('_', "").parse::<usize>() {
         Ok(0) => Err(format!(
-            "context window (--max-context-tokens / KODA_MAX_CONTEXT_TOKENS) must be a positive \
+            "context window (--max-context-tokens) must be a positive \
              number of tokens, got '{raw}'"
         )),
         Ok(n) => Ok(n),
         Err(_) => Err(format!(
-            "context window (--max-context-tokens / KODA_MAX_CONTEXT_TOKENS) must be a positive \
+            "context window (--max-context-tokens) must be a positive \
              whole number of tokens, got '{raw}'"
         )),
     }
@@ -299,16 +299,11 @@ impl KodaConfig {
             .unwrap_or_else(|| "http://localhost:1234/v1".to_string());
         let provider_type = ProviderType::from_url_or_name(&default_url, agent.provider.as_deref());
 
-        // If it's a local provider and we have a user-defined default in env, use it
-        let mut base_url = agent.base_url;
-        if base_url.is_none()
-            && !provider_type.requires_api_key()
-            && let Some(env_url) = crate::runtime_env::get("KODA_LOCAL_URL")
-        {
-            base_url = Some(env_url);
-        }
-
-        let base_url = base_url.unwrap_or_else(|| provider_type.default_base_url().to_string());
+        // A local server's address comes from the agent, else the config
+        // file's `[model_providers.<id>] base_url`, which the host applies.
+        let base_url = agent
+            .base_url
+            .unwrap_or_else(|| provider_type.default_base_url().to_string());
         let model = agent
             .model
             .unwrap_or_else(|| provider_type.default_model().to_string());
@@ -418,17 +413,9 @@ impl KodaConfig {
             agents_dir,
             model_settings: settings,
             max_iterations,
-            request_max_retries: crate::inference_helpers::retries_from(
-                crate::runtime_env::get("KODA_REQUEST_MAX_RETRIES").as_deref(),
-                crate::inference_helpers::DEFAULT_REQUEST_MAX_RETRIES,
-            ),
-            stream_max_retries: crate::inference_helpers::retries_from(
-                crate::runtime_env::get("KODA_STREAM_MAX_RETRIES").as_deref(),
-                crate::inference_helpers::DEFAULT_STREAM_MAX_RETRIES,
-            ),
-            post_turn_compact_percent: crate::inference_helpers::percent_from(
-                crate::runtime_env::get("KODA_POST_TURN_COMPACT_PERCENT").as_deref(),
-            ),
+            request_max_retries: crate::inference_helpers::DEFAULT_REQUEST_MAX_RETRIES,
+            stream_max_retries: crate::inference_helpers::DEFAULT_STREAM_MAX_RETRIES,
+            post_turn_compact_percent: 0,
             skip_memory: agent.skip_memory,
             trust: declared_trust,
             trust_named: false,
@@ -531,7 +518,7 @@ impl KodaConfig {
         self
     }
 
-    /// Pin the context window (`--max-context-tokens` / `KODA_MAX_CONTEXT_TOKENS`).
+    /// Pin the context window (`--max-context-tokens`).
     ///
     /// `None` leaves whatever the agent config set. Call after
     /// [`Self::with_overrides`]; the pin also survives later model switches

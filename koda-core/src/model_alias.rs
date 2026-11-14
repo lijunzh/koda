@@ -372,7 +372,7 @@ pub fn resolve_with(name: &str, live: Option<&ClaudeLineIds>) -> Option<Resolved
         .map(|a| a.resolved(live))
 }
 
-/// Resolve `--model` (or `KODA_MODEL`) when it names an alias, as `/model`
+/// Resolve `--model` when it names an alias, as `/model`
 /// lists them, so `koda --model claude-haiku` runs the newest Haiku rather
 /// than sending `claude-haiku` to the API. A Claude alias asks the Models
 /// API first, once per process ([`ensure_live_claude_ids`]); without a key

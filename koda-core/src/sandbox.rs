@@ -413,36 +413,26 @@ pub fn policy_for_agent(trust: crate::trust::TrustMode, project_root: &Path) -> 
     }
 
     policy.net.allow_local_binding =
-        local_binding_allowed(crate::runtime_env::get(LOCAL_BINDING_ENV).as_deref())
-            || LOCAL_BINDING_CONFIGURED.load(std::sync::atomic::Ordering::Relaxed);
+        LOCAL_BINDING_CONFIGURED.load(std::sync::atomic::Ordering::Relaxed);
 
     policy
 }
 
-/// The user's opt-in to every local port, both ways (`=1` or `=true`): a
-/// test that starts a server and connects to it, a database, a dev server
-/// started outside Koda. Off by default, as Codex's and Claude Code's
-/// `allow_local_binding` are, since it exposes every service listening on
-/// the machine. It comes from the user's environment or the user's config
-/// file (`[sandbox] allow_local_binding`), never a project's, so a
-/// repository can't turn it on. macOS only; on
-/// Linux each command has its own loopback, which it can always use.
-pub const LOCAL_BINDING_ENV: &str = "KODA_ALLOW_LOCAL_BINDING";
-
-/// `[sandbox] allow_local_binding` from the config file, which the host
-/// sets ([`set_local_binding_configured`]).
+/// `[sandbox] allow_local_binding` in the user's config file: every local
+/// port, both ways, for a test that starts a server and connects to it, a
+/// database, a dev server started outside Koda. Off by default, as Codex's
+/// and Claude Code's `allow_local_binding` are, since it exposes every
+/// service listening on the machine. Only the host sets it, from the user's
+/// own file, never a project's, so a repository can't turn it on. macOS
+/// only; on Linux each command has its own loopback, which it can always
+/// use.
 static LOCAL_BINDING_CONFIGURED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 /// Take `[sandbox] allow_local_binding` from the user's config file for the
-/// commands started from now on. Only the host calls this, from the user's
-/// own file; a project still can't turn it on.
+/// commands started from now on.
 pub fn set_local_binding_configured(allowed: bool) {
     LOCAL_BINDING_CONFIGURED.store(allowed, std::sync::atomic::Ordering::Relaxed);
-}
-
-fn local_binding_allowed(value: Option<&str>) -> bool {
-    matches!(value, Some("1" | "true"))
 }
 
 /// What a child mustn't write when `.git` is a file, as in a worktree or a
@@ -568,17 +558,7 @@ mod tests {
     /// to the spawned Command. We verify by running `echo $HTTPS_PROXY`
     /// inside the sandbox and reading stdout — platform-agnostic and
     /// independent of the kernel sandbox availability.
-    #[test]
-    fn local_binding_is_on_only_when_the_user_says_so() {
-        assert!(!local_binding_allowed(None));
-        for off in ["", "0", "false", "no", "yes", "TRUE"] {
-            assert!(!local_binding_allowed(Some(off)), "{off:?}");
-        }
-        assert!(local_binding_allowed(Some("1")));
-        assert!(local_binding_allowed(Some("true")));
-    }
-
-    /// What `KODA_ALLOW_LOCAL_BINDING` is for: a command that starts a
+    /// What `[sandbox] allow_local_binding` is for: a command that starts a
     /// server on 127.0.0.1 and connects to it, as a test with a fake HTTP
     /// server does. Asked of the kernel, not read off the profile.
     #[cfg(target_os = "macos")]

@@ -29,50 +29,21 @@
 //! Retrying in Ns..." toast). A unit test on the helper alone would
 //! miss that.
 //!
-//! ## Why ENV_MUTEX is load-bearing
+//! ## The read timeout
 //!
-//! The test sets `KODA_READ_TIMEOUT_SECS=1` in
-//! `koda_core::runtime_env`, which is process-wide state. Other
-//! tests in this crate also mutate the runtime env; without
-//! `ENV_MUTEX` they'd race.
+//! The provider is built from a config whose `stream_idle_timeout_ms`
+//! is 1s, as the config file's `[model_providers.<id>]` table sets it.
+//! `ENV_MUTEX` is still held: the provider reads proxy variables, which
+//! other tests in this crate change.
 
 use std::time::{Duration, Instant};
 
 use koda_core::config::ProviderType;
 use koda_core::persistence::Persistence;
-use koda_core::providers::openai_compat::OpenAiCompatProvider;
-use koda_core::runtime_env;
 use koda_test_utils::network::FakeLlmServer;
 use koda_test_utils::{ENV_MUTEX, EngineEvent, Env};
 
 // ── Helpers ───────────────────────────────────────────────
-
-/// RAII guard for runtime-env keys we set during a test. Mirrors the
-/// pattern used in `http_client_config_test.rs`. Inlined here rather
-/// than promoted to `koda-test-utils` because only two tests need it
-/// (YAGNI says wait for the third caller).
-struct EnvGuard {
-    keys: Vec<&'static str>,
-}
-
-impl EnvGuard {
-    fn new() -> Self {
-        Self { keys: Vec::new() }
-    }
-
-    fn set(&mut self, key: &'static str, value: &str) {
-        runtime_env::set(key, value);
-        self.keys.push(key);
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        for k in &self.keys {
-            runtime_env::remove(k);
-        }
-    }
-}
 
 /// SSE chunks that reassemble into the assistant message
 /// `"recovered after retry"` and signal a clean stop.
@@ -89,7 +60,7 @@ fn ok_sse_chunks() -> Vec<&'static str> {
 /// **The acceptance criterion this test exists to enforce (#1123).**
 ///
 /// Scenario: the provider's first chat-completion request stalls past
-/// `KODA_READ_TIMEOUT_SECS`. The inference loop must:
+/// its read timeout (`stream_idle_timeout_ms`). The inference loop must:
 ///
 /// 1. Catch the resulting timeout error from `provider.chat_stream(...)`.
 /// 2. Recognise it as a transient network failure (per
@@ -112,12 +83,6 @@ async fn read_timeout_triggers_auto_retry_not_hard_failure() {
         .mount_chat_silent_then_resume(Duration::from_secs(3), &ok_sse_chunks())
         .await;
 
-    let mut env = EnvGuard::new();
-    // Force the read-timeout below the silent_for window so the first
-    // request errors with "operation timed out" — the canonical
-    // is_network_transient_error trigger.
-    env.set("KODA_READ_TIMEOUT_SECS", "1");
-
     let test_env = Env::builder()
         .max_context_tokens(100_000)
         .provider_type(ProviderType::OpenAI)
@@ -125,10 +90,16 @@ async fn read_timeout_triggers_auto_retry_not_hard_failure() {
         .await;
     test_env.insert_user_message("hello").await;
 
-    let provider = OpenAiCompatProvider::new(&server.url(), Some("sk-test".into()));
+    // A read timeout below the silent_for window, so the first request
+    // errors with "operation timed out", the canonical
+    // is_network_transient_error trigger.
+    let mut config = koda_core::config::KodaConfig::default_for_testing(ProviderType::OpenAI);
+    config.base_url = server.url();
+    config.stream_idle_timeout_ms = Some(1_000);
+    let provider = koda_core::providers::create_provider(&config);
 
     let started = Instant::now();
-    let (result, events) = test_env.run_inference_result(&provider).await;
+    let (result, events) = test_env.run_inference_result(provider.as_ref()).await;
     let elapsed = started.elapsed();
 
     // Contract 1: the inference loop recovered (no error bubbled up).

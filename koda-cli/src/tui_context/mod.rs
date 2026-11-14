@@ -244,8 +244,8 @@ pub(crate) fn resolve_initial_trust_mode(
     Ok((mode, warning))
 }
 
-/// Which of `--provider`, `--base-url` and `--model` (or `KODA_PROVIDER`,
-/// `KODA_BASE_URL`, `KODA_MODEL`) the user set for this run.
+/// Which of `--provider`, `--base-url` and `--model` the user set for this
+/// run.
 ///
 /// `KodaConfig::with_overrides` has already applied the values by the time
 /// the TUI starts. The TUI only needs to know which fields are the user's
@@ -255,11 +255,11 @@ pub(crate) fn resolve_initial_trust_mode(
 /// defaults.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct ProviderOverrides {
-    /// `--provider` / `KODA_PROVIDER` was given.
+    /// `--provider` was given.
     pub provider: bool,
-    /// `--base-url` / `KODA_BASE_URL` was given.
+    /// `--base-url` was given.
     pub base_url: bool,
-    /// `--model` / `KODA_MODEL` was given.
+    /// `--model` was given.
     pub model: bool,
 }
 
@@ -370,6 +370,9 @@ impl TuiContext {
         }
         startup_lines.extend(crate::startup::home_dir_warning_lines(&project_root));
         if let Some(warning) = crate::legacy_clones::tidy_home() {
+            startup_lines.push(crate::startup::warning_line(warning));
+        }
+        for warning in crate::retired_env::warnings() {
             startup_lines.push(crate::startup::warning_line(warning));
         }
         if let Ok(Some(latest)) = version_check.await

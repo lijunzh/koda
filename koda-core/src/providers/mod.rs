@@ -217,9 +217,9 @@ fn is_localhost_url(url: &str) -> bool {
 /// - Supports proxy auth via URL (http://user:pass@proxy:port)
 /// - Supports separate PROXY_USER / PROXY_PASS env vars
 /// - Bypasses proxy for localhost (LM Studio)
-/// - Applies a connect timeout (default 30s, env: `KODA_CONNECT_TIMEOUT_SECS`)
-///   and a read timeout (default 300s = 5 min, env: `KODA_READ_TIMEOUT_SECS`;
-///   [`build_local_http_client`] defaults it to [`LOCAL_READ_TIMEOUT_SECS`]).
+/// - Applies a connect timeout (30s) and a read timeout (300s = 5 min;
+///   [`build_local_http_client`] uses [`LOCAL_READ_TIMEOUT_SECS`], and a
+///   provider's `stream_idle_timeout_ms` in the config file replaces either).
 ///   We deliberately avoid the total-request `.timeout()` because it would
 ///   kill long-running SSE streams during slow tool/agent turns.
 ///
@@ -296,21 +296,9 @@ pub fn build_local_http_client(base_url: &str) -> reqwest::Client {
     .unwrap_or_else(|_| reqwest::Client::new())
 }
 
-/// The read timeout, in seconds: `KODA_READ_TIMEOUT_SECS` if it's a number,
-/// else `default_secs`. `0` turns the timeout off, as it does in Codex and
-/// qwen-code.
-fn read_timeout_secs(default_secs: u64) -> u64 {
-    read_timeout_from(
-        crate::runtime_env::get("KODA_READ_TIMEOUT_SECS").as_deref(),
-        default_secs,
-    )
-}
-
-fn read_timeout_from(setting: Option<&str>, default_secs: u64) -> u64 {
-    setting
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(default_secs)
-}
+/// Seconds to wait for a TCP and TLS connection, as Codex has no setting
+/// for it.
+const CONNECT_TIMEOUT_SECS: u64 = 30;
 
 fn client_builder(
     base_url: Option<&str>,
@@ -330,11 +318,8 @@ fn client_builder(
     // every chunk, so it doesn't penalize long agent turns; but a server
     // that goes silent (or a half-open connection a NAT box has dropped)
     // will fail fast instead of hanging the agent forever.
-    let connect_timeout = crate::runtime_env::get("KODA_CONNECT_TIMEOUT_SECS")
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(30);
-    let read_timeout = read_timeout_secs(default_read_secs);
-    builder = builder.connect_timeout(std::time::Duration::from_secs(connect_timeout));
+    let read_timeout = default_read_secs;
+    builder = builder.connect_timeout(std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS));
     if read_timeout > 0 {
         builder = builder.read_timeout(std::time::Duration::from_secs(read_timeout));
     }
@@ -490,8 +475,7 @@ pub trait LlmProvider: Send + Sync {
 
 use crate::config::{KodaConfig, ProviderType};
 
-/// The HTTP client a provider uses: the read timeout is
-/// `KODA_READ_TIMEOUT_SECS` if set, else the config file's
+/// The HTTP client a provider uses: the read timeout is the config file's
 /// `stream_idle_timeout_ms` for the provider, else `default_secs`.
 fn provider_http_client(config: &KodaConfig, default_secs: u64) -> reqwest::Client {
     let default_secs = match config.stream_idle_timeout_ms {
@@ -562,19 +546,6 @@ pub fn create_provider(config: &KodaConfig) -> Box<dyn LlmProvider + Send + Sync
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_read_timeout_default_depends_on_the_server_unless_the_env_sets_one() {
-        assert_eq!(read_timeout_from(None, READ_TIMEOUT_SECS), 300);
-        assert_eq!(read_timeout_from(None, LOCAL_READ_TIMEOUT_SECS), 1800);
-        assert_eq!(read_timeout_from(Some("45"), LOCAL_READ_TIMEOUT_SECS), 45);
-        assert_eq!(
-            read_timeout_from(Some("soon"), LOCAL_READ_TIMEOUT_SECS),
-            1800
-        );
-        // 0 turns the timeout off; client_builder skips it.
-        assert_eq!(read_timeout_from(Some("0"), READ_TIMEOUT_SECS), 0);
-    }
 
     // ── is_localhost_url ────────────────────────────────────────────────
 
