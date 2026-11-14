@@ -31,6 +31,25 @@ pub struct SessionStartParams {
     /// session starts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// Who answers the session's requests. Without one, the client does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_policy: Option<ApprovalPolicy>,
+}
+
+/// Who answers a session's approvals, questions and loop-cap decisions.
+/// Codex's `approvalPolicy` names the same choice.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ApprovalPolicy {
+    /// The client answers each request.
+    #[default]
+    OnRequest,
+    /// Nobody is there to ask, as in `koda exec`: Koda approves what the
+    /// mode allows, refuses destructive actions and anything outside the
+    /// sandbox, answers a question with nothing and goes on at the loop
+    /// cap. Each request is still sent, followed at once by
+    /// `serverRequest/resolved`, so a reader sees what was decided.
+    Never,
 }
 
 /// The answer to `session/start`.

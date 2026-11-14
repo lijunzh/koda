@@ -109,6 +109,7 @@ async fn client(config: KodaConfig, dir: &tempfile::TempDir) -> InProcessClient 
         config,
         project_root: project,
         db,
+        raw_events: false,
         client_info: ClientInfo {
             name: "turns-test".to_string(),
             version: "0".to_string(),
@@ -134,6 +135,19 @@ impl Koda {
             _dir: dir,
         };
         koda.until("session/started").await;
+        // The scripted server reports no context window, so Koda says what it
+        // assumed, once the session has started.
+        let warned = koda.until("warning").await;
+        assert_eq!(names(&warned), "warning");
+        match &warned[0] {
+            Outgoing::Notification(ServerNotification::Warning(w)) => {
+                assert!(
+                    w.message.contains("didn't report its context window"),
+                    "{w:?}"
+                );
+            }
+            other => panic!("expected a warning, got {other:?}"),
+        }
         koda
     }
 
@@ -151,6 +165,7 @@ impl Koda {
             .request::<methods::TurnStart>(TurnStartParams {
                 session_id: self.session.clone(),
                 input: input.to_string(),
+                images: Vec::new(),
                 client_message_id: client_message_id.map(str::to_string),
                 mode: None,
             })
@@ -551,6 +566,7 @@ async fn requests_without_a_running_turn_or_session_are_refused() {
             .request::<methods::TurnStart>(TurnStartParams {
                 session_id: "no-such-session".to_string(),
                 input: "hi".to_string(),
+                images: Vec::new(),
                 client_message_id: None,
                 mode: Some(TrustMode::Safe),
             })
@@ -599,6 +615,7 @@ async fn a_resumed_session_keeps_its_history() {
         .request::<methods::TurnStart>(TurnStartParams {
             session_id: session.clone(),
             input: "Remember 42".to_string(),
+            images: Vec::new(),
             client_message_id: None,
             mode: None,
         })
@@ -618,6 +635,7 @@ async fn a_resumed_session_keeps_its_history() {
         first
             .request::<methods::SessionStart>(SessionStartParams {
                 session_id: Some(session.clone()),
+                ..Default::default()
             })
             .await,
     );
@@ -628,6 +646,7 @@ async fn a_resumed_session_keeps_its_history() {
     let resumed = second
         .request::<methods::SessionStart>(SessionStartParams {
             session_id: Some(session.clone()),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -647,6 +666,7 @@ async fn a_resumed_session_keeps_its_history() {
         koda.client
             .request::<methods::SessionStart>(SessionStartParams {
                 session_id: Some("no-such-session".to_string()),
+                ..Default::default()
             })
             .await,
     );

@@ -16,6 +16,11 @@
 //!
 //! [`events::EventProjector`] turns a session's engine events into those
 //! messages; `koda exec --json` prints them.
+//!
+//! In process only, and only for now, a front end whose renderer still
+//! reads engine events can ask for them as they are
+//! ([`StartArgs::raw_events`]), as Codex's TUI read its old events while it
+//! moved onto its app-server. They go when the TUI renders items.
 
 pub mod builtin_skills;
 pub mod events;
@@ -24,6 +29,7 @@ mod session;
 
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
@@ -51,55 +57,43 @@ pub struct StartArgs {
     pub project_root: PathBuf,
     /// Where sessions are stored.
     pub db: Database,
+    /// Also hand out every engine event as it is
+    /// ([`InProcessClient::take_raw_events`]). In process only.
+    pub raw_events: bool,
     /// Who the client is, sent in `initialize`.
     pub client_info: ClientInfo,
 }
 
 /// A client with Koda's host running in this process.
 pub struct InProcessClient {
-    commands: mpsc::Sender<HostCommand>,
+    requests: RequestHandle,
     host: JoinHandle<()>,
     events: mpsc::UnboundedReceiver<Outgoing>,
-    next_id: AtomicI64,
+    raw_events: Option<mpsc::UnboundedReceiver<RawEvent>>,
     server: InitializeResponse,
 }
 
-impl InProcessClient {
-    /// Start the host and run the `initialize` handshake.
-    pub async fn start(args: StartArgs) -> Result<Self, RequestError> {
-        let (events_tx, events) = mpsc::unbounded_channel();
-        let (commands, host) = host::spawn(HostArgs {
-            config: args.config,
-            project_root: args.project_root,
-            db: args.db,
-            events: events_tx,
-        });
-        let mut client = Self {
-            commands,
-            host,
-            events,
-            next_id: AtomicI64::new(1),
-            server: InitializeResponse {
-                server_info: koda_protocol::initialize::ServerInfo {
-                    name: String::new(),
-                    version: String::new(),
-                },
-                protocol_version: 0,
-            },
-        };
-        client.server = client
-            .request::<methods::Initialize>(InitializeParams {
-                client_info: args.client_info,
-            })
-            .await?;
-        Ok(client)
-    }
+/// An engine event as the engine sent it, for a front end whose renderer
+/// still reads them ([`StartArgs::raw_events`]).
+#[derive(Debug, Clone)]
+pub struct RawEvent {
+    /// The session it came from.
+    pub session_id: String,
+    /// The tool call that started the sub-agent it came from, if one did.
+    pub parent: Option<String>,
+    /// The event.
+    pub event: koda_core::engine::EngineEvent,
+}
 
-    /// What the server said in `initialize`.
-    pub fn server(&self) -> &InitializeResponse {
-        &self.server
-    }
+/// Sends requests to the host. Cheap to clone, so a task can send one
+/// while another reads events.
+#[derive(Clone)]
+pub struct RequestHandle {
+    commands: mpsc::Sender<HostCommand>,
+    next_id: Arc<AtomicI64>,
+}
 
+impl RequestHandle {
     /// Call method `M` and wait for its response.
     pub async fn request<M: Method>(&self, params: M::Params) -> Result<M::Response, RequestError> {
         let id = RequestId::Integer(self.next_id.fetch_add(1, Ordering::Relaxed));
@@ -126,11 +120,79 @@ impl InProcessClient {
             source,
         })
     }
+}
+
+impl InProcessClient {
+    /// Start the host and run the `initialize` handshake.
+    pub async fn start(args: StartArgs) -> Result<Self, RequestError> {
+        let (events_tx, events) = mpsc::unbounded_channel();
+        let (raw_tx, raw_events) = if args.raw_events {
+            let (tx, rx) = mpsc::unbounded_channel();
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
+        let (commands, host) = host::spawn(HostArgs {
+            config: args.config,
+            project_root: args.project_root,
+            db: args.db,
+            events: events_tx,
+            raw: raw_tx,
+        });
+        let mut client = Self {
+            requests: RequestHandle {
+                commands,
+                next_id: Arc::new(AtomicI64::new(1)),
+            },
+            host,
+            events,
+            raw_events,
+            server: InitializeResponse {
+                server_info: koda_protocol::initialize::ServerInfo {
+                    name: String::new(),
+                    version: String::new(),
+                },
+                protocol_version: 0,
+            },
+        };
+        client.server = client
+            .request::<methods::Initialize>(InitializeParams {
+                client_info: args.client_info,
+            })
+            .await?;
+        Ok(client)
+    }
+
+    /// What the server said in `initialize`.
+    pub fn server(&self) -> &InitializeResponse {
+        &self.server
+    }
+
+    /// Call method `M` and wait for its response.
+    pub async fn request<M: Method>(&self, params: M::Params) -> Result<M::Response, RequestError> {
+        self.requests.request::<M>(params).await
+    }
+
+    /// A handle that sends requests, for another task.
+    pub fn request_handle(&self) -> RequestHandle {
+        self.requests.clone()
+    }
+
+    /// The engine events, as they are, when [`StartArgs::raw_events`] asked
+    /// for them. Only the first call gets them.
+    pub fn take_raw_events(&mut self) -> Option<mpsc::UnboundedReceiver<RawEvent>> {
+        self.raw_events.take()
+    }
 
     /// The next notification or server request, in the order Koda produced
     /// them. `None` once the host has stopped.
     pub async fn next_event(&mut self) -> Option<Outgoing> {
         self.events.recv().await
+    }
+
+    /// The next notification or server request if one is already queued.
+    pub fn try_next_event(&mut self) -> Option<Outgoing> {
+        self.events.try_recv().ok()
     }
 
     /// Answer the server request `id` with `result`, the request's response
@@ -158,7 +220,8 @@ impl InProcessClient {
         id: RequestId,
         result: Result<serde_json::Value, ErrorObject>,
     ) -> Result<(), RequestError> {
-        self.commands
+        self.requests
+            .commands
             .send(HostCommand::Response { id, result })
             .await
             .map_err(|_| RequestError::Closed { method: "response" })
@@ -169,8 +232,9 @@ impl InProcessClient {
     /// seconds, then stops it by force.
     pub async fn shutdown(self) {
         let Self {
-            commands, mut host, ..
+            requests, mut host, ..
         } = self;
+        let commands = requests.commands;
         let (done, stopped) = oneshot::channel();
         if commands.send(HostCommand::Shutdown { done }).await.is_ok() {
             let _ = tokio::time::timeout(SHUTDOWN_TIMEOUT, stopped).await;
@@ -257,6 +321,7 @@ mod tests {
             config,
             project_root: dir.path().to_path_buf(),
             db,
+            raw_events: false,
             client_info: ClientInfo {
                 name: "koda-client-test".to_string(),
                 version: "0".to_string(),

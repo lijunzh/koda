@@ -109,6 +109,8 @@ generated from the protocol's types, and CI fails if the two differ.
 ```json
 {"jsonrpc":"2.0","method":"session/started","params":{"session":{"id":"a3f8bc12-…","model":"claude-haiku-5-5","provider":"anthropic","contextWindow":200000,"mode":"auto","tools":["Read","Grep","…"]},"kodaVersion":"0.7.0","protocolVersion":2}}
 {"jsonrpc":"2.0","method":"turn/started","params":{"sessionId":"a3f8bc12-…","turn":{"id":"7d1e…","status":"inProgress","error":null,"usage":null,"durationMs":null}}}
+{"jsonrpc":"2.0","method":"item/started","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"userMessage","id":"user-1","text":"Why does the test fail?","clientMessageIds":[]}}}
+{"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"userMessage","id":"user-1","text":"Why does the test fail?","clientMessageIds":[]}}}
 {"jsonrpc":"2.0","method":"item/started","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"toolCall","id":"call_1","tool":"Bash","arguments":{"command":"cargo test"},"status":"inProgress","output":null,"detail":null}}}
 {"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"toolCall","id":"call_1","tool":"Bash","arguments":{"command":"cargo test"},"status":"failed","output":"Exit code: 101 | …","detail":null}}}
 {"jsonrpc":"2.0","method":"item/started","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"agentMessage","id":"msg-1","text":""}}}
@@ -118,8 +120,14 @@ generated from the protocol's types, and CI fails if the two differ.
 ```
 
 A run prints `session/started`, one turn, and `exec/summary`, in that order.
-Every message after the first carries `sessionId`; every message in a turn
-carries `turnId`.
+Between the first two may come a `warning` from starting the session: a local
+server that doesn't report its context window gets one saying what Koda
+assumed. Every message after the first carries `sessionId`; every message in a
+turn carries `turnId`.
+
+`koda exec` is a client like any other: it starts Koda's host in process and
+opens a session with `approvalPolicy: never`, so the host answers the requests
+below as described, and Ctrl+C sends `turn/interrupt`.
 
 ### Notifications
 
@@ -143,7 +151,7 @@ carries `turnId`.
 
 | `type` | Fields | Notes |
 |--------|--------|-------|
-| `userMessage` | `id`, `text`, `clientMessageIds` | What the user said, as the model received it: a turn's prompt, or steering text sent during it (texts that arrived together are one item). Sent to clients that start turns themselves; `koda exec` doesn't send it yet |
+| `userMessage` | `id`, `text`, `clientMessageIds` | What the user said, as the model received it: a turn's prompt, or steering text sent during it (texts that arrived together are one item) |
 | `agentMessage` | `id`, `text` | Text is empty when it starts and complete when it completes |
 | `reasoning` | `id`, `text` | Where the provider shows reasoning |
 | `toolCall` | `id`, `tool`, `arguments`, `status`, `output`, `detail` | One item for every tool, named by `tool`. `status` ends as `completed`, `failed` (it ran and failed, or a command exited non-zero), `declined` (refused at an approval, by `--mode plan` or by a sub-agent's limits) or `cancelled`. `output` is what the model read. `detail` is the one-line description Koda showed when it asked about or blocked the call |
