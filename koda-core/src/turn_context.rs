@@ -51,11 +51,11 @@ use tokio_util::sync::CancellationToken;
 
 use crate::child_agent::ChildAgentRegistry;
 use crate::config::KodaConfig;
-use crate::db::Database;
 use crate::engine::EngineSink;
 use crate::sub_agent_cache::SubAgentCache;
 use crate::tools::ToolRegistry;
 use crate::trust::{SessionAllows, TrustMode};
+use koda_state::db::Database;
 
 /// Per-turn ambient context shared across the inference loop, tool
 /// dispatch, and sub-agent invocation.
@@ -173,6 +173,43 @@ impl<'a> ToolExecutionContext<'a> {
     }
 }
 
+/// The record of a turn about to run with `config` in `mode`, offered
+/// `tools`, in `cwd`, sending `system_prompt` and `project_memory`, as the
+/// store keeps one per turn
+/// ([`koda_state::session_store::TurnContextItem`]).
+#[allow(clippy::too_many_arguments)]
+pub fn context_item(
+    turn_id: &str,
+    config: &crate::config::KodaConfig,
+    mode: crate::trust::TrustMode,
+    cwd: &std::path::Path,
+    tools: &[crate::providers::ToolDefinition],
+    system_prompt: Option<&str>,
+    project_memory: Option<&str>,
+) -> koda_state::session_store::TurnContextItem {
+    use sha2::{Digest, Sha256};
+    let sha256 = |text: &str| format!("{:x}", Sha256::digest(text.as_bytes()));
+    let settings = &config.model_settings;
+    koda_state::session_store::TurnContextItem {
+        turn_id: turn_id.to_string(),
+        koda_version: env!("CARGO_PKG_VERSION").to_string(),
+        cwd: cwd.display().to_string(),
+        agent_name: config.agent_name.clone(),
+        provider: config.provider_type.to_string(),
+        base_url: config.base_url.clone(),
+        model: config.model.clone(),
+        max_tokens: settings.max_tokens,
+        temperature: settings.temperature,
+        thinking_budget: settings.thinking_budget,
+        reasoning_effort: settings.reasoning_effort.clone(),
+        context_window: config.max_context_tokens,
+        trust_mode: mode.as_str().to_string(),
+        tools: tools.iter().map(|tool| tool.name.clone()).collect(),
+        system_prompt_sha256: system_prompt.map(sha256),
+        project_memory_sha256: project_memory.map(sha256),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Smoke tests: construct each context with stub-y values and read
@@ -209,10 +246,10 @@ mod tests {
     /// turn_context's tests are intentionally minimal — the call
     /// graph migration in PR-2/PR-3 will exercise these types
     /// through the real workspace battery.
-    async fn fixtures() -> (TempDir, crate::config::KodaConfig, crate::db::Database) {
+    async fn fixtures() -> (TempDir, crate::config::KodaConfig, koda_state::db::Database) {
         let dir = TempDir::new().expect("tempdir");
         let config = crate::config::KodaConfig::default_for_testing(ProviderType::Mock);
-        let db = crate::db::Database::open(&dir.path().join("turn_ctx.db"))
+        let db = koda_state::db::Database::open(&dir.path().join("turn_ctx.db"))
             .await
             .expect("open db");
         (dir, config, db)

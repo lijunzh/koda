@@ -37,7 +37,6 @@
 
 use crate::approval_flow::CommandInbox;
 use crate::config::KodaConfig;
-use crate::db::{Database, Role};
 use crate::engine::{
     CompactionStatus, CompactionTrigger, EngineCommand, EngineEvent, EngineSink, LoopGuardAction,
     Notice, RetryReason,
@@ -56,7 +55,6 @@ use crate::providers::{
     error::{ProviderError, ProviderErrorKind, stream_error_is_final},
     stream_collector::SseCollector,
 };
-use crate::session_store::SessionStore;
 use crate::skill_scope::SkillToolScope;
 use crate::tool_dispatch::{
     can_parallelize, execute_tools_parallel, execute_tools_sequential, execute_tools_split_batch,
@@ -64,6 +62,8 @@ use crate::tool_dispatch::{
 };
 use crate::tools::ToolRegistry;
 use crate::trust::TrustMode;
+use koda_state::db::{Database, Role};
+use koda_state::session_store::SessionStore;
 
 use anyhow::{Context, Result};
 use std::path::Path;
@@ -1190,7 +1190,8 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
     // sink-only and disappeared once the user closed the TUI.
     let _persisting_sink = crate::engine::sink::PersistingSink::new(
         sink,
-        std::sync::Arc::new(db.clone()) as std::sync::Arc<dyn crate::session_store::SessionStore>,
+        std::sync::Arc::new(db.clone())
+            as std::sync::Arc<dyn koda_state::session_store::SessionStore>,
         session_id.to_string(),
         None,
     );
@@ -1746,8 +1747,15 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
             retried_empty = true;
             // Never marked complete, so `load_context` leaves it out of the
             // conversation while the session's usage totals still count it.
-            db.insert_message(session_id, &Role::Assistant, None, None, None, Some(&usage))
-                .await?;
+            db.insert_message(
+                session_id,
+                &Role::Assistant,
+                None,
+                None,
+                None,
+                Some(&usage.stored()),
+            )
+            .await?;
             sink.emit(EngineEvent::Retry {
                 reason: RetryReason::EmptyResponse,
                 attempt: 1,
@@ -1780,7 +1788,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
                 content,
                 tool_calls_json.as_deref(),
                 None,
-                Some(&usage),
+                Some(&usage.stored()),
             )
             .await?;
 

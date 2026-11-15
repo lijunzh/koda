@@ -360,7 +360,7 @@ pub(crate) fn with_saved(mut choice: ModelChoice, saved: &KodaConfigValues) -> M
 /// sessions read it. A key in the environment Koda started with is
 /// replaced for this run, as the TUI's key wizard did.
 pub(crate) async fn set_api_key(
-    db: &koda_core::db::Database,
+    db: &koda_state::db::Database,
     provider_id: &str,
     key: &str,
 ) -> Result<(), ErrorObject> {
@@ -383,7 +383,7 @@ pub(crate) async fn set_api_key(
 /// run's environment only when it came from the store; one from the shell
 /// Koda started in stays.
 pub(crate) async fn remove_api_key(
-    db: &koda_core::db::Database,
+    db: &koda_state::db::Database,
     provider_id: &str,
 ) -> Result<(), ErrorObject> {
     let ptype = provider(provider_id)?;

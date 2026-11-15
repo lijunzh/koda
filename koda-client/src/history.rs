@@ -14,12 +14,12 @@
 
 use std::collections::HashMap;
 
-use koda_core::db::Database;
 use koda_core::providers::ToolCall;
-use koda_core::session_store::{Message, Role, SessionStore, TurnRecord, session_event_kind};
 use koda_protocol::ServerNotification;
 use koda_protocol::item::{Item, ToolCallStatus, TurnItem};
 use koda_protocol::turn::{Turn, TurnStatus};
+use koda_state::db::Database;
+use koda_state::session_store::{Message, Role, SessionStore, TurnRecord, session_event_kind};
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
@@ -186,7 +186,7 @@ pub(crate) async fn turns_for_resume(db: &dyn SessionStore, session_id: &str) ->
 }
 
 /// The session's records of turns and items. Core also stores each turn's
-/// context ([`koda_core::session_store::TurnContextItem`]) among them, for
+/// context ([`koda_state::session_store::TurnContextItem`]) among them, for
 /// debugging; it isn't part of a turn as a client sees it, so a session
 /// whose only records are contexts has no turns stored.
 async fn turn_records(db: &dyn SessionStore, session_id: &str) -> Result<Vec<TurnRecord>> {
@@ -456,7 +456,7 @@ mod tests {
     fn context_record(turn: &str) -> TurnRecord {
         TurnRecord {
             turn_id: turn.into(),
-            kind: koda_core::session_store::TURN_CONTEXT_KIND.into(),
+            kind: koda_state::session_store::TURN_CONTEXT_KIND.into(),
             payload: "{}".into(),
         }
     }

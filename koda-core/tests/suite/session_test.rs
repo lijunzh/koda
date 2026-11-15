@@ -9,10 +9,10 @@ use koda_core::{
     engine::{EngineCommand, EngineEvent, event::TurnEndReason},
     providers::{LlmResponse, ModelInfo},
     session::{KodaSession, SessionCancel},
-    session_store::SessionStore,
     tools::ToolRegistry,
     trust::TrustMode,
 };
+use koda_state::session_store::SessionStore;
 use koda_test_utils::{
     ChatMessage, Env, LlmProvider, MockProvider, MockResponse, TestSink, ToolDefinition,
 };
@@ -405,11 +405,11 @@ async fn session_persists_messages_across_two_turns() {
         .expect("turn 2 should succeed");
 
     // Verify both turns' messages are in the DB.
-    let messages: Vec<koda_core::session_store::Message> =
+    let messages: Vec<koda_state::session_store::Message> =
         env.db.load_context(&env.session_id).await.unwrap();
     let contents: Vec<String> = messages
         .iter()
-        .filter_map(|m: &koda_core::session_store::Message| m.content.clone())
+        .filter_map(|m: &koda_state::session_store::Message| m.content.clone())
         .collect();
 
     assert!(
@@ -543,13 +543,13 @@ async fn session_network_drop_turn_ends_with_error() {
 }
 
 /// The contexts stored for `env`'s session, oldest first.
-async fn stored_contexts(env: &Env) -> Vec<koda_core::session_store::TurnContextItem> {
+async fn stored_contexts(env: &Env) -> Vec<koda_state::session_store::TurnContextItem> {
     env.db
         .load_turn_records(&env.session_id)
         .await
         .unwrap()
         .into_iter()
-        .filter(|record| record.kind == koda_core::session_store::TURN_CONTEXT_KIND)
+        .filter(|record| record.kind == koda_state::session_store::TURN_CONTEXT_KIND)
         .map(|record| serde_json::from_str(&record.payload).unwrap())
         .collect()
 }

@@ -30,7 +30,7 @@ use koda_client::protocol::turn::{
 use koda_client::protocol::{ServerNotification, ServerRequest, methods};
 use koda_client::{InProcessClient, RequestError, StartArgs};
 use koda_core::config::{KodaConfig, ProviderType};
-use koda_core::db::Database;
+use koda_state::db::Database;
 use koda_test_utils::network::{FakeLlmServer, Request, ResponseTemplate};
 use serde_json::{Value, json};
 
@@ -1574,7 +1574,7 @@ async fn a_settings_update_reaches_the_next_turn() {
     let db = Database::init(&koda._dir.path().join("config"))
         .await
         .unwrap();
-    use koda_core::session_store::SessionStore;
+    use koda_state::session_store::SessionStore;
     let stored = db.get_session(&koda.session).await.unwrap().unwrap();
     assert_eq!(stored.model.as_deref(), Some("other-model"));
     assert_eq!(stored.mode.as_deref(), Some("safe"));
@@ -1619,9 +1619,9 @@ async fn a_running_turn_keeps_its_settings() {
         .filter(|record| record.kind == "turn")
         .map(|record| record.turn_id.as_str())
         .collect();
-    let contexts: Vec<koda_core::session_store::TurnContextItem> = records
+    let contexts: Vec<koda_state::session_store::TurnContextItem> = records
         .iter()
-        .filter(|record| record.kind == koda_core::session_store::TURN_CONTEXT_KIND)
+        .filter(|record| record.kind == koda_state::session_store::TURN_CONTEXT_KIND)
         .map(|record| serde_json::from_str(&record.payload).unwrap())
         .collect();
     let models: Vec<&str> = contexts.iter().map(|c| c.model.as_str()).collect();
@@ -1635,8 +1635,8 @@ async fn a_running_turn_keeps_its_settings() {
 async fn stored_records(
     config_dir: &std::path::Path,
     session: &str,
-) -> Vec<koda_core::session_store::TurnRecord> {
-    use koda_core::session_store::SessionStore;
+) -> Vec<koda_state::session_store::TurnRecord> {
+    use koda_state::session_store::SessionStore;
     let db = Database::init(config_dir).await.unwrap();
     db.load_turn_records(session).await.unwrap()
 }

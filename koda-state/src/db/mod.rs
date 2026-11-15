@@ -25,7 +25,7 @@
 
 mod context_cache;
 pub mod queries;
-pub(crate) use koda_state::sqlite;
+use crate::sqlite;
 #[cfg(test)]
 mod tests;
 
@@ -44,7 +44,7 @@ pub use crate::session_store::{
 ///
 /// `Clone` is cheap — `SqlitePool` is internally `Arc`-shared, so a
 /// clone bumps a refcount, not a real connection. This matters for
-/// [`crate::engine::sink::PersistingSink`], which needs an owned
+/// the engine's `PersistingSink`, which needs an owned
 /// handle to spawn fire-and-forget DB writes from sink emissions.
 ///
 /// `context_cache` and `compaction_gen` are shared via `Arc` so cloned
@@ -58,11 +58,6 @@ pub struct Database {
     /// Monotonic counter bumped on every `compact_session` call.
     /// Snapshot mismatch invalidates a `ContextCacheEntry`.
     pub(crate) compaction_gen: std::sync::Arc<std::sync::atomic::AtomicU64>,
-}
-
-/// Koda's folder (`~/.config/koda/`): [`koda_config::config_dir`].
-pub fn config_dir() -> Result<std::path::PathBuf> {
-    Ok(koda_config::config_dir()?)
 }
 
 impl Database {
@@ -87,7 +82,7 @@ impl Database {
     /// `koda_config_dir` is the koda configuration directory (e.g. `~/.config/koda`).
     /// The database lives in `<koda_config_dir>/db/koda.db`.
     ///
-    /// Production callers should pass `db::config_dir()?`; tests pass a temp dir.
+    /// Production callers pass `koda_config::config_dir()?`; tests pass a temp dir.
     pub async fn init(koda_config_dir: &Path) -> Result<Self> {
         // Owner-only: it holds API keys and conversations that may include
         // secrets (#693).

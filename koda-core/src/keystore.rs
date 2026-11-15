@@ -1,6 +1,6 @@
 //! Secure API key storage (#693).
 //!
-//! Keys are stored in SQLite via the [`crate::db`] KV store with the
+//! Keys are stored in SQLite via the [`koda_state::db`] KV store with the
 //! `apikey:` prefix. The database file is created with 0600 permissions.
 //!
 //! ## Supported providers
@@ -11,8 +11,8 @@
 //! Keys are also read from environment variables (e.g., `ANTHROPIC_API_KEY`).
 //! The keystore is checked first, then the environment.
 
-use crate::db::Database;
 use anyhow::Result;
+use koda_state::db::Database;
 
 /// KV key prefix for API keys.
 const PREFIX: &str = "apikey:";

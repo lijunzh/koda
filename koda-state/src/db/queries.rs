@@ -200,7 +200,7 @@ impl Database {
         session_id: &str,
         summary: &str,
         keep: KeepRows,
-        usage: Option<&crate::providers::TokenUsage>,
+        usage: Option<&crate::session_store::MessageUsage>,
     ) -> Result<usize> {
         // `BEGIN IMMEDIATE`, not the default deferred `BEGIN`: this
         // transaction reads first and writes later. In WAL mode a
@@ -467,7 +467,7 @@ impl SessionStore for Database {
         content: Option<&str>,
         tool_calls: Option<&str>,
         tool_call_id: Option<&str>,
-        usage: Option<&crate::providers::TokenUsage>,
+        usage: Option<&crate::session_store::MessageUsage>,
     ) -> Result<i64> {
         self.insert_message_with_agent(
             session_id,
@@ -490,7 +490,7 @@ impl SessionStore for Database {
         content: Option<&str>,
         tool_calls: Option<&str>,
         tool_call_id: Option<&str>,
-        usage: Option<&crate::providers::TokenUsage>,
+        usage: Option<&crate::session_store::MessageUsage>,
         agent_name: Option<&str>,
     ) -> Result<i64> {
         let result = sqlx::query(
@@ -1029,7 +1029,7 @@ impl SessionStore for Database {
     /// Keeps the last `preserve_count` messages intact, archives the rest, and
     /// inserts `summary` as a `system` row. That row is engine bookkeeping, so
     /// it stays out of the user's history and of interruption detection;
-    /// [`assemble_messages`](crate::inference_helpers::assemble_messages) sends
+    /// the engine's `assemble_messages` sends
     /// it to the model as a user message ahead of the preserved tail.
     ///
     /// Returns the number of messages that were deleted/replaced.
@@ -1048,7 +1048,7 @@ impl SessionStore for Database {
         session_id: &str,
         summary: &str,
         keep_from_id: i64,
-        usage: Option<&crate::providers::TokenUsage>,
+        usage: Option<&crate::session_store::MessageUsage>,
     ) -> Result<usize> {
         self.archive_into_summary(session_id, summary, KeepRows::From(keep_from_id), usage)
             .await

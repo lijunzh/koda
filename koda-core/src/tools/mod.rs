@@ -256,7 +256,7 @@ pub struct ToolRegistry {
     /// Discovered skills.
     pub skill_registry: crate::skills::SkillRegistry,
     /// Database handle for tools that need session access (RecallContext).
-    db: std::sync::RwLock<Option<std::sync::Arc<crate::db::Database>>>,
+    db: std::sync::RwLock<Option<std::sync::Arc<koda_state::db::Database>>>,
     /// Current session ID (for RecallContext).
     session_id: std::sync::RwLock<Option<String>>,
     /// Context-scaled output caps for all tools.
@@ -396,7 +396,7 @@ impl ToolRegistry {
     }
 
     /// Attach database + session for tools that need history access.
-    pub fn set_session(&self, db: std::sync::Arc<crate::db::Database>, session_id: String) {
+    pub fn set_session(&self, db: std::sync::Arc<koda_state::db::Database>, session_id: String) {
         if let Ok(mut guard) = self.db.write() {
             *guard = Some(db);
         }
@@ -1182,13 +1182,13 @@ mod tests {
     async fn registry_with_session() -> (
         ToolRegistry,
         tempfile::TempDir,
-        std::sync::Arc<crate::db::Database>,
+        std::sync::Arc<koda_state::db::Database>,
         String,
     ) {
-        use crate::session_store::SessionStore;
+        use koda_state::session_store::SessionStore;
         let dir = tempfile::TempDir::new().unwrap();
         let db = std::sync::Arc::new(
-            crate::db::Database::open(&dir.path().join("test.db"))
+            koda_state::db::Database::open(&dir.path().join("test.db"))
                 .await
                 .unwrap(),
         );

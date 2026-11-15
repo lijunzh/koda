@@ -19,12 +19,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use koda_core::agent::KodaAgent;
 use koda_core::config::KodaConfig;
-use koda_core::db::{Database, Role};
 use koda_core::engine::{ApprovalDecision, EngineCommand, EngineEvent, EngineSink};
 use koda_core::loop_guard::LoopContinuation;
 use koda_core::providers::ImageData;
 use koda_core::session::KodaSession;
-use koda_core::session_store::SessionStore;
 use koda_protocol::item::{self, ToolCallApprovalResponse, UserInputResponse};
 use koda_protocol::rpc::{ErrorObject, RequestId, codes};
 use koda_protocol::server::WarningNotification;
@@ -37,6 +35,8 @@ use koda_protocol::turn::{
     TurnStartParams, TurnStartResponse, TurnStatus, TurnSteerParams, TurnSteerResponse,
 };
 use koda_protocol::{PROTOCOL_VERSION, ServerNotification, ServerRequest};
+use koda_state::db::{Database, Role};
+use koda_state::session_store::SessionStore;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::events::{EventProjector, Outgoing};
@@ -874,7 +874,7 @@ pub(crate) struct SessionHandles {
 
 /// A stored session as the protocol describes it, without what an open one
 /// runs with: its mode is the one it last ran in, which resuming it keeps.
-pub(crate) fn describe(stored: &koda_core::session_store::SessionInfo) -> Session {
+pub(crate) fn describe(stored: &koda_state::session_store::SessionInfo) -> Session {
     Session {
         id: stored.id.clone(),
         name: stored.title.clone(),

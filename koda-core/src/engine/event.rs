@@ -683,8 +683,8 @@ impl From<&crate::providers::TokenUsage> for UsageTotals {
     }
 }
 
-impl From<&crate::session_store::SessionUsage> for UsageTotals {
-    fn from(usage: &crate::session_store::SessionUsage) -> Self {
+impl From<&koda_state::session_store::SessionUsage> for UsageTotals {
+    fn from(usage: &koda_state::session_store::SessionUsage) -> Self {
         Self {
             prompt_tokens: usage.prompt_tokens,
             completion_tokens: usage.completion_tokens,

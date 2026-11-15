@@ -28,11 +28,11 @@ pub mod network;
 // ── Re-exports from koda-core (test-support gated) ─────────────────────────
 
 pub use koda_core::config::{KodaConfig, ProviderType};
-pub use koda_core::db::Role;
 pub use koda_core::engine::EngineEvent;
 pub use koda_core::engine::sink::TestSink;
 pub use koda_core::providers::mock::{MockProvider, MockResponse};
 pub use koda_core::providers::{ChatMessage, LlmProvider, ToolDefinition};
+pub use koda_state::db::Role;
 
 // ── This crate's own utilities ─────────────────────────────────────────────
 

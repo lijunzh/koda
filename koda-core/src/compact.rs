@@ -32,10 +32,10 @@
 //! the wait.
 
 use crate::config::ModelSettings;
-use crate::db::{Database, Role};
 use crate::providers::{ChatMessage, LlmProvider};
-use crate::session_store::SessionStore;
 use anyhow::Result;
+use koda_state::db::{Database, Role};
+use koda_state::session_store::SessionStore;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
@@ -489,7 +489,7 @@ pub async fn compact_without_summary(
 
 /// The marker, plus what the model can't work without: the user's messages and
 /// any earlier summary from the part being replaced (#1452).
-fn no_summary_text(replaced: &[crate::db::Message]) -> String {
+fn no_summary_text(replaced: &[koda_state::db::Message]) -> String {
     let carried = carried_text(replaced, true);
     if carried.is_empty() {
         return NO_SUMMARY_MARKER.to_string();
@@ -498,7 +498,7 @@ fn no_summary_text(replaced: &[crate::db::Message]) -> String {
 }
 
 /// A model's summary, plus the user's own words from the part being replaced.
-fn with_user_messages(summary: String, replaced: &[crate::db::Message]) -> String {
+fn with_user_messages(summary: String, replaced: &[koda_state::db::Message]) -> String {
     let carried = carried_text(replaced, false);
     if carried.is_empty() {
         return summary;
@@ -511,7 +511,7 @@ fn with_user_messages(summary: String, replaced: &[crate::db::Message]) -> Strin
 ///
 /// Newest first until [`MAX_CARRIED_CHARS`] runs out, the same order Codex
 /// keeps user messages through compaction, then back in conversation order.
-fn carried_text(replaced: &[crate::db::Message], whole_summaries: bool) -> String {
+fn carried_text(replaced: &[koda_state::db::Message], whole_summaries: bool) -> String {
     let mut budget = MAX_CARRIED_CHARS;
     let mut carried = Vec::new();
     for msg in replaced.iter().rev() {
@@ -555,7 +555,7 @@ fn carried_text(replaced: &[crate::db::Message], whole_summaries: bool) -> Strin
 async fn compaction_range(
     db: &Database,
     session_id: &str,
-) -> Result<std::result::Result<(Vec<crate::db::Message>, usize), CompactSkip>> {
+) -> Result<std::result::Result<(Vec<koda_state::db::Message>, usize), CompactSkip>> {
     if db.has_pending_tool_calls(session_id).await.unwrap_or(false) {
         return Ok(Err(CompactSkip::PendingToolCalls));
     }
@@ -599,8 +599,13 @@ async fn replace_with_summary(
     let compact_message = format!("{SUMMARY_HEADING}\n\n{summary}");
     // Debug only: this is conversation text, which the default logs leave out.
     tracing::debug!("Stored compaction summary:\n{summary}");
-    db.compact_session_before(session_id, &compact_message, keep_from_id, usage)
-        .await
+    db.compact_session_before(
+        session_id,
+        &compact_message,
+        keep_from_id,
+        usage.map(crate::providers::TokenUsage::stored).as_ref(),
+    )
+    .await
 }
 
 /// Move a split off any tool result, so a call and its results stay together.
@@ -608,7 +613,7 @@ async fn replace_with_summary(
 /// A result cut off from its call is dropped at load, which would leave it in
 /// neither the summary nor the tail. The batch goes to the summary, unless it
 /// runs to the end of the history: then it stays, whole.
-fn tail_start(history: &[crate::db::Message], split: usize) -> usize {
+fn tail_start(history: &[koda_state::db::Message], split: usize) -> usize {
     let is_result = |i: &usize| history[*i].role == Role::Tool;
     match (split..history.len()).find(|i| !is_result(i)) {
         Some(start) => start,
@@ -621,8 +626,8 @@ fn tail_start(history: &[crate::db::Message], split: usize) -> usize {
 ///
 /// By size and not by row, because rows vary by orders of magnitude: a count
 /// keeps a few huge tool results and frees almost nothing, or keeps nothing.
-fn preserve_count(history: &[crate::db::Message]) -> usize {
-    let size = |msg: &crate::db::Message| {
+fn preserve_count(history: &[koda_state::db::Message]) -> usize {
+    let size = |msg: &koda_state::db::Message| {
         msg.content.as_deref().map_or(0, str::len) + msg.tool_calls.as_deref().map_or(0, str::len)
     };
     let total: usize = history.iter().map(size).sum();
@@ -865,7 +870,10 @@ fn collapse_blank_lines(stripped: &str) -> String {
 /// recent messages, and any leading summary: it holds what was already
 /// compacted, the user's request included, and has no other copy once this
 /// compaction archives it. Returns `None` if it can't fit after max retries.
-fn truncate_until_fits(history: &[crate::db::Message], available_tokens: usize) -> Option<String> {
+fn truncate_until_fits(
+    history: &[koda_state::db::Message],
+    available_tokens: usize,
+) -> Option<String> {
     let total = history.len();
     // Minimum messages to keep: the preserved tail + at least 1 to summarize
     let min_keep = COMPACT_PRESERVE_COUNT + 1;
@@ -916,7 +924,7 @@ fn truncate_until_fits(history: &[crate::db::Message], available_tokens: usize) 
 /// answer in the summary, and a clipped one lost it. No total cap — the
 /// capacity check in `compact_session_with_provider` drops the oldest
 /// messages until the result fits the model's context window.
-fn build_conversation_text(history: &[crate::db::Message]) -> String {
+fn build_conversation_text(history: &[koda_state::db::Message]) -> String {
     let mut text = String::new();
     for msg in history {
         let role = msg.role.as_str();
@@ -937,7 +945,7 @@ fn build_conversation_text(history: &[crate::db::Message]) -> String {
 }
 
 /// How much of a message's content the summarizer sees.
-fn content_limit(msg: &crate::db::Message) -> usize {
+fn content_limit(msg: &koda_state::db::Message) -> usize {
     match msg.role {
         Role::Tool => MAX_SUMMARIZED_TOOL_RESULT_CHARS,
         Role::System | Role::User | Role::Assistant => usize::MAX,
@@ -945,7 +953,7 @@ fn content_limit(msg: &crate::db::Message) -> usize {
 }
 
 /// Characters [`build_conversation_text`] cuts from these messages.
-fn clipped_chars(history: &[crate::db::Message]) -> usize {
+fn clipped_chars(history: &[koda_state::db::Message]) -> usize {
     let over = |text: &Option<String>, limit: usize| {
         let chars = text.as_deref().map_or(0, |t| t.chars().count());
         chars.saturating_sub(limit)
@@ -993,7 +1001,7 @@ mod tests {
         assert_eq!(summary_effort("gemini", "gemini-x", None), None);
     }
     use super::*;
-    use crate::db::Message;
+    use koda_state::db::Message;
 
     fn make_msg(role: &str, content: Option<&str>, tool_calls: Option<&str>) -> Message {
         Message {

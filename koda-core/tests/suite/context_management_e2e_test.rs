@@ -39,8 +39,8 @@
 //! `compact::test_circuit_breaker` covers the breaker's state machine.
 
 use koda_core::engine::{CompactionStatus, CompactionTrigger, EngineEvent};
-use koda_core::session_store::Role;
-use koda_core::session_store::SessionStore;
+use koda_state::session_store::Role;
+use koda_state::session_store::SessionStore;
 use koda_test_utils::{Env, MockProvider, MockResponse};
 
 // ── Helpers ──────────────────────────────────────────────────

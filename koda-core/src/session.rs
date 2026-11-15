@@ -26,12 +26,12 @@ use crate::agent::KodaAgent;
 use crate::approval_flow::CommandInbox;
 use crate::child_agent::{self, ChildAgentRegistry};
 use crate::config::KodaConfig;
-use crate::db::Database;
 use crate::engine::{EngineCommand, EngineSink};
 use crate::inference::{InferenceContext, TurnOutcome};
 use crate::providers::{self, ImageData, LlmProvider};
 use crate::sub_agent_cache::SubAgentCache;
 use crate::trust::TrustMode;
+use koda_state::db::Database;
 
 use anyhow::Result;
 use koda_sandbox::{BuiltInProxy, BuiltInSocks5Proxy, DEFAULT_DEV_ALLOWLIST, Filter, ProxyHandle};
@@ -611,7 +611,7 @@ impl KodaSession {
         };
         // What this turn runs with, stored before it starts, as Codex
         // records a `TurnContextItem` per user turn.
-        crate::session_store::TurnContextItem::of_turn(
+        crate::turn_context::context_item(
             &turn_id,
             config,
             self.mode,
@@ -706,7 +706,7 @@ impl KodaSession {
         let cancel = turn_cancel.unwrap_or_else(|| self.cancel_token());
         // A compaction turn records its context too, as Codex's does. It
         // offers no tools; the prompts are the summary's own.
-        crate::session_store::TurnContextItem::of_turn(
+        crate::turn_context::context_item(
             &turn_id,
             config,
             self.mode,

@@ -14,9 +14,9 @@
 //! Strong-tier models only — cheaper models don't benefit enough from
 //! the extra context to justify the cost.
 
-use crate::db::Database;
 use crate::providers::ToolDefinition;
-use crate::session_store::SessionStore;
+use koda_state::db::Database;
+use koda_state::session_store::SessionStore;
 use serde_json::json;
 use std::ops::Range;
 
@@ -217,7 +217,7 @@ impl Tool for RecallContextTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session_store::{Role, SessionStore};
+    use koda_state::session_store::{Role, SessionStore};
     use serde_json::json;
 
     // ── Trait invariants (#1265 PR-7) ─────────────────────────

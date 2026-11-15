@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 
-use crate::db::Database;
+use koda_state::db::Database;
 
 /// Key prefix for MCP server configs in the kv_store.
 const MCP_KEY_PREFIX: &str = "mcp:";

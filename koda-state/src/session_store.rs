@@ -5,7 +5,7 @@
 //! Types and trait definition for the storage layer. The engine
 //! depends on this trait, not the concrete SQLite implementation.
 //!
-//! The default implementation is `Database` in `db.rs`.
+//! The default implementation is [`crate::db::Database`], over SQLite.
 //!
 //! ## Design (DESIGN.md)
 //!
@@ -38,7 +38,7 @@ impl Role {
     /// # Examples
     ///
     /// ```
-    /// use koda_core::session_store::Role;
+    /// use koda_state::session_store::Role;
     ///
     /// assert_eq!(Role::User.as_str(), "user");
     /// assert_eq!(Role::Assistant.as_str(), "assistant");
@@ -184,8 +184,9 @@ pub const TURN_CONTEXT_KIND: &str = "context";
 /// used, not only the session's latest settings. Like Codex's, it is
 /// storage only; the protocol's turns don't carry it.
 ///
-/// Written by core from the turn it is about to run, so it holds what the
-/// turn used: a settings change made during a turn applies to the next.
+/// Written by core from the turn it is about to run
+/// (`koda_core::turn_context::context_item`), so it holds what the turn
+/// used: a settings change made during a turn applies to the next.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnContextItem {
@@ -234,41 +235,6 @@ pub struct TurnContextItem {
 }
 
 impl TurnContextItem {
-    /// The record of a turn about to run with `config` in `mode`, offered
-    /// `tools`, in `cwd`, sending `system_prompt` and `project_memory`.
-    #[allow(clippy::too_many_arguments)]
-    pub fn of_turn(
-        turn_id: &str,
-        config: &crate::config::KodaConfig,
-        mode: crate::trust::TrustMode,
-        cwd: &Path,
-        tools: &[crate::providers::ToolDefinition],
-        system_prompt: Option<&str>,
-        project_memory: Option<&str>,
-    ) -> Self {
-        use sha2::{Digest, Sha256};
-        let sha256 = |text: &str| format!("{:x}", Sha256::digest(text.as_bytes()));
-        let settings = &config.model_settings;
-        Self {
-            turn_id: turn_id.to_string(),
-            koda_version: env!("CARGO_PKG_VERSION").to_string(),
-            cwd: cwd.display().to_string(),
-            agent_name: config.agent_name.clone(),
-            provider: config.provider_type.to_string(),
-            base_url: config.base_url.clone(),
-            model: config.model.clone(),
-            max_tokens: settings.max_tokens,
-            temperature: settings.temperature,
-            thinking_budget: settings.thinking_budget,
-            reasoning_effort: settings.reasoning_effort.clone(),
-            context_window: config.max_context_tokens,
-            trust_mode: mode.as_str().to_string(),
-            tools: tools.iter().map(|tool| tool.name.clone()).collect(),
-            system_prompt_sha256: system_prompt.map(sha256),
-            project_memory_sha256: project_memory.map(sha256),
-        }
-    }
-
     /// Store it for `session_id`. A failure is logged and the turn goes on:
     /// the record is for debugging, and a turn shouldn't fail over it.
     pub async fn store(&self, db: &dyn SessionStore, session_id: &str) {
@@ -288,6 +254,22 @@ impl TurnContextItem {
             tracing::warn!("couldn't store turn {}'s context: {e:#}", self.turn_id);
         }
     }
+}
+
+/// The tokens one model call used, as a message row stores them. The
+/// engine converts its provider's usage into this when it writes a reply.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MessageUsage {
+    /// Input tokens.
+    pub prompt_tokens: i64,
+    /// Output tokens.
+    pub completion_tokens: i64,
+    /// Input tokens read from the provider's cache.
+    pub cache_read_tokens: i64,
+    /// Input tokens written to the provider's cache.
+    pub cache_creation_tokens: i64,
+    /// Output tokens spent reasoning.
+    pub thinking_tokens: i64,
 }
 
 /// Token usage totals for a session.
@@ -392,7 +374,7 @@ pub trait SessionStore: Send + Sync {
         content: Option<&str>,
         tool_calls: Option<&str>,
         tool_call_id: Option<&str>,
-        usage: Option<&crate::providers::TokenUsage>,
+        usage: Option<&MessageUsage>,
     ) -> Result<i64>;
 
     /// Insert a message with an explicit agent name (for sub-agent tracking).
@@ -404,7 +386,7 @@ pub trait SessionStore: Send + Sync {
         content: Option<&str>,
         tool_calls: Option<&str>,
         tool_call_id: Option<&str>,
-        usage: Option<&crate::providers::TokenUsage>,
+        usage: Option<&MessageUsage>,
         agent_name: Option<&str>,
     ) -> Result<i64>;
 
@@ -512,7 +494,7 @@ pub trait SessionStore: Send + Sync {
         session_id: &str,
         summary: &str,
         keep_from_id: i64,
-        usage: Option<&crate::providers::TokenUsage>,
+        usage: Option<&MessageUsage>,
     ) -> Result<usize>;
 
     // ── Metadata ──
@@ -552,7 +534,7 @@ pub trait SessionStore: Send + Sync {
     /// fold them under the parent's `InvokeAgent` tool result.
     ///
     /// Hot-path: called from every `EngineEvent::Info`/`ChildTaskUpdate`
-    /// emission via [`crate::engine::sink::PersistingSink`]. Failures
+    /// emission via the engine's `PersistingSink`. Failures
     /// are logged but never propagated — a DB hiccup must not crash
     /// the inference loop.
     async fn insert_session_event(

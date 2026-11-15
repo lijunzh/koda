@@ -14,7 +14,6 @@ use std::path::Path;
 
 use koda_config::{ConfigError, ConfigFile, Edit, Loaded};
 use koda_core::config::{KodaConfig, ProviderType};
-use koda_core::db::Database;
 use koda_protocol::config::{
     ConfigBatchWriteParams, ConfigLayer, ConfigLayerMetadata, ConfigLayerSource, ConfigReadParams,
     ConfigReadResponse, ConfigWarningNotification, ConfigWriteErrorCode, ConfigWriteResponse, KEYS,
@@ -24,6 +23,7 @@ use koda_protocol::config::{
 use koda_protocol::mcp::{McpServerConfigValue, SERVERS_KEY};
 use koda_protocol::rpc::{ErrorObject, codes};
 use koda_protocol::state::TrustMode as ProtocolMode;
+use koda_state::db::Database;
 use serde_json::{Value, json};
 
 use crate::session::internal;

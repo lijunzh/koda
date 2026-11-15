@@ -23,7 +23,7 @@ pub struct DbSpec {
     pub max_connections: u32,
 }
 
-/// Sessions: messages, turns, settings and keys (`koda_core::db::Database`).
+/// Sessions: messages, turns, settings and keys ([`crate::db::Database`]).
 pub const SESSIONS_DB: DbSpec = DbSpec {
     label: "session database",
     filename: "koda.db",

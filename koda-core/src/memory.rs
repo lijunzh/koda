@@ -11,7 +11,7 @@
 //!      `CLAUDE.md` gives one file, which the eval harness relies on: it
 //!      writes the same text under both names.
 //!
-//! `<config>` is [`crate::db::config_dir`], `~/.config/koda` unless
+//! `<config>` is [`koda_config::config_dir`], `~/.config/koda` unless
 //! `XDG_CONFIG_HOME` moves it. The older names, a project `MEMORY.md` and
 //! a global `memory.md`, are still read where nothing newer exists, with a
 //! warning to rename them.
@@ -214,7 +214,7 @@ pub(crate) static MEMORY_TEST_LOCK: Mutex<()> = Mutex::new(());
 /// **#1232 §3b**: memoized per resolved file path with `(mtime, len)`
 /// invalidation, so parallel sub-agent fan-out reads each file once.
 pub fn load(project_root: &Path) -> Result<String> {
-    load_in(project_root, crate::db::config_dir().ok().as_deref())
+    load_in(project_root, koda_config::config_dir().ok().as_deref())
 }
 
 pub(crate) fn load_in(project_root: &Path, config: Option<&Path>) -> Result<String> {
@@ -256,7 +256,7 @@ pub(crate) fn load_in(project_root: &Path, config: Option<&Path>) -> Result<Stri
 /// down. Empty files are left out, as [`load`] leaves them out. Codex's
 /// `instructionSources`.
 pub fn instruction_sources(project_root: &Path) -> Vec<PathBuf> {
-    instruction_files_in(project_root, crate::db::config_dir().ok().as_deref())
+    instruction_files_in(project_root, koda_config::config_dir().ok().as_deref())
         .into_iter()
         .filter(|path| std::fs::read_to_string(path).is_ok_and(|text| !text.trim().is_empty()))
         .collect()
@@ -301,12 +301,15 @@ pub fn active_project_file(project_root: &Path) -> Option<String> {
 
 /// Where Koda's notes for this project are kept.
 pub fn project_notes_path(project_root: &Path) -> Result<PathBuf> {
-    Ok(project_notes_file(&crate::db::config_dir()?, project_root))
+    Ok(project_notes_file(
+        &koda_config::config_dir()?,
+        project_root,
+    ))
 }
 
 /// Where Koda's global notes are kept.
 pub fn global_notes_path() -> Result<PathBuf> {
-    Ok(global_notes_file(&crate::db::config_dir()?))
+    Ok(global_notes_file(&koda_config::config_dir()?))
 }
 
 /// [`append`] with an explicit config directory.

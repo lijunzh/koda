@@ -971,7 +971,7 @@ async fn a_resumed_session_shows_and_keeps_its_history() {
 /// shown instead and the mode stays Safe.
 #[tokio::test(flavor = "multi_thread")]
 async fn shift_tab_switches_the_mode_through_the_host() {
-    use koda_core::session_store::SessionStore;
+    use koda_state::session_store::SessionStore;
     let server = scripted_model(vec![final_text()]).await;
     let home = home();
     let mut tui = Tui::start_with_model(home.path(), &server.url());
@@ -985,7 +985,7 @@ async fn shift_tab_switches_the_mode_through_the_host() {
     tui.submit("hello");
     tui.wait_for_screen("All done.");
     let session = quit_and_read_session_id(&mut tui);
-    let db = koda_core::db::Database::init(&home.path().join(".config/koda"))
+    let db = koda_state::db::Database::init(&home.path().join(".config/koda"))
         .await
         .unwrap();
     let stored = db.get_session_mode(&session).await.unwrap();
@@ -1001,7 +1001,7 @@ async fn shift_tab_switches_the_mode_through_the_host() {
 /// the replies it was sent, as Codex's `/copy` does, and reads no database.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_resumed_session_keeps_its_mode_and_copy_takes_its_reply() {
-    use koda_core::session_store::SessionStore;
+    use koda_state::session_store::SessionStore;
     let server = scripted_model(vec![final_text()]).await;
     let home = home();
     let mut tui = Tui::start_with_model(home.path(), &server.url());
@@ -1011,7 +1011,7 @@ async fn a_resumed_session_keeps_its_mode_and_copy_takes_its_reply() {
 
     // Stored as an older Koda could leave it: in Plan, which a top-level
     // session can't run in.
-    let db = koda_core::db::Database::init(&home.path().join(".config/koda"))
+    let db = koda_state::db::Database::init(&home.path().join(".config/koda"))
         .await
         .unwrap();
     db.set_session_mode(&session, "plan").await.unwrap();
@@ -1271,7 +1271,7 @@ async fn startup_flags_are_not_saved() {
 /// goes to Auto, which needs the sandbox.
 #[tokio::test(flavor = "multi_thread")]
 async fn shift_tab_sends_the_mode_to_the_host() {
-    use koda_core::session_store::SessionStore;
+    use koda_state::session_store::SessionStore;
     if !koda_core::sandbox::is_available() {
         eprintln!("skipped: Auto needs the sandbox, which isn't here");
         return;
@@ -1280,7 +1280,7 @@ async fn shift_tab_sends_the_mode_to_the_host() {
     let home = home();
     let tui_project = std::fs::canonicalize(home.path()).unwrap();
     let mut tui = Tui::start_with_model(home.path(), &server.url());
-    let db = koda_core::db::Database::open(&home.path().join(".config/koda/db/koda.db"))
+    let db = koda_state::db::Database::open(&home.path().join(".config/koda/db/koda.db"))
         .await
         .unwrap();
     let session = db.list_sessions(10, &tui_project).await.unwrap()[0]
@@ -1310,14 +1310,14 @@ async fn shift_tab_sends_the_mode_to_the_host() {
 /// the way a mistyped `--resume` id once did.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_message_that_cant_be_saved_isnt_sent() {
-    use koda_core::session_store::SessionStore;
+    use koda_state::session_store::SessionStore;
     let server = scripted_model(vec![]).await;
     let home = home();
     // Koda stores the project root canonicalized (/var is /private/var on macOS).
     let tui_project = std::fs::canonicalize(home.path()).unwrap();
     let mut tui = Tui::start_with_model(home.path(), &server.url());
 
-    let db = koda_core::db::Database::open(&home.path().join(".config/koda/db/koda.db"))
+    let db = koda_state::db::Database::open(&home.path().join(".config/koda/db/koda.db"))
         .await
         .unwrap();
     let sessions = db.list_sessions(10, &tui_project).await.unwrap();
@@ -1737,7 +1737,12 @@ async fn compact_replaces_earlier_turns_with_the_summary() {
     }
 
     run_command(&mut tui, "/compact");
-    tui.wait_for_screen("Compacted");
+    // "Compacted" can be drawn before the compaction's turn ends, and text
+    // entered then is refused as a steer and comes back to the input box.
+    tui.wait_for_screen_that(
+        |screen| screen.contains("Compacted") && !screen.contains(BUSY_PROMPT),
+        "finish the compaction",
+    );
     let sent = wait_for_model_call(&server, 4).await;
     assert!(
         sent.contains("turn one oldest"),

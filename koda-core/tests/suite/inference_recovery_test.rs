@@ -3,7 +3,8 @@
 //! Exercises rate-limit retry (429 → backoff → success) and context-overflow
 //! recovery (overflow → compact → retry → success).
 
-use koda_core::{engine::EngineEvent, session_store::SessionStore};
+use koda_core::engine::EngineEvent;
+use koda_state::session_store::SessionStore;
 use koda_test_utils::{Env, MockProvider, MockResponse, Role};
 
 // ── Rate limit retry tests ───────────────────────────────────

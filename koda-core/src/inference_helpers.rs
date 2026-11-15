@@ -238,10 +238,10 @@ const COMPACTION_CONTINUATION_HINT: &str = "Your context was compacted. The text
 /// The user message that carries a session's compaction summaries, if any.
 ///
 /// Summaries are the only `system` rows in the history.
-fn compaction_message(history: &[crate::db::Message]) -> Option<String> {
+fn compaction_message(history: &[koda_state::db::Message]) -> Option<String> {
     let summaries: Vec<&str> = history
         .iter()
-        .filter(|m| m.role == crate::session_store::Role::System)
+        .filter(|m| m.role == koda_state::session_store::Role::System)
         .filter_map(|m| m.content.as_deref())
         .collect();
     (!summaries.is_empty()).then(|| {
@@ -274,7 +274,7 @@ fn compaction_message(history: &[crate::db::Message]) -> Option<String> {
 /// models read whose ([`crate::providers::anthropic`]).
 pub fn assemble_messages(
     system_message: &ChatMessage,
-    history: &[crate::db::Message],
+    history: &[koda_state::db::Message],
     model: &str,
 ) -> Vec<ChatMessage> {
     let mut messages = vec![system_message.clone()];
@@ -282,7 +282,7 @@ pub fn assemble_messages(
 
     for msg in history
         .iter()
-        .filter(|m| m.role != crate::session_store::Role::System)
+        .filter(|m| m.role != koda_state::session_store::Role::System)
     {
         let role = msg.role.as_str();
         let is_plain_user = role == "user" && msg.tool_call_id.is_none();
@@ -494,7 +494,7 @@ pub fn rate_limit_backoff(attempt: u32) -> std::time::Duration {
 mod tests {
     use super::*;
 
-    use crate::session_store::{Message, Role};
+    use koda_state::session_store::{Message, Role};
 
     /// Every provider sees one `system` message and the summary ahead of the
     /// tail, whatever the tail opens with (#1444).

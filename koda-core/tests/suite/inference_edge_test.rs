@@ -12,8 +12,8 @@ use koda_core::{
         event::{LoopGuardAction, RetryReason},
     },
     loop_guard::{MAX_REPEATED_REPLIES, MAX_TRUNCATED_REPLIES},
-    session_store::{Role, SessionStore},
 };
+use koda_state::session_store::{Role, SessionStore};
 use koda_test_utils::{Env, MockProvider, MockResponse};
 
 // ── Rate limit retry ─────────────────────────────────────────
@@ -648,7 +648,7 @@ async fn context_overflow_attempts_compact_and_retry() {
         env.db
             .insert_message(
                 &env.session_id,
-                &koda_core::db::Role::Assistant,
+                &koda_state::db::Role::Assistant,
                 Some(
                     &"Answer: Here's a long response about this topic that fills up context. "
                         .repeat(5),
@@ -791,7 +791,7 @@ fn looping_reply() -> MockResponse {
     MockResponse::Text(LOOPING_PARAGRAPH.repeat(40))
 }
 
-fn user_messages(messages: &[koda_core::session_store::Message]) -> Vec<String> {
+fn user_messages(messages: &[koda_state::session_store::Message]) -> Vec<String> {
     messages
         .iter()
         .filter(|m| m.role == Role::User)

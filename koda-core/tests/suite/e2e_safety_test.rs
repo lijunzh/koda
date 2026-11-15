@@ -5,7 +5,8 @@
 //!
 //! Run with: `cargo test -p koda-core --features test-support --test e2e_safety_test`
 
-use koda_core::{engine::EngineEvent, session_store::SessionStore};
+use koda_core::engine::EngineEvent;
+use koda_state::session_store::SessionStore;
 use koda_test_utils::{Env, MockProvider, MockResponse};
 
 /// Find the first ToolCallResult output for a given tool name.
@@ -447,7 +448,7 @@ async fn resume_interrupted_tool_call_session() {
     env.db
         .insert_message(
             &env.session_id,
-            &koda_core::db::Role::Assistant,
+            &koda_state::db::Role::Assistant,
             None,
             Some(tc_json),
             None,

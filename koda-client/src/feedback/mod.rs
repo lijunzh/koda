@@ -18,10 +18,10 @@
 mod env_filter;
 
 use crate::session::{internal, invalid};
-use koda_core::db::Database;
-use koda_core::session_store::SessionStore;
 use koda_protocol::feedback::{FeedbackSaveParams, FeedbackSaveResponse};
 use koda_protocol::rpc::ErrorObject;
+use koda_state::db::Database;
+use koda_state::session_store::SessionStore;
 use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -310,14 +310,14 @@ mod tests {
         let child = db.create_session("explore", dir.path()).await.unwrap();
         db.set_metadata(
             &child,
-            koda_core::session_store::PARENT_SESSION_KEY,
+            koda_state::session_store::PARENT_SESSION_KEY,
             &parent,
         )
         .await
         .unwrap();
         db.insert_message(
             &parent,
-            &koda_core::session_store::Role::User,
+            &koda_state::session_store::Role::User,
             Some("fix it"),
             None,
             None,

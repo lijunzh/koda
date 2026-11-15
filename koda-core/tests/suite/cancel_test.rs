@@ -7,15 +7,15 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
-use koda_core::session_store::SessionStore;
 use koda_core::{
     config::{KodaConfig, ProviderType},
-    db::{Database, Role},
     engine::{EngineCommand, EngineEvent},
     inference::{self, InferenceContext},
     providers::{LlmResponse, ModelInfo},
     tools::ToolRegistry,
 };
+use koda_state::db::{Database, Role};
+use koda_state::session_store::SessionStore;
 use koda_test_utils::{ChatMessage, LlmProvider, TestSink, ToolDefinition};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};

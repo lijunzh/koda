@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 async fn only_the_matching_decision_resumes_the_turn() {
     let mut env = Env::new().await;
     env.config.max_iterations = 1;
-    env.insert_message(&koda_core::db::Role::User, "go").await;
+    env.insert_message(&koda_state::db::Role::User, "go").await;
 
     let provider = Arc::new(MockProvider::new(vec![
         MockResponse::tool_call("List", serde_json::json!({})),
