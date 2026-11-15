@@ -2816,6 +2816,77 @@
       ],
       "type": "object"
     },
+    "SessionTurnsListParams": {
+      "additionalProperties": false,
+      "description": "`session/turns/list`: a page of a session's turns, with their items, as\nCodex's `thread/turns/list` pages a thread's. A client that loads only a\nsession's recent turns (a phone, a long session) fetches older ones as it\nneeds them.",
+      "properties": {
+        "cursor": {
+          "description": "Where to go on from: an earlier answer's `nextCursor`, or its\n`backwardsCursor` with the other `sortDirection`. Without one, the\nnewest turns (or the oldest, ascending).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "How many turns at most: 25 without one, at most 100.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "sessionId": {
+          "description": "The session, by its full id; open or not.",
+          "type": "string"
+        },
+        "sortDirection": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SortDirection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Newest first (`desc`, without one) or oldest first (`asc`)."
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "type": "object"
+    },
+    "SessionTurnsListResponse": {
+      "description": "The answer to `session/turns/list`.",
+      "properties": {
+        "backwardsCursor": {
+          "description": "Opaque; pass it as `cursor` with the other `sortDirection` to read\nback from this page's first turn, that turn included, to catch what\nchanged in it (a turn that was running). Absent on an empty page.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "data": {
+          "description": "The turns, in the order asked for, each with its items. A turn still\nrunning is `inProgress`, with the items it has so far.",
+          "items": {
+            "$ref": "#/$defs/Turn"
+          },
+          "type": "array"
+        },
+        "nextCursor": {
+          "description": "Opaque; pass it as `cursor` for the next page in the same order.\nAbsent when there are no more.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "data"
+      ],
+      "type": "object"
+    },
     "SessionUnsubscribeParams": {
       "additionalProperties": false,
       "description": "`session/unsubscribe`: the client is done with a session. Its running\nturn, if any, stops, and the session is closed; `session/start` with its\nid opens it again. Codex's `thread/unsubscribe`.",
@@ -2994,6 +3065,21 @@
         "data"
       ],
       "type": "object"
+    },
+    "SortDirection": {
+      "description": "The order a page runs in. Codex's `SortDirection`.",
+      "oneOf": [
+        {
+          "const": "asc",
+          "description": "Oldest first.",
+          "type": "string"
+        },
+        {
+          "const": "desc",
+          "description": "Newest first.",
+          "type": "string"
+        }
+      ]
     },
     "StateReadParams": {
       "additionalProperties": false,
@@ -3393,7 +3479,7 @@
           "type": "string"
         },
         "items": {
-          "description": "Its items, in order. Filled only when a stored session is returned\nwith its turns, by `session/start` resuming it or by `session/read`,\nas Codex's `Turn.items` is; empty on `turn/started` and\n`turn/completed`, whose items come as notifications.",
+          "description": "Its items, in order. Filled only when a stored session's turns are\nreturned, by `session/start` resuming it, `session/read` or\n`session/turns/list`, as Codex's `Turn.items` is; empty on `turn/started` and\n`turn/completed`, whose items come as notifications.",
           "items": {
             "$ref": "#/$defs/TurnItem"
           },
@@ -4023,6 +4109,14 @@
       },
       "result": {
         "$ref": "#/$defs/SessionStartResponse"
+      }
+    },
+    "session/turns/list": {
+      "params": {
+        "$ref": "#/$defs/SessionTurnsListParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionTurnsListResponse"
       }
     },
     "session/unsubscribe": {

@@ -47,6 +47,25 @@ request that is already closed, or that Koda never sent, changes nothing.
 `--provider`, `--base-url` or `--resume`. `-c` and the other config flags set
 what new sessions start from, as for `koda`.
 
+## A session's earlier turns
+
+`session/start` with a stored session's id reopens it and returns all its turns,
+and `session/read` with `includeTurns` reads them without opening it. A client
+that shows only recent turns, such as a phone or a long session, pages them
+with `session/turns/list`, as Codex's `thread/turns/list` does:
+
+```json
+{"jsonrpc":"2.0","id":7,"method":"session/turns/list","params":{"sessionId":"a3f8bc12-…","limit":10}}
+```
+
+The answer's `data` has up to `limit` turns (25 without one, at most 100),
+newest first, each with its items; a turn still running is `inProgress`, with
+the items it has so far. Pass `nextCursor` as `cursor` for the next older page;
+it is absent on the last. `"sortDirection": "asc"` pages from the oldest
+instead. `backwardsCursor`, with the other direction, reads back from a page's
+first turn, that turn included, to catch what changed in a turn that was
+running. Cursors are opaque, and one whose turn is gone is refused.
+
 ## Errors
 
 | The client sends | Koda answers |
@@ -81,7 +100,5 @@ and the process exits 0.
 
 - **One client per process.** A shared server that several clients attach to,
   on a Unix socket, comes later.
-- **Paged turns** (`session/turns/list`, Codex's `thread/turns/list`), for a
-  client that loads only a session's recent turns, are next.
 - **`@file` mentions** are read by the client today; with a server on another
   machine, the server will read them.

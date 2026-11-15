@@ -129,6 +129,12 @@ client_requests! {
         params: crate::session::SessionReadParams,
         response: crate::session::SessionReadResponse,
     },
+    /// A page of a session's turns, with their items, newest first unless
+    /// asked otherwise.
+    SessionTurnsList => "session/turns/list" {
+        params: crate::session::SessionTurnsListParams,
+        response: crate::session::SessionTurnsListResponse,
+    },
     /// Delete a stored session, closing it first if it is open.
     /// `session/deleted` follows.
     SessionDelete => "session/delete" {

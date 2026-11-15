@@ -19,9 +19,9 @@ pub struct Turn {
     pub usage: Option<Usage>,
     /// Wall-clock time, set when the turn is over.
     pub duration_ms: Option<u64>,
-    /// Its items, in order. Filled only when a stored session is returned
-    /// with its turns, by `session/start` resuming it or by `session/read`,
-    /// as Codex's `Turn.items` is; empty on `turn/started` and
+    /// Its items, in order. Filled only when a stored session's turns are
+    /// returned, by `session/start` resuming it, `session/read` or
+    /// `session/turns/list`, as Codex's `Turn.items` is; empty on `turn/started` and
     /// `turn/completed`, whose items come as notifications.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub items: Vec<crate::item::TurnItem>,
