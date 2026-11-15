@@ -114,6 +114,8 @@ pub mod glob_tool;
 pub mod grep;
 /// Project memory read/write tools (`MemoryRead`, `MemoryWrite`).
 pub mod memory;
+/// `@` mentions, read under the Read tool's rules.
+pub mod mention;
 /// On-demand conversation history retrieval (`RecallContext`).
 pub mod recall;
 /// Shell command execution tool (`Bash`).

@@ -71,6 +71,7 @@ Every key, in Codex's names where Codex has one:
 | `model_thinking_budget` | A thinking budget in tokens, for Gemini models, as `--thinking-budget` gives it |
 | `agent` | The agent sessions run, as `--agent` names it: a built-in, or a JSON file in `agents/` (default: `default`) |
 | `model_post_turn_compact_threshold_percent` | Compact after a turn's final reply once this share of the window is used (1–100; 0 turns it off) |
+| `file_mentions` | `false` sends an `@` mention's path only, for the model to read, as Codex does; on by default, sending its contents as Claude Code does (see [File & image attachments](./attachments.md#mentioning-files)) |
 | `mode` | The mode a new session starts in: `auto`, `safe`, or `plan` (`koda exec` only) |
 | `[model_providers.<id>]` | Per provider: `base_url`, `request_max_retries`, `stream_max_retries`, `stream_idle_timeout_ms` (0 turns the limit off) |
 | `[mcp_servers.<name>]` | An MCP server every new session starts |

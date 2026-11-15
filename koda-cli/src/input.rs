@@ -1,13 +1,15 @@
-//! Input processing — @file references and image loading.
+//! Input processing: `@path` mentions, dragged-in images and pastes.
 //!
-//! Processes user input for `@path` references, loading file contents
-//! as additional context and images for multi-modal prompts.
+//! An `@path` mention stays in the text as typed and goes to the host as a
+//! path, which reads it on its own machine under the Read tool's rules, as
+//! Claude Code includes an `@` file. An image dragged in as a bare path is
+//! the client's own file, so the client loads it and sends its bytes.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 // ── @file pre-processor ────────────────────────────────────────
 
-/// An image from an `@path` reference, sent with the prompt as the
+/// An image dragged in as a bare path, sent with the prompt as the
 /// protocol's `ImageInput`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageData {
@@ -26,24 +28,19 @@ pub struct PasteBlock {
     pub char_count: usize,
 }
 
-/// Result of processing user input for `@path` references.
+/// Result of processing user input.
 #[derive(Debug)]
 pub struct ProcessedInput {
-    /// The cleaned prompt text (with @references stripped).
+    /// The prompt: the input as typed, `@path` mentions included; only
+    /// dragged-in images leave it.
     pub prompt: String,
-    /// File contents to inject as additional context.
-    pub context_files: Vec<FileContext>,
-    /// Base64-encoded images from @image references.
+    /// The paths mentioned with `@`, in order, each once: sent as the
+    /// protocol's `mentions` for the host to read.
+    pub mentions: Vec<String>,
+    /// Images dragged in as bare paths, base64-encoded.
     pub images: Vec<ImageData>,
     /// Pasted content blocks (from bracketed paste).
     pub paste_blocks: Vec<PasteBlock>,
-}
-
-/// A file's contents loaded from an `@path` reference.
-#[derive(Debug)]
-pub struct FileContext {
-    pub path: String,
-    pub content: String,
 }
 
 /// Image file extensions we recognize for multi-modal input.
@@ -208,35 +205,6 @@ fn looks_like_file_path(token: &str) -> bool {
     check(cleaned) || check(&unescaped)
 }
 
-/// Where `@requested` points, if it stays inside the project or a temp
-/// folder (`/tmp`, `/var/tmp`, `$TMPDIR`), as Koda's write tools allow:
-/// `..` can't climb out of the project. Resolved by its words alone, as
-/// the path is joined and cleaned, not by following links.
-fn resolve_mention(project_root: &Path, requested: &str) -> Option<PathBuf> {
-    let joined = if Path::new(requested).is_absolute() {
-        PathBuf::from(requested)
-    } else {
-        project_root.join(requested)
-    };
-    let mut clean = PathBuf::new();
-    for part in joined.components() {
-        match part {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                clean.pop();
-            }
-            other => clean.push(other),
-        }
-    }
-    let temp_roots = [
-        std::env::temp_dir(),
-        PathBuf::from("/tmp"),
-        PathBuf::from("/var/tmp"),
-    ];
-    (clean.starts_with(project_root) || temp_roots.iter().any(|t| clean.starts_with(t)))
-        .then_some(clean)
-}
-
 /// Try to load an image file, returning the ImageData if successful.
 fn try_load_image(path: &Path, display_path: &str) -> Option<ImageData> {
     match std::fs::read(path) {
@@ -283,15 +251,15 @@ fn drop_trailing_spaces(prompt: &mut String) {
     prompt.truncate(prompt.trim_end_matches([' ', '\t']).len());
 }
 
-/// Scan input for `@path` tokens and bare image paths (drag-and-drop),
-/// read the files, and return cleaned prompt plus file contents and images.
+/// Scan input for `@path` mentions and bare image paths (drag-and-drop):
+/// the mentions are collected for the host, the images loaded here.
 ///
 /// The prompt keeps the input's text exactly, newlines and indentation
-/// included. An attachment leaves with the spaces before it, or the whitespace
-/// after it when it opens the prompt.
-pub fn process_input(input: &str, project_root: &Path) -> ProcessedInput {
+/// included, `@path` mentions too. A dragged-in image leaves with the spaces
+/// before it, or the whitespace after it when it opens the prompt.
+pub fn process_input(input: &str) -> ProcessedInput {
     let mut prompt = String::new();
-    let mut context_files = Vec::new();
+    let mut mentions: Vec<String> = Vec::new();
     let mut images = Vec::new();
 
     for piece in split_shell_aware(input) {
@@ -306,52 +274,16 @@ pub fn process_input(input: &str, project_root: &Path) -> ProcessedInput {
             }
         };
 
-        // ── @path references (explicit) ───────────────────────
+        // ── @path mentions ────────────────────────────────────
+        // Kept in the text as typed; the host reads the file.
         if let Some(raw_path) = token.strip_prefix('@') {
-            if raw_path.is_empty() {
-                prompt.push_str(&token);
-                continue;
-            }
-
-            // Strip quotes and shell escapes for the actual path
-            let raw_path = strip_quotes(raw_path);
-            let clean_path = unescape_path(raw_path);
-
-            // Security: reject paths that escape the project root
-            let full_path = match resolve_mention(project_root, &clean_path) {
-                Some(p) => p,
-                None => {
-                    tracing::warn!("@file path escapes project root: {clean_path}");
-                    prompt.push_str(&token);
-                    continue;
-                }
-            };
-
-            // Image files → base64 encode for multi-modal
-            if is_image_file(&clean_path) {
-                if let Some(img) = try_load_image(&full_path, &clean_path) {
-                    images.push(img);
-                    drop_trailing_spaces(&mut prompt);
-                } else {
-                    prompt.push_str(&token);
-                }
-                continue;
-            }
-
-            // Text files → read as string context
-            match std::fs::read_to_string(&full_path) {
-                Ok(content) => {
-                    context_files.push(FileContext {
-                        path: clean_path,
-                        content,
-                    });
-                    drop_trailing_spaces(&mut prompt);
-                }
-                Err(_) => {
-                    eprintln!("  \x1b[33m\u{26a0} Could not read: {clean_path}\x1b[0m");
-                    prompt.push_str(&token);
+            if !raw_path.is_empty() {
+                let path = unescape_path(strip_quotes(raw_path));
+                if !mentions.contains(&path) {
+                    mentions.push(path);
                 }
             }
+            prompt.push_str(&token);
             continue;
         }
 
@@ -376,89 +308,19 @@ pub fn process_input(input: &str, project_root: &Path) -> ProcessedInput {
         prompt.push_str(&token);
     }
 
-    // If only @refs were provided with no other text, add a default prompt
-    let prompt = if prompt.trim().is_empty() && (!context_files.is_empty() || !images.is_empty()) {
-        if !images.is_empty() && context_files.is_empty() {
-            "Describe and analyze this image.".to_string()
-        } else {
-            "Describe and explain the attached files.".to_string()
-        }
+    // Only a dragged-in image, with no words: say what to do with it.
+    let prompt = if prompt.trim().is_empty() && !images.is_empty() {
+        "Describe and analyze this image.".to_string()
     } else {
         prompt
     };
 
     ProcessedInput {
         prompt,
-        context_files,
+        mentions,
         images,
         paste_blocks: Vec::new(),
     }
-}
-
-/// Format file contexts into a string suitable for injection into the user
-/// message sent to the LLM.
-///
-/// Returns `None` when `files` is empty. Each file is wrapped in an XML
-/// `<file path="...">` tag and joined with a double newline.
-/// Contents exceeding 40 000 bytes are truncated with a note.
-///
-/// # Examples
-///
-/// ```ignore
-/// // pub(crate): input is not importable from a doc-test binary; illustrative only.
-/// use koda_cli::input::{FileContext, format_context_files};
-///
-/// // Empty list → None
-/// assert!(format_context_files(&[]).is_none());
-///
-/// // Single file → XML-tagged content
-/// let files = vec![FileContext {
-///     path: "src/main.rs".into(),
-///     content: "fn main() {}".into(),
-/// }];
-/// let out = format_context_files(&files).unwrap();
-/// assert!(out.contains("<file path=\"src/main.rs\">"));
-/// assert!(out.contains("fn main() {}"));
-/// assert!(out.contains("</file>"));
-///
-/// // Multiple files are joined with a blank line
-/// let two = vec![
-///     FileContext { path: "a.rs".into(), content: "// a".into() },
-///     FileContext { path: "b.rs".into(), content: "// b".into() },
-/// ];
-/// let out2 = format_context_files(&two).unwrap();
-/// assert!(out2.contains("a.rs"));
-/// assert!(out2.contains("b.rs"));
-/// ```
-pub fn format_context_files(files: &[FileContext]) -> Option<String> {
-    if files.is_empty() {
-        return None;
-    }
-
-    let mut parts = Vec::new();
-    for f in files {
-        parts.push(format!(
-            "<file path=\"{}\">{}</file>",
-            f.path,
-            // Cap at ~40k chars (~10k tokens) per file
-            if f.content.len() > 40_000 {
-                // Snap to char boundary to avoid panic on multi-byte chars
-                let mut end = 40_000;
-                while !f.content.is_char_boundary(end) {
-                    end -= 1;
-                }
-                format!(
-                    "{}\n\n[truncated — {} bytes total]",
-                    &f.content[..end],
-                    f.content.len()
-                )
-            } else {
-                f.content.clone()
-            }
-        ));
-    }
-
-    Some(parts.join("\n\n"))
 }
 
 /// Pastes shorter than this go inline in the textarea; longer ones become PasteBlocks.
@@ -529,22 +391,6 @@ pub fn format_paste_blocks(blocks: &[PasteBlock]) -> Option<String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_mention_stays_inside_the_project_or_a_temp_folder() {
-        let root = Path::new("/work/project");
-        assert_eq!(
-            resolve_mention(root, "src/main.rs"),
-            Some(PathBuf::from("/work/project/src/main.rs"))
-        );
-        assert_eq!(
-            resolve_mention(root, "./src/../README.md"),
-            Some(PathBuf::from("/work/project/README.md"))
-        );
-        assert_eq!(resolve_mention(root, "../secrets.txt"), None);
-        assert_eq!(resolve_mention(root, "/etc/passwd"), None);
-        assert!(resolve_mention(root, "/tmp/scratch.txt").is_some());
-    }
-
     /// The tokens alone, for the tests that only care where words split.
     fn tokenize_shell_aware(input: &str) -> Vec<String> {
         split_shell_aware(input)
@@ -559,28 +405,21 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn test_process_input_with_file_ref() {
-        let dir = TempDir::new().unwrap();
-        fs::write(dir.path().join("test.rs"), "fn test() {}").unwrap();
-
-        let result = process_input("explain @test.rs", dir.path());
-        assert_eq!(result.prompt, "explain");
-        assert_eq!(result.context_files.len(), 1);
-        assert_eq!(result.context_files[0].path, "test.rs");
-        assert_eq!(result.context_files[0].content, "fn test() {}");
+    fn a_mention_stays_in_the_text_and_goes_to_the_host() {
+        let result = process_input("explain @test.rs");
+        assert_eq!(result.prompt, "explain @test.rs");
+        assert_eq!(result.mentions, ["test.rs"]);
     }
 
     #[test]
     fn test_process_input_no_refs() {
-        let dir = TempDir::new().unwrap();
-        let result = process_input("just a normal question", dir.path());
+        let result = process_input("just a normal question");
         assert_eq!(result.prompt, "just a normal question");
-        assert!(result.context_files.is_empty());
+        assert!(result.mentions.is_empty());
     }
 
     #[test]
     fn test_process_input_keeps_text_exactly() {
-        let dir = TempDir::new().unwrap();
         for prompt in [
             "Repair:\n```python\ndef f():\n    return 1\n```\n",
             "  leading and trailing  ",
@@ -591,27 +430,22 @@ mod tests {
             "@missing.rs stays\n  as text",
             "",
         ] {
-            let result = process_input(prompt, dir.path());
+            let result = process_input(prompt);
             assert_eq!(result.prompt, prompt);
         }
     }
 
     #[test]
-    fn test_process_input_attachment_keeps_the_rest_exact() {
-        let dir = TempDir::new().unwrap();
-        fs::write(dir.path().join("a.rs"), "fn a() {}").unwrap();
-        for (input, prompt) in [
-            (
-                "@a.rs\n\nfix this:\n    indented",
-                "fix this:\n    indented",
-            ),
-            ("see @a.rs and\n  this", "see and\n  this"),
-            ("first\n@a.rs\n    second", "first\n\n    second"),
-            ("fix  @a.rs", "fix"),
+    fn mentions_leave_the_text_exactly_as_typed() {
+        for (input, mentions) in [
+            ("@a.rs\n\nfix this:\n    indented", vec!["a.rs"]),
+            ("see @a.rs and @b.rs and\n  this", vec!["a.rs", "b.rs"]),
+            ("@a.rs then @a.rs again", vec!["a.rs"]),
+            ("mail me at x@y.com, or @", vec![]),
         ] {
-            let result = process_input(input, dir.path());
-            assert_eq!(result.prompt, prompt);
-            assert_eq!(result.context_files.len(), 1);
+            let result = process_input(input);
+            assert_eq!(result.prompt, input);
+            assert_eq!(result.mentions, mentions, "{input}");
         }
     }
 
@@ -629,39 +463,18 @@ mod tests {
     }
 
     #[test]
-    fn test_process_input_only_ref() {
-        let dir = TempDir::new().unwrap();
-        fs::write(dir.path().join("code.py"), "print('hi')").unwrap();
-
-        let result = process_input("@code.py", dir.path());
-        assert_eq!(result.prompt, "Describe and explain the attached files.");
-        assert_eq!(result.context_files.len(), 1);
+    fn a_mention_alone_is_the_prompt() {
+        let result = process_input("@code.py");
+        assert_eq!(result.prompt, "@code.py");
+        assert_eq!(result.mentions, ["code.py"]);
     }
 
     #[test]
-    fn test_process_input_missing_file() {
-        let dir = TempDir::new().unwrap();
-        let result = process_input("explain @nonexistent.rs", dir.path());
-        // Missing file stays in prompt as-is
-        assert!(result.prompt.contains("@nonexistent.rs"));
-        assert!(result.context_files.is_empty());
-    }
-
-    #[test]
-    fn test_format_context_files_empty() {
-        assert!(format_context_files(&[]).is_none());
-    }
-
-    #[test]
-    fn test_format_context_files() {
-        let files = vec![FileContext {
-            path: "main.rs".into(),
-            content: "fn main() {}".into(),
-        }];
-        let result = format_context_files(&files).unwrap();
-        assert!(result.contains("<file path=\"main.rs\">"));
-        assert!(result.contains("fn main() {}"));
-        assert!(result.contains("</file>"));
+    /// Whether it exists is the host's to say: it reads on its own machine.
+    fn a_missing_file_is_still_mentioned() {
+        let result = process_input("explain @nonexistent.rs");
+        assert_eq!(result.prompt, "explain @nonexistent.rs");
+        assert_eq!(result.mentions, ["nonexistent.rs"]);
     }
 
     #[test]
@@ -689,42 +502,12 @@ mod tests {
     }
 
     #[test]
-    fn test_process_input_image_ref() {
-        let dir = TempDir::new().unwrap();
-        // Create a tiny 1x1 PNG (valid minimal)
-        let png_bytes: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
-        fs::write(dir.path().join("screenshot.png"), png_bytes).unwrap();
-
-        let result = process_input("what is this @screenshot.png", dir.path());
-        assert_eq!(result.prompt, "what is this");
-        assert!(result.context_files.is_empty());
-        assert_eq!(result.images.len(), 1);
-        assert_eq!(result.images[0].media_type, "image/png");
-        assert!(!result.images[0].base64.is_empty());
-    }
-
-    #[test]
-    fn test_process_input_image_only_default_prompt() {
-        let dir = TempDir::new().unwrap();
-        let png_bytes: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
-        fs::write(dir.path().join("ui.png"), png_bytes).unwrap();
-
-        let result = process_input("@ui.png", dir.path());
-        assert_eq!(result.prompt, "Describe and analyze this image.");
-        assert_eq!(result.images.len(), 1);
-    }
-
-    #[test]
-    fn test_process_input_mixed_image_and_file() {
-        let dir = TempDir::new().unwrap();
-        fs::write(dir.path().join("code.rs"), "fn main() {}").unwrap();
-        let png_bytes: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
-        fs::write(dir.path().join("error.png"), png_bytes).unwrap();
-
-        let result = process_input("fix this @code.rs @error.png", dir.path());
-        assert_eq!(result.prompt, "fix this");
-        assert_eq!(result.context_files.len(), 1);
-        assert_eq!(result.images.len(), 1);
+    /// An `@` image is the host's to read, like any mention.
+    fn an_image_mention_goes_to_the_host() {
+        let result = process_input("what is this @screenshot.png");
+        assert_eq!(result.prompt, "what is this @screenshot.png");
+        assert_eq!(result.mentions, ["screenshot.png"]);
+        assert!(result.images.is_empty());
     }
 
     #[test]
@@ -871,7 +654,7 @@ mod tests {
         fs::write(&img_path, png_bytes).unwrap();
 
         let input = format!("what is this {}", img_path.display());
-        let result = process_input(&input, dir.path());
+        let result = process_input(&input);
         assert_eq!(result.prompt, "what is this");
         assert_eq!(result.images.len(), 1);
         assert_eq!(result.images[0].media_type, "image/png");
@@ -886,7 +669,7 @@ mod tests {
 
         // Single-quoted (some terminals do this)
         let input = format!("explain '{}'", img_path.display());
-        let result = process_input(&input, dir.path());
+        let result = process_input(&input);
         assert_eq!(result.prompt, "explain");
         assert_eq!(result.images.len(), 1);
     }
@@ -902,7 +685,7 @@ mod tests {
         // Simulate terminal drag-and-drop: backslash-escaped spaces
         let escaped_path = img_path.display().to_string().replace(' ', "\\ ");
         let input = format!("what is this {escaped_path}");
-        let result = process_input(&input, dir.path());
+        let result = process_input(&input);
         assert_eq!(result.prompt, "what is this");
         assert_eq!(
             result.images.len(),
@@ -921,7 +704,7 @@ mod tests {
 
         // Simulate terminal drag-and-drop: double-quoted path
         let input = format!("what is this \"{}\"", img_path.display());
-        let result = process_input(&input, dir.path());
+        let result = process_input(&input);
         assert_eq!(result.prompt, "what is this");
         assert_eq!(
             result.images.len(),
@@ -932,21 +715,15 @@ mod tests {
 
     #[test]
     fn test_at_ref_with_escaped_spaces() {
-        let dir = TempDir::new().unwrap();
-        let file_path = dir.path().join("my file.rs");
-        fs::write(&file_path, "fn main() {}").unwrap();
-
-        let result = process_input("explain @my\\ file.rs", dir.path());
-        assert_eq!(result.prompt, "explain");
-        assert_eq!(result.context_files.len(), 1);
-        assert_eq!(result.context_files[0].content, "fn main() {}");
+        let result = process_input("explain @my\\ file.rs");
+        assert_eq!(result.prompt, "explain @my\\ file.rs");
+        assert_eq!(result.mentions, ["my file.rs"]);
     }
 
     #[test]
     fn test_drag_and_drop_nonexistent_stays_in_prompt() {
-        let dir = TempDir::new().unwrap();
         let input = "/tmp/nonexistent_image_12345.png what is this";
-        let result = process_input(input, dir.path());
+        let result = process_input(input);
         // Non-existent file stays as text in prompt
         assert!(result.prompt.contains("/tmp/nonexistent_image_12345.png"));
         assert!(result.images.is_empty());
@@ -957,7 +734,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("data.json"), "{}").unwrap();
         let input = format!("read {}", dir.path().join("data.json").display());
-        let result = process_input(&input, dir.path());
+        let result = process_input(&input);
         // Non-image absolute paths are NOT auto-consumed (only images)
         assert!(result.prompt.contains("data.json"));
         assert!(result.images.is_empty());
@@ -1012,18 +789,12 @@ mod tests {
     }
 
     #[test]
-    fn test_at_file_traversal_blocked() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("safe.rs"), "fn main() {}").unwrap();
-
-        let result = process_input("read @../../etc/passwd", dir.path());
-        // Traversal path should be rejected — no context files loaded
-        assert!(
-            result.context_files.is_empty(),
-            "traversal should not load files outside project root"
-        );
-        // The @ref should remain in the prompt as-is
-        assert!(result.prompt.contains("@../../etc/passwd"));
+    /// Which paths may be read is the host's rule (the Read tool's), not
+    /// the client's: the client passes the path as written.
+    fn a_path_outside_the_project_is_passed_to_the_host() {
+        let result = process_input("read @../../etc/hosts");
+        assert_eq!(result.mentions, ["../../etc/hosts"]);
+        assert!(result.prompt.contains("@../../etc/hosts"));
     }
 
     #[test]

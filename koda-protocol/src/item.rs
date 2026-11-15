@@ -29,16 +29,19 @@ pub const OUTSIDE_SANDBOX_TAG: &str = "[outside the sandbox]";
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Item {
     /// What the user said: a turn's prompt, or steering text added while it
-    /// ran, as the model received it. Steering texts that reached the model
-    /// together are one item.
+    /// ran. Steering texts that reached the model together are one item.
     #[serde(rename_all = "camelCase")]
     UserMessage {
         /// The item's id.
         id: String,
-        /// The text.
+        /// The text, as the user wrote it.
         text: String,
         /// The client's ids for the messages it carries, where it gave them.
         client_message_ids: Vec<String>,
+        /// The files and directories it mentioned. The model was sent their
+        /// contents after the text; the item carries only the paths.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        mentions: Vec<crate::turn::Mention>,
     },
     /// Text from the model. Complete text on `item/completed`.
     #[serde(rename_all = "camelCase")]

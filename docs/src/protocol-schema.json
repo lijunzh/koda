@@ -900,7 +900,7 @@
       "description": "A part of a turn.",
       "oneOf": [
         {
-          "description": "What the user said: a turn's prompt, or steering text added while it\nran, as the model received it. Steering texts that reached the model\ntogether are one item.",
+          "description": "What the user said: a turn's prompt, or steering text added while it\nran. Steering texts that reached the model together are one item.",
           "properties": {
             "clientMessageIds": {
               "description": "The client's ids for the messages it carries, where it gave them.",
@@ -913,8 +913,15 @@
               "description": "The item's id.",
               "type": "string"
             },
+            "mentions": {
+              "description": "The files and directories it mentioned. The model was sent their\ncontents after the text; the item carries only the paths.",
+              "items": {
+                "$ref": "#/$defs/Mention"
+              },
+              "type": "array"
+            },
             "text": {
-              "description": "The text.",
+              "description": "The text, as the user wrote it.",
               "type": "string"
             },
             "type": {
@@ -1194,6 +1201,13 @@
           "description": "The agent new sessions run: a built-in, or one from an agent file.",
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "file_mentions": {
+          "description": "Whether a mentioned file is sent with its contents (on when unset),\nor only its path.",
+          "type": [
+            "boolean",
             "null"
           ]
         },
@@ -1696,6 +1710,19 @@
           "type": "string"
         }
       ]
+    },
+    "Mention": {
+      "description": "A file or directory mentioned in a turn's input.",
+      "properties": {
+        "path": {
+          "description": "Its path, as the user wrote it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
     },
     "MergeStrategy": {
       "description": "How an edit's value merges with what's there.",
@@ -3672,6 +3699,13 @@
         "input": {
           "description": "What the user said.",
           "type": "string"
+        },
+        "mentions": {
+          "description": "Files and directories the user mentioned (`@path`), which the host\nreads and sends the model with the text, as Claude Code includes an\n`@` file. A path is relative to the session's project, or absolute,\non the host's machine.",
+          "items": {
+            "$ref": "#/$defs/Mention"
+          },
+          "type": "array"
         },
         "mode": {
           "anyOf": [
