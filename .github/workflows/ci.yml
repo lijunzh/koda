@@ -31,7 +31,11 @@ env:
 #   doc     → doc compile + intra-doc links + -Dwarnings
 #   audit   → dependency advisories (on PRs, only when deps change)
 #
-# All jobs run in parallel; wall-clock is gated by the slowest (test ≈ 3min).
+#   required → "CI required": succeeds only if every job above did
+#
+# All jobs run in parallel; wall-clock is gated by the slowest (test ≈ 4min).
+# Each has a timeout well above its usual time: a hung job would otherwise
+# hold a runner for GitHub's six-hour default.
 #
 # Why both `clippy` and `check`? They run with different feature sets:
 #   - clippy enables `koda-core/test-support` (covers the full code surface)
@@ -44,8 +48,11 @@ jobs:
   fmt:
     name: Format
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: 1.99.1 # = rust-toolchain.toml (pin guarded in ci.yml)
@@ -94,8 +101,11 @@ jobs:
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: 1.99.1 # = rust-toolchain.toml (pin guarded in ci.yml)
@@ -103,19 +113,30 @@ jobs:
       - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2.8.1
         with:
           shared-key: clippy-Linux
+          # PRs restore main's cache but don't save their own: a PR's cache
+          # can only be read by that PR, and seven of them per PR pushed the
+          # repo past GitHub's 10 GB limit, evicting main's (2026-11-15).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --workspace --all-targets --features koda-core/test-support -- -D warnings
 
   check:
     name: Check (no features)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: 1.99.1 # = rust-toolchain.toml (pin guarded in ci.yml)
       - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2.8.1
         with:
           shared-key: check-Linux
+          # PRs restore main's cache but don't save their own: a PR's cache
+          # can only be read by that PR, and seven of them per PR pushed the
+          # repo past GitHub's 10 GB limit, evicting main's (2026-11-15).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # Catches cfg-gated items invisible behind feature flags. This is the
       # crates.io consumer build — koda-core ships without test-support.
       - run: cargo check --workspace --all-targets
@@ -123,18 +144,25 @@ jobs:
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: 1.99.1 # = rust-toolchain.toml (pin guarded in ci.yml)
       - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2.8.1
         with:
           shared-key: ci-${{ runner.os }}
+          # PRs restore main's cache but don't save their own: a PR's cache
+          # can only be read by that PR, and seven of them per PR pushed the
+          # repo past GitHub's 10 GB limit, evicting main's (2026-11-15).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Set up Linux sandbox (bubblewrap)
         if: runner.os == 'Linux'
         run: |
@@ -275,14 +303,21 @@ jobs:
   doc:
     name: Docs
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: 1.99.1 # = rust-toolchain.toml (pin guarded in ci.yml)
       - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2.8.1
         with:
           shared-key: doc  # stable across branches & workflow edits
+          # PRs restore main's cache but don't save their own: a PR's cache
+          # can only be read by that PR, and seven of them per PR pushed the
+          # repo past GitHub's 10 GB limit, evicting main's (2026-11-15).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo doc --workspace --no-deps
         env:
           RUSTDOCFLAGS: -Dwarnings
@@ -307,9 +342,11 @@ jobs:
   audit:
     name: Security Audit
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           # On pull_request this checks out GitHub's test-merge commit
           # (refs/pull/N/merge): first parent = base branch tip, second
           # parent = PR head. Depth 2 fetches both parents, so diffing
@@ -346,11 +383,38 @@ jobs:
         if: steps.scope.outputs.run == 'true'
         with:
           toolchain: 1.99.1 # = rust-toolchain.toml (pin guarded in ci.yml)
-      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2.8.1
+      # A prebuilt cargo-audit: `cargo install` compiled it from source each
+      # time a cache missed. It reads Cargo.lock and builds nothing, so the
+      # job needs no Rust cache.
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
         if: steps.scope.outputs.run == 'true'
-      - name: Install cargo-audit
-        if: steps.scope.outputs.run == 'true'
-        run: cargo install cargo-audit --locked
+        with:
+          tool: cargo-audit
       - name: Run audit
         if: steps.scope.outputs.run == 'true'
         run: cargo audit --deny unsound --deny yanked
+
+  # The one check main's ruleset needs, as Codex's `CI required`: the list of
+  # what must pass lives here, in review, instead of in the repo's settings,
+  # so a job added above is required once it's listed in `needs`.
+  required:
+    name: CI required
+    # Without always(), a failed job would skip this one, and a skipped
+    # required check counts as passing.
+    if: always()
+    needs: [fmt, clippy, check, test, doc, audit]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every job to succeed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          failed=$(jq -r 'to_entries[] | select(.value.result != "success") | "\(.key): \(.value.result)"' <<< "$NEEDS")
+          if [ -n "$failed" ]; then
+            echo "::error::Not every CI job succeeded:"
+            echo "$failed"
+            exit 1
+          fi
+          echo "✓ Every CI job succeeded."

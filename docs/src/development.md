@@ -374,7 +374,7 @@ whatever new lints the new toolchain surfaces.
 
 ## CI workflows
 
-Six workflows live in `.github/workflows/`:
+Seven workflows live in `.github/workflows/`:
 
 | Workflow | Trigger | Purpose |
 |---|---|---|
@@ -383,6 +383,7 @@ Six workflows live in `.github/workflows/`:
 | `coverage.yml` | Push to `main`; PRs touching `koda-core/` or `koda-sandbox/` | Coverage thresholds, with auto issue creation on `main` |
 | `release.yml` | Tag `v*` | Version verify, cross-platform test + build, publish, Homebrew |
 | `docs.yml` | Push to `main` (docs/ changes) | Build + deploy mdBook to GitHub Pages |
+| `codeql.yml` | Push to `main`, weekly (Mon 14:00 UTC) + manual | CodeQL code scanning of Rust and the workflows; not on PRs |
 | `auto-merge-dependabot.yml` | Dependabot PRs | Enables squash auto-merge; merges once required checks pass |
 
 Release job chain:
@@ -400,7 +401,8 @@ number; it does not need to wait for Homebrew.
 ### CI jobs (`ci.yml`)
 
 Six independent jobs run in parallel, one responsibility each, so a red check
-names what broke. Wall-clock is set by the slowest (Test).
+names what broke, and a seventh gathers them. Wall-clock is set by the slowest
+(Test).
 
 | Job | Check name(s) | Runs |
 |---|---|---|
@@ -410,16 +412,35 @@ names what broke. Wall-clock is set by the slowest (Test).
 | `test` | `Test (ubuntu-latest)`, `Test (macos-latest)` | `cargo nextest run --workspace --features koda-core/test-support --profile ci`, the doc tests with `cargo test --doc`, then asserts from nextest's JUnit report that the security-boundary tests ran |
 | `doc` | `Docs` | `cargo doc --workspace --no-deps` with `RUSTDOCFLAGS=-Dwarnings` |
 | `audit` | `Security Audit` | `cargo audit --deny unsound --deny yanked`, gated on dependency changes (below) |
+| `required` | `CI required` | Succeeds only if every job above succeeded |
 
 The pre-push hook (`.githooks/pre-push`) runs only `cargo fmt --check` and
 `cargo clippy`, the two cheap checks. CI is the source of truth for the rest.
 
-**Branch ruleset required checks:** `Format`, `Clippy`, `Check (no features)`,
-`Test (ubuntu-latest)`, `Test (macos-latest)`, `Docs`, `Security Audit`, i.e.
-every `ci.yml` check (verify with `gh api repos/lijunzh/koda/rules/branches/main`).
-A required check that never reports blocks merging forever, so **never add a
-workflow-level `paths:` filter to `ci.yml`**. Skip work inside a job instead, as
-`audit` does.
+**Branch ruleset required checks:** `CI required` is the check `main`'s
+ruleset should require, as Codex's ruleset requires its `CI required`. What
+must pass is then the `required` job's `needs` list, reviewed in `ci.yml`,
+rather than a list in the repository's settings; a new job is required once
+it's added there. Verify what the ruleset requires with
+`gh api repos/lijunzh/koda/rules/branches/main`. A required check that never
+reports blocks merging forever, so **never add a workflow-level `paths:` filter
+to `ci.yml`**. Skip work inside a job instead, as `audit` does.
+
+**Runner hygiene, in every workflow:**
+
+- **Caches:** `Swatinem/rust-cache` saves only on `main`
+  (`save-if: github.ref == 'refs/heads/main'`); PRs restore `main`'s cache. A
+  PR's own cache can be read only by that PR, and saving seven per PR pushed
+  the repository past GitHub's 10 GB cache limit, evicting `main`'s.
+- **Timeouts:** every job has `timeout-minutes` well above its usual time;
+  GitHub's default is six hours.
+- **Pinned actions:** every action is pinned to a commit SHA with its version
+  in a comment, and Dependabot's `github-actions` updates bump both.
+- **Credentials:** checkouts set `persist-credentials: false`, except the one
+  that pushes to the Homebrew tap, so build scripts and tests can't read the
+  job's token from `.git/config`.
+- **Prebuilt tools:** `cargo-nextest`, `cargo-llvm-cov`, `cargo-audit` and
+  `mdbook` come from `taiki-e/install-action`, not `cargo install`.
 
 ### Security audit (`ci.yml` `audit` + `audit.yml`)
 

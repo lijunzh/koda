@@ -60,6 +60,10 @@ KODA_TEST_LMSTUDIO=1 cargo test -p koda-cli --test smoke_test -- --ignored  # Li
 The toolchain is pinned in `rust-toolchain.toml`; a bump also edits the
 workflows. CI runs the checks above; never add a workflow-level `paths:` filter
 to `ci.yml`, because a required check that never reports blocks merging forever.
+A new `ci.yml` job goes in the `required` job's `needs`, which is what `main`
+requires. Workflow changes keep the conventions in `docs/src/development.md`
+("Runner hygiene"): caches saved on `main` only, a timeout per job, actions
+pinned by SHA, `persist-credentials: false`.
 
 ## Architecture
 
