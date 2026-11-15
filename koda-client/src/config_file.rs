@@ -46,6 +46,7 @@ pub(crate) fn values(loaded: &Loaded) -> KodaConfigValues {
         model_temperature: config.model_temperature,
         model_thinking_budget: config.model_thinking_budget,
         model_post_turn_compact_threshold_percent: config.model_post_turn_compact_threshold_percent,
+        file_mentions: config.file_mentions,
         mode: config.mode.map(protocol_mode),
         agent: config.agent.clone(),
         model_providers: config
@@ -143,6 +144,9 @@ pub(crate) fn apply_settings(config: &mut KodaConfig, loaded: &Loaded) {
     }
     if let Some(percent) = file.model_post_turn_compact_threshold_percent {
         config.post_turn_compact_percent = percent.min(100);
+    }
+    if let Some(on) = file.file_mentions {
+        config.file_mentions = on;
     }
     // Retries are capped as Codex caps them.
     let retries =

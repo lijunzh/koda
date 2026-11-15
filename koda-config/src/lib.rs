@@ -111,6 +111,11 @@ pub struct ConfigToml {
     /// final reply (1 to 100); 0 or none turns it off, as in Codex.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_post_turn_compact_threshold_percent: Option<u8>,
+    /// Whether a mentioned file (`@path`) is sent with its contents, as
+    /// Claude Code sends it; `false` sends only the path, for the model to
+    /// read, as Codex does. On when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_mentions: Option<bool>,
     /// The mode a new session starts in, as `--mode` gives it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<Mode>,

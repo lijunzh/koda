@@ -253,9 +253,11 @@ pub(crate) async fn show_earlier_turns(
 
 /// What a turn starts with, and what to give back if it can't start.
 pub(crate) struct TurnInput {
-    /// The message the model gets: the prompt, with attached files and pastes.
+    /// The message: the prompt as typed, with pastes.
     pub message: String,
     pub images: Vec<crate::input::ImageData>,
+    /// The paths mentioned with `@`, which the host reads.
+    pub mentions: Vec<String>,
     /// What the user typed, and its paste blocks, for the input box.
     pub typed: String,
     pub paste_blocks: Vec<crate::input::PasteBlock>,
@@ -803,7 +805,7 @@ impl TuiContext {
     }
 
     async fn prepare_inference_start(&mut self, input: &str) -> CommandOutcome {
-        let mut processed = input::process_input(input, &self.project_root);
+        let mut processed = input::process_input(input);
         processed.paste_blocks = std::mem::take(&mut self.paste_blocks);
 
         for (i, _img) in processed.images.iter().enumerate() {
@@ -816,21 +818,16 @@ impl TuiContext {
             ]));
         }
 
-        let mut user_message =
-            if let Some(context) = input::format_context_files(&processed.context_files) {
-                for f in &processed.context_files {
-                    self.scroll_buffer.push(Line::from(vec![
-                        Span::raw("  "),
-                        Span::styled(
-                            format!("\u{1f4ce} {}", f.path),
-                            Style::default().fg(Color::Cyan),
-                        ),
-                    ]));
-                }
-                format!("{}\n\n{context}", processed.prompt)
-            } else {
-                processed.prompt.clone()
-            };
+        for path in &processed.mentions {
+            self.scroll_buffer.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    format!("\u{1f4ce} {path}"),
+                    Style::default().fg(Color::Cyan),
+                ),
+            ]));
+        }
+        let mut user_message = processed.prompt.clone();
 
         if let Some(pasted) = input::format_paste_blocks(&processed.paste_blocks) {
             user_message = format!("{user_message}\n\n{pasted}");
@@ -842,6 +839,7 @@ impl TuiContext {
         CommandOutcome::StartInference(TurnInput {
             message: user_message,
             images: processed.images,
+            mentions: processed.mentions,
             typed: input.to_string(),
             paste_blocks: std::mem::take(&mut processed.paste_blocks),
         })

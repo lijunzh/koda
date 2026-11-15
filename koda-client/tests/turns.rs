@@ -186,6 +186,7 @@ impl Koda {
                 session_id: self.session.clone(),
                 input: input.to_string(),
                 images: Vec::new(),
+                mentions: Vec::new(),
                 client_message_id: client_message_id.map(str::to_string),
                 mode: None,
             })
@@ -744,6 +745,7 @@ async fn requests_without_a_running_turn_or_session_are_refused() {
                 session_id: "no-such-session".to_string(),
                 input: "hi".to_string(),
                 images: Vec::new(),
+                mentions: Vec::new(),
                 client_message_id: None,
                 mode: Some(TrustMode::Safe),
             })
@@ -774,6 +776,74 @@ async fn shutdown_stops_a_turn_that_waits_on_the_client() {
         "{:?}",
         asked.elapsed()
     );
+}
+
+/// `@` mentions are read by the host under the Read tool's rules: a file's
+/// numbered lines, a directory's listing, an image as an image, and why a
+/// binary file wasn't read. The model gets them after the text; the item
+/// keeps the text as typed, with the paths.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mentions_are_read_by_the_host() {
+    use koda_client::protocol::turn::Mention;
+    let server = model(vec![text("Seen."), text("Paths.")]).await;
+    let mut koda = Koda::start(config(&server)).await;
+    std::fs::write(koda.project.join("notes.md"), "alpha\nbeta\n").unwrap();
+    std::fs::create_dir(koda.project.join("src")).unwrap();
+    std::fs::write(koda.project.join("src/lib.rs"), "").unwrap();
+    std::fs::write(koda.project.join("blob.bin"), b"ab\0cd").unwrap();
+    std::fs::write(koda.project.join("shot.png"), b"\x89PNG\r\n\x1a\nrest").unwrap();
+    let typed = "look at @notes.md @src @blob.bin @shot.png";
+    let mention = |path: &str| Mention { path: path.into() };
+    koda.client
+        .request::<methods::TurnStart>(TurnStartParams {
+            session_id: koda.session.clone(),
+            input: typed.to_string(),
+            images: Vec::new(),
+            mentions: ["notes.md", "src", "blob.bin", "shot.png"]
+                .map(mention)
+                .to_vec(),
+            client_message_id: None,
+            mode: None,
+        })
+        .await
+        .unwrap();
+    let messages = koda.until("turn/completed").await;
+    let Item::UserMessage { text, mentions, .. } = completed(&messages)[0] else {
+        panic!("no user message first");
+    };
+    assert_eq!(text, typed);
+    assert_eq!(mentions.len(), 4);
+
+    let sent = chat_requests(&server).await[0]["messages"].to_string();
+    assert!(sent.contains("<file path=\\\"notes.md\\\">"), "{sent}");
+    assert!(sent.contains("     1\\talpha"), "{sent}");
+    assert!(sent.contains("<directory path=\\\"src\\\">"), "{sent}");
+    assert!(sent.contains("lib.rs"), "{sent}");
+    assert!(sent.contains("a binary file"), "{sent}");
+    assert!(sent.contains("image/png"), "the image wasn't sent: {sent}");
+    koda.client.shutdown().await;
+
+    // With `file_mentions` off, the model gets the paths to read itself.
+    let mut config = config(&server);
+    config.file_mentions = false;
+    let mut koda = Koda::start(config).await;
+    std::fs::write(koda.project.join("notes.md"), "alpha\n").unwrap();
+    koda.client
+        .request::<methods::TurnStart>(TurnStartParams {
+            session_id: koda.session.clone(),
+            input: "look at @notes.md".to_string(),
+            images: Vec::new(),
+            mentions: vec![mention("notes.md")],
+            client_message_id: None,
+            mode: None,
+        })
+        .await
+        .unwrap();
+    koda.until("turn/completed").await;
+    let sent = chat_requests(&server).await[1]["messages"].to_string();
+    assert!(sent.contains("Mentioned, not attached"), "{sent}");
+    assert!(!sent.contains("alpha"), "{sent}");
+    koda.client.shutdown().await;
 }
 
 /// `session/turns/list` pages a session's turns newest first, each with
@@ -893,6 +963,7 @@ async fn a_resumed_session_keeps_its_history() {
             session_id: session.clone(),
             input: "Remember 42".to_string(),
             images: Vec::new(),
+            mentions: Vec::new(),
             client_message_id: None,
             mode: None,
         })

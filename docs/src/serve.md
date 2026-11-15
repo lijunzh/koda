@@ -47,6 +47,15 @@ request that is already closed, or that Koda never sent, changes nothing.
 `--provider`, `--base-url` or `--resume`. `-c` and the other config flags set
 what new sessions start from, as for `koda`.
 
+## Mentioned files
+
+`turn/start` takes `mentions: [{"path": "src/lib.rs"}]` beside `input`, for the
+files and directories the user mentioned with `@`. Koda reads them on its own
+machine, under the `Read` tool's rules, and sends the model their contents after
+the text (see [File & image attachments](./attachments.md#mentioning-files)). The
+`userMessage` item keeps the text as the user wrote it and lists the paths under
+`mentions`.
+
 ## A session's earlier turns
 
 `session/start` with a stored session's id reopens it and returns all its turns,
@@ -100,5 +109,3 @@ and the process exits 0.
 
 - **One client per process.** A shared server that several clients attach to,
   on a Unix socket, comes later.
-- **`@file` mentions** are read by the client today; with a server on another
-  machine, the server will read them.

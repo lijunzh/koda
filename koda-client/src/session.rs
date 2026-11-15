@@ -31,8 +31,9 @@ use koda_protocol::session::{
     SessionSettingsUpdateResponse, SessionSettingsUpdatedNotification, SessionStartedNotification,
 };
 use koda_protocol::turn::{
-    LoopCapDecision, LoopCapResponse, Turn, TurnError, TurnInterruptParams, TurnInterruptResponse,
-    TurnStartParams, TurnStartResponse, TurnStatus, TurnSteerParams, TurnSteerResponse,
+    LoopCapDecision, LoopCapResponse, Mention, Turn, TurnError, TurnInterruptParams,
+    TurnInterruptResponse, TurnStartParams, TurnStartResponse, TurnStatus, TurnSteerParams,
+    TurnSteerResponse,
 };
 use koda_protocol::{PROTOCOL_VERSION, ServerNotification, ServerRequest};
 use koda_state::db::{Database, Role};
@@ -609,19 +610,23 @@ impl SessionTask {
         let TurnStartParams {
             input,
             images,
+            mentions,
             client_message_id,
             mode,
             ..
         } = params;
-        let images = (!images.is_empty()).then(|| {
-            images
-                .into_iter()
-                .map(|image| ImageData {
-                    media_type: image.media_type,
-                    base64: image.data,
-                })
-                .collect()
-        });
+        let mut images: Vec<ImageData> = images
+            .into_iter()
+            .map(|image| ImageData {
+                media_type: image.media_type,
+                base64: image.data,
+            })
+            .collect();
+        // Mentioned files are read here, on the host's machine, under the
+        // Read tool's rules; the model gets them after the text, and the
+        // item keeps the text as written.
+        let message = self.with_mentions(&input, &mentions, &mut images).await;
+        let images = (!images.is_empty()).then_some(images);
         if let Some(mode) = mode {
             self.session.mode = core_mode(mode);
         }
@@ -632,7 +637,7 @@ impl SessionTask {
         if let Err(e) = self
             .session
             .db
-            .insert_message(&session_id, &Role::User, Some(&input), None, None, None)
+            .insert_message(&session_id, &Role::User, Some(&message), None, None, None)
             .await
         {
             let _ = reply.send(Err(internal(format!(
@@ -659,8 +664,42 @@ impl SessionTask {
             },
         }));
         self.sink
-            .begin_turn(input, client_message_id.into_iter().collect());
+            .begin_turn(input, client_message_id.into_iter().collect(), mentions);
         self.run_turn(turn_id, Work::Prompt(images)).await
+    }
+
+    /// `input` as the model is sent it: with each mentioned file's contents
+    /// after it, or a directory's listing, or why it wasn't read, unless the
+    /// config's `file_mentions` is off, when the model gets the paths to
+    /// read itself, as Codex leaves them. Mentioned images join `images`.
+    async fn with_mentions(
+        &self,
+        input: &str,
+        mentions: &[Mention],
+        images: &mut Vec<ImageData>,
+    ) -> String {
+        use koda_core::tools::mention::{Mentioned, mention_context};
+        if mentions.is_empty() {
+            return input.to_string();
+        }
+        if !self.config.file_mentions {
+            let paths: Vec<&str> = mentions.iter().map(|m| m.path.as_str()).collect();
+            return format!(
+                "{input}\n\n(Mentioned, not attached; read them if you need them: {})",
+                paths.join(", ")
+            );
+        }
+        let mut read = Vec::new();
+        for mention in mentions {
+            match self.session.agent.tools.read_mention(&mention.path).await {
+                Mentioned::Image(image) => images.push(image),
+                other => read.push((mention.path.clone(), other)),
+            }
+        }
+        match mention_context(&read) {
+            Some(context) => format!("{input}\n\n{context}"),
+            None => input.to_string(),
+        }
     }
 
     /// Run a turn to its end, reading the client's commands meanwhile.
@@ -906,8 +945,9 @@ enum RequestKind {
 
 struct SinkState {
     projector: EventProjector,
-    /// The prompt of the turn about to start, with its client id.
-    prompt: Option<(String, Vec<String>)>,
+    /// The prompt of the turn about to start, with its client id and the
+    /// paths it mentioned.
+    prompt: Option<(String, Vec<String>, Vec<Mention>)>,
     /// Client ids of steering texts sent and not yet delivered, oldest
     /// first; `None` where the client gave none.
     steers: VecDeque<Option<String>>,
@@ -938,9 +978,9 @@ impl HostSink {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn begin_turn(&self, prompt: String, client_message_ids: Vec<String>) {
+    fn begin_turn(&self, prompt: String, client_message_ids: Vec<String>, mentions: Vec<Mention>) {
         let mut state = self.lock();
-        state.prompt = Some((prompt, client_message_ids));
+        state.prompt = Some((prompt, client_message_ids, mentions));
         state.steers.clear();
     }
 
@@ -1018,12 +1058,14 @@ impl HostSink {
                 let ids = (0..texts.len())
                     .filter_map(|_| state.steers.pop_front().flatten())
                     .collect();
-                state.projector.user_message(texts.join("\n\n"), ids)
+                state
+                    .projector
+                    .user_message(texts.join("\n\n"), ids, Vec::new())
             }
             (None, event @ EngineEvent::TurnStart { .. }) => {
                 let mut out = state.projector.project(None, event);
-                if let Some((text, ids)) = state.prompt.take() {
-                    out.extend(state.projector.user_message(text, ids));
+                if let Some((text, ids, mentions)) = state.prompt.take() {
+                    out.extend(state.projector.user_message(text, ids, mentions));
                 }
                 out
             }

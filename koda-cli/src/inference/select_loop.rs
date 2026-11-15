@@ -159,9 +159,13 @@ impl TuiContext {
             TurnRequest::Prompt(TurnInput {
                 message,
                 images,
+                mentions,
                 typed,
                 paste_blocks,
-            }) => (Some((message, images)), Some((typed, paste_blocks))),
+            }) => (
+                Some((message, images, mentions)),
+                Some((typed, paste_blocks)),
+            ),
             TurnRequest::Compact => (None, None),
         };
         // The host's own words say what went wrong.
@@ -178,7 +182,7 @@ impl TuiContext {
             // Messages from before this turn (session notices, resolved
             // requests) are no business of it.
             while self.client.try_next_event().is_some() {}
-            let Some((message, images)) = prompt else {
+            let Some((message, images, mentions)) = prompt else {
                 self.client
                     .request::<methods::SessionCompactStart>(SessionCompactStartParams {
                         session_id: self.session.id.clone(),
@@ -210,6 +214,10 @@ impl TuiContext {
                             media_type: image.media_type,
                             data: image.base64,
                         })
+                        .collect(),
+                    mentions: mentions
+                        .into_iter()
+                        .map(|path| koda_client::protocol::turn::Mention { path })
                         .collect(),
                     client_message_id: None,
                     mode: None,

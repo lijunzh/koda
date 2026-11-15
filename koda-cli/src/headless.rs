@@ -30,7 +30,7 @@ use koda_client::protocol::item::{
 use koda_client::protocol::server::ExecSummary;
 use koda_client::protocol::session::{ApprovalPolicy, SessionStartParams, TokenUsage};
 use koda_client::protocol::turn::{
-    ImageInput, PlanStep, Turn, TurnInterruptParams, TurnStartParams, TurnStatus, Usage,
+    ImageInput, Mention, PlanStep, Turn, TurnInterruptParams, TurnStartParams, TurnStatus, Usage,
 };
 use koda_client::protocol::{ServerNotification, ServerRequest, methods};
 use koda_client::{InProcessClient, StartArgs};
@@ -81,14 +81,15 @@ pub struct Named {
 /// the start of one; without one a new session starts. Returns the process exit code (0 =
 /// success).
 pub async fn run_headless(project_root: PathBuf, resume: Option<String>, run: Run) -> Result<i32> {
-    // Process @file references and images
-    let processed = input::process_input(&run.prompt, &project_root);
-    let user_message = if let Some(context) = input::format_context_files(&processed.context_files)
-    {
-        format!("{}\n\n{context}", processed.prompt)
-    } else {
-        processed.prompt.clone()
-    };
+    // `@path` mentions go to the host, which reads them; dragged-in images
+    // are loaded here.
+    let processed = input::process_input(&run.prompt);
+    let user_message = processed.prompt.clone();
+    let mentions: Vec<Mention> = processed
+        .mentions
+        .iter()
+        .map(|path| Mention { path: path.clone() })
+        .collect();
     let images = processed
         .images
         .into_iter()
@@ -153,6 +154,7 @@ pub async fn run_headless(project_root: PathBuf, resume: Option<String>, run: Ru
             session_id: session_id.clone(),
             input: user_message,
             images,
+            mentions,
             client_message_id: None,
             mode: None,
         })

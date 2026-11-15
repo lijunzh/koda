@@ -519,6 +519,17 @@ fn mock_at_file_reference() {
         "@file processing failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    // The mention reaches the host as a path, with the text as typed.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let user = stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|line| {
+            line["method"] == "item/completed" && line["params"]["item"]["type"] == "userMessage"
+        })
+        .expect("no userMessage item");
+    assert_eq!(user["params"]["item"]["text"], "analyze @data.txt");
+    assert_eq!(user["params"]["item"]["mentions"][0]["path"], "data.txt");
 }
 
 #[test]

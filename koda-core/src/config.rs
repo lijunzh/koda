@@ -274,6 +274,9 @@ pub struct KodaConfig {
     /// it off, as Codex's `model_post_turn_compact_threshold_percent` does;
     /// the next turn still compacts before its first call when it must.
     pub post_turn_compact_percent: u8,
+    /// Whether a mentioned file is sent with its contents (`file_mentions`,
+    /// on by default, as in Claude Code) or only its path, as in Codex.
+    pub file_mentions: bool,
     /// Skip injecting project/global memory into the system prompt.
     /// Set by `skip_memory: true` in agent JSON. Default: `false`.
     pub skip_memory: bool,
@@ -441,6 +444,7 @@ impl KodaConfig {
             request_max_retries: crate::inference_helpers::DEFAULT_REQUEST_MAX_RETRIES,
             stream_max_retries: crate::inference_helpers::DEFAULT_STREAM_MAX_RETRIES,
             post_turn_compact_percent: 0,
+            file_mentions: true,
             skip_memory: agent.skip_memory,
             trust: declared_trust,
             stream_idle_timeout_ms: None,
@@ -689,6 +693,7 @@ impl KodaConfig {
             request_max_retries: crate::inference_helpers::DEFAULT_REQUEST_MAX_RETRIES,
             stream_max_retries: crate::inference_helpers::DEFAULT_STREAM_MAX_RETRIES,
             post_turn_compact_percent: 0,
+            file_mentions: true,
             skip_memory: false,
             trust: crate::trust::TrustMode::Auto,
             stream_idle_timeout_ms: None,

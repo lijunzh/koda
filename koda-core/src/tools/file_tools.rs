@@ -191,6 +191,14 @@ pub async fn read_file(
         .read(&resolved, None)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", resolved.display(), e))?;
+    // Decoded as text, a binary file is noise that costs tokens; Claude
+    // Code's Read refuses one too.
+    if let Some(kind) = binary_kind(&raw_bytes) {
+        anyhow::bail!(
+            "{path_str} is {kind}, which Read can't show. Inspect it with Bash \
+             instead, such as `file {path_str}`, or a tool that reads its format."
+        );
+    }
     let raw_content = String::from_utf8_lossy(&raw_bytes).into_owned();
 
     let output = numbered_window(&raw_content, start_line, num_lines, max_bytes);
@@ -207,6 +215,50 @@ pub async fn read_file(
     }
 
     Ok(output)
+}
+
+/// What a file is when it isn't text: by its signature (an image, a PDF, an
+/// archive), or a NUL byte in its first 8 KiB, git's test for a binary file.
+/// Text in another encoding has no NUL bytes, so it is still read.
+pub fn binary_kind(bytes: &[u8]) -> Option<&'static str> {
+    if image_media_type(bytes).is_some() {
+        return Some("an image");
+    }
+    const SIGNATURES: [(&[u8], &str); 5] = [
+        (b"%PDF-", "a PDF"),
+        (
+            b"PK\x03\x04",
+            "an archive (zip, or a format built on it such as .docx or .xlsx)",
+        ),
+        (b"\x1f\x8b", "a gzip archive"),
+        (b"\x7fELF", "a program"),
+        (b"\xcf\xfa\xed\xfe", "a program"),
+    ];
+    if let Some((_, kind)) = SIGNATURES
+        .iter()
+        .find(|(magic, _)| bytes.starts_with(magic))
+    {
+        return Some(kind);
+    }
+    bytes[..bytes.len().min(8192)]
+        .contains(&0)
+        .then_some("a binary file")
+}
+
+/// An image's media type, by its signature: the formats every provider
+/// Koda supports takes (PNG, JPEG, GIF, WebP).
+pub fn image_media_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
+    }
 }
 
 /// Lines `start_line..` of `content` (1-based, from the first line when
@@ -1008,6 +1060,34 @@ mod tests {
             )),
             "{result}"
         );
+    }
+
+    /// A binary file is refused with what it is, not decoded into noise, as
+    /// Claude Code's Read refuses one; text in another encoding still reads.
+    #[tokio::test]
+    async fn read_file_refuses_a_binary_file_and_says_what_it_is() {
+        let tmp = tempfile::tempdir().unwrap();
+        for (name, bytes, kind) in [
+            ("shot.png", &b"\x89PNG\r\n\x1a\nxxxx"[..], "an image"),
+            ("doc.pdf", &b"%PDF-1.7\n"[..], "a PDF"),
+            ("book.xlsx", &b"PK\x03\x04rest"[..], "an archive"),
+            ("blob.bin", &b"abc\0def"[..], "a binary file"),
+        ] {
+            std::fs::write(tmp.path().join(name), bytes).unwrap();
+            let args = json!({"file_path": name});
+            let error = read_file(tmp.path(), &args, &cache(), &fs(), TEST_CAP)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(kind), "{name}: {error}");
+            assert!(error.contains("Bash"), "{name}: {error}");
+        }
+        std::fs::write(tmp.path().join("latin1.txt"), b"caf\xe9\n").unwrap();
+        let args = json!({"file_path": "latin1.txt"});
+        let text = read_file(tmp.path(), &args, &cache(), &fs(), TEST_CAP)
+            .await
+            .unwrap();
+        assert!(text.starts_with("     1\tcaf"), "{text}");
     }
 
     #[tokio::test]

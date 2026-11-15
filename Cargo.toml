@@ -29,6 +29,7 @@ authors = ["Lijun Zhu"]
 # consumer site. Add a dep here once it's used by 3+ crates; before
 # that it's premature DRY (YAGNI).
 [workspace.dependencies]
+base64 = "0.23"
 anyhow = "1"
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }

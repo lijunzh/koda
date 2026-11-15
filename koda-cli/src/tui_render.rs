@@ -1569,6 +1569,7 @@ mod tests {
                     id: "u1".into(),
                     text: "look around".into(),
                     client_message_ids: Vec::new(),
+                    mentions: Vec::new(),
                 },
                 None,
             ),

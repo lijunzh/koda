@@ -78,6 +78,12 @@ pub struct TurnStartParams {
     /// Images sent with it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<ImageInput>,
+    /// Files and directories the user mentioned (`@path`), which the host
+    /// reads and sends the model with the text, as Claude Code includes an
+    /// `@` file. A path is relative to the session's project, or absolute,
+    /// on the host's machine.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mentions: Vec<Mention>,
     /// The client's id for the message, echoed on its `userMessage` item.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_message_id: Option<String>,
@@ -85,6 +91,14 @@ pub struct TurnStartParams {
     /// its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<crate::state::TrustMode>,
+}
+
+/// A file or directory mentioned in a turn's input.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Mention {
+    /// Its path, as the user wrote it.
+    pub path: String,
 }
 
 /// An image sent with a turn's input.

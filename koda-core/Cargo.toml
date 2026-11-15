@@ -19,6 +19,8 @@ name = "koda_core"
 path = "src/lib.rs"
 
 [dependencies]
+# `@` mentions of images, read by the host.
+base64 = { workspace = true }
 # Async runtime
 tokio = { workspace = true, features = ["full"] }
 

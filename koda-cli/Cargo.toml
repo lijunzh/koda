@@ -108,7 +108,7 @@ anyhow = { workspace = true }
 time = { workspace = true }
 
 # Base64 encoding (for image input)
-base64 = "0.23"
+base64 = { workspace = true }
 futures-util = { workspace = true }
 
 [[bench]]
