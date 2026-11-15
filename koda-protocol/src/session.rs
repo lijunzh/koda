@@ -301,6 +301,56 @@ pub struct SessionReadResponse {
     pub session: Session,
 }
 
+/// `session/turns/list`: a page of a session's turns, with their items, as
+/// Codex's `thread/turns/list` pages a thread's. A client that loads only a
+/// session's recent turns (a phone, a long session) fetches older ones as it
+/// needs them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionTurnsListParams {
+    /// The session, by its full id; open or not.
+    pub session_id: String,
+    /// Where to go on from: an earlier answer's `nextCursor`, or its
+    /// `backwardsCursor` with the other `sortDirection`. Without one, the
+    /// newest turns (or the oldest, ascending).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    /// How many turns at most: 25 without one, at most 100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+    /// Newest first (`desc`, without one) or oldest first (`asc`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sort_direction: Option<SortDirection>,
+}
+
+/// The order a page runs in. Codex's `SortDirection`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum SortDirection {
+    /// Oldest first.
+    Asc,
+    /// Newest first.
+    Desc,
+}
+
+/// The answer to `session/turns/list`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionTurnsListResponse {
+    /// The turns, in the order asked for, each with its items. A turn still
+    /// running is `inProgress`, with the items it has so far.
+    pub data: Vec<crate::turn::Turn>,
+    /// Opaque; pass it as `cursor` for the next page in the same order.
+    /// Absent when there are no more.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    /// Opaque; pass it as `cursor` with the other `sortDirection` to read
+    /// back from this page's first turn, that turn included, to catch what
+    /// changed in it (a turn that was running). Absent on an empty page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backwards_cursor: Option<String>,
+}
+
 /// `session/tokenUsage/updated`: what an open session's model calls have
 /// used, and how full its context is. Codex's `thread/tokenUsage/updated`,
 /// sent before each model call and when a turn's last call is done.

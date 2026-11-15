@@ -23,6 +23,7 @@ use koda_protocol::rpc::{self, ErrorObject, RequestId, codes};
 use koda_protocol::session::{
     SessionDeleteResponse, SessionDeletedNotification, SessionListParams, SessionListResponse,
     SessionStartParams, SessionStartResponse, SessionUnsubscribeResponse, SessionUnsubscribeStatus,
+    SortDirection,
 };
 use koda_protocol::state::{SandboxState, StateReadResponse, TrustMode};
 use koda_protocol::{ClientRequest, PROTOCOL_VERSION};
@@ -337,6 +338,10 @@ impl Host {
                 let _ = reply.send(self.read_session(params).await.and_then(to_json));
                 return;
             }
+            ClientRequest::SessionTurnsList { params, .. } => {
+                let _ = reply.send(self.list_turns(params).await.and_then(to_json));
+                return;
+            }
             ClientRequest::SessionDelete { params, .. } => {
                 let _ = reply.send(
                     self.delete_session(params.session_id)
@@ -492,6 +497,40 @@ impl Host {
                 .map_err(history_error)?;
         }
         Ok(koda_protocol::session::SessionReadResponse { session })
+    }
+
+    /// `session/turns/list`: a page of a session's turns, as Codex's
+    /// `thread/turns/list`. It reads them all and pages in memory, as Codex
+    /// does from its rollout file.
+    async fn list_turns(
+        &self,
+        params: koda_protocol::session::SessionTurnsListParams,
+    ) -> Result<koda_protocol::session::SessionTurnsListResponse, ErrorObject> {
+        use koda_state::session_store::SessionStore;
+        let exists = self
+            .context
+            .db
+            .get_session(&params.session_id)
+            .await
+            .map_err(|e| internal(format!("couldn't read the session: {e:#}")))?
+            .is_some();
+        if !exists {
+            return Err(ErrorObject::new(
+                koda_protocol::rpc::codes::INVALID_PARAMS,
+                format!("no session {:?}", params.session_id),
+            ));
+        }
+        // An open session's last turn may still be running.
+        let running = self.sessions.lock().await.contains_key(&params.session_id);
+        let turns = crate::history::turns(&self.context.db, &params.session_id, running)
+            .await
+            .map_err(history_error)?;
+        crate::history::page(
+            turns,
+            params.cursor.as_deref(),
+            params.limit,
+            params.sort_direction.unwrap_or(SortDirection::Desc),
+        )
     }
 
     /// Delete session `id`, closing it first if it is open, as Codex's

@@ -1,6 +1,7 @@
-//! A session's turns as a client saw them, for `session/start` resuming it
-//! and for `session/read`, as Codex's `thread/resume` and `thread/read`
-//! return a thread's turns.
+//! A session's turns as a client saw them, for `session/start` resuming it,
+//! `session/read` and `session/turns/list` ([`page`]), as Codex's
+//! `thread/resume`, `thread/read` and `thread/turns/list` return a
+//! thread's turns.
 //!
 //! The host stores each turn as it sends it ([`HistoryWriter`]): the turn as
 //! it starts and ends, and each item as it completes, with its parent. A
@@ -134,6 +135,89 @@ fn records_of(out: &[Outgoing], started: &mut HashMap<String, i64>) -> Vec<TurnR
             _ => None,
         })
         .collect()
+}
+
+// ── Paging ──────────────────────────────────────────────────────────────
+
+/// How many turns a page has without a `limit`, and at most: Codex's.
+const PAGE_DEFAULT: usize = 25;
+const PAGE_MAX: usize = 100;
+
+/// Where a page goes on from: a turn, and whether to include it. Codex's
+/// cursor, as JSON, so a client treats it as opaque.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TurnCursor {
+    turn_id: String,
+    include_anchor: bool,
+}
+
+/// One page of `turns` (oldest first, as [`turns`] gives them), as Codex's
+/// `thread/turns/list` pages: `limit` turns in `direction` after the
+/// cursor's turn. A cursor whose turn is gone, or that isn't one, is
+/// refused rather than read as the start.
+pub(crate) fn page(
+    turns: Vec<Turn>,
+    cursor: Option<&str>,
+    limit: Option<u32>,
+    direction: koda_protocol::session::SortDirection,
+) -> std::result::Result<
+    koda_protocol::session::SessionTurnsListResponse,
+    koda_protocol::rpc::ErrorObject,
+> {
+    use koda_protocol::session::{SessionTurnsListResponse, SortDirection};
+    let anchor = cursor
+        .map(|cursor| {
+            serde_json::from_str::<TurnCursor>(cursor)
+                .map_err(|_| crate::session::invalid(format!("invalid cursor: {cursor}")))
+        })
+        .transpose()?;
+    let size = limit
+        .map_or(PAGE_DEFAULT, |n| n as usize)
+        .clamp(1, PAGE_MAX);
+    let at = match &anchor {
+        Some(anchor) => Some(
+            turns
+                .iter()
+                .position(|turn| turn.id == anchor.turn_id)
+                .ok_or_else(|| {
+                    crate::session::invalid("invalid cursor: its turn is no longer there")
+                })?,
+        ),
+        None => None,
+    };
+    let mut keyed: Vec<(usize, Turn)> = turns.into_iter().enumerate().collect();
+    if direction == SortDirection::Desc {
+        keyed.reverse();
+    }
+    if let (Some(anchor), Some(at)) = (&anchor, at) {
+        keyed.retain(|(index, _)| match (direction, anchor.include_anchor) {
+            (SortDirection::Asc, true) => *index >= at,
+            (SortDirection::Asc, false) => *index > at,
+            (SortDirection::Desc, true) => *index <= at,
+            (SortDirection::Desc, false) => *index < at,
+        });
+    }
+    let more = keyed.len() > size;
+    keyed.truncate(size);
+    let cursor_at = |turn: &Turn, include_anchor: bool| {
+        serde_json::to_string(&TurnCursor {
+            turn_id: turn.id.clone(),
+            include_anchor,
+        })
+        .ok()
+    };
+    let backwards_cursor = keyed.first().and_then(|(_, turn)| cursor_at(turn, true));
+    let next_cursor = if more {
+        keyed.last().and_then(|(_, turn)| cursor_at(turn, false))
+    } else {
+        None
+    };
+    Ok(SessionTurnsListResponse {
+        data: keyed.into_iter().map(|(_, turn)| turn).collect(),
+        next_cursor,
+        backwards_cursor,
+    })
 }
 
 // ── Reading ─────────────────────────────────────────────────────────────
@@ -696,5 +780,90 @@ mod tests {
         // The item keeps when it started and completed, as Codex's does.
         assert_eq!(turns[0].items[0].started_at_ms, Some(1_000));
         assert_eq!(turns[0].items[0].completed_at_ms, Some(3_500));
+    }
+
+    // ── Paging ──────────────────────────────────────────────────────────
+
+    use koda_protocol::session::SortDirection::{Asc, Desc};
+
+    fn numbered(n: usize) -> Vec<Turn> {
+        (0..n)
+            .map(|i| Turn {
+                id: format!("t{i}"),
+                status: TurnStatus::Completed,
+                error: None,
+                usage: None,
+                duration_ms: None,
+                items: Vec::new(),
+            })
+            .collect()
+    }
+
+    fn ids(page: &koda_protocol::session::SessionTurnsListResponse) -> Vec<&str> {
+        page.data.iter().map(|t| t.id.as_str()).collect()
+    }
+
+    #[test]
+    fn pages_go_newest_first_and_follow_their_cursor() {
+        let first = page(numbered(5), None, Some(2), Desc).unwrap();
+        assert_eq!(ids(&first), ["t4", "t3"]);
+        let second = page(numbered(5), first.next_cursor.as_deref(), Some(2), Desc).unwrap();
+        assert_eq!(ids(&second), ["t2", "t1"]);
+        let last = page(numbered(5), second.next_cursor.as_deref(), Some(2), Desc).unwrap();
+        assert_eq!(ids(&last), ["t0"]);
+        assert_eq!(last.next_cursor, None);
+    }
+
+    #[test]
+    fn ascending_pages_start_from_the_oldest() {
+        let first = page(numbered(3), None, Some(2), Asc).unwrap();
+        assert_eq!(ids(&first), ["t0", "t1"]);
+        let rest = page(numbered(3), first.next_cursor.as_deref(), None, Asc).unwrap();
+        assert_eq!(ids(&rest), ["t2"]);
+    }
+
+    /// The backwards cursor reads the other way from the page's first turn,
+    /// that turn included, as Codex's does.
+    #[test]
+    fn the_backwards_cursor_includes_the_pages_first_turn() {
+        let newest = page(numbered(4), None, Some(2), Desc).unwrap();
+        let back = page(numbered(4), newest.backwards_cursor.as_deref(), None, Asc).unwrap();
+        assert_eq!(ids(&back), ["t3"]);
+        let older = page(numbered(4), Some(&newest.next_cursor.unwrap()), None, Desc).unwrap();
+        let back = page(numbered(4), older.backwards_cursor.as_deref(), None, Asc).unwrap();
+        assert_eq!(ids(&back), ["t1", "t2", "t3"]);
+    }
+
+    #[test]
+    fn the_limit_defaults_to_25_and_stops_at_100() {
+        assert_eq!(page(numbered(30), None, None, Desc).unwrap().data.len(), 25);
+        assert_eq!(
+            page(numbered(150), None, Some(500), Desc)
+                .unwrap()
+                .data
+                .len(),
+            100
+        );
+        assert_eq!(
+            page(numbered(3), None, Some(0), Desc).unwrap().data.len(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_bad_or_stale_cursor_is_refused() {
+        let error = page(numbered(3), Some("nope"), None, Desc).unwrap_err();
+        assert!(error.message.contains("invalid cursor"), "{error:?}");
+        let gone = r#"{"turnId": "t9", "includeAnchor": false}"#;
+        let error = page(numbered(3), Some(gone), None, Desc).unwrap_err();
+        assert!(error.message.contains("no longer there"), "{error:?}");
+    }
+
+    #[test]
+    fn no_turns_is_an_empty_page() {
+        let empty = page(Vec::new(), None, None, Desc).unwrap();
+        assert!(empty.data.is_empty());
+        assert_eq!(empty.next_cursor, None);
+        assert_eq!(empty.backwards_cursor, None);
     }
 }

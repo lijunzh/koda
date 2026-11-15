@@ -776,6 +776,106 @@ async fn shutdown_stops_a_turn_that_waits_on_the_client() {
     );
 }
 
+/// `session/turns/list` pages a session's turns newest first, each with
+/// its items, a running one included, as Codex's `thread/turns/list`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn turns_are_listed_a_page_at_a_time() {
+    use koda_client::protocol::session::{SessionTurnsListParams, SortDirection};
+    let server = model(vec![
+        text("One."),
+        text("Two."),
+        text("Three."),
+        tool_call(
+            "call_1",
+            "Write",
+            json!({"file_path": "a.txt", "content": "hi"}),
+        ),
+    ])
+    .await;
+    let mut config = config(&server);
+    config.trust = koda_core::trust::TrustMode::Safe;
+    let mut koda = Koda::start(config).await;
+    let mut done = Vec::new();
+    for prompt in ["first", "second", "third"] {
+        done.push(koda.turn(prompt).await);
+        koda.until("turn/completed").await;
+    }
+    let running = koda.turn("fourth").await;
+    let approval = koda.request().await;
+
+    let list = |cursor: Option<String>, limit, sort_direction| SessionTurnsListParams {
+        session_id: koda.session.clone(),
+        cursor,
+        limit,
+        sort_direction,
+    };
+    let newest = koda
+        .client
+        .request::<methods::SessionTurnsList>(list(None, Some(2), None))
+        .await
+        .unwrap();
+    let ids: Vec<_> = newest.data.iter().map(|t| t.id.clone()).collect();
+    assert_eq!(ids, [running.clone(), done[2].clone()]);
+    // The running turn, with what it has so far.
+    assert_eq!(newest.data[0].status, TurnStatus::InProgress);
+    assert!(
+        newest.data[0]
+            .items
+            .iter()
+            .any(|i| matches!(&i.item, Item::UserMessage { text, .. } if text == "fourth")),
+        "{:?}",
+        newest.data[0]
+    );
+    let third = &newest.data[1];
+    assert_eq!(third.status, TurnStatus::Completed);
+    assert!(
+        third
+            .items
+            .iter()
+            .any(|i| matches!(&i.item, Item::AgentMessage { text, .. } if text == "Three.")),
+        "{third:?}"
+    );
+
+    let older = koda
+        .client
+        .request::<methods::SessionTurnsList>(list(newest.next_cursor.clone(), Some(2), None))
+        .await
+        .unwrap();
+    let ids: Vec<_> = older.data.iter().map(|t| t.id.clone()).collect();
+    assert_eq!(ids, [done[1].clone(), done[0].clone()]);
+    assert_eq!(older.next_cursor, None);
+    let oldest_first = koda
+        .client
+        .request::<methods::SessionTurnsList>(list(None, None, Some(SortDirection::Asc)))
+        .await
+        .unwrap();
+    assert_eq!(oldest_first.data.len(), 4);
+    assert_eq!(oldest_first.data[0].id, done[0]);
+
+    let error = server_error(
+        koda.client
+            .request::<methods::SessionTurnsList>(SessionTurnsListParams {
+                session_id: "no-such-session".to_string(),
+                cursor: None,
+                limit: None,
+                sort_direction: None,
+            })
+            .await,
+    );
+    assert_eq!(error.code, codes::INVALID_PARAMS);
+    let error = server_error(
+        koda.client
+            .request::<methods::SessionTurnsList>(list(Some("garbage".into()), None, None))
+            .await,
+    );
+    assert_eq!(error.code, codes::INVALID_REQUEST);
+
+    koda.answer(approval.id(), json!({"decision": {"type": "reject"}}))
+        .await;
+    koda.until("turn/completed").await;
+    koda.client.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_resumed_session_keeps_its_history() {
     let server = model(vec![text("Noted."), text("It was 42.")]).await;
