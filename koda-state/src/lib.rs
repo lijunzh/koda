@@ -14,6 +14,11 @@
 //! It depends on no other Koda crate. The engine (`koda-core`) and the
 //! host (`koda-client`) use it; a front end that keeps its own logs (the
 //! TUI, `koda-logs`) uses it without `koda-core`.
+//!
+//! **Versioning:** published so that `cargo install koda-cli` builds. It
+//! follows koda-cli's version, and its Rust API makes no semver promise of
+//! its own: a 0.7.x release may change it. The Koda crates pin each other
+//! exactly, so every koda-cli builds against the crates it shipped with.
 
 #![warn(missing_docs)]
 

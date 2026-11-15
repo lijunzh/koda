@@ -35,6 +35,6 @@ pub struct InitializeResponse {
 pub struct ServerInfo {
     /// Always `koda`.
     pub name: String,
-    /// The Koda release, such as `0.6.4`.
+    /// The Koda release, such as `0.7.0`.
     pub version: String,
 }

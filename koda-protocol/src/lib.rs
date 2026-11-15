@@ -19,6 +19,13 @@
 //! ```text
 //! KODA_UPDATE_PROTOCOL_SCHEMA=1 cargo test -p koda-protocol --lib schema
 //! ```
+//!
+//! **Versioning:** published so that `cargo install koda-cli` builds. It
+//! follows koda-cli's version, and its Rust API makes no semver promise of
+//! its own: a 0.7.x release may change it. The Koda crates pin each other
+//! exactly, so every koda-cli builds against the crates it shipped with.
+//! The wire protocol is versioned apart, by [`PROTOCOL_VERSION`]: a 0.7.x
+//! release only adds to it.
 
 pub mod agent;
 pub mod background;

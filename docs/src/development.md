@@ -345,7 +345,15 @@ security-boundary tests ran rather than being skipped, look for each name in
 - Bump the version in every published crate (koda-config, koda-protocol,
   koda-state, koda-sandbox, koda-core, koda-client, koda-cli; release.yml checks
   them all) and in the path-dependency `version =` fields that point at them,
-  including koda-test-utils.
+  including koda-test-utils. Those are exact pins (`version = "=0.7.0"`), so a
+  koda-cli always builds against the crates it shipped with, whatever later
+  0.7.x versions exist.
+- A 0.7.x release stays additive for users: no config key removed or renamed,
+  the wire protocol only added to, stored sessions only added to, no command or
+  flag removed. A release that breaks one of those is the next minor.
+- A new crate goes into release.yml's version check and publish order, and gets
+  a `cargo publish --dry-run -p <crate>` before the tag; the publish job fails
+  the release if any crate fails to publish.
 - Verify README quick-start examples still work.
 - Check that CHANGELOG entries match what's documented in README/DESIGN.md.
 

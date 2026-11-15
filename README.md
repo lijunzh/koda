@@ -21,7 +21,7 @@ brew tap lijunzh/koda
 brew install koda
 
 # Cargo (requires Rust 1.99.1 or newer)
-cargo install koda-cli
+cargo install koda-cli --locked
 
 # From source
 git clone https://github.com/lijunzh/koda.git
