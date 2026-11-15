@@ -115,7 +115,15 @@ jobs:
           if sudo sysctl -a 2>/dev/null | grep -q '^kernel.apparmor_restrict_unprivileged_userns'; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
-      - run: cargo test --workspace --features koda-core/test-support
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
+        with:
+          tool: cargo-nextest
+      # As CI tests: nextest runs tests from all binaries at once, where
+      # cargo test runs the binaries one after another; it skips doc tests.
+      - name: Test
+        run: cargo nextest run --workspace --features koda-core/test-support --profile ci
+      - name: Doc tests
+        run: cargo test --workspace --features koda-core/test-support --doc
 
   build:
     name: Build ${{ matrix.target }}
@@ -130,8 +138,6 @@ jobs:
             os: ubuntu-latest
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
-          - target: x86_64-apple-darwin
-            os: macos-latest
           - target: aarch64-apple-darwin
             os: macos-latest
     steps:
@@ -348,7 +354,6 @@ jobs:
         id: sha
         run: |
           echo "aarch64_mac=$(sha256sum artifacts/koda-aarch64-apple-darwin.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
-          echo "x86_64_mac=$(sha256sum artifacts/koda-x86_64-apple-darwin.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
           echo "aarch64_linux=$(sha256sum artifacts/koda-aarch64-unknown-linux-gnu.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
           echo "x86_64_linux=$(sha256sum artifacts/koda-x86_64-unknown-linux-gnu.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
 
@@ -369,14 +374,12 @@ jobs:
             version "VERSION_PLACEHOLDER"
             license "MIT"
 
+            # Apple Silicon only since 0.7.1: on an Intel Mac, Homebrew says
+            # the formula needs ARM64; `cargo install koda-cli --locked` works.
             on_macos do
-              if Hardware::CPU.arm?
-                url "https://github.com/lijunzh/koda/releases/download/vVERSION_PLACEHOLDER/koda-aarch64-apple-darwin.tar.gz"
-                sha256 "SHA_AARCH64_MAC"
-              else
-                url "https://github.com/lijunzh/koda/releases/download/vVERSION_PLACEHOLDER/koda-x86_64-apple-darwin.tar.gz"
-                sha256 "SHA_X86_64_MAC"
-              end
+              depends_on arch: :arm64
+              url "https://github.com/lijunzh/koda/releases/download/vVERSION_PLACEHOLDER/koda-aarch64-apple-darwin.tar.gz"
+              sha256 "SHA_AARCH64_MAC"
             end
 
             on_linux do
@@ -401,7 +404,6 @@ jobs:
           # Replace placeholders
           sed -i "s/VERSION_PLACEHOLDER/${VERSION}/g" homebrew-koda/Formula/koda.rb
           sed -i "s/SHA_AARCH64_MAC/${{ steps.sha.outputs.aarch64_mac }}/g" homebrew-koda/Formula/koda.rb
-          sed -i "s/SHA_X86_64_MAC/${{ steps.sha.outputs.x86_64_mac }}/g" homebrew-koda/Formula/koda.rb
           sed -i "s/SHA_AARCH64_LINUX/${{ steps.sha.outputs.aarch64_linux }}/g" homebrew-koda/Formula/koda.rb
           sed -i "s/SHA_X86_64_LINUX/${{ steps.sha.outputs.x86_64_linux }}/g" homebrew-koda/Formula/koda.rb
           # Fix indentation (heredoc adds leading spaces)
