@@ -28,6 +28,8 @@ koda-core = { path = "../koda-core", version = "0.6.4" }
 koda-client = { path = "../koda-client", version = "0.6.4" }
 koda-config = { path = "../koda-config", version = "0.6.4" }
 koda-state = { path = "../koda-state", version = "0.6.4" }
+reqwest = { workspace = true }
+shlex = { workspace = true }
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }

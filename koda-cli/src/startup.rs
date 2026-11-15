@@ -92,7 +92,7 @@ pub fn collect_startup_lines(
 
 /// Build update-available notice lines.
 pub fn update_notice_lines(current: &str, latest: &str) -> Vec<Line<'static>> {
-    let crate_name = koda_core::version::crate_name();
+    let crate_name = crate::updates::crate_name();
     vec![
         Line::from(vec![
             Span::styled("  \u{2728} Update available: ", DIM),

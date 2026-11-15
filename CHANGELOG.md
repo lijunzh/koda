@@ -43,6 +43,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - **The TUI:** `/copy` copies from the replies the TUI was sent, as Codex's does. A resumed session's mode comes from the host, and listed sessions carry the mode they last ran in. A bare `/copy` now runs on Enter instead of only completing.
   - **Session ids, as in Codex:** `session/start` takes a full id only, as Codex's `thread/resume` does; it used to accept a prefix too. `koda -s` and `koda exec -s` match a shorter id against this project's sessions over `session/list`, which now pages with `cursor` and `nextCursor` (Codex's), so a prefix of another project's session no longer resolves. `/resume` and `/resume delete` look through every session, not only the latest 100.
   - **Shared helpers:** Koda's folder (`config_dir`) and the thread-safe environment (`runtime_env`) move to `koda-config`.
+- **The TUI's display needs no engine code.**
+  - **Tool colours:** a `toolCall` item now carries its `effect`, as the host classifies the call for an approval, MCP tools included. The TUI colours tools and their output from it rather than from core's tool catalog. A `Bash` call that only reads now shows its output as read output.
+  - **Update check:** it is the TUI's own, as Codex's is (`updates.rs`).
+  - **Moved to `koda-protocol`:** `OUTSIDE_SANDBOX_TAG`, as `PLAN_BLOCKED_MESSAGE` was.
+  - **The TUI's own small helpers:** the `Cargo` command line in a tool header, the `@file` path check (inside the project or a temp folder, as before) and the image type.
 - **A new `koda-state` crate holds Koda's stored state, apart from its engine,** as Codex's `codex-state` does: how Koda opens its SQLite files, and the diagnostic log database. The TUI's logging and `koda-logs` now use it without `koda-core`; `koda-core` re-exports `log_db`. The session store moves into it next, before 0.7.0.
   - **The release publishes the crates in dependency order:** `koda-config`, `koda-protocol`, `koda-state`, `koda-sandbox`, `koda-core`, `koda-client`, `koda-cli`. Since `koda-core` began using `koda-protocol` (in this release), the old order would have published `koda-core` first and failed.
   - **The client boundary check** reads code only: a comment that names a core module, such as a log target, no longer counts as a use.

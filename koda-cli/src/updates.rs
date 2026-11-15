@@ -1,4 +1,5 @@
-//! Version checker — non-blocking startup check for newer crate versions.
+//! The TUI's update check, its own as Codex's TUI runs its own
+//! (`updates.rs`): a non-blocking startup check for a newer `koda-cli`.
 //!
 //! Spawns a background task that queries crates.io for `koda-cli`.
 //! If a newer version exists, prints a one-line hint after the banner.

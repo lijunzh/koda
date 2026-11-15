@@ -996,6 +996,17 @@
                 "null"
               ]
             },
+            "effect": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ToolEffect"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What it does, as Koda classifies the call, the effect an approval\nnames, so a client can colour or group it. Absent in turns stored\nbefore Koda sent it."
+            },
             "id": {
               "description": "The call's id, from the model.",
               "type": "string"

@@ -60,8 +60,9 @@ use std::collections::{HashMap, HashSet};
 
 /// A tool call the renderer saw start.
 struct Call {
-    tool: String,
     arguments: serde_json::Value,
+    /// What it does, as the host classified it.
+    effect: Option<koda_client::protocol::item::ToolEffect>,
     /// The call it runs under: a sub-agent's `InvokeAgent`.
     parent: Option<String>,
     /// Where in the buffer its first streamed output line went. The finished
@@ -343,13 +344,14 @@ impl TuiRenderer {
                 id,
                 tool,
                 arguments,
+                effect,
                 ..
             } => {
                 self.calls.insert(
                     id.clone(),
                     Call {
-                        tool: tool.clone(),
                         arguments: arguments.clone(),
+                        effect: *effect,
                         parent: parent.map(str::to_string),
                         stream_start: None,
                     },
@@ -371,11 +373,13 @@ impl TuiRenderer {
                         if let Some(run) = self.agents.get_mut(parent) {
                             run.calls += 1;
                         }
-                        let line = crate::tool_header::build_header_line("  ", tool, arguments);
+                        let line =
+                            crate::tool_header::build_header_line("  ", tool, arguments, *effect);
                         buffer.push_folded(line, Fold::Full);
                     }
                     None => {
-                        let line = crate::tool_header::build_header_line("", tool, arguments);
+                        let line =
+                            crate::tool_header::build_header_line("", tool, arguments, *effect);
                         tui_output::emit_line(buffer, line);
                     }
                 }
@@ -502,6 +506,7 @@ impl TuiRenderer {
             );
             return;
         }
+        let effect = call.as_ref().and_then(|c| c.effect);
         let arguments = call.map(|c| c.arguments).unwrap_or_default();
         let file_ext = extract_file_extension(&arguments.to_string());
         // Grep bolds the pattern it searched for.
@@ -510,6 +515,7 @@ impl TuiRenderer {
             .flatten();
         buffer.push_folded_lines(tool_output_view(
             tool,
+            effect,
             output,
             failed,
             file_ext.as_deref(),
@@ -537,7 +543,7 @@ impl TuiRenderer {
         // Pull the body color from the central theme module so read-only
         // output stays legible (#804) and stderr is always red whatever
         // the tool.
-        let style = theme::content_style_for(&call.tool, stderr);
+        let style = theme::content_style_for(call.effect, stderr);
         let sub_agent = call.parent.is_some();
         if !sub_agent {
             call.stream_start.get_or_insert_with(|| buffer.next_seq());
@@ -882,6 +888,7 @@ fn numbered_read_lines(
 /// whether it streamed or not.
 pub(crate) fn tool_output_view(
     name: &str,
+    effect: Option<koda_client::protocol::item::ToolEffect>,
     output: &str,
     failed: bool,
     file_ext: Option<&str>,
@@ -907,7 +914,7 @@ pub(crate) fn tool_output_view(
     } else {
         None
     };
-    let body = theme::content_style_for(name, false);
+    let body = theme::content_style_for(effect, false);
 
     if name == "Read"
         && let Some(summary) = read_summary(output)
@@ -1049,6 +1056,7 @@ mod tests {
             id: id.into(),
             tool: tool.into(),
             arguments,
+            effect: None,
             status: ToolCallStatus::InProgress,
             output: None,
             detail: None,
@@ -1072,6 +1080,7 @@ mod tests {
                 id,
                 tool,
                 arguments,
+                effect: None,
                 status,
                 output: Some(output.into()),
                 detail,
@@ -1143,7 +1152,14 @@ mod tests {
     #[test]
     fn a_read_folds_to_its_summary() {
         let out = "     1\tfn a() {}\n     2\tfn b() {}\n     3\tfn c() {}";
-        let view = tool_output_view("Read", out, false, Some("rs"), None);
+        let view = tool_output_view(
+            "Read",
+            Some(koda_client::protocol::item::ToolEffect::ReadOnly),
+            out,
+            false,
+            Some("rs"),
+            None,
+        );
         let folded = view_text(&view, Fold::Full);
         assert_eq!(folded, vec!["  \u{2514} 3 lines"]);
         let full = view_text(&view, Fold::Folded);
@@ -1157,7 +1173,14 @@ mod tests {
     #[test]
     fn a_read_shows_numbers_in_a_column_and_highlights_the_content() {
         let out = "     9\t# Title\n    10\tplain words\n    11\t\tindented\n\n... [Showing lines 9-11 of 40. Continue with start_line=12.]";
-        let view = tool_output_view("Read", out, false, Some("md"), None);
+        let view = tool_output_view(
+            "Read",
+            Some(koda_client::protocol::item::ToolEffect::ReadOnly),
+            out,
+            false,
+            Some("md"),
+            None,
+        );
         let full: Vec<&Line<'static>> = view
             .iter()
             .filter(|(_, f)| *f == Fold::Full)
@@ -1205,7 +1228,14 @@ mod tests {
         assert_eq!(read_summary("     1\tonly").as_deref(), Some("1 line"));
         // Not numbered (an empty file, an error): shown as it is.
         assert_eq!(read_summary("(empty file)"), None);
-        let view = tool_output_view("Read", "(empty file)", false, Some("rs"), None);
+        let view = tool_output_view(
+            "Read",
+            Some(koda_client::protocol::item::ToolEffect::ReadOnly),
+            "(empty file)",
+            false,
+            Some("rs"),
+            None,
+        );
         assert_eq!(
             view_text(&view, Fold::Full),
             vec!["  \u{2502} (empty file)"]
@@ -1215,7 +1245,7 @@ mod tests {
     #[test]
     fn long_output_folds_after_its_first_lines() {
         let out: String = (1..=20).map(|i| format!("out {i}\n")).collect();
-        let view = tool_output_view("Bash", &out, false, None, None);
+        let view = tool_output_view("Bash", None, &out, false, None, None);
         let folded = view_text(&view, Fold::Full);
         assert_eq!(folded.len(), 6, "{folded:?}");
         assert!(folded[4].ends_with("out 5"));
@@ -1224,7 +1254,7 @@ mod tests {
 
         // A failure keeps its last lines too: they say what went wrong.
         let failed = view_text(
-            &tool_output_view("Bash", &out, true, None, None),
+            &tool_output_view("Bash", None, &out, true, None, None),
             Fold::Full,
         );
         assert_eq!(failed.len(), 11, "{failed:?}");
@@ -1233,20 +1263,31 @@ mod tests {
 
         // Six lines fold nothing away worth a marker.
         let short: String = (1..=6).map(|i| format!("out {i}\n")).collect();
-        let view = tool_output_view("Bash", &short, false, None, None);
+        let view = tool_output_view("Bash", None, &short, false, None, None);
         assert!(view.iter().all(|(_, f)| *f == Fold::Always));
     }
 
     #[test]
     fn output_takes_its_effect_colour() {
-        let view = tool_output_view("WebFetch", "plain text", false, None, None);
+        let view = tool_output_view(
+            "WebFetch",
+            Some(koda_client::protocol::item::ToolEffect::ReadOnly),
+            "plain text",
+            false,
+            None,
+            None,
+        );
         let body = &view[0].0.spans[1];
         assert_eq!(
             body.style.fg,
-            theme::content_style_for("WebFetch", false).fg
+            theme::content_style_for(
+                Some(koda_client::protocol::item::ToolEffect::ReadOnly),
+                false
+            )
+            .fg
         );
         // An ANSI colour of its own still wins.
-        let view = tool_output_view("Bash", "\x1b[31mred\x1b[0m", false, None, None);
+        let view = tool_output_view("Bash", None, "\x1b[31mred\x1b[0m", false, None, None);
         assert_eq!(view[0].0.spans[1].style.fg, Some(Color::Red));
     }
 
@@ -1322,6 +1363,7 @@ mod tests {
                 id,
                 tool,
                 arguments,
+                effect: None,
                 status,
                 output: Some(output.into()),
                 detail: Some("Write a.txt".into()),
@@ -1359,6 +1401,7 @@ mod tests {
             id,
             tool,
             arguments,
+            effect: None,
             status: ToolCallStatus::Declined,
             output: Some("[plan mode] Not run: this session is read-only".into()),
             detail: Some("Write a.txt".into()),
@@ -1577,6 +1620,7 @@ mod tests {
             id: "e1".into(),
             tool: "Edit".into(),
             arguments: json!({"file_path": "a.rs"}),
+            effect: None,
             status: ToolCallStatus::Declined,
             output: Some("User rejected this action.".into()),
             detail: Some("Edit a.rs".into()),

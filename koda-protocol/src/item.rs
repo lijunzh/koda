@@ -19,6 +19,11 @@ pub const PLAN_BLOCKED_MESSAGE: &str = "[plan mode] Not run: this session is rea
      only tools that read are allowed. Don't retry it or try another way to make the change; \
      say in your answer what you would do instead.";
 
+/// Opens a `Bash` approval's `detail` when the call asks to run outside
+/// the sandbox, so a client can tell it from an ordinary destructive
+/// command.
+pub const OUTSIDE_SANDBOX_TAG: &str = "[outside the sandbox]";
+
 /// A part of a turn.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -60,6 +65,11 @@ pub enum Item {
         tool: String,
         /// The arguments the model gave.
         arguments: Value,
+        /// What it does, as Koda classifies the call, the effect an approval
+        /// names, so a client can colour or group it. Absent in turns stored
+        /// before Koda sent it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effect: Option<ToolEffect>,
         /// Where it stands.
         status: ToolCallStatus,
         /// What the model reads: the tool's output, or why it didn't run.

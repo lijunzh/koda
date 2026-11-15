@@ -705,6 +705,7 @@ mod tests {
                 id: format!("call-{name}"),
                 tool: name.into(),
                 arguments: serde_json::json!({}),
+                effect: None,
                 status: ToolCallStatus::InProgress,
                 output: None,
                 detail: None,

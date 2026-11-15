@@ -58,6 +58,7 @@ pub(crate) mod tui_render;
 pub(crate) mod tui_types;
 pub(crate) mod tui_viewport;
 pub(crate) mod tui_wizards;
+pub(crate) mod updates;
 pub(crate) mod user_config;
 pub(crate) mod util;
 pub(crate) mod widgets;

@@ -82,6 +82,7 @@ impl Outgoing {
 struct OpenCall {
     tool: String,
     arguments: Value,
+    effect: ToolEffect,
     parent: Option<String>,
     /// Set when Koda asked about the call or blocked it.
     detail: Option<String>,
@@ -129,6 +130,19 @@ pub struct EventProjector {
     /// under, from its `SubAgentStart`: parallel calls start after their
     /// sub-agents have run, so the call can't say whose usage it is.
     agent_names: HashMap<String, String>,
+    /// The session's agent, whose tools (MCP ones included) classify each
+    /// call's effect; without one, the built-in tools'.
+    agent: Option<SessionAgent>,
+}
+
+/// The session's agent, for classifying its calls. Shown by name only.
+#[derive(Clone)]
+struct SessionAgent(Arc<koda_core::agent::KodaAgent>);
+
+impl std::fmt::Debug for SessionAgent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SessionAgent")
+    }
 }
 
 impl EventProjector {
@@ -148,6 +162,7 @@ impl EventProjector {
             shared_request_ids: None,
             tokens: TokenUsage::default(),
             agent_names: HashMap::new(),
+            agent: None,
         }
     }
 
@@ -211,6 +226,24 @@ impl EventProjector {
             .filter(|name| !name.is_empty())
             .unwrap_or("main")
             .to_string()
+    }
+
+    /// This projector, classifying tool calls with `agent`'s tools, as its
+    /// approvals are.
+    pub fn with_agent(self, agent: Arc<koda_core::agent::KodaAgent>) -> Self {
+        Self {
+            agent: Some(SessionAgent(agent)),
+            ..self
+        }
+    }
+
+    /// What a call of `name` with `arguments` does.
+    fn effect_of_call(&self, name: &str, arguments: &Value) -> ToolEffect {
+        let effect = match &self.agent {
+            Some(SessionAgent(agent)) => agent.tools.catalog().classify_call(name, arguments),
+            None => koda_core::tools::ToolCatalog::default_static().classify_call(name, arguments),
+        };
+        effect_of(effect)
     }
 
     /// The engine's id for the open request `request_id`, if this
@@ -354,10 +387,12 @@ impl EventProjector {
                 // Text before a call is finished when the call starts.
                 self.close_text(&mut out, &parent, TextKind::Reasoning);
                 self.close_text(&mut out, &parent, TextKind::Message);
+                let effect = self.effect_of_call(&name, &args);
                 let item = Item::ToolCall {
                     id: id.clone(),
                     tool: name.clone(),
                     arguments: args.clone(),
+                    effect: Some(effect),
                     status: ToolCallStatus::InProgress,
                     output: None,
                     detail: None,
@@ -369,6 +404,7 @@ impl EventProjector {
                     OpenCall {
                         tool: name,
                         arguments: args,
+                        effect,
                         parent: parent.clone(),
                         detail: None,
                         changes: Vec::new(),
@@ -402,21 +438,31 @@ impl EventProjector {
             } => {
                 self.agent_names.remove(&id);
                 let call = self.calls.remove(&id);
-                let (tool, arguments, call_parent, detail, changes, progress) = match call {
+                let (tool, arguments, effect, call_parent, detail, changes, progress) = match call {
                     Some(c) => (
                         c.tool,
                         c.arguments,
+                        Some(c.effect),
                         c.parent,
                         c.detail,
                         c.changes,
                         c.progress,
                     ),
-                    None => (name, Value::Null, parent, None, Vec::new(), Vec::new()),
+                    None => (
+                        name,
+                        Value::Null,
+                        None,
+                        parent,
+                        None,
+                        Vec::new(),
+                        Vec::new(),
+                    ),
                 };
                 let item = Item::ToolCall {
                     id,
                     tool,
                     arguments,
+                    effect,
                     status: status_of(outcome),
                     output: Some(output),
                     detail,
@@ -828,6 +874,7 @@ impl EventProjector {
                 id,
                 tool: call.tool,
                 arguments: call.arguments,
+                effect: Some(call.effect),
                 status: ToolCallStatus::Cancelled,
                 output: None,
                 detail: call.detail,

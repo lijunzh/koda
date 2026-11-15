@@ -1517,8 +1517,8 @@ mod tests {
 // ── Tool action descriptions ──────────────────────────────────
 
 /// Opens the approval detail of a Bash call that asks to run outside the
-/// sandbox, so clients can tell it from an ordinary destructive command.
-pub const OUTSIDE_SANDBOX_TAG: &str = "[outside the sandbox]";
+/// sandbox: the protocol's [`koda_protocol::item::OUTSIDE_SANDBOX_TAG`].
+pub use koda_protocol::item::OUTSIDE_SANDBOX_TAG;
 
 /// Generate a human-readable description of a tool action for approval prompts.
 pub fn describe_action(tool_name: &str, args: &serde_json::Value) -> String {

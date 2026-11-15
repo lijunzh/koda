@@ -379,7 +379,7 @@ pub(crate) async fn run() -> Result<()> {
     }
 
     // Interactive mode: full REPL experience
-    let version_check = koda_core::version::spawn_version_check();
+    let version_check = crate::updates::spawn_version_check();
     // Ask Anthropic for its newest models now, so the startup can say when
     // one is out that Koda doesn't support yet. The TUI joins this same
     // request (`model_alias` asks once per process); without a key it's a no-op.

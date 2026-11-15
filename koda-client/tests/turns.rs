@@ -2651,6 +2651,24 @@ async fn token_usage_is_sent_after_each_model_call() {
     let mut koda = Koda::start(config(&server)).await;
     koda.turn("List the files").await;
     let messages = koda.until("turn/completed").await;
+    // Each call says what it does, as its approval would: List only reads.
+    let effects: Vec<_> = messages
+        .iter()
+        .filter_map(|m| match m {
+            Outgoing::Notification(ServerNotification::ItemStarted(n)) => match &n.item {
+                Item::ToolCall { tool, effect, .. } => Some((tool.clone(), *effect)),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        effects,
+        [(
+            "List".to_string(),
+            Some(koda_client::protocol::item::ToolEffect::ReadOnly)
+        )]
+    );
     let usage = token_usage(&messages);
     assert_eq!(usage.len(), 2, "{}", names(&messages));
     assert_eq!(usage[0].last.input_tokens, 100);

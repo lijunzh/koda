@@ -252,7 +252,7 @@ pub(crate) async fn show_earlier_turns(
 pub(crate) struct TurnInput {
     /// The message the model gets: the prompt, with attached files and pastes.
     pub message: String,
-    pub images: Vec<koda_core::providers::ImageData>,
+    pub images: Vec<crate::input::ImageData>,
     /// What the user typed, and its paste blocks, for the input box.
     pub typed: String,
     pub paste_blocks: Vec<crate::input::PasteBlock>,
@@ -382,7 +382,7 @@ impl TuiContext {
             startup_lines.push(crate::startup::warning_line(warning));
         }
         if let Ok(Some(latest)) = version_check.await
-            && let Some((current, latest)) = koda_core::version::update_available(&latest)
+            && let Some((current, latest)) = crate::updates::update_available(&latest)
         {
             startup_lines.extend(crate::startup::update_notice_lines(current, &latest));
         }
