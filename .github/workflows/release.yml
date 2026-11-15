@@ -15,9 +15,11 @@ jobs:
   verify-version:
     name: Verify Version
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
       - name: Require tag on main
         run: |
@@ -44,15 +46,19 @@ jobs:
   audit:
     name: Security Audit
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: verify-version
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: 1.99.1 # = rust-toolchain.toml (pin guarded in ci.yml)
-      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2.8.1
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+      # A prebuilt cargo-audit; it reads Cargo.lock and builds nothing.
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
+        with:
+          tool: cargo-audit
       - name: Run cargo audit
         run: cargo audit --deny unsound --deny yanked
       - name: Verify RUSTSEC-2026-0097 suppression
@@ -74,12 +80,15 @@ jobs:
     name: Test (${{ matrix.os }})
     needs: [verify-version, audit]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: true   # release needs all platforms green — no point continuing if one fails
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: 1.99.1 # = rust-toolchain.toml (pin guarded in ci.yml)
@@ -112,6 +121,7 @@ jobs:
     name: Build ${{ matrix.target }}
     needs: [verify-version, test]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -125,7 +135,9 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: 1.99.1 # = rust-toolchain.toml (pin guarded in ci.yml)
@@ -145,7 +157,7 @@ jobs:
           cp README.md LICENSE koda-${{ matrix.target }}/
           tar czf koda-${{ matrix.target }}.tar.gz koda-${{ matrix.target }}
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: koda-${{ matrix.target }}
           path: koda-${{ matrix.target }}.tar.gz
@@ -155,10 +167,13 @@ jobs:
     name: Publish to crates.io
     needs: github-release
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     environment: crates-io
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: 1.99.1 # = rust-toolchain.toml (pin guarded in ci.yml)
@@ -269,10 +284,13 @@ jobs:
     name: GitHub Release
     needs: build  # fans out to update-homebrew and publish in parallel
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           path: artifacts
           merge-multiple: true
@@ -302,8 +320,9 @@ jobs:
     name: Update Homebrew Tap
     needs: github-release
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           path: artifacts
           merge-multiple: true
@@ -317,7 +336,7 @@ jobs:
           echo "x86_64_linux=$(sha256sum artifacts/koda-x86_64-unknown-linux-gnu.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
 
       - name: Update formula
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: lijunzh/homebrew-koda
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}

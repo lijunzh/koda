@@ -1,0 +1,52 @@
+name: CodeQL
+
+# Replaces GitHub's CodeQL "default setup", which ran on every pull request
+# as well (Lijun, 2026-11-15). Each PR run took about nine minutes on two
+# runners and gated nothing: CodeQL isn't a required check, and Rust's memory
+# safety leaves it the injection and data-flow queries, which a scan of each
+# merge catches one merge later. Codex runs no CodeQL on its pull requests.
+#
+# Runs on every push to main, weekly for new queries against unchanged code,
+# and by hand from the Actions tab.
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # Mondays 14:00 UTC, after the weekly security audit.
+    - cron: '0 14 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read            # the workflow-file analysis reads run metadata
+      security-events: write   # upload results to code scanning
+    strategy:
+      fail-fast: false
+      matrix:
+        # The languages default setup analysed. Neither needs a build:
+        # CodeQL extracts Rust from source (`build-mode: none`).
+        language: [actions, rust]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+      - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          category: /language:${{ matrix.language }}
