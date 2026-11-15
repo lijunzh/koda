@@ -108,8 +108,7 @@ impl TuiContext {
     async fn adopt(&mut self, settings: SessionSettings) {
         mirror(&mut self.config, &settings);
         self.renderer.model = settings.model;
-        // Still used to list models for the completer.
-        *self.provider.write().await = koda_core::providers::create_provider(&self.config);
+        self.refresh_model_names().await;
     }
 
     /// After opening a session: give the host the TUI's mode, which it has

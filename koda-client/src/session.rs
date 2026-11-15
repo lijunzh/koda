@@ -116,9 +116,6 @@ pub(crate) struct SessionContext {
     pub events: mpsc::UnboundedSender<Outgoing>,
     pub request_ids: Arc<AtomicI64>,
     pub open_requests: OpenRequests,
-    /// In process only: the agent every session uses, when the front end
-    /// built it. Without one, each session builds its own.
-    pub agent: Option<Arc<KodaAgent>>,
 }
 
 /// A session, open and ready for a turn.
@@ -144,7 +141,6 @@ pub(crate) async fn open(
         events,
         request_ids,
         open_requests,
-        agent,
     } = context;
 
     let resumed = resume.is_some();
@@ -220,17 +216,16 @@ pub(crate) async fn open(
     .await
     .map_err(|e| internal(format!("couldn't record the session's model: {e:#}")))?;
 
-    let agent = match agent {
-        Some(agent) => agent,
-        None => {
-            let mut agent = KodaAgent::new(&config, project_root, &[])
-                .await
-                .map_err(|e| internal(format!("couldn't build the agent: {e:#}")))?;
-            crate::builtin_skills::inject_builtin_skills(&mut agent);
-            agent.rebuild_system_prompt(&config, &[]);
-            Arc::new(agent)
-        }
-    };
+    // Every session's agent is the host's, as Codex's server builds each
+    // thread's: a front end never hands it one. The prompt's quick reference
+    // is for a session a person answers.
+    let interactive = policy != ApprovalPolicy::Never;
+    let mut agent = KodaAgent::new(&config, project_root, interactive)
+        .await
+        .map_err(|e| internal(format!("couldn't build the agent: {e:#}")))?;
+    crate::builtin_skills::inject_builtin_skills(&mut agent);
+    agent.rebuild_system_prompt(&config);
+    let agent = Arc::new(agent);
     let history = crate::history::HistoryWriter::spawn(db.clone(), id.clone());
     let mut session = KodaSession::new(id.clone(), agent, db, &config, mode).await;
     // A resumed session already has its title.

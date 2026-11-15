@@ -46,6 +46,7 @@ fn build_agent(root: std::path::PathBuf, max_context_tokens: usize) -> Arc<KodaA
         system_prompt: "You are a test assistant.".to_string(),
         prompt_model: String::new(),
         semantic_memory: String::new(),
+        interactive: false,
     })
 }
 

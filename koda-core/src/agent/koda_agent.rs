@@ -66,6 +66,9 @@ pub struct KodaAgent {
     /// `new()`. Each turn reloads it, so changes apply next turn; this copy
     /// is used only when that reload fails.
     pub semantic_memory: String,
+    /// Whether a person answers this session's questions: the prompt's
+    /// quick reference, kept for [`Self::rebuild_system_prompt`].
+    pub interactive: bool,
 }
 
 /// Told to a session in Plan (a headless `--mode plan` run) so it knows
@@ -81,11 +84,11 @@ const PLAN_MODE_NOTE: &str = "\n## Read-only session\n\n\
 fn system_prompt_for(
     config: &KodaConfig,
     env: &crate::prompt::EnvironmentInfo<'_>,
-    commands: &[&str],
+    interactive: bool,
     skills: &crate::skills::SkillRegistry,
 ) -> String {
     let mut prompt =
-        crate::prompt::build_system_prompt(&config.system_prompt, env, commands, skills);
+        crate::prompt::build_system_prompt(&config.system_prompt, env, interactive, skills);
     if config.trust == crate::trust::TrustMode::Plan {
         prompt.push_str(PLAN_MODE_NOTE);
     }
@@ -95,12 +98,13 @@ fn system_prompt_for(
 impl KodaAgent {
     /// Build a new agent from config and project root.
     ///
-    /// `commands` lists the user-facing slash commands. The TUI passes its
-    /// `SLASH_COMMANDS` registry here; everything without a REPL passes `&[]`.
+    /// `interactive` is whether a person answers the session's questions,
+    /// which adds the prompt's quick reference
+    /// ([`crate::prompt::build_system_prompt`]).
     pub async fn new(
         config: &KodaConfig,
         project_root: PathBuf,
-        commands: &[&str],
+        interactive: bool,
     ) -> Result<Self> {
         let tools = ToolRegistry::with_trust(
             project_root.clone(),
@@ -117,7 +121,7 @@ impl KodaAgent {
             model: &config.model,
             platform: std::env::consts::OS,
         };
-        let system_prompt = system_prompt_for(config, &env, commands, &tools.skill_registry);
+        let system_prompt = system_prompt_for(config, &env, interactive, &tools.skill_registry);
 
         Ok(Self {
             project_root,
@@ -126,6 +130,7 @@ impl KodaAgent {
             system_prompt,
             prompt_model: config.model.clone(),
             semantic_memory,
+            interactive,
         })
     }
 
@@ -137,7 +142,7 @@ impl KodaAgent {
     /// Note: MCP server instructions are NOT included here — they are composed
     /// per-turn in `KodaSession::run_turn` via `render_mcp_instructions_section`,
     /// because MCP servers may attach after this static prompt is built (#922).
-    pub fn rebuild_system_prompt(&mut self, config: &KodaConfig, commands: &[&str]) {
+    pub fn rebuild_system_prompt(&mut self, config: &KodaConfig) {
         // Reuse cached memory loaded in `new()` — avoids duplicate disk read
         // and duplicate `Loaded project memory from CLAUDE.md` log line (#1136).
         let env = crate::prompt::EnvironmentInfo {
@@ -145,7 +150,8 @@ impl KodaAgent {
             model: &config.model,
             platform: std::env::consts::OS,
         };
-        self.system_prompt = system_prompt_for(config, &env, commands, &self.tools.skill_registry);
+        self.system_prompt =
+            system_prompt_for(config, &env, self.interactive, &self.tools.skill_registry);
         self.prompt_model = config.model.clone();
     }
 
@@ -189,6 +195,7 @@ mod tests {
             system_prompt: prompt.to_string(),
             prompt_model: model.to_string(),
             semantic_memory: String::new(),
+            interactive: false,
         }
     }
 

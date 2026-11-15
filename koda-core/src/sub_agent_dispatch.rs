@@ -716,7 +716,7 @@ fn run_sub_agent<'a>(
         let system_prompt = build_system_prompt(
             &instructions_for(&sub_config.system_prompt, effective_root != project_root),
             &env,
-            &[], // sub-agents have no REPL commands
+            false, // no person answers a sub-agent
             &tools.skill_registry,
         );
         // What this run uses, stored in the sub-agent's own session, as a

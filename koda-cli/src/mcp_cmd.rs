@@ -141,7 +141,6 @@ impl McpCli {
                 name: "koda-mcp".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
             },
-            agent: None,
         })
         .await?;
         let result = match self.subcommand {

@@ -82,6 +82,14 @@ onto the protocol),
 `koda-config` (the config file `config.toml`: reading, checking and editing it),
 `koda-test-utils`.
 
+**The client boundary:** `koda-cli` (the TUI and `koda exec`) reaches the
+engine only through the client protocol, so other TUIs and GUIs can too, as
+Codex's CI keeps `codex-core` out of its TUI. Shared crates (`koda-protocol`,
+`koda-config`) are fine; `koda-core` is not. Its remaining uses are listed in
+`scripts/tui_core_boundary.allow`, which `scripts/check_tui_core_boundary.sh`
+(run in CI) lets only shrink: add a protocol request or a shared crate, never
+a new `koda_core::` use.
+
 ### Where things are
 
 In `koda-core/src/`:

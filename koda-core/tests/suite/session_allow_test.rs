@@ -66,6 +66,7 @@ async fn session(env: &Env, responses: Vec<MockResponse>) -> KodaSession {
         system_prompt: "You are a test assistant.".to_string(),
         prompt_model: String::new(),
         semantic_memory: String::new(),
+        interactive: false,
     });
     let mut session = KodaSession::new(
         env.session_id.clone(),

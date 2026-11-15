@@ -16,12 +16,8 @@ use koda_core::session_store::SessionStore;
 use koda_core::trust;
 
 use crate::tui_context::TuiSession;
-use koda_core::agent::KodaAgent;
 use koda_core::config::KodaConfig;
-use koda_core::providers::LlmProvider;
 use ratatui::text::{Line, Span};
-use std::sync::Arc;
-use tokio::sync::RwLock;
 
 pub enum SlashAction {
     Continue,
@@ -46,12 +42,10 @@ pub async fn handle_slash_command(
     buffer: &mut ScrollBuffer,
     input: &str,
     config: &mut KodaConfig,
-    provider: &Arc<RwLock<Box<dyn LlmProvider>>>,
     session: &mut TuiSession,
     shared_mode: &trust::SharedTrustMode,
     renderer: &mut TuiRenderer,
     project_root: &std::path::Path,
-    agent: &Arc<KodaAgent>,
     pending_command: &mut Option<String>,
     menu: &mut crate::tui_types::MenuContent,
     child_activity: &mut crate::child_activity::ChildActivityTracker,

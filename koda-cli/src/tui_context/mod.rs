@@ -24,17 +24,13 @@ use crate::tui_viewport::{draw_viewport, init_terminal, restore_terminal};
 use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyCode, KeyModifiers};
 use futures_util::StreamExt;
-use koda_core::agent::KodaAgent;
 use koda_core::config::KodaConfig;
-use koda_core::providers::LlmProvider;
 use koda_core::trust::{self, TrustMode};
 use ratatui::{
     style::{Color, Style},
     text::{Line, Span},
 };
 use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::sync::RwLock;
 use tokio::sync::mpsc;
 
 use crate::composer::keymap::RuntimeKeymap;
@@ -106,14 +102,8 @@ pub(crate) struct TuiContext {
     pub paste_burst: crate::composer::paste_burst::PasteBurst,
 
     // ── Session state (shared references) ────────────────────
-    // Lock discipline for `provider: Arc<RwLock<_>>`:
-    // - Methods that swap the provider (handle_command) acquire write lock.
-    //   Must NOT hold across .await points.
-    // - Methods that read model info acquire read lock briefly.
-    // - Sequential dispatch in run() prevents concurrent access.
-    // Rule: acquire lock, do sync work, drop lock, then .await.
+    /// What the session runs with, mirrored from the host.
     pub config: KodaConfig,
-    pub provider: Arc<RwLock<Box<dyn LlmProvider>>>,
     pub session: TuiSession,
     /// Koda's host, in process: it runs the session's turns.
     pub client: koda_client::InProcessClient,
@@ -121,7 +111,6 @@ pub(crate) struct TuiContext {
     /// `session.id`, the TUI opens that one before the next turn.
     pub(crate) host_session: String,
     pub shared_mode: trust::SharedTrustMode,
-    pub agent: Arc<KodaAgent>,
     pub project_root: PathBuf,
 
     /// Coalescing draw scheduler (#1138). Replaces the old per-iteration
@@ -355,20 +344,8 @@ impl TuiContext {
             }
         }
 
-        // Command names from SLASH_COMMANDS for the system prompt.
-        let commands: Vec<&str> = crate::completer::SLASH_COMMANDS
-            .iter()
-            .map(|&(name, _, _)| name)
-            .collect();
-
-        let mut agent =
-            koda_core::agent::KodaAgent::new(&config, project_root.clone(), &commands).await?;
-        koda_client::builtin_skills::inject_builtin_skills(&mut agent);
-        agent.rebuild_system_prompt(&config, &commands);
-        let agent = Arc::new(agent);
-
-        // Koda's host runs the session's turns; the TUI is its client, with
-        // the agent it built (slash commands in the prompt, its MCP servers).
+        // Koda's host runs the session's turns and builds each session's
+        // agent (its tools, MCP servers and prompt); the TUI is its client.
         let mut client = koda_client::InProcessClient::start(koda_client::StartArgs {
             config: config.clone(),
             config_file: crate::user_config::file()?,
@@ -378,7 +355,6 @@ impl TuiContext {
                 name: "koda-tui".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
             },
-            agent: Some(agent.clone()),
         })
         .await
         .map_err(|e| anyhow::anyhow!("couldn't start Koda's host: {e}"))?;
@@ -427,8 +403,6 @@ impl TuiContext {
         settings::mirror(&mut config, &session_settings);
         // Flags are for this run only, as Codex's are: only `/model` and
         // `/provider` save a choice into config.toml.
-        let provider: Arc<RwLock<Box<dyn LlmProvider>>> =
-            Arc::new(RwLock::new(koda_core::providers::create_provider(&config)));
 
         let mut startup_lines = crate::startup::collect_startup_lines(&config);
         for warning in host_warnings {
@@ -484,13 +458,7 @@ impl TuiContext {
         let mut renderer = TuiRenderer::new();
         renderer.model = config.model.clone();
 
-        let mut completer = crate::completer::InputCompleter::new(project_root.clone());
-        {
-            let prov = provider.read().await;
-            if let Ok(models) = prov.list_models().await {
-                completer.set_model_names(models.iter().map(|m| m.id.clone()).collect());
-            }
-        }
+        let completer = crate::completer::InputCompleter::new(project_root.clone());
 
         let mut menu = MenuContent::None;
         if first_run {
@@ -526,7 +494,7 @@ impl TuiContext {
         // Codex's TUI replays a resumed thread.
         replay_turns(&mut renderer, &earlier_turns, &mut scroll_buffer);
 
-        let ctx = Self {
+        let mut ctx = Self {
             terminal,
             textarea,
             renderer,
@@ -553,12 +521,10 @@ impl TuiContext {
             history_area_height: 0,
             paste_burst: crate::composer::paste_burst::PasteBurst::default(),
             config,
-            provider,
             host_session: session.id.clone(),
             session,
             client,
             shared_mode,
-            agent,
             project_root,
             frame_requester,
             draw_rx,
@@ -566,7 +532,25 @@ impl TuiContext {
             mcp: mcp::McpView::default(),
             mcp_stale: true,
         };
+        ctx.refresh_model_names().await;
         Ok(ctx)
+    }
+
+    /// The completer's model names, from `model/list` for the session's
+    /// provider: the host's list, aliases and ids, as `/model` offers them.
+    pub(crate) async fn refresh_model_names(&mut self) {
+        let models = self
+            .list_models(self.config.provider_type, &self.config.base_url.clone())
+            .await;
+        let mut names: Vec<String> = Vec::new();
+        for model in models {
+            if let Some(alias) = model.alias {
+                names.push(alias);
+            }
+            names.push(model.id);
+        }
+        names.dedup();
+        self.completer.set_model_names(names);
     }
 
     /// Draw the fullscreen viewport.
@@ -833,12 +817,10 @@ impl TuiContext {
             &mut self.scroll_buffer,
             input,
             &mut self.config,
-            &self.provider,
             &mut self.session,
             &self.shared_mode,
             &mut self.renderer,
             &self.project_root,
-            &self.agent,
             &mut self.pending_command,
             &mut self.menu,
             &mut self.child_activity,
@@ -882,13 +864,7 @@ impl TuiContext {
     async fn reinit_after_slash(&mut self) {
         // Fullscreen mode: no terminal reinit needed.
         // Just refresh completer state and model name.
-        {
-            let prov = self.provider.read().await;
-            if let Ok(models) = prov.list_models().await {
-                self.completer
-                    .set_model_names(models.iter().map(|m| m.id.clone()).collect());
-            }
-        }
+        self.refresh_model_names().await;
         self.renderer.model = self.config.model.clone();
     }
 
