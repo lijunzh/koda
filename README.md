@@ -55,6 +55,8 @@ task, while Sonnet passed every run. See [what belongs in it](https://lijunzh.gi
 
 Koda no longer has an ACP server, so `koda server` and editor connections over
 ACP are gone. [What changed, and what to use instead](https://lijunzh.github.io/koda/acp.html).
+A program can drive Koda with `koda serve --stdio`, which serves Koda's client
+protocol on stdin and stdout ([Koda as a server](https://lijunzh.github.io/koda/serve.html)).
 
 ---
 

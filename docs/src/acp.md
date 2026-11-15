@@ -24,8 +24,10 @@ Koda now has one protocol instead of two half-built ones.
 | Work with Koda from an editor | Run `koda` in the editor's terminal |
 | Call Koda from a script | `koda exec "prompt"` ([headless mode](headless.md)) |
 | Read a run's events from a program | `koda exec --json "prompt"` ([client protocol](headless.md#the-client-protocol)) |
+| Drive Koda from a program: sessions, turns, approvals | `koda serve --stdio` ([Koda as a server](serve.md)) |
 
-`koda exec --json` is output only for now. A run takes one prompt and applies the
+`koda exec --json` is output only: a run takes one prompt and applies the
 [headless policy](headless.md#trust-mode-in-headless-mode) to approvals, so
-another program can follow a run but can't steer it or answer its approvals.
-There's no way to do that yet.
+another program can follow it but can't steer it or answer its approvals.
+[`koda serve --stdio`](serve.md) can: the program sends the requests and
+answers Koda's.

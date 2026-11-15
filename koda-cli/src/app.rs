@@ -182,6 +182,17 @@ enum Command {
     /// to stderr. With --json, stdout carries the client protocol's
     /// notifications instead, one JSON-RPC message per line.
     Exec(ExecArgs),
+    /// Serve the client protocol on stdin and stdout, for a GUI, an editor
+    /// or a script.
+    ///
+    /// One JSON-RPC message per line, as `codex app-server` does: the
+    /// client drives sessions with requests and answers Koda's approvals.
+    /// Runs until stdin closes or a signal stops it.
+    ///
+    /// The client picks each session's model in `session/start`, so
+    /// --model, --provider and --base-url don't apply; -c and the other
+    /// config flags do.
+    Serve(ServeArgs),
     /// Manage the MCP servers every session starts: list, get, add, remove.
     ///
     /// Open TUI sessions take a change on `/mcp reconnect`.
@@ -193,6 +204,15 @@ enum Command {
         #[arg(hide = true, trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+}
+
+/// `koda serve`'s own flags.
+#[derive(clap::Args, Debug)]
+struct ServeArgs {
+    /// Serve on stdin and stdout, the one transport so far. Required, so
+    /// that `koda serve` alone stays free for the shared server.
+    #[arg(long)]
+    stdio: bool,
 }
 
 /// `koda exec`'s own flags. The model, provider, mode and the rest are the
@@ -229,7 +249,8 @@ const STDIN_NOT_A_TERMINAL: &str = "stdin is not a terminal. To run a piped prom
 
 const SERVER_REMOVED: &str = "`koda server` has been removed. Koda no longer speaks ACP, \
 so editors can't connect to it.
-Run `koda` in a terminal, or `koda exec --json <prompt>` from a script.
+Run `koda` in a terminal, `koda exec --json <prompt>` from a script, or
+`koda serve --stdio` to drive Koda from a program.
 See https://lijunzh.github.io/koda/acp.html";
 
 pub(crate) async fn run() -> Result<()> {
@@ -242,8 +263,14 @@ pub(crate) async fn run() -> Result<()> {
 
     // A one-shot run is `koda exec`, as in Codex. `koda` alone opens the TUI.
     let mut mcp_cli = None;
+    let mut serving = false;
     let headless_run = match cli.command.take() {
         Some(Command::Exec(args)) => Some(exec_run(args)?),
+        Some(Command::Serve(args)) => {
+            check_serve(&args, &cli);
+            serving = true;
+            None
+        }
         Some(Command::Mcp(mcp)) => {
             mcp_cli = Some(mcp);
             None
@@ -317,6 +344,36 @@ pub(crate) async fn run() -> Result<()> {
         return mcp.run(project_root).await;
     }
 
+    // `koda serve --stdio`: stdout is the protocol, so warnings go to
+    // stderr, as `koda exec --json`'s do.
+    if serving {
+        for warning in crate::retired_env::warnings() {
+            eprintln!("warning: {warning}");
+        }
+        let served = koda_client::stdio::serve(
+            koda_client::stdio::ServeArgs {
+                config_file: crate::user_config::file()?,
+                project_root,
+                home: config_dir,
+            },
+            tokio::io::stdin(),
+            tokio::io::stdout(),
+            stop_signal(),
+        )
+        .await;
+        crate::logging::flush().await;
+        drop(_logging);
+        // `exit`, since a client may hold stdin open after a signal, and
+        // Tokio's stdin reader would keep the process waiting for it.
+        match served {
+            Ok(()) => std::process::exit(0),
+            Err(e) => {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     // The model choice goes to `session/start`, as Codex's TUI passes its
     // model to `thread/start`; the host resolves an alias (`claude-haiku`
     // picks Anthropic) and fills in the rest from the saved choice.
@@ -379,6 +436,56 @@ pub(crate) async fn run() -> Result<()> {
         first_run,
     )
     .await
+}
+
+/// Refuse what `koda serve` can't use: the transport left out, or a flag
+/// that names a session's model or prompt, which the client sends in
+/// `session/start` and `turn/start`.
+fn check_serve(args: &ServeArgs, cli: &Cli) {
+    if !args.stdio {
+        eprintln!(
+            "error: koda serve needs --stdio, the one transport so far: \
+             koda serve --stdio"
+        );
+        std::process::exit(2);
+    }
+    let named = [
+        ("--model", cli.model.is_some()),
+        ("--provider", cli.provider.is_some()),
+        ("--base-url", cli.base_url.is_some()),
+        ("--resume", cli.session.is_some()),
+        ("a prompt", cli.positional_prompt.is_some()),
+    ];
+    if let Some((flag, _)) = named.iter().find(|(_, given)| *given) {
+        eprintln!(
+            "error: koda serve doesn't take {flag}: the client sends it in \
+             session/start or turn/start. Set a default with -c (as in -c model=...)."
+        );
+        std::process::exit(2);
+    }
+}
+
+/// Ctrl-C or, on Unix, SIGTERM: what stops `koda serve`.
+async fn stop_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+            }
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 /// The flags that set a config value, as `-c` values: `--effort` is

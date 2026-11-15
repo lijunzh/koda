@@ -8,6 +8,7 @@
 
 - [CLI reference](./cli-reference.md)
 - [Headless mode](./headless.md)
+- [Koda as a server](./serve.md)
 
 # Using Koda
 

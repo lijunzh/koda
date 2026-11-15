@@ -130,6 +130,9 @@ server that doesn't report its context window gets one saying what Koda
 assumed. Every message after the first carries `sessionId`; every message in a
 turn carries `turnId`.
 
+[`koda serve --stdio`](serve.md) serves the same protocol to another program,
+which sends the requests and answers Koda's.
+
 `koda exec` is a client like any other: it starts Koda's host in process and
 opens a session with `approvalPolicy: never`, so the host answers the requests
 below as described, and Ctrl+C sends `turn/interrupt`.
