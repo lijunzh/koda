@@ -93,6 +93,7 @@ http = "1"
 # First-party workspace libraries (direct calls)
 
 # Sandbox runtime — kernel-level FS/net/exec policies (#934)
+koda-config = { path = "../koda-config", version = "0.6.4" }
 koda-sandbox = { path = "../koda-sandbox", version = "0.6.4" }
 
 # Async trait support

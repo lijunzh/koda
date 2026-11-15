@@ -124,6 +124,9 @@ pub(crate) struct OpenSession {
     pub commands: mpsc::UnboundedSender<SessionCommand>,
     pub handles: SessionHandles,
     pub task: SessionTask,
+    /// A resumed session's stored token counts, which the host sends the
+    /// client that resumed it, as Codex replays a thread's on attach.
+    pub restored_usage: Option<koda_protocol::session::TokenUsage>,
 }
 
 /// Open a session: `resume` names an earlier one, or `None` starts one.
@@ -155,28 +158,30 @@ pub(crate) async fn open(
     // mode unless the client names others, as Codex's `thread/resume` does.
     let mut mode = config.trust;
     if let Some(id) = &resume {
-        let id = db
-            .resolve_session_id(id)
-            .await
-            .map_err(|e| ErrorObject::new(codes::INVALID_PARAMS, format!("{e:#}")))?;
+        // By its full id, as Codex's `thread/resume` takes one: a client
+        // matches a shorter one over `session/list`.
         let stored = db
-            .get_session(&id)
+            .get_session(id)
             .await
-            .map_err(|e| internal(format!("couldn't read the session: {e:#}")))?;
-        if let Some(stored) = stored {
-            let overridden = choice.provider.is_some() || choice.model.is_some();
-            if !overridden {
-                choice.provider = stored.provider;
-                choice.base_url = choice.base_url.or(stored.base_url);
-                choice.model = stored.model;
-            }
-            if let Some(saved) = stored
-                .mode
-                .as_deref()
-                .and_then(koda_core::trust::TrustMode::parse)
-            {
-                mode = saved;
-            }
+            .map_err(|e| internal(format!("couldn't read the session: {e:#}")))?
+            .ok_or_else(|| {
+                ErrorObject::new(
+                    codes::INVALID_PARAMS,
+                    format!("no session '{id}'. Run `koda` and type /sessions to list them."),
+                )
+            })?;
+        let overridden = choice.provider.is_some() || choice.model.is_some();
+        if !overridden {
+            choice.provider = stored.provider;
+            choice.base_url = choice.base_url.or(stored.base_url);
+            choice.model = stored.model;
+        }
+        if let Some(saved) = stored
+            .mode
+            .as_deref()
+            .and_then(koda_core::trust::TrustMode::parse)
+        {
+            mode = saved;
         }
     }
     // A new session takes the saved choice where the client named nothing,
@@ -198,10 +203,7 @@ pub(crate) async fn open(
     let notice = config.assumed_context_notice(source);
 
     let id = match resume {
-        Some(id) => db
-            .resolve_session_id(&id)
-            .await
-            .map_err(|e| ErrorObject::new(codes::INVALID_PARAMS, format!("{e:#}")))?,
+        Some(id) => id,
         None => db
             .create_session(&config.agent_name, &project_root)
             .await
@@ -289,6 +291,41 @@ pub(crate) async fn open(
         )));
     }
 
+    // A resumed session's counts go on from what its stored calls used,
+    // as Codex restores a thread's. Input tokens count cached ones, by the
+    // provider's rule, as live calls do.
+    let mut projector = EventProjector::with_request_ids(&id, request_ids);
+    let restored_usage = if resumed {
+        let stored = session
+            .db
+            .session_usage_by_agent(&id)
+            .await
+            .map_err(|e| internal(format!("couldn't read the session's usage: {e:#}")))?;
+        (!stored.is_empty()).then(|| {
+            let by_agent = stored
+                .iter()
+                .map(|(agent, usage)| {
+                    let call = koda_core::providers::TokenUsage {
+                        prompt_tokens: usage.prompt_tokens,
+                        completion_tokens: usage.completion_tokens,
+                        cache_read_tokens: usage.cache_read_tokens,
+                        cache_creation_tokens: usage.cache_creation_tokens,
+                        thinking_tokens: usage.thinking_tokens,
+                        stop_reason: String::new(),
+                    };
+                    let totals = koda_core::engine::UsageTotals {
+                        api_calls: usage.api_calls,
+                        ..koda_core::engine::UsageTotals::of_call(probe.as_ref(), &call)
+                    };
+                    (agent.clone(), crate::events::usage_of(&totals))
+                })
+                .collect();
+            projector.restore_usage(by_agent, Some(config.max_context_tokens as u64))
+        })
+    } else {
+        None
+    };
+
     let (commands_tx, commands) = mpsc::unbounded_channel();
     let (engine_tx, engine_rx) = mpsc::channel(32);
     let sink = Arc::new(HostSink {
@@ -299,7 +336,7 @@ pub(crate) async fn open(
         // Koda answers itself only when nobody is there to ask.
         answers: (policy == ApprovalPolicy::Never).then(|| engine_tx.clone()),
         state: Mutex::new(SinkState {
-            projector: EventProjector::with_request_ids(&id, request_ids),
+            projector,
             prompt: None,
             steers: VecDeque::new(),
             kinds: HashMap::new(),
@@ -331,6 +368,7 @@ pub(crate) async fn open(
             engine_rx,
             commands,
         },
+        restored_usage,
     })
 }
 
@@ -816,7 +854,7 @@ pub(crate) struct SessionHandles {
 }
 
 /// A stored session as the protocol describes it, without what an open one
-/// runs with.
+/// runs with: its mode is the one it last ran in, which resuming it keeps.
 pub(crate) fn describe(stored: &koda_core::session_store::SessionInfo) -> Session {
     Session {
         id: stored.id.clone(),
@@ -828,7 +866,11 @@ pub(crate) fn describe(stored: &koda_core::session_store::SessionInfo) -> Sessio
         model: None,
         provider: None,
         context_window: None,
-        mode: None,
+        mode: stored
+            .mode
+            .as_deref()
+            .and_then(koda_core::trust::TrustMode::parse)
+            .map(protocol_mode),
         tools: None,
         instruction_sources: None,
         turns: Vec::new(),

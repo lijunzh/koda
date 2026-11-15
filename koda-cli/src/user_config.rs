@@ -17,7 +17,7 @@ pub(crate) fn set_overrides(overrides: Vec<Override>) {
 
 /// The config file with this run's `-c` values over it.
 pub(crate) fn file() -> anyhow::Result<ConfigFile> {
-    Ok(ConfigFile::in_dir(&koda_core::db::config_dir()?)
+    Ok(ConfigFile::in_dir(&koda_config::config_dir()?)
         .with_overrides(OVERRIDES.get().cloned().unwrap_or_default()))
 }
 

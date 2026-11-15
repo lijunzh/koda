@@ -145,7 +145,7 @@ below as described, and Ctrl+C sends `turn/interrupt`.
 | `item/reasoning/textDelta` | `itemId`, `delta` | Only with `--json-deltas` |
 | `item/toolCall/outputDelta` | `itemId`, `delta`, `stream` (`stdout` or `stderr`) | A line of a running command. Only with `--json-deltas` |
 | `item/toolCall/progress` | `itemId`, `message` | A notice about a call, such as a sub-agent reaching its turn limit, or a skill restricting the tools. Codex's `item/mcpToolCall/progress` |
-| `session/tokenUsage/updated` | `tokenUsage`: `total`, `last`, `modelContextWindow` | After each model call, as Codex's `thread/tokenUsage/updated`. `total` adds up every call since the session opened, sub-agents' and compactions' included; `last` is the session's latest call, and its `totalTokens` is how full the context was. Each counts `totalTokens`, `inputTokens` (cached tokens included), `cachedInputTokens`, `cacheWriteInputTokens`, `outputTokens` and `reasoningOutputTokens` |
+| `session/tokenUsage/updated` | `tokenUsage`: `total`, `last`, `modelContextWindow`, `byAgent` | After each model call, as Codex's `thread/tokenUsage/updated`, and once when a session is resumed, with what it had stored, as Codex replays a thread's. `total` adds up every call since the session was created, sub-agents' and compactions' included; `byAgent` splits it by agent (the session's own under `main`), with each agent's `modelCalls`; `last` is the session's latest call, and its `totalTokens` is how full the context was. Each counts `totalTokens`, `inputTokens` (cached tokens included), `cachedInputTokens`, `cacheWriteInputTokens`, `outputTokens` and `reasoningOutputTokens` |
 | `turn/plan/updated` | `plan`: `{step, status}` | The model's todo list, whole. `status` is `pending`, `inProgress` or `completed` |
 | `turn/loopGuard` | `action`, `detail` | The model repeated itself. `action` is `feedback`, or `stop` when it didn't change course. Koda's own |
 | `error` | `error.message`, `willRetry`, `retry` | With `willRetry`, Koda tries the model call again and the turn goes on. `retry` has `reason` (`rateLimit`, `network`, `serverError`, `streamFailed`, `contextOverflow`, `emptyResponse`), `attempt` (the one that failed, from 1), `maxAttempts` and `delayMs` |
@@ -188,9 +188,11 @@ refused call completes as `declined`.
 `turn/completed`'s `usage` counts this turn alone, however it ended, and
 includes sub-agents, compaction and retries. A model call cut off before the
 provider reported usage counts for nothing, so a cancelled or failed turn
-reports the calls that finished. `exec/summary`'s `usage` covers the stored
+reports the calls that finished. `exec/summary`'s `usage` covers the whole
 session, earlier turns of a resumed one included, and `usageByAgent` splits it
-with the session's own calls under `main`.
+with the session's own calls under `main`: both are the last
+`session/tokenUsage/updated`'s `byAgent`. Its `response` is the session's last
+reply in this run, as `codex exec` takes its final agent message.
 
 **A cancelled turn** gets five seconds to stop. A sub-agent stops at once and
 gives back its workspace, but a Bash command the turn itself is running doesn't

@@ -133,10 +133,9 @@ impl TuiContext {
             )
             .await;
         // Its earlier turns were drawn when `/resume` chose it.
-        let (opened, _) = crate::tui_context::open_host_session(
+        let (opened, _, _) = crate::tui_context::open_host_session(
             &self.client,
             Some(self.session.id.clone()),
-            self.session.db.clone(),
             &crate::tui_context::settings::Named::default(),
         )
         .await?;

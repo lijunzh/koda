@@ -8,7 +8,7 @@
 | Flag | Description |
 |------|-------------|
 | `-a`, `--agent <NAME>` | Agent definition to use (JSON in `agents/`, default: `default`) |
-| `-s`, `--resume <ID>` | Resume a previous session by its full ID. `/resume` in the TUI takes a prefix. |
+| `-s`, `--resume <ID>` | Resume a previous session by its full ID, or by the start of one of this project's sessions, as `/resume` takes it. |
 | `--model <NAME>` | Model ID (e.g. `claude-sonnet-5-5`) or alias (e.g. `claude-sonnet`); an alias also picks its provider. |
 | `--provider <NAME>` | LLM provider (`anthropic`, `gemini`, `openai`, `ollama`, …) |
 | `--base-url <URL>` | Override the provider's API base URL |

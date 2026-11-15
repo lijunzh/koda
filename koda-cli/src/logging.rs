@@ -94,7 +94,7 @@ fn open_log_file(dir: &Path) -> anyhow::Result<std::fs::File> {
 /// relative path is under the Koda config directory.
 pub(crate) fn resolve_log_dir(value: &str, config_dir: &Path) -> PathBuf {
     if let Some(rest) = value.strip_prefix("~/")
-        && let Some(home) = koda_core::runtime_env::get("HOME")
+        && let Some(home) = koda_config::runtime_env::get("HOME")
     {
         return PathBuf::from(home).join(rest);
     }
@@ -132,7 +132,7 @@ mod tests {
             resolve_log_dir("logs", config),
             PathBuf::from("/cfg/koda/logs")
         );
-        if let Some(home) = koda_core::runtime_env::get("HOME") {
+        if let Some(home) = koda_config::runtime_env::get("HOME") {
             assert_eq!(
                 resolve_log_dir("~/koda-logs", config),
                 PathBuf::from(home).join("koda-logs")

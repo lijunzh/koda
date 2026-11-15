@@ -60,36 +60,9 @@ pub struct Database {
     pub(crate) compaction_gen: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
-/// Get the koda config directory (~/.config/koda/).
-///
-/// **#1109 F1**: reads via [`crate::runtime_env::get`] (thread-safe with
-/// `mask`/fallback semantics) instead of `std::env::var`. Tests can now
-/// inject or hide these keys without `unsafe { set_var }`.
+/// Koda's folder (`~/.config/koda/`): [`koda_config::config_dir`].
 pub fn config_dir() -> Result<std::path::PathBuf> {
-    let base = crate::runtime_env::get("XDG_CONFIG_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            // Unix: $HOME/.config  (XDG Base Directory spec fallback)
-            crate::runtime_env::get("HOME").map(|h| std::path::PathBuf::from(h).join(".config"))
-        })
-        .or({
-            // Windows: %APPDATA%  (e.g. C:\Users\Alice\AppData\Roaming)
-            #[cfg(windows)]
-            {
-                crate::runtime_env::get("APPDATA").map(std::path::PathBuf::from)
-            }
-            #[cfg(not(windows))]
-            {
-                None
-            }
-        })
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Cannot determine config directory \
-                 (set XDG_CONFIG_HOME, HOME, or APPDATA)"
-            )
-        })?;
-    Ok(base.join("koda"))
+    Ok(koda_config::config_dir()?)
 }
 
 impl Database {
@@ -527,32 +500,6 @@ impl Database {
 }
 
 impl Database {
-    /// The session `id` names: itself, or the one session whose id starts
-    /// with it (the short ids `/sessions` shows). An error says why there's
-    /// none, so `--resume` with a mistyped id stops at startup instead of
-    /// running a session nothing can be saved to.
-    pub async fn resolve_session_id(&self, id: &str) -> Result<String> {
-        let id = id.trim();
-        anyhow::ensure!(!id.is_empty(), "no session id given");
-        let pattern = format!("{}%", id.replace(['%', '_'], ""));
-        let ids: Vec<(String,)> =
-            sqlx::query_as("SELECT id FROM sessions WHERE id = ? OR id LIKE ? ORDER BY id LIMIT 3")
-                .bind(id)
-                .bind(&pattern)
-                .fetch_all(&self.pool)
-                .await?;
-        if let Some((exact,)) = ids.iter().find(|(s,)| s == id) {
-            return Ok(exact.clone());
-        }
-        match &ids[..] {
-            [(only,)] => Ok(only.clone()),
-            [] => anyhow::bail!(
-                "no session matches '{id}'. Run `koda` and type /sessions to list them."
-            ),
-            _ => anyhow::bail!("'{id}' matches more than one session; give more of the id."),
-        }
-    }
-
     /// The input history Koda kept here before the TUI kept its own file
     /// (`history.jsonl`, as Codex's TUI does), oldest first. Read once, to
     /// bring it over; nothing writes it any more.

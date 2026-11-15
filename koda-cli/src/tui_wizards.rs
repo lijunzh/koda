@@ -104,7 +104,7 @@ pub(crate) fn handle_keys(buffer: &mut ScrollBuffer) {
     tui_output::blank(buffer);
 
     for (name, env_var) in KEY_PROVIDERS {
-        let is_set = koda_core::runtime_env::is_set(env_var);
+        let is_set = koda_config::runtime_env::is_set(env_var);
         let status = if is_set {
             Span::styled("\u{2714} set", tui_output::GREEN)
         } else {

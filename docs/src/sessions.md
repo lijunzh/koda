@@ -10,9 +10,10 @@ project root. Each session gets a UUID that you can use to resume it.
 # Resume by ID prefix from the TUI
 /resume a3f8bc
 
-# Resume from the command line, with the full ID: in the TUI, or headless
+# Resume from the command line, in the TUI or headless: a full ID, or the
+# start of one of this project's sessions
 koda -s a3f8bc12-1587-4c6d-a855-46183ca84fba
-koda exec -s a3f8bc12-1587-4c6d-a855-46183ca84fba "continue where we left off"
+koda exec -s a3f8bc "continue where we left off"
 
 # Delete a session permanently
 /resume delete a3f8bc

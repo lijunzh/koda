@@ -348,7 +348,17 @@ pub trait SessionStore: Send + Sync {
     /// Create a new session, returning its unique ID.
     async fn create_session(&self, agent_name: &str, project_root: &Path) -> Result<String>;
     /// List recent sessions for the given project root.
-    async fn list_sessions(&self, limit: i64, project_root: &Path) -> Result<Vec<SessionInfo>>;
+    async fn list_sessions(&self, limit: i64, project_root: &Path) -> Result<Vec<SessionInfo>> {
+        self.list_sessions_from(limit, 0, project_root).await
+    }
+    /// [`Self::list_sessions`] after skipping the `offset` most recent, for
+    /// listing page by page.
+    async fn list_sessions_from(
+        &self,
+        limit: i64,
+        offset: i64,
+        project_root: &Path,
+    ) -> Result<Vec<SessionInfo>>;
     /// One session by its full id, or `None` if there is none.
     async fn get_session(&self, session_id: &str) -> Result<Option<SessionInfo>>;
     /// Delete a session by ID. Returns `true` if it existed.

@@ -36,7 +36,9 @@ pub struct Session {
     /// The context window in tokens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
-    /// What Koda may do without asking.
+    /// What Koda may do without asking: the mode an open session runs in,
+    /// and for a listed one the mode it last ran in, which resuming it
+    /// keeps.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<TrustMode>,
     /// The tools the model is offered.
@@ -70,8 +72,9 @@ pub struct Session {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionStartParams {
-    /// An earlier session to resume, by its full id. Without one, a new
-    /// session starts.
+    /// An earlier session to resume, by its full id, as Codex's
+    /// `thread/resume` takes one; a client matches a shorter one over
+    /// `session/list`. Without one, a new session starts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     /// Who answers the session's requests. Without one, the client does.
@@ -227,6 +230,10 @@ pub struct SessionListParams {
     /// How many at most; without one, 50.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
+    /// Where to go on from: an earlier answer's `nextCursor`, as Codex's
+    /// `thread/list` pages. Without one, the most recent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
 }
 
 /// The answer to `session/list`.
@@ -235,6 +242,10 @@ pub struct SessionListParams {
 pub struct SessionListResponse {
     /// The sessions, without what open ones are running with.
     pub data: Vec<Session>,
+    /// Opaque; pass it as `cursor` for the next page. Absent when there are
+    /// no more, as Codex's `nextCursor`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
 
 /// `session/delete`: delete a stored session. An open one is closed first,
@@ -306,13 +317,20 @@ pub struct SessionTokenUsageUpdatedNotification {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenUsage {
-    /// Every model call since the session was opened: its turns,
-    /// sub-agents and compactions.
+    /// Every model call since the session was created: its turns,
+    /// sub-agents and compactions. A resumed session's count starts from
+    /// what its stored calls used, as Codex restores a thread's.
     pub total: TokenUsageBreakdown,
     /// The latest model call of the session's own: not a sub-agent's.
     pub last: TokenUsageBreakdown,
     /// The context window, in tokens.
     pub model_context_window: Option<u64>,
+    /// `total` by agent, with its model calls: the session's own under
+    /// `main`, each sub-agent's under its name. Koda's own: a Codex
+    /// sub-agent is a thread with its own usage, while Koda's run inside
+    /// the session's turn, so the split is sent here.
+    #[serde(default)]
+    pub by_agent: std::collections::BTreeMap<String, crate::turn::Usage>,
 }
 
 /// Tokens of one model call, or added up. Codex's `TokenUsageBreakdown`.

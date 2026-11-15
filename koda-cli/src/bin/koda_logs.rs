@@ -90,7 +90,7 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let path = match &args.db {
         Some(path) => path.clone(),
-        None => koda_core::db::config_dir()?.join("db").join("logs_1.db"),
+        None => koda_config::config_dir()?.join("db").join("logs_1.db"),
     };
     if !path.exists() {
         anyhow::bail!("no log database at {}: has Koda run here?", path.display());

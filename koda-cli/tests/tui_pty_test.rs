@@ -106,6 +106,11 @@ impl Tui {
             .env_remove("ANTHROPIC_API_KEY")
             .env_remove("OPENAI_API_KEY")
             .env_remove("GEMINI_API_KEY")
+            // `/copy` and mouse copies reach the system clipboard only
+            // outside SSH, and a tmux buffer only inside tmux: these keep
+            // them to OSC 52 on the test's own terminal.
+            .env("SSH_CONNECTION", "test")
+            .env_remove("TMUX")
             .stdin(stdio(slave))
             .stdout(stdio(slave))
             .stderr(stdio(slave));
@@ -947,6 +952,41 @@ async fn a_resumed_session_shows_and_keeps_its_history() {
         "the model lost the read: {sent}"
     );
     assert!(sent.contains("and now?"), "{sent}");
+}
+
+/// A session resumed by an id prefix opens in the mode it last ran in, as
+/// the host reports it, and `/copy` copies its earlier reply: the TUI keeps
+/// the replies it was sent, as Codex's `/copy` does, and reads no database.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resumed_session_keeps_its_mode_and_copy_takes_its_reply() {
+    use koda_core::session_store::SessionStore;
+    let server = scripted_model(vec![final_text()]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    tui.submit("say something");
+    tui.wait_for_screen("All done.");
+    let session = quit_and_read_session_id(&mut tui);
+
+    // Stored as an older Koda could leave it: in Plan, which a top-level
+    // session can't run in.
+    let db = koda_core::db::Database::init(&home.path().join(".config/koda"))
+        .await
+        .unwrap();
+    db.set_session_mode(&session, "plan").await.unwrap();
+    drop(db);
+
+    let mut tui = Tui::start_with_args(
+        home.path(),
+        &server.url(),
+        &["--resume", &session[..8]],
+        IDLE_HINT,
+    );
+    tui.wait_for_screen("session resumed");
+    tui.wait_for_screen("Plan mode is sub-agent-only");
+    run_command(&mut tui, "/copy");
+    tui.wait_for_screen("Copied last response");
+    let screen = tui.screen();
+    assert!(screen.contains("All done"), "{screen}");
 }
 
 /// Ctrl+D on an empty composer quits during a turn too, as in Codex. It

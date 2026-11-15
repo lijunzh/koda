@@ -123,8 +123,12 @@ pub struct EventProjector {
     /// Request ids shared with the host's other sessions, so a response
     /// names one session's request. `None` numbers them per projector.
     shared_request_ids: Option<Arc<AtomicI64>>,
-    /// The session's token counts since it was opened.
+    /// The session's token counts since it was created.
     tokens: TokenUsage,
+    /// Each running sub-agent's name, by the `InvokeAgent` call it runs
+    /// under, from its `SubAgentStart`: parallel calls start after their
+    /// sub-agents have run, so the call can't say whose usage it is.
+    agent_names: HashMap<String, String>,
 }
 
 impl EventProjector {
@@ -143,6 +147,7 @@ impl EventProjector {
             next_request: 0,
             shared_request_ids: None,
             tokens: TokenUsage::default(),
+            agent_names: HashMap::new(),
         }
     }
 
@@ -153,6 +158,59 @@ impl EventProjector {
             shared_request_ids: Some(ids),
             ..Self::new(session_id)
         }
+    }
+
+    /// Start the session's counts from what its stored calls used, by
+    /// agent, as Codex restores a resumed thread's: `by_agent` as the
+    /// protocol counts it, and the context window it runs with. Returns the
+    /// counts, for the client that resumed it.
+    pub fn restore_usage(
+        &mut self,
+        by_agent: std::collections::BTreeMap<String, Usage>,
+        context_window: Option<u64>,
+    ) -> TokenUsage {
+        let mut total = TokenUsageBreakdown::default();
+        for usage in by_agent.values() {
+            add(
+                &mut total,
+                &TokenUsageBreakdown {
+                    total_tokens: usage.input_tokens + usage.output_tokens,
+                    input_tokens: usage.input_tokens,
+                    cached_input_tokens: usage.cached_input_tokens,
+                    cache_write_input_tokens: usage.cache_creation_tokens,
+                    output_tokens: usage.output_tokens,
+                    reasoning_output_tokens: usage.reasoning_tokens,
+                },
+            );
+        }
+        self.tokens = TokenUsage {
+            total,
+            last: TokenUsageBreakdown::default(),
+            model_context_window: context_window,
+            by_agent,
+        };
+        self.tokens.clone()
+    }
+
+    /// Whose model call this is: `main` for the session's own, else the
+    /// name of the sub-agent whose `InvokeAgent` call `parent` is.
+    fn agent_of(&self, parent: Option<&str>) -> String {
+        let Some(parent) = parent else {
+            return "main".to_string();
+        };
+        self.agent_names
+            .get(parent)
+            .map(String::as_str)
+            .or_else(|| {
+                self.calls
+                    .get(parent)
+                    .and_then(|call| call.arguments.get("agent_name"))
+                    .and_then(Value::as_str)
+            })
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .unwrap_or("main")
+            .to_string()
     }
 
     /// The engine's id for the open request `request_id`, if this
@@ -342,6 +400,7 @@ impl EventProjector {
                 output,
                 outcome,
             } => {
+                self.agent_names.remove(&id);
                 let call = self.calls.remove(&id);
                 let (tool, arguments, call_parent, detail, changes, progress) = match call {
                     Some(c) => (
@@ -533,6 +592,14 @@ impl EventProjector {
             EngineEvent::ModelUsage { usage } => {
                 let call = breakdown_of(&usage);
                 add(&mut self.tokens.total, &call);
+                let agent = self.agent_of(parent.as_deref());
+                add_usage(
+                    self.tokens.by_agent.entry(agent).or_default(),
+                    &usage_of(&UsageTotals {
+                        api_calls: 1,
+                        ..usage
+                    }),
+                );
                 if parent.is_none() {
                     self.tokens.last = call;
                 }
@@ -564,6 +631,13 @@ impl EventProjector {
                     will_retry: false,
                     retry: None,
                 })));
+            }
+
+            // Not sent: whose usage a sub-agent's model calls are.
+            EngineEvent::SubAgentStart { agent_name } => {
+                if let Some(call) = parent {
+                    self.agent_names.insert(call, agent_name);
+                }
             }
 
             // Presentation, state a client reads, and the TUI's own feeds.
@@ -886,6 +960,15 @@ fn breakdown_of(usage: &UsageTotals) -> TokenUsageBreakdown {
         output_tokens: output,
         reasoning_output_tokens: count(usage.thinking_tokens),
     }
+}
+
+fn add_usage(total: &mut Usage, call: &Usage) {
+    total.input_tokens += call.input_tokens;
+    total.cached_input_tokens += call.cached_input_tokens;
+    total.cache_creation_tokens += call.cache_creation_tokens;
+    total.output_tokens += call.output_tokens;
+    total.reasoning_tokens += call.reasoning_tokens;
+    total.model_calls += call.model_calls;
 }
 
 fn add(total: &mut TokenUsageBreakdown, call: &TokenUsageBreakdown) {

@@ -145,7 +145,7 @@ impl TuiContext {
             })
             .map(|&(key, name)| {
                 let ptype = koda_core::config::ProviderType::from_url_or_name("", Some(key));
-                let has_key = koda_core::runtime_env::is_set(ptype.env_key_name());
+                let has_key = koda_config::runtime_env::is_set(ptype.env_key_name());
                 crate::widgets::provider_menu::ProviderItem {
                     key,
                     name,
@@ -213,7 +213,7 @@ impl TuiContext {
         note: String,
     ) {
         use koda_client::protocol::{feedback::FeedbackSaveParams, methods};
-        let dir = match koda_core::db::config_dir() {
+        let dir = match koda_config::config_dir() {
             Ok(dir) => dir.join("feedback"),
             Err(e) => {
                 crate::tui_output::err_msg(&mut self.scroll_buffer, format!("{e:#}"));
@@ -292,7 +292,7 @@ impl TuiContext {
 
         if ptype.requires_api_key() {
             let env_name = ptype.env_key_name().to_string();
-            let has_key = koda_core::runtime_env::is_set(&env_name);
+            let has_key = koda_config::runtime_env::is_set(&env_name);
             let label = if has_key {
                 format!("API key for {} (Enter to keep current)", ptype)
             } else {
@@ -605,7 +605,7 @@ impl TuiContext {
                     let ptype = koda_core::config::ProviderType::from_url_or_name("", Some(key));
 
                     if ptype.requires_api_key()
-                        && !koda_core::runtime_env::is_set(ptype.env_key_name())
+                        && !koda_config::runtime_env::is_set(ptype.env_key_name())
                     {
                         // Need API key first — enter wizard
                         self.start_provider_wizard(key);
@@ -622,7 +622,7 @@ impl TuiContext {
                         koda_core::config::ProviderType::from_url_or_name("", Some(item.key));
                     let env_name = ptype.env_key_name().to_string();
                     let provider_name = ptype.to_string();
-                    let has_key = koda_core::runtime_env::is_set(&env_name);
+                    let has_key = koda_config::runtime_env::is_set(&env_name);
                     let label = if has_key {
                         format!("API key for {} (Enter to keep current)", provider_name)
                     } else {
@@ -755,7 +755,7 @@ impl TuiContext {
                     base_url,
                     env_name,
                 } => {
-                    if value.is_empty() && !koda_core::runtime_env::is_set(&env_name) {
+                    if value.is_empty() && !koda_config::runtime_env::is_set(&env_name) {
                         self.scroll_buffer.push(Line::styled(
                             "  \u{2716} No API key provided.",
                             Style::default().fg(Color::Red),
@@ -776,7 +776,7 @@ impl TuiContext {
                     provider_type,
                     env_name,
                 } => {
-                    if value.is_empty() && !koda_core::runtime_env::is_set(&env_name) {
+                    if value.is_empty() && !koda_config::runtime_env::is_set(&env_name) {
                         self.scroll_buffer.push(Line::styled(
                             "  \u{2716} No API key provided.",
                             Style::default().fg(Color::Red),

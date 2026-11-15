@@ -1948,6 +1948,7 @@ dependencies = [
  "glob",
  "http",
  "ignore",
+ "koda-config",
  "koda-sandbox",
  "koda-test-utils",
  "parking_lot 0.13.0",

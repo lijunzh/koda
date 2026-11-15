@@ -84,6 +84,9 @@ pub struct TuiRenderer {
     pub tool_history: crate::tool_history::ToolOutputHistory,
     /// Current model name displayed in the status bar.
     pub model: String,
+    /// The open session's own replies, oldest first, as they completed or
+    /// were replayed, for `/copy`: Codex's TUI copies what it was sent too.
+    replies: Vec<String>,
     /// Reply text not yet drawn: everything after its last `\n`.
     text_buf: String,
     /// Reasoning text not yet drawn.
@@ -120,6 +123,7 @@ impl TuiRenderer {
         Self {
             tool_history: crate::tool_history::ToolOutputHistory::new(),
             model: String::new(),
+            replies: Vec::new(),
             text_buf: String::new(),
             think_buf: String::new(),
             has_emitted_text: false,
@@ -132,6 +136,16 @@ impl TuiRenderer {
             agents: HashMap::new(),
             error_shown: false,
         }
+    }
+
+    /// The open session's own replies, oldest first.
+    pub fn replies(&self) -> &[String] {
+        &self.replies
+    }
+
+    /// Another session is open: its replies come with its turns.
+    pub fn forget_replies(&mut self) {
+        self.replies.clear();
     }
 
     /// Forget the last turn's state as a new one starts.
@@ -383,7 +397,10 @@ impl TuiRenderer {
         buffer: &mut ScrollBuffer,
     ) {
         match item {
-            Item::AgentMessage { id, .. } if self.messages.remove(id) => {
+            Item::AgentMessage { id, text } if self.messages.remove(id) => {
+                if !text.trim().is_empty() {
+                    self.replies.push(text.clone());
+                }
                 if !self.text_buf.is_empty() {
                     let rest = std::mem::take(&mut self.text_buf);
                     self.rule(&rest, buffer);

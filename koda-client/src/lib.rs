@@ -69,10 +69,27 @@ pub struct StartArgs {
     pub config_file: ConfigFile,
     /// The project sessions work in.
     pub project_root: PathBuf,
-    /// Where sessions are stored.
-    pub db: Database,
+    /// Koda's folder, `~/.config/koda` in production
+    /// ([`koda_config::config_dir`]). The host keeps its database here, as
+    /// Codex's server keeps its state under `$CODEX_HOME`; no client opens
+    /// it. Tests pass a scratch one.
+    pub home: PathBuf,
     /// Who the client is, sent in `initialize`.
     pub client_info: ClientInfo,
+}
+
+/// The input history Koda kept in its database before the TUI kept its own
+/// file (`history.jsonl`, as Codex's TUI does), oldest first; empty when
+/// there is none or it can't be read. A front end reads it once, to bring
+/// it over. `home` is Koda's folder, as [`StartArgs::home`].
+pub async fn earlier_input_history(home: &std::path::Path) -> Vec<String> {
+    match Database::init(home).await {
+        Ok(db) => db.history_load().await.unwrap_or_default(),
+        Err(e) => {
+            tracing::warn!("couldn't read the earlier input history: {e:#}");
+            Vec::new()
+        }
+    }
 }
 
 /// A client with Koda's host running in this process.
@@ -126,7 +143,10 @@ impl InProcessClient {
     /// settings earlier versions kept in the database move into the file
     /// first, once.
     pub async fn start(args: StartArgs) -> Result<Self, RequestError> {
-        config_file::migrate(&args.db, &args.config_file).await;
+        let db = Database::init(&args.home)
+            .await
+            .map_err(|e| RequestError::Database(format!("{e:#}")))?;
+        config_file::migrate(&db, &args.config_file).await;
         let loaded = args.config_file.load().map_err(RequestError::Config)?;
         let config_warnings = config_file::warnings(&args.config_file, &loaded);
         // Commands any session starts may use local ports if the file says
@@ -136,7 +156,7 @@ impl InProcessClient {
         );
         // Stored API keys reach the sessions through the environment; one
         // already set there wins.
-        if let Err(e) = koda_core::keystore::inject_into_env(&args.db).await {
+        if let Err(e) = koda_core::keystore::inject_into_env(&db).await {
             tracing::warn!("couldn't load the stored API keys: {e:#}");
         }
         let (events_tx, events) = mpsc::unbounded_channel();
@@ -145,7 +165,7 @@ impl InProcessClient {
             config_file: args.config_file,
             config_warnings,
             project_root: args.project_root,
-            db: args.db,
+            db,
             events: events_tx,
         });
         let mut client = Self {
@@ -313,6 +333,8 @@ pub enum RequestError {
     /// The config file couldn't be read, or isn't valid: the host didn't
     /// start.
     Config(koda_config::ConfigError),
+    /// Koda's database couldn't be opened: the host didn't start.
+    Database(String),
 }
 
 impl fmt::Display for RequestError {
@@ -327,6 +349,7 @@ impl fmt::Display for RequestError {
                 write!(f, "{method}: response didn't decode: {source}")
             }
             Self::Config(error) => error.fmt(f),
+            Self::Database(error) => write!(f, "couldn't open Koda's database: {error}"),
         }
     }
 }
@@ -338,6 +361,7 @@ impl std::error::Error for RequestError {
             Self::Server { error, .. } => Some(error),
             Self::Encode { source, .. } | Self::Decode { source, .. } => Some(source),
             Self::Config(error) => Some(error),
+            Self::Database(_) => None,
         }
     }
 }
@@ -353,12 +377,11 @@ mod tests {
     /// client runs.
     async fn args(config: KodaConfig) -> (StartArgs, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        let db = Database::init(dir.path()).await.unwrap();
         let args = StartArgs {
             config,
             config_file: ConfigFile::in_dir(dir.path()),
+            home: dir.path().to_path_buf(),
             project_root: dir.path().to_path_buf(),
-            db,
             client_info: ClientInfo {
                 name: "koda-client-test".to_string(),
                 version: "0".to_string(),
