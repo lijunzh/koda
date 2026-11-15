@@ -140,6 +140,10 @@ server_notifications! {
     ReasoningTextDelta => "item/reasoning/textDelta" (crate::item::TextDeltaNotification),
     /// A line of a running command's output.
     ToolCallOutputDelta => "item/toolCall/outputDelta" (crate::item::ToolCallOutputDeltaNotification),
+    /// A notice about a running tool call.
+    ToolCallProgress => "item/toolCall/progress" (crate::item::ToolCallProgressNotification),
+    /// What the session's model calls have used, and how full its context is.
+    SessionTokenUsageUpdated => "session/tokenUsage/updated" (crate::session::SessionTokenUsageUpdatedNotification),
     /// A request was answered, by this client or another, or by Koda.
     ServerRequestResolved => "serverRequest/resolved" (ServerRequestResolvedNotification),
     /// Something failed. With `willRetry`, Koda tries again and the turn
@@ -335,6 +339,8 @@ mod tests {
                 status: ToolCallStatus::InProgress,
                 output: None,
                 detail: None,
+                changes: Vec::new(),
+                progress: Vec::new(),
             },
         });
         let wire = serde_json::to_value(n.to_rpc().unwrap()).unwrap();

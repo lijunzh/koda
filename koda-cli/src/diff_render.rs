@@ -267,6 +267,7 @@ mod tests {
             byte_count: 200,
             first_lines: vec!["fn main() {}".into()],
             truncated: true,
+            content: String::new(),
         });
         let lines = render_lines(&preview);
         let text: Vec<String> = lines

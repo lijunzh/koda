@@ -229,6 +229,7 @@ mod tests {
                 detail: "a.txt".into(),
                 effect: ToolEffect::LocalMutation,
                 allow_for_session: true,
+                changes: Vec::new(),
             },
         })
     }
@@ -330,6 +331,7 @@ mod tests {
                         error: None,
                         usage: None,
                         duration_ms: None,
+                        items: Vec::new(),
                     },
                 },
             ))

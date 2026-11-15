@@ -515,6 +515,10 @@ fn run_sub_agent<'a>(
                 parent_session_id,
             )
             .await?;
+            if let Some(call) = parent_tool_call_id {
+                db.set_metadata(&sid, crate::persistence::PARENT_TOOL_CALL_KEY, call)
+                    .await?;
+            }
             // Fork: copy parent conversation history into the new session.
             //
             // **#1022 B20**: was a per-row loop — N×(`insert_message`
@@ -526,7 +530,13 @@ fn run_sub_agent<'a>(
             // `completed_at` written inline for assistant rows).
             if is_fork {
                 let parent_history = db.load_context(parent_session_id).await?;
-                db.copy_messages_into_session(&sid, &parent_history).await?
+                db.copy_messages_into_session(&sid, &parent_history).await?;
+                db.set_metadata(
+                    &sid,
+                    crate::persistence::FORKED_ROWS_KEY,
+                    &parent_history.len().to_string(),
+                )
+                .await?
             }
             sid
         };

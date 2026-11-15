@@ -597,6 +597,7 @@ impl SessionTask {
                 error: None,
                 usage: None,
                 duration_ms: None,
+                items: Vec::new(),
             },
         }));
         self.sink
@@ -835,6 +836,7 @@ pub(crate) fn describe(stored: &koda_core::persistence::SessionInfo) -> Session 
         mode: None,
         tools: None,
         instruction_sources: None,
+        turns: Vec::new(),
     }
 }
 

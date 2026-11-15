@@ -30,6 +30,7 @@ mod background;
 pub mod builtin_skills;
 mod config_file;
 pub mod events;
+mod history;
 mod host;
 mod mcp;
 mod memory;

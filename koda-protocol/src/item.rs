@@ -4,7 +4,7 @@
 //! Koda has one item for every tool call, named by its tool, where Codex has
 //! one per kind (`commandExecution`, `fileChange`, `mcpToolCall`…): Koda's
 //! tools share one shape, and typed fields such as a command or a diff are
-//! added when a client needs them.
+//! added when a client needs them, as `changes` was for a file edit's diff.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -59,6 +59,17 @@ pub enum Item {
         /// What the call would do, in a line, when Koda asked about it or
         /// blocked it.
         detail: Option<String>,
+        /// The file changes it would make, when Koda asked about it or
+        /// blocked it: Codex's `fileChange` item's `changes`, carried on
+        /// Koda's one tool-call item.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        changes: Vec<FileUpdateChange>,
+        /// The notices sent about it as `item/toolCall/progress`, in order:
+        /// a sub-agent's, for an `InvokeAgent` call. Set on completion. A
+        /// notice sent after the call completed, as a skill's change of tool
+        /// scope is, is here only when the session is read back.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        progress: Vec<String>,
     },
     /// Context compaction: old history summarized or dropped to make room.
     #[serde(rename_all = "camelCase")]
@@ -91,6 +102,34 @@ impl Item {
             | Self::ContextCompaction { id, .. } => id,
         }
     }
+}
+
+/// A change to one file, in Codex's `FileUpdateChange` shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FileUpdateChange {
+    /// The file, as the tool call names it.
+    pub path: String,
+    /// Added, deleted or changed.
+    pub kind: PatchChangeKind,
+    /// For a change, the unified diff; for a new file, its content.
+    pub diff: String,
+}
+
+/// What happens to a file, as Codex's `PatchChangeKind` says.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum PatchChangeKind {
+    /// A new file.
+    Add,
+    /// A file removed.
+    Delete,
+    /// A file changed, and moved when `movePath` is set.
+    #[serde(rename_all = "camelCase")]
+    Update {
+        /// Where it moves to. Koda's tools never move a file.
+        move_path: Option<String>,
+    },
 }
 
 /// Where a tool call stands.
@@ -172,6 +211,34 @@ pub struct ItemCompletedNotification {
     pub item: Item,
 }
 
+/// An item of a stored turn, as `session/start` (resuming) and
+/// `session/read` return it: what `item/completed` sent, with its parent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnItem {
+    /// On a sub-agent's items: the tool call that started the sub-agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_item_id: Option<String>,
+    /// The item.
+    pub item: Item,
+}
+
+/// `item/toolCall/progress`: a notice about a running tool call, such as a
+/// sub-agent reaching its turn limit. Codex's `item/mcpToolCall/progress`,
+/// for Koda's one tool-call item.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolCallProgressNotification {
+    /// The session.
+    pub session_id: String,
+    /// The turn.
+    pub turn_id: String,
+    /// The tool call.
+    pub item_id: String,
+    /// The notice, in a line.
+    pub message: String,
+}
+
 /// `item/agentMessage/delta` and `item/reasoning/textDelta`: more text.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -226,6 +293,9 @@ pub struct ToolCallApprovalParams {
     pub tool: String,
     /// What the call would do, in a line.
     pub detail: String,
+    /// The file changes it would make, as on its item.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changes: Vec<FileUpdateChange>,
     /// Why it needs a yes.
     pub effect: ToolEffect,
     /// Whether `approveForSession` may be answered: only for local changes

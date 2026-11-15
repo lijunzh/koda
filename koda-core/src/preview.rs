@@ -107,6 +107,21 @@ pub struct WriteNewPreview {
     pub first_lines: Vec<String>,
     /// Whether `first_lines` was truncated.
     pub truncated: bool,
+    /// The whole file, for a client that shows it all. Empty in previews
+    /// stored before it was added.
+    #[serde(default)]
+    pub content: String,
+}
+
+impl UnifiedDiffPreview {
+    /// The whole change as a unified diff: `@@` hunks with three lines of
+    /// context and no file header, not cut short as [`Self::hunks`] may be.
+    pub fn unified_text(&self) -> String {
+        TextDiff::from_lines(&self.old_content, &self.new_content)
+            .unified_diff()
+            .context_radius(CONTEXT_LINES)
+            .to_string()
+    }
 }
 
 // ── Compute ───────────────────────────────────────────────────
@@ -261,6 +276,7 @@ async fn preview_write(args: &serde_json::Value, project_root: &Path) -> Option<
             byte_count: content.len(),
             first_lines,
             truncated,
+            content: content.to_string(),
         }))
     }
 }

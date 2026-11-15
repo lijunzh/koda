@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **What a client needs to draw a session comes through the client protocol,** as in Codex. `session/tokenUsage/updated` reports token counts and how full the context is, before each model call and when a turn's last call is done (Codex's `thread/tokenUsage/updated`, plus Koda's `contextTokens`). An edit's approval and its tool-call item carry its diff as `changes: [{path, kind, diff}]`, Codex's shape. A sub-agent's notices, such as reaching its turn limit, and a skill's change of tool scope arrive as `item/toolCall/progress` on their call, and the call's item keeps them as `progress`. Resuming a session with `session/start` returns its turns and their items, a sub-agent's tool calls under its call, and `session/read` reads a stored session without opening it, with its turns when asked (Codex's `thread/resume` and `thread/read`). Stored sessions keep messages, not turns, so a resumed turn's status is read from its messages and its items lack what wasn't stored; the `turns` field documents what.
+
 - **Background processes and agents through the client protocol.** `session/backgroundTerminals/list`, `terminate` and `clean` list and stop the processes the model started with `Bash {background: true}`, as Codex's `thread/backgroundTerminals/*` do; they outlive the turn that started them. `agent/list` names the sub-agents the model can call, with where each is defined (built-in, user or project).
 
 - **`skills/list` lists the skills, as Codex's does:** each skill's name, description, file, scope (`system`, `user` or `repo`, Codex's names) and whether a person can pick it, plus the skill files that couldn't be loaded and why. With no `cwds`, the host's project. `/skills` uses it. Search in `/skills` now matches name and description only, as Codex's skills have no tags; the model's `ListSkills` still searches tags.
@@ -76,6 +78,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **A sub-agent's notices are stored under its call again.** Since 0.6.0 a resumed session or a debug bundle lost the notices a sub-agent sent, such as reaching its turn limit: they were stored as the session's own lines, not under the `InvokeAgent` call.
 - **A skill file that can't be loaded is reported** instead of skipped silently: `/skills` names the file and the reason (no frontmatter, no closing `---`, no `name:`), and so does `skills/list`.
 - **`/skills` no longer lists model-only skills** (`user_invocable: false`), as its documentation always said.
 - **Koda tidies `~/.koda/clones`, unused since 0.6.0.** Sub-agents on macOS used to work in copies of the project there, and folders were left behind, most of them empty. At TUI start Koda now removes the empty ones, and `~/.koda` once nothing is left in it. A folder that still holds a copy is kept, and a startup warning names it so you can check it and delete it yourself.
