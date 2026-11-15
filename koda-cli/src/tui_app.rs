@@ -18,7 +18,6 @@ use crate::tui_context::{ProviderOverrides, TuiContext};
 
 use anyhow::Result;
 use koda_core::config::KodaConfig;
-use koda_core::db::Database;
 use ratatui::{
     style::{Color, Style},
     text::Line,
@@ -32,7 +31,6 @@ pub async fn run(
     project_root: PathBuf,
     config: KodaConfig,
     overrides: ProviderOverrides,
-    db: Database,
     resume: Option<String>,
     prompt: Option<String>,
     version_check: tokio::task::JoinHandle<Option<String>>,
@@ -42,7 +40,6 @@ pub async fn run(
         project_root,
         config,
         overrides,
-        db,
         resume,
         version_check,
         first_run,

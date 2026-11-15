@@ -186,8 +186,9 @@ Defaults to the most recent response (`n=1`).
 /copy 5    ← copy the fifth-to-last response
 ```
 
-Reads from the full session DB, so compacted (summarised) responses are
-included in the count. A one-line preview is shown in the confirmation.
+Counts the session's own replies, not sub-agents', from the ones the TUI was
+sent: this run's, and a resumed session's earlier turns, compacted ones
+included. A one-line preview is shown in the confirmation.
 
 ## `/feedback`
 

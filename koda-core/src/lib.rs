@@ -107,7 +107,7 @@ pub mod provider_catalog;
 /// LLM provider abstraction — Anthropic, Gemini, OpenAI-compatible.
 pub mod providers;
 /// Thread-safe runtime environment — replaces `std::env::set_var`.
-pub mod runtime_env;
+pub use koda_config::runtime_env;
 /// Process sandboxing for the Bash tool (macOS seatbelt / Linux bwrap).
 pub mod sandbox;
 /// Session lifecycle — create, resume, list, delete.

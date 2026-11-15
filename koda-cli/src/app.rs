@@ -300,7 +300,7 @@ pub(crate) async fn run() -> Result<()> {
 
     // Logs go to the log database, and to `<log_dir>/koda.log` when the
     // config file sets `log_dir`, as Codex's do (see `logging`).
-    let config_dir = koda_core::db::config_dir()?;
+    let config_dir = koda_config::config_dir()?;
     let log_dir = user_config
         .config
         .log_dir
@@ -318,13 +318,14 @@ pub(crate) async fn run() -> Result<()> {
         .or_else(|| user_config.config.mode.map(|m| m.as_str().to_string()))
         .unwrap_or_else(|| "auto".to_string());
 
-    // Initialize database early — keys and last-provider recall live here (#693)
-    let db = koda_core::db::Database::init(&koda_core::db::config_dir()?).await?;
+    // Stored API keys and `--session` prefixes still come from the
+    // database here: keys move into the host's start in 8d.
+    let db = koda_core::db::Database::init(&config_dir).await?;
 
     // `koda mcp`: the stored servers, through a host, then exit.
     if let Some(mcp) = mcp_cli {
         let config = koda_core::config::KodaConfig::load(&project_root, &cli.agent)?;
-        return mcp.run(config, project_root, db).await;
+        return mcp.run(config, project_root).await;
     }
 
     // Load and inject stored API keys (env vars take precedence)
@@ -398,7 +399,7 @@ pub(crate) async fn run() -> Result<()> {
             Some(id) => Some(db.resolve_session_id(&id).await?),
             None => None,
         };
-        let exit_code = headless::run_headless(project_root, config, db, resume, run).await?;
+        let exit_code = headless::run_headless(project_root, config, resume, run).await?;
         // `exit` runs no destructors: store the queued lines first, the last
         // of which say how the run ended, and write out the file's.
         crate::logging::flush().await;
@@ -463,7 +464,6 @@ pub(crate) async fn run() -> Result<()> {
         project_root,
         config,
         overrides,
-        db,
         resume,
         cli.positional_prompt,
         version_check,

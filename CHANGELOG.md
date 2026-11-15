@@ -38,6 +38,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Changed
 
 - **The host builds every session's agent; the TUI no longer builds its own,** as Codex's server builds each thread's. The system prompt no longer lists the TUI's slash commands, as Codex's prompt lists none (`/help` does); a session a person answers still gets the short quick reference (trust modes, file history), and `koda exec`'s prompt is unchanged. The TUI's model completions come from `model/list`. `StartArgs::agent` is removed from `koda-client`.
+- **The TUI and `koda exec` no longer open Koda's database; the host does,** as Codex's server keeps its own state. `koda-client`'s `StartArgs` takes Koda's folder (`home`) instead of a `Database`.
+  - **Usage:** `session/tokenUsage/updated`'s `total` now counts from the session's creation, and a resumed session's stored counts are sent once when it opens, as Codex replays a thread's. A new `byAgent` splits the counts by agent. `koda exec`'s `exec/summary` takes `usage`, `usageByAgent` and `response` from the protocol: `inputTokens` now counts cached tokens for Anthropic too, as the protocol's usage always has, and compaction calls are counted.
+  - **The TUI:** `/copy` copies from the replies the TUI was sent, as Codex's does. A resumed session's mode comes from the host, and listed sessions carry the mode they last ran in. A bare `/copy` now runs on Enter instead of only completing.
+  - **Shared helpers:** Koda's folder (`config_dir`) and the thread-safe environment (`runtime_env`) move to `koda-config`.
 - **CI keeps new `koda-core` uses out of `koda-cli`** (`scripts/check_tui_core_boundary.sh`), as Codex's CI keeps `codex-core` out of its TUI: the remaining uses are listed and may only shrink, on the way to the TUI reaching the engine only through the client protocol.
 
 - **`/feedback` replaces `/debug-bundle`,** as in Codex. It asks what kind of report (bug, bad result, good result, other), whether to include logs and session history, and for a note, then saves `~/.config/koda/feedback/koda-feedback-<time>-<id>.zip` to attach to an issue. Nothing is sent anywhere.

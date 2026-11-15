@@ -12,7 +12,6 @@ use crate::mouse_select::copy_to_clipboard;
 use crate::scroll_buffer::ScrollBuffer;
 use crate::tui_output;
 use crate::tui_render::TuiRenderer;
-use koda_core::session_store::SessionStore;
 use koda_core::trust;
 
 use crate::tui_context::TuiSession;
@@ -178,7 +177,7 @@ pub async fn handle_slash_command(
 
         "/copy" => {
             let n: usize = arg.and_then(|s| s.parse().ok()).unwrap_or(1).max(1);
-            handle_copy_response(buffer, session, n).await;
+            handle_copy_response(buffer, renderer.replies(), n);
             SlashAction::Continue
         }
 
@@ -318,33 +317,25 @@ async fn handle_resume_session(
                     0 => tui_output::err_msg(buffer, format!("No session found matching '{id}'.")),
                     1 => {
                         let target = &matches[0];
-                        let mode_to_apply = match session
-                            .db
-                            .get_session_mode(&target.id)
-                            .await
-                            .ok()
-                            .flatten()
-                        {
-                            Some(mode_str) => match trust::TrustMode::parse(&mode_str) {
-                                Some(parsed) => {
-                                    let (m, warning) = trust::coerce_for_top_level(parsed);
-                                    let report = koda_core::sandbox::dependency_report();
-                                    match trust::require_sandbox_for_auto(m, report.available) {
-                                        Ok(validated) => Some((validated, warning)),
-                                        Err(msg) => {
-                                            tui_output::err_msg(
-                                                buffer,
-                                                format!(
-                                                    "Cannot resume session in Auto mode: {msg}\n\nSetup:\n{}",
-                                                    koda_core::sandbox::setup_hint(report.backend)
-                                                ),
-                                            );
-                                            return;
-                                        }
+                        let mode_to_apply = match target.mode {
+                            Some(mode) => {
+                                let parsed = crate::tui_context::core_mode(mode);
+                                let (m, warning) = trust::coerce_for_top_level(parsed);
+                                let report = koda_core::sandbox::dependency_report();
+                                match trust::require_sandbox_for_auto(m, report.available) {
+                                    Ok(validated) => Some((validated, warning)),
+                                    Err(msg) => {
+                                        tui_output::err_msg(
+                                            buffer,
+                                            format!(
+                                                "Cannot resume session in Auto mode: {msg}\n\nSetup:\n{}",
+                                                koda_core::sandbox::setup_hint(report.backend)
+                                            ),
+                                        );
+                                        return;
                                     }
                                 }
-                                None => None,
-                            },
+                            }
                             None => None,
                         };
                         // The TUI opens it on the host before the next turn.
@@ -552,33 +543,12 @@ fn handle_expand(buffer: &mut ScrollBuffer, renderer: &TuiRenderer, n: usize) {
 
 // ── /copy ────────────────────────────────────────────────
 
-/// Export the session transcript to clipboard or a Markdown file.
-///
-/// `/copy [n]` — copy the Nth-most-recent assistant response to clipboard.
-///
-/// Loads messages from the DB, filters to assistant turns with text content,
-/// and copies the Nth-last one (1 = most recent).
-async fn handle_copy_response(buffer: &mut ScrollBuffer, session: &TuiSession, n: usize) {
-    let messages = match session.db.load_all_messages(&session.id).await {
-        Ok(msgs) => msgs,
-        Err(e) => {
-            tui_output::err_msg(buffer, format!("Could not load messages: {e}"));
-            return;
-        }
-    };
-
-    let responses: Vec<&str> = messages
-        .iter()
-        .filter_map(|m| {
-            use koda_core::session_store::Role;
-            if m.role == Role::Assistant {
-                m.content.as_deref().filter(|c| !c.trim().is_empty())
-            } else {
-                None
-            }
-        })
-        .collect();
-
+/// `/copy [n]`: copy the Nth-most-recent reply of the session's own to the
+/// clipboard (1 = most recent). The replies are the ones the TUI was sent,
+/// live or with the session's earlier turns, as Codex's `/copy` copies its
+/// last agent message: the clipboard is the client's.
+fn handle_copy_response(buffer: &mut ScrollBuffer, replies: &[String], n: usize) {
+    let responses: Vec<&str> = replies.iter().map(String::as_str).collect();
     let total = responses.len();
     if total == 0 {
         tui_output::dim_msg(buffer, "No assistant responses to copy.".into());

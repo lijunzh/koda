@@ -36,7 +36,9 @@ pub struct Session {
     /// The context window in tokens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
-    /// What Koda may do without asking.
+    /// What Koda may do without asking: the mode an open session runs in,
+    /// and for a listed one the mode it last ran in, which resuming it
+    /// keeps.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<TrustMode>,
     /// The tools the model is offered.
@@ -306,13 +308,20 @@ pub struct SessionTokenUsageUpdatedNotification {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenUsage {
-    /// Every model call since the session was opened: its turns,
-    /// sub-agents and compactions.
+    /// Every model call since the session was created: its turns,
+    /// sub-agents and compactions. A resumed session's count starts from
+    /// what its stored calls used, as Codex restores a thread's.
     pub total: TokenUsageBreakdown,
     /// The latest model call of the session's own: not a sub-agent's.
     pub last: TokenUsageBreakdown,
     /// The context window, in tokens.
     pub model_context_window: Option<u64>,
+    /// `total` by agent, with its model calls: the session's own under
+    /// `main`, each sub-agent's under its name. Koda's own: a Codex
+    /// sub-agent is a thread with its own usage, while Koda's run inside
+    /// the session's turn, so the split is sent here.
+    #[serde(default)]
+    pub by_agent: std::collections::BTreeMap<String, crate::turn::Usage>,
 }
 
 /// Tokens of one model call, or added up. Codex's `TokenUsageBreakdown`.

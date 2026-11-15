@@ -2284,7 +2284,7 @@
               "type": "null"
             }
           ],
-          "description": "What Koda may do without asking."
+          "description": "What Koda may do without asking: the mode an open session runs in,\nand for a listed one the mode it last ran in, which resuming it\nkeeps."
         },
         "model": {
           "description": "The model id, such as `claude-sonnet-5-5`.",
@@ -3001,6 +3001,14 @@
     "TokenUsage": {
       "description": "A session's token counts. Codex's `ThreadTokenUsage`.",
       "properties": {
+        "byAgent": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Usage"
+          },
+          "default": {},
+          "description": "`total` by agent, with its model calls: the session's own under\n`main`, each sub-agent's under its name. Koda's own: a Codex\nsub-agent is a thread with its own usage, while Koda's run inside\nthe session's turn, so the split is sent here.",
+          "type": "object"
+        },
         "last": {
           "$ref": "#/$defs/TokenUsageBreakdown",
           "description": "The latest model call of the session's own: not a sub-agent's."
@@ -3016,7 +3024,7 @@
         },
         "total": {
           "$ref": "#/$defs/TokenUsageBreakdown",
-          "description": "Every model call since the session was opened: its turns,\nsub-agents and compactions."
+          "description": "Every model call since the session was created: its turns,\nsub-agents and compactions. A resumed session's count starts from\nwhat its stored calls used, as Codex restores a thread's."
         }
       },
       "required": [

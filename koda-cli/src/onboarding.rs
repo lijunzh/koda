@@ -6,7 +6,7 @@
 
 /// Check if this is the first run (no config directory exists).
 pub fn is_first_run() -> bool {
-    koda_core::db::config_dir().is_ok_and(|dir| !dir.exists())
+    koda_config::config_dir().is_ok_and(|dir| !dir.exists())
 }
 
 #[cfg(test)]

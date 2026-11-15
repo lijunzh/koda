@@ -140,8 +140,6 @@ pub struct TuiSession {
     /// The open session's id. A command that switches sessions changes it,
     /// and the TUI opens that session on the host before its next turn.
     pub id: String,
-    /// The database the host also writes to. The TUI writes only while idle.
-    pub db: koda_core::db::Database,
     /// The instruction files the host loaded for it, in order, as of its
     /// opening (`instructionSources`), for `/memory`.
     pub instruction_sources: Vec<String>,
@@ -149,13 +147,17 @@ pub struct TuiSession {
 
 /// Open session `resume`, or a new one, on the host, with what `named`
 /// gives; the host fills in the rest (the saved choice, or a resumed
-/// session's own). A resumed session comes with its earlier turns.
+/// session's own). A resumed session comes with its earlier turns. Returns
+/// the mode it opened in, too.
 pub(crate) async fn open_host_session(
     client: &koda_client::InProcessClient,
     resume: Option<String>,
-    db: koda_core::db::Database,
     named: &settings::Named,
-) -> Result<(TuiSession, Vec<koda_client::protocol::turn::Turn>)> {
+) -> Result<(
+    TuiSession,
+    Vec<koda_client::protocol::turn::Turn>,
+    Option<koda_client::protocol::state::TrustMode>,
+)> {
     use koda_client::protocol::{methods, session::SessionStartParams};
     let started = client
         .request::<methods::SessionStart>(SessionStartParams {
@@ -171,11 +173,22 @@ pub(crate) async fn open_host_session(
     Ok((
         TuiSession {
             id: started.session.id,
-            db,
             instruction_sources,
         },
         started.session.turns,
+        started.session.mode,
     ))
+}
+
+/// Core's name for a protocol trust mode, while the TUI still keeps core's
+/// (8c moves it to the protocol's).
+pub(crate) fn core_mode(mode: koda_client::protocol::state::TrustMode) -> TrustMode {
+    use koda_client::protocol::state::TrustMode as P;
+    match mode {
+        P::Plan => TrustMode::Plan,
+        P::Safe => TrustMode::Safe,
+        P::Auto => TrustMode::Auto,
+    }
 }
 
 /// Draw `turns`, a session's earlier turns, through the live renderer, and
@@ -225,6 +238,8 @@ pub(crate) async fn show_earlier_turns(
     buffer: &mut ScrollBuffer,
 ) {
     use koda_client::protocol::{methods, session::SessionReadParams};
+    // Another session's replies, for `/copy`, come with its turns.
+    renderer.forget_replies();
     let read = client
         .request::<methods::SessionRead>(SessionReadParams {
             session_id: session_id.to_string(),
@@ -289,11 +304,11 @@ pub(crate) enum CommandOutcome {
 /// persisted as `auto` on a sandboxed host could be resumed on an unsandboxed
 /// host and bypass the startup Auto refusal. Sneaky little gremlin.
 pub(crate) fn resolve_initial_trust_mode(
-    persisted: Option<&str>,
+    persisted: Option<TrustMode>,
     fallback: TrustMode,
     sandbox_available: bool,
 ) -> Result<(TrustMode, Option<&'static str>), String> {
-    let parsed = persisted.and_then(TrustMode::parse).unwrap_or(fallback);
+    let parsed = persisted.unwrap_or(fallback);
     let (mode, warning) = koda_core::trust::coerce_for_top_level(parsed);
     let mode = koda_core::trust::require_sandbox_for_auto(mode, sandbox_available)?;
     Ok((mode, warning))
@@ -327,18 +342,16 @@ impl TuiContext {
         project_root: PathBuf,
         mut config: KodaConfig,
         overrides: ProviderOverrides,
-        db: koda_core::db::Database,
         resume: Option<String>,
         version_check: tokio::task::JoinHandle<Option<String>>,
         first_run: bool,
     ) -> Result<Self> {
         // Input history is the TUI's own file. The first time, what Koda kept
         // in its database before comes over.
-        let input_history = crate::input_history::InputHistory::in_dir(
-            &koda_core::db::config_dir().unwrap_or_else(|_| std::env::temp_dir()),
-        );
+        let home = koda_config::config_dir()?;
+        let input_history = crate::input_history::InputHistory::in_dir(&home);
         if !input_history.exists() {
-            let earlier = db.history_load().await.unwrap_or_default();
+            let earlier = koda_client::earlier_input_history(&home).await;
             if let Err(e) = input_history.import(earlier) {
                 tracing::warn!("couldn't bring the input history over: {e}");
             }
@@ -349,8 +362,8 @@ impl TuiContext {
         let mut client = koda_client::InProcessClient::start(koda_client::StartArgs {
             config: config.clone(),
             config_file: crate::user_config::file()?,
+            home,
             project_root: project_root.clone(),
-            db: db.clone(),
             client_info: koda_client::protocol::initialize::ClientInfo {
                 name: "koda-tui".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
@@ -361,8 +374,8 @@ impl TuiContext {
         // The flags given, and nothing else: the host fills in the rest from
         // the saved choice for a new session, or a resumed one's own.
         let named = settings::Named::from_flags(&config, overrides);
-        let (session, earlier_turns) =
-            open_host_session(&client, resume, db.clone(), &named).await?;
+        let (session, earlier_turns, opened_mode) =
+            open_host_session(&client, resume, &named).await?;
 
         // Lines shown under the banner, which waits for the session's settings.
         let mut notices: Vec<Line<'static>> = Vec::new();
@@ -372,21 +385,14 @@ impl TuiContext {
         // constant) so `--mode safe` is honored on first run when there's no
         // persisted mode yet. Fixes #982.
         let (initial_mode, initial_mode_warning) = {
-            use koda_core::session_store::SessionStore;
-            let persisted = session
-                .db
-                .get_session_mode(&session.id)
-                .await
-                .ok()
-                .flatten();
             let report = koda_core::sandbox::dependency_report();
-            resolve_initial_trust_mode(persisted.as_deref(), config.trust, report.available)
+            resolve_initial_trust_mode(opened_mode.map(core_mode), config.trust, report.available)
                 .map_err(|msg| {
-                    anyhow::anyhow!(
-                        "{msg}\n\nSetup:\n{}",
-                        koda_core::sandbox::setup_hint(report.backend)
-                    )
-                })?
+                anyhow::anyhow!(
+                    "{msg}\n\nSetup:\n{}",
+                    koda_core::sandbox::setup_hint(report.backend)
+                )
+            })?
         };
         if let Some(warning) = initial_mode_warning {
             notices.push(Line::from(vec![
@@ -776,7 +782,8 @@ impl TuiContext {
                 // from it and save the choice, like a name picked from the
                 // wizard.
                 let ptype = koda_core::config::ProviderType::from_url_or_name(arg, None);
-                if ptype.requires_api_key() && !koda_core::runtime_env::is_set(ptype.env_key_name())
+                if ptype.requires_api_key()
+                    && !koda_config::runtime_env::is_set(ptype.env_key_name())
                 {
                     self.scroll_buffer.push(Line::styled(
                         format!(
@@ -958,19 +965,19 @@ mod tests {
         // Resume semantics from #590: a stored mode beats the CLI fallback,
         // then the top-level safety rules are applied.
         assert_eq!(
-            resolve_initial_trust_mode(Some("plan"), TrustMode::Auto, true)
+            resolve_initial_trust_mode(Some(TrustMode::Plan), TrustMode::Auto, true)
                 .unwrap()
                 .0,
             TrustMode::Safe,
         );
         assert_eq!(
-            resolve_initial_trust_mode(Some("safe"), TrustMode::Auto, true)
+            resolve_initial_trust_mode(Some(TrustMode::Safe), TrustMode::Auto, true)
                 .unwrap()
                 .0,
             TrustMode::Safe,
         );
         assert_eq!(
-            resolve_initial_trust_mode(Some("auto"), TrustMode::Safe, true)
+            resolve_initial_trust_mode(Some(TrustMode::Auto), TrustMode::Safe, true)
                 .unwrap()
                 .0,
             TrustMode::Auto,
@@ -978,26 +985,9 @@ mod tests {
     }
 
     #[test]
-    fn unparseable_persisted_mode_falls_back_to_config_trust_not_auto() {
-        // The other half of the bug: corrupt/unknown persisted strings used
-        // to fall through to a hardcoded `Auto`. Now they honor config.trust.
-        assert_eq!(
-            resolve_initial_trust_mode(Some("bogus"), TrustMode::Safe, true)
-                .unwrap()
-                .0,
-            TrustMode::Safe,
-        );
-        assert_eq!(
-            resolve_initial_trust_mode(Some(""), TrustMode::Plan, true)
-                .unwrap()
-                .0,
-            TrustMode::Safe,
-        );
-    }
-
-    #[test]
     fn persisted_auto_requires_sandbox_on_resume() {
-        let err = resolve_initial_trust_mode(Some("auto"), TrustMode::Safe, false).unwrap_err();
+        let err =
+            resolve_initial_trust_mode(Some(TrustMode::Auto), TrustMode::Safe, false).unwrap_err();
         assert!(err.contains("Auto mode requires"));
         assert!(err.contains("--mode safe"));
     }
@@ -1011,31 +1001,7 @@ mod tests {
     #[test]
     fn persisted_safe_still_allowed_without_sandbox() {
         assert_eq!(
-            resolve_initial_trust_mode(Some("safe"), TrustMode::Auto, false)
-                .unwrap()
-                .0,
-            TrustMode::Safe,
-        );
-    }
-
-    #[test]
-    fn parse_accepts_legacy_aliases_for_persisted_strings() {
-        // `TrustMode::parse` accepts aliases like "yolo", "strict", etc.
-        // Make sure resume of older sessions stored under those names still works.
-        assert_eq!(
-            resolve_initial_trust_mode(Some("yolo"), TrustMode::Safe, true)
-                .unwrap()
-                .0,
-            TrustMode::Auto,
-        );
-        assert_eq!(
-            resolve_initial_trust_mode(Some("strict"), TrustMode::Auto, true)
-                .unwrap()
-                .0,
-            TrustMode::Safe,
-        );
-        assert_eq!(
-            resolve_initial_trust_mode(Some("readonly"), TrustMode::Auto, true)
+            resolve_initial_trust_mode(Some(TrustMode::Safe), TrustMode::Auto, false)
                 .unwrap()
                 .0,
             TrustMode::Safe,

@@ -570,6 +570,21 @@ impl Host {
             opened.session.turns = crate::history::turns_for_resume(&self.context.db, &id)
                 .await
                 .map_err(history_error)?;
+            // Its stored token counts, on the turn they were last counted
+            // on, as Codex replays a thread's when a client attaches.
+            if let (Some(token_usage), Some(last)) =
+                (opened.restored_usage.take(), opened.session.turns.last())
+            {
+                let _ = self.context.events.send(Outgoing::Notification(
+                    ServerNotification::SessionTokenUsageUpdated(
+                        koda_protocol::session::SessionTokenUsageUpdatedNotification {
+                            session_id: id.clone(),
+                            turn_id: last.id.clone(),
+                            token_usage,
+                        },
+                    ),
+                ));
+            }
         }
         let mut sessions = self.sessions.lock().await;
         // A prefix may have resolved to a session opened meanwhile.

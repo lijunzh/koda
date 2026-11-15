@@ -118,12 +118,11 @@ fn config(server: &FakeLlmServer) -> KodaConfig {
 async fn client(config: KodaConfig, dir: &tempfile::TempDir) -> InProcessClient {
     let project = dir.path().join("project");
     std::fs::create_dir_all(&project).unwrap();
-    let db = Database::init(&dir.path().join("config")).await.unwrap();
     InProcessClient::start(StartArgs {
         config,
         config_file: koda_client::ConfigFile::in_dir(&dir.path().join("config")),
+        home: dir.path().join("config"),
         project_root: project,
-        db,
         client_info: ClientInfo {
             name: "turns-test".to_string(),
             version: "0".to_string(),
@@ -2458,6 +2457,103 @@ async fn token_usage_is_sent_after_each_model_call() {
     assert_eq!(last.last.output_tokens, 20);
     assert_eq!(last.total.input_tokens, 300);
     assert_eq!(last.total.output_tokens, 30);
+    koda.client.shutdown().await;
+}
+
+/// Usage is counted by agent, and a resumed session's count goes on from
+/// what it stored, re-sent to the client that resumed it, as Codex replays
+/// a thread's token usage on attach. A listed session carries the mode it
+/// last ran in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn usage_is_split_by_agent_and_restored_on_resume() {
+    use koda_client::protocol::session::SessionListParams;
+    let server = model(vec![
+        tool_call(
+            "call_agent",
+            "InvokeAgent",
+            json!({"agent_name": "explore", "prompt": "What does notes.txt say?"}),
+        ),
+        whole(json!({
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [{
+                "id": "call_read",
+                "type": "function",
+                "function": {"name": "Read", "arguments": json!({"file_path": "notes.txt"}).to_string()},
+            }],
+        })),
+        whole(json!({"role": "assistant", "content": "It says 42."})),
+        text("The notes say 42."),
+    ])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("project")).unwrap();
+    std::fs::write(dir.path().join("project/notes.txt"), "42\n").unwrap();
+    let mut koda = Koda::start_in(config(&server), dir).await;
+    let turn_id = koda.turn("Ask a sub-agent about the notes").await;
+    let messages = koda.until("turn/completed").await;
+    let live = (*token_usage(&messages).last().expect("usage was sent")).clone();
+    let explore = &live.by_agent["explore"];
+    assert_eq!(
+        (
+            explore.input_tokens,
+            explore.output_tokens,
+            explore.model_calls
+        ),
+        (100, 10, 2),
+        "{live:#?}"
+    );
+    assert_eq!(live.by_agent["main"].model_calls, 2, "{live:#?}");
+    assert_eq!(live.by_agent.len(), 2, "{live:#?}");
+    let summed: u64 = live.by_agent.values().map(|u| u.input_tokens).sum();
+    assert_eq!(live.total.input_tokens, summed);
+
+    // A mode set for it is stored with it.
+    koda.client
+        .request::<methods::SessionSettingsUpdate>(
+            koda_client::protocol::session::SessionSettingsUpdateParams {
+                session_id: koda.session.clone(),
+                mode: Some(koda_client::protocol::state::TrustMode::Safe),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        koda.unsubscribe().await,
+        SessionUnsubscribeStatus::Unsubscribed
+    );
+    let listed = koda
+        .client
+        .request::<methods::SessionList>(SessionListParams::default())
+        .await
+        .unwrap()
+        .data;
+    let mine = listed.iter().find(|s| s.id == koda.session).unwrap();
+    assert_eq!(
+        mine.mode,
+        Some(koda_client::protocol::state::TrustMode::Safe),
+        "the mode it last ran in"
+    );
+
+    koda.client
+        .request::<methods::SessionStart>(SessionStartParams {
+            session_id: Some(koda.session.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let opened = koda.until("session/tokenUsage/updated").await;
+    let restored = match opened.last() {
+        Some(Outgoing::Notification(ServerNotification::SessionTokenUsageUpdated(n))) => n,
+        other => panic!("expected the restored usage, got {other:?}"),
+    };
+    assert_eq!(
+        restored.turn_id, turn_id,
+        "on the turn it was last counted on"
+    );
+    assert_eq!(restored.token_usage.by_agent, live.by_agent);
+    assert_eq!(restored.token_usage.total, live.total);
     koda.client.shutdown().await;
 }
 

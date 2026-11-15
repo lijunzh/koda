@@ -235,9 +235,10 @@ impl TuiContext {
         let instruction_sources = started.session.instruction_sources.unwrap_or_default();
         self.session = TuiSession {
             id: started.session.id,
-            db: self.session.db.clone(),
             instruction_sources,
         };
+        // A new session has no replies to `/copy` yet.
+        self.renderer.forget_replies();
         if let Err(e) = self.sync_settings(true).await {
             crate::tui_output::warn_msg(&mut self.scroll_buffer, format!("{e:#}"));
         }

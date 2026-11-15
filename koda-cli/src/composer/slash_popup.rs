@@ -47,10 +47,12 @@ pub const SLASH_COMMANDS: &[(&str, &str, Option<&str>)] = &[
         "Summarize conversation to reclaim context",
         None,
     ),
+    // No arg hint, as for `/mcp`: with one, Enter on a bare `/copy`
+    // completed it instead of copying.
     (
         "/copy",
         "Copy last response to clipboard (/copy 2 for 2nd-last)",
-        Some("[n]"),
+        None,
     ),
     ("/diff", "Show git diff (review, commit)", None),
     ("/exit", "Quit the session (also /quit)", None),

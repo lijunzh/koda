@@ -22,22 +22,19 @@
 
 use crate::input;
 use crate::protocol_text::{self, Tone};
-use koda_client::events::{Outgoing, usage_of};
+use koda_client::events::Outgoing;
 use koda_client::protocol::initialize::ClientInfo;
 use koda_client::protocol::item::{
     FileUpdateChange, Item, OutputStream, PatchChangeKind, ToolCallStatus, ToolEffect,
 };
 use koda_client::protocol::server::ExecSummary;
-use koda_client::protocol::session::{ApprovalPolicy, SessionStartParams};
+use koda_client::protocol::session::{ApprovalPolicy, SessionStartParams, TokenUsage};
 use koda_client::protocol::turn::{
-    ImageInput, PlanStep, Turn, TurnInterruptParams, TurnStartParams, TurnStatus,
+    ImageInput, PlanStep, Turn, TurnInterruptParams, TurnStartParams, TurnStatus, Usage,
 };
 use koda_client::protocol::{ServerNotification, ServerRequest, methods};
 use koda_client::{InProcessClient, StartArgs};
 use koda_core::config::KodaConfig;
-use koda_core::db::Database;
-use koda_core::engine::UsageTotals;
-use koda_core::session_store::{SessionStore, SessionUsage};
 
 use anyhow::{Context, Result};
 use std::collections::{BTreeMap, HashSet};
@@ -87,7 +84,6 @@ pub struct Named {
 pub async fn run_headless(
     project_root: PathBuf,
     config: KodaConfig,
-    db: Database,
     resume: Option<String>,
     run: Run,
 ) -> Result<i32> {
@@ -112,8 +108,8 @@ pub async fn run_headless(
     let mut client = InProcessClient::start(StartArgs {
         config,
         config_file: crate::user_config::file()?,
+        home: koda_config::config_dir()?,
         project_root,
-        db: db.clone(),
         client_info: ClientInfo {
             name: "koda-exec".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -184,10 +180,7 @@ pub async fn run_headless(
     };
     let elapsed_ms = started.elapsed().as_millis() as u64;
 
-    let response = db
-        .last_assistant_message(&session_id)
-        .await
-        .unwrap_or_default();
+    let response = view.stats.last_reply.clone().unwrap_or_default();
     if let Some(path) = &run.last_message
         && let Err(e) = std::fs::write(path, &response)
     {
@@ -206,27 +199,14 @@ pub async fn run_headless(
         _ => Ok(()),
     };
     if let Output::Events { .. } = run.output {
-        // Usage comes from the DB rather than the `Footer` event: the
-        // footer only fires on a clean finish, while every persisted
-        // assistant message (sub-agents included) carries its tokens,
-        // so the totals stay right for errored and cancelled turns too.
-        let usage = db
-            .session_token_usage(&session_id)
-            .await
-            .unwrap_or_default();
-        let usage_by_agent = db
-            .session_usage_by_agent(&session_id)
-            .await
-            .unwrap_or_default();
+        // Usage is the host's latest count, sent after every model call,
+        // so it holds for failed and cancelled turns too.
         let outcome = RunOutcome {
             result: &result,
             session_id: &session_id,
             provider,
             model: &model,
-            response: &response,
             elapsed_ms,
-            usage: &usage,
-            usage_by_agent: &usage_by_agent,
             stats: &view.stats,
         };
         view.print(&Outgoing::Notification(ServerNotification::ExecSummary(
@@ -286,6 +266,13 @@ struct RunStats {
     sub_agent_tool_calls: BTreeMap<String, u64>,
     /// How the turn ended, and why if it failed.
     turn_end: Option<(TurnStatus, Option<String>)>,
+    /// The session's latest token counts (`session/tokenUsage/updated`),
+    /// by agent: everything since it was created, a resumed session's
+    /// earlier turns and sub-agents included.
+    usage: TokenUsage,
+    /// The last reply of the session's own, as `codex exec` takes its
+    /// final agent message.
+    last_reply: Option<String>,
 }
 
 /// Everything a summary needs once the turn is over.
@@ -294,10 +281,7 @@ struct RunOutcome<'a> {
     session_id: &'a str,
     provider: &'a str,
     model: &'a str,
-    response: &'a str,
     elapsed_ms: u64,
-    usage: &'a SessionUsage,
-    usage_by_agent: &'a [(String, SessionUsage)],
     stats: &'a RunStats,
 }
 
@@ -319,22 +303,27 @@ fn run_failure(result: &Result<()>, stats: &RunStats) -> Option<String> {
 /// `koda exec --json`'s last line.
 fn exec_summary(outcome: RunOutcome<'_>) -> ExecSummary {
     let failure = run_failure(outcome.result, outcome.stats);
-    let usage = |u: &SessionUsage| usage_of(&UsageTotals::from(u));
+    let by_agent = &outcome.stats.usage.by_agent;
+    let mut usage = Usage::default();
+    for agent in by_agent.values() {
+        usage.input_tokens += agent.input_tokens;
+        usage.cached_input_tokens += agent.cached_input_tokens;
+        usage.cache_creation_tokens += agent.cache_creation_tokens;
+        usage.output_tokens += agent.output_tokens;
+        usage.reasoning_tokens += agent.reasoning_tokens;
+        usage.model_calls += agent.model_calls;
+    }
     ExecSummary {
         session_id: outcome.session_id.to_string(),
         success: failure.is_none(),
         error: failure,
         provider: outcome.provider.to_string(),
         model: outcome.model.to_string(),
-        response: outcome.response.to_string(),
+        response: outcome.stats.last_reply.clone().unwrap_or_default(),
         turn_status: outcome.stats.turn_end.as_ref().map(|(status, _)| *status),
         duration_ms: outcome.elapsed_ms,
-        usage: usage(outcome.usage),
-        usage_by_agent: outcome
-            .usage_by_agent
-            .iter()
-            .map(|(agent, u)| (agent.clone(), usage(u)))
-            .collect(),
+        usage,
+        usage_by_agent: by_agent.clone(),
         tool_calls: outcome.stats.tool_calls.clone(),
         sub_agent_tool_calls: outcome.stats.sub_agent_tool_calls.clone(),
     }
@@ -392,7 +381,9 @@ impl View {
 
     /// What starting the session said. Text shows its warnings on stderr,
     /// like every other notice: stdout carries only the answer.
-    fn before_turn(&self, message: &Outgoing) {
+    fn before_turn(&mut self, message: &Outgoing) {
+        // A resumed session's stored counts come as it opens.
+        self.record(message);
         match (self.output, message) {
             (Output::Events { .. }, _) => self.print(message),
             (Output::Text, Outgoing::Notification(ServerNotification::Warning(w))) => {
@@ -430,6 +421,16 @@ impl View {
                         &mut self.stats.tool_calls
                     };
                     *counts.entry(tool.clone()).or_default() += 1;
+                }
+            }
+            Outgoing::Notification(ServerNotification::SessionTokenUsageUpdated(updated)) => {
+                self.stats.usage = updated.token_usage.clone();
+            }
+            Outgoing::Notification(ServerNotification::ItemCompleted(done))
+                if done.parent_item_id.is_none() =>
+            {
+                if let Item::AgentMessage { text, .. } = &done.item {
+                    self.stats.last_reply = Some(text.clone());
                 }
             }
             Outgoing::Notification(ServerNotification::TurnCompleted(done)) => {
@@ -749,28 +750,38 @@ mod tests {
 
     #[test]
     fn exec_summary_carries_the_run_and_its_metrics() {
+        let main = Usage {
+            input_tokens: 120,
+            output_tokens: 30,
+            model_calls: 2,
+            ..Default::default()
+        };
+        let explore = Usage {
+            input_tokens: 80,
+            output_tokens: 10,
+            model_calls: 1,
+            ..Default::default()
+        };
         let stats = RunStats {
             tool_calls: BTreeMap::from([("Read".to_string(), 2)]),
             sub_agent_tool_calls: BTreeMap::new(),
             turn_end: Some((TurnStatus::Completed, None)),
+            usage: TokenUsage {
+                by_agent: BTreeMap::from([
+                    ("main".to_string(), main),
+                    ("explore".to_string(), explore),
+                ]),
+                ..Default::default()
+            },
+            last_reply: Some("done".to_string()),
         };
-        let usage = SessionUsage {
-            prompt_tokens: 120,
-            completion_tokens: 30,
-            api_calls: 2,
-            ..Default::default()
-        };
-        let by_agent = vec![("main".to_string(), usage.clone())];
         let result: Result<()> = Ok(());
         let summary = exec_summary(RunOutcome {
             result: &result,
             session_id: "s1",
             provider: "mock",
             model: "mock-model",
-            response: "done",
             elapsed_ms: 42,
-            usage: &usage,
-            usage_by_agent: &by_agent,
             stats: &stats,
         });
 
@@ -781,9 +792,11 @@ mod tests {
         assert_eq!(summary.model, "mock-model");
         assert_eq!(summary.duration_ms, 42);
         assert_eq!(summary.turn_status, Some(TurnStatus::Completed));
-        assert_eq!(summary.usage.input_tokens, 120);
-        assert_eq!(summary.usage.model_calls, 2);
+        // The whole session's, every agent's added up.
+        assert_eq!(summary.usage.input_tokens, 200);
+        assert_eq!(summary.usage.model_calls, 3);
         assert_eq!(summary.usage_by_agent["main"].output_tokens, 30);
+        assert_eq!(summary.usage_by_agent["explore"].model_calls, 1);
         assert_eq!(summary.tool_calls["Read"], 2);
     }
 
@@ -795,10 +808,7 @@ mod tests {
             session_id: "s1",
             provider: "mock",
             model: "mock-model",
-            response: "",
             elapsed_ms: 0,
-            usage: &SessionUsage::default(),
-            usage_by_agent: &[],
             stats: &RunStats::default(),
         });
         assert!(!summary.success);
@@ -826,10 +836,7 @@ mod tests {
                 session_id: "s1",
                 provider: "mock",
                 model: "mock-model",
-                response: "",
                 elapsed_ms: 0,
-                usage: &SessionUsage::default(),
-                usage_by_agent: &[],
                 stats: &stats,
             });
             assert!(!summary.success, "{message}");

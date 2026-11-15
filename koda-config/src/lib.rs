@@ -38,6 +38,36 @@ use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
 use toml_edit::{DocumentMut, Item, TableLike};
 
+pub mod runtime_env;
+
+/// Koda's folder: `$XDG_CONFIG_HOME/koda`, else `~/.config/koda`, else
+/// `%APPDATA%\koda` on Windows. The config file, the database and the TUI's
+/// own files live in it, as Codex keeps its files under `$CODEX_HOME`
+/// (`codex-utils-home-dir`). Read through [`runtime_env`], so tests can
+/// point it at a scratch folder without touching the process environment.
+pub fn config_dir() -> std::io::Result<PathBuf> {
+    let base = runtime_env::get("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| runtime_env::get("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .or({
+            #[cfg(windows)]
+            {
+                runtime_env::get("APPDATA").map(PathBuf::from)
+            }
+            #[cfg(not(windows))]
+            {
+                None
+            }
+        })
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Cannot determine config directory (set XDG_CONFIG_HOME, HOME, or APPDATA)",
+            )
+        })?;
+    Ok(base.join("koda"))
+}
+
 /// The file's name in Koda's config folder.
 pub const FILE_NAME: &str = "config.toml";
 
