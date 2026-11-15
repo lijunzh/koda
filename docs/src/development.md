@@ -180,7 +180,7 @@ capture is enabled for scroll wheel; text selection is handled by
 ─── 🐻 ─                        ← separator
 ⚡> input                      ← tui-textarea, sized to content
 ──────────────────────────────
-model │ auto │ ████ 42% │ 🐻 12s  ← status bar
+model │ auto │ 58% context left │ 🐻 12s  ← status bar
 [menu_area]                    ← dropdown / approval / wizard (Min(0))
 ```
 
@@ -190,10 +190,12 @@ remaining vertical space. Mouse scroll works during inference. Native clipboard
 selection. DESIGN.md (Interaction section) has the interaction system design
 and competitive analysis.
 
-The engine communicates through `EngineEvent` (output) and `EngineCommand`
-(input) enums. Approval flows through async channels: the engine emits
-`ApprovalRequest`, the client sends `ApprovalResponse`. See
-[#70](https://github.com/lijunzh/koda/issues/70) for the TUI design.
+While a turn runs, the TUI is a client of Koda's host, as Codex's TUI is of
+its app server: it draws the turn from the protocol's notifications (items,
+their deltas and notices) and answers the host's requests (approvals,
+questions, the loop cap) from its dialogs. [headless.md](headless.md) lists
+the messages. See [#70](https://github.com/lijunzh/koda/issues/70) for the
+TUI design.
 
 ## Engine notes
 

@@ -344,11 +344,10 @@ fn exec_json_prints_the_protocol_from_session_to_summary() {
             "turn/started",
             "item/started userMessage",
             "item/completed userMessage",
-            // Before each model call, and once the turn's last is done.
+            // After each model call, as Codex sends its token count.
             "session/tokenUsage/updated",
             "item/started toolCall",
             "item/completed toolCall",
-            "session/tokenUsage/updated",
             "item/started agentMessage",
             "item/completed agentMessage",
             "session/tokenUsage/updated",
@@ -363,7 +362,10 @@ fn exec_json_prints_the_protocol_from_session_to_summary() {
     let prompt = &lines[4]["params"]["item"];
     assert_eq!(prompt["text"], "read hello.txt");
     let usage = &lines[5]["params"]["tokenUsage"];
-    assert!(usage["contextTokens"].as_u64().unwrap() > 0, "{usage}");
+    assert!(
+        usage["last"]["totalTokens"].as_u64().unwrap() > 0,
+        "{usage}"
+    );
     assert!(usage["modelContextWindow"].as_u64().unwrap() > 0, "{usage}");
     let read = &lines[7]["params"]["item"];
     assert_eq!(read["tool"], "Read");
@@ -374,9 +376,9 @@ fn exec_json_prints_the_protocol_from_session_to_summary() {
             .unwrap()
             .contains("mock test content")
     );
-    assert_eq!(lines[10]["params"]["item"]["text"], "I read the file.");
-    assert_eq!(lines[12]["params"]["turn"]["status"], "completed");
-    let summary = &lines[13]["params"];
+    assert_eq!(lines[9]["params"]["item"]["text"], "I read the file.");
+    assert_eq!(lines[11]["params"]["turn"]["status"], "completed");
+    let summary = &lines[12]["params"];
     assert_eq!(summary["success"], true);
     assert_eq!(summary["toolCalls"]["Read"], 1);
     assert_eq!(summary["turnStatus"], "completed");

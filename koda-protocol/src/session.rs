@@ -302,8 +302,7 @@ pub struct SessionTokenUsageUpdatedNotification {
     pub token_usage: TokenUsage,
 }
 
-/// A session's token counts. Codex's `ThreadTokenUsage`, plus
-/// `contextTokens`.
+/// A session's token counts. Codex's `ThreadTokenUsage`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenUsage {
@@ -314,12 +313,6 @@ pub struct TokenUsage {
     pub last: TokenUsageBreakdown,
     /// The context window, in tokens.
     pub model_context_window: Option<u64>,
-    /// The tokens in the context now: Koda's count of what goes to the next
-    /// model call, then the provider's count once a turn's last call is
-    /// done. Koda's own. Codex's TUI reads `last.totalTokens`, which moves
-    /// only after a call returns; Koda's meter moves before one, which a
-    /// slow local model makes worth it.
-    pub context_tokens: u64,
 }
 
 /// Tokens of one model call, or added up. Codex's `TokenUsageBreakdown`.

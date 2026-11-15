@@ -1,7 +1,11 @@
 # Context management
 
 Every provider has a context window limit (measured in tokens). The status
-bar shows current usage as a percentage (e.g. `34%`).
+bar shows how much of it is left (e.g. `66% context left`), as Codex does:
+the last model call's tokens against the window, with about 12,000 tokens
+of system prompt and tool definitions left out of both, so it reads 100%
+at the start. It moves when a call returns, since only then does the
+provider say what the call used.
 
 ## Auto-compact
 
@@ -11,7 +15,7 @@ When usage reaches **85%**, Koda automatically compacts the session:
 2. The rest is summarised by the model, and your own messages from that part
    are kept word for word beside the summary
 3. The old messages are archived in the DB and the summary takes their place
-4. A status line appears: `📦 Context at 85% — compacting before sending...`
+4. A status line appears: `📦 Context at 85% — compacting...`
 
 Usage is Koda's estimate, raised when the provider's last count came in higher,
 so the percentage can jump after a reply.

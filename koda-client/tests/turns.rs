@@ -2411,10 +2411,10 @@ fn token_usage(messages: &[Outgoing]) -> Vec<&koda_client::protocol::session::To
         .collect()
 }
 
-/// `session/tokenUsage/updated` goes out before each model call and once
-/// the turn's last is done, with the provider's counts.
+/// `session/tokenUsage/updated` goes out after each model call, with the
+/// provider's counts, as Codex sends its token count.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn token_usage_is_sent_before_each_model_call_and_after_the_last() {
+async fn token_usage_is_sent_after_each_model_call() {
     let server = model(vec![
         tool_call("call_1", "List", json!({})),
         text("Listed."),
@@ -2424,12 +2424,10 @@ async fn token_usage_is_sent_before_each_model_call_and_after_the_last() {
     koda.turn("List the files").await;
     let messages = koda.until("turn/completed").await;
     let usage = token_usage(&messages);
-    assert_eq!(usage.len(), 3, "{}", names(&messages));
-    // Koda's count before the first call; the provider's after the last.
-    assert!(usage[0].context_tokens > 0);
-    assert_eq!(usage[0].total.total_tokens, 0);
-    let last = usage[2];
-    assert_eq!(last.context_tokens, 200);
+    assert_eq!(usage.len(), 2, "{}", names(&messages));
+    assert_eq!(usage[0].last.input_tokens, 100);
+    assert_eq!(usage[0].total.total_tokens, 110);
+    let last = usage[1];
     assert_eq!(last.model_context_window, Some(100_000));
     assert_eq!(last.last.input_tokens, 200);
     assert_eq!(last.last.output_tokens, 20);

@@ -23,8 +23,11 @@ use crate::input;
 use crate::scroll_buffer::ScrollBuffer;
 use crate::tui_types::{MenuContent, PromptMode};
 
+use super::TurnCommand;
 use crossterm::event::{Event, KeyCode, KeyModifiers};
-use koda_core::engine::{ApprovalDecision, EngineCommand};
+use koda_client::protocol::item::{ApprovalDecision, ToolCallApprovalResponse, UserInputResponse};
+use koda_client::protocol::rpc::RequestId;
+use koda_client::protocol::turn::{LoopCapDecision, LoopCapResponse};
 use koda_core::trust::{self, TrustMode};
 use ratatui::{
     style::{Color, Style},
@@ -41,12 +44,12 @@ use tokio::sync::mpsc;
 pub(super) async fn handle_crossterm_event_inline(
     ev: Event,
     stop: &super::TurnStop,
-    cmd_tx: &mpsc::Sender<EngineCommand>,
+    cmd_tx: &mpsc::Sender<TurnCommand>,
     scroll_buffer: &mut ScrollBuffer,
     hist_h: usize,
     menu: &mut MenuContent,
     prompt_mode: &mut PromptMode,
-    pending_approval_id: &mut Option<String>,
+    pending_approval_id: &mut Option<RequestId>,
     textarea: &mut crate::composer::textarea::TextArea,
     shared_mode: &koda_core::trust::SharedTrustMode,
     completer: &mut crate::completer::InputCompleter,
@@ -116,11 +119,11 @@ pub(super) async fn handle_crossterm_event_inline(
 async fn handle_inference_key_inline(
     key: crossterm::event::KeyEvent,
     stop: &super::TurnStop,
-    cmd_tx: &mpsc::Sender<EngineCommand>,
+    cmd_tx: &mpsc::Sender<TurnCommand>,
     scroll_buffer: &mut ScrollBuffer,
     menu: &mut MenuContent,
     prompt_mode: &mut PromptMode,
-    pending_approval_id: &mut Option<String>,
+    pending_approval_id: &mut Option<RequestId>,
     textarea: &mut crate::composer::textarea::TextArea,
     shared_mode: &koda_core::trust::SharedTrustMode,
     completer: &mut crate::completer::InputCompleter,
@@ -204,10 +207,10 @@ async fn handle_inference_key_inline(
         if let Some(d) = decision {
             *menu = MenuContent::None;
             let _ = cmd_tx
-                .send(EngineCommand::ApprovalResponse {
-                    id: approval_id,
-                    decision: d,
-                })
+                .send(TurnCommand::answer(
+                    approval_id,
+                    ToolCallApprovalResponse { decision: d },
+                ))
                 .await;
         }
         return false;
@@ -216,19 +219,15 @@ async fn handle_inference_key_inline(
     // Loop cap hotkeys
     if let MenuContent::LoopCap { id } = menu {
         let id = id.clone();
-        let action = match key.code {
-            KeyCode::Char('y') | KeyCode::Char('Y') => {
-                Some(koda_core::loop_guard::LoopContinuation::Continue200)
-            }
-            KeyCode::Char('n') | KeyCode::Char('N') => {
-                Some(koda_core::loop_guard::LoopContinuation::Stop)
-            }
+        let decision = match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => Some(LoopCapDecision::Continue200),
+            KeyCode::Char('n') | KeyCode::Char('N') => Some(LoopCapDecision::Stop),
             _ => None,
         };
-        if let Some(a) = action {
+        if let Some(decision) = decision {
             *menu = MenuContent::None;
             let _ = cmd_tx
-                .send(EngineCommand::LoopDecision { id, action: a })
+                .send(TurnCommand::answer(id, LoopCapResponse { decision }))
                 .await;
         }
         return false;
@@ -250,7 +249,7 @@ async fn handle_inference_key_inline(
                 if let MenuContent::AskUser { id, .. } = std::mem::replace(menu, MenuContent::None)
                 {
                     let _ = cmd_tx
-                        .send(EngineCommand::AskUserResponse { id, answer })
+                        .send(TurnCommand::answer(id, UserInputResponse { answer }))
                         .await;
                 }
             }
@@ -279,7 +278,10 @@ async fn handle_inference_key_inline(
                         ApprovalDecision::RejectWithFeedback { feedback }
                     };
                     let _ = cmd_tx
-                        .send(EngineCommand::ApprovalResponse { id: aid, decision })
+                        .send(TurnCommand::answer(
+                            aid,
+                            ToolCallApprovalResponse { decision },
+                        ))
                         .await;
                 }
             }
@@ -336,7 +338,7 @@ async fn handle_inference_key_inline(
                     Span::styled(preview, Style::default().fg(Color::DarkGray)),
                 ]));
 
-                let _ = cmd_tx.send(EngineCommand::QueueNext { text }).await;
+                let _ = cmd_tx.send(TurnCommand::Steer { text }).await;
             }
         }
         (KeyCode::Esc, _) => {
@@ -405,7 +407,7 @@ async fn handle_inference_key_inline(
 pub(super) fn close_dialog(
     menu: &mut MenuContent,
     prompt_mode: &mut PromptMode,
-    pending_approval_id: &mut Option<String>,
+    pending_approval_id: &mut Option<RequestId>,
     textarea: &mut crate::composer::textarea::TextArea,
 ) {
     let typing = matches!(prompt_mode, PromptMode::WizardInput { .. });

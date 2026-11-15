@@ -5,10 +5,11 @@
 //! [`crate::widgets::child_activity_overlay`] widget. Both kinds of row
 //! come from what the host sends, not from the engine's registries:
 //!
-//! - **Sub-agents** from the `ChildTaskUpdate` and `ChildAgentActivity`
-//!   events of the running turn. A row appears with the first status
-//!   and goes with the last (`Completed`, `Errored`, `Cancelled`). Sub-
-//!   agents run inside the turn, so the turn's end clears any left.
+//! - **Sub-agents** from the turn's items: an `InvokeAgent` call starting
+//!   adds a row, the calls and notices under it say what it does now, and
+//!   its completion removes the row. Sub-agents run inside the turn, so the
+//!   turn's end clears any left. Claude Code's panel below the prompt
+//!   works the same way.
 //! - **Background processes** from `session/backgroundTerminals/list`,
 //!   which the TUI asks for about once a second while a turn runs or a
 //!   process is listed. They outlive the turn; `/stop` stops them.
@@ -19,31 +20,27 @@
 
 use crate::widgets::child_activity_overlay::{ActivityRow, ActivityStatus, MAX_VISIBLE};
 use koda_client::protocol::background::BackgroundTerminal;
-use koda_core::child_agent::AgentStatus;
-use koda_core::engine::event::ChildAgentActivityKind;
-use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-/// A sub-agent of the running turn, as its events describe it.
+/// A sub-agent of the running turn: its `InvokeAgent` call.
 #[derive(Debug, Clone)]
 struct AgentRow {
+    /// The call's item id.
+    call: String,
     name: String,
-    /// When its first status arrived.
+    /// When its call started.
     started: Instant,
-    /// Its latest tool call or info line, if any yet.
+    /// Its latest tool call or notice, if any yet.
     activity: Option<String>,
-    /// Still queued (`Pending`).
-    pending: bool,
-    /// Esc asked the turn to stop; the row goes red until its last
-    /// status arrives.
+    /// Esc asked the turn to stop; the row goes red until its call ends.
     cancelling: bool,
 }
 
 /// The overlay's state. Carry one on `TuiContext`.
 #[derive(Debug, Clone, Default)]
 pub struct ChildActivityTracker {
-    /// The turn's sub-agents, by task id, so they keep spawn order.
-    agents: BTreeMap<u32, AgentRow>,
+    /// The turn's sub-agents, in the order they started.
+    agents: Vec<AgentRow>,
     /// The background processes, as the host last listed them, oldest
     /// first.
     processes: Vec<BackgroundTerminal>,
@@ -55,53 +52,37 @@ pub struct ChildActivityTracker {
 const LIST_EVERY: Duration = Duration::from_secs(1);
 
 impl ChildActivityTracker {
-    /// Absorb a `ChildTaskUpdate`: a first status adds the row, a last
-    /// one drops it.
-    pub fn record_status(&mut self, task_id: u32, agent_name: &str, status: &AgentStatus) {
-        let pending = match status {
-            AgentStatus::Pending => true,
-            AgentStatus::Running { .. } => false,
-            // Terminal, or a status this build doesn't know (#1224):
-            // either way the row goes rather than stick.
-            _ => {
-                self.agents.remove(&task_id);
-                return;
-            }
-        };
-        let row = self.agents.entry(task_id).or_insert_with(|| AgentRow {
-            name: agent_name.to_string(),
+    /// An `InvokeAgent` call started: its sub-agent gets a row.
+    pub fn agent_started(&mut self, call: &str, name: &str) {
+        if self.agents.iter().any(|a| a.call == call) {
+            return;
+        }
+        self.agents.push(AgentRow {
+            call: call.to_string(),
+            name: name.to_string(),
             started: Instant::now(),
             activity: None,
-            pending,
             cancelling: false,
         });
-        row.pending = pending;
-        if row.name.is_empty() {
-            row.name = agent_name.to_string();
+    }
+
+    /// What the sub-agent of `call` does now: a tool call it started, a
+    /// notice, or a call of its that failed.
+    pub fn agent_activity(&mut self, call: &str, activity: String) {
+        if let Some(row) = self.agents.iter_mut().find(|a| a.call == call) {
+            row.activity = Some(activity);
         }
     }
 
-    /// Absorb a `ChildAgentActivity` for a sub-agent already shown.
-    pub fn record_activity(&mut self, task_id: u32, kind: &ChildAgentActivityKind) {
-        let description = match kind {
-            ChildAgentActivityKind::ToolStart { summary, .. } => summary.clone(),
-            // A success keeps showing the call that started; a failure
-            // says so, so the user sees it without waiting for the end.
-            ChildAgentActivityKind::ToolEnd { success: true, .. } => return,
-            ChildAgentActivityKind::ToolEnd { tool_name, .. } => format!("{tool_name} \u{2717}"),
-            ChildAgentActivityKind::Info { message } => message.clone(),
-            // A kind this build can't render (#1224).
-            _ => return,
-        };
-        if let Some(row) = self.agents.get_mut(&task_id) {
-            row.activity = Some(description);
-        }
+    /// The `InvokeAgent` call ended: its row goes.
+    pub fn agent_ended(&mut self, call: &str) {
+        self.agents.retain(|a| a.call != call);
     }
 
     /// Esc or Ctrl+C stopped the turn: its sub-agents' rows go red until
     /// their last statuses arrive.
     pub fn mark_agents_cancelling(&mut self) {
-        for row in self.agents.values_mut() {
+        for row in self.agents.iter_mut() {
             row.cancelling = true;
         }
     }
@@ -138,15 +119,13 @@ impl ChildActivityTracker {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
             .unwrap_or(0);
-        let agents = self.agents.values().map(|a| ActivityRow {
+        let agents = self.agents.iter().map(|a| ActivityRow {
             icon: "\u{1f916}", // 🤖
             label: a.name.clone(),
             age: format_age(a.started.elapsed()),
             activity: a.activity.clone(),
             status: if a.cancelling {
                 ActivityStatus::Cancelling
-            } else if a.pending {
-                ActivityStatus::Pending
             } else {
                 ActivityStatus::Running
             },
@@ -245,13 +224,6 @@ mod tests {
         }
     }
 
-    fn tool_start(summary: &str) -> ChildAgentActivityKind {
-        ChildAgentActivityKind::ToolStart {
-            tool_name: "Read".into(),
-            summary: summary.into(),
-        }
-    }
-
     #[test]
     fn nothing_running_draws_nothing() {
         let (rows, total) = ChildActivityTracker::default().build_rows();
@@ -260,84 +232,44 @@ mod tests {
     }
 
     #[test]
-    fn a_sub_agent_row_comes_with_its_first_status_and_goes_with_its_last() {
+    fn a_sub_agent_row_comes_with_its_call_and_goes_with_it() {
         let mut t = ChildActivityTracker::default();
-        t.record_status(1, "explore", &AgentStatus::Pending);
+        t.agent_started("call_1", "explore");
         let (rows, _) = t.build_rows();
         assert_eq!(rows[0].label, "explore");
-        assert_eq!(rows[0].status, ActivityStatus::Pending);
+        assert_eq!(rows[0].status, ActivityStatus::Running);
         assert_eq!(rows[0].activity, None);
-
-        t.record_status(1, "explore", &AgentStatus::Running { iter: 0 });
-        assert_eq!(t.build_rows().0[0].status, ActivityStatus::Running);
-
-        t.record_status(
-            1,
-            "explore",
-            &AgentStatus::Completed {
-                summary: "done".into(),
-            },
-        );
+        t.agent_ended("call_1");
         assert_eq!(t.build_rows().1, 0);
     }
 
     #[test]
-    fn an_errored_or_cancelled_sub_agent_goes_too() {
+    fn activity_shows_the_latest_call_or_notice() {
         let mut t = ChildActivityTracker::default();
-        t.record_status(1, "a", &AgentStatus::Running { iter: 1 });
-        t.record_status(2, "b", &AgentStatus::Running { iter: 1 });
-        t.record_status(1, "a", &AgentStatus::Errored { error: "x".into() });
-        t.record_status(2, "b", &AgentStatus::Cancelled);
-        assert_eq!(t.build_rows().1, 0);
-    }
-
-    #[test]
-    fn activity_shows_the_latest_call_and_keeps_it_through_a_success() {
-        let mut t = ChildActivityTracker::default();
-        t.record_status(1, "explore", &AgentStatus::Running { iter: 1 });
-        t.record_activity(1, &tool_start("Read src/auth.rs"));
-        t.record_activity(
-            1,
-            &ChildAgentActivityKind::ToolEnd {
-                tool_name: "Read".into(),
-                success: true,
-            },
-        );
+        t.agent_started("call_1", "explore");
+        t.agent_activity("call_1", "Read src/auth.rs".into());
         assert_eq!(
             t.build_rows().0[0].activity.as_deref(),
             Some("Read src/auth.rs")
         );
-        t.record_activity(
-            1,
-            &ChildAgentActivityKind::ToolEnd {
-                tool_name: "Bash".into(),
-                success: false,
-            },
-        );
+        t.agent_activity("call_1", "Bash \u{2717}".into());
         assert_eq!(
             t.build_rows().0[0].activity.as_deref(),
             Some("Bash \u{2717}")
         );
-        t.record_activity(
-            1,
-            &ChildAgentActivityKind::Info {
-                message: "thinking".into(),
-            },
-        );
-        assert_eq!(t.build_rows().0[0].activity.as_deref(), Some("thinking"));
     }
 
     #[test]
-    fn activity_for_an_unknown_task_adds_no_row() {
+    fn activity_for_an_unknown_call_adds_no_row() {
         let mut t = ChildActivityTracker::default();
-        t.record_activity(9, &tool_start("Read x"));
+        t.agent_activity("call_9", "Read x".into());
         assert_eq!(t.build_rows().1, 0);
     }
 
     #[test]
     fn interrupting_turns_the_sub_agents_red_and_the_turns_end_clears_them() {
         let mut t = ChildActivityTracker::default();
-        t.record_status(1, "a", &AgentStatus::Running { iter: 1 });
+        t.agent_started("call_1", "a");
         t.mark_agents_cancelling();
         assert_eq!(t.build_rows().0[0].status, ActivityStatus::Cancelling);
         t.clear_agents();
@@ -348,8 +280,8 @@ mod tests {
     fn sub_agents_come_in_spawn_order_before_processes() {
         let mut t = ChildActivityTracker::default();
         t.set_processes(vec![process(42, "cargo build", 8)]);
-        t.record_status(2, "verify", &AgentStatus::Running { iter: 1 });
-        t.record_status(1, "explore", &AgentStatus::Running { iter: 1 });
+        t.agent_started("call_1", "explore");
+        t.agent_started("call_2", "verify");
         let labels: Vec<String> = t.build_rows().0.into_iter().map(|r| r.label).collect();
         assert_eq!(labels, ["explore", "verify", "process:42"]);
     }
@@ -395,7 +327,7 @@ mod tests {
         let mut t = ChildActivityTracker::default();
         t.set_processes(vec![process(42, "sleep 30", 1)]);
         assert_eq!(t.hint(), "/stop to stop");
-        t.record_status(1, "a", &AgentStatus::Running { iter: 1 });
+        t.agent_started("call_1", "a");
         assert!(t.hint().starts_with("Esc to interrupt \u{b7} /stop"));
         t.set_processes(Vec::new());
         assert_eq!(t.hint(), "Esc to interrupt");

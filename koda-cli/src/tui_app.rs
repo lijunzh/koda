@@ -19,7 +19,6 @@ use crate::tui_context::{ProviderOverrides, TuiContext};
 use anyhow::Result;
 use koda_core::config::KodaConfig;
 use koda_core::db::Database;
-use koda_core::engine::EngineCommand;
 use ratatui::{
     style::{Color, Style},
     text::Line,
@@ -58,13 +57,9 @@ pub async fn run(
         ));
     }
 
-    // The engine's events, from the host; the dialogs' answers and steering
-    // text, from the key handlers to the turn loop.
-    let mut ui_rx = ctx
-        .client
-        .take_raw_events()
-        .ok_or_else(|| anyhow::anyhow!("the host's engine events were taken"))?;
-    let (cmd_tx, mut cmd_rx) = mpsc::channel::<EngineCommand>(32);
+    // The dialogs' answers and steering text, from the key handlers to the
+    // turn loop.
+    let (cmd_tx, mut cmd_rx) = mpsc::channel::<crate::inference::TurnCommand>(32);
 
     // `koda "prompt"` sends it, as `codex "prompt"` does. On a first run it
     // waits in the input box until a provider is chosen.
@@ -80,7 +75,7 @@ pub async fn run(
     ctx.draw()?;
 
     // ── Main event loop ────────────────────────────────────────
-    let ran = ctx.run_event_loop(&mut ui_rx, &cmd_tx, &mut cmd_rx).await;
+    let ran = ctx.run_event_loop(&cmd_tx, &mut cmd_rx).await;
 
     // ── Cleanup ────────────────────────────────────────────
     ctx.cleanup().await;

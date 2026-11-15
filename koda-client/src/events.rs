@@ -528,16 +528,14 @@ impl EventProjector {
                     )));
                 }
             }
+            // Sent once a call has returned, as Codex sends its token count:
+            // only then does the provider say what it used.
             EngineEvent::ModelUsage { usage } => {
                 let call = breakdown_of(&usage);
                 add(&mut self.tokens.total, &call);
                 if parent.is_none() {
                     self.tokens.last = call;
                 }
-            }
-            EngineEvent::ContextUsage { used, max } if parent.is_none() => {
-                self.tokens.context_tokens = used as u64;
-                self.tokens.model_context_window = Some(max as u64);
                 out.push(notification(ServerNotification::SessionTokenUsageUpdated(
                     SessionTokenUsageUpdatedNotification {
                         session_id: self.session_id.clone(),
@@ -545,6 +543,10 @@ impl EventProjector {
                         token_usage: self.tokens.clone(),
                     },
                 )));
+            }
+            // Koda's own count before a call isn't sent; the window is.
+            EngineEvent::ContextUsage { max, .. } if parent.is_none() => {
+                self.tokens.model_context_window = Some(max as u64);
             }
             EngineEvent::Warn { message } => {
                 out.push(notification(ServerNotification::Warning(
@@ -805,7 +807,7 @@ fn notification(n: ServerNotification) -> Outgoing {
 pub fn usage_of(usage: &UsageTotals) -> Usage {
     let n = |v: i64| v.max(0) as u64;
     Usage {
-        input_tokens: n(usage.prompt_tokens),
+        input_tokens: n(usage.input_tokens()),
         cached_input_tokens: n(usage.cache_read_tokens),
         cache_creation_tokens: n(usage.cache_creation_tokens),
         output_tokens: n(usage.completion_tokens),
@@ -864,7 +866,7 @@ fn changes_of(preview: Option<&DiffPreview>) -> Vec<FileUpdateChange> {
 /// One model call's tokens, in Codex's breakdown.
 fn breakdown_of(usage: &UsageTotals) -> TokenUsageBreakdown {
     let count = |n: i64| n.max(0) as u64;
-    let input = count(usage.prompt_tokens);
+    let input = count(usage.input_tokens());
     let output = count(usage.completion_tokens);
     TokenUsageBreakdown {
         total_tokens: input + output,
@@ -1286,10 +1288,10 @@ mod tests {
         );
     }
 
-    /// Token counts go out with each context reading: the session's own
-    /// calls as `last`, every call in `total`, a sub-agent's included.
+    /// Token counts go out after each call: the session's own calls as
+    /// `last`, every call in `total`, a sub-agent's included.
     #[test]
-    fn token_usage_counts_every_call_and_reads_the_context() {
+    fn token_usage_goes_out_after_every_call() {
         let mut p = EventProjector::new("s1");
         let call = |prompt: i64, completion: i64| EngineEvent::ModelUsage {
             usage: UsageTotals {
@@ -1341,9 +1343,9 @@ mod tests {
                 "session/tokenUsage/updated"
             ]
         );
-        assert_eq!(lines[1]["params"]["tokenUsage"]["contextTokens"], 90);
+        assert_eq!(lines[1]["params"]["tokenUsage"]["last"]["totalTokens"], 110);
         let usage = &lines[2]["params"]["tokenUsage"];
-        assert_eq!(usage["contextTokens"], 120);
+        assert!(usage.get("contextTokens").is_none(), "{usage}");
         assert_eq!(usage["modelContextWindow"], 1000);
         assert_eq!(usage["last"]["inputTokens"], 100);
         assert_eq!(usage["last"]["totalTokens"], 110);
