@@ -365,7 +365,10 @@ impl SessionTask {
     /// Read commands until told to stop or the host is gone, then stop the
     /// session's MCP servers.
     pub(crate) async fn run(mut self) {
-        self.serve().await;
+        // Every line logged for this session, by the host or the engine,
+        // carries its id: the log database files it under the session.
+        let span = tracing::info_span!("session", session_id = %self.session.id);
+        tracing::Instrument::instrument(self.serve(), span).await;
         if let Some(mcp) = &self.mcp {
             mcp.write().await.shutdown().await;
         }

@@ -5,14 +5,31 @@
 
 use std::path::Path;
 
-/// Everything koda logged for a run whose config dir was `config`.
+/// Everything koda logged for a run whose config dir was `config`: every
+/// line of its log database, rendered as `koda-logs` prints them.
+///
+/// Read on a thread of its own with its own runtime, so a `#[tokio::test]`
+/// can call it.
 pub fn read_log(config: &Path) -> String {
-    std::fs::read_dir(config.join("koda/logs"))
-        .unwrap()
-        .flatten()
-        .filter(|entry| entry.file_name().to_string_lossy().starts_with("koda-"))
-        .map(|entry| std::fs::read_to_string(entry.path()).unwrap())
-        .collect()
+    let config = config.join("koda");
+    std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let store = koda_core::log_db::LogStore::open_in(&config).await.unwrap();
+                let rows = store
+                    .query(&koda_core::log_db::LogQuery::default())
+                    .await
+                    .unwrap();
+                rows.iter()
+                    .map(|row| row.render() + "\n")
+                    .collect::<String>()
+            })
+    })
+    .join()
+    .unwrap()
 }
 
 /// The first line with `message` and every one of `fields`.

@@ -37,8 +37,7 @@ koda exec "your prompt here"
   Debug logs and bundles hold your prompts and the files Koda read. Check them
   before you post them. Never attach koda.db: it holds your API keys.
 -->
-- **Log level:** <!-- default, or the RUST_LOG you set; RUST_LOG=koda_core=debug,koda_cli=info is best -->
-- **Log file:** <!-- attach ~/.config/koda/logs/latest (cp -L), or paste the lines below -->
+- **Log:** <!-- paste from `koda-logs --session <id>` (`koda-logs --backfill 300` for the newest lines), or attach <log_dir>/koda.log if you set log_dir -->
 - **Debug bundle:** <!-- TUI: attach the .zip from /debug-bundle -->
 - **`exec/summary`:** <!-- headless: the last line of koda exec --json -->
 - **Lines that show the problem:** <!-- by name, e.g. compaction branch="cut_off", turn end outcome="stopped" -->

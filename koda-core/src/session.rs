@@ -532,6 +532,7 @@ impl KodaSession {
 
     /// [`Self::run_turn`] with the caller's turn id, for a host that names
     /// the turn before it starts (`turn/start` answers with it).
+    #[tracing::instrument(name = "turn", skip_all, fields(session_id = %self.id, turn_id = %turn_id))]
     pub async fn run_turn_as(
         &mut self,
         turn_id: String,
@@ -686,6 +687,7 @@ impl KodaSession {
     /// runs: `TurnStart`, a `manual` compaction, `TurnEnd`. A compaction
     /// that fails ends the turn with its error; one that had nothing to do
     /// completes it. `turn_cancel` stops it, leaving the history as it was.
+    #[tracing::instrument(name = "turn", skip_all, fields(session_id = %self.id, turn_id = %turn_id))]
     pub async fn compact_as(
         &mut self,
         turn_id: String,

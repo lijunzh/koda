@@ -229,7 +229,7 @@ type EndedSlot = std::sync::Arc<parking_lot::Mutex<Option<crate::child_agent::Ch
 /// How much of a sub-agent's output its final `ChildTaskUpdate` carries.
 const ENDED_SUMMARY_CHARS: usize = 200;
 
-#[tracing::instrument(skip_all, fields(agent_name, cached = false))]
+#[tracing::instrument(skip_all, fields(agent_name, cached = false, session_id = tracing::field::Empty))]
 fn run_sub_agent<'a>(
     parent_tx: ToolExecutionContext<'a>,
     arguments: &'a str,
@@ -515,6 +515,8 @@ fn run_sub_agent<'a>(
                 parent_session_id,
             )
             .await?;
+            // From here the sub-agent's lines are its own session's.
+            tracing::Span::current().record("session_id", sid.as_str());
             // Fork: copy parent conversation history into the new session.
             //
             // **#1022 B20**: was a per-row loop — N×(`insert_message`

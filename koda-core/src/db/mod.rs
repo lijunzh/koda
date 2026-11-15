@@ -5,7 +5,7 @@
 //!
 //! ## Database location
 //!
-//! - **Default**: `~/.config/koda/koda.db`
+//! - **Default**: `~/.config/koda/db/koda.db`
 //! - Schema is auto-migrated on startup
 //! - WAL mode enables concurrent reads (main session + sub-agents)
 //!
@@ -25,15 +25,15 @@
 
 mod context_cache;
 pub mod queries;
+pub(crate) mod sqlite;
 #[cfg(test)]
 mod tests;
 
 pub(crate) use context_cache::{ContextCache, ContextCacheEntry};
 
-use anyhow::{Context, Result};
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
+use anyhow::Result;
+use sqlx::sqlite::SqlitePool;
 use std::path::Path;
-use std::str::FromStr;
 
 /// Re-export the session store types for backward compatibility.
 pub use crate::session_store::{
@@ -116,44 +116,20 @@ impl Database {
     ///
     /// Production callers should pass `db::config_dir()?`; tests pass a temp dir.
     pub async fn init(koda_config_dir: &Path) -> Result<Self> {
-        let db_dir = koda_config_dir.join("db");
-        std::fs::create_dir_all(&db_dir)
-            .with_context(|| format!("Failed to create DB dir: {}", db_dir.display()))?;
-
-        let db_path = db_dir.join("koda.db");
-
-        let db = Self::open(&db_path).await?;
-
-        // Ensure restrictive permissions — DB contains API keys and
-        // conversation history that may include secrets (#693).
-        #[cfg(unix)]
-        Self::set_db_permissions(&db_path);
-
-        Ok(db)
+        // Owner-only: it holds API keys and conversations that may include
+        // secrets (#693).
+        let pool = sqlite::SESSIONS_DB.open_in(koda_config_dir).await?;
+        Self::with_pool(pool).await
     }
 
     /// Open a database at a specific path (used by tests and init).
     pub async fn open(db_path: &Path) -> Result<Self> {
-        let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
+        let pool = sqlite::SESSIONS_DB.open(db_path).await?;
+        Self::with_pool(pool).await
+    }
 
-        let options = SqliteConnectOptions::from_str(&db_url)?
-            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-            .auto_vacuum(sqlx::sqlite::SqliteAutoVacuum::Incremental)
-            .foreign_keys(true)
-            .create_if_missing(true)
-            // Retry for up to 5 s when another connection holds the write
-            // lock. Without this, concurrent writes from parallel sub-agents
-            // (#595) return SQLITE_BUSY immediately and the insert is silently
-            // dropped. Individual writes are ~1 ms so the retry resolves fast.
-            .busy_timeout(std::time::Duration::from_millis(5000));
-
-        let pool = SqlitePoolOptions::new()
-            .max_connections(5)
-            .connect_with(options)
-            .await
-            .with_context(|| format!("Failed to connect to database: {db_url}"))?;
-
-        // Run schema migrations
+    /// Apply the schema to `pool` and wrap it.
+    async fn with_pool(pool: SqlitePool) -> Result<Self> {
         Self::migrate(&pool).await?;
         Ok(Self {
             pool,
@@ -356,19 +332,6 @@ impl Database {
         .await?;
 
         Ok(())
-    }
-
-    /// Set koda.db file permissions to 0600 (owner-only).
-    ///
-    /// The DB contains API keys and conversation history that may include
-    /// secrets. Restrictive permissions prevent other local users from reading.
-    #[cfg(unix)]
-    fn set_db_permissions(db_path: &Path) {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o600);
-        if let Err(e) = std::fs::set_permissions(db_path, perms) {
-            tracing::warn!("Failed to set 0600 on {}: {e}", db_path.display());
-        }
     }
 }
 

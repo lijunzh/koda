@@ -79,6 +79,12 @@ pub struct ConfigToml {
     /// What sandboxed commands may do beyond Koda's defaults.
     #[serde(default, skip_serializing_if = "SandboxToml::is_empty")]
     pub sandbox: SandboxToml,
+    /// A folder for a log file, `koda.log`, as Codex's `log_dir`: set, Koda
+    /// also writes its log there, at `RUST_LOG`'s level. `~/` is the home
+    /// folder; a relative path is under Koda's config folder. Unset, the
+    /// log database is the only log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_dir: Option<String>,
 }
 
 /// The mode a session runs in.

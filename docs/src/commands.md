@@ -206,11 +206,11 @@ The bundle is written to:
 ```
 
 where `{slug}` is derived from the first user message. The success
-message prints the full path and a hint to the raw log directory:
+message prints the full path and how to read the session's whole log:
 
 ```text
 Wrote debug bundle → /Users/you/.config/koda/debug-bundles/koda-debug-20260429-082303-fix-the-auth-bug.zip
-  raw logs: /Users/you/.config/koda/logs/latest
+  every line: koda-logs --session 3f2a9c1e-…
 ```
 
 ### Bundle layout
@@ -222,8 +222,7 @@ Wrote debug bundle → /Users/you/.config/koda/debug-bundles/koda-debug-20260429
 | `messages.json` | Raw per-message DB rows (role, content, tool calls, tool results) |
 | `metadata.json` | Session ID, title, started-at, model, provider, current PID, capture timestamp |
 | `env.txt` | Allowlist-filtered environment variables (see below) |
-| `logs/koda-{PID}.log` | Full per-process tracing log captured by the active session |
-| `logs/panic.log` | A copy of `~/.config/koda/logs/panic.log` if it exists, so it can hold panics from other sessions |
+| `logs/koda.log` | The session's lines from the log database, with this process's lines outside any session (startup, the TUI, a crash) |
 
 The `.zip` format was chosen for **random-access reads** — LLM debugging
 workflows that poke at one file at a time pay O(file) instead of
@@ -261,17 +260,6 @@ before sharing externally.
   session — the model can `unzip` and read `conversation.md` directly.
 - Capturing a known-bad state for later analysis (the timestamped
   filename + slug make bundles trivially sortable).
-
-### Self-correlating logs (v0.2.26)
-
-When a panic occurs, the panic hook now emits a `tracing::error!`
-breadcrumb in rustc's default format (`thread '<name>' panicked at
-<location>: <message>`) **before** writing `panic.log`. The breadcrumb
-lands in the per-process tracing log, so within a `/debug-bundle` the
-`logs/panic.log` and `logs/koda-{PID}.log` are correlatable by
-wall-clock timestamp — no more orphan panic files disconnected from
-the events that led up to them.
-
 
 ## `/verbose [on|off]`
 

@@ -14,8 +14,7 @@
 //! ├── metadata.json        ← session/runtime context
 //! ├── env.txt              ← allowlist-filtered env vars (D5)
 //! └── logs/
-//!     ├── koda-<PID>.log   ← FULL per-process log
-//!     └── panic.log        ← if exists, full file (else absent)
+//!     └── koda.log         ← the session's lines from the log database
 //! ```
 //!
 //! ## Why `.zip` and not `.tar.gz`
@@ -41,10 +40,10 @@
 //!   is produced by `history_render::render_history_messages` →
 //!   `lines_to_text`. Same pipeline as the live TUI render and the
 //!   resumed-session display. Per RFC §D1.
-//! - **Logs copied verbatim, not tailed.** Per RFC §D4: each koda
-//!   invocation gets its own log file; bundle takes the whole thing.
-//! - **`panic.log` stays separate from `koda-{PID}.log` on disk.** Per
-//!   RFC §D3. The bundle is the merge point, not the file system.
+//! - **The session's own log.** The log database files every line under
+//!   its session, so the bundle takes this session's lines, with this
+//!   process's lines outside any session (startup, the TUI, a panic),
+//!   rather than a whole process's file with other sessions in it.
 
 mod env_filter;
 mod metadata;
@@ -84,11 +83,8 @@ pub struct BundleInput<'a> {
     /// unchanged — they just produce a bundle without sub-agent
     /// activity blocks, same as before.
     pub events: &'a [SessionEvent],
-    /// Used for log discovery (`<config_dir>/logs/koda-<PID>.log`).
-    /// Passed as a parameter rather than read from the live process so
-    /// tests can point at a temp dir.
-    pub config_dir: &'a Path,
-    pub current_pid: u32,
+    /// The session's log as text (`logging::session_log`), if there is one.
+    pub log: Option<&'a str>,
     /// Captured-at ISO 8601 timestamp. Caller-supplied (rather than
     /// `now()`-internal) so tests are deterministic.
     pub captured_at: &'a str,
@@ -136,10 +132,11 @@ pub fn write_bundle(input: &BundleInput<'_>) -> std::io::Result<PathBuf> {
     )?;
     add_file_to_zip(&mut zip, "env.txt", render_env().as_bytes())?;
 
-    // Logs: best-effort copy. Missing log file (e.g. headless test
-    // harness without tracing init) is not an error — the bundle just
-    // has no logs/ directory entry.
-    add_logs_to_zip(&mut zip, input)?;
+    // No log database (it didn't open, or a test without one): the bundle
+    // has no logs/ entry.
+    if let Some(log) = input.log.filter(|log| !log.is_empty()) {
+        add_file_to_zip(&mut zip, "logs/koda.log", log.as_bytes())?;
+    }
 
     // ZipWriter::finish writes the central directory at the tail.
     // Without this, the file is truncated and unreadable. Drop alone is
@@ -210,29 +207,6 @@ fn add_file_to_zip<W: Write + std::io::Seek>(
     zip.start_file(path, options)
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     zip.write_all(contents)
-}
-
-/// Copy log files into the zip. Best-effort: missing files are silently
-/// skipped (a debug bundle from a headless test harness without tracing
-/// init is still useful).
-fn add_logs_to_zip<W: Write + std::io::Seek>(
-    zip: &mut ZipWriter<W>,
-    input: &BundleInput<'_>,
-) -> std::io::Result<()> {
-    let logs_dir = input.config_dir.join("logs");
-    let process_log = logs_dir.join(format!("koda-{}.log", input.current_pid));
-    if let Ok(contents) = std::fs::read(&process_log) {
-        add_file_to_zip(
-            zip,
-            &format!("logs/koda-{}.log", input.current_pid),
-            &contents,
-        )?;
-    }
-    let panic_log = logs_dir.join("panic.log");
-    if let Ok(contents) = std::fs::read(&panic_log) {
-        add_file_to_zip(zip, "logs/panic.log", &contents)?;
-    }
-    Ok(())
 }
 
 /// Build the [`Metadata`] snapshot from inputs + runtime sniffing.
@@ -437,7 +411,6 @@ mod tests {
     #[test]
     fn bundle_filename_uses_slug_and_timestamp() {
         let messages: Vec<Message> = vec![];
-        let config_dir = temp_dir("filename");
         let output_dir = temp_dir("filename-out");
         let input = BundleInput {
             session_id: "abc",
@@ -448,8 +421,7 @@ mod tests {
             context_window: None,
             messages: &messages,
             events: &[],
-            config_dir: &config_dir,
-            current_pid: 1234,
+            log: None,
             captured_at: "2026-04-30T22:48:43Z",
             output_dir: &output_dir,
         };
@@ -462,7 +434,6 @@ mod tests {
     #[test]
     fn bundle_filename_falls_back_when_title_missing() {
         let messages: Vec<Message> = vec![];
-        let config_dir = temp_dir("noslug");
         let output_dir = temp_dir("noslug-out");
         let input = BundleInput {
             session_id: "abc",
@@ -473,8 +444,7 @@ mod tests {
             context_window: None,
             messages: &messages,
             events: &[],
-            config_dir: &config_dir,
-            current_pid: 1234,
+            log: None,
             captured_at: "2026-04-30T22:48:43Z",
             output_dir: &output_dir,
         };
@@ -526,16 +496,9 @@ mod tests {
                 "Hi! What can I help with?",
             ),
         ];
-        let config_dir = temp_dir("integration-cfg");
         let output_dir = temp_dir("integration-out");
 
-        // Seed a fake log file so we exercise the log-copy path.
-        std::fs::create_dir_all(config_dir.join("logs")).unwrap();
-        std::fs::write(
-            config_dir.join("logs").join(format!("koda-{}.log", 9999)),
-            b"INFO koda starting up\nINFO session created\n",
-        )
-        .unwrap();
+        let log = "INFO koda starting up\nINFO session created\n";
 
         let input = BundleInput {
             session_id: "test-session-id",
@@ -546,8 +509,7 @@ mod tests {
             context_window: Some(200_000),
             messages: &messages,
             events: &[],
-            config_dir: &config_dir,
-            current_pid: 9999,
+            log: Some(log),
             captured_at: "2026-04-30T11:00:00Z",
             output_dir: &output_dir,
         };
@@ -575,7 +537,7 @@ mod tests {
             "conversation.md",
             "messages.json",
             "env.txt",
-            "logs/koda-9999.log",
+            "logs/koda.log",
         ] {
             assert!(
                 found.contains_key(required),
@@ -583,12 +545,6 @@ mod tests {
                 found.keys().collect::<Vec<_>>()
             );
         }
-
-        // panic.log should be ABSENT (we didn't seed one).
-        assert!(
-            !found.contains_key("logs/panic.log"),
-            "panic.log appeared but no source file was seeded"
-        );
 
         // Random-access sanity check — one of the headline reasons we
         // chose zip over tar.gz. Read just `metadata.json` by name
@@ -620,7 +576,7 @@ mod tests {
             "conversation.md should not be empty"
         );
 
-        let log = String::from_utf8(found["logs/koda-9999.log"].clone()).unwrap();
+        let log = String::from_utf8(found["logs/koda.log"].clone()).unwrap();
         assert!(log.contains("koda starting up"));
 
         // Bundle filename must include slug + timestamp.
@@ -630,49 +586,10 @@ mod tests {
     }
 
     #[test]
-    fn write_bundle_with_panic_log_includes_it() {
-        use std::io::Read;
-
+    fn write_bundle_succeeds_with_no_log() {
+        // No log database (it didn't open, or a headless test): the bundle
+        // still ships, without logs/.
         let messages: Vec<Message> = vec![];
-        let config_dir = temp_dir("panic-cfg");
-        let output_dir = temp_dir("panic-out");
-        std::fs::create_dir_all(config_dir.join("logs")).unwrap();
-        std::fs::write(
-            config_dir.join("logs").join("panic.log"),
-            b"--- panic at 2026-04-30T11:00:00Z ---\nthread 'main' panicked\n",
-        )
-        .unwrap();
-
-        let input = BundleInput {
-            session_id: "p",
-            session_title: None,
-            session_started_at: None,
-            model: None,
-            provider: None,
-            context_window: None,
-            messages: &messages,
-            events: &[],
-            config_dir: &config_dir,
-            current_pid: 1,
-            captured_at: "2026-04-30T11:00:00Z",
-            output_dir: &output_dir,
-        };
-        let path = write_bundle(&input).unwrap();
-        let file = std::fs::File::open(&path).unwrap();
-        let mut archive = zip::ZipArchive::new(file).expect("valid zip");
-        let mut entry = archive
-            .by_name("logs/panic.log")
-            .expect("panic.log seeded but missing from bundle");
-        let mut buf = String::new();
-        entry.read_to_string(&mut buf).unwrap();
-        assert!(buf.contains("panicked"));
-    }
-    #[test]
-    fn write_bundle_succeeds_with_no_logs_dir() {
-        // Headless / fresh-config-dir case: log copying is best-effort,
-        // bundle still ships.
-        let messages: Vec<Message> = vec![];
-        let config_dir = temp_dir("nologs-cfg"); // empty
         let output_dir = temp_dir("nologs-out");
         let input = BundleInput {
             session_id: "n",
@@ -683,8 +600,7 @@ mod tests {
             context_window: None,
             messages: &messages,
             events: &[],
-            config_dir: &config_dir,
-            current_pid: 1,
+            log: None,
             captured_at: "2026-04-30T11:00:00Z",
             output_dir: &output_dir,
         };
