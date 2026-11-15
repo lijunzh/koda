@@ -11,8 +11,8 @@
 //! to the id it resolved to; the move keeps the alias, so it follows its
 //! line.
 
-use crate::db::Database;
 use anyhow::Result;
+use koda_state::db::Database;
 
 /// KV key for the last-used provider.
 const KV_KEY: &str = "setting:last_provider";

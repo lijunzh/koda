@@ -90,6 +90,19 @@ pub struct TokenUsage {
     pub stop_reason: String,
 }
 
+impl TokenUsage {
+    /// The counts a message row stores.
+    pub fn stored(&self) -> koda_state::session_store::MessageUsage {
+        koda_state::session_store::MessageUsage {
+            prompt_tokens: self.prompt_tokens,
+            completion_tokens: self.completion_tokens,
+            cache_read_tokens: self.cache_read_tokens,
+            cache_creation_tokens: self.cache_creation_tokens,
+            thinking_tokens: self.thinking_tokens,
+        }
+    }
+}
+
 /// The LLM's response: either text, tool calls, or both.
 #[derive(Debug, Clone)]
 pub struct LlmResponse {

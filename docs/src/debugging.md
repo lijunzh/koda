@@ -206,7 +206,7 @@ earlier summary from the part it replaced.
 A sanitization pass hid rows from the model when the history was loaded. The
 rows stay in the database, so this line is the only trace. It is a `warn` when
 text was lost and an `info` when it wasn't, and it repeats on each load while
-the rows are there. Written in `koda-core/src/db/queries.rs`.
+the rows are there. Written in `koda-state/src/db/queries.rs`.
 
 | Field | Meaning |
 |---|---|

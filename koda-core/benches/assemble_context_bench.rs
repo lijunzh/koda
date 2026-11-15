@@ -18,10 +18,10 @@
 use std::time::{Duration, Instant};
 
 use koda_core::context_analysis::analyze_context;
-use koda_core::db::Database;
 use koda_core::inference_helpers::{assemble_messages, estimate_tokens};
 use koda_core::providers::ChatMessage;
-use koda_core::session_store::{Role, SessionStore};
+use koda_state::db::Database;
+use koda_state::session_store::{Role, SessionStore};
 
 const SIZES: &[usize] = &[10, 100, 500, 1000, 2000];
 const ITERATIONS_PER_SIZE: usize = 30;

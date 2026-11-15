@@ -24,14 +24,7 @@ koda/
 │   │   ├── config.rs       # Agent/provider config + provider metadata
 │   │   ├── context.rs      # Context window token tracking
 │   │   ├── context_analysis.rs # Per-tool token breakdown + duplicate detection
-│   │   ├── db/             # SQLite persistence (split into submodules)
-│   │   │   ├── mod.rs      # Database struct, migrations, schema (WAL mode)
-│   │   │   ├── context_cache.rs # Per-session context cache
-│   │   │   ├── queries.rs  # SessionStore trait impl (all SQL queries)
-│   │   │   ├── sqlite.rs   # How each SQLite file is opened: one spec per file (koda.db, logs_1.db)
-│   │   │   └── tests.rs    # Database integration tests
 │   │   ├── git.rs          # Read-only git context for the system prompt (branch, diff, recent commits)
-│   │   ├── log_db/         # The log database: store, limits, and the tracing layer that fills it
 │   │   ├── inference.rs    # Streaming inference loop + tool execution
 │   │   ├── inference_helpers.rs # Token estimation, message assembly, overflow detection
 │   │   ├── instructions.md # Behavioral instructions in the system prompt
@@ -43,7 +36,6 @@ koda/
 │   │   ├── model_alias.rs  # Curated model aliases (e.g. "sonnet" → exact model ID)
 │   │   ├── model_context.rs# Model → context window size lookup table (fallback)
 │   │   ├── output_caps.rs  # Output cap scaling based on context window size
-│   │   ├── session_store.rs  # SessionStore trait — the session storage contract
 │   │   ├── preview.rs      # Pre-confirmation diff previews for Edit/Write
 │   │   ├── prompt.rs       # System prompt construction
 │   │   ├── provider_catalog.rs # Static metadata for every supported provider
@@ -159,7 +151,12 @@ koda/
 ├── koda-protocol/          # The client protocol: JSON-RPC messages and their types
 ├── koda-client/            # The client API and Koda's host: sessions, config, MCP
 ├── koda-config/            # config.toml: reading, checking and editing it, keeping comments
-├── koda-state/             # SQLite files and the diagnostic log database
+├── koda-state/             # Stored state, apart from the engine
+│   └── src/
+│       ├── session_store.rs  # SessionStore trait: the session storage contract, and its types
+│       ├── db/             # Database: the trait over SQLite (WAL mode), with its context cache and tests
+│       ├── sqlite.rs       # How each SQLite file is opened: one spec per file (koda.db, logs_1.db)
+│       └── log_db/         # The log database: store, limits, and the tracing layer that fills it
 ├── koda-sandbox/           # Sandbox runtime: kernel-level FS, network and exec policies
 ├── koda-test-utils/        # Shared test helpers
 ├── DESIGN.md               # Architecture decisions

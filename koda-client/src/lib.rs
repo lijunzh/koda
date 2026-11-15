@@ -41,10 +41,10 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use koda_core::config::KodaConfig;
-use koda_core::db::Database;
 use koda_protocol::initialize::{ClientInfo, InitializeParams, InitializeResponse};
 use koda_protocol::rpc::{ErrorObject, RequestId};
 use koda_protocol::{Method, methods};
+use koda_state::db::Database;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 

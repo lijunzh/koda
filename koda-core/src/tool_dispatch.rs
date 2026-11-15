@@ -28,16 +28,16 @@
 //!   Rust's exhaustive matching catches missing handlers at compile time.
 
 use crate::approval_flow::{CommandInbox, handle_ask_user, request_approval};
-use crate::db::Role;
 use crate::engine::event::ToolOutcome;
 use crate::engine::{ApprovalDecision, EngineEvent};
 use crate::preview;
 use crate::providers::ToolCall;
-use crate::session_store::SessionStore;
 use crate::sub_agent_dispatch;
 use crate::tools;
 use crate::trust::{self, ToolApproval, TrustMode};
 use crate::turn_context::{ToolExecutionContext, TurnContext};
+use koda_state::db::Role;
+use koda_state::session_store::SessionStore;
 
 use anyhow::Result;
 use std::path::Path;

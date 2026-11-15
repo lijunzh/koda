@@ -17,7 +17,6 @@ use std::sync::{Arc, OnceLock, PoisonError};
 use std::time::Duration;
 
 use koda_core::config::KodaConfig;
-use koda_core::db::Database;
 use koda_protocol::ServerNotification;
 use koda_protocol::initialize::{ClientInfo, InitializeResponse, ServerInfo};
 use koda_protocol::rpc::{self, ErrorObject, RequestId, codes};
@@ -27,6 +26,7 @@ use koda_protocol::session::{
 };
 use koda_protocol::state::{SandboxState, StateReadResponse, TrustMode};
 use koda_protocol::{ClientRequest, PROTOCOL_VERSION};
+use koda_state::db::Database;
 use serde_json::Value;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::{JoinHandle, JoinSet};
@@ -434,7 +434,7 @@ impl Host {
         &self,
         params: SessionListParams,
     ) -> Result<SessionListResponse, ErrorObject> {
-        use koda_core::session_store::SessionStore;
+        use koda_state::session_store::SessionStore;
         let root = params
             .cwd
             .map(PathBuf::from)
@@ -470,7 +470,7 @@ impl Host {
         &self,
         params: koda_protocol::session::SessionReadParams,
     ) -> Result<koda_protocol::session::SessionReadResponse, ErrorObject> {
-        use koda_core::session_store::SessionStore;
+        use koda_state::session_store::SessionStore;
         let stored = self
             .context
             .db
@@ -497,7 +497,7 @@ impl Host {
     /// Delete session `id`, closing it first if it is open, as Codex's
     /// `thread/delete` does, and say so with `session/deleted`.
     async fn delete_session(&self, id: String) -> Result<SessionDeleteResponse, ErrorObject> {
-        use koda_core::session_store::SessionStore;
+        use koda_state::session_store::SessionStore;
         let open = self.sessions.lock().await.remove(&id);
         if let Some(session) = open {
             self.handles

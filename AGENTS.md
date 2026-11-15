@@ -80,8 +80,9 @@ Workspace: `koda-core` (library, pure engine, zero terminal deps), `koda-cli`
 (the client API, the host and its session tasks, and engine events projected
 onto the protocol),
 `koda-config` (the config file `config.toml`: reading, checking and editing it),
-`koda-state` (Koda's SQLite files and the diagnostic log database, as Codex's
-`codex-state`; the session store moves here next), `koda-test-utils`.
+`koda-state` (Koda's stored state: the `SessionStore` trait and its SQLite
+`Database`, how its SQLite files are opened, and the diagnostic log database,
+as Codex keeps its storage outside `codex-core`), `koda-test-utils`.
 
 **The client boundary:** `koda-cli` (the TUI and `koda exec`) reaches the
 engine only through the client protocol, so other TUIs and GUIs can too, as
@@ -106,7 +107,9 @@ In `koda-core/src/`:
 - **Sub-agents:** `sub_agent_dispatch.rs`, `child_agent.rs`, `sub_agent_cache.rs`
 - **Providers:** `providers/` (all implement the `LlmProvider` trait),
   `provider_catalog.rs`, `model_alias.rs`, `keystore.rs`
-- **Storage and protocol:** `db/`, `persistence.rs`, `engine/`, `mcp/`, `config.rs`
+- **Storage:** `koda-state/src/` (`session_store.rs`, `db/`, `sqlite.rs`,
+  `log_db/`), apart from the engine
+- **Protocol and config:** `engine/`, `mcp/`, `config.rs`
 - **File history:** there is none, and no `/undo`. Git and the shell are how
   changes come back.
 

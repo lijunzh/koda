@@ -7,18 +7,18 @@
 
 use crate::approval_flow::{CommandInbox, request_approval};
 use crate::config::AgentIsolation;
-use crate::db::Role;
 use crate::engine::event::ToolOutcome;
 use crate::engine::{ApprovalDecision, EngineCommand, EngineEvent};
 use crate::memory;
 use crate::preview;
 use crate::prompt::build_system_prompt;
 use crate::providers::ChatMessage;
-use crate::session_store::SessionStore;
 use crate::tool_dispatch::execute_one_tool;
 use crate::tools::{self, ToolRegistry};
 use crate::trust::{self, ToolApproval, TrustMode, derive_child_trust};
 use crate::turn_context::ToolExecutionContext;
+use koda_state::db::Role;
+use koda_state::session_store::SessionStore;
 
 use anyhow::{Context, Result};
 use koda_sandbox::{CwdProvider, GitWorktreeProvider, WorkspaceProvider};
@@ -511,7 +511,7 @@ fn run_sub_agent<'a>(
                 .await?;
             db.set_metadata(
                 &sid,
-                crate::session_store::PARENT_SESSION_KEY,
+                koda_state::session_store::PARENT_SESSION_KEY,
                 parent_session_id,
             )
             .await?;
@@ -726,7 +726,7 @@ fn run_sub_agent<'a>(
         let context_turn_id = parent_tool_call_id
             .map(str::to_string)
             .unwrap_or_else(|| format!("sub-agent-{my_invocation_id}"));
-        crate::session_store::TurnContextItem::of_turn(
+        crate::turn_context::context_item(
             &context_turn_id,
             &sub_config,
             sub_config.trust,
@@ -955,7 +955,7 @@ fn run_sub_agent<'a>(
                         response.content.as_deref(),
                         tool_calls_json.as_deref(),
                         None,
-                        Some(&response.usage),
+                        Some(&response.usage.stored()),
                     )
                     .await?;
                 db.mark_message_complete(assistant_msg_id).await?;

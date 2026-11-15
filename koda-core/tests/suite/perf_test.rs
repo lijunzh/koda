@@ -6,7 +6,7 @@
 //! their wall-clock bounds failed.
 //! Run with: cargo test -p koda-core --test all -- perf_test
 
-use koda_core::session_store::SessionStore;
+use koda_state::session_store::SessionStore;
 use std::time::Instant;
 use tempfile::TempDir;
 
@@ -14,7 +14,7 @@ use tempfile::TempDir;
 
 mod db_perf {
     use super::*;
-    use koda_core::db::Database;
+    use koda_state::db::Database;
 
     #[tokio::test]
     async fn test_load_context_500_messages_under_1s() {
@@ -25,9 +25,9 @@ mod db_perf {
         // Insert 500 messages
         for i in 0..500 {
             let role = if i % 2 == 0 {
-                koda_core::db::Role::User
+                koda_state::db::Role::User
             } else {
-                koda_core::db::Role::Assistant
+                koda_state::db::Role::Assistant
             };
             let content = format!("Message {i}: realistic content with `code` and explanations.");
             db.insert_message(&session_id, &role, Some(&content), None, None, None)
@@ -57,7 +57,7 @@ mod db_perf {
         for _ in 0..10 {
             db.insert_message(
                 &session_id,
-                &koda_core::db::Role::User,
+                &koda_state::db::Role::User,
                 Some("A typical user message"),
                 None,
                 None,

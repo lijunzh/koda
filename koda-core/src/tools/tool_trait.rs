@@ -229,7 +229,7 @@ pub struct ToolExecCtx<'a> {
     /// these from `RwLock`s on the registry; the fast path now
     /// does the same snapshot once and threads borrows through
     /// the context.
-    pub session: Option<(&'a crate::db::Database, &'a str)>,
+    pub session: Option<(&'a koda_state::db::Database, &'a str)>,
 
     /// Skill registry for `ListSkills` / `ActivateSkill`. Other
     /// tools ignore this. Added in PR-8 of #1265 item 5.

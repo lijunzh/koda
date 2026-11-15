@@ -18,7 +18,10 @@
 //! | [`compact`] | Context compaction (summarize old messages) |
 //! | [`memory`] | Instruction files (`AGENTS.md`, `CLAUDE.md`) and Koda's notes |
 //! | [`skills`] | Expertise modules (prompt injection, zero LLM cost) |
-//! | [`db`] | SQLite persistence (sessions, history, file ownership) |
+//!
+//! Sessions are stored by `koda-state` (`koda_state::db`, behind the
+//! `koda_state::session_store::SessionStore` trait), as Codex keeps its
+//! storage outside `codex-core`.
 //!
 //! ## Architecture
 //!
@@ -67,8 +70,6 @@ pub mod config;
 pub(crate) mod context;
 /// Context analysis — per-tool token breakdown and duplicate detection.
 pub mod context_analysis;
-/// SQLite persistence layer — sessions, messages, usage tracking.
-pub mod db;
 /// Engine protocol: `EngineEvent` / `EngineCommand` enums.
 pub mod engine;
 /// File lifecycle tracker — tracks files created by Koda per session (#465).
@@ -112,8 +113,6 @@ pub use koda_config::runtime_env;
 pub mod sandbox;
 /// Session lifecycle — create, resume, list, delete.
 pub mod session;
-/// `SessionStore` trait — the session storage contract.
-pub mod session_store;
 /// Skill-scoped tool filtering — hard enforcement of `allowed_tools`.
 pub mod skill_scope;
 /// Skill discovery and activation (project, user, built-in).

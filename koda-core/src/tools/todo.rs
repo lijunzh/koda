@@ -11,10 +11,10 @@
 //! - `status`   — `"pending"` | `"in_progress"` | `"completed"`
 //! - `priority` — `"high"` | `"medium"` | `"low"`
 
-use crate::db::Database;
 use crate::providers::ToolDefinition;
-use crate::session_store::SessionStore as _;
 use anyhow::Result;
+use koda_state::db::Database;
+use koda_state::session_store::SessionStore as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -525,7 +525,7 @@ mod tests {
     async fn test_db() -> (Database, TempDir, String) {
         let dir = TempDir::new().unwrap();
         let db = Database::open(&dir.path().join("test.db")).await.unwrap();
-        use crate::session_store::SessionStore;
+        use koda_state::session_store::SessionStore;
         let sid = db.create_session("koda", dir.path()).await.unwrap();
         (db, dir, sid)
     }
@@ -549,7 +549,7 @@ mod tests {
         // Clients now mirror state from `EngineEvent::TodoUpdate`;
         // the DB row stays as the source-of-truth but is no
         // longer read into the system prompt.
-        use crate::session_store::SessionStore;
+        use koda_state::session_store::SessionStore;
         let raw = db.get_todo(&sid).await.unwrap().expect("row persisted");
         assert!(raw.contains("Add tests"));
         assert!(raw.contains("Write docs"));
@@ -569,7 +569,7 @@ mod tests {
         assert!(out.message.contains("cleared"));
         // Persisted row is the empty list (not deleted) — same
         // observable behaviour as before, just verified directly.
-        use crate::session_store::SessionStore;
+        use koda_state::session_store::SessionStore;
         let raw = db.get_todo(&sid).await.unwrap().expect("row persisted");
         assert_eq!(raw, "[]");
     }
@@ -731,7 +731,7 @@ mod tests {
         assert!(msg.contains("Only one task"), "got: {msg}");
         assert!(msg.contains("in_progress"), "got: {msg}");
         // Must reject BEFORE writing — the DB should still be empty.
-        use crate::session_store::SessionStore;
+        use koda_state::session_store::SessionStore;
         assert!(
             db.get_todo(&sid).await.unwrap().is_none(),
             "failed validation must not touch the DB"

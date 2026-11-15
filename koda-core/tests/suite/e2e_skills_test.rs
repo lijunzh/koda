@@ -1,6 +1,8 @@
 //! E2E tests: skills, compaction, and file ownership.
 
-use koda_core::{compact, db::Role, engine::EngineEvent, session_store::SessionStore};
+use koda_core::{compact, engine::EngineEvent};
+use koda_state::db::Role;
+use koda_state::session_store::SessionStore;
 use koda_test_utils::{Env, LlmProvider, MockProvider, MockResponse};
 use std::sync::Arc;
 use tokio::sync::RwLock;

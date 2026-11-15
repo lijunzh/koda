@@ -10,9 +10,9 @@ use koda_core::{
     engine::{EngineCommand, EngineEvent},
     inference::{self, InferenceContext},
     providers::{LlmResponse, ModelInfo},
-    session_store::SessionStore,
     trust::TrustMode,
 };
+use koda_state::session_store::SessionStore;
 use koda_test_utils::{ChatMessage, Env, LlmProvider, MockProvider, MockResponse, ToolDefinition};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;

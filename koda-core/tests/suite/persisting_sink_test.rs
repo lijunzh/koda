@@ -53,11 +53,11 @@
 //! (it stalls a real socket past `KODA_READ_TIMEOUT_SECS`), so we
 //! deliberately don't duplicate it here.
 
-use koda_core::db::Database;
 use koda_core::engine::EngineEvent;
 use koda_core::engine::sink::{EngineSink, PersistingSink, TestSink};
-use koda_core::session_store::{SessionStore, session_event_kind as sek};
 use koda_core::tools::ToolEffect;
+use koda_state::db::Database;
+use koda_state::session_store::{SessionStore, session_event_kind as sek};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -90,7 +90,7 @@ async fn wait_for_events(
     db: &Arc<dyn SessionStore>,
     session_id: &str,
     expected: usize,
-) -> Vec<koda_core::session_store::SessionEvent> {
+) -> Vec<koda_state::session_store::SessionEvent> {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         let events = db.load_session_events(session_id).await.expect("load");

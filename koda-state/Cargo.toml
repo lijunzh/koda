@@ -3,7 +3,7 @@ name = "koda-state"
 version = "0.6.4"
 edition.workspace = true
 rust-version.workspace = true
-description = "The stored state of the Koda AI coding agent: its SQLite files and diagnostic log database"
+description = "The stored state of the Koda AI coding agent: its sessions, SQLite files and diagnostic log database"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
@@ -13,6 +13,9 @@ categories = ["database", "development-tools"]
 
 [dependencies]
 anyhow = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 sqlx = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true, features = ["full"] }

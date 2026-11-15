@@ -43,7 +43,7 @@ const LEGACY_PROJECT_AGENTS_DIR: &str = "agents";
 /// `agents/` that holds agent files is logged once as deprecated.
 pub fn agent_dirs(project_root: &Path) -> Vec<(PathBuf, &'static str)> {
     let mut dirs = Vec::new();
-    if let Ok(config) = crate::db::config_dir() {
+    if let Ok(config) = koda_config::config_dir() {
         dirs.push((config.join("agents"), "user"));
     }
     let legacy = project_root.join(LEGACY_PROJECT_AGENTS_DIR);

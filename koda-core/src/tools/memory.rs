@@ -64,7 +64,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
 
 /// Read all loaded memory.
 pub async fn memory_read(project_root: &Path) -> Result<String> {
-    memory_read_in(crate::db::config_dir().ok().as_deref(), project_root)
+    memory_read_in(koda_config::config_dir().ok().as_deref(), project_root)
 }
 
 fn memory_read_in(config: Option<&Path>, project_root: &Path) -> Result<String> {
@@ -91,7 +91,7 @@ fn memory_read_in(config: Option<&Path>, project_root: &Path) -> Result<String> 
 
 /// Write a memory entry to Koda's notes, outside the project.
 pub async fn memory_write(project_root: &Path, args: &Value) -> Result<String> {
-    memory_write_in(&crate::db::config_dir()?, project_root, args)
+    memory_write_in(&koda_config::config_dir()?, project_root, args)
 }
 
 fn memory_write_in(config: &Path, project_root: &Path, args: &Value) -> Result<String> {

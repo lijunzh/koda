@@ -128,7 +128,7 @@ impl SkillRegistry {
         registry.load_builtin();
 
         // 2. User-global skills
-        if let Ok(config_dir) = crate::db::config_dir() {
+        if let Ok(config_dir) = koda_config::config_dir() {
             let user_dir = config_dir.join("skills");
             registry.load_directory(&user_dir, SkillSource::User);
         }

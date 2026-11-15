@@ -3,17 +3,17 @@
 //! Provides [`Env`] — an isolated test environment with temp dir, DB,
 //! session, config, and tool registry.
 
-use koda_core::session_store::SessionStore;
 use koda_core::{
     child_agent::ChildAgentRegistry,
     config::{KodaConfig, ProviderType},
-    db::{Database, Role},
     engine::{EngineCommand, EngineEvent, sink::TestSink},
     inference::{self, InferenceContext},
     providers::{LlmProvider, mock::MockProvider},
     tools::ToolRegistry,
     trust::TrustMode,
 };
+use koda_state::db::{Database, Role};
+use koda_state::session_store::SessionStore;
 use std::{path::PathBuf, sync::Arc};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
