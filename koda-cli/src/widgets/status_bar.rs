@@ -56,7 +56,7 @@ pub struct StatusBar<'a> {
     /// ⚠ "unsandboxed" pill so users on systems without kernel
     /// sandbox can see at a glance why Auto mode refuses (and why
     /// Safe is the only available top-level mode there). Sourced
-    /// from `koda_core::sandbox::is_available()` in `tui_viewport`.
+    /// from the host's `state/read` in `tui_viewport`.
     sandbox_available: Option<bool>,
 }
 
@@ -102,7 +102,7 @@ impl<'a> StatusBar<'a> {
 
     /// Set the sandbox-availability indicator (#860 visibility companion).
     ///
-    /// Pass `Some(koda_core::sandbox::is_available())` from production
+    /// Pass `Some(sandbox.available)` (the host's `state/read`) from production
     /// call sites. `None` (or omitting this builder method) hides the
     /// segment — used by the existing tests so adding the indicator
     /// doesn't churn the rendered-bar snapshots; the new sandbox

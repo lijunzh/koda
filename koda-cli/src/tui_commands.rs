@@ -12,7 +12,7 @@ use crate::mouse_select::copy_to_clipboard;
 use crate::scroll_buffer::ScrollBuffer;
 use crate::tui_output;
 use crate::tui_render::TuiRenderer;
-use koda_core::trust;
+use koda_client::protocol::state::{SandboxState, TrustMode};
 
 use crate::tui_context::TuiSession;
 use koda_core::config::KodaConfig;
@@ -42,7 +42,7 @@ pub async fn handle_slash_command(
     input: &str,
     config: &mut KodaConfig,
     session: &mut TuiSession,
-    shared_mode: &trust::SharedTrustMode,
+    mode: (&mut TrustMode, &SandboxState),
     renderer: &mut TuiRenderer,
     project_root: &std::path::Path,
     pending_command: &mut Option<String>,
@@ -149,14 +149,13 @@ pub async fn handle_slash_command(
                 }
                 Some(sub) if sub.starts_with("resume ") => {
                     let id = sub.strip_prefix("resume ").unwrap().trim().to_string();
-                    handle_resume_session(buffer, session, client, &id, shared_mode, renderer)
-                        .await;
+                    handle_resume_session(buffer, session, client, &id, mode, renderer).await;
                 }
                 // Bare ID shorthand: /resume <hex-id>
                 Some(id)
                     if !id.is_empty() && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') =>
                 {
-                    handle_resume_session(buffer, session, client, id, shared_mode, renderer).await;
+                    handle_resume_session(buffer, session, client, id, mode, renderer).await;
                 }
                 _ => {} // no-op: session list is opened by the TUI context
             }
@@ -307,7 +306,7 @@ async fn handle_resume_session(
     session: &mut TuiSession,
     client: &koda_client::InProcessClient,
     id: &str,
-    shared_mode: &trust::SharedTrustMode,
+    mode: (&mut TrustMode, &SandboxState),
     renderer: &mut TuiRenderer,
 ) {
     use tui_output::GREEN;
@@ -324,27 +323,18 @@ async fn handle_resume_session(
                     0 => tui_output::err_msg(buffer, format!("No session found matching '{id}'.")),
                     1 => {
                         let target = &matches[0];
-                        let mode_to_apply = match target.mode {
-                            Some(mode) => {
-                                let parsed = crate::tui_context::core_mode(mode);
-                                let (m, warning) = trust::coerce_for_top_level(parsed);
-                                let report = koda_core::sandbox::dependency_report();
-                                match trust::require_sandbox_for_auto(m, report.available) {
-                                    Ok(validated) => Some((validated, warning)),
-                                    Err(msg) => {
-                                        tui_output::err_msg(
-                                            buffer,
-                                            format!(
-                                                "Cannot resume session in Auto mode: {msg}\n\nSetup:\n{}",
-                                                koda_core::sandbox::setup_hint(report.backend)
-                                            ),
-                                        );
-                                        return;
-                                    }
-                                }
-                            }
-                            None => None,
-                        };
+                        // Auto needs the host's sandbox: refused here,
+                        // before switching, as the host would refuse it.
+                        if target.mode == Some(TrustMode::Auto) && !mode.1.available {
+                            tui_output::err_msg(
+                                buffer,
+                                format!(
+                                    "Cannot resume session in Auto mode: {}",
+                                    crate::mode::auto_refused(mode.1)
+                                ),
+                            );
+                            return;
+                        }
                         // The TUI opens it on the host before the next turn.
                         session.id = target.id.clone();
                         let short_id = target.id[..8].to_string();
@@ -366,23 +356,14 @@ async fn handle_resume_session(
                                 Span::styled(detail, DIM),
                             ]),
                         );
-                        // Restore persisted approval mode (#590).
-                        // **#1244**: route the parsed mode through
-                        // `coerce_for_top_level` so a session that
-                        // somehow got persisted with `plan` (older
-                        // koda version, manual DB edit, race) is
-                        // coerced to Safe with a visible banner.
-                        //
-                        // **#1241 release audit**: validate Auto with
-                        // `require_sandbox_for_auto` BEFORE switching
-                        // `session.id`; otherwise a persisted Auto
-                        // session could bypass the startup sandbox
-                        // refusal when resumed on an unsandboxed host.
-                        if let Some((m, warning)) = mode_to_apply {
-                            if let Some(w) = warning {
-                                tui_output::warn_msg(buffer, w.to_string());
-                            }
-                            trust::set_trust(shared_mode, m);
+                        // Its stored mode (#590). Plan isn't for a session
+                        // a person answers: the host opens it in Safe and
+                        // says so, and the TUI follows.
+                        if let Some(stored) = target.mode {
+                            *mode.0 = match stored {
+                                TrustMode::Plan => TrustMode::Safe,
+                                other => other,
+                            };
                         }
                         // Its earlier turns, as they were drawn live.
                         crate::tui_context::show_earlier_turns(

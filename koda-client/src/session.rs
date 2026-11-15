@@ -113,6 +113,8 @@ pub(crate) struct SessionContext {
     pub config_file: koda_config::ConfigFile,
     pub project_root: PathBuf,
     pub db: Database,
+    /// This machine's sandbox, checked once as the host starts.
+    pub sandbox: koda_protocol::state::SandboxState,
     pub events: mpsc::UnboundedSender<Outgoing>,
     pub request_ids: Arc<AtomicI64>,
     pub open_requests: OpenRequests,
@@ -141,10 +143,16 @@ pub(crate) async fn open(
         config_file: context_file,
         project_root,
         db,
+        sandbox,
         events,
         request_ids,
         open_requests,
     } = context;
+    // The modes this session may run in, which the host enforces.
+    let rules = crate::settings::ModeRules {
+        answered: policy != ApprovalPolicy::Never,
+        sandbox,
+    };
 
     let resumed = resume.is_some();
     let loaded = crate::config_file::load(&context_file)?;
@@ -184,6 +192,9 @@ pub(crate) async fn open(
             mode = saved;
         }
     }
+    // The mode rules, before anything is created: Auto needs the sandbox,
+    // and a session a person answers runs in Safe rather than Plan.
+    let (mode, mode_warning) = rules.allow(mode)?;
     // A new session takes the saved choice where the client named nothing,
     // as a Codex thread starts from `config.toml`'s defaults.
     let saved = crate::config_file::values(&loaded);
@@ -282,7 +293,7 @@ pub(crate) async fn open(
             protocol_version: PROTOCOL_VERSION,
         },
     )));
-    if let Some(message) = notice {
+    for message in notice.into_iter().chain(mode_warning.map(str::to_string)) {
         let _ = events.send(Outgoing::Notification(ServerNotification::Warning(
             WarningNotification {
                 session_id: Some(id.clone()),
@@ -361,6 +372,7 @@ pub(crate) async fn open(
             config_file: context_file,
             alias: alias.map(str::to_string),
             pending_settings: Vec::new(),
+            rules,
             mcp,
             reload_mcp: false,
             sink,
@@ -388,6 +400,8 @@ pub(crate) struct SessionTask {
     mcp: Option<SharedMcpManager>,
     /// A `config/mcpServer/reload` arrived during the turn.
     reload_mcp: bool,
+    /// The modes the session may run in.
+    rules: crate::settings::ModeRules,
     sink: Arc<HostSink>,
     engine_tx: mpsc::Sender<EngineCommand>,
     engine_rx: mpsc::Receiver<EngineCommand>,
@@ -520,8 +534,15 @@ impl SessionTask {
                 .map_err(|e| internal(format!("couldn't record the model: {e:#}")))?;
             self.session.update_provider(&next);
         }
-        if let Some(mode) = params.mode {
-            let mode = crate::settings::mode_of(mode);
+        if let Some(asked) = params.mode {
+            let (mode, warning) = self.rules.allow(crate::settings::mode_of(asked))?;
+            if let Some(message) = warning {
+                self.sink
+                    .notify(ServerNotification::Warning(WarningNotification {
+                        session_id: Some(id.clone()),
+                        message: message.to_string(),
+                    }));
+            }
             self.session.mode = mode;
             self.session
                 .db
@@ -659,6 +680,7 @@ impl SessionTask {
             commands,
             pending_settings,
             reload_mcp,
+            rules,
             ..
         } = self;
         let result = {
@@ -750,11 +772,18 @@ impl SessionTask {
                         }
                         // Checked now, applied once the turn has ended.
                         Some(SessionCommand::UpdateSettings { params, reply }) => {
-                            match crate::settings::check_update(
+                            let checked = crate::settings::check_update(
                                 config,
                                 params.model.as_deref(),
                                 params.effort.as_deref(),
-                            ) {
+                            )
+                            .and_then(|_| match params.mode {
+                                Some(mode) => rules
+                                    .allow(crate::settings::mode_of(mode))
+                                    .map(|_| ()),
+                                None => Ok(()),
+                            });
+                            match checked {
                                 Ok(_) => {
                                     pending_settings.push(params);
                                     let _ = reply.send(to_json(SessionSettingsUpdateResponse {}));

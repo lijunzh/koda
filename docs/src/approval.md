@@ -124,8 +124,9 @@ These apply **regardless of the trust mode**:
    startup gives a clear error + exit code 1 instead. Safe and Plan
    are unaffected. The TUI status bar shows the current sandbox state
    (🛡 sandboxed / ⚠ unsandboxed) next to the trust badge so you can
-   see at a glance why Auto refuses on your system; `koda --version`
-   prints the same state on a paste-friendly one-liner.
+   see at a glance why Auto refuses on your system, and `/feedback`'s
+   diagnostics record it for a bug report. Koda's host enforces this
+   rule whichever client asks for Auto.
 4. **Agent-file protection** — `.koda/agents/` and `.koda/skills/`
    are write-protected in every mode to prevent prompt injection
    from rewriting an agent's tools or system prompt mid-session.

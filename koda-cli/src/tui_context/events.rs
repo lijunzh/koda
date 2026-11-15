@@ -228,12 +228,13 @@ impl TuiContext {
                 // and surface a one-line warning in the scroll buffer
                 // instead of silently flipping to a state that would bail
                 // at the next tool call.
-                match trust::cycle_trust_checked(
-                    &self.shared_mode,
-                    koda_core::sandbox::is_available(),
-                ) {
-                    // The host applies the mode and records it with the session.
-                    Ok(_) => self.send_mode().await,
+                match crate::mode::next(self.mode, &self.sandbox) {
+                    // The host applies the mode, records it with the
+                    // session and reports it back.
+                    Ok(mode) => {
+                        self.mode = mode;
+                        self.send_mode().await;
+                    }
                     Err(msg) => {
                         self.scroll_buffer.push(ratatui::text::Line::styled(
                             format!("\u{26a0} {msg}"),
@@ -341,12 +342,7 @@ impl TuiContext {
             self.history.push(text.clone());
             self.input_history.push(&self.session.id, &text);
             self.history_idx = None;
-            let mode = trust::read_trust(&self.shared_mode);
-            let icon = match mode {
-                TrustMode::Plan => "\u{1f4cb}",
-                TrustMode::Safe => "\u{1f512}",
-                TrustMode::Auto => "\u{26a1}",
-            };
+            let icon = crate::mode::icon(self.mode);
             self.scroll_buffer.push(Line::from(vec![
                 Span::styled(format!("{icon}> "), Style::default().fg(Color::Cyan)),
                 Span::raw(text.clone()),

@@ -2193,6 +2193,13 @@
             "string",
             "null"
           ]
+        },
+        "setupHint": {
+          "description": "What to do about it, when it doesn't: how to install or enable the\nbackend, or to use Safe mode. For a person, a few lines.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [

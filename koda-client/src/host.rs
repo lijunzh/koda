@@ -81,6 +81,8 @@ pub(crate) struct HostArgs {
     pub project_root: PathBuf,
     /// Where sessions are stored.
     pub db: Database,
+    /// This machine's sandbox, which the mode rules and `state/read` use.
+    pub sandbox: SandboxState,
     /// The client's queue of notifications and server requests.
     pub events: mpsc::UnboundedSender<Outgoing>,
 }
@@ -94,6 +96,7 @@ pub(crate) fn spawn(args: HostArgs) -> (mpsc::Sender<HostCommand>, JoinHandle<()
             config_file: args.config_file,
             project_root: args.project_root,
             db: args.db,
+            sandbox: args.sandbox,
             events: args.events,
             request_ids: Arc::new(AtomicI64::new(0)),
             open_requests: OpenRequests::default(),
@@ -652,10 +655,6 @@ impl Host {
     }
 
     async fn state(&self) -> Result<StateReadResponse, ErrorObject> {
-        // The sandbox check may start a process, so it runs off the async threads.
-        let report = tokio::task::spawn_blocking(koda_core::sandbox::dependency_report)
-            .await
-            .map_err(|e| internal(format!("sandbox check failed: {e}")))?;
         let config = &self.context.config;
         Ok(StateReadResponse {
             model: config.model.clone(),
@@ -663,11 +662,7 @@ impl Host {
             base_url: config.base_url.clone(),
             context_window: config.max_context_tokens as u64,
             mode: protocol_mode(self.new_session_mode()),
-            sandbox: SandboxState {
-                backend: report.backend.to_string(),
-                available: report.available,
-                reason: report.reason,
-            },
+            sandbox: self.context.sandbox.clone(),
         })
     }
 }
@@ -705,6 +700,12 @@ mod tests {
             config_warnings: Vec::new(),
             project_root: dir.path().to_path_buf(),
             db,
+            sandbox: SandboxState {
+                backend: "seatbelt".to_string(),
+                available: true,
+                reason: None,
+                setup_hint: None,
+            },
             events,
         });
         (tx, handle, dir)

@@ -24,8 +24,8 @@ use crate::tui_viewport::{draw_viewport, init_terminal, restore_terminal};
 use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyCode, KeyModifiers};
 use futures_util::StreamExt;
+use koda_client::protocol::state::TrustMode;
 use koda_core::config::KodaConfig;
-use koda_core::trust::{self, TrustMode};
 use ratatui::{
     style::{Color, Style},
     text::{Line, Span},
@@ -110,7 +110,10 @@ pub(crate) struct TuiContext {
     /// The session open on the host. When a command has switched
     /// `session.id`, the TUI opens that one before the next turn.
     pub(crate) host_session: String,
-    pub shared_mode: trust::SharedTrustMode,
+    /// The session's mode, as the host reports it.
+    pub mode: TrustMode,
+    /// The host's sandbox, from `state/read`: whether Auto is possible.
+    pub sandbox: koda_client::protocol::state::SandboxState,
     pub project_root: PathBuf,
 
     /// Coalescing draw scheduler (#1138). Replaces the old per-iteration
@@ -178,17 +181,6 @@ pub(crate) async fn open_host_session(
         started.session.turns,
         started.session.mode,
     ))
-}
-
-/// Core's name for a protocol trust mode, while the TUI still keeps core's
-/// (8c moves it to the protocol's).
-pub(crate) fn core_mode(mode: koda_client::protocol::state::TrustMode) -> TrustMode {
-    use koda_client::protocol::state::TrustMode as P;
-    match mode {
-        P::Plan => TrustMode::Plan,
-        P::Safe => TrustMode::Safe,
-        P::Auto => TrustMode::Auto,
-    }
 }
 
 /// Draw `turns`, a session's earlier turns, through the live renderer, and
@@ -286,34 +278,6 @@ pub(crate) enum CommandOutcome {
     Quit,
 }
 
-/// Resolve the initial trust mode for a session, given any persisted mode
-/// string and a fallback to use when nothing valid is persisted.
-///
-/// Resume semantics (#590): a previously-stored mode wins over the CLI/config
-/// value, so users don't lose their per-session preference on `/resume`.
-///
-/// Fallback semantics (#982): when there's no persisted mode (fresh session)
-/// OR the persisted string is unparseable (corruption / older format), fall
-/// back to the user's current `config.trust` — **never** to a hardcoded
-/// constant. Hardcoding `Auto` here was the original bug: it silently
-/// overrode `--mode safe`, defeating the whole point of the flag.
-///
-/// Top-level safety semantics (#1241 release audit): persisted modes must obey
-/// the same top-level rules as CLI/env startup. Plan coerces to Safe, and Auto
-/// is rejected when the kernel sandbox is unavailable. Without this, a session
-/// persisted as `auto` on a sandboxed host could be resumed on an unsandboxed
-/// host and bypass the startup Auto refusal. Sneaky little gremlin.
-pub(crate) fn resolve_initial_trust_mode(
-    persisted: Option<TrustMode>,
-    fallback: TrustMode,
-    sandbox_available: bool,
-) -> Result<(TrustMode, Option<&'static str>), String> {
-    let parsed = persisted.unwrap_or(fallback);
-    let (mode, warning) = koda_core::trust::coerce_for_top_level(parsed);
-    let mode = koda_core::trust::require_sandbox_for_auto(mode, sandbox_available)?;
-    Ok((mode, warning))
-}
-
 /// Which of `--provider`, `--base-url` and `--model` the user set for this
 /// run.
 ///
@@ -383,30 +347,17 @@ impl TuiContext {
         let (session, earlier_turns, opened_mode) =
             open_host_session(&client, resume, &named).await?;
 
-        // Lines shown under the banner, which waits for the session's settings.
-        let mut notices: Vec<Line<'static>> = Vec::new();
-
-        // Restore persisted approval mode on resume (#590).
-        // Fallback to the user's current CLI/config trust mode (not a hardcoded
-        // constant) so `--mode safe` is honored on first run when there's no
-        // persisted mode yet. Fixes #982.
-        let (initial_mode, initial_mode_warning) = {
-            let report = koda_core::sandbox::dependency_report();
-            resolve_initial_trust_mode(opened_mode.map(core_mode), config.trust, report.available)
-                .map_err(|msg| {
-                anyhow::anyhow!(
-                    "{msg}\n\nSetup:\n{}",
-                    koda_core::sandbox::setup_hint(report.backend)
-                )
-            })?
-        };
-        if let Some(warning) = initial_mode_warning {
-            notices.push(Line::from(vec![
-                Span::styled("  \u{26a0} ", Style::new().fg(Color::Yellow)),
-                Span::styled(warning.to_string(), Style::new().fg(Color::Yellow)),
-            ]));
-        }
-        let shared_mode = trust::new_shared_trust(initial_mode);
+        // The mode the host opened it in: a resumed session's own, or the
+        // flags' or the config's, after the host's rules (Auto needs the
+        // sandbox; Plan is Safe here, with a warning the host sends).
+        let initial_mode = opened_mode.unwrap_or(TrustMode::Safe);
+        let sandbox = client
+            .request::<koda_client::protocol::methods::StateRead>(
+                koda_client::protocol::state::StateReadParams {},
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+            .sandbox;
 
         // What the session runs with, which the host decided: the saved
         // choice, a resumed session's own, or the flags. The TUI mirrors it.
@@ -445,7 +396,6 @@ impl TuiContext {
                 startup_lines.push(crate::startup::warning_line(notice));
             }
         }
-        startup_lines.extend(notices);
 
         // Terminal + textarea
         let terminal = init_terminal()?;
@@ -536,7 +486,8 @@ impl TuiContext {
             host_session: session.id.clone(),
             session,
             client,
-            shared_mode,
+            mode: initial_mode,
+            sandbox,
             project_root,
             frame_requester,
             draw_rx,
@@ -580,7 +531,7 @@ impl TuiContext {
         let vh = (self.history_area_height as usize).max(1);
         self.scroll_buffer.clamp_offset(w, vh);
 
-        let mode = trust::read_trust(&self.shared_mode);
+        let mode = self.mode;
         let ctx = self.context_left;
         let tui_state = self.tui_state;
         let prompt_mode = &self.prompt_mode;
@@ -608,6 +559,7 @@ impl TuiContext {
                 textarea,
                 &config.model,
                 mode,
+                self.sandbox.available,
                 ctx,
                 tui_state,
                 prompt_mode,
@@ -831,7 +783,7 @@ impl TuiContext {
             input,
             &mut self.config,
             &mut self.session,
-            &self.shared_mode,
+            (&mut self.mode, &self.sandbox),
             &mut self.renderer,
             &self.project_root,
             &mut self.pending_command,
@@ -929,88 +881,4 @@ impl TuiContext {
     // ═══════════════════════════════════════════════════════════
     // Idle-mode event handling (keyboard, paste, menu, wizard, history)
     // ═══════════════════════════════════════════════════════════
-}
-
-#[cfg(test)]
-mod tests {
-    //! Regression tests for #982: `--mode safe` was silently overridden by a
-    //! hardcoded `TrustMode::Auto` at session-creation time. The fix routes
-    //! `config.trust` through both fresh-session and resume-fallback paths.
-    //!
-    //! These tests pin the resolution semantics so a future refactor can't
-    //! reintroduce a hardcoded constant without turning the build red.
-
-    use super::resolve_initial_trust_mode;
-    use koda_core::trust::TrustMode;
-
-    #[test]
-    fn fresh_session_no_persisted_mode_uses_config_trust() {
-        // The exact bug: fresh session, no persisted mode, user passed `--mode safe`.
-        // Pre-fix this returned hardcoded `Auto`, ignoring the user's choice.
-        assert_eq!(
-            resolve_initial_trust_mode(None, TrustMode::Safe, true)
-                .unwrap()
-                .0,
-            TrustMode::Safe,
-        );
-        // Plan is sub-agent-only; top-level fallback still goes through
-        // coerce_for_top_level, so it resolves to Safe with a warning.
-        let (mode, warning) = resolve_initial_trust_mode(None, TrustMode::Plan, true).unwrap();
-        assert_eq!(mode, TrustMode::Safe);
-        assert!(warning.is_some());
-        assert_eq!(
-            resolve_initial_trust_mode(None, TrustMode::Auto, true)
-                .unwrap()
-                .0,
-            TrustMode::Auto,
-        );
-    }
-
-    #[test]
-    fn persisted_mode_wins_over_config_trust_on_resume_after_top_level_coercion() {
-        // Resume semantics from #590: a stored mode beats the CLI fallback,
-        // then the top-level safety rules are applied.
-        assert_eq!(
-            resolve_initial_trust_mode(Some(TrustMode::Plan), TrustMode::Auto, true)
-                .unwrap()
-                .0,
-            TrustMode::Safe,
-        );
-        assert_eq!(
-            resolve_initial_trust_mode(Some(TrustMode::Safe), TrustMode::Auto, true)
-                .unwrap()
-                .0,
-            TrustMode::Safe,
-        );
-        assert_eq!(
-            resolve_initial_trust_mode(Some(TrustMode::Auto), TrustMode::Safe, true)
-                .unwrap()
-                .0,
-            TrustMode::Auto,
-        );
-    }
-
-    #[test]
-    fn persisted_auto_requires_sandbox_on_resume() {
-        let err =
-            resolve_initial_trust_mode(Some(TrustMode::Auto), TrustMode::Safe, false).unwrap_err();
-        assert!(err.contains("Auto mode requires"));
-        assert!(err.contains("--mode safe"));
-    }
-
-    #[test]
-    fn fallback_auto_requires_sandbox_on_fresh_session() {
-        let err = resolve_initial_trust_mode(None, TrustMode::Auto, false).unwrap_err();
-        assert!(err.contains("Auto mode requires"));
-    }
-
-    #[test]
-    fn persisted_safe_still_allowed_without_sandbox() {
-        assert_eq!(
-            resolve_initial_trust_mode(Some(TrustMode::Safe), TrustMode::Auto, false)
-                .unwrap()
-                .0,
-            TrustMode::Safe,
-        );
-    }
 }

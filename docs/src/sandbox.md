@@ -171,10 +171,11 @@ Linux), behavior depends on your trust mode:
   — Plan denies all mutating tools at the trust layer; Bash never
   runs.
 
-Run `koda --version` to see your platform's sandbox state in one
-line (paste-friendly for bug reports). The TUI status bar also
-surfaces the current state next to the trust badge
-(🛡 sandboxed / ⚠ unsandboxed).
+The TUI status bar shows the sandbox state next to the trust badge
+(🛡 sandboxed / ⚠ unsandboxed), and `/feedback`'s diagnostics record
+it for a bug report. Clients read it from Koda's host (`state/read`'s
+`sandbox`, with a `setupHint` when it's unavailable), since commands
+run in the host's sandbox.
 
 ## When a command needs to leave the sandbox
 

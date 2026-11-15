@@ -34,6 +34,7 @@ pub(crate) mod legacy_clones;
 pub(crate) mod logging;
 pub(crate) mod mcp_cmd;
 pub(crate) mod md_render;
+pub(crate) mod mode;
 pub(crate) mod mouse_select;
 pub(crate) mod onboarding;
 pub(crate) mod panic_log;

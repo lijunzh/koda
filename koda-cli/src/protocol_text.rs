@@ -208,7 +208,7 @@ mod tests {
         assert_eq!(declined("[safe mode] Action blocked."), Declined::Blocked);
         // What Koda tells the model, read from where it is written.
         assert_eq!(
-            declined(koda_core::trust::PLAN_BLOCKED_MESSAGE),
+            declined(koda_client::protocol::item::PLAN_BLOCKED_MESSAGE),
             Declined::Blocked
         );
         assert_eq!(declined("[cancelled]"), Declined::Other);

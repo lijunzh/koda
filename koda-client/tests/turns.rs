@@ -961,6 +961,143 @@ async fn sessions_are_listed_newest_first_with_their_first_prompt() {
     assert!(refused.message.contains("no session"), "{refused:?}");
 }
 
+/// The host enforces the mode rules whichever client asks, as Codex's
+/// server owns a thread's sandbox policy: on a machine without a sandbox,
+/// Auto is refused with what to do about it, at `session/start` and at
+/// `session/settings/update`; a session a person answers runs in Safe
+/// rather than Plan, and says so; one nobody answers keeps Plan.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_host_enforces_the_mode_rules() {
+    use koda_client::protocol::session::{ApprovalPolicy, SessionSettingsUpdateParams};
+    use koda_client::protocol::state::{SandboxState, StateReadParams, TrustMode};
+    let server = model(vec![]).await;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("project")).unwrap();
+    let start = |trust: koda_core::trust::TrustMode| {
+        let mut config = config(&server);
+        config.trust = trust;
+        config.trust_named = true;
+        InProcessClient::start_with_sandbox(
+            StartArgs {
+                config,
+                config_file: koda_client::ConfigFile::in_dir(&dir.path().join("config")),
+                home: dir.path().join("config"),
+                project_root: dir.path().join("project"),
+                client_info: ClientInfo {
+                    name: "turns-test".to_string(),
+                    version: "0".to_string(),
+                },
+            },
+            SandboxState {
+                backend: "bwrap".to_string(),
+                available: false,
+                reason: Some("bwrap isn't installed".to_string()),
+                setup_hint: Some("Install bubblewrap".to_string()),
+            },
+        )
+    };
+
+    // Auto, asked for at the start, is refused before a session exists.
+    let client = start(koda_core::trust::TrustMode::Auto).await.unwrap();
+    let state = client
+        .request::<methods::StateRead>(StateReadParams {})
+        .await
+        .unwrap();
+    assert!(!state.sandbox.available);
+    assert_eq!(
+        state.sandbox.setup_hint.as_deref(),
+        Some("Install bubblewrap")
+    );
+    let refused = server_error(
+        client
+            .request::<methods::SessionStart>(SessionStartParams::default())
+            .await,
+    );
+    assert!(
+        refused.message.contains("Auto mode requires"),
+        "{refused:?}"
+    );
+    assert!(
+        refused.message.contains("Install bubblewrap"),
+        "{refused:?}"
+    );
+    client.shutdown().await;
+
+    // In Safe it opens, and can't be switched to Auto.
+    let mut client = start(koda_core::trust::TrustMode::Safe).await.unwrap();
+    let opened = client
+        .request::<methods::SessionStart>(SessionStartParams::default())
+        .await
+        .unwrap()
+        .session;
+    assert_eq!(opened.mode, Some(TrustMode::Safe));
+    let update = |mode| SessionSettingsUpdateParams {
+        session_id: opened.id.clone(),
+        mode: Some(mode),
+        ..Default::default()
+    };
+    let refused = server_error(
+        client
+            .request::<methods::SessionSettingsUpdate>(update(TrustMode::Auto))
+            .await,
+    );
+    assert!(
+        refused.message.contains("Auto mode requires"),
+        "{refused:?}"
+    );
+    // Plan, for a session a person answers, is Safe, and a warning says so
+    // before the settings are reported.
+    while client.try_next_event().is_some() {}
+    client
+        .request::<methods::SessionSettingsUpdate>(update(TrustMode::Plan))
+        .await
+        .unwrap();
+    let mut warned = false;
+    let reported = loop {
+        let next = tokio::time::timeout(Duration::from_secs(10), client.next_event()).await;
+        match next
+            .expect("no session/settings/updated")
+            .expect("host stopped")
+        {
+            Outgoing::Notification(ServerNotification::Warning(w)) => {
+                warned |= w.message.contains("Plan mode is sub-agent-only");
+            }
+            Outgoing::Notification(ServerNotification::SessionSettingsUpdated(n)) => {
+                break n.settings.mode;
+            }
+            _ => {}
+        }
+    };
+    assert!(warned, "no warning that Plan became Safe");
+    assert_eq!(reported, TrustMode::Safe);
+
+    // A session nobody answers keeps Plan: a run that may only read.
+    let unattended = client
+        .request::<methods::SessionStart>(SessionStartParams {
+            approval_policy: Some(ApprovalPolicy::Never),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .session;
+    client
+        .request::<methods::SessionSettingsUpdate>(SessionSettingsUpdateParams {
+            session_id: unattended.id.clone(),
+            mode: Some(TrustMode::Plan),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let read = client
+        .request::<methods::SessionList>(Default::default())
+        .await
+        .unwrap()
+        .data;
+    let stored = read.iter().find(|s| s.id == unattended.id).unwrap();
+    assert_eq!(stored.mode, Some(TrustMode::Plan));
+    client.shutdown().await;
+}
+
 /// `session/delete` closes an open session first, stopping its turn, then
 /// deletes it and says so with `session/deleted`, as Codex's `thread/delete`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1313,13 +1450,13 @@ async fn a_settings_update_reaches_the_next_turn() {
     koda.turn("first").await;
     koda.until("turn/completed").await;
 
-    koda.update(Some("other-model"), Some(TrustMode::Plan))
+    koda.update(Some("other-model"), Some(TrustMode::Safe))
         .await
         .unwrap();
     let settings = koda.settings_updated().await;
     assert_eq!(settings.model, "other-model");
     assert_eq!(settings.model_provider, "lm-studio");
-    assert_eq!(settings.mode, TrustMode::Plan);
+    assert_eq!(settings.mode, TrustMode::Safe);
 
     koda.turn("second").await;
     koda.until("turn/completed").await;
@@ -1331,7 +1468,7 @@ async fn a_settings_update_reaches_the_next_turn() {
     use koda_core::session_store::SessionStore;
     let stored = db.get_session(&koda.session).await.unwrap().unwrap();
     assert_eq!(stored.model.as_deref(), Some("other-model"));
-    assert_eq!(stored.mode.as_deref(), Some("plan"));
+    assert_eq!(stored.mode.as_deref(), Some("safe"));
     koda.client.shutdown().await;
 }
 
@@ -2059,6 +2196,19 @@ async fn servers_are_config_in_codexs_shape() {
     koda.client.shutdown().await;
 }
 
+/// Point Koda's folder at `xdg` for one test. The setting is the
+/// process's, so the tests that make it take turns; the guard holds the
+/// turn until the test ends.
+async fn own_config_dir(xdg: &std::path::Path) -> tokio::sync::MutexGuard<'static, ()> {
+    static TURN: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    let turn = TURN
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    koda_core::runtime_env::set("XDG_CONFIG_HOME", xdg.display().to_string());
+    turn
+}
+
 // ── Memory ──────────────────────────────────────────────────────────────
 
 /// A session says which instruction files its prompt carries
@@ -2071,7 +2221,7 @@ async fn memory_requests_read_and_save_the_notes_the_model_reads() {
     // Koda's notes and global instructions live under the config directory,
     // which here is the test's own, never the real one.
     let xdg = dir.path().join("xdg");
-    koda_core::runtime_env::set("XDG_CONFIG_HOME", xdg.display().to_string());
+    let _config_dir = own_config_dir(&xdg).await;
     std::fs::create_dir_all(xdg.join("koda")).unwrap();
     std::fs::write(xdg.join("koda/AGENTS.md"), "Global rule.").unwrap();
     std::fs::create_dir_all(dir.path().join("project")).unwrap();
@@ -2241,7 +2391,7 @@ async fn background_processes_are_listed_and_stopped_through_the_client() {
 async fn agent_list_names_builtin_user_and_project_agents() {
     let dir = tempfile::tempdir().unwrap();
     let xdg = dir.path().join("xdg");
-    koda_core::runtime_env::set("XDG_CONFIG_HOME", xdg.display().to_string());
+    let _config_dir = own_config_dir(&xdg).await;
     let agent = |folder: &std::path::Path, name: &str, description: &str| {
         std::fs::create_dir_all(folder).unwrap();
         std::fs::write(
@@ -2294,7 +2444,7 @@ async fn skills_list_names_each_skill_its_scope_and_the_files_that_failed() {
     use koda_client::protocol::skills::{SkillScope, SkillsListParams};
     let dir = tempfile::tempdir().unwrap();
     let xdg = dir.path().join("xdg");
-    koda_core::runtime_env::set("XDG_CONFIG_HOME", xdg.display().to_string());
+    let _config_dir = own_config_dir(&xdg).await;
     let skill = |root: &std::path::Path, folder: &str, text: &str| {
         let folder = root.join(folder);
         std::fs::create_dir_all(&folder).unwrap();
