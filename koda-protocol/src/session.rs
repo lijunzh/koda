@@ -72,8 +72,9 @@ pub struct Session {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionStartParams {
-    /// An earlier session to resume, by its full id. Without one, a new
-    /// session starts.
+    /// An earlier session to resume, by its full id, as Codex's
+    /// `thread/resume` takes one; a client matches a shorter one over
+    /// `session/list`. Without one, a new session starts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     /// Who answers the session's requests. Without one, the client does.
@@ -229,6 +230,10 @@ pub struct SessionListParams {
     /// How many at most; without one, 50.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
+    /// Where to go on from: an earlier answer's `nextCursor`, as Codex's
+    /// `thread/list` pages. Without one, the most recent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
 }
 
 /// The answer to `session/list`.
@@ -237,6 +242,10 @@ pub struct SessionListParams {
 pub struct SessionListResponse {
     /// The sessions, without what open ones are running with.
     pub data: Vec<Session>,
+    /// Opaque; pass it as `cursor` for the next page. Absent when there are
+    /// no more, as Codex's `nextCursor`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
 
 /// `session/delete`: delete a stored session. An open one is closed first,

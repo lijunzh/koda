@@ -78,8 +78,8 @@ pub struct Named {
     pub model: Option<String>,
 }
 
-/// Run a single prompt and exit. `resume` is an earlier session's full id;
-/// without one a new session starts. Returns the process exit code (0 =
+/// Run a single prompt and exit. `resume` is an earlier session's id, or
+/// the start of one; without one a new session starts. Returns the process exit code (0 =
 /// success).
 pub async fn run_headless(
     project_root: PathBuf,
@@ -117,6 +117,11 @@ pub async fn run_headless(
     })
     .await?;
     let mut view = View::new(run.output);
+    // A mistyped id (once, a llama-server pid) stops here, before the turn.
+    let resume = match resume {
+        Some(typed) => Some(crate::session_id::resolve(&client, &typed).await?),
+        None => None,
+    };
 
     let opened = client
         .request::<methods::SessionStart>(SessionStartParams {

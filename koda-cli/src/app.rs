@@ -318,8 +318,8 @@ pub(crate) async fn run() -> Result<()> {
         .or_else(|| user_config.config.mode.map(|m| m.as_str().to_string()))
         .unwrap_or_else(|| "auto".to_string());
 
-    // Stored API keys and `--session` prefixes still come from the
-    // database here: keys move into the host's start in 8d.
+    // Stored API keys still come from the database here; they move into
+    // the host's start in 8d.
     let db = koda_core::db::Database::init(&config_dir).await?;
 
     // `koda mcp`: the stored servers, through a host, then exit.
@@ -393,13 +393,9 @@ pub(crate) async fn run() -> Result<()> {
             .with_session_mcp_servers(session_mcp)
             .with_trust_named();
         check_typed_reasoning(typed.0.as_deref(), typed.1, &config)?;
-        // An unknown id stops here, before anything runs. A new session is
-        // the host's to create.
-        let resume = match cli.session {
-            Some(id) => Some(db.resolve_session_id(&id).await?),
-            None => None,
-        };
-        let exit_code = headless::run_headless(project_root, config, resume, run).await?;
+        // An unknown id stops the run before its turn (`session_id`). A new
+        // session is the host's to create.
+        let exit_code = headless::run_headless(project_root, config, cli.session, run).await?;
         // `exit` runs no destructors: store the queued lines first, the last
         // of which say how the run ended, and write out the file's.
         crate::logging::flush().await;
@@ -451,20 +447,12 @@ pub(crate) async fn run() -> Result<()> {
         std::process::exit(1);
     }
 
-    // A mistyped id (once, a llama-server pid) used to run a session that
-    // didn't exist: nothing could be saved, and the model got no messages.
-    // Without one, Koda's host creates the session.
-    let resume = match cli.session {
-        Some(id) => Some(db.resolve_session_id(&id).await?),
-        None => None,
-    };
-
     // Run the main event loop
     tui_app::run(
         project_root,
         config,
         overrides,
-        resume,
+        cli.session,
         cli.positional_prompt,
         version_check,
         first_run,

@@ -500,32 +500,6 @@ impl Database {
 }
 
 impl Database {
-    /// The session `id` names: itself, or the one session whose id starts
-    /// with it (the short ids `/sessions` shows). An error says why there's
-    /// none, so `--resume` with a mistyped id stops at startup instead of
-    /// running a session nothing can be saved to.
-    pub async fn resolve_session_id(&self, id: &str) -> Result<String> {
-        let id = id.trim();
-        anyhow::ensure!(!id.is_empty(), "no session id given");
-        let pattern = format!("{}%", id.replace(['%', '_'], ""));
-        let ids: Vec<(String,)> =
-            sqlx::query_as("SELECT id FROM sessions WHERE id = ? OR id LIKE ? ORDER BY id LIMIT 3")
-                .bind(id)
-                .bind(&pattern)
-                .fetch_all(&self.pool)
-                .await?;
-        if let Some((exact,)) = ids.iter().find(|(s,)| s == id) {
-            return Ok(exact.clone());
-        }
-        match &ids[..] {
-            [(only,)] => Ok(only.clone()),
-            [] => anyhow::bail!(
-                "no session matches '{id}'. Run `koda` and type /sessions to list them."
-            ),
-            _ => anyhow::bail!("'{id}' matches more than one session; give more of the id."),
-        }
-    }
-
     /// The input history Koda kept here before the TUI kept its own file
     /// (`history.jsonl`, as Codex's TUI does), oldest first. Read once, to
     /// bring it over; nothing writes it any more.

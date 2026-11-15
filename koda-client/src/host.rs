@@ -430,15 +430,28 @@ impl Host {
             .cwd
             .map(PathBuf::from)
             .unwrap_or_else(|| self.context.project_root.clone());
-        let limit = params.limit.unwrap_or(DEFAULT_LIST_LIMIT);
-        let stored = self
+        let limit = i64::from(params.limit.unwrap_or(DEFAULT_LIST_LIMIT));
+        // The cursor is how many came before; opaque to clients.
+        let offset = match params.cursor.as_deref() {
+            None => 0,
+            Some(cursor) => cursor
+                .parse::<i64>()
+                .ok()
+                .filter(|n| *n >= 0)
+                .ok_or_else(|| invalid(format!("not a cursor from session/list: {cursor}")))?,
+        };
+        // One more than asked says whether there is another page.
+        let mut stored = self
             .context
             .db
-            .list_sessions(i64::from(limit), &root)
+            .list_sessions_from(limit + 1, offset, &root)
             .await
             .map_err(|e| internal(format!("couldn't list sessions: {e:#}")))?;
+        let more = stored.len() as i64 > limit;
+        stored.truncate(limit.max(0) as usize);
         Ok(SessionListResponse {
             data: stored.iter().map(session::describe).collect(),
+            next_cursor: more.then(|| (offset + limit).to_string()),
         })
     }
 
@@ -587,7 +600,7 @@ impl Host {
             }
         }
         let mut sessions = self.sessions.lock().await;
-        // A prefix may have resolved to a session opened meanwhile.
+        // It may have been opened meanwhile.
         if sessions.contains_key(&id) {
             return Err(invalid(format!("session {id} is already open")));
         }

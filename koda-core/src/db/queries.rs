@@ -858,18 +858,24 @@ impl SessionStore for Database {
             .collect())
     }
 
-    /// List recent sessions for a specific project.
-    async fn list_sessions(&self, limit: i64, project_root: &Path) -> Result<Vec<SessionInfo>> {
+    /// List recent sessions for a specific project, from `offset` on.
+    async fn list_sessions_from(
+        &self,
+        limit: i64,
+        offset: i64,
+        project_root: &Path,
+    ) -> Result<Vec<SessionInfo>> {
         let root = project_root.to_string_lossy().to_string();
         let rows: Vec<SessionInfoRow> = sqlx::query_as(concat!(
             session_info_select!(),
             " WHERE s.project_root = ? OR s.project_root IS NULL
              GROUP BY s.id
              ORDER BY s.created_at DESC, s.rowid DESC
-             LIMIT ?"
+             LIMIT ? OFFSET ?"
         ))
         .bind(&root)
         .bind(limit)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(|r| r.into()).collect())

@@ -922,6 +922,43 @@ async fn sessions_are_listed_newest_first_with_their_first_prompt() {
         .await
         .unwrap();
     assert_eq!(one.data.len(), 1);
+    // Page by page, as Codex's `thread/list`: the cursor goes on from
+    // there, and the last page has none.
+    assert_eq!(one.data[0].id, second.id);
+    let next = koda
+        .client
+        .request::<methods::SessionList>(SessionListParams {
+            limit: Some(1),
+            cursor: one.next_cursor.clone(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(one.next_cursor.is_some());
+    assert_eq!(next.data.len(), 1);
+    assert_eq!(next.data[0].id, first);
+    assert_eq!(next.next_cursor, None);
+    let bad = server_error(
+        koda.client
+            .request::<methods::SessionList>(SessionListParams {
+                cursor: Some("x".to_string()),
+                ..Default::default()
+            })
+            .await,
+    );
+    assert!(bad.message.contains("not a cursor"), "{bad:?}");
+
+    // `session/start` takes a full id only, as Codex's `thread/resume`: a
+    // client matches a shorter one over the list.
+    let refused = server_error(
+        koda.client
+            .request::<methods::SessionStart>(SessionStartParams {
+                session_id: Some(first[..8].to_string()),
+                ..Default::default()
+            })
+            .await,
+    );
+    assert!(refused.message.contains("no session"), "{refused:?}");
 }
 
 /// `session/delete` closes an open session first, stopping its turn, then

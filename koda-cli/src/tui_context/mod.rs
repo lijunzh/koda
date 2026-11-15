@@ -374,6 +374,12 @@ impl TuiContext {
         // The flags given, and nothing else: the host fills in the rest from
         // the saved choice for a new session, or a resumed one's own.
         let named = settings::Named::from_flags(&config, overrides);
+        // A mistyped id (once, a llama-server pid) used to run a session
+        // that didn't exist; now it stops the start.
+        let resume = match resume {
+            Some(typed) => Some(crate::session_id::resolve(&client, &typed).await?),
+            None => None,
+        };
         let (session, earlier_turns, opened_mode) =
             open_host_session(&client, resume, &named).await?;
 

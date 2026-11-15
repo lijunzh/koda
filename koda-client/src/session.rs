@@ -158,28 +158,30 @@ pub(crate) async fn open(
     // mode unless the client names others, as Codex's `thread/resume` does.
     let mut mode = config.trust;
     if let Some(id) = &resume {
-        let id = db
-            .resolve_session_id(id)
-            .await
-            .map_err(|e| ErrorObject::new(codes::INVALID_PARAMS, format!("{e:#}")))?;
+        // By its full id, as Codex's `thread/resume` takes one: a client
+        // matches a shorter one over `session/list`.
         let stored = db
-            .get_session(&id)
+            .get_session(id)
             .await
-            .map_err(|e| internal(format!("couldn't read the session: {e:#}")))?;
-        if let Some(stored) = stored {
-            let overridden = choice.provider.is_some() || choice.model.is_some();
-            if !overridden {
-                choice.provider = stored.provider;
-                choice.base_url = choice.base_url.or(stored.base_url);
-                choice.model = stored.model;
-            }
-            if let Some(saved) = stored
-                .mode
-                .as_deref()
-                .and_then(koda_core::trust::TrustMode::parse)
-            {
-                mode = saved;
-            }
+            .map_err(|e| internal(format!("couldn't read the session: {e:#}")))?
+            .ok_or_else(|| {
+                ErrorObject::new(
+                    codes::INVALID_PARAMS,
+                    format!("no session '{id}'. Run `koda` and type /sessions to list them."),
+                )
+            })?;
+        let overridden = choice.provider.is_some() || choice.model.is_some();
+        if !overridden {
+            choice.provider = stored.provider;
+            choice.base_url = choice.base_url.or(stored.base_url);
+            choice.model = stored.model;
+        }
+        if let Some(saved) = stored
+            .mode
+            .as_deref()
+            .and_then(koda_core::trust::TrustMode::parse)
+        {
+            mode = saved;
         }
     }
     // A new session takes the saved choice where the client named nothing,
@@ -201,10 +203,7 @@ pub(crate) async fn open(
     let notice = config.assumed_context_notice(source);
 
     let id = match resume {
-        Some(id) => db
-            .resolve_session_id(&id)
-            .await
-            .map_err(|e| ErrorObject::new(codes::INVALID_PARAMS, format!("{e:#}")))?,
+        Some(id) => id,
         None => db
             .create_session(&config.agent_name, &project_root)
             .await

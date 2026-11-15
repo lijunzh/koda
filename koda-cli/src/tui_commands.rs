@@ -243,6 +243,7 @@ pub(crate) async fn list_sessions(
         .request::<methods::SessionList>(SessionListParams {
             cwd: None,
             limit: Some(limit),
+            cursor: None,
         })
         .await
         .map(|listed| listed.data)
@@ -256,7 +257,10 @@ async fn handle_delete_session(
     id: &str,
 ) {
     use koda_client::protocol::{methods, session::SessionDeleteParams};
-    let sessions = match list_sessions(client, 100).await {
+    let sessions = match crate::session_id::all_sessions(client)
+        .await
+        .map_err(|e| e.to_string())
+    {
         Ok(sessions) => sessions,
         Err(e) => return tui_output::err_msg(buffer, format!("Error: {e}")),
     };
@@ -310,7 +314,10 @@ async fn handle_resume_session(
     if session.id.starts_with(id) {
         tui_output::dim_msg(buffer, "Already in this session.".into());
     } else {
-        match list_sessions(client, 100).await {
+        match crate::session_id::all_sessions(client)
+            .await
+            .map_err(|e| e.to_string())
+        {
             Ok(sessions) => {
                 let matches: Vec<_> = sessions.iter().filter(|s| s.id.starts_with(id)).collect();
                 match matches.len() {

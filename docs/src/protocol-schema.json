@@ -2395,6 +2395,13 @@
       "additionalProperties": false,
       "description": "`session/list`: stored sessions, newest first. Codex's `thread/list`.",
       "properties": {
+        "cursor": {
+          "description": "Where to go on from: an earlier answer's `nextCursor`, as Codex's\n`thread/list` pages. Without one, the most recent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "cwd": {
           "description": "The project whose sessions to list; without one, the host's.",
           "type": [
@@ -2423,6 +2430,13 @@
             "$ref": "#/$defs/Session"
           },
           "type": "array"
+        },
+        "nextCursor": {
+          "description": "Opaque; pass it as `cursor` for the next page. Absent when there are\nno more, as Codex's `nextCursor`.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -2676,7 +2690,7 @@
           ]
         },
         "sessionId": {
-          "description": "An earlier session to resume, by its full id. Without one, a new\nsession starts.",
+          "description": "An earlier session to resume, by its full id, as Codex's\n`thread/resume` takes one; a client matches a shorter one over\n`session/list`. Without one, a new session starts.",
           "type": [
             "string",
             "null"
