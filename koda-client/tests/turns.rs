@@ -14,7 +14,7 @@ use koda_client::protocol::background::{
     BackgroundTerminalsTerminateParams,
 };
 use koda_client::protocol::initialize::ClientInfo;
-use koda_client::protocol::item::{CompactionStatus, CompactionTrigger, Item};
+use koda_client::protocol::item::{CompactionStatus, CompactionTrigger, Item, TurnItem};
 use koda_client::protocol::memory::{MemoryScope, SessionMemoryAddParams, SessionMemoryReadParams};
 use koda_client::protocol::model::{ModelListParams, ModelProviderListParams};
 use koda_client::protocol::rpc::{ErrorObject, RequestId, codes};
@@ -2456,38 +2456,9 @@ fn whole(message: Value) -> ResponseTemplate {
         )
 }
 
-/// The completed items as `(parent, item)`, with the ids Koda makes up for
-/// text items left out: those are new on every read.
-fn comparable(
-    items: impl IntoIterator<Item = (Option<String>, Item)>,
-) -> Vec<(Option<String>, Item)> {
-    items
-        .into_iter()
-        .map(|(parent, item)| {
-            let item = match item {
-                Item::UserMessage { text, .. } => Item::UserMessage {
-                    id: String::new(),
-                    text,
-                    client_message_ids: Vec::new(),
-                },
-                Item::AgentMessage { text, .. } => Item::AgentMessage {
-                    id: String::new(),
-                    text,
-                },
-                Item::Reasoning { text, .. } => Item::Reasoning {
-                    id: String::new(),
-                    text,
-                },
-                other => other,
-            };
-            (parent, item)
-        })
-        .collect()
-}
-
-/// A resumed session returns its turns with the items they sent live, a
-/// sub-agent's under its call; `session/read` returns them without opening
-/// it.
+/// A resumed session returns its turns exactly as they were sent, a
+/// sub-agent's tool calls under its call; `session/read` returns them
+/// without opening it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_resumed_session_returns_its_turns_as_they_were_sent() {
     use koda_client::protocol::session::SessionReadParams;
@@ -2521,22 +2492,32 @@ async fn a_resumed_session_returns_its_turns_as_they_were_sent() {
     let first = koda.until("turn/completed").await;
     koda.turn("Sure?").await;
     let second = koda.until("turn/completed").await;
-    let live: Vec<Vec<(Option<String>, Item)>> = [first, second]
+    // Each turn as the client saw it: the turn as it completed, and its
+    // completed items with their parents.
+    let live: Vec<koda_client::protocol::turn::Turn> = [first, second]
         .iter()
         .map(|messages| {
-            comparable(messages.iter().filter_map(|m| match m {
-                Outgoing::Notification(ServerNotification::ItemCompleted(n)) => {
-                    Some((n.parent_item_id.clone(), n.item.clone()))
-                }
-                _ => None,
-            }))
+            let mut turn = turn_completed(messages).clone();
+            turn.items = messages
+                .iter()
+                .filter_map(|m| match m {
+                    Outgoing::Notification(ServerNotification::ItemCompleted(n)) => {
+                        Some(TurnItem {
+                            parent_item_id: n.parent_item_id.clone(),
+                            item: n.item.clone(),
+                        })
+                    }
+                    _ => None,
+                })
+                .collect();
+            turn
         })
         .collect();
     // The sub-agent's call and text are under its InvokeAgent call.
     assert!(
-        live[0].iter().any(|(parent, item)| {
-            parent.as_deref() == Some("call_agent")
-                && matches!(item, Item::ToolCall { id, .. } if id == "call_read")
+        live[0].items.iter().any(|i| {
+            i.parent_item_id.as_deref() == Some("call_agent")
+                && matches!(&i.item, Item::ToolCall { id, .. } if id == "call_read")
         }),
         "{live:#?}"
     );
@@ -2573,19 +2554,24 @@ async fn a_resumed_session_returns_its_turns_as_they_were_sent() {
         .session
         .turns;
     assert_eq!(resumed, read_back);
-    let stored: Vec<Vec<(Option<String>, Item)>> = resumed
-        .iter()
-        .map(|turn| {
-            comparable(
-                turn.items
-                    .iter()
-                    .map(|i| (i.parent_item_id.clone(), i.item.clone())),
-            )
+    // Exactly as sent: ids, statuses, usage and items.
+    assert_eq!(resumed, live);
+    // A turn run after resuming follows them.
+    koda.turn("And now?").await;
+    koda.until("turn/completed").await;
+    let after = koda
+        .client
+        .request::<methods::SessionRead>(SessionReadParams {
+            session_id: koda.session.clone(),
+            include_turns: true,
         })
-        .collect();
-    assert_eq!(stored, live);
-    assert!(resumed.iter().all(|t| t.status == TurnStatus::Completed));
-
+        .await
+        .unwrap()
+        .session
+        .turns;
+    assert_eq!(after.len(), 3);
+    assert_eq!(after[..2], live[..]);
+    assert_eq!(after[2].status, TurnStatus::Completed);
     let error = server_error(
         koda.client
             .request::<methods::SessionRead>(SessionReadParams {

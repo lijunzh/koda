@@ -951,7 +951,7 @@
               ]
             },
             "progress": {
-              "description": "The notices sent about it as `item/toolCall/progress`, in order:\na sub-agent's, for an `InvokeAgent` call. Set on completion. A\nnotice sent after the call completed, as a skill's change of tool\nscope is, is here only when the session is read back.",
+              "description": "The notices sent about it as `item/toolCall/progress` while it\nran, in order: a sub-agent's, for an `InvokeAgent` call. Set on\ncompletion. A skill's change of tool scope is sent once its call\nhas completed, so it isn't here.",
               "items": {
                 "type": "string"
               },
@@ -2254,7 +2254,7 @@
           ]
         },
         "turns": {
-          "description": "Its turns, oldest first, each with its items. Filled only by\n`session/start` resuming a session and by `session/read` with\n`includeTurns`, as Codex's `Thread.turns` is.\n\nA stored session keeps its messages, not its turns, so these are\nrebuilt from them. A turn's id is its first message's, not the id it\nran with, and an interrupted turn followed by a new prompt reads as\none turn. A tool call's status is read from its output, its `detail`\nand `changes` aren't kept, and compactions aren't listed. A\nsub-agent's tool calls come before its `InvokeAgent` call, with the\ncall as their parent, as they did live, for sub-agents run since Koda recorded that link; the\nnotices it sent come as the call's `progress`.",
+          "description": "Its turns, oldest first, each with its items. Filled only by\n`session/start` resuming a session and by `session/read` with\n`includeTurns`, as Codex's `Thread.turns` is.\n\nEach turn is the one the client saw: its id, status, usage and\ncompleted items, a sub-agent's tool calls under its `InvokeAgent`\ncall. A turn that never ended, Koda having stopped mid-way, reads as\ninterrupted.\n\nSessions from before Koda stored turns (0.6.4 and earlier) are\nrebuilt from the messages the model read, which keep less: a turn's id\nis its first message's, an interrupted turn followed by a new prompt\nreads as one turn, a tool call's status is read from its output, its\n`detail` and `changes` are missing, a sub-agent's tool calls and\ncompactions aren't listed, and turns have no usage or duration.",
           "items": {
             "$ref": "#/$defs/Turn"
           },

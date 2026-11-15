@@ -235,6 +235,7 @@ pub(crate) async fn open(
             Arc::new(agent)
         }
     };
+    let history = crate::history::HistoryWriter::spawn(db.clone(), id.clone());
     let mut session = KodaSession::new(id.clone(), agent, db, &config, mode).await;
     // A resumed session already has its title.
     session.title_set = resumed;
@@ -304,6 +305,7 @@ pub(crate) async fn open(
         events,
         open_requests,
         raw,
+        history: Some(history),
         // Koda answers itself only when nobody is there to ask.
         answers: (policy == ApprovalPolicy::Never).then(|| engine_tx.clone()),
         state: Mutex::new(SinkState {
@@ -763,7 +765,7 @@ impl SessionTask {
         // Steering text the turn didn't deliver: the client sees no item for
         // it. Left in the channel, it would go out with the next prompt.
         let _ = session.take_queued_steers(engine_rx);
-        sink.end_turn(error);
+        sink.end_turn(error).await;
         for reply in interrupts {
             let _ = reply.send(to_json(TurnInterruptResponse {}));
         }
@@ -870,6 +872,9 @@ pub(crate) struct HostSink {
     events: mpsc::UnboundedSender<Outgoing>,
     open_requests: OpenRequests,
     raw: Option<mpsc::UnboundedSender<RawEvent>>,
+    /// Where the session's turns are stored as they are sent, for resuming
+    /// it. `None` in tests that need no database.
+    history: Option<crate::history::HistoryWriter>,
     /// Set under [`ApprovalPolicy::Never`]: where Koda's own answers go.
     answers: Option<mpsc::Sender<EngineCommand>>,
     state: Mutex<SinkState>,
@@ -903,28 +908,39 @@ impl HostSink {
 
     /// The turn has returned: send its `turn/completed`, with `error` on it
     /// when the turn returned one and its end didn't already say why.
-    fn end_turn(&self, error: Option<String>) {
-        let mut state = self.lock();
-        state.prompt = None;
-        state.steers.clear();
-        let Some(end) = state.pending_end.take() else {
-            return;
-        };
-        // Requests still open when the turn ends need no answer.
-        let mut out = state.projector.resolve_all();
-        out.extend(state.projector.project(None, end));
-        if let Some(message) = error {
-            for message_out in &mut out {
-                if let Outgoing::Notification(ServerNotification::TurnCompleted(done)) = message_out
-                    && done.turn.error.is_none()
-                {
-                    done.turn.error = Some(TurnError {
-                        message: message.clone(),
-                    });
+    /// Send `turn/completed`, once the turn is stored: a client that reads
+    /// the session when the turn ends gets all of it.
+    async fn end_turn(&self, error: Option<String>) {
+        let out = {
+            let mut state = self.lock();
+            state.prompt = None;
+            state.steers.clear();
+            let Some(end) = state.pending_end.take() else {
+                return;
+            };
+            // Requests still open when the turn ends need no answer.
+            let mut out = state.projector.resolve_all();
+            out.extend(state.projector.project(None, end));
+            if let Some(message) = error {
+                for message_out in &mut out {
+                    if let Outgoing::Notification(ServerNotification::TurnCompleted(done)) =
+                        message_out
+                        && done.turn.error.is_none()
+                    {
+                        done.turn.error = Some(TurnError {
+                            message: message.clone(),
+                        });
+                    }
                 }
             }
+            out
+        };
+        if let Some(history) = &self.history {
+            history.record(&out);
+            history.flush().await;
         }
-        self.send(&mut state, out);
+        let mut state = self.lock();
+        self.deliver(&mut state, out);
     }
 
     /// The engine command the client's answer to `id` stands for, once
@@ -989,9 +1005,19 @@ impl HostSink {
         }
     }
 
-    /// Put `out` on the client's queue, keeping the open-request tables in
-    /// step. Called with the lock held, so messages keep their order.
+    /// Store what `out` adds to the session's turns, and put it on the
+    /// client's queue. Called with the lock held, so messages keep their
+    /// order.
     fn send(&self, state: &mut SinkState, out: Vec<Outgoing>) {
+        if let Some(history) = &self.history {
+            history.record(&out);
+        }
+        self.deliver(state, out);
+    }
+
+    /// Put `out` on the client's queue, keeping the open-request tables in
+    /// step.
+    fn deliver(&self, state: &mut SinkState, out: Vec<Outgoing>) {
         for message in out {
             match &message {
                 Outgoing::Request(request) => {
@@ -1180,6 +1206,7 @@ mod tests {
             events,
             open_requests: OpenRequests::default(),
             raw: None,
+            history: None,
             answers,
             state: Mutex::new(SinkState {
                 projector: EventProjector::with_request_ids("s1", Arc::default()),
@@ -1285,8 +1312,8 @@ mod tests {
 
     /// A turn dropped where it stood after a cancel ends `interrupted`, and
     /// says on `turn/completed` that it didn't stop cleanly.
-    #[test]
-    fn a_turn_that_returns_an_error_says_so_on_turn_completed() {
+    #[tokio::test]
+    async fn a_turn_that_returns_an_error_says_so_on_turn_completed() {
         let (sink, mut events) = sink(None);
         sink.emit(EngineEvent::TurnStart {
             turn_id: "t1".into(),
@@ -1302,7 +1329,8 @@ mod tests {
         )));
         sink.end_turn(Some(
             "the turn did not stop within 5s of being cancelled".into(),
-        ));
+        ))
+        .await;
         let sent = drain(&mut events);
         let [Outgoing::Notification(ServerNotification::TurnCompleted(done))] = sent.as_slice()
         else {

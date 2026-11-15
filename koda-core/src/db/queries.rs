@@ -967,6 +967,11 @@ impl Persistence for Database {
             .execute(&mut *tx)
             .await?;
 
+        sqlx::query("DELETE FROM turn_records WHERE session_id = ?")
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await?;
+
         let result = sqlx::query("DELETE FROM sessions WHERE id = ?")
             .bind(session_id)
             .execute(&mut *tx)
@@ -1100,37 +1105,47 @@ impl Persistence for Database {
         Ok(row.map(|r| r.0))
     }
 
-    async fn sub_agent_sessions(
+    async fn append_turn_records(
         &self,
         session_id: &str,
-    ) -> Result<Vec<crate::persistence::SubAgentSession>> {
-        use crate::persistence::{FORKED_ROWS_KEY, PARENT_SESSION_KEY, PARENT_TOOL_CALL_KEY};
-        let rows: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
-            "SELECT parent.session_id, call.value, forked.value
-             FROM session_metadata AS parent
-             JOIN sessions ON sessions.id = parent.session_id
-             LEFT JOIN session_metadata AS call
-               ON call.session_id = parent.session_id AND call.key = ?
-             LEFT JOIN session_metadata AS forked
-               ON forked.session_id = parent.session_id AND forked.key = ?
-             WHERE parent.key = ? AND parent.value = ?
-             ORDER BY sessions.created_at ASC, sessions.rowid ASC",
+        records: &[crate::persistence::TurnRecord],
+    ) -> Result<()> {
+        if records.is_empty() {
+            return Ok(());
+        }
+        let mut tx = self.pool.begin().await?;
+        for record in records {
+            sqlx::query(
+                "INSERT INTO turn_records (session_id, turn_id, kind, payload) VALUES (?, ?, ?, ?)",
+            )
+            .bind(session_id)
+            .bind(&record.turn_id)
+            .bind(&record.kind)
+            .bind(&record.payload)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn load_turn_records(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<crate::persistence::TurnRecord>> {
+        let rows: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT turn_id, kind, payload FROM turn_records WHERE session_id = ? ORDER BY id ASC",
         )
-        .bind(PARENT_TOOL_CALL_KEY)
-        .bind(FORKED_ROWS_KEY)
-        .bind(PARENT_SESSION_KEY)
         .bind(session_id)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows
             .into_iter()
-            .map(
-                |(session_id, tool_call_id, forked)| crate::persistence::SubAgentSession {
-                    session_id,
-                    tool_call_id,
-                    forked_rows: forked.and_then(|n| n.parse().ok()).unwrap_or(0),
-                },
-            )
+            .map(|(turn_id, kind, payload)| crate::persistence::TurnRecord {
+                turn_id,
+                kind,
+                payload,
+            })
             .collect())
     }
 

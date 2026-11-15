@@ -468,16 +468,13 @@ impl Host {
             })?;
         let mut session = session::describe(&stored);
         if params.include_turns {
-            session.turns = self.turns(&session.id).await?;
+            // An open session's last turn may still be running.
+            let running = self.sessions.lock().await.contains_key(&session.id);
+            session.turns = crate::history::turns(&self.context.db, &session.id, running)
+                .await
+                .map_err(history_error)?;
         }
         Ok(koda_protocol::session::SessionReadResponse { session })
-    }
-
-    /// A stored session's turns.
-    async fn turns(&self, id: &str) -> Result<Vec<koda_protocol::turn::Turn>, ErrorObject> {
-        crate::history::turns(&self.context.db, id)
-            .await
-            .map_err(|e| internal(format!("couldn't read the session's history: {e:#}")))
     }
 
     /// Delete session `id`, closing it first if it is open, as Codex's
@@ -575,7 +572,9 @@ impl Host {
         // A resumed session comes back with its turns, as Codex's
         // `thread/resume` does.
         if resuming {
-            opened.session.turns = self.turns(&id).await?;
+            opened.session.turns = crate::history::turns_for_resume(&self.context.db, &id)
+                .await
+                .map_err(history_error)?;
         }
         let mut sessions = self.sessions.lock().await;
         // A prefix may have resolved to a session opened meanwhile.
@@ -648,6 +647,10 @@ impl Host {
             },
         })
     }
+}
+
+fn history_error(e: String) -> ErrorObject {
+    internal(format!("couldn't read the session's history: {e}"))
 }
 
 pub(crate) fn protocol_mode(mode: koda_core::trust::TrustMode) -> TrustMode {

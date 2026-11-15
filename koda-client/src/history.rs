@@ -1,23 +1,29 @@
-//! A stored session's turns, rebuilt from its messages, for `session/start`
-//! resuming it and for `session/read`, as Codex's `thread/resume` and
-//! `thread/read` return a thread's turns.
+//! A session's turns as a client saw them, for `session/start` resuming it
+//! and for `session/read`, as Codex's `thread/resume` and `thread/read`
+//! return a thread's turns.
 //!
-//! Koda stores messages, not turns or items, so this reads them back the way
-//! [`crate::events::EventProjector`] sent them live: each user prompt opens a
-//! turn; a reply's reasoning and text are items; each tool call is an item,
-//! completed where its result was stored. A sub-agent's own session supplies
-//! its tool calls, after its `InvokeAgent` call's other items and before the
-//! call, with the call as their parent, as they completed live. Its text
-//! isn't sent live (its answer is the call's output), so it isn't here. What isn't stored
-//! is left out; [`koda_protocol::session::Session::turns`] lists it.
+//! The host stores each turn as it sends it ([`HistoryWriter`]): the turn as
+//! it starts and ends, and each item as it completes, with its parent. A
+//! read replays those records, so a resumed turn is the one the client saw,
+//! as Codex replays its rollout file and Claude Code its transcript.
+//!
+//! Sessions from before 6h have no records. Their turns are rebuilt from the
+//! messages the model read ([`rebuild`]), which keep less; the first time
+//! the host opens one, the rebuilt turns are stored as its records
+//! ([`turns_for_resume`]), and its new turns follow them.
 
 use std::collections::HashMap;
 
-use koda_core::persistence::{Message, Persistence, Role, SubAgentSession, session_event_kind};
+use koda_core::db::Database;
+use koda_core::persistence::{Message, Persistence, Role, TurnRecord, session_event_kind};
 use koda_core::providers::ToolCall;
+use koda_protocol::ServerNotification;
 use koda_protocol::item::{Item, ToolCallStatus, TurnItem};
 use koda_protocol::turn::{Turn, TurnStatus};
 use serde_json::Value;
+use tokio::sync::{mpsc, oneshot};
+
+use crate::events::Outgoing;
 
 /// A failure, as the database described it.
 type Result<T> = std::result::Result<T, String>;
@@ -26,187 +32,310 @@ fn checked<T, E: std::fmt::Display>(read: std::result::Result<T, E>) -> Result<T
     read.map_err(|e| format!("{e:#}"))
 }
 
-/// How deep sub-agents are followed. Koda limits how deep they nest when it
-/// runs them; this only stops a bad link from looping.
-const MAX_DEPTH: usize = 8;
+/// A record of the turn itself, as it started or ended: a [`Turn`].
+const TURN: &str = "turn";
+/// A record of a completed item: a [`TurnItem`].
+const ITEM: &str = "item";
 
-/// The turns of session `session_id`, oldest first.
-pub(crate) async fn turns(db: &dyn Persistence, session_id: &str) -> Result<Vec<Turn>> {
-    let messages = checked(db.load_all_messages(session_id).await)?;
-    // Notices are stored under the call they are about, in the session that
-    // ran the turn, whichever sub-agent sent them.
-    let progress = progress_by_call(db, session_id).await?;
-    let mut reader = Reader {
-        db,
-        progress,
-        turns: Vec::new(),
-    };
-    reader.session(session_id, &messages, None, 0).await?;
-    Ok(reader.turns)
+// ── Writing ─────────────────────────────────────────────────────────────
+
+/// Stores one session's turns as the host sends them, in order, on a task
+/// of its own so the engine never waits on the database.
+pub(crate) struct HistoryWriter {
+    writes: mpsc::UnboundedSender<Write>,
 }
 
-struct Reader<'a> {
-    db: &'a dyn Persistence,
-    progress: HashMap<String, Vec<String>>,
-    turns: Vec<Turn>,
+enum Write {
+    Records(Vec<TurnRecord>),
+    /// Answered once everything before it is stored.
+    Flush(oneshot::Sender<()>),
 }
 
-impl Reader<'_> {
-    /// Read one session's messages. `parent` is set for a sub-agent's, whose
-    /// items join the turn already open.
-    async fn session(
-        &mut self,
-        session_id: &str,
-        messages: &[Message],
-        parent: Option<&str>,
-        depth: usize,
-    ) -> Result<()> {
-        let children: HashMap<String, SubAgentSession> = if depth < MAX_DEPTH {
-            checked(self.db.sub_agent_sessions(session_id).await)?
-                .into_iter()
-                .filter_map(|child| Some((child.tool_call_id.clone()?, child)))
-                .collect()
-        } else {
-            HashMap::new()
-        };
-        // Calls started and not yet completed, by id: name and arguments.
-        let mut open: HashMap<String, (String, Value)> = HashMap::new();
-        // Whether the session's last stored row leaves a turn mid-way: a
-        // user row then is steering text, not a new prompt.
-        let mut mid_turn = false;
-
-        for msg in messages {
-            match msg.role {
-                // The system prompt and compaction summaries.
-                Role::System => {}
-                // A sub-agent's prompt and reminders aren't sent as items.
-                Role::User if parent.is_some() => {}
-                Role::User => {
-                    if msg.tool_call_id.is_some() {
-                        continue;
+impl HistoryWriter {
+    /// A writer for session `session_id`.
+    pub(crate) fn spawn(db: Database, session_id: String) -> Self {
+        let (writes, mut queue) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Some(write) = queue.recv().await {
+                match write {
+                    Write::Records(records) => {
+                        if let Err(e) = db.append_turn_records(&session_id, &records).await {
+                            tracing::warn!(session_id, "couldn't store the session's turns: {e:#}");
+                        }
                     }
-                    let text = msg.content.clone().unwrap_or_default();
-                    if !mid_turn || self.turns.is_empty() {
-                        self.turns.push(Turn {
-                            id: format!("turn-m{}", msg.id),
-                            status: TurnStatus::Completed,
-                            error: None,
-                            usage: None,
-                            duration_ms: None,
-                            items: Vec::new(),
-                        });
+                    Write::Flush(done) => {
+                        let _ = done.send(());
                     }
-                    self.push(
-                        None,
-                        Item::UserMessage {
-                            id: format!("user-m{}", msg.id),
-                            text,
-                            client_message_ids: Vec::new(),
-                        },
-                    );
-                    mid_turn = false;
-                }
-                Role::Assistant => {
-                    // A sub-agent's text isn't sent live: its answer is its
-                    // call's output.
-                    if parent.is_none()
-                        && let Some(thinking) = msg.thinking_content.as_deref()
-                        && !thinking.is_empty()
-                    {
-                        self.push(
-                            parent,
-                            Item::Reasoning {
-                                id: format!("reasoning-m{}", msg.id),
-                                text: thinking.to_string(),
-                            },
-                        );
-                    }
-                    if parent.is_none()
-                        && let Some(text) = msg.content.as_deref()
-                        && !text.is_empty()
-                    {
-                        self.push(
-                            parent,
-                            Item::AgentMessage {
-                                id: format!("message-m{}", msg.id),
-                                text: text.to_string(),
-                            },
-                        );
-                    }
-                    let calls: Vec<ToolCall> = msg
-                        .tool_calls
-                        .as_deref()
-                        .and_then(|json| serde_json::from_str(json).ok())
-                        .unwrap_or_default();
-                    mid_turn = !calls.is_empty();
-                    for call in calls {
-                        let arguments = serde_json::from_str(&call.arguments).unwrap_or_default();
-                        open.insert(call.id, (call.function_name, arguments));
-                    }
-                }
-                Role::Tool => {
-                    mid_turn = true;
-                    let Some(id) = msg.tool_call_id.clone() else {
-                        continue;
-                    };
-                    let (tool, arguments) = open.remove(&id).unwrap_or_default();
-                    if let Some(child) = children.get(&id) {
-                        Box::pin(self.sub_agent(child, &id, depth)).await?;
-                    }
-                    let output = msg.content.clone().unwrap_or_default();
-                    let progress = self.progress.remove(&id).unwrap_or_default();
-                    self.push(
-                        parent,
-                        Item::ToolCall {
-                            status: status_of(&output),
-                            progress,
-                            id,
-                            tool,
-                            arguments,
-                            output: Some(output),
-                            detail: None,
-                            changes: Vec::new(),
-                        },
-                    );
                 }
             }
-        }
-        // The last turn of the session itself, left mid-way.
-        if parent.is_none()
-            && mid_turn
-            && let Some(last) = self.turns.last_mut()
-        {
-            last.status = TurnStatus::Interrupted;
-        }
-        Ok(())
+        });
+        Self { writes }
     }
 
-    /// The items of the sub-agent that call `call_id` started.
-    async fn sub_agent(
-        &mut self,
-        child: &SubAgentSession,
-        call_id: &str,
-        depth: usize,
-    ) -> Result<()> {
-        let messages = checked(self.db.load_all_messages(&child.session_id).await)?;
-        let own = messages.get(child.forked_rows..).unwrap_or_default();
-        self.session(&child.session_id, own, Some(call_id), depth + 1)
-            .await
+    /// Store what `out` adds to the session's turns.
+    pub(crate) fn record(&self, out: &[Outgoing]) {
+        let records = records_of(out);
+        if !records.is_empty() {
+            let _ = self.writes.send(Write::Records(records));
+        }
     }
 
-    fn push(&mut self, parent: Option<&str>, item: Item) {
-        if let Some(turn) = self.turns.last_mut() {
+    /// Wait until everything recorded so far is stored.
+    pub(crate) async fn flush(&self) {
+        let (done, stored) = oneshot::channel();
+        if self.writes.send(Write::Flush(done)).is_ok() {
+            let _ = stored.await;
+        }
+    }
+}
+
+/// The records `out` makes: `turn/started`, `item/completed` and
+/// `turn/completed`.
+fn records_of(out: &[Outgoing]) -> Vec<TurnRecord> {
+    let record = |turn_id: &str, kind: &str, payload: serde_json::Result<String>| {
+        payload.ok().map(|payload| TurnRecord {
+            turn_id: turn_id.to_string(),
+            kind: kind.to_string(),
+            payload,
+        })
+    };
+    out.iter()
+        .filter_map(|message| match message {
+            Outgoing::Notification(ServerNotification::TurnStarted(n)) => {
+                record(&n.turn.id, TURN, serde_json::to_string(&n.turn))
+            }
+            Outgoing::Notification(ServerNotification::TurnCompleted(n)) => {
+                record(&n.turn.id, TURN, serde_json::to_string(&n.turn))
+            }
+            Outgoing::Notification(ServerNotification::ItemCompleted(n)) => record(
+                &n.turn_id,
+                ITEM,
+                serde_json::to_string(&TurnItem {
+                    parent_item_id: n.parent_item_id.clone(),
+                    item: n.item.clone(),
+                }),
+            ),
+            _ => None,
+        })
+        .collect()
+}
+
+// ── Reading ─────────────────────────────────────────────────────────────
+
+/// The turns of session `session_id`, oldest first. A turn still in
+/// progress in its records ended without the host seeing it end, unless
+/// `running` says the session is open and the turn is going on.
+pub(crate) async fn turns(
+    db: &dyn Persistence,
+    session_id: &str,
+    running: bool,
+) -> Result<Vec<Turn>> {
+    let records = checked(db.load_turn_records(session_id).await)?;
+    if records.is_empty() {
+        return rebuild(db, session_id).await;
+    }
+    Ok(replay(&records, running))
+}
+
+/// [`turns`] for a session the host is opening again: a session without
+/// records gets its rebuilt turns stored first, so the turns it runs now
+/// follow them.
+pub(crate) async fn turns_for_resume(db: &dyn Persistence, session_id: &str) -> Result<Vec<Turn>> {
+    let records = checked(db.load_turn_records(session_id).await)?;
+    if !records.is_empty() {
+        return Ok(replay(&records, false));
+    }
+    let turns = rebuild(db, session_id).await?;
+    let mut backfill = Vec::new();
+    for turn in &turns {
+        let bare = Turn {
+            items: Vec::new(),
+            ..turn.clone()
+        };
+        backfill.extend(serde_json::to_string(&bare).ok().map(|payload| TurnRecord {
+            turn_id: turn.id.clone(),
+            kind: TURN.to_string(),
+            payload,
+        }));
+        for item in &turn.items {
+            backfill.extend(serde_json::to_string(item).ok().map(|payload| TurnRecord {
+                turn_id: turn.id.clone(),
+                kind: ITEM.to_string(),
+                payload,
+            }));
+        }
+    }
+    checked(db.append_turn_records(session_id, &backfill).await)?;
+    Ok(turns)
+}
+
+/// The turns `records` hold, in the order they started.
+fn replay(records: &[TurnRecord], running: bool) -> Vec<Turn> {
+    let mut turns: Vec<Turn> = Vec::new();
+    let mut index: HashMap<&str, usize> = HashMap::new();
+    for record in records {
+        let at = match index.get(record.turn_id.as_str()) {
+            Some(&at) => at,
+            None => {
+                index.insert(&record.turn_id, turns.len());
+                turns.push(Turn {
+                    id: record.turn_id.clone(),
+                    status: TurnStatus::InProgress,
+                    error: None,
+                    usage: None,
+                    duration_ms: None,
+                    items: Vec::new(),
+                });
+                turns.len() - 1
+            }
+        };
+        match record.kind.as_str() {
+            TURN => match serde_json::from_str::<Turn>(&record.payload) {
+                Ok(turn) => {
+                    let items = std::mem::take(&mut turns[at].items);
+                    turns[at] = Turn { items, ..turn };
+                }
+                Err(e) => tracing::warn!("skipped a stored turn: {e}"),
+            },
+            ITEM => match serde_json::from_str::<TurnItem>(&record.payload) {
+                Ok(item) => turns[at].items.push(item),
+                Err(e) => tracing::warn!("skipped a stored item: {e}"),
+            },
+            other => tracing::debug!("skipped a turn record of kind {other:?}"),
+        }
+    }
+    // Only the session's last turn can still be running.
+    let last = turns.len().saturating_sub(1);
+    for (i, turn) in turns.iter_mut().enumerate() {
+        if turn.status == TurnStatus::InProgress && !(running && i == last) {
+            turn.status = TurnStatus::Interrupted;
+        }
+    }
+    turns
+}
+
+// ── Sessions from before 6h ─────────────────────────────────────────────
+
+/// A session's turns rebuilt from the messages the model read, the way
+/// [`crate::events::EventProjector`] would have sent them: each prompt
+/// opens a turn, a reply's reasoning and text are items, and a tool call is
+/// an item where its result was stored. Less is kept than a record keeps:
+/// [`koda_protocol::session::Session::turns`] says what.
+async fn rebuild(db: &dyn Persistence, session_id: &str) -> Result<Vec<Turn>> {
+    let messages = checked(db.load_all_messages(session_id).await)?;
+    let mut progress = progress_by_call(db, session_id).await?;
+    Ok(rebuild_from(&messages, &mut progress))
+}
+
+fn rebuild_from(messages: &[Message], progress: &mut HashMap<String, Vec<String>>) -> Vec<Turn> {
+    let mut turns: Vec<Turn> = Vec::new();
+    let push = |turns: &mut Vec<Turn>, item: Item| {
+        if let Some(turn) = turns.last_mut() {
             turn.items.push(TurnItem {
-                parent_item_id: parent.map(str::to_string),
+                parent_item_id: None,
                 item,
             });
         }
+    };
+    // Calls started and not yet completed, by id: name and arguments.
+    let mut open: HashMap<String, (String, Value)> = HashMap::new();
+    // Whether the last row leaves a turn mid-way: a user row then is
+    // steering text, not a new prompt.
+    let mut mid_turn = false;
+
+    for msg in messages {
+        match msg.role {
+            // The system prompt and compaction summaries.
+            Role::System => {}
+            Role::User => {
+                if msg.tool_call_id.is_some() {
+                    continue;
+                }
+                if !mid_turn || turns.is_empty() {
+                    turns.push(Turn {
+                        id: format!("turn-m{}", msg.id),
+                        status: TurnStatus::Completed,
+                        error: None,
+                        usage: None,
+                        duration_ms: None,
+                        items: Vec::new(),
+                    });
+                }
+                push(
+                    &mut turns,
+                    Item::UserMessage {
+                        id: format!("user-m{}", msg.id),
+                        text: msg.content.clone().unwrap_or_default(),
+                        client_message_ids: Vec::new(),
+                    },
+                );
+                mid_turn = false;
+            }
+            Role::Assistant => {
+                if let Some(thinking) = msg.thinking_content.as_deref()
+                    && !thinking.is_empty()
+                {
+                    push(
+                        &mut turns,
+                        Item::Reasoning {
+                            id: format!("reasoning-m{}", msg.id),
+                            text: thinking.to_string(),
+                        },
+                    );
+                }
+                if let Some(text) = msg.content.as_deref()
+                    && !text.is_empty()
+                {
+                    push(
+                        &mut turns,
+                        Item::AgentMessage {
+                            id: format!("message-m{}", msg.id),
+                            text: text.to_string(),
+                        },
+                    );
+                }
+                let calls: Vec<ToolCall> = msg
+                    .tool_calls
+                    .as_deref()
+                    .and_then(|json| serde_json::from_str(json).ok())
+                    .unwrap_or_default();
+                mid_turn = !calls.is_empty();
+                for call in calls {
+                    let arguments = serde_json::from_str(&call.arguments).unwrap_or_default();
+                    open.insert(call.id, (call.function_name, arguments));
+                }
+            }
+            Role::Tool => {
+                mid_turn = true;
+                let Some(id) = msg.tool_call_id.clone() else {
+                    continue;
+                };
+                let (tool, arguments) = open.remove(&id).unwrap_or_default();
+                let output = msg.content.clone().unwrap_or_default();
+                push(
+                    &mut turns,
+                    Item::ToolCall {
+                        status: status_of(&output),
+                        progress: progress.remove(&id).unwrap_or_default(),
+                        id,
+                        tool,
+                        arguments,
+                        output: Some(output),
+                        detail: None,
+                        changes: Vec::new(),
+                    },
+                );
+            }
+        }
     }
+    if mid_turn && let Some(last) = turns.last_mut() {
+        last.status = TurnStatus::Interrupted;
+    }
+    turns
 }
 
-/// The notices stored for each call, as `item/toolCall/progress` sent them.
-/// A sub-agent's stored trace also names each tool it started; those are
-/// its items now, so they're left out.
+/// The notices stored for each call. A sub-agent's stored trace also names
+/// each tool it started; those aren't notices, so they're left out.
 async fn progress_by_call(
     db: &dyn Persistence,
     session_id: &str,
@@ -228,8 +357,8 @@ async fn progress_by_call(
     Ok(by_call)
 }
 
-/// A stored result's status. The outcome itself isn't stored, so a call
-/// that was refused or stopped reads as completed.
+/// A stored result's status. The outcome itself isn't in the messages, so a
+/// call that was refused or stopped reads as completed.
 fn status_of(output: &str) -> ToolCallStatus {
     let head = output.trim_start();
     if head.starts_with("Error:") || head.starts_with('\u{274c}') {
@@ -242,12 +371,17 @@ fn status_of(output: &str) -> ToolCallStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use koda_core::db::Database;
-    use koda_core::persistence::{FORKED_ROWS_KEY, PARENT_SESSION_KEY, PARENT_TOOL_CALL_KEY};
     use serde_json::json;
 
     fn calls(id: &str, name: &str, args: Value) -> String {
         json!([{"id": id, "function_name": name, "arguments": args.to_string()}]).to_string()
+    }
+
+    async fn db() -> (tempfile::TempDir, Database, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::init(dir.path()).await.unwrap();
+        let session = db.create_session("default", dir.path()).await.unwrap();
+        (dir, db, session)
     }
 
     async fn insert(db: &Database, session: &str, role: Role, content: &str) {
@@ -256,45 +390,111 @@ mod tests {
             .unwrap();
     }
 
-    /// Prompts open turns and steering text joins one; a forked sub-agent's
-    /// own tool calls follow its call, without the history it copied or its
-    /// text, and its notices are the call's progress.
+    fn turn_record(id: &str, status: TurnStatus) -> TurnRecord {
+        TurnRecord {
+            turn_id: id.into(),
+            kind: TURN.into(),
+            payload: serde_json::to_string(&Turn {
+                id: id.into(),
+                status,
+                error: None,
+                usage: None,
+                duration_ms: Some(5),
+                items: Vec::new(),
+            })
+            .unwrap(),
+        }
+    }
+
+    fn item_record(turn: &str, parent: Option<&str>, text: &str) -> TurnRecord {
+        TurnRecord {
+            turn_id: turn.into(),
+            kind: ITEM.into(),
+            payload: serde_json::to_string(&TurnItem {
+                parent_item_id: parent.map(str::to_string),
+                item: Item::AgentMessage {
+                    id: format!("message-{text}"),
+                    text: text.into(),
+                },
+            })
+            .unwrap(),
+        }
+    }
+
+    /// Records replay in order: a turn's end replaces its start, its items
+    /// keep their parents, and a turn that never ended is interrupted unless
+    /// it is the running one.
+    #[test]
+    fn records_replay_as_the_turns_were_sent() {
+        let records = [
+            turn_record("t1", TurnStatus::InProgress),
+            item_record("t1", None, "one"),
+            item_record("t1", Some("call-a"), "sub"),
+            turn_record("t1", TurnStatus::Completed),
+            turn_record("t2", TurnStatus::InProgress),
+            item_record("t2", None, "two"),
+        ];
+        let turns = replay(&records, false);
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].status, TurnStatus::Completed);
+        assert_eq!(turns[0].duration_ms, Some(5));
+        assert_eq!(turns[0].items.len(), 2);
+        assert_eq!(turns[0].items[1].parent_item_id.as_deref(), Some("call-a"));
+        assert_eq!(turns[1].status, TurnStatus::Interrupted);
+        assert_eq!(replay(&records, true)[1].status, TurnStatus::InProgress);
+    }
+
+    /// A session from before 6h: prompts open turns, steering text joins
+    /// one, a call's stored notices are its progress, and a turn left
+    /// mid-way is interrupted. Resuming it stores the rebuilt turns, which
+    /// later reads replay.
     #[tokio::test]
-    async fn turns_are_rebuilt_with_a_forked_sub_agents_items() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = Database::init(dir.path()).await.unwrap();
-        let root = dir.path();
-        let parent = db.create_session("default", root).await.unwrap();
-        insert(&db, &parent, Role::System, "system prompt").await;
-        insert(&db, &parent, Role::User, "Ask the fork").await;
+    async fn an_older_session_is_rebuilt_then_stored_on_resume() {
+        let (_dir, db, session) = db().await;
+        insert(&db, &session, Role::System, "system prompt").await;
+        insert(&db, &session, Role::User, "Ask the agent").await;
         db.insert_message(
-            &parent,
+            &session,
             &Role::Assistant,
             Some("Asking."),
             Some(&calls(
                 "call-a",
                 "InvokeAgent",
-                json!({"agent_name": "fork"}),
+                json!({"agent_name": "explore"}),
             )),
             None,
             None,
         )
         .await
         .unwrap();
-        // The fork copies the history so far, then works on its own.
-        let child = db.create_session("fork", root).await.unwrap();
-        db.set_metadata(&child, PARENT_SESSION_KEY, &parent)
+        for line in [
+            "  \u{1f527} Read",
+            "  \u{23f3} explore: reached max turns (1)",
+        ] {
+            db.insert_session_event(
+                &session,
+                session_event_kind::SUB_AGENT_EVENT,
+                line,
+                Some("call-a"),
+            )
             .await
             .unwrap();
-        db.set_metadata(&child, PARENT_TOOL_CALL_KEY, "call-a")
-            .await
-            .unwrap();
-        db.set_metadata(&child, FORKED_ROWS_KEY, "2").await.unwrap();
-        insert(&db, &child, Role::System, "system prompt").await;
-        insert(&db, &child, Role::User, "Ask the fork").await;
-        insert(&db, &child, Role::User, "the fork's prompt").await;
+        }
         db.insert_message(
-            &child,
+            &session,
+            &Role::Tool,
+            Some("Error: no such file"),
+            None,
+            Some("call-a"),
+            None,
+        )
+        .await
+        .unwrap();
+        insert(&db, &session, Role::User, "and steer").await;
+        insert(&db, &session, Role::Assistant, "Done.").await;
+        insert(&db, &session, Role::User, "Read it").await;
+        db.insert_message(
+            &session,
             &Role::Assistant,
             None,
             Some(&calls("call-r", "Read", json!({"path": "a.txt"}))),
@@ -303,109 +503,107 @@ mod tests {
         )
         .await
         .unwrap();
-        db.insert_message(
-            &child,
-            &Role::Tool,
-            Some("Error: no such file"),
-            None,
-            Some("call-r"),
-            None,
-        )
-        .await
-        .unwrap();
-        insert(&db, &child, Role::Assistant, "Nothing there.").await;
-        for (line, call) in [
-            ("  \u{1f527} Read", "call-a"),
-            ("  \u{23f3} fork: reached max turns (1)", "call-a"),
-        ] {
-            db.insert_session_event(
-                &parent,
-                session_event_kind::SUB_AGENT_EVENT,
-                line,
-                Some(call),
-            )
-            .await
-            .unwrap();
-        }
-        db.insert_message(
-            &parent,
-            &Role::Tool,
-            Some("Nothing there."),
-            None,
-            Some("call-a"),
-            None,
-        )
-        .await
-        .unwrap();
-        insert(&db, &parent, Role::User, "and steer").await;
-        insert(&db, &parent, Role::Assistant, "Done.").await;
-        insert(&db, &parent, Role::User, "Next").await;
-        insert(&db, &parent, Role::Assistant, "OK.").await;
 
-        let turns = turns(&db, &parent).await.unwrap();
-        assert_eq!(turns.len(), 2, "{turns:#?}");
-        let shape: Vec<(Option<&str>, String)> = turns[0]
+        let rebuilt = turns(&db, &session, false).await.unwrap();
+        assert_eq!(rebuilt.len(), 2, "{rebuilt:#?}");
+        let shape: Vec<String> = rebuilt[0]
             .items
             .iter()
-            .map(|i| {
-                let what = match &i.item {
-                    Item::UserMessage { text, .. } => format!("user {text}"),
-                    Item::AgentMessage { text, .. } => format!("message {text}"),
-                    Item::Reasoning { text, .. } => format!("reasoning {text}"),
-                    Item::ToolCall {
-                        id, tool, status, ..
-                    } => format!("{tool} {id} {status:?}"),
-                    Item::ContextCompaction { .. } => "compaction".to_string(),
-                };
-                (i.parent_item_id.as_deref(), what)
+            .map(|i| match &i.item {
+                Item::UserMessage { text, .. } => format!("user {text}"),
+                Item::AgentMessage { text, .. } => format!("message {text}"),
+                Item::ToolCall {
+                    tool,
+                    status,
+                    progress,
+                    arguments,
+                    ..
+                } => format!("{tool} {status:?} {progress:?} {}", arguments["agent_name"]),
+                other => format!("{other:?}"),
             })
             .collect();
         assert_eq!(
             shape,
             [
-                (None, "user Ask the fork".to_string()),
-                (None, "message Asking.".to_string()),
-                (Some("call-a"), "Read call-r Failed".to_string()),
-                (None, "InvokeAgent call-a Completed".to_string()),
-                (None, "user and steer".to_string()),
-                (None, "message Done.".to_string()),
+                "user Ask the agent",
+                "message Asking.",
+                "InvokeAgent Failed [\"\u{23f3} explore: reached max turns (1)\"] \"explore\"",
+                "user and steer",
+                "message Done.",
             ]
         );
-        let Item::ToolCall {
-            progress,
-            arguments,
-            ..
-        } = &turns[0].items[3].item
-        else {
-            unreachable!()
-        };
-        assert_eq!(progress, &["\u{23f3} fork: reached max turns (1)"]);
-        assert_eq!(arguments["agent_name"], "fork");
-        assert_eq!(turns[0].status, TurnStatus::Completed);
-        assert_eq!(turns[1].items.len(), 2);
+        assert_eq!(rebuilt[0].status, TurnStatus::Completed);
+        // A call with no stored result never completed, so it isn't listed.
+        assert_eq!(rebuilt[1].items.len(), 1);
+        assert_eq!(rebuilt[1].status, TurnStatus::Interrupted);
+        // Nothing is stored by reading.
+        assert!(db.load_turn_records(&session).await.unwrap().is_empty());
+
+        let resumed = turns_for_resume(&db, &session).await.unwrap();
+        assert_eq!(resumed, rebuilt);
+        assert!(!db.load_turn_records(&session).await.unwrap().is_empty());
+        assert_eq!(turns(&db, &session, false).await.unwrap(), rebuilt);
     }
 
-    /// A session that stopped mid-way ends on an interrupted turn.
+    /// The writer stores what the host sends, in order, by the time a flush
+    /// returns.
     #[tokio::test]
-    async fn a_turn_left_mid_way_is_interrupted() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = Database::init(dir.path()).await.unwrap();
-        let session = db.create_session("default", dir.path()).await.unwrap();
-        insert(&db, &session, Role::User, "Read it").await;
-        db.insert_message(
-            &session,
-            &Role::Assistant,
-            None,
-            Some(&calls("call-1", "Read", json!({"path": "a.txt"}))),
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-        let turns = turns(&db, &session).await.unwrap();
+    async fn the_writer_stores_turns_and_completed_items_only() {
+        use koda_protocol::item::{ItemCompletedNotification, ItemStartedNotification};
+        use koda_protocol::turn::{TurnCompletedNotification, TurnStartedNotification};
+        let (_dir, db, session) = db().await;
+        let writer = HistoryWriter::spawn(db.clone(), session.clone());
+        let turn = |status| Turn {
+            id: "t1".into(),
+            status,
+            error: None,
+            usage: None,
+            duration_ms: None,
+            items: Vec::new(),
+        };
+        let item = Item::AgentMessage {
+            id: "message-1".into(),
+            text: "Hi.".into(),
+        };
+        let note = |n| Outgoing::Notification(n);
+        writer.record(&[
+            note(ServerNotification::TurnStarted(TurnStartedNotification {
+                session_id: session.clone(),
+                turn: turn(TurnStatus::InProgress),
+            })),
+            note(ServerNotification::ItemStarted(ItemStartedNotification {
+                session_id: session.clone(),
+                turn_id: "t1".into(),
+                parent_item_id: None,
+                item: item.clone(),
+            })),
+            note(ServerNotification::ItemCompleted(
+                ItemCompletedNotification {
+                    session_id: session.clone(),
+                    turn_id: "t1".into(),
+                    parent_item_id: None,
+                    item: item.clone(),
+                },
+            )),
+        ]);
+        writer.record(&[note(ServerNotification::TurnCompleted(
+            TurnCompletedNotification {
+                session_id: session.clone(),
+                turn: turn(TurnStatus::Completed),
+            },
+        ))]);
+        writer.flush().await;
+        let kinds: Vec<String> = db
+            .load_turn_records(&session)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.kind)
+            .collect();
+        assert_eq!(kinds, [TURN, ITEM, TURN]);
+        let turns = turns(&db, &session, false).await.unwrap();
         assert_eq!(turns.len(), 1);
-        assert_eq!(turns[0].status, TurnStatus::Interrupted);
-        // A call with no stored result never completed, so it isn't listed.
-        assert_eq!(turns[0].items.len(), 1);
+        assert_eq!(turns[0].status, TurnStatus::Completed);
+        assert_eq!(turns[0].items[0].item, item);
     }
 }

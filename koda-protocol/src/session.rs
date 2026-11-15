@@ -51,14 +51,17 @@ pub struct Session {
     /// `session/start` resuming a session and by `session/read` with
     /// `includeTurns`, as Codex's `Thread.turns` is.
     ///
-    /// A stored session keeps its messages, not its turns, so these are
-    /// rebuilt from them. A turn's id is its first message's, not the id it
-    /// ran with, and an interrupted turn followed by a new prompt reads as
-    /// one turn. A tool call's status is read from its output, its `detail`
-    /// and `changes` aren't kept, and compactions aren't listed. A
-    /// sub-agent's tool calls come before its `InvokeAgent` call, with the
-    /// call as their parent, as they did live, for sub-agents run since Koda recorded that link; the
-    /// notices it sent come as the call's `progress`.
+    /// Each turn is the one the client saw: its id, status, usage and
+    /// completed items, a sub-agent's tool calls under its `InvokeAgent`
+    /// call. A turn that never ended, Koda having stopped mid-way, reads as
+    /// interrupted.
+    ///
+    /// Sessions from before Koda stored turns (0.6.4 and earlier) are
+    /// rebuilt from the messages the model read, which keep less: a turn's id
+    /// is its first message's, an interrupted turn followed by a new prompt
+    /// reads as one turn, a tool call's status is read from its output, its
+    /// `detail` and `changes` are missing, a sub-agent's tool calls and
+    /// compactions aren't listed, and turns have no usage or duration.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub turns: Vec<crate::turn::Turn>,
 }

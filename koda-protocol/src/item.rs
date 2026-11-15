@@ -64,10 +64,10 @@ pub enum Item {
         /// Koda's one tool-call item.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         changes: Vec<FileUpdateChange>,
-        /// The notices sent about it as `item/toolCall/progress`, in order:
-        /// a sub-agent's, for an `InvokeAgent` call. Set on completion. A
-        /// notice sent after the call completed, as a skill's change of tool
-        /// scope is, is here only when the session is read back.
+        /// The notices sent about it as `item/toolCall/progress` while it
+        /// ran, in order: a sub-agent's, for an `InvokeAgent` call. Set on
+        /// completion. A skill's change of tool scope is sent once its call
+        /// has completed, so it isn't here.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         progress: Vec<String>,
     },

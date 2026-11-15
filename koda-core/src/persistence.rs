@@ -184,23 +184,18 @@ pub enum InterruptionKind {
 /// started it.
 pub const PARENT_SESSION_KEY: &str = "parent_session";
 
-/// Metadata key on a sub-agent's session, holding the id of the
-/// `InvokeAgent` call that started it. Absent on sessions from before 6h.
-pub const PARENT_TOOL_CALL_KEY: &str = "parent_tool_call";
-
-/// Metadata key on a forked sub-agent's session: how many of its first
-/// messages were copied from the session that started it.
-pub const FORKED_ROWS_KEY: &str = "forked_rows";
-
-/// A sub-agent's session, as the session that started it sees it.
+/// One stored part of a turn as a client saw it: the turn as it started or
+/// ended, or an item as it completed. The client host writes them, so
+/// resuming a session replays its turns exactly, as Codex's rollout file
+/// does. The payload is the protocol's JSON, which the core doesn't read.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SubAgentSession {
-    /// The sub-agent's session.
-    pub session_id: String,
-    /// The `InvokeAgent` call that started it, where Koda recorded it.
-    pub tool_call_id: Option<String>,
-    /// How many of its first messages a fork copied from the parent.
-    pub forked_rows: usize,
+pub struct TurnRecord {
+    /// The turn it belongs to.
+    pub turn_id: String,
+    /// What it is, such as `turn` or `item`.
+    pub kind: String,
+    /// The JSON.
+    pub payload: String,
 }
 
 /// Token usage totals for a session.
@@ -424,9 +419,13 @@ pub trait Persistence: Send + Sync {
     async fn get_metadata(&self, session_id: &str, key: &str) -> Result<Option<String>>;
     /// Set a session metadata value.
     async fn set_metadata(&self, session_id: &str, key: &str, value: &str) -> Result<()>;
-    /// The sessions of the sub-agents session `session_id` started, oldest
-    /// first.
-    async fn sub_agent_sessions(&self, session_id: &str) -> Result<Vec<SubAgentSession>>;
+
+    // ── Turn records (6h) ──
+
+    /// Append `records` to the session's turn records, in order.
+    async fn append_turn_records(&self, session_id: &str, records: &[TurnRecord]) -> Result<()>;
+    /// The session's turn records, in the order they were written.
+    async fn load_turn_records(&self, session_id: &str) -> Result<Vec<TurnRecord>>;
     /// Get the TODO list for a session.
     async fn get_todo(&self, session_id: &str) -> Result<Option<String>>;
     /// Set the TODO list for a session.

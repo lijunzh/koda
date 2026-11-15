@@ -331,6 +331,28 @@ impl Database {
         .execute(pool)
         .await?;
 
+        // Turn records (6h): each turn as a client saw it, written by the
+        // client host and replayed when the session is resumed or read.
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS turn_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                turn_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(session_id) REFERENCES sessions(id)
+            );",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_turn_records_session_id \
+             ON turn_records(session_id, id);",
+        )
+        .execute(pool)
+        .await?;
+
         Ok(())
     }
 
