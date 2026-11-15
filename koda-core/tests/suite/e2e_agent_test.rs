@@ -1122,3 +1122,72 @@ async fn invoke_agent_without_agent_name_is_rejected_with_actionable_error() {
         "error must list `task` in the available agents hint; got: {invoke_result}"
     );
 }
+
+/// A sub-agent's session stores the context of its run, as a Codex
+/// sub-agent's thread records its own: its own model and the trust it
+/// was clamped to, under the parent's `InvokeAgent` call.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sub_agent_session_stores_its_own_context() {
+    let _lock = ENV_MUTEX.lock().await;
+    let env = Env::new().await;
+    let agents_dir = env.root.join(".koda/agents");
+    std::fs::create_dir_all(&agents_dir).unwrap();
+    std::fs::write(
+        agents_dir.join("reader.json"),
+        serde_json::json!({
+            "name": "reader",
+            "system_prompt": "You read.",
+            "provider": "mock",
+            "base_url": "http://localhost:0",
+            "model": "sub-model",
+            "trust": "plan"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    runtime_env::set("KODA_MOCK_RESPONSES", r#"[{"text": "read it"}]"#);
+    env.insert_user_message("delegate to reader").await;
+    let provider = MockProvider::new(vec![
+        MockResponse::tool_call(
+            "InvokeAgent",
+            serde_json::json!({"agent_name": "reader", "prompt": "read"}),
+        ),
+        MockResponse::Text("done".into()),
+    ]);
+    let events = env.run_inference(&provider).await;
+    runtime_env::remove("KODA_MOCK_RESPONSES");
+    let call_id = events
+        .iter()
+        .find_map(|e| match e {
+            EngineEvent::ToolCallStart { id, name, .. } if name == "InvokeAgent" => {
+                Some(id.clone())
+            }
+            _ => None,
+        })
+        .expect("an InvokeAgent call");
+
+    let (child,): (String,) =
+        sqlx::query_as("SELECT session_id FROM session_metadata WHERE key = ? AND value = ?")
+            .bind(koda_core::session_store::PARENT_SESSION_KEY)
+            .bind(&env.session_id)
+            .fetch_one(env.db.pool())
+            .await
+            .unwrap();
+    let contexts: Vec<koda_core::session_store::TurnContextItem> = env
+        .db
+        .load_turn_records(&child)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|record| record.kind == koda_core::session_store::TURN_CONTEXT_KIND)
+        .map(|record| serde_json::from_str(&record.payload).unwrap())
+        .collect();
+
+    assert_eq!(contexts.len(), 1, "{contexts:#?}");
+    let context = &contexts[0];
+    assert_eq!(context.turn_id, call_id);
+    assert_eq!(context.agent_name, "reader");
+    assert_eq!(context.model, "sub-model");
+    assert_eq!(context.trust_mode, "plan");
+    assert!(context.system_prompt_sha256.is_some());
+}

@@ -608,6 +608,19 @@ impl KodaSession {
                 self.agent.semantic_memory.clone()
             }
         };
+        // What this turn runs with, stored before it starts, as Codex
+        // records a `TurnContextItem` per user turn.
+        crate::session_store::TurnContextItem::of_turn(
+            &turn_id,
+            config,
+            self.mode,
+            &self.agent.project_root,
+            &tool_defs,
+            Some(&system_prompt),
+            Some(&project_memory),
+        )
+        .store(&self.db, &self.id)
+        .await;
         let result = crate::inference::inference_loop_outcome(InferenceContext {
             project_root: &self.agent.project_root,
             config,
@@ -689,6 +702,19 @@ impl KodaSession {
         let started = std::time::Instant::now();
         let meter = crate::engine::sink::TurnMeter::new(sink);
         let cancel = turn_cancel.unwrap_or_else(|| self.cancel_token());
+        // A compaction turn records its context too, as Codex's does. It
+        // offers no tools; the prompts are the summary's own.
+        crate::session_store::TurnContextItem::of_turn(
+            &turn_id,
+            config,
+            self.mode,
+            &self.agent.project_root,
+            &[],
+            None,
+            None,
+        )
+        .store(&self.db, &self.id)
+        .await;
         let outcome = crate::inference::compact_now(
             &self.db,
             &self.id,

@@ -160,18 +160,134 @@ pub struct SessionEvent {
 /// started it.
 pub const PARENT_SESSION_KEY: &str = "parent_session";
 
-/// One stored part of a turn as a client saw it: the turn as it started or
-/// ended, or an item as it completed. The client host writes them, so
+/// One stored part of a turn: the turn as it started or ended, or an item
+/// as it completed, which the client host writes as a client saw them, so
 /// resuming a session replays its turns exactly, as Codex's rollout file
-/// does. The payload is the protocol's JSON, which the core doesn't read.
+/// does; or what the turn ran with, a [`TurnContextItem`], which core
+/// writes. The payload is JSON; core reads none of it back.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TurnRecord {
     /// The turn it belongs to.
     pub turn_id: String,
-    /// What it is, such as `turn` or `item`.
+    /// What it is: `turn`, `item` or [`TURN_CONTEXT_KIND`].
     pub kind: String,
     /// The JSON.
     pub payload: String,
+}
+
+/// The [`TurnRecord::kind`] of a [`TurnContextItem`].
+pub const TURN_CONTEXT_KIND: &str = "context";
+
+/// What a turn ran with, stored once per turn as a [`TURN_CONTEXT_KIND`]
+/// record, as Codex stores a `TurnContextItem` in its rollout once per
+/// user turn: so a session can be debugged with what each turn actually
+/// used, not only the session's latest settings. Like Codex's, it is
+/// storage only; the protocol's turns don't carry it.
+///
+/// Written by core from the turn it is about to run, so it holds what the
+/// turn used: a settings change made during a turn applies to the next.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnContextItem {
+    /// The turn it belongs to; a sub-agent's is its `InvokeAgent` call.
+    pub turn_id: String,
+    /// Koda's version. Codex keeps its version once per session; a Koda
+    /// session can be resumed after an upgrade, so each turn says.
+    pub koda_version: String,
+    /// The directory the turn worked in: the project, or a sub-agent's
+    /// worktree.
+    pub cwd: String,
+    /// The agent running the turn.
+    pub agent_name: String,
+    /// The provider's type, such as `anthropic`.
+    pub provider: String,
+    /// The provider's endpoint.
+    pub base_url: String,
+    /// The model the turn called.
+    pub model: String,
+    /// The output limit sent, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    /// The temperature sent, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    /// The thinking budget sent, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_budget: Option<u32>,
+    /// The reasoning effort sent, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    /// The context window the turn compacted against, in tokens.
+    pub context_window: usize,
+    /// The trust mode the turn ran in: `plan`, `safe` or `auto`.
+    pub trust_mode: String,
+    /// The tools offered to the model, built-in and MCP, by name.
+    pub tools: Vec<String>,
+    /// SHA-256 of the system prompt, so a change to it shows without
+    /// storing it every turn. `None` for a compaction, whose prompt is
+    /// Koda's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt_sha256: Option<String>,
+    /// SHA-256 of the project memory sent with it; `None` for a compaction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_memory_sha256: Option<String>,
+}
+
+impl TurnContextItem {
+    /// The record of a turn about to run with `config` in `mode`, offered
+    /// `tools`, in `cwd`, sending `system_prompt` and `project_memory`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn of_turn(
+        turn_id: &str,
+        config: &crate::config::KodaConfig,
+        mode: crate::trust::TrustMode,
+        cwd: &Path,
+        tools: &[crate::providers::ToolDefinition],
+        system_prompt: Option<&str>,
+        project_memory: Option<&str>,
+    ) -> Self {
+        use sha2::{Digest, Sha256};
+        let sha256 = |text: &str| format!("{:x}", Sha256::digest(text.as_bytes()));
+        let settings = &config.model_settings;
+        Self {
+            turn_id: turn_id.to_string(),
+            koda_version: env!("CARGO_PKG_VERSION").to_string(),
+            cwd: cwd.display().to_string(),
+            agent_name: config.agent_name.clone(),
+            provider: config.provider_type.to_string(),
+            base_url: config.base_url.clone(),
+            model: config.model.clone(),
+            max_tokens: settings.max_tokens,
+            temperature: settings.temperature,
+            thinking_budget: settings.thinking_budget,
+            reasoning_effort: settings.reasoning_effort.clone(),
+            context_window: config.max_context_tokens,
+            trust_mode: mode.as_str().to_string(),
+            tools: tools.iter().map(|tool| tool.name.clone()).collect(),
+            system_prompt_sha256: system_prompt.map(sha256),
+            project_memory_sha256: project_memory.map(sha256),
+        }
+    }
+
+    /// Store it for `session_id`. A failure is logged and the turn goes on:
+    /// the record is for debugging, and a turn shouldn't fail over it.
+    pub async fn store(&self, db: &dyn SessionStore, session_id: &str) {
+        let payload = match serde_json::to_string(self) {
+            Ok(payload) => payload,
+            Err(e) => {
+                tracing::warn!("couldn't encode turn {}'s context: {e}", self.turn_id);
+                return;
+            }
+        };
+        let record = TurnRecord {
+            turn_id: self.turn_id.clone(),
+            kind: TURN_CONTEXT_KIND.to_string(),
+            payload,
+        };
+        if let Err(e) = db.append_turn_records(session_id, &[record]).await {
+            tracing::warn!("couldn't store turn {}'s context: {e:#}", self.turn_id);
+        }
+    }
 }
 
 /// Token usage totals for a session.

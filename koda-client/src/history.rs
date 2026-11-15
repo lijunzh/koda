@@ -146,7 +146,7 @@ pub(crate) async fn turns(
     session_id: &str,
     running: bool,
 ) -> Result<Vec<Turn>> {
-    let records = checked(db.load_turn_records(session_id).await)?;
+    let records = turn_records(db, session_id).await?;
     if records.is_empty() {
         return rebuild(db, session_id).await;
     }
@@ -157,7 +157,7 @@ pub(crate) async fn turns(
 /// records gets its rebuilt turns stored first, so the turns it runs now
 /// follow them.
 pub(crate) async fn turns_for_resume(db: &dyn SessionStore, session_id: &str) -> Result<Vec<Turn>> {
-    let records = checked(db.load_turn_records(session_id).await)?;
+    let records = turn_records(db, session_id).await?;
     if !records.is_empty() {
         return Ok(replay(&records, false));
     }
@@ -183,6 +183,16 @@ pub(crate) async fn turns_for_resume(db: &dyn SessionStore, session_id: &str) ->
     }
     checked(db.append_turn_records(session_id, &backfill).await)?;
     Ok(turns)
+}
+
+/// The session's records of turns and items. Core also stores each turn's
+/// context ([`koda_core::session_store::TurnContextItem`]) among them, for
+/// debugging; it isn't part of a turn as a client sees it, so a session
+/// whose only records are contexts has no turns stored.
+async fn turn_records(db: &dyn SessionStore, session_id: &str) -> Result<Vec<TurnRecord>> {
+    let mut records = checked(db.load_turn_records(session_id).await)?;
+    records.retain(|record| matches!(record.kind.as_str(), TURN | ITEM));
+    Ok(records)
 }
 
 /// The turns `records` hold, in the order they started.
@@ -439,6 +449,60 @@ mod tests {
             })
             .unwrap(),
         }
+    }
+
+    fn context_record(turn: &str) -> TurnRecord {
+        TurnRecord {
+            turn_id: turn.into(),
+            kind: koda_core::session_store::TURN_CONTEXT_KIND.into(),
+            payload: "{}".into(),
+        }
+    }
+
+    /// Core stores each turn's context among the records, often before the
+    /// host stores the turn. It is not part of a turn as a client sees it:
+    /// it opens no turn, and a session holding only contexts, such as a
+    /// sub-agent's, has no turns stored, so its turns are rebuilt from its
+    /// messages.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn context_records_are_not_turns() {
+        let (_dir2, old, old_session) = db().await;
+        let (_dir, db, session) = db().await;
+        db.append_turn_records(
+            &session,
+            &[
+                context_record("t1"),
+                turn_record("t1", TurnStatus::InProgress),
+                item_record("t1", None, "one"),
+                turn_record("t1", TurnStatus::Completed),
+                context_record("t2"),
+            ],
+        )
+        .await
+        .unwrap();
+        let read = turns(&db, &session, false).await.unwrap();
+        assert_eq!(read.len(), 1, "{read:#?}");
+        assert_eq!(read[0].id, "t1");
+        assert_eq!(read[0].items.len(), 1);
+
+        insert(&old, &old_session, Role::User, "hello").await;
+        insert(&old, &old_session, Role::Assistant, "Hi.").await;
+        old.append_turn_records(&old_session, &[context_record("t9")])
+            .await
+            .unwrap();
+        let resumed = turns_for_resume(&old, &old_session).await.unwrap();
+        assert_eq!(resumed.len(), 1, "rebuilt from the messages: {resumed:#?}");
+        let kinds: Vec<String> = old
+            .load_turn_records(&old_session)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|record| record.kind)
+            .collect();
+        assert!(
+            kinds.iter().any(|kind| kind == TURN),
+            "backfilled: {kinds:?}"
+        );
     }
 
     /// Records replay in order: a turn's end replaces its start, its items
