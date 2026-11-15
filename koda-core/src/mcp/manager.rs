@@ -101,21 +101,6 @@ impl McpManager {
         }
     }
 
-    /// The servers a session starts: the configured ones, plus this run's
-    /// from `--mcp-config`. A run's server replaces a configured one of the
-    /// same name for this run only; nothing is written back.
-    pub fn configured(
-        mut configs: HashMap<String, McpServerConfig>,
-        session_servers: &HashMap<String, McpServerConfig>,
-    ) -> HashMap<String, McpServerConfig> {
-        for (name, server) in session_servers {
-            if configs.insert(name.clone(), server.clone()).is_some() {
-                tracing::info!(server = %name, "--mcp-config replaces the configured server for this run");
-            }
-        }
-        configs
-    }
-
     /// Who is told when a server's startup changes.
     pub fn set_status_fn(&mut self, on_status: McpStatusFn) {
         self.on_status = Some(on_status);

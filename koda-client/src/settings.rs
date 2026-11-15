@@ -44,10 +44,49 @@ pub(crate) fn provider(id: &str) -> Result<ProviderType, ErrorObject> {
     if ptype.to_string() == id {
         Ok(ptype)
     } else {
-        Err(invalid(format!(
-            "unknown provider {id:?}; modelProvider/list names them"
-        )))
+        Err(unknown_provider(id))
     }
+}
+
+fn unknown_provider(name: &str) -> ErrorObject {
+    let ids: Vec<String> = ProviderType::OFFERED
+        .iter()
+        .map(|p| p.to_string())
+        .collect();
+    invalid(format!(
+        "unknown provider {name:?}; Koda offers {}",
+        ids.join(", ")
+    ))
+}
+
+/// Refuse an effort or thinking budget given for this run (`--effort`,
+/// `--thinking-budget` or `-c`) that the session's Claude model doesn't
+/// take: a person typed it and can fix the command. The file's and an
+/// agent's are corrected at request time instead, and so are the run's for
+/// sessions after the first.
+pub(crate) fn check_run_reasoning(
+    config: &KodaConfig,
+    loaded: &koda_config::Loaded,
+) -> Result<(), ErrorObject> {
+    if config.provider_type != ProviderType::Anthropic {
+        return Ok(());
+    }
+    let model = &config.model;
+    if let Some(level) = loaded
+        .flag_value("model_reasoning_effort")
+        .and_then(|v| v.as_str())
+    {
+        koda_core::model_effort::check_typed(model, level).map_err(invalid)?;
+    }
+    // Current Claude models take effort, not a token budget; the setting
+    // is for Gemini.
+    if loaded.flag_value("model_thinking_budget").is_some() {
+        return Err(invalid(format!(
+            "{model} takes no --thinking-budget. Use --effort with one of: {}.",
+            koda_core::model_effort::LEVELS.join(", ")
+        )));
+    }
+    Ok(())
 }
 
 /// Resolve `model` for `ptype`: an alias's id, refused if the alias is
@@ -294,10 +333,17 @@ pub(crate) fn with_saved(mut choice: ModelChoice, saved: &KodaConfigValues) -> M
     let Some(saved_provider) = saved.model_provider.clone() else {
         return choice;
     };
+    // A provider is named by its id, an endpoint, or a model alias, which
+    // picks its own provider (`claude-haiku` picks Anthropic).
     let named = match (&choice.provider, &choice.base_url) {
         (Some(id), _) => Some(id.clone()),
         (None, Some(url)) => Some(ProviderType::from_url_or_name(url, None).to_string()),
-        (None, None) => None,
+        (None, None) => choice
+            .model
+            .as_deref()
+            .filter(|m| *m != model_alias::LOCAL_ALIAS)
+            .and_then(model_alias::resolve)
+            .map(|alias| alias.provider.to_string()),
     };
     match named {
         Some(named) if named != saved_provider => return choice,
@@ -493,6 +539,62 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(config.base_url, ProviderType::Ollama.default_base_url());
+    }
+
+    /// `koda exec --model claude-haiku` runs Anthropic's Haiku whatever
+    /// provider is saved: an alias names its provider.
+    #[test]
+    fn a_model_alias_names_its_provider() {
+        let got = with_saved(choice(None, None, Some("claude-haiku")), &saved_lm_studio());
+        assert_eq!(got.provider, None, "the alias picks it in apply_start");
+        assert_eq!(got.model.as_deref(), Some("claude-haiku"));
+    }
+
+    #[test]
+    fn an_unknown_provider_is_refused_with_the_list() {
+        assert_eq!(provider("lm-studio").unwrap(), ProviderType::LMStudio);
+        let err = provider("lmstudio").unwrap_err();
+        assert!(
+            err.message.contains("unknown provider \"lmstudio\""),
+            "{err:?}"
+        );
+        assert!(err.message.contains("lm-studio"), "{err:?}");
+    }
+
+    /// `--effort` and `--thinking-budget` are checked against the session's
+    /// Claude model; the file's own values aren't.
+    #[test]
+    fn a_run_effort_or_budget_the_claude_model_doesnt_take_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let load = |flags: &[&str]| {
+            koda_config::ConfigFile::in_dir(dir.path())
+                .with_overrides(
+                    flags
+                        .iter()
+                        .map(|f| koda_config::parse_override(f).unwrap())
+                        .collect(),
+                )
+                .load()
+                .unwrap()
+        };
+        let mut claude = KodaConfig::default_for_testing(ProviderType::Anthropic);
+        claude.model = "claude-opus-5-5".to_string();
+        assert!(check_run_reasoning(&claude, &load(&["model_reasoning_effort=high"])).is_ok());
+        let err =
+            check_run_reasoning(&claude, &load(&["model_reasoning_effort=extreme"])).unwrap_err();
+        assert!(err.message.contains("extreme"), "{err:?}");
+        let err = check_run_reasoning(&claude, &load(&["model_thinking_budget=2048"])).unwrap_err();
+        assert!(err.message.contains("--effort"), "{err:?}");
+        // Another provider takes them as given.
+        let gemini = KodaConfig::default_for_testing(ProviderType::Gemini);
+        assert!(check_run_reasoning(&gemini, &load(&["model_thinking_budget=2048"])).is_ok());
+        // The file's budget isn't the run's.
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "model_thinking_budget = 2048\n",
+        )
+        .unwrap();
+        assert!(check_run_reasoning(&claude, &load(&[])).is_ok());
     }
 
     #[test]

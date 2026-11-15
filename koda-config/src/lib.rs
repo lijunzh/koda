@@ -38,7 +38,10 @@ use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
 use toml_edit::{DocumentMut, Item, TableLike};
 
+mod mcp_json;
 pub mod runtime_env;
+
+pub use mcp_json::mcp_config_overrides;
 
 /// Koda's folder: `$XDG_CONFIG_HOME/koda`, else `~/.config/koda`, else
 /// `%APPDATA%\koda` on Windows. The config file, the database and the TUI's
@@ -72,7 +75,7 @@ pub fn config_dir() -> std::io::Result<PathBuf> {
 pub const FILE_NAME: &str = "config.toml";
 
 /// The settings the file holds, in Codex's key names.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ConfigToml {
     /// The model a new session starts with: an alias such as
     /// `claude-opus`, which follows its line, or a model id.
@@ -90,6 +93,20 @@ pub struct ConfigToml {
     /// its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_context_window: Option<u64>,
+    /// The most tokens a reply may use, as `--max-tokens` gives it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_max_output_tokens: Option<u32>,
+    /// The sampling temperature, as `--temperature` gives it (0.0 to 2.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_temperature: Option<f64>,
+    /// A thinking budget in tokens, for Gemini models, as
+    /// `--thinking-budget` gives it. Claude models take an effort instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_thinking_budget: Option<u32>,
+    /// The agent new sessions run, as `--agent` gives it: a built-in, or a
+    /// JSON file in the project's `.koda/agents/` or Koda's `agents/`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
     /// Context used, in percent, past which a turn compacts after its
     /// final reply (1 to 100); 0 or none turns it off, as in Codex.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -199,6 +216,16 @@ pub struct Override {
     pub key_path: String,
     /// The value.
     pub value: toml::Value,
+}
+
+impl Override {
+    /// `key_path` set to `value`, as a flag such as `--effort` sets one.
+    pub fn new(key_path: impl Into<String>, value: impl Into<toml::Value>) -> Self {
+        Self {
+            key_path: key_path.into(),
+            value: value.into(),
+        }
+    }
 }
 
 /// Parse `key=value`. The value is read as TOML (`5`, `true`, `"text"`,
@@ -400,7 +427,8 @@ impl ConfigFile {
         }
     }
 
-    /// Lay this run's `-c` values over the file. Later ones win. Loading
+    /// Lay this run's `-c` values over the file. Each replaces what is at
+    /// its key path, a whole table included, and later ones win. Loading
     /// refuses a key Koda doesn't know there, as Codex does; edits still
     /// write only the file.
     pub fn with_overrides(mut self, overrides: Vec<Override>) -> Self {
@@ -514,8 +542,13 @@ impl ConfigFile {
                     "unknown configuration field `{key}` in -c/--config"
                 )));
             }
+            // Each value replaces what is at its key path, tables
+            // included, as Codex's `-c` does.
             let mut merged = values.clone();
-            merge(&mut merged, &flags);
+            for o in &self.overrides {
+                set_path(&mut merged, &o.key_path, o.value.clone())
+                    .map_err(ConfigError::Override)?;
+            }
             config = toml::Value::Table(merged)
                 .try_into()
                 .map_err(|e| ConfigError::Override(format!("-c: {e}")))?;
@@ -575,18 +608,6 @@ fn set_path(table: &mut toml::Table, key_path: &str, value: toml::Value) -> Resu
     }
     table.insert(last.to_string(), value);
     Ok(())
-}
-
-/// Lay `over` onto `base`: tables merge key by key, anything else replaces.
-fn merge(base: &mut toml::Table, over: &toml::Table) {
-    for (key, value) in over {
-        match (base.get_mut(key), value) {
-            (Some(toml::Value::Table(base)), toml::Value::Table(over)) => merge(base, over),
-            _ => {
-                base.insert(key.clone(), value.clone());
-            }
-        }
-    }
 }
 
 fn push_key_paths(table: &toml::Table, prefix: &str, out: &mut Vec<String>) {
@@ -686,7 +707,7 @@ fn remove(table: &mut dyn TableLike, parents: &[&str], last: &str) {
 }
 
 /// The key that holds MCP servers: `[mcp_servers.<name>]`.
-const SERVERS_KEY: &str = "mcp_servers";
+pub(crate) const SERVERS_KEY: &str = "mcp_servers";
 
 /// [`McpServerToml`]'s fields in declaration order.
 const SERVER_KEY_ORDER: [&str; 12] = [

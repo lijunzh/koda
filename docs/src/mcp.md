@@ -171,8 +171,9 @@ koda exec "Anything in my inbox?" --mcp-config mcp.json
   Fields Koda doesn't know are ignored.
 - The flag is repeatable. A later server wins a name clash, and a flag's
   server replaces a stored one of the same name for this run.
-- Nothing is written to the database, and `/mcp` shows the servers only
-  while the run lasts; `koda mcp list` doesn't show them.
+- The servers are this run's `-c mcp_servers.<name>` values, as Codex
+  takes a run's servers, so nothing is written to `config.toml`. `/mcp`
+  shows them while the run lasts.
 - A value Koda can't read or use stops the start with an error, rather
   than running without the servers you asked for.
 

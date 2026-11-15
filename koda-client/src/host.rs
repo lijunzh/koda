@@ -59,12 +59,6 @@ pub(crate) enum HostCommand {
     },
     /// The client's answer to the server request `id`.
     Response { id: RequestId, result: Answer },
-    /// In process only: what session `session_id`'s next turns run with.
-    Configure {
-        session_id: String,
-        config: Box<KodaConfig>,
-        done: oneshot::Sender<Answer>,
-    },
     /// Stop every session and the host; say so on `done`.
     Shutdown { done: oneshot::Sender<()> },
 }
@@ -100,6 +94,7 @@ pub(crate) fn spawn(args: HostArgs) -> (mpsc::Sender<HostCommand>, JoinHandle<()
             events: args.events,
             request_ids: Arc::new(AtomicI64::new(0)),
             open_requests: OpenRequests::default(),
+            run_checked: Arc::default(),
         },
         handles: HandleMap::default(),
         client: OnceLock::new(),
@@ -135,12 +130,6 @@ async fn run(host: Arc<Host>, mut commands: mpsc::Receiver<HostCommand>) {
                     running.spawn(async move { host.handle(request, reply).await });
                 }
                 Some(HostCommand::Response { id, result }) => host.route(id, result).await,
-                // In the order it was sent, so it reaches the session before a
-                // turn the client starts next.
-                Some(HostCommand::Configure { session_id, config, done }) => {
-                    let command = SessionCommand::Configure { config, done };
-                    host.to_session(&session_id, command).await;
-                }
                 Some(HostCommand::Shutdown { done }) => {
                     running.shutdown().await;
                     host.stop_sessions().await;
@@ -425,8 +414,7 @@ impl Host {
         params: koda_protocol::mcp::ListMcpServerStatusParams,
     ) -> Result<koda_protocol::mcp::ListMcpServerStatusResponse, ErrorObject> {
         let Some(id) = &params.session_id else {
-            let configured =
-                crate::mcp::configured(&self.context.config_file, &self.context.config)?;
+            let configured = crate::mcp::configured(&self.context.config_file)?;
             return Ok(crate::mcp::configured_status(configured, &params));
         };
         let mcp = self
@@ -566,13 +554,10 @@ impl Host {
         })
     }
 
-    /// The mode a new session starts in: the one this run named, else the
-    /// config file's, else the host's default.
+    /// The mode a new session starts in: the config file's, with `--mode`
+    /// over it, else the host's default.
     fn new_session_mode(&self) -> koda_core::trust::TrustMode {
         let config = &self.context.config;
-        if config.trust_named {
-            return config.trust;
-        }
         crate::config_file::load(&self.context.config_file)
             .ok()
             .and_then(|loaded| crate::config_file::mode(&loaded))

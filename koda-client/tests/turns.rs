@@ -118,16 +118,18 @@ fn config(server: &FakeLlmServer) -> KodaConfig {
 async fn client(config: KodaConfig, dir: &tempfile::TempDir) -> InProcessClient {
     let project = dir.path().join("project");
     std::fs::create_dir_all(&project).unwrap();
-    InProcessClient::start(StartArgs {
-        config,
-        config_file: koda_client::ConfigFile::in_dir(&dir.path().join("config")),
-        home: dir.path().join("config"),
-        project_root: project,
-        client_info: ClientInfo {
-            name: "turns-test".to_string(),
-            version: "0".to_string(),
+    InProcessClient::start_with_config(
+        StartArgs {
+            config_file: koda_client::ConfigFile::in_dir(&dir.path().join("config")),
+            home: dir.path().join("config"),
+            project_root: project,
+            client_info: ClientInfo {
+                name: "turns-test".to_string(),
+                version: "0".to_string(),
+            },
         },
-    })
+        config,
+    )
     .await
     .unwrap()
 }
@@ -353,6 +355,139 @@ async fn a_turn_runs_from_start_to_finish() {
     let history = requests[1]["messages"].to_string();
     assert!(history.contains("Say hi") && history.contains("Hello there."));
     koda.client.shutdown().await;
+}
+
+/// `koda`'s flags reach the host as config values for the run, as Codex's
+/// do (`--max-tokens` is `-c model_max_output_tokens=...`, `--mode` is `-c
+/// mode=...`). A host started from the config alone, as `koda` starts
+/// one, runs the config's model choice with them, and the model gets them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_host_starts_from_the_config_and_this_runs_values() {
+    let server = model(vec![text("Hi.")]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let flags = [
+        "model_provider=lm-studio".to_string(),
+        format!("model_providers.lm-studio.base_url={}", server.url()),
+        "model=stub".to_string(),
+        "model_context_window=100000".to_string(),
+        "model_max_output_tokens=321".to_string(),
+        "model_temperature=0.25".to_string(),
+        "mode=safe".to_string(),
+    ];
+    let config_file = koda_client::ConfigFile::in_dir(&dir.path().join("config")).with_overrides(
+        flags
+            .iter()
+            .map(|f| koda_config::parse_override(f).unwrap())
+            .collect(),
+    );
+    let client = InProcessClient::start(StartArgs {
+        config_file,
+        home: dir.path().join("config"),
+        project_root: project.clone(),
+        client_info: ClientInfo {
+            name: "turns-test".to_string(),
+            version: "0".to_string(),
+        },
+    })
+    .await
+    .unwrap();
+    let started = client
+        .request::<methods::SessionStart>(SessionStartParams::default())
+        .await
+        .unwrap();
+    assert_eq!(started.session.provider.as_deref(), Some("lm-studio"));
+    assert_eq!(started.session.model.as_deref(), Some("stub"));
+    assert_eq!(started.session.context_window, Some(100_000));
+    assert_eq!(started.session.mode, Some(TrustMode::Safe));
+    let mut koda = Koda {
+        client,
+        session: started.session.id.clone(),
+        opened: started.session,
+        project,
+        _dir: dir,
+    };
+    koda.until("session/started").await;
+
+    koda.turn("Say hi").await;
+    let messages = koda.until("turn/completed").await;
+    assert_eq!(turn_completed(&messages).status, TurnStatus::Completed);
+    let requests = chat_requests(&server).await;
+    assert_eq!(requests[0]["model"], "stub");
+    assert_eq!(requests[0]["max_tokens"], 321);
+    assert_eq!(requests[0]["temperature"], 0.25);
+    koda.client.shutdown().await;
+}
+
+/// `--effort` is checked against the model the run starts with: a later
+/// session on another model (`/provider` in the TUI) has it corrected at
+/// request time rather than refused, as Codex falls back when a switch
+/// lands on a model without it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn only_the_first_session_refuses_the_runs_effort() {
+    let server = model(vec![]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let client = InProcessClient::start_with_config(
+        StartArgs {
+            config_file: koda_client::ConfigFile::in_dir(&dir.path().join("config"))
+                .with_overrides(vec![
+                    koda_config::parse_override("model_reasoning_effort=ultra").unwrap(),
+                ]),
+            home: dir.path().join("config"),
+            project_root: project,
+            client_info: ClientInfo {
+                name: "turns-test".to_string(),
+                version: "0".to_string(),
+            },
+        },
+        config(&server),
+    )
+    .await
+    .unwrap();
+    // The first session, on the scripted server, takes any effort.
+    client
+        .request::<methods::SessionStart>(SessionStartParams::default())
+        .await
+        .unwrap();
+    // A later one on Claude isn't refused. Nothing listens at the address,
+    // and no key is set, so nothing reaches Anthropic.
+    let later = client
+        .request::<methods::SessionStart>(SessionStartParams {
+            model_provider: Some("anthropic".to_string()),
+            base_url: Some("http://127.0.0.1:9".to_string()),
+            model: Some("claude-haiku-5-5".to_string()),
+            ..Default::default()
+        })
+        .await;
+    assert!(later.is_ok(), "{later:?}");
+    client.shutdown().await;
+}
+
+/// `--agent` (`-c agent=...`) names the agent sessions run; one Koda can't
+/// find stops the start, as a bad config file does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unknown_agent_stops_the_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let Err(error) = InProcessClient::start(StartArgs {
+        config_file: koda_client::ConfigFile::in_dir(dir.path()).with_overrides(vec![
+            koda_config::parse_override("agent=no-such-agent").unwrap(),
+        ]),
+        home: dir.path().to_path_buf(),
+        project_root: dir.path().to_path_buf(),
+        client_info: ClientInfo {
+            name: "turns-test".to_string(),
+            version: "0".to_string(),
+        },
+    })
+    .await
+    else {
+        panic!("started with an agent that doesn't exist");
+    };
+    assert!(matches!(error, RequestError::Agent(_)), "{error:?}");
+    assert!(error.to_string().contains("no-such-agent"), "{error}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -800,31 +935,6 @@ async fn unsubscribe_stops_the_running_turn() {
     );
 }
 
-/// `configure_session` changes what the next turn runs with: here the
-/// server it goes to.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn configure_moves_the_next_turn_to_another_server() {
-    let first = model(vec![]).await;
-    let second = model(vec![text("From the second server.")]).await;
-    let mut koda = Koda::start(config(&first)).await;
-
-    koda.client
-        .configure_session(&koda.session, config(&second))
-        .await
-        .unwrap();
-    koda.turn("where are you").await;
-    koda.until("turn/completed").await;
-    assert_eq!(chat_requests(&second).await.len(), 1);
-    assert!(chat_requests(&first).await.is_empty());
-
-    let error = koda
-        .client
-        .configure_session("no-such-session", config(&second))
-        .await
-        .unwrap_err();
-    assert!(error.to_string().contains("no open session"), "{error}");
-}
-
 /// The host builds every session's agent (PR 8a). A session a person
 /// answers gets the prompt's quick reference; one nobody answers, as
 /// `koda exec` opens, doesn't. Neither lists a client's slash commands.
@@ -976,10 +1086,8 @@ async fn the_host_enforces_the_mode_rules() {
     let start = |trust: koda_core::trust::TrustMode| {
         let mut config = config(&server);
         config.trust = trust;
-        config.trust_named = true;
         InProcessClient::start_with_sandbox(
             StartArgs {
-                config,
                 config_file: koda_client::ConfigFile::in_dir(&dir.path().join("config")),
                 home: dir.path().join("config"),
                 project_root: dir.path().join("project"),
@@ -988,6 +1096,7 @@ async fn the_host_enforces_the_mode_rules() {
                     version: "0".to_string(),
                 },
             },
+            config,
             SandboxState {
                 backend: "bwrap".to_string(),
                 available: false,
@@ -1364,15 +1473,15 @@ async fn reasoning_goes_back_only_to_the_model_that_wrote_it() {
         })
         .await;
     let mut koda = Koda::start(config(&server)).await;
-    let using = |model: &str| {
-        let mut config = config(&server);
-        config.model = model.to_string();
-        config
-    };
 
     for (model, prompt) in [("stub", "first"), ("stub", "second"), ("strict", "third")] {
         koda.client
-            .configure_session(&koda.session, using(model))
+            .request::<methods::SessionSettingsUpdate>(SessionSettingsUpdateParams {
+                session_id: koda.session.clone(),
+                model: Some(model.to_string()),
+                effort: None,
+                mode: None,
+            })
             .await
             .unwrap();
         koda.turn(prompt).await;

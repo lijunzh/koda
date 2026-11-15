@@ -1190,6 +1190,13 @@
     "KodaConfigValues": {
       "description": "Koda's settings.",
       "properties": {
+        "agent": {
+          "description": "The agent new sessions run: a built-in, or one from an agent file.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "mcp_servers": {
           "additionalProperties": {
             "$ref": "#/$defs/McpServerConfigValue"
@@ -1224,6 +1231,15 @@
             "null"
           ]
         },
+        "model_max_output_tokens": {
+          "description": "The most tokens a reply may use.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "model_post_turn_compact_threshold_percent": {
           "description": "Context used, in percent, past which a turn compacts after its\nfinal reply; 0 or none turns it off.",
           "format": "uint8",
@@ -1252,6 +1268,23 @@
           "description": "The reasoning effort a new session asks for.",
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "model_temperature": {
+          "description": "The sampling temperature (0.0 to 2.0).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "model_thinking_budget": {
+          "description": "A thinking budget in tokens, for Gemini models.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
             "null"
           ]
         },

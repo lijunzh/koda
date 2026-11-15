@@ -18,7 +18,6 @@ use koda_client::protocol::initialize::ClientInfo;
 use koda_client::protocol::mcp::McpServerConfigValue;
 use koda_client::protocol::methods;
 use koda_client::{InProcessClient, StartArgs};
-use koda_core::config::KodaConfig;
 use serde_json::Value;
 
 /// Manage the MCP servers every session starts.
@@ -125,9 +124,8 @@ fn parse_env_pair(raw: &str) -> Result<(String, String), String> {
 
 impl McpCli {
     /// Run the subcommand against a host.
-    pub(crate) async fn run(self, config: KodaConfig, project_root: PathBuf) -> Result<()> {
+    pub(crate) async fn run(self, project_root: PathBuf) -> Result<()> {
         let client = InProcessClient::start(StartArgs {
-            config,
             config_file: crate::user_config::file()?,
             home: koda_config::config_dir()?,
             project_root,

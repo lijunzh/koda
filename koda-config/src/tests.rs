@@ -447,3 +447,32 @@ fn an_unknown_or_mistyped_override_is_refused() {
         .unwrap_err();
     assert!(matches!(mistyped, ConfigError::Override(_)), "{mistyped:?}");
 }
+
+#[test]
+fn an_override_replaces_the_whole_value_at_its_key_path() {
+    let (_dir, file) = file_with(
+        "[model_providers.lm-studio]\nbase_url = \"http://a\"\nrequest_max_retries = 2\n",
+    );
+    let loaded = file
+        .with_overrides(vec![
+            parse_override("model_providers.lm-studio={ base_url = \"http://b\" }").unwrap(),
+        ])
+        .load()
+        .unwrap();
+    let lm = &loaded.config.model_providers["lm-studio"];
+    assert_eq!(lm.base_url.as_deref(), Some("http://b"));
+    assert_eq!(lm.request_max_retries, None, "replaced, as Codex's -c is");
+}
+
+#[test]
+fn the_run_keys_load() {
+    let (_dir, file) = file_with(
+        "model_max_output_tokens = 4096\nmodel_temperature = 0.2\n\
+         model_thinking_budget = 2048\nagent = \"reviewer\"\n",
+    );
+    let config = file.load().unwrap().config;
+    assert_eq!(config.model_max_output_tokens, Some(4096));
+    assert_eq!(config.model_temperature, Some(0.2));
+    assert_eq!(config.model_thinking_budget, Some(2048));
+    assert_eq!(config.agent.as_deref(), Some("reviewer"));
+}

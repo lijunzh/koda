@@ -7,7 +7,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use koda_core::config::KodaConfig;
 use koda_core::mcp::McpServerConfig;
 use koda_core::mcp::client::McpClientStatus;
 use koda_core::mcp::config::{
@@ -27,15 +26,15 @@ use tokio::sync::mpsc;
 use crate::events::Outgoing;
 use crate::session::invalid;
 
-/// The servers a session on this host starts: the config file's and this
-/// run's `--mcp-config` ones. A server in the file that can't run is
-/// skipped (the host warned about it after `initialize`).
+/// The servers a session on this host starts: the config file's, with
+/// this run's `-c mcp_servers.<name>` values over them (`--mcp-config`
+/// gives its servers as those). A server that can't run is skipped (the
+/// host warned about it after `initialize`).
 pub(crate) fn configured(
     file: &koda_config::ConfigFile,
-    config: &KodaConfig,
 ) -> Result<HashMap<String, McpServerConfig>, ErrorObject> {
     let loaded = crate::config_file::load(file)?;
-    let configured = crate::config_file::servers(&loaded)
+    Ok(crate::config_file::servers(&loaded)
         .into_iter()
         .filter_map(|(name, value)| match to_core(&name, value) {
             Ok(server) => Some((name, server)),
@@ -44,11 +43,7 @@ pub(crate) fn configured(
                 None
             }
         })
-        .collect();
-    Ok(koda_core::mcp::McpManager::configured(
-        configured,
-        &config.session_mcp_servers,
-    ))
+        .collect())
 }
 
 /// If `key_path` is `mcp_servers.<name>`, the name.
