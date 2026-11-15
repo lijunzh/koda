@@ -15,8 +15,9 @@ on:
       - '.github/workflows/coverage.yml'
       - 'scripts/check_per_file_coverage.sh'
 
-# A newer push to a PR replaces its run; main's runs all finish, since
-# each one opens or closes the regression issue.
+# A newer push to a PR cancels its running coverage. On main a running one
+# finishes, since it opens or closes the regression issue; one still queued
+# gives way to a newer push, whose run measures the later commit.
 concurrency:
   group: coverage-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
