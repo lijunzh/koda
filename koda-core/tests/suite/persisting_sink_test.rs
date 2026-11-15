@@ -26,7 +26,7 @@
 //! ## Why the real `Database`, not a mock
 //!
 //! `PersistingSink::persist` spawns a `tokio::task` and writes
-//! through the `Persistence` trait. Mocking the trait would prove
+//! through the `SessionStore` trait. Mocking the trait would prove
 //! the call shape but not the actual SQL — and the `parent_tool_call_id`
 //! column is the bug surface (it's a nullable text column, easy to
 //! mis-route by passing `Some("")` instead of `None`, or dropping the
@@ -56,7 +56,7 @@
 use koda_core::db::Database;
 use koda_core::engine::EngineEvent;
 use koda_core::engine::sink::{EngineSink, PersistingSink, TestSink};
-use koda_core::persistence::{Persistence, session_event_kind as sek};
+use koda_core::session_store::{SessionStore, session_event_kind as sek};
 use koda_core::tools::ToolEffect;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -64,12 +64,12 @@ use std::time::{Duration, Instant};
 // ── Helpers ───────────────────────────────────────────────
 
 /// Spin up an isolated `Database` and a fresh session id. Returns the
-/// db (as both concrete `Database` and `Arc<dyn Persistence>` so tests
+/// db (as both concrete `Database` and `Arc<dyn SessionStore>` so tests
 /// can read back rows without an extra clone) and the session id.
 ///
 /// Each call uses a fresh `tempfile::TempDir`; the dir is held by the
 /// returned tuple so the SQLite file outlives the test body.
-async fn fresh_db() -> (tempfile::TempDir, Arc<dyn Persistence>, String) {
+async fn fresh_db() -> (tempfile::TempDir, Arc<dyn SessionStore>, String) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let db = Database::init(tmp.path()).await.expect("db init");
     let session_id = db
@@ -87,10 +87,10 @@ async fn fresh_db() -> (tempfile::TempDir, Arc<dyn Persistence>, String) {
 /// in <50ms, slow enough to not burn the CPU during the ~zero waits
 /// we expect on a healthy machine.
 async fn wait_for_events(
-    db: &Arc<dyn Persistence>,
+    db: &Arc<dyn SessionStore>,
     session_id: &str,
     expected: usize,
-) -> Vec<koda_core::persistence::SessionEvent> {
+) -> Vec<koda_core::session_store::SessionEvent> {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         let events = db.load_session_events(session_id).await.expect("load");

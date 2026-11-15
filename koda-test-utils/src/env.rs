@@ -3,7 +3,7 @@
 //! Provides [`Env`] — an isolated test environment with temp dir, DB,
 //! session, config, and tool registry.
 
-use koda_core::persistence::Persistence;
+use koda_core::session_store::SessionStore;
 use koda_core::{
     child_agent::ChildAgentRegistry,
     config::{KodaConfig, ProviderType},

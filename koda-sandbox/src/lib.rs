@@ -23,7 +23,7 @@
 //!                          └─ no upward dependency
 //! ```
 //!
-//! `koda-sandbox` knows nothing about `Persistence`, `Provider`,
+//! `koda-sandbox` knows nothing about `SessionStore`, `Provider`,
 //! `ToolRegistry`. Pure infrastructure — testable with
 //! `assert_eq!(transform(cmd, policy), expected)`.
 

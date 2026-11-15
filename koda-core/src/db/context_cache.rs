@@ -68,7 +68,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use crate::persistence::Message;
+use crate::session_store::Message;
 
 /// One cached session's last-known context state.
 #[derive(Debug, Clone)]

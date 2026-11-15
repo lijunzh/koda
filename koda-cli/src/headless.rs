@@ -37,7 +37,7 @@ use koda_client::{InProcessClient, StartArgs};
 use koda_core::config::KodaConfig;
 use koda_core::db::Database;
 use koda_core::engine::UsageTotals;
-use koda_core::persistence::{Persistence, SessionUsage};
+use koda_core::session_store::{SessionStore, SessionUsage};
 
 use anyhow::{Context, Result};
 use std::collections::{BTreeMap, HashSet};

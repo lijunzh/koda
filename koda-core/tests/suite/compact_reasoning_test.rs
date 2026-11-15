@@ -12,8 +12,8 @@ use koda_core::compact::{
     self, CompactResult, CompactSkip, is_compact_circuit_broken, record_compact_failure,
 };
 use koda_core::engine::EngineEvent;
-use koda_core::persistence::Persistence;
-use koda_core::persistence::Role;
+use koda_core::session_store::Role;
+use koda_core::session_store::SessionStore;
 use koda_test_utils::{Env, MockProvider, MockResponse};
 
 /// Twenty short messages, enough for a partial compaction (oldest 10 go).

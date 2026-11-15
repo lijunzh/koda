@@ -1,4 +1,6 @@
-//! Persistence trait — the storage contract for koda.
+//! `SessionStore` — how sessions are stored: their messages, turns,
+//! events and metadata. Codex calls the same boundary `ThreadStore`;
+//! Koda says session where Codex says thread.
 //!
 //! Types and trait definition for the storage layer. The engine
 //! depends on this trait, not the concrete SQLite implementation.
@@ -7,7 +9,7 @@
 //!
 //! ## Design (DESIGN.md)
 //!
-//! - **Database Backend: SQLite + Persistence Trait (P3)**: This trait
+//! - **Database Backend: SQLite + Store Traits (P3)**: This trait
 //!   exists because P3 says the storage backend will change. But there's
 //!   only one real implementation because P1 says we don't need a second
 //!   one yet. When P1 and P3 conflict: P1 wins on timing, P3 wins on
@@ -36,7 +38,7 @@ impl Role {
     /// # Examples
     ///
     /// ```
-    /// use koda_core::persistence::Role;
+    /// use koda_core::session_store::Role;
     ///
     /// assert_eq!(Role::User.as_str(), "user");
     /// assert_eq!(Role::Assistant.as_str(), "assistant");
@@ -224,7 +226,7 @@ pub struct SessionInfo {
 
 /// Core storage contract for sessions, messages, and metadata.
 #[async_trait::async_trait]
-pub trait Persistence: Send + Sync {
+pub trait SessionStore: Send + Sync {
     // ── Sessions ──
 
     /// Create a new session, returning its unique ID.
@@ -314,7 +316,7 @@ pub trait Persistence: Send + Sync {
     /// Atomically copy a slice of pre-loaded messages into a session.
     ///
     /// Used by `fork` sub-agent dispatch (#1022 B20). Pre-fix, the fork
-    /// path looped over `Persistence::insert_message` row-by-row — each
+    /// path looped over `SessionStore::insert_message` row-by-row — each
     /// iteration was 2 queries (INSERT + UPDATE last_accessed_at) plus,
     /// for assistant rows, a separate `mark_message_complete` (1 more
     /// query). For an N-message parent history that's ~3N round-trips

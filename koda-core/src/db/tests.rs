@@ -1,6 +1,6 @@
 //! Tests for the SQLite persistence layer.
 //!
-//! Covers the `Persistence` trait methods on `Database`, message pruning
+//! Covers the `SessionStore` trait methods on `Database`, message pruning
 //! helpers (`prune_mismatched_tool_calls`, `prune_null_content_messages`,
 //! `prune_whitespace_only_messages`), and interrupted turn detection.
 
@@ -9,7 +9,7 @@ use super::queries::{
     dedupe_tool_results_by_call_id, prune_null_content_messages, prune_whitespace_only_messages,
 };
 use crate::db::Database;
-use crate::persistence::{Message, Persistence, Role};
+use crate::session_store::{Message, Role, SessionStore};
 use tempfile::TempDir;
 
 async fn setup() -> (Database, TempDir) {
@@ -1301,7 +1301,7 @@ async fn test_session_usage_by_agent() {
 /// agent's name, and an unrelated session doesn't.
 #[tokio::test]
 async fn usage_includes_linked_sub_agent_sessions() {
-    use crate::persistence::PARENT_SESSION_KEY;
+    use crate::session_store::PARENT_SESSION_KEY;
 
     let (db, _tmp) = setup().await;
     let parent = db.create_session("default", _tmp.path()).await.unwrap();
@@ -1830,7 +1830,7 @@ async fn test_copy_messages_does_not_touch_source_session() {
 // the contract end-to-end: insert order is preserved, parent-link
 // is nullable, and unrelated sessions don't leak into each other.
 
-use crate::persistence::session_event_kind;
+use crate::session_store::session_event_kind;
 
 #[tokio::test]
 async fn session_events_round_trip_preserves_order_and_parent() {

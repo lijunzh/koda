@@ -39,7 +39,7 @@
 use std::time::{Duration, Instant};
 
 use koda_core::config::ProviderType;
-use koda_core::persistence::Persistence;
+use koda_core::session_store::SessionStore;
 use koda_test_utils::network::FakeLlmServer;
 use koda_test_utils::{ENV_MUTEX, EngineEvent, Env};
 

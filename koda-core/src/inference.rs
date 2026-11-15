@@ -51,12 +51,12 @@ use crate::inference_helpers::{
 use crate::loop_guard::{
     LoopAction, LoopDetector, MAX_REPEATED_REPLIES, MAX_TRUNCATED_REPLIES, ReplyRepetition,
 };
-use crate::persistence::Persistence;
 use crate::providers::{
     ChatMessage, ImageData, LlmProvider, StreamChunk, TokenUsage, ToolCall, ToolDefinition,
     error::{ProviderError, ProviderErrorKind, stream_error_is_final},
     stream_collector::SseCollector,
 };
+use crate::session_store::SessionStore;
 use crate::skill_scope::SkillToolScope;
 use crate::tool_dispatch::{
     can_parallelize, execute_tools_parallel, execute_tools_sequential, execute_tools_split_batch,
@@ -1190,7 +1190,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
     // sink-only and disappeared once the user closed the TUI.
     let _persisting_sink = crate::engine::sink::PersistingSink::new(
         sink,
-        std::sync::Arc::new(db.clone()) as std::sync::Arc<dyn crate::persistence::Persistence>,
+        std::sync::Arc::new(db.clone()) as std::sync::Arc<dyn crate::session_store::SessionStore>,
         session_id.to_string(),
         None,
     );

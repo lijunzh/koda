@@ -12,7 +12,7 @@ use koda_core::{
         event::{LoopGuardAction, RetryReason},
     },
     loop_guard::{MAX_REPEATED_REPLIES, MAX_TRUNCATED_REPLIES},
-    persistence::{Persistence, Role},
+    session_store::{Role, SessionStore},
 };
 use koda_test_utils::{Env, MockProvider, MockResponse};
 
@@ -791,7 +791,7 @@ fn looping_reply() -> MockResponse {
     MockResponse::Text(LOOPING_PARAGRAPH.repeat(40))
 }
 
-fn user_messages(messages: &[koda_core::persistence::Message]) -> Vec<String> {
+fn user_messages(messages: &[koda_core::session_store::Message]) -> Vec<String> {
     messages
         .iter()
         .filter(|m| m.role == Role::User)

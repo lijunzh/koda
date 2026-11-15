@@ -346,7 +346,7 @@ mod tests {
     #[test]
     fn store_clones_share_inner_buffer() {
         // Sub-agent slots will clone the store handle — both clones must
-        // see the same ring buffer. Same Arc semantics as Persistence::clone.
+        // see the same ring buffer. Same Arc semantics as SessionStore::clone.
         let store = SandboxViolationStore::new();
         let twin = store.clone();
         store.record(Violation::new(ViolationKind::Other, None, None));

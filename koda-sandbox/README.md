@@ -126,7 +126,7 @@ koda-cli → koda-core → koda-sandbox
                           └─ no upward dependency
 ```
 
-`koda-sandbox` knows nothing about `Persistence`, `Provider`, or
+`koda-sandbox` knows nothing about `SessionStore`, `Provider`, or
 `ToolRegistry`. Pure infrastructure — testable with
 `assert_eq!(transform(cmd, policy), expected)`.
 

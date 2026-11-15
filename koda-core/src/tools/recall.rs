@@ -15,8 +15,8 @@
 //! the extra context to justify the cost.
 
 use crate::db::Database;
-use crate::persistence::Persistence;
 use crate::providers::ToolDefinition;
+use crate::session_store::SessionStore;
 use serde_json::json;
 use std::ops::Range;
 
@@ -217,7 +217,7 @@ impl Tool for RecallContextTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persistence::{Persistence, Role};
+    use crate::session_store::{Role, SessionStore};
     use serde_json::json;
 
     // ── Trait invariants (#1265 PR-7) ─────────────────────────

@@ -12,7 +12,7 @@ use crate::mouse_select::copy_to_clipboard;
 use crate::scroll_buffer::ScrollBuffer;
 use crate::tui_output;
 use crate::tui_render::TuiRenderer;
-use koda_core::persistence::Persistence;
+use koda_core::session_store::SessionStore;
 use koda_core::trust;
 
 use crate::tui_context::TuiSession;
@@ -577,7 +577,7 @@ async fn handle_copy_response(buffer: &mut ScrollBuffer, session: &TuiSession, n
     let responses: Vec<&str> = messages
         .iter()
         .filter_map(|m| {
-            use koda_core::persistence::Role;
+            use koda_core::session_store::Role;
             if m.role == Role::Assistant {
                 m.content.as_deref().filter(|c| !c.trim().is_empty())
             } else {

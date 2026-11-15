@@ -197,7 +197,7 @@ impl EngineSink for BufferingSink {
 /// ## Sink wrapping order
 ///
 /// `PersistingSink` wraps `ForwardingChildSink` wraps `BufferingSink`.
-/// Persistence sees every event first (so the transcript captures
+/// Persisting sees every event first (so the transcript captures
 /// `SubAgentEvent` rows in real time), then forwarding fans out to
 /// the parent's queue, then buffering captures the line for the
 /// post-completion drain.
@@ -533,7 +533,7 @@ fn looks_like_tool_error(output: &str) -> bool {
 /// transcript, not a lost turn.
 pub struct PersistingSink<'a> {
     inner: &'a dyn EngineSink,
-    db: std::sync::Arc<dyn crate::persistence::Persistence>,
+    db: std::sync::Arc<dyn crate::session_store::SessionStore>,
     session_id: String,
     /// Set on sub-agent sinks so their events can be folded under the
     /// parent's `InvokeAgent` tool result. `None` for top-level.
@@ -546,7 +546,7 @@ impl<'a> PersistingSink<'a> {
     /// untouched.
     pub fn new(
         inner: &'a dyn EngineSink,
-        db: std::sync::Arc<dyn crate::persistence::Persistence>,
+        db: std::sync::Arc<dyn crate::session_store::SessionStore>,
         session_id: String,
         parent_tool_call_id: Option<String>,
     ) -> Self {
@@ -604,7 +604,7 @@ pub(crate) fn classify_for_persist(
     event: &EngineEvent,
     parent_tool_call_id: Option<&str>,
 ) -> Option<(&'static str, String)> {
-    use crate::persistence::session_event_kind as sek;
+    use crate::session_store::session_event_kind as sek;
     let notice = event.notice();
     let event = notice.as_ref().unwrap_or(event);
     if parent_tool_call_id.is_some() {
@@ -1547,7 +1547,7 @@ mod tests {
     // *decision*, not the side effect — with no async, no DB, no sleep.
 
     use crate::child_agent::AgentStatus;
-    use crate::persistence::session_event_kind as sek;
+    use crate::session_store::session_event_kind as sek;
 
     fn child_task_update_event() -> EngineEvent {
         EngineEvent::ChildTaskUpdate {

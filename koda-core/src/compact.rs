@@ -33,8 +33,8 @@
 
 use crate::config::ModelSettings;
 use crate::db::{Database, Role};
-use crate::persistence::Persistence;
 use crate::providers::{ChatMessage, LlmProvider};
+use crate::session_store::SessionStore;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
