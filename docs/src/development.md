@@ -342,18 +342,19 @@ security-boundary tests ran rather than being skipped, look for each name in
   advisory fails the audit on release day (`rustix` in 0.6.3).
 - Run the release check on that commit, and release the commit it checked.
 - Move CHANGELOG.md `[Unreleased]` to a versioned section.
-- Bump the version in every published crate (koda-config, koda-protocol,
-  koda-state, koda-sandbox, koda-core, koda-client, koda-cli; release.yml checks
-  them all) and in the path-dependency `version =` fields that point at them,
-  including koda-test-utils. Those are exact pins (`version = "=0.7.0"`), so a
-  koda-cli always builds against the crates it shipped with, whatever later
-  0.7.x versions exist.
+- Bump the version in the root `Cargo.toml`: `[workspace.package] version`, which
+  every published crate inherits, and the exact pins of the Koda crates under
+  `[workspace.dependencies]` (`version = "=0.7.0"`), so a koda-cli always builds
+  against the crates it shipped with, whatever later 0.7.x versions exist.
+  release.yml's version check reads that file and fails the tag on a mismatch.
 - A 0.7.x release stays additive for users: no config key removed or renamed,
   the wire protocol only added to, stored sessions only added to, no command or
   flag removed. A release that breaks one of those is the next minor.
-- A new crate goes into release.yml's version check and publish order, and gets
-  a `cargo publish --dry-run -p <crate>` before the tag; the publish job fails
-  the release if any crate fails to publish.
+- A new crate inherits the workspace version (`version.workspace = true`), gets a
+  pin under `[workspace.dependencies]`, and a `cargo publish --dry-run -p <crate>`
+  before the tag. The release publishes every publishable crate with
+  `cargo publish --workspace`, in dependency order, and fails if any crate fails
+  to publish.
 - Verify README quick-start examples still work.
 - Check that CHANGELOG entries match what's documented in README/DESIGN.md.
 
@@ -398,9 +399,11 @@ Seven workflows live in `.github/workflows/`:
 Release job chain:
 
 ```
-verify-version → test → build → github-release ─┬→ update-homebrew
-                                                 └→ publish (crates.io)
+verify-version ─┬→ audit → test ─┬→ github-release ─┬→ update-homebrew
+                └→ build ────────┘                  └→ publish (crates.io)
 ```
+
+The builds run alongside the tests; nothing ships until both pass.
 
 crates.io and Homebrew are independent distribution channels: both fan out from
 `github-release` in parallel. Publishing to crates.io only after `github-release`

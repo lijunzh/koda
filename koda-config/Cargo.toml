@@ -1,6 +1,6 @@
 [package]
 name = "koda-config"
-version = "0.7.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "The config file of the Koda AI coding agent: reading, checking and editing ~/.config/koda/config.toml"

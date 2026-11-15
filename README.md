@@ -16,11 +16,11 @@
 ### Install
 
 ```bash
-# macOS / Linux (Homebrew)
+# macOS on Apple Silicon / Linux (Homebrew)
 brew tap lijunzh/koda
 brew install koda
 
-# Cargo (requires Rust 1.99.1 or newer)
+# Cargo (requires Rust 1.99.1 or newer; the way to install on an Intel Mac)
 cargo install koda-cli --locked
 
 # From source

@@ -12,8 +12,8 @@ path = "src/lib.rs"
 
 [dependencies]
 async-trait = { workspace = true }
-koda-core = { path = "../koda-core", version = "=0.7.0", features = ["test-support"] }
-koda-state = { path = "../koda-state", version = "=0.7.0" }
+koda-core = { workspace = true, features = ["test-support"] }
+koda-state = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
 tokio-util = { workspace = true }

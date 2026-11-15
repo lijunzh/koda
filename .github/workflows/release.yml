@@ -28,17 +28,30 @@ jobs:
             exit 1
           fi
       - name: Check tag matches workspace versions
+        # The version and the exact pins of the Koda crates all live in the
+        # root Cargo.toml; every published crate inherits the version.
         run: |
-          TAG="${GITHUB_REF#refs/tags/v}"
-          # Every crate the publish job publishes, in its order.
-          for CRATE in koda-config koda-protocol koda-state koda-sandbox koda-core koda-client koda-cli; do
-            VER=$(grep '^version' "$CRATE/Cargo.toml" | head -1 | sed 's/.*"\(.*\)"/\1/')
-            if [ "$TAG" != "$VER" ]; then
-              echo "::error::Tag v$TAG does not match $CRATE version $VER"
-              exit 1
-            fi
-          done
-          echo "✅ Tag v$TAG matches every published crate's version"
+          TAG="${GITHUB_REF#refs/tags/v}" python3 - <<'PY'
+          import glob, os, sys, tomllib
+          tag = os.environ["TAG"]
+          root = tomllib.load(open("Cargo.toml", "rb"))
+          errors = []
+          if root["workspace"]["package"]["version"] != tag:
+              errors.append(f"workspace version {root['workspace']['package']['version']}")
+          for name, dep in root["workspace"]["dependencies"].items():
+              if name.startswith("koda-") and dep.get("version") != f"={tag}":
+                  errors.append(f"{name} pin {dep.get('version')}")
+          for path in glob.glob("koda-*/Cargo.toml"):
+              package = tomllib.load(open(path, "rb"))["package"]
+              if package.get("publish", True) is False:
+                  continue
+              if package.get("version") != {"workspace": True}:
+                  errors.append(f"{path} sets its own version")
+          for error in errors:
+              print(f"::error::Tag v{tag} does not match: {error}")
+          sys.exit(1 if errors else 0)
+          PY
+          echo "✅ Tag v$TAG matches the workspace version and every Koda pin"
 
 
   # Security audit — run after version is verified but before burning
@@ -115,11 +128,21 @@ jobs:
           if sudo sysctl -a 2>/dev/null | grep -q '^kernel.apparmor_restrict_unprivileged_userns'; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
-      - run: cargo test --workspace --features koda-core/test-support
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
+        with:
+          tool: cargo-nextest
+      # As CI tests: nextest runs tests from all binaries at once, where
+      # cargo test runs the binaries one after another; it skips doc tests.
+      - name: Test
+        run: cargo nextest run --workspace --features koda-core/test-support --profile ci
+      - name: Doc tests
+        run: cargo test --workspace --features koda-core/test-support --doc
 
   build:
     name: Build ${{ matrix.target }}
-    needs: [verify-version, test]
+    # Builds run alongside the tests; nothing ships until both pass, since
+    # github-release (and Homebrew and crates.io after it) needs both.
+    needs: verify-version
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
@@ -130,8 +153,6 @@ jobs:
             os: ubuntu-latest
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
-          - target: x86_64-apple-darwin
-            os: macos-latest
           - target: aarch64-apple-darwin
             os: macos-latest
     steps:
@@ -178,128 +199,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: 1.99.1 # = rust-toolchain.toml (pin guarded in ci.yml)
-      # Publish order follows dependency graph:
-      # koda-config → koda-protocol → koda-state → koda-sandbox → koda-core →
-      # koda-client → koda-cli. koda-config, koda-protocol, koda-state and
-      # koda-sandbox depend on no other Koda crate; koda-core needs all four.
-      # Each crate waits for its dep to appear in the sparse index before publishing,
-      # otherwise cargo resolve will fail with "no matching version".
-      - name: Publish koda-config
-        run: cargo publish -p koda-config
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - name: Wait for koda-config in sparse index
-        run: |
-          VERSION="${GITHUB_REF#refs/tags/v}"
-          URL="https://index.crates.io/ko/da/koda-config"
-          echo "Polling $URL for koda-config $VERSION ..."
-          for i in $(seq 1 20); do
-            if curl -sf "$URL" | grep -q "\"vers\":\"${VERSION}\""; then
-              echo "✅ koda-config $VERSION is in the index (attempt $i)"
-              exit 0
-            fi
-            echo "  attempt $i/20 — not yet, sleeping 15s"
-            sleep 15
-          done
-          echo "⚠️ timed out after 300s — koda-config $VERSION may still propagate"
-      - name: Publish koda-protocol
-        run: cargo publish -p koda-protocol
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - name: Wait for koda-protocol in sparse index
-        run: |
-          VERSION="${GITHUB_REF#refs/tags/v}"
-          URL="https://index.crates.io/ko/da/koda-protocol"
-          echo "Polling $URL for koda-protocol $VERSION ..."
-          for i in $(seq 1 20); do
-            if curl -sf "$URL" | grep -q "\"vers\":\"${VERSION}\""; then
-              echo "✅ koda-protocol $VERSION is in the index (attempt $i)"
-              exit 0
-            fi
-            echo "  attempt $i/20 — not yet, sleeping 15s"
-            sleep 15
-          done
-          echo "⚠️ timed out after 300s — koda-protocol $VERSION may still propagate"
-      - name: Publish koda-state
-        run: cargo publish -p koda-state
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - name: Wait for koda-state in sparse index
-        run: |
-          VERSION="${GITHUB_REF#refs/tags/v}"
-          URL="https://index.crates.io/ko/da/koda-state"
-          echo "Polling $URL for koda-state $VERSION ..."
-          for i in $(seq 1 20); do
-            if curl -sf "$URL" | grep -q "\"vers\":\"${VERSION}\""; then
-              echo "✅ koda-state $VERSION is in the index (attempt $i)"
-              exit 0
-            fi
-            echo "  attempt $i/20 — not yet, sleeping 15s"
-            sleep 15
-          done
-          echo "⚠️ timed out after 300s — koda-state $VERSION may still propagate"
-      - name: Publish koda-sandbox
-        run: cargo publish -p koda-sandbox
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - name: Wait for koda-sandbox in sparse index
-        run: |
-          VERSION="${GITHUB_REF#refs/tags/v}"
-          URL="https://index.crates.io/ko/da/koda-sandbox"
-          echo "Polling $URL for koda-sandbox $VERSION ..."
-          for i in $(seq 1 20); do
-            if curl -sf "$URL" | grep -q "\"vers\":\"${VERSION}\""; then
-              echo "✅ koda-sandbox $VERSION is in the index (attempt $i)"
-              exit 0
-            fi
-            echo "  attempt $i/20 — not yet, sleeping 15s"
-            sleep 15
-          done
-          echo "⚠️ timed out after 300s — koda-sandbox $VERSION may still propagate"
-      - name: Publish koda-core
-        run: cargo publish -p koda-core
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - name: Wait for koda-core in sparse index
-        run: |
-          VERSION="${GITHUB_REF#refs/tags/v}"
-          URL="https://index.crates.io/ko/da/koda-core"
-          echo "Polling $URL for koda-core $VERSION ..."
-          for i in $(seq 1 20); do
-            if curl -sf "$URL" | grep -q "\"vers\":\"${VERSION}\""; then
-              echo "✅ koda-core $VERSION is in the index (attempt $i)"
-              exit 0
-            fi
-            echo "  attempt $i/20 — not yet, sleeping 15s"
-            sleep 15
-          done
-          echo "⚠️ timed out after 300s — koda-core $VERSION may still propagate"
-      - name: Publish koda-client
-        run: cargo publish -p koda-client
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - name: Wait for koda-client in sparse index
-        run: |
-          VERSION="${GITHUB_REF#refs/tags/v}"
-          URL="https://index.crates.io/ko/da/koda-client"
-          echo "Polling $URL for koda-client $VERSION ..."
-          for i in $(seq 1 20); do
-            if curl -sf "$URL" | grep -q "\"vers\":\"${VERSION}\""; then
-              echo "✅ koda-client $VERSION is in the index (attempt $i)"
-              exit 0
-            fi
-            echo "  attempt $i/20 — not yet, sleeping 15s"
-            sleep 15
-          done
-          echo "⚠️ timed out after 300s — koda-client $VERSION may still propagate"
-      - name: Publish koda-cli
-        run: cargo publish -p koda-cli
+      # Every publishable crate, in dependency order. Cargo waits for each
+      # to reach the index before publishing the crates that need it.
+      - name: Publish to crates.io
+        run: cargo publish --workspace
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
   github-release:
     name: GitHub Release
-    needs: build  # fans out to update-homebrew and publish in parallel
+    needs: [build, test]  # fans out to update-homebrew and publish in parallel
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -348,7 +257,6 @@ jobs:
         id: sha
         run: |
           echo "aarch64_mac=$(sha256sum artifacts/koda-aarch64-apple-darwin.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
-          echo "x86_64_mac=$(sha256sum artifacts/koda-x86_64-apple-darwin.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
           echo "aarch64_linux=$(sha256sum artifacts/koda-aarch64-unknown-linux-gnu.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
           echo "x86_64_linux=$(sha256sum artifacts/koda-x86_64-unknown-linux-gnu.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
 
@@ -369,14 +277,12 @@ jobs:
             version "VERSION_PLACEHOLDER"
             license "MIT"
 
+            # Apple Silicon only since 0.7.1: on an Intel Mac, Homebrew says
+            # the formula needs ARM64; `cargo install koda-cli --locked` works.
             on_macos do
-              if Hardware::CPU.arm?
-                url "https://github.com/lijunzh/koda/releases/download/vVERSION_PLACEHOLDER/koda-aarch64-apple-darwin.tar.gz"
-                sha256 "SHA_AARCH64_MAC"
-              else
-                url "https://github.com/lijunzh/koda/releases/download/vVERSION_PLACEHOLDER/koda-x86_64-apple-darwin.tar.gz"
-                sha256 "SHA_X86_64_MAC"
-              end
+              depends_on arch: :arm64
+              url "https://github.com/lijunzh/koda/releases/download/vVERSION_PLACEHOLDER/koda-aarch64-apple-darwin.tar.gz"
+              sha256 "SHA_AARCH64_MAC"
             end
 
             on_linux do
@@ -401,7 +307,6 @@ jobs:
           # Replace placeholders
           sed -i "s/VERSION_PLACEHOLDER/${VERSION}/g" homebrew-koda/Formula/koda.rb
           sed -i "s/SHA_AARCH64_MAC/${{ steps.sha.outputs.aarch64_mac }}/g" homebrew-koda/Formula/koda.rb
-          sed -i "s/SHA_X86_64_MAC/${{ steps.sha.outputs.x86_64_mac }}/g" homebrew-koda/Formula/koda.rb
           sed -i "s/SHA_AARCH64_LINUX/${{ steps.sha.outputs.aarch64_linux }}/g" homebrew-koda/Formula/koda.rb
           sed -i "s/SHA_X86_64_LINUX/${{ steps.sha.outputs.x86_64_linux }}/g" homebrew-koda/Formula/koda.rb
           # Fix indentation (heredoc adds leading spaces)
