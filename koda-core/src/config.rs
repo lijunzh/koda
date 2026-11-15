@@ -97,16 +97,14 @@ pub struct ModelSettings {
 }
 
 impl ModelSettings {
-    /// Build settings with provider-appropriate defaults.
-    pub fn defaults_for(model: &str, provider: &ProviderType) -> Self {
-        let max_tokens = match provider {
-            ProviderType::Anthropic => Some(16384),
-            _ => None,
-        };
+    /// Build settings with no output limit set: the provider applies its
+    /// own (the Models API's for a Claude model, else 16,384) unless the
+    /// agent or the config sets one.
+    pub fn defaults_for(model: &str, _provider: &ProviderType) -> Self {
         let max_context_tokens = crate::model_context::context_window_for_model(model);
         Self {
             model: model.to_string(),
-            max_tokens,
+            max_tokens: None,
             temperature: None,
             thinking_budget: None,
             reasoning_effort: None,
@@ -281,34 +279,11 @@ pub struct KodaConfig {
     pub skip_memory: bool,
     /// Trust mode for this session. Default: `TrustMode::Auto` (#1241).
     pub trust: crate::trust::TrustMode,
-    /// Whether the mode was named for this run (`--mode`): then the
-    /// config file's `mode` doesn't apply.
-    pub trust_named: bool,
     /// Milliseconds a reply may go silent before the connection counts as
     /// lost, from the config file's `[model_providers.<id>]
     /// stream_idle_timeout_ms`; 0 turns the limit off. `None` keeps the
     /// provider's default.
     pub stream_idle_timeout_ms: Option<u64>,
-    /// MCP servers from `--mcp-config`, for this run only. Added to the
-    /// stored servers at session start and never written to the database.
-    pub session_mcp_servers: std::collections::HashMap<String, crate::mcp::McpServerConfig>,
-}
-
-/// Parse `--max-context-tokens`: a positive whole
-/// number. Anything else is an error, never a silent fallback to the probe or
-/// the model table, since a mistyped pin would otherwise go unnoticed.
-pub fn parse_max_context_tokens(raw: &str) -> std::result::Result<usize, String> {
-    match raw.trim().replace('_', "").parse::<usize>() {
-        Ok(0) => Err(format!(
-            "context window (--max-context-tokens) must be a positive \
-             number of tokens, got '{raw}'"
-        )),
-        Ok(n) => Ok(n),
-        Err(_) => Err(format!(
-            "context window (--max-context-tokens) must be a positive \
-             whole number of tokens, got '{raw}'"
-        )),
-    }
 }
 
 /// Where the context window in force came from.
@@ -468,9 +443,7 @@ impl KodaConfig {
             post_turn_compact_percent: 0,
             skip_memory: agent.skip_memory,
             trust: declared_trust,
-            trust_named: false,
             stream_idle_timeout_ms: None,
-            session_mcp_servers: Default::default(),
         })
     }
 
@@ -531,44 +504,8 @@ impl KodaConfig {
         self
     }
 
-    /// Run `alias`'s model on its provider, as choosing it in `/model` does.
-    /// The provider's default endpoint replaces the loaded one unless that
-    /// already belongs to the provider, as with `--provider`.
-    pub fn with_alias(mut self, alias: &crate::model_alias::ResolvedAlias) -> Self {
-        if ProviderType::from_url_or_name(&self.base_url, None) != alias.provider {
-            self.base_url = alias.provider.default_base_url().to_string();
-        }
-        self.provider_type = alias.provider;
-        self.model = alias.model_id.clone();
-        self.model_settings.model = alias.model_id.clone();
-        self.recalculate_model_derived();
-        self
-    }
-
-    /// Apply model-specific setting overrides from CLI.
-    pub fn with_model_overrides(
-        mut self,
-        max_tokens: Option<u32>,
-        temperature: Option<f64>,
-        thinking_budget: Option<u32>,
-        reasoning_effort: Option<String>,
-    ) -> Self {
-        if let Some(mt) = max_tokens {
-            self.model_settings.max_tokens = Some(mt);
-        }
-        if let Some(t) = temperature {
-            self.model_settings.temperature = Some(t);
-        }
-        if let Some(tb) = thinking_budget {
-            self.model_settings.thinking_budget = Some(tb);
-        }
-        if let Some(re) = reasoning_effort {
-            self.model_settings.reasoning_effort = Some(re);
-        }
-        self
-    }
-
-    /// Pin the context window (`--max-context-tokens`).
+    /// Pin the context window, as `model_context_window` (and
+    /// `--max-context-tokens`) does.
     ///
     /// `None` leaves whatever the agent config set. Call after
     /// [`Self::with_overrides`]; the pin also survives later model switches
@@ -586,27 +523,9 @@ impl KodaConfig {
         self
     }
 
-    /// Add MCP servers for this run (`--mcp-config`). Later entries win.
-    pub fn with_session_mcp_servers(
-        mut self,
-        servers: std::collections::HashMap<String, crate::mcp::McpServerConfig>,
-    ) -> Self {
-        self.session_mcp_servers.extend(servers);
-        self
-    }
-
     /// Override the trust mode (e.g. from `--mode safe` on the CLI).
     pub fn with_trust(mut self, mode: crate::trust::TrustMode) -> Self {
         self.trust = mode;
-        self
-    }
-
-    /// Mark the mode as settled for this run, so a host doesn't take the
-    /// config file's `mode` over it: `koda` resolves `--mode`, the file's
-    /// `mode` and the default itself, since Auto needs the sandbox checked
-    /// before start.
-    pub fn with_trust_named(mut self) -> Self {
-        self.trust_named = true;
         self
     }
 
@@ -772,9 +691,7 @@ impl KodaConfig {
             post_turn_compact_percent: 0,
             skip_memory: false,
             trust: crate::trust::TrustMode::Auto,
-            trust_named: false,
             stream_idle_timeout_ms: None,
-            session_mcp_servers: Default::default(),
         }
     }
 
@@ -1170,25 +1087,6 @@ mod tests {
     // ── Override logic ────────────────────────────────────────
 
     #[test]
-    fn with_alias_moves_to_the_alias_provider_and_its_endpoint() {
-        let alias = crate::model_alias::resolve_with("gemini-flash", None).unwrap();
-        let config = KodaConfig::default_for_testing(ProviderType::OpenAI).with_alias(&alias);
-        assert_eq!(config.provider_type, ProviderType::Gemini);
-        assert_eq!(config.base_url, ProviderType::Gemini.default_base_url());
-        assert_eq!(config.model, alias.model_id);
-        assert_eq!(config.model_settings.model, alias.model_id);
-
-        // A custom endpoint for the same provider stays.
-        let mut custom = KodaConfig::default_for_testing(ProviderType::Gemini);
-        custom.base_url = "https://generativelanguage.googleapis.com/proxy".into();
-        let config = custom.with_alias(&alias);
-        assert_eq!(
-            config.base_url,
-            "https://generativelanguage.googleapis.com/proxy"
-        );
-    }
-
-    #[test]
     fn test_with_overrides_model() {
         let config = KodaConfig::default_for_testing(ProviderType::OpenAI).with_overrides(
             None,
@@ -1310,29 +1208,6 @@ mod tests {
         crate::providers::ModelCapabilities {
             context_window: Some(window),
             max_output_tokens: None,
-        }
-    }
-
-    #[test]
-    fn parse_max_context_tokens_accepts_positive_integers() {
-        assert_eq!(parse_max_context_tokens("65536"), Ok(65_536));
-        assert_eq!(parse_max_context_tokens(" 65_536 "), Ok(65_536));
-    }
-
-    #[test]
-    fn parse_max_context_tokens_rejects_zero_and_non_numbers() {
-        for bad in [
-            "0",
-            "",
-            "abc",
-            "64k",
-            "-5",
-            "1.5",
-            "99999999999999999999999",
-        ] {
-            let err = parse_max_context_tokens(bad).expect_err(bad);
-            assert!(err.contains("context window"), "{bad}: {err}");
-            assert!(err.contains(&format!("'{bad}'")), "{bad}: {err}");
         }
     }
 
@@ -1600,9 +1475,9 @@ mod tests {
     // ── ModelSettings::defaults_for ─────────────────────────────────────
 
     #[test]
-    fn test_model_settings_defaults_anthropic_has_max_tokens() {
+    fn test_model_settings_defaults_anthropic_leave_max_tokens_to_the_provider() {
         let s = ModelSettings::defaults_for("claude-opus-5", &ProviderType::Anthropic);
-        assert_eq!(s.max_tokens, Some(16384));
+        assert!(s.max_tokens.is_none(), "the provider applies its own");
         assert_eq!(s.model, "claude-opus-5");
         assert!(s.temperature.is_none());
     }
@@ -1612,34 +1487,6 @@ mod tests {
         let s = ModelSettings::defaults_for("gpt-4o", &ProviderType::OpenAI);
         assert!(s.max_tokens.is_none(), "OpenAI should use provider default");
         assert_eq!(s.model, "gpt-4o");
-    }
-
-    // ── with_model_overrides ──────────────────────────────────────────
-
-    #[test]
-    fn test_with_model_overrides_all_fields() {
-        let config = KodaConfig::default_for_testing(ProviderType::Anthropic).with_model_overrides(
-            Some(8192),         // max_tokens
-            Some(0.7),          // temperature
-            Some(2000),         // thinking_budget
-            Some("low".into()), // reasoning_effort
-        );
-        assert_eq!(config.model_settings.max_tokens, Some(8192));
-        assert_eq!(config.model_settings.temperature, Some(0.7));
-        assert_eq!(config.model_settings.thinking_budget, Some(2000));
-        assert_eq!(
-            config.model_settings.reasoning_effort,
-            Some("low".to_string())
-        );
-    }
-
-    #[test]
-    fn test_with_model_overrides_none_changes_nothing() {
-        let original = KodaConfig::default_for_testing(ProviderType::OpenAI);
-        let original_tokens = original.model_settings.max_tokens;
-        let config = original.with_model_overrides(None, None, None, None);
-        assert_eq!(config.model_settings.max_tokens, original_tokens);
-        assert!(config.model_settings.temperature.is_none());
     }
 
     // ── builtin_agents ─────────────────────────────────────────────────

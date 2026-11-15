@@ -17,7 +17,6 @@ use koda_client::protocol::session::{
     SessionSettings, SessionSettingsUpdateParams, SessionStartParams, SessionUnsubscribeParams,
 };
 use koda_client::protocol::{ServerNotification, methods};
-use koda_core::config::KodaConfig;
 
 use super::{TuiContext, TuiSession};
 
@@ -253,25 +252,16 @@ impl TuiContext {
     }
 }
 
-/// What the command line named for a new session: each optional, the rest
-/// left to the host's saved choice (`config/read`), as Codex's TUI passes
-/// only its overrides to `thread/start`.
+/// What the command line named for a new session (`--provider`,
+/// `--base-url`, `--model`): each optional, the rest left to the host's
+/// saved choice (`config/read`), as Codex's TUI passes only its overrides
+/// to `thread/start`. A provider by its id or a name for it, a model by
+/// alias or id; the host resolves them.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Named {
     pub provider: Option<String>,
     pub base_url: Option<String>,
     pub model: Option<String>,
-}
-
-impl Named {
-    /// What `overrides` says the command line gave, read from `config`.
-    pub(crate) fn from_flags(config: &KodaConfig, overrides: super::ProviderOverrides) -> Self {
-        Self {
-            provider: overrides.provider.then(|| config.provider_type.to_string()),
-            base_url: overrides.base_url.then(|| config.base_url.clone()),
-            model: overrides.model.then(|| config.model.clone()),
-        }
-    }
 }
 
 /// Give a just-opened session the TUI's `mode`, which the host checks

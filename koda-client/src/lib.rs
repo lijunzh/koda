@@ -18,9 +18,7 @@
 //! [`events::EventProjector`] turns a session's engine events into those
 //! messages; `koda exec --json` prints them.
 //!
-//! In process only, and only for now, a front end can set what a session's
-//! next turns run with ([`InProcessClient::configure_session`]). The host
-//! builds every session's agent; a front end never hands it one.
+//! The host builds every session's agent; a front end never hands it one.
 
 mod background;
 pub mod builtin_skills;
@@ -61,8 +59,6 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// What [`InProcessClient::start`] needs.
 pub struct StartArgs {
-    /// What new sessions start with.
-    pub config: KodaConfig,
     /// The config file, `~/.config/koda/config.toml` in production
     /// ([`ConfigFile::in_dir`] of Koda's config folder). Tests pass a
     /// scratch one.
@@ -142,38 +138,67 @@ impl InProcessClient {
     /// that can't be read or isn't valid stops it here, naming the line;
     /// settings earlier versions kept in the database move into the file
     /// first, once.
+    ///
+    /// What new sessions start with comes from the config file, with this
+    /// run's `-c` values over it, as Codex's server builds its config from
+    /// `config.toml` and the overrides it is given: the agent it names
+    /// (`agent`), that agent's model and settings, and the file's model
+    /// choice and settings over them for each new session.
     pub async fn start(args: StartArgs) -> Result<Self, RequestError> {
-        // The check may start a process, so it runs off the async threads.
-        let sandbox = tokio::task::spawn_blocking(settings::probe_sandbox)
-            .await
-            .unwrap_or_else(|e| koda_protocol::state::SandboxState {
-                backend: "none".to_string(),
-                available: false,
-                reason: Some(format!("the sandbox check failed: {e}")),
-                setup_hint: None,
-            });
-        Self::start_on(args, sandbox).await
+        Self::start_on(args, None, None).await
     }
 
-    /// [`Self::start`] on a machine whose sandbox is `sandbox`, for tests
-    /// of the mode rules: a host with no sandbox refuses Auto.
+    /// [`Self::start`] with new sessions starting from `config` rather
+    /// than the agent the config file names, for tests that need settings
+    /// no key gives (a scripted server's address, an iteration cap).
+    #[doc(hidden)]
+    pub async fn start_with_config(
+        args: StartArgs,
+        config: KodaConfig,
+    ) -> Result<Self, RequestError> {
+        Self::start_on(args, Some(config), None).await
+    }
+
+    /// [`Self::start_with_config`] on a machine whose sandbox is
+    /// `sandbox`, for tests of the mode rules: a host with no sandbox
+    /// refuses Auto.
     #[doc(hidden)]
     pub async fn start_with_sandbox(
         args: StartArgs,
+        config: KodaConfig,
         sandbox: koda_protocol::state::SandboxState,
     ) -> Result<Self, RequestError> {
-        Self::start_on(args, sandbox).await
+        Self::start_on(args, Some(config), Some(sandbox)).await
     }
 
     async fn start_on(
         args: StartArgs,
-        sandbox: koda_protocol::state::SandboxState,
+        config: Option<KodaConfig>,
+        sandbox: Option<koda_protocol::state::SandboxState>,
     ) -> Result<Self, RequestError> {
         let db = Database::init(&args.home)
             .await
             .map_err(|e| RequestError::Database(format!("{e:#}")))?;
         config_file::migrate(&db, &args.config_file).await;
         let loaded = args.config_file.load().map_err(RequestError::Config)?;
+        let config = match config {
+            Some(config) => config,
+            None => config_file::host_config(&args.project_root, &loaded)
+                .map_err(RequestError::Agent)?,
+        };
+        let sandbox = match sandbox {
+            Some(sandbox) => sandbox,
+            // The check may start a process, so it runs off the async
+            // threads.
+            None => tokio::task::spawn_blocking(settings::probe_sandbox)
+                .await
+                .unwrap_or_else(|e| koda_protocol::state::SandboxState {
+                    backend: "none".to_string(),
+                    available: false,
+                    reason: Some(format!("the sandbox check failed: {e}")),
+                    setup_hint: None,
+                }),
+        };
         let config_warnings = config_file::warnings(&args.config_file, &loaded);
         // Commands any session starts may use local ports if the file says
         // so; each new session takes the file again.
@@ -187,7 +212,7 @@ impl InProcessClient {
         }
         let (events_tx, events) = mpsc::unbounded_channel();
         let (commands, host) = host::spawn(HostArgs {
-            config: args.config,
+            config,
             config_file: args.config_file,
             config_warnings,
             project_root: args.project_root,
@@ -231,36 +256,6 @@ impl InProcessClient {
     /// A handle that sends requests, for another task.
     pub fn request_handle(&self) -> RequestHandle {
         self.requests.clone()
-    }
-
-    /// In process only: what session `session_id`'s next turns run with
-    /// (model, provider, address and the rest), until the protocol has
-    /// requests for them. A running turn keeps what it started with; the
-    /// answer comes once the change has taken effect.
-    pub async fn configure_session(
-        &self,
-        session_id: &str,
-        config: KodaConfig,
-    ) -> Result<(), RequestError> {
-        const METHOD: &str = "configure";
-        let (done, answer) = oneshot::channel();
-        self.requests
-            .commands
-            .send(HostCommand::Configure {
-                session_id: session_id.to_string(),
-                config: Box::new(config),
-                done,
-            })
-            .await
-            .map_err(|_| RequestError::Closed { method: METHOD })?;
-        answer
-            .await
-            .map_err(|_| RequestError::Closed { method: METHOD })?
-            .map(|_| ())
-            .map_err(|error| RequestError::Server {
-                method: METHOD,
-                error,
-            })
     }
 
     /// The next notification or server request, in the order Koda produced
@@ -362,6 +357,9 @@ pub enum RequestError {
     Config(koda_config::ConfigError),
     /// Koda's database couldn't be opened: the host didn't start.
     Database(String),
+    /// The agent the config names (`agent`, `--agent`) couldn't be
+    /// loaded: the host didn't start.
+    Agent(String),
 }
 
 impl fmt::Display for RequestError {
@@ -377,6 +375,7 @@ impl fmt::Display for RequestError {
             }
             Self::Config(error) => error.fmt(f),
             Self::Database(error) => write!(f, "couldn't open Koda's database: {error}"),
+            Self::Agent(error) => error.fmt(f),
         }
     }
 }
@@ -388,7 +387,7 @@ impl std::error::Error for RequestError {
             Self::Server { error, .. } => Some(error),
             Self::Encode { source, .. } | Self::Decode { source, .. } => Some(source),
             Self::Config(error) => Some(error),
-            Self::Database(_) => None,
+            Self::Database(_) | Self::Agent(_) => None,
         }
     }
 }
@@ -402,10 +401,9 @@ mod tests {
 
     /// Start arguments on a scratch database. Keep the directory while the
     /// client runs.
-    async fn args(config: KodaConfig) -> (StartArgs, tempfile::TempDir) {
+    async fn args() -> (StartArgs, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let args = StartArgs {
-            config,
             config_file: ConfigFile::in_dir(dir.path()),
             home: dir.path().to_path_buf(),
             project_root: dir.path().to_path_buf(),
@@ -420,8 +418,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn start_runs_the_handshake() {
         let config = KodaConfig::default_for_testing(ProviderType::LMStudio);
-        let (args, _dir) = args(config).await;
-        let client = InProcessClient::start(args).await.unwrap();
+        let (args, _dir) = args().await;
+        let client = InProcessClient::start_with_config(args, config)
+            .await
+            .unwrap();
         assert_eq!(client.server().server_info.name, "koda");
         assert_eq!(
             client.server().server_info.version,
@@ -439,13 +439,13 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_broken_config_file_stops_the_start() {
         let config = KodaConfig::default_for_testing(ProviderType::LMStudio);
-        let (args, dir) = args(config).await;
+        let (args, dir) = args().await;
         std::fs::write(
             dir.path().join("config.toml"),
             "model = \"a\"\nmodel_provider = \n",
         )
         .unwrap();
-        let Err(error) = InProcessClient::start(args).await else {
+        let Err(error) = InProcessClient::start_with_config(args, config).await else {
             panic!("started on a broken config file");
         };
         assert!(matches!(error, RequestError::Config(_)), "{error:?}");
@@ -458,9 +458,11 @@ mod tests {
     async fn unknown_config_keys_are_reported_after_initialize() {
         use koda_protocol::ServerNotification;
         let config = KodaConfig::default_for_testing(ProviderType::LMStudio);
-        let (args, dir) = args(config).await;
+        let (args, dir) = args().await;
         std::fs::write(dir.path().join("config.toml"), "modle = \"claude-opus\"\n").unwrap();
-        let mut client = InProcessClient::start(args).await.unwrap();
+        let mut client = InProcessClient::start_with_config(args, config)
+            .await
+            .unwrap();
         let event = tokio::time::timeout(Duration::from_secs(5), client.next_event())
             .await
             .unwrap();
@@ -489,8 +491,10 @@ mod tests {
         config.base_url = "http://127.0.0.1:9/v1".to_string();
         config.max_context_tokens = 32_768;
         config.trust = TrustMode::Safe;
-        let (args, _dir) = args(config).await;
-        let client = InProcessClient::start(args).await.unwrap();
+        let (args, _dir) = args().await;
+        let client = InProcessClient::start_with_config(args, config)
+            .await
+            .unwrap();
 
         let state = client
             .request::<methods::StateRead>(StateReadParams {})
@@ -510,8 +514,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn requests_run_side_by_side() {
         let config = KodaConfig::default_for_testing(ProviderType::LMStudio);
-        let (args, _dir) = args(config).await;
-        let client = InProcessClient::start(args).await.unwrap();
+        let (args, _dir) = args().await;
+        let client = InProcessClient::start_with_config(args, config)
+            .await
+            .unwrap();
         let (a, b) = tokio::join!(
             client.request::<methods::StateRead>(StateReadParams {}),
             client.request::<methods::StateRead>(StateReadParams {}),

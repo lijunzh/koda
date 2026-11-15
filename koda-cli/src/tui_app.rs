@@ -14,10 +14,10 @@
 //!
 //! See #209 for the refactoring plan.
 
-use crate::tui_context::{ProviderOverrides, TuiContext};
+use crate::tui_context::TuiContext;
+use crate::tui_context::settings::Named;
 
 use anyhow::Result;
-use koda_core::config::KodaConfig;
 use ratatui::{
     style::{Color, Style},
     text::Line,
@@ -26,25 +26,16 @@ use std::path::PathBuf;
 use tokio::sync::mpsc;
 
 /// Run the main interactive event loop with persistent TUI.
-#[allow(clippy::too_many_arguments)]
 pub async fn run(
     project_root: PathBuf,
-    config: KodaConfig,
-    overrides: ProviderOverrides,
+    named: Named,
     resume: Option<String>,
     prompt: Option<String>,
     version_check: tokio::task::JoinHandle<Option<String>>,
     first_run: bool,
 ) -> Result<()> {
-    let mut ctx = TuiContext::new(
-        project_root,
-        config,
-        overrides,
-        resume,
-        version_check,
-        first_run,
-    )
-    .await?;
+    let mut ctx = TuiContext::new(project_root, named, resume, version_check, first_run).await?;
+    let first_run = ctx.first_run;
 
     // First-run welcome message (after terminal is initialized)
     if first_run {

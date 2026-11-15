@@ -231,3 +231,30 @@ fn resume_with_an_unknown_id_stops_before_running() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("no session matches '28545'"), "{stderr}");
 }
+
+/// `--provider` takes a provider's id or its name as `/provider` lists it;
+/// one Koda doesn't offer stops the run with the ids, rather than running
+/// OpenAI as an unknown name once did.
+#[test]
+fn an_unknown_provider_stops_the_run_with_the_list() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let output = Command::new(koda_bin())
+        .args(["exec", "test", "--provider", "nope"])
+        .arg("--project-root")
+        .arg(&project)
+        .env("HOME", tmp.path())
+        .env("XDG_CONFIG_HOME", tmp.path())
+        .env_remove("ANTHROPIC_API_KEY")
+        .env_remove("OPENAI_API_KEY")
+        .output()
+        .expect("Failed to run koda");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unknown provider \"nope\""), "{stderr}");
+    assert!(
+        stderr.contains("anthropic") && stderr.contains("lm-studio"),
+        "{stderr}"
+    );
+}

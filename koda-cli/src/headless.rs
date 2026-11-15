@@ -34,7 +34,6 @@ use koda_client::protocol::turn::{
 };
 use koda_client::protocol::{ServerNotification, ServerRequest, methods};
 use koda_client::{InProcessClient, StartArgs};
-use koda_core::config::KodaConfig;
 
 use anyhow::{Context, Result};
 use std::collections::{BTreeMap, HashSet};
@@ -64,7 +63,7 @@ pub struct Run {
     /// Where to write the last reply (`koda exec -o`).
     pub last_message: Option<PathBuf>,
     /// What `--provider`, `--base-url` and `--model` named (a provider by
-    /// its id, a model by alias or id). The host fills in the rest: a new
+    /// its id or a name for it, a model by alias or id). The host fills in the rest: a new
     /// session from the saved choice, a resumed one from its own, as
     /// `codex exec` does.
     pub named: Named,
@@ -81,12 +80,7 @@ pub struct Named {
 /// Run a single prompt and exit. `resume` is an earlier session's id, or
 /// the start of one; without one a new session starts. Returns the process exit code (0 =
 /// success).
-pub async fn run_headless(
-    project_root: PathBuf,
-    config: KodaConfig,
-    resume: Option<String>,
-    run: Run,
-) -> Result<i32> {
+pub async fn run_headless(project_root: PathBuf, resume: Option<String>, run: Run) -> Result<i32> {
     // Process @file references and images
     let processed = input::process_input(&run.prompt, &project_root);
     let user_message = if let Some(context) = input::format_context_files(&processed.context_files)
@@ -104,9 +98,7 @@ pub async fn run_headless(
         })
         .collect();
 
-    let provider = config.provider_type.meta().name;
     let mut client = InProcessClient::start(StartArgs {
-        config,
         config_file: crate::user_config::file()?,
         home: koda_config::config_dir()?,
         project_root,
@@ -123,11 +115,20 @@ pub async fn run_headless(
         None => None,
     };
 
+    // A provider goes by its id; `--provider` takes its name too.
+    let provider = match run.named.provider.as_deref() {
+        Some(typed) => Some(
+            crate::providers::Providers::fetch(&client)
+                .await
+                .id_for(typed),
+        ),
+        None => None,
+    };
     let opened = client
         .request::<methods::SessionStart>(SessionStartParams {
             // Given flags win; without them a resumed session keeps its own
-            // provider and model. A new session starts with this config.
-            model_provider: run.named.provider.clone(),
+            // provider and model. A new session starts from the config.
+            model_provider: provider,
             base_url: run.named.base_url.clone(),
             model: run.named.model.clone(),
             session_id: resume,
@@ -137,6 +138,7 @@ pub async fn run_headless(
     let session_id = opened.session.id;
     // An open session always says what it runs.
     let model = opened.session.model.unwrap_or_default();
+    let provider = opened.session.provider.unwrap_or_default();
     // What starting the session said: `session/started`, and the context
     // window Koda assumed when the server didn't report one.
     while let Some(message) = client.try_next_event() {
@@ -209,7 +211,7 @@ pub async fn run_headless(
         let outcome = RunOutcome {
             result: &result,
             session_id: &session_id,
-            provider,
+            provider: &provider,
             model: &model,
             elapsed_ms,
             stats: &view.stats,

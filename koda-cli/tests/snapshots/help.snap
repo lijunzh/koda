@@ -35,9 +35,7 @@ Arguments:
 
 Options:
   -a, --agent <AGENT>
-          Agent to use: a built-in, or a JSON file in .koda/agents/ or ~/.config/koda/agents/
-          
-          [default: default]
+          Agent to use: a built-in, or a JSON file in .koda/agents/ or ~/.config/koda/agents/ (default: config.toml's `agent`, else `default`)
 
   -s, --resume <SESSION>
           Session ID to resume (omit to start a new session)
@@ -75,7 +73,7 @@ Options:
           [possible values: safe, auto, plan]
 
   -c, --config <KEY=VALUE>
-          Override a config.toml value for this run: `-c key=value`, with a dotted key (`-c model_providers.lm-studio.base_url=http://...`). The value is read as TOML, else taken as text, as Codex's `-c` is. Repeatable; never saved. Flags such as --model win over it
+          Override a config.toml value for this run: `-c key=value`, with a dotted key (`-c model_providers.lm-studio.base_url=http://...`). The value is read as TOML, else taken as text, as Codex's `-c` is, and replaces what is at that key. Repeatable; never saved. Flags such as --effort are `-c` values too, and win over these
 
       --mcp-config <FILE|JSON>
           Add MCP servers for this run only, from a JSON file or inline JSON in the `{"mcpServers": {...}}` shape of Claude Code's `.mcp.json`. Repeatable; later servers win a name clash, and all of them win over servers stored with `koda mcp add`. Nothing is saved

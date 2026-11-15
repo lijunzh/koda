@@ -15,13 +15,17 @@ use serde_json::Value;
 /// Koda takes `model_providers.<id>.<key>` ([`PROVIDERS_KEY`]),
 /// `mcp_servers.<name>`, `tui.<key>` and `sandbox.<key>`; any other is
 /// refused.
-pub const KEYS: [&str; 6] = [
+pub const KEYS: [&str; 10] = [
     "model",
     "model_provider",
     "model_reasoning_effort",
     "model_context_window",
+    "model_max_output_tokens",
+    "model_temperature",
+    "model_thinking_budget",
     "model_post_turn_compact_threshold_percent",
     "mode",
+    "agent",
 ];
 
 /// The config key that holds per-provider settings:
@@ -93,7 +97,7 @@ pub struct ConfigLayer {
 }
 
 /// Koda's settings.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct KodaConfigValues {
     /// The model a new session starts with: an alias such as `claude-opus`,
     /// which follows its line, or an id.
@@ -109,6 +113,15 @@ pub struct KodaConfigValues {
     /// report its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_context_window: Option<u64>,
+    /// The most tokens a reply may use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_max_output_tokens: Option<u32>,
+    /// The sampling temperature (0.0 to 2.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_temperature: Option<f64>,
+    /// A thinking budget in tokens, for Gemini models.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_thinking_budget: Option<u32>,
     /// Context used, in percent, past which a turn compacts after its
     /// final reply; 0 or none turns it off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -116,6 +129,9 @@ pub struct KodaConfigValues {
     /// The mode a new session starts in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<crate::state::TrustMode>,
+    /// The agent new sessions run: a built-in, or one from an agent file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
     /// Settings per provider, by provider id.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub model_providers: BTreeMap<String, ModelProviderConfigValue>,
@@ -231,7 +247,7 @@ pub enum MergeStrategy {
 }
 
 /// The answer to `config/batchWrite`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigWriteResponse {
     /// How the write went.

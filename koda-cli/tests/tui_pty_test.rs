@@ -81,6 +81,13 @@ impl Tui {
         Self::start_full(home, base_url, &[], None, IDLE_HINT)
     }
 
+    /// Start `koda` with nothing choosing the provider: the default one's
+    /// endpoint comes from `-c`, which sets an address without choosing.
+    fn start_unchosen(home: &Path, base_url: &str, ready: &str) -> Self {
+        let endpoint = format!("model_providers.lm-studio.base_url={base_url}");
+        Self::start_command(home, &["-c", &endpoint], Some("stub-model"), ready)
+    }
+
     fn start_full(
         home: &Path,
         base_url: &str,
@@ -88,10 +95,15 @@ impl Tui {
         model: Option<&str>,
         ready: &str,
     ) -> Self {
+        let mut args = vec!["--base-url", base_url];
+        args.extend(flags);
+        Self::start_command(home, &args, model, ready)
+    }
+
+    fn start_command(home: &Path, flags: &[&str], model: Option<&str>, ready: &str) -> Self {
         let (master, slave) = open_pty();
         let mut command = Command::new(env!("CARGO_BIN_EXE_koda"));
         command
-            .args(["--base-url", base_url])
             .args(model.map(|m| ["--model", m]).into_iter().flatten())
             .args(["--max-context-tokens", "64000"])
             .args(["--mode", "safe"])
@@ -1087,8 +1099,8 @@ async fn the_first_run_greets_and_still_answers() {
     let server = scripted_model(vec![]).await;
     // No `.config/koda`: Koda has never run here.
     let home = tempfile::tempdir().unwrap();
-    // No `--provider`: the first run asks which one.
-    let mut tui = Tui::start_with_flags(home.path(), &server.url(), &[], "Welcome to Koda");
+    // Nothing chooses the provider: the first run asks which one.
+    let mut tui = Tui::start_unchosen(home.path(), &server.url(), "Welcome to Koda");
     tui.wait_for_screen("Choose your LLM provider");
     tui.type_text(ESC);
     tui.wait_for_screen_without("Choose your LLM provider");
@@ -1107,11 +1119,12 @@ async fn the_first_run_greets_and_still_answers() {
     );
 }
 
-/// A first run that names its provider on the command line goes straight to
-/// the composer, as Codex skips the screens a start doesn't need: the picker
-/// would only ask again what `--provider` said.
+/// A first run that chose its provider on the command line goes straight to
+/// the composer, as Codex shows only the screens its resolved setup still
+/// needs: the picker would only ask again what `--provider` said, or what
+/// `--base-url` said, since the host takes the provider from the address.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_first_run_with_a_provider_flag_skips_the_picker() {
+async fn a_first_run_that_chose_its_provider_skips_the_picker() {
     let server = scripted_model(vec![]).await;
     // No `.config/koda`: Koda has never run here.
     let home = tempfile::tempdir().unwrap();
@@ -1124,6 +1137,13 @@ async fn a_first_run_with_a_provider_flag_skips_the_picker() {
     let sent = wait_for_model_call(&server, 1).await;
     assert!(sent.contains("hello"), "{sent}");
     tui.wait_for_screen("All done.");
+
+    // `--base-url` alone chooses too.
+    let home = tempfile::tempdir().unwrap();
+    let tui = Tui::start_with_flags(home.path(), &server.url(), &[], IDLE_HINT);
+    let screen = tui.screen();
+    assert!(!screen.contains("Welcome to Koda"), "{screen}");
+    assert!(!screen.contains("Choose your LLM provider"), "{screen}");
 }
 
 /// A key typed into a wizard is taken with one Enter. The wizard's trail

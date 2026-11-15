@@ -22,10 +22,10 @@ name = "koda-logs"
 path = "src/bin/koda_logs.rs"
 
 [dependencies]
-# Core engine
-koda-core = { path = "../koda-core", version = "0.6.4" }
-# The client protocol, and the projection of engine events onto it
+# Koda's host and the client protocol: the TUI and `koda exec` reach the
+# engine only through these, never `koda-core` (scripts/check_tui_core_boundary.sh).
 koda-client = { path = "../koda-client", version = "0.6.4" }
+# Shared crates: the config file, and the log database.
 koda-config = { path = "../koda-config", version = "0.6.4" }
 koda-state = { path = "../koda-state", version = "0.6.4" }
 reqwest = { workspace = true }

@@ -42,6 +42,15 @@ impl Providers {
             .find(|p| squash(&p.id) == want || squash(&p.name) == want)
     }
 
+    /// The id of the provider a person typed (`--provider`), matched as
+    /// [`Self::find`] matches, since `session/start` takes ids only, as
+    /// Codex's `thread/start` does. A name the list doesn't have goes as
+    /// typed: the host refuses one it doesn't know, with its ids.
+    pub(crate) fn id_for(&self, typed: &str) -> String {
+        self.find(typed)
+            .map_or_else(|| typed.to_string(), |p| p.id.clone())
+    }
+
     /// The name a person reads for provider `id`, or the id itself.
     pub(crate) fn name<'a>(&'a self, id: &'a str) -> &'a str {
         self.list
@@ -91,5 +100,7 @@ mod tests {
         assert!(providers.find("nope").is_none());
         assert_eq!(providers.name("anthropic"), "Anthropic");
         assert_eq!(providers.name("other"), "other");
+        assert_eq!(providers.id_for("LM Studio"), "lm-studio");
+        assert_eq!(providers.id_for("nope"), "nope", "the host decides");
     }
 }

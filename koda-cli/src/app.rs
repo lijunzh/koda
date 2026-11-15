@@ -77,9 +77,10 @@ struct Cli {
     output_format: Option<String>,
 
     /// Agent to use: a built-in, or a JSON file in .koda/agents/ or
-    /// ~/.config/koda/agents/
-    #[arg(short, long, default_value = "default", global = true)]
-    agent: String,
+    /// ~/.config/koda/agents/ (default: config.toml's `agent`, else
+    /// `default`)
+    #[arg(short, long, global = true)]
+    agent: Option<String>,
 
     /// Session ID to resume (omit to start a new session)
     #[arg(short, long = "resume", alias = "session", global = true)]
@@ -110,9 +111,10 @@ struct Cli {
     #[arg(
         long,
         value_name = "TOKENS",
-        value_parser = koda_core::config::parse_max_context_tokens
-    , global = true)]
-    max_context_tokens: Option<usize>,
+        value_parser = parse_context_window,
+        global = true
+    )]
+    max_context_tokens: Option<u64>,
 
     /// Sampling temperature (0.0 - 2.0)
     #[arg(long, global = true)]
@@ -149,8 +151,9 @@ struct Cli {
 
     /// Override a config.toml value for this run: `-c key=value`, with a
     /// dotted key (`-c model_providers.lm-studio.base_url=http://...`).
-    /// The value is read as TOML, else taken as text, as Codex's `-c` is.
-    /// Repeatable; never saved. Flags such as --model win over it.
+    /// The value is read as TOML, else taken as text, as Codex's `-c` is,
+    /// and replaces what is at that key. Repeatable; never saved. Flags
+    /// such as --effort are `-c` values too, and win over these.
     #[arg(
         short = 'c',
         long = "config",
@@ -231,7 +234,6 @@ See https://lijunzh.github.io/koda/acp.html";
 
 pub(crate) async fn run() -> Result<()> {
     let mut cli = Cli::parse();
-    crate::user_config::set_overrides(cli.config.clone());
 
     if matches!(cli.command, Some(Command::Server { .. })) {
         eprintln!("{SERVER_REMOVED}");
@@ -255,9 +257,19 @@ pub(crate) async fn run() -> Result<()> {
         }
     };
 
+    // Every flag but the model choice is a config value for this run, as
+    // Codex's flags are: after `-c`, so a flag wins over a `-c` value.
+    let mut overrides = std::mem::take(&mut cli.config);
+    for arg in &cli.mcp_config {
+        overrides.extend(koda_config::mcp_config_overrides(arg).map_err(anyhow::Error::msg)?);
+    }
+    overrides.extend(flag_overrides(&cli));
+    crate::user_config::set_overrides(overrides);
+
     // Resolve project root
     let project_root = cli
         .project_root
+        .take()
         .unwrap_or_else(|| std::env::current_dir().expect("Failed to get current directory"));
     let project_root = std::fs::canonicalize(&project_root)?;
 
@@ -267,11 +279,26 @@ pub(crate) async fn run() -> Result<()> {
     // first run and onboarding never opened.
     let first_run = onboarding::is_first_run();
 
-    // The config file, with this run's `-c` values: a broken file or an
-    // unknown `-c` key stops the start here, before any terminal setup.
+    // The config file, with this run's `-c` values and flags: a broken file
+    // or an unknown `-c` key stops the start here, before any terminal
+    // setup.
     let user_config = crate::user_config::file()?
         .load()
         .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    // Asked for in the TUI, Plan is refused outright rather than turned into
+    // Safe, since the person typed it (`--mode plan` or `-c mode=plan`) and
+    // can fix the command. `koda exec --mode plan "..."` may only read, as
+    // `codex exec`'s read-only sandbox allows. Plan from config.toml becomes
+    // Safe in the TUI, with a warning the host sends.
+    let run_mode = user_config.flag_value("mode").and_then(|v| v.as_str());
+    if headless_run.is_none() && mcp_cli.is_none() && run_mode == Some("plan") {
+        eprintln!(
+            "error: --mode plan is for one-shot runs (koda exec --mode plan \"...\"). \
+             Interactive sessions use --mode safe or --mode auto."
+        );
+        std::process::exit(1);
+    }
 
     // Logs go to the log database, and to `<log_dir>/koda.log` when the
     // config file sets `log_dir`, as Codex's do (see `logging`).
@@ -285,56 +312,19 @@ pub(crate) async fn run() -> Result<()> {
 
     tracing::info!("Koda starting. Project root: {:?}", project_root);
 
-    // The mode: --mode, else the file's (or `-c mode=`), else auto. Resolved
-    // here because Auto needs the sandbox, which is checked before start.
-    let mode = cli
-        .mode
-        .clone()
-        .or_else(|| user_config.config.mode.map(|m| m.as_str().to_string()))
-        .unwrap_or_else(|| "auto".to_string());
-
-    // Stored API keys still come from the database here; they move into
-    // the host's start in 8d.
-    let db = koda_core::db::Database::init(&config_dir).await?;
-
     // `koda mcp`: the stored servers, through a host, then exit.
     if let Some(mcp) = mcp_cli {
-        let config = koda_core::config::KodaConfig::load(&project_root, &cli.agent)?;
-        return mcp.run(config, project_root).await;
+        return mcp.run(project_root).await;
     }
 
-    // Load and inject stored API keys (env vars take precedence)
-    if let Err(e) = koda_core::keystore::inject_into_env(&db).await {
-        tracing::warn!("Failed to load keystore: {e}");
-    }
-
-    // `--model claude-haiku` names an alias, as `/model` lists them. Taken
-    // after the keystore so a Claude alias can ask for the newest id.
-    let alias = match cli.model.as_deref() {
-        Some(name) => {
-            koda_core::model_alias::resolve_for_flag(
-                name,
-                cli.provider.as_deref(),
-                cli.base_url.as_deref(),
-            )
-            .await
-        }
-        None => None,
+    // The model choice goes to `session/start`, as Codex's TUI passes its
+    // model to `thread/start`; the host resolves an alias (`claude-haiku`
+    // picks Anthropic) and fills in the rest from the saved choice.
+    let named = tui_context::settings::Named {
+        provider: cli.provider.take(),
+        base_url: cli.base_url.take(),
+        model: cli.model.take(),
     };
-    if alias.is_some() {
-        cli.model = None;
-    }
-    let with_alias = |config: koda_core::config::KodaConfig| match &alias {
-        Some(a) => config.with_alias(a),
-        None => config,
-    };
-
-    // `--mcp-config` servers, for this run only. A bad value stops the start:
-    // the caller asked for these servers by name.
-    let mut session_mcp = std::collections::HashMap::new();
-    for arg in &cli.mcp_config {
-        session_mcp.extend(koda_core::mcp::config::parse_mcp_config_arg(arg)?);
-    }
 
     // Headless mode: skip onboarding, banner, version check
     if let Some(mut run) = headless_run {
@@ -343,34 +333,13 @@ pub(crate) async fn run() -> Result<()> {
             eprintln!("warning: {warning}");
         }
         run.named = headless::Named {
-            // The catalog's own id, which the host reads (`lmstudio` is
-            // `lm-studio`).
-            provider: cli.provider.as_deref().map(|p| {
-                koda_core::config::ProviderType::from_url_or_name("", Some(p)).to_string()
-            }),
-            base_url: cli.base_url.clone(),
-            model: alias
-                .as_ref()
-                .map(|a| a.alias.to_string())
-                .or_else(|| cli.model.clone()),
+            provider: named.provider,
+            base_url: named.base_url,
+            model: named.model,
         };
-        let config = koda_core::config::KodaConfig::load(&project_root, &cli.agent)?;
-        let typed = (cli.reasoning_effort.clone(), cli.thinking_budget);
-        let config = with_alias(config.with_overrides(cli.base_url, cli.model, cli.provider))
-            .with_model_overrides(
-                cli.max_tokens,
-                cli.temperature,
-                cli.thinking_budget,
-                cli.reasoning_effort,
-            )
-            .with_context_override(cli.max_context_tokens)
-            .with_trust(parse_top_level_trust_mode(&mode, true))
-            .with_session_mcp_servers(session_mcp)
-            .with_trust_named();
-        check_typed_reasoning(typed.0.as_deref(), typed.1, &config)?;
         // An unknown id stops the run before its turn (`session_id`). A new
         // session is the host's to create.
-        let exit_code = headless::run_headless(project_root, config, cli.session, run).await?;
+        let exit_code = headless::run_headless(project_root, cli.session, run).await?;
         // `exit` runs no destructors: store the queued lines first, the last
         // of which say how the run ended, and write out the file's.
         crate::logging::flush().await;
@@ -380,39 +349,17 @@ pub(crate) async fn run() -> Result<()> {
 
     // Interactive mode: full REPL experience
     let version_check = crate::updates::spawn_version_check();
-    // Ask Anthropic for its newest models now, so the startup can say when
-    // one is out that Koda doesn't support yet. The TUI joins this same
-    // request (`model_alias` asks once per process); without a key it's a no-op.
-    tokio::spawn(koda_core::model_alias::ensure_live_claude_ids());
 
-    // Load configuration. The TUI also restores the last-used provider from
-    // the DB, but only for the fields these flags leave unset.
-    // An alias picks the provider as well as the model.
-    let overrides = tui_context::ProviderOverrides {
-        provider: cli.provider.is_some() || alias.is_some(),
-        base_url: cli.base_url.is_some(),
-        model: cli.model.is_some() || alias.is_some(),
-    };
-    let config = koda_core::config::KodaConfig::load(&project_root, &cli.agent)?;
-    let typed = (cli.reasoning_effort.clone(), cli.thinking_budget);
-    let config = with_alias(config.with_overrides(cli.base_url, cli.model, cli.provider))
-        .with_model_overrides(
-            cli.max_tokens,
-            cli.temperature,
-            cli.thinking_budget,
-            cli.reasoning_effort,
-        )
-        .with_context_override(cli.max_context_tokens)
-        .with_trust(parse_top_level_trust_mode(&mode, false))
-        .with_session_mcp_servers(session_mcp)
-        .with_trust_named();
-    check_typed_reasoning(typed.0.as_deref(), typed.1, &config)?;
-
-    // Onboarding asks which provider to use. A start that names one already
-    // skips it, as Codex skips the screens a start doesn't need.
-    let first_run = first_run && !overrides.provider;
-
-    // Initialize database is already done above
+    // Onboarding asks which provider to use, so a start that already chose
+    // one skips it, as Codex shows only the screens its resolved setup still
+    // needs: `--provider`, `--base-url` (the host takes the provider from
+    // the address) or `-c model_provider`; a model alias picks one too,
+    // which the TUI learns once the session opens. A model id alone doesn't
+    // say which provider.
+    let first_run = first_run
+        && named.provider.is_none()
+        && named.base_url.is_none()
+        && user_config.flag_value("model_provider").is_none();
 
     // The TUI needs a terminal; a piped prompt is `koda exec`'s. Checked
     // after the flags, so a bad one is reported first, and before a session
@@ -425,8 +372,7 @@ pub(crate) async fn run() -> Result<()> {
     // Run the main event loop
     tui_app::run(
         project_root,
-        config,
-        overrides,
+        named,
         cli.session,
         cli.positional_prompt,
         version_check,
@@ -435,50 +381,55 @@ pub(crate) async fn run() -> Result<()> {
     .await
 }
 
-/// Refuse an effort or thinking budget typed for this run that the Claude
-/// model doesn't take. A person can fix the command; a setting from an agent
-/// config is corrected at request time instead (`koda_core::model_effort`).
-fn check_typed_reasoning(
-    effort: Option<&str>,
-    thinking_budget: Option<u32>,
-    config: &koda_core::config::KodaConfig,
-) -> Result<()> {
-    if config.provider_type != koda_core::config::ProviderType::Anthropic {
-        return Ok(());
+/// The flags that set a config value, as `-c` values: `--effort` is
+/// `model_reasoning_effort`, `--max-tokens` is `model_max_output_tokens`,
+/// and so on. The host reads them with the file, and checks an effort or a
+/// thinking budget against the session's model.
+fn flag_overrides(cli: &Cli) -> Vec<koda_config::Override> {
+    use koda_config::Override;
+    let mut overrides = Vec::new();
+    if let Some(agent) = &cli.agent {
+        overrides.push(Override::new("agent", agent.as_str()));
     }
-    let model = &config.model_settings.model;
-    if let Some(level) = effort {
-        koda_core::model_effort::check_typed(model, level).map_err(anyhow::Error::msg)?;
+    if let Some(tokens) = cli.max_tokens {
+        overrides.push(Override::new("model_max_output_tokens", i64::from(tokens)));
     }
-    // Current Claude models take effort, not a token budget; the flag is
-    // for Gemini.
-    if thinking_budget.is_some() {
-        anyhow::bail!(
-            "{model} takes no --thinking-budget. Use --effort with one of: {}.",
-            koda_core::model_effort::LEVELS.join(", ")
-        );
+    if let Some(tokens) = cli.max_context_tokens {
+        // At most i64::MAX: TOML's integers are signed.
+        let tokens = i64::try_from(tokens).unwrap_or(i64::MAX);
+        overrides.push(Override::new("model_context_window", tokens));
     }
-    Ok(())
+    if let Some(temperature) = cli.temperature {
+        overrides.push(Override::new("model_temperature", temperature));
+    }
+    if let Some(budget) = cli.thinking_budget {
+        overrides.push(Override::new("model_thinking_budget", i64::from(budget)));
+    }
+    if let Some(effort) = &cli.reasoning_effort {
+        overrides.push(Override::new("model_reasoning_effort", effort.as_str()));
+    }
+    if let Some(mode) = &cli.mode {
+        overrides.push(Override::new("mode", mode.as_str()));
+    }
+    overrides
 }
 
-/// The `--mode` asked for, as the config the host starts sessions from.
-/// The host enforces the rules whichever client asks (Auto needs the
-/// sandbox, with the setup hint in its refusal; a session a person answers
-/// runs in Safe rather than Plan). Only the flag itself is checked here:
-/// asked for in an interactive session, Plan is refused outright rather
-/// than turned into Safe, since the person typed it and can fix the
-/// command. A headless run keeps Plan: `koda exec --mode plan "..."` may
-/// only read, as `codex exec`'s read-only sandbox allows.
-fn parse_top_level_trust_mode(cli_mode: &str, headless: bool) -> koda_core::trust::TrustMode {
-    let parsed = koda_core::trust::TrustMode::parse(cli_mode).unwrap_or_default();
-    if parsed == koda_core::trust::TrustMode::Plan && !headless {
-        eprintln!(
-            "error: --mode plan is for one-shot runs (koda exec --mode plan \"...\"). \
-             Interactive sessions use --mode safe or --mode auto."
-        );
-        std::process::exit(1);
+/// Parse `--max-context-tokens`: a positive whole number, `_` allowed.
+/// Anything else is an error, never a silent fallback to the provider's
+/// answer or the model table, since a mistyped pin would otherwise go
+/// unnoticed.
+fn parse_context_window(raw: &str) -> std::result::Result<u64, String> {
+    match raw.trim().replace('_', "").parse::<u64>() {
+        Ok(0) => Err(format!(
+            "context window (--max-context-tokens) must be a positive \
+             number of tokens, got '{raw}'"
+        )),
+        Ok(n) => Ok(n),
+        Err(_) => Err(format!(
+            "context window (--max-context-tokens) must be a positive \
+             whole number of tokens, got '{raw}'"
+        )),
     }
-    parsed
 }
 
 /// `koda exec`'s run: its prompt, from the argument or stdin, and output.
@@ -520,4 +471,83 @@ fn read_stdin() -> Result<String> {
 fn atty_is_terminal() -> bool {
     use std::io::IsTerminal;
     std::io::stdin().is_terminal()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The config the flags give, over an empty file.
+    fn config_of(args: &[&str]) -> koda_config::ConfigToml {
+        let mut cli = Cli::try_parse_from(args).unwrap();
+        let mut overrides = std::mem::take(&mut cli.config);
+        overrides.extend(flag_overrides(&cli));
+        let dir = tempfile::tempdir().unwrap();
+        koda_config::ConfigFile::in_dir(dir.path())
+            .with_overrides(overrides)
+            .load()
+            .unwrap()
+            .config
+    }
+
+    #[test]
+    fn each_flag_is_its_config_key() {
+        let config = config_of(&[
+            "koda",
+            "--agent",
+            "reviewer",
+            "--max-tokens",
+            "512",
+            "--max-context-tokens",
+            "65_536",
+            "--temperature",
+            "0.5",
+            "--thinking-budget",
+            "2048",
+            "--effort",
+            "high",
+            "--mode",
+            "safe",
+        ]);
+        assert_eq!(config.agent.as_deref(), Some("reviewer"));
+        assert_eq!(config.model_max_output_tokens, Some(512));
+        assert_eq!(config.model_context_window, Some(65_536));
+        assert_eq!(config.model_temperature, Some(0.5));
+        assert_eq!(config.model_thinking_budget, Some(2048));
+        assert_eq!(config.model_reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(config.mode, Some(koda_config::Mode::Safe));
+        // Unset flags set nothing.
+        assert_eq!(config_of(&["koda"]), koda_config::ConfigToml::default());
+    }
+
+    #[test]
+    fn a_flag_wins_over_a_c_value() {
+        let config = config_of(&[
+            "koda",
+            "-c",
+            "model_reasoning_effort=low",
+            "--effort",
+            "high",
+        ]);
+        assert_eq!(config.model_reasoning_effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn the_context_window_flag_takes_positive_whole_numbers() {
+        assert_eq!(parse_context_window("65536"), Ok(65_536));
+        assert_eq!(parse_context_window(" 65_536 "), Ok(65_536));
+        for bad in [
+            "0",
+            "",
+            "abc",
+            "64k",
+            "-5",
+            "1.5",
+            "99999999999999999999999",
+        ] {
+            let err = parse_context_window(bad).expect_err(bad);
+            assert!(err.contains("context window"), "{bad}: {err}");
+            assert!(err.contains(&format!("'{bad}'")), "{bad}: {err}");
+        }
+    }
 }

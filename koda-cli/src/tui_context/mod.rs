@@ -25,7 +25,6 @@ use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyCode, KeyModifiers};
 use futures_util::StreamExt;
 use koda_client::protocol::state::TrustMode;
-use koda_core::config::KodaConfig;
 use ratatui::{
     style::{Color, Style},
     text::{Line, Span},
@@ -117,6 +116,10 @@ pub(crate) struct TuiContext {
     /// The host's sandbox, from `state/read`: whether Auto is possible.
     pub sandbox: koda_client::protocol::state::SandboxState,
     pub project_root: PathBuf,
+    /// Koda's first run here, which opens the provider picker: no config
+    /// folder yet, and nothing on the command line chose the provider
+    /// (`app.rs` has the rule).
+    pub first_run: bool,
 
     /// Coalescing draw scheduler (#1138). Replaces the old per-iteration
     /// synchronous `terminal.draw()` calls in the inference hot loop.
@@ -280,25 +283,6 @@ pub(crate) enum CommandOutcome {
     Quit,
 }
 
-/// Which of `--provider`, `--base-url` and `--model` the user set for this
-/// run.
-///
-/// `KodaConfig::with_overrides` has already applied the values by the time
-/// the TUI starts. The TUI only needs to know which fields are the user's
-/// explicit choice, so that the saved last-used provider (#693) fills in
-/// the rest without replacing them. `app.rs` documents the precedence: CLI
-/// flags beat env vars, which beat saved config, which beats built-in
-/// defaults.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct ProviderOverrides {
-    /// `--provider` was given.
-    pub provider: bool,
-    /// `--base-url` was given.
-    pub base_url: bool,
-    /// `--model` was given.
-    pub model: bool,
-}
-
 impl TuiContext {
     /// Initialize all TUI state. Call before entering the event loop.
     ///
@@ -306,8 +290,7 @@ impl TuiContext {
     /// onboarding, and everything that `run()` used to do before `loop {`.
     pub async fn new(
         project_root: PathBuf,
-        config: KodaConfig,
-        overrides: ProviderOverrides,
+        named: settings::Named,
         resume: Option<String>,
         version_check: tokio::task::JoinHandle<Option<String>>,
         first_run: bool,
@@ -326,7 +309,6 @@ impl TuiContext {
         // Koda's host runs the session's turns and builds each session's
         // agent (its tools, MCP servers and prompt); the TUI is its client.
         let mut client = koda_client::InProcessClient::start(koda_client::StartArgs {
-            config: config.clone(),
             config_file: crate::user_config::file()?,
             home,
             project_root: project_root.clone(),
@@ -337,9 +319,14 @@ impl TuiContext {
         })
         .await
         .map_err(|e| anyhow::anyhow!("couldn't start Koda's host: {e}"))?;
-        // The flags given, and nothing else: the host fills in the rest from
-        // the saved choice for a new session, or a resumed one's own.
-        let named = settings::Named::from_flags(&config, overrides);
+        // `named` is what the flags gave, and nothing else: the host fills
+        // in the rest from the saved choice for a new session, or a resumed
+        // one's own. A provider goes by its id.
+        let providers = crate::providers::Providers::fetch(&client).await;
+        let mut named = named;
+        if let Some(typed) = named.provider.take() {
+            named.provider = Some(providers.id_for(&typed));
+        }
         // A mistyped id (once, a llama-server pid) used to run a session
         // that didn't exist; now it stops the start.
         let resume = match resume {
@@ -365,7 +352,6 @@ impl TuiContext {
         // choice, a resumed session's own, or the flags. The TUI mirrors it.
         let (session_settings, host_warnings) =
             settings::fetch_settings(&mut client, &session.id, initial_mode).await?;
-        let providers = crate::providers::Providers::fetch(&client).await;
         // Flags are for this run only, as Codex's are: only `/model` and
         // `/provider` save a choice into config.toml.
 
@@ -412,6 +398,10 @@ impl TuiContext {
 
         let completer = crate::completer::InputCompleter::new(project_root.clone());
 
+        // A model alias picks its own provider, so it skips onboarding too;
+        // the session says it chose by one.
+        let by_alias = named.model.is_some() && session_settings.alias == named.model;
+        let first_run = first_run && !by_alias;
         let mut menu = MenuContent::None;
         if first_run {
             // Onboarding: auto-open provider dropdown
@@ -468,6 +458,7 @@ impl TuiContext {
             mode: initial_mode,
             sandbox,
             project_root,
+            first_run,
             frame_requester,
             draw_rx,
             child_activity: crate::child_activity::ChildActivityTracker::default(),

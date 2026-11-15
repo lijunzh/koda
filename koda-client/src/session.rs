@@ -77,12 +77,6 @@ pub(crate) enum SessionCommand {
     /// when idle or once the running turn has ended. `done` is dropped once
     /// the session has taken them, or, during a turn, queued them.
     ReloadMcp { done: oneshot::Sender<()> },
-    /// In process only: what the session's next turns run with. Applied
-    /// at once when idle, or once the running turn has ended.
-    Configure {
-        config: Box<KodaConfig>,
-        done: oneshot::Sender<Answer>,
-    },
     /// Stop the turn, if one runs, and end the task. `done`, if given, is
     /// dropped once the task has ended.
     Shutdown { done: Option<oneshot::Sender<()>> },
@@ -96,8 +90,7 @@ impl SessionCommand {
             | Self::Interrupt { reply, .. }
             | Self::Steer { reply, .. }
             | Self::Compact { reply }
-            | Self::UpdateSettings { reply, .. }
-            | Self::Configure { done: reply, .. } => {
+            | Self::UpdateSettings { reply, .. } => {
                 let _ = reply.send(Err(error));
             }
             Self::Respond { .. } | Self::ReloadMcp { .. } | Self::Shutdown { .. } => {}
@@ -118,6 +111,9 @@ pub(crate) struct SessionContext {
     pub events: mpsc::UnboundedSender<Outgoing>,
     pub request_ids: Arc<AtomicI64>,
     pub open_requests: OpenRequests,
+    /// Set once the first session has checked this run's effort and
+    /// thinking budget against its model ([`crate::settings::check_run_reasoning`]).
+    pub run_checked: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// A session, open and ready for a turn.
@@ -147,6 +143,7 @@ pub(crate) async fn open(
         events,
         request_ids,
         open_requests,
+        run_checked,
     } = context;
     // The modes this session may run in, which the host enforces.
     let rules = crate::settings::ModeRules {
@@ -156,10 +153,9 @@ pub(crate) async fn open(
 
     let resumed = resume.is_some();
     let loaded = crate::config_file::load(&context_file)?;
-    // A new session starts in the file's mode unless this run named one.
-    if !config.trust_named
-        && let Some(file_mode) = crate::config_file::mode(&loaded)
-    {
+    // A new session starts in the file's mode (with `--mode` over it), else
+    // the host's.
+    if let Some(file_mode) = crate::config_file::mode(&loaded) {
         config.trust = file_mode;
     }
     // A resumed session keeps its own provider, endpoint, model choice and
@@ -206,6 +202,14 @@ pub(crate) async fn open(
     // The file's effort, window, retries and timeouts, now that the
     // provider is known, before the provider is asked for its window.
     crate::config_file::apply_settings(&mut config, &loaded);
+    // The run's effort and thinking budget were asked for the model the run
+    // starts with, so its first session refuses one that model doesn't take,
+    // as Codex refuses an effort asked for a model. A later session on
+    // another model (`/provider`, `/new`) has them corrected at request
+    // time, as Codex falls back when a switch lands on a model without it.
+    if !run_checked.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        crate::settings::check_run_reasoning(&config, &loaded)?;
+    }
 
     // Ask the provider for the model's window first. A guess is said once
     // the session has started.
@@ -247,7 +251,7 @@ pub(crate) async fn open(
     // Its MCP servers start in the background; opening waits only for the
     // required ones, and fails when one of them does, as Codex's does.
     let mcp = session.mcp();
-    let servers = crate::mcp::configured(&context_file, &config)?;
+    let servers = crate::mcp::configured(&context_file)?;
     let on_status = crate::mcp::status_fn(&id, &events);
     if let Err(e) = session.start_mcp(servers, Some(on_status)).await {
         if let Some(mcp) = &mcp {
@@ -458,10 +462,6 @@ impl SessionTask {
                     self.reload_mcp_now().await;
                     drop(done);
                 }
-                SessionCommand::Configure { config, done } => {
-                    self.configure(*config);
-                    let _ = done.send(to_json(serde_json::Value::Null));
-                }
                 SessionCommand::UpdateSettings { params, reply } => {
                     match self.update_settings(params).await {
                         Ok(()) => {
@@ -476,11 +476,6 @@ impl SessionTask {
                 SessionCommand::Shutdown { .. } => return,
             }
         }
-    }
-
-    fn configure(&mut self, config: KodaConfig) {
-        self.session.update_provider(&config);
-        self.config = config;
     }
 
     /// Run the compactions that turns ended asking for. Returns whether the
@@ -569,7 +564,7 @@ impl SessionTask {
         let Some(mcp) = &self.mcp else {
             return;
         };
-        match crate::mcp::configured(&self.config_file, &self.config) {
+        match crate::mcp::configured(&self.config_file) {
             Ok(servers) => koda_core::mcp::McpManager::reconcile(mcp, servers).await,
             Err(error) => tracing::warn!("MCP reload: {}", error.message),
         }
@@ -676,7 +671,6 @@ impl SessionTask {
         // compaction runs once it has.
         let mut compact_next: Option<oneshot::Sender<Answer>> = None;
         let mut interrupts = Vec::new();
-        let mut configured: Option<(KodaConfig, Vec<oneshot::Sender<Answer>>)> = None;
         // Told when the turn has stopped: dropped as this returns.
         let mut closing: Vec<oneshot::Sender<()>> = Vec::new();
         let mut keep_running = true;
@@ -807,12 +801,6 @@ impl SessionTask {
                             *reload_mcp = true;
                             drop(done);
                         }
-                        // The running turn keeps what it started with.
-                        Some(SessionCommand::Configure { config: next, done }) => {
-                            let mut waiting = configured.take().map(|(_, d)| d).unwrap_or_default();
-                            waiting.push(done);
-                            configured = Some((*next, waiting));
-                        }
                         // Told to stop, or the host is gone: stop the turn and
                         // let it wind down. It bounds that itself.
                         Some(SessionCommand::Shutdown { done }) => {
@@ -843,13 +831,6 @@ impl SessionTask {
         if let Some(tokens) = sink.take_learned_window() {
             config.max_context_tokens = tokens;
             config.model_settings.max_context_tokens = tokens;
-        }
-        if let Some((next, waiting)) = configured {
-            session.update_provider(&next);
-            *config = next;
-            for done in waiting {
-                let _ = done.send(to_json(serde_json::Value::Null));
-            }
         }
         match compact_next {
             _ if !keep_running => Next::Stop,

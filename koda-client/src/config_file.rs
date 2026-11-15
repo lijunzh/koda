@@ -10,6 +10,7 @@
 //! which are never written to the file.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use koda_config::{ConfigError, ConfigFile, Edit, Loaded};
 use koda_core::config::{KodaConfig, ProviderType};
@@ -41,8 +42,12 @@ pub(crate) fn values(loaded: &Loaded) -> KodaConfigValues {
         model_provider: config.model_provider.clone(),
         model_reasoning_effort: config.model_reasoning_effort.clone(),
         model_context_window: config.model_context_window,
+        model_max_output_tokens: config.model_max_output_tokens,
+        model_temperature: config.model_temperature,
+        model_thinking_budget: config.model_thinking_budget,
         model_post_turn_compact_threshold_percent: config.model_post_turn_compact_threshold_percent,
         mode: config.mode.map(protocol_mode),
+        agent: config.agent.clone(),
         model_providers: config
             .model_providers
             .iter()
@@ -83,15 +88,52 @@ pub(crate) fn mode(loaded: &Loaded) -> Option<koda_core::trust::TrustMode> {
     })
 }
 
-/// Fill what a session runs with from the file (with `-c` over it), for
-/// what nothing above it set: a flag, or the agent's JSON. Call once the
-/// session's provider is known; its `[model_providers]` entry applies.
+/// What new sessions start from: the agent the file names (`agent`, which
+/// `--agent` sets for a run), else the default one, in Auto. The file's
+/// model choice, settings and mode go over it for each new session, read
+/// again each time ([`apply_settings`], [`mode`]).
+pub(crate) fn host_config(project_root: &Path, loaded: &Loaded) -> Result<KodaConfig, String> {
+    let agent = loaded.config.agent.as_deref().unwrap_or(DEFAULT_AGENT);
+    let mut config = KodaConfig::load(project_root, agent).map_err(|e| format!("{e:#}"))?;
+    // The agent's own `trust` is for it as a sub-agent; a session's mode
+    // is the file's, else Auto, and the host's rules check it.
+    config.trust = koda_core::trust::TrustMode::Auto;
+    Ok(config)
+}
+
+/// The agent a session runs when the config names none.
+const DEFAULT_AGENT: &str = "default";
+
+/// Fill what a session runs with from the file, with `-c` over it. A value
+/// given for this run (a flag such as `--effort`, or `-c`) wins over the
+/// agent's JSON; the file's own fills in what the agent left unset. Call
+/// once the session's provider is known; its `[model_providers]` entry
+/// applies.
 pub(crate) fn apply_settings(config: &mut KodaConfig, loaded: &Loaded) {
     let file = &loaded.config;
-    if config.model_settings.reasoning_effort.is_none() {
-        config.model_settings.reasoning_effort = file.model_reasoning_effort.clone();
-    }
-    if config.context_override.is_none()
+    let for_run = |key: &str| loaded.flag_value(key).is_some();
+    let settings = &mut config.model_settings;
+    fill(
+        &mut settings.reasoning_effort,
+        file.model_reasoning_effort.clone(),
+        for_run("model_reasoning_effort"),
+    );
+    fill(
+        &mut settings.max_tokens,
+        file.model_max_output_tokens,
+        for_run("model_max_output_tokens"),
+    );
+    fill(
+        &mut settings.temperature,
+        file.model_temperature,
+        for_run("model_temperature"),
+    );
+    fill(
+        &mut settings.thinking_budget,
+        file.model_thinking_budget,
+        for_run("model_thinking_budget"),
+    );
+    if (config.context_override.is_none() || for_run("model_context_window"))
         && let Some(tokens) = file.model_context_window.filter(|n| *n > 0)
     {
         let tokens = tokens as usize;
@@ -117,6 +159,16 @@ pub(crate) fn apply_settings(config: &mut KodaConfig, loaded: &Loaded) {
     koda_core::sandbox::set_local_binding_configured(
         file.sandbox.allow_local_binding.unwrap_or(false),
     );
+}
+
+/// Put `value` in `slot` when it is unset, or whatever it holds when
+/// `wins`.
+fn fill<T>(slot: &mut Option<T>, value: Option<T>, wins: bool) {
+    if let Some(value) = value
+        && (wins || slot.is_none())
+    {
+        *slot = Some(value);
+    }
 }
 
 /// The endpoint the file gives provider `ptype`, if any.
@@ -712,8 +764,8 @@ mod tests {
         );
     }
 
-    /// The file fills what a session runs with where nothing above it set
-    /// a value; a flag or the agent's JSON keeps its own.
+    /// The file fills what a session runs with where the agent's JSON set
+    /// nothing; the agent keeps its own.
     #[tokio::test]
     async fn the_file_fills_what_nothing_named() {
         let (_dir, _db, file) = scratch().await;
@@ -741,16 +793,60 @@ mod tests {
         assert_eq!(config.stream_max_retries, 2);
         assert_eq!(config.stream_idle_timeout_ms, Some(90_000));
 
-        // A flag (or the agent's JSON) keeps its value.
-        let mut named = KodaConfig::default_for_testing(ProviderType::LMStudio);
-        named.model_settings.reasoning_effort = Some("low".into());
-        named.context_override = Some(8_192);
-        apply_settings(&mut named, &loaded);
+        // The agent's JSON keeps its value.
+        let mut agent = KodaConfig::default_for_testing(ProviderType::LMStudio);
+        agent.model_settings.reasoning_effort = Some("low".into());
+        agent.context_override = Some(8_192);
+        apply_settings(&mut agent, &loaded);
         assert_eq!(
-            named.model_settings.reasoning_effort.as_deref(),
+            agent.model_settings.reasoning_effort.as_deref(),
             Some("low")
         );
-        assert_eq!(named.context_override, Some(8_192));
+        assert_eq!(agent.context_override, Some(8_192));
+    }
+
+    /// A value given for this run (`--effort` is `-c
+    /// model_reasoning_effort=...`) wins over the agent's JSON; the file's
+    /// own fills only what the agent left unset.
+    #[tokio::test]
+    async fn a_run_value_wins_over_the_agent() {
+        let (_dir, _db, file) = scratch().await;
+        std::fs::write(
+            file.path(),
+            "model_temperature = 0.9
+model_max_output_tokens = 4096
+",
+        )
+        .unwrap();
+        let flags = [
+            "model_reasoning_effort=high",
+            "model_context_window=65536",
+            "model_thinking_budget=1024",
+        ];
+        let loaded = file
+            .with_overrides(
+                flags
+                    .iter()
+                    .map(|f| koda_config::parse_override(f).unwrap())
+                    .collect(),
+            )
+            .load()
+            .unwrap();
+
+        let mut agent = KodaConfig::default_for_testing(ProviderType::Anthropic);
+        agent.model_settings.reasoning_effort = Some("low".into());
+        agent.context_override = Some(8_192);
+        agent.model_settings.temperature = Some(0.1);
+        apply_settings(&mut agent, &loaded);
+        let settings = &agent.model_settings;
+        assert_eq!(settings.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(agent.context_override, Some(65_536));
+        assert_eq!(agent.max_context_tokens, 65_536);
+        assert_eq!(settings.thinking_budget, Some(1024));
+        // The file's temperature doesn't beat the agent's; its output
+        // limit fills what the agent left unset.
+        assert_eq!(settings.temperature, Some(0.1));
+        assert_eq!(settings.max_tokens, Some(4096));
     }
 
     /// A `-c` value wins over the file's, `config/read` names it as the

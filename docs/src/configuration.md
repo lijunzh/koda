@@ -66,6 +66,10 @@ Every key, in Codex's names where Codex has one:
 | `model_provider`, `model` | The provider and model a new session starts with |
 | `model_reasoning_effort` | The reasoning effort, as `--effort` gives it |
 | `model_context_window` | The context window to assume, in tokens, as `--max-context-tokens` pins it |
+| `model_max_output_tokens` | The most tokens a reply may use, as `--max-tokens` gives it |
+| `model_temperature` | The sampling temperature (0.0–2.0), as `--temperature` gives it |
+| `model_thinking_budget` | A thinking budget in tokens, for Gemini models, as `--thinking-budget` gives it |
+| `agent` | The agent sessions run, as `--agent` names it: a built-in, or a JSON file in `agents/` (default: `default`) |
 | `model_post_turn_compact_threshold_percent` | Compact after a turn's final reply once this share of the window is used (1–100; 0 turns it off) |
 | `mode` | The mode a new session starts in: `auto`, `safe`, or `plan` (`koda exec` only) |
 | `[model_providers.<id>]` | Per provider: `base_url`, `request_max_retries`, `stream_max_retries`, `stream_idle_timeout_ms` (0 turns the limit off) |
@@ -78,9 +82,24 @@ Every key, in Codex's names where Codex has one:
 never saved: `koda -c model=claude-opus`, or
 `koda exec -c model_providers.lm-studio.base_url=http://127.0.0.1:1234/v1 "…"`.
 The value is read as TOML (`5`, `true`, `"text"`), and as plain text when it
-isn't. A key Koda doesn't know stops the run. Flags such as `--model` win over
-`-c`. A setting the agent's JSON gives wins over the file and `-c`, for that
-agent.
+isn't, and replaces what is at its key, a whole table included. A key Koda
+doesn't know stops the run.
+
+**Most flags are `-c` values,** as Codex's are: `--effort` is
+`model_reasoning_effort`, `--max-tokens` `model_max_output_tokens`,
+`--temperature` `model_temperature`, `--thinking-budget`
+`model_thinking_budget`, `--max-context-tokens` `model_context_window`,
+`--mode` `mode` and `--agent` `agent`; `--mcp-config` gives
+`mcp_servers.<name>` values. A flag wins over a `-c` value for the same key.
+`--model`, `--provider` and `--base-url` choose the session's model instead,
+as Codex's TUI passes its model to the session it starts.
+
+**A value given for the run** (a flag or `-c`) wins over the agent's JSON.
+The file's own value fills in only what the agent's JSON leaves unset. An
+effort or thinking budget given for the run that the Claude model it starts
+with doesn't take stops the run, so the command can be fixed. A later session
+on another model (`/provider`) gets a level that model takes instead, as
+Codex falls back when a switch lands on a model without it.
 
 - **A hand edit applies to the next session,** without a restart. Run
   `/mcp reconnect` for open sessions to take MCP server changes.
@@ -104,9 +123,9 @@ Koda needs the model's context window to show the footer percentage, warn
 before a request overflows, and auto-compact. It takes the first of these:
 
 ```text
-1. --max-context-tokens N
+1. --max-context-tokens N (or -c model_context_window=N)
 2. "max_context_tokens" in the agent JSON
-3. model_context_window in config.toml (or -c model_context_window=N)
+3. model_context_window in config.toml
 4. What the server reports (LM Studio, llama-server, Ollama, Anthropic, Gemini)
 5. Koda's built-in model table
 ```
@@ -115,8 +134,7 @@ Use 1 or 3 when the server loaded a different size than Koda assumed, or can't
 say (an OpenAI-compatible engine such as `rec` falls to the table, which
 assumes 128,000 for most local models). A pinned value also stays when you
 switch models with `/model`. It must be a positive whole number; `0` or
-text stops Koda at startup with an error rather than being ignored. Startup
-logs `Context window from override: N tokens for <model>`.
+text stops Koda at startup with an error rather than being ignored.
 
 ```bash
 koda exec --max-context-tokens 65536 "say hi" --provider lm-studio --base-url http://127.0.0.1:11500/v1
