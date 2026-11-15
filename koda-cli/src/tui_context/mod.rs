@@ -6,6 +6,7 @@
 //! - **events.rs** — keyboard, mouse, paste, clipboard, history input handling
 //! - **menus.rs** — dropdown pickers, menu navigation, wizard state machines
 
+pub(crate) mod background;
 mod events;
 mod idle_ui_events;
 mod mcp;
@@ -130,11 +131,11 @@ pub(crate) struct TuiContext {
     pub frame_requester: crate::frame_requester::FrameRequester,
     pub draw_rx: crate::frame_requester::DrawNotifyRx,
 
-    /// Live activity tracker for bg agents + processes (#1210).
-    /// Absorbs `ChildAgentActivity` / `ChildTaskUpdate` events into a per-task
-    /// last-seen map; projected each frame into the
-    /// `widgets::child_activity_overlay` rendered above the status bar.
-    /// See [`crate::child_activity::ChildActivityTracker`].
+    /// What the activity overlay above the status bar shows (#1210): the
+    /// turn's sub-agents, from its `ChildTaskUpdate` and
+    /// `ChildAgentActivity` events, and the background processes, from
+    /// `session/backgroundTerminals/list`. See
+    /// [`crate::child_activity::ChildActivityTracker`].
     pub child_activity: crate::child_activity::ChildActivityTracker,
     /// The session's MCP servers as the host reports them, for the status
     /// bar.
@@ -152,9 +153,6 @@ pub struct TuiSession {
     pub id: String,
     /// The database the host also writes to. The TUI writes only while idle.
     pub db: koda_core::db::Database,
-    /// The session's sub-agents, from the host
-    /// ([`koda_client::InProcessClient::session_handles`]).
-    pub bg_agents: Arc<koda_core::child_agent::ChildAgentRegistry>,
     /// The instruction files the host loaded for it, in order, as of its
     /// opening (`instructionSources`), for `/memory`.
     pub instruction_sources: Vec<String>,
@@ -181,15 +179,9 @@ pub(crate) async fn open_host_session(
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let instruction_sources = started.session.instruction_sources.unwrap_or_default();
-    let id = started.session.id;
-    let bg_agents = client
-        .session_handles(&id)
-        .map(|handles| handles.bg_agents)
-        .unwrap_or_else(koda_core::child_agent::new_shared);
     Ok(TuiSession {
-        id,
+        id: started.session.id,
         db,
-        bg_agents,
         instruction_sources,
     })
 }
@@ -590,22 +582,11 @@ impl TuiContext {
         let selection = self.mouse_selection.as_ref();
         let mcp_info = self.mcp.status_bar();
         let project_root = self.project_root.clone();
-        // #1210: project bg-agent + bg-process snapshots through the
-        // activity tracker into renderable rows for the live overlay
-        // above the status bar. Cheap — snapshots are a vec clone
-        // under one short lock; tracker projection is O(n) over the
-        // (always small: bounded by sub-agent fan-out cap) snapshot
-        // size. Done before the terminal.draw closure to satisfy the
-        // borrow checker around `&mut self`.
-        //
-        // Replaces the #1158 ambient `bg_counts` status pill: the
-        // overlay shows what's running, what each task is doing right
-        // now, and the cancel keybindings — the pill's job becomes
-        // redundant the moment the live surface exists (#1210).
-        let agent_snaps = self.session.bg_agents.snapshot();
-        let process_snaps = self.agent.tools.bg_registry.snapshot();
-        let (child_activity_rows, child_activity_total) =
-            self.child_activity.build_rows(&agent_snaps, &process_snaps);
+        // #1210: the overlay above the status bar shows the turn's
+        // sub-agents and the session's background processes, and what
+        // stops them.
+        let (child_activity_rows, child_activity_total) = self.child_activity.build_rows();
+        let child_activity_hint = self.child_activity.hint();
 
         let mut history_rect = None;
         if let Err(e) = self.terminal.draw(|f| {
@@ -626,6 +607,7 @@ impl TuiContext {
                 &project_root,
                 &child_activity_rows,
                 child_activity_total,
+                child_activity_hint,
             ));
         }) {
             tracing::debug!("draw skipped: {e}");
@@ -673,6 +655,7 @@ impl TuiContext {
             if self.mcp_stale {
                 self.refresh_mcp().await;
             }
+            self.refresh_background(false).await;
 
             // ── Dispatch pending commands ────────────────────
             if self.tui_state == TuiState::Idle

@@ -126,37 +126,43 @@ See [Memory](./memory.md) for the full memory system.
 /skills security     ← filter by name or description
 ```
 
-## `/agent`
+## `/agents`
 
-Lists the available agents, built-in and custom. To run a session as a
-named agent, start Koda with `--agent <name>`.
+Lists the available agents: built-in, yours (`~/.config/koda/agents/`) and
+the project's (`.koda/agents/`). To run a session as a named agent, start
+Koda with `--agent <name>`. `/agent`, its old name, still works for a
+release and says the new one.
 
 ```text
-/agent
+/agents
 koda --agent testgen
 ```
 
-## `/agents`
+## `/stop`
 
-Removed in #1210. The **activity overlay** just above the status bar
-shows, in real time, the sub-agent running in the current turn and
-every background shell process: name, the last tool call each one
-fired, and elapsed age.
+Stops every background process the model started (`Bash` with
+`background: true`), such as a dev server. `/clean` is the same command, as in
+Codex. It works during a turn too. `Esc` and `Ctrl+C` stop the turn and its
+sub-agents but leave background processes running; they also stop when Koda
+exits. To stop just one, ask: "stop the dev server". Koda stops a background
+process it started itself, without asking in Auto mode.
+
+The **activity overlay** just above the status bar shows, in real time, the
+sub-agents of the current turn and every background process: name, the last
+tool call each sub-agent fired, the command each process runs, and its age.
+Its last row says what stops them.
 
 ```text
   🤖 explore   (12s)  · Read src/lib.rs
-  🐚 process:5821 (1m) · cargo test --workspace
-  + 2 more  ·  Esc cancel all
+  🐚 process:5821 (1m) · npm run dev
+  Esc to interrupt · /stop to stop background processes
 ```
 
 ## `/cancel`
 
 Removed on 2026-11-06. It only ran while Koda was idle, when no
-sub-agent exists, so `/cancel agent:N` could never reach one. Press
-`Esc` or `Ctrl+C` to stop everything running, including background
-shell processes. To stop just one background process, ask: "stop the
-dev server". Koda stops a background process it started itself, without
-asking in Auto mode.
+sub-agent exists, so `/cancel agent:N` could never reach one. `Esc` stops a
+turn's sub-agents and `/stop` the background processes.
 
 ## `/expand [<n>]`
 

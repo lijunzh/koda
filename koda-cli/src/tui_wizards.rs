@@ -15,45 +15,6 @@ use ratatui::text::{Line, Span};
 
 use tui_output::{BOLD, CYAN, DIM};
 
-// ── Agents (native TUI) ─────────────────────────────
-
-pub(crate) fn handle_list_agents(buffer: &mut ScrollBuffer, project_root: &std::path::Path) {
-    let agents = koda_core::tools::agent::list_agents(project_root);
-    tui_output::blank(buffer);
-    tui_output::emit_line(buffer, Line::styled("  \u{1f43b} Sub-Agents", BOLD));
-    tui_output::blank(buffer);
-
-    if agents.is_empty() {
-        tui_output::dim_msg(buffer, "No sub-agents configured.".into());
-    } else {
-        for (name, desc, source) in &agents {
-            let tag = match source.as_str() {
-                "user" => " [user]",
-                "project" => " [project]",
-                _ => "",
-            };
-            tui_output::emit_line(
-                buffer,
-                Line::from(vec![
-                    Span::styled(format!("  {name}"), CYAN),
-                    Span::raw(format!(" \u{2014} {desc}")),
-                    Span::styled(tag, DIM),
-                ]),
-            );
-        }
-    }
-
-    tui_output::blank(buffer);
-    tui_output::dim_msg(
-        buffer,
-        "Ask Koda to invoke them, or use koda --agent <name>".into(),
-    );
-    tui_output::dim_msg(
-        buffer,
-        "Need a specialist? Ask Koda to create one for recurring tasks".into(),
-    );
-}
-
 // ── Skills ─────────────────────────────────────────
 
 pub(crate) fn handle_list_skills(

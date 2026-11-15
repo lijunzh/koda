@@ -152,7 +152,7 @@ pattern is sub-agent-only.
 
 ```text
 koda --agent testgen     ← run the session as a named agent
-/agent                   ← list the available agents
+/agents                  ← list the available agents
 ```
 
 The main model dispatches to sub-agents via the `InvokeAgent` tool. Each

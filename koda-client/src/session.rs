@@ -324,7 +324,6 @@ pub(crate) async fn open(
         handles: SessionHandles {
             project_root: session.agent.project_root.clone(),
             agent: Arc::clone(&session.agent),
-            bg_agents: Arc::clone(&session.bg_agents),
             mcp: mcp.clone(),
         },
         task: SessionTask {
@@ -806,18 +805,16 @@ enum Next {
     Stop,
 }
 
-/// In process only: a session's parts a front end still reaches directly
-/// while it moves onto the protocol.
+/// An open session's parts the host's requests reach: its notes, its
+/// background processes and agents, its MCP servers.
 #[derive(Clone)]
-pub struct SessionHandles {
+pub(crate) struct SessionHandles {
     /// The project the session works in, whose notes `session/memory/*`
     /// read and write.
     pub project_root: PathBuf,
     /// The agent the session runs: its background processes for
     /// `session/backgroundTerminals/*` and its sub-agents for `agent/list`.
     pub agent: Arc<koda_core::agent::KodaAgent>,
-    /// The session's sub-agents, for showing what they do and stopping them.
-    pub bg_agents: Arc<koda_core::child_agent::ChildAgentRegistry>,
     /// The session's MCP servers, for `mcpServerStatus/list`.
     pub mcp: Option<SharedMcpManager>,
 }

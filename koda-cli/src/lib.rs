@@ -47,7 +47,6 @@ pub(crate) mod tool_header;
 pub(crate) mod tool_history;
 pub(crate) mod tool_output_lines;
 pub(crate) mod tui_app;
-pub(crate) mod tui_bg_tasks;
 pub(crate) mod tui_commands;
 pub(crate) mod tui_context;
 pub(crate) mod tui_output;

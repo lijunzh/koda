@@ -7,7 +7,7 @@
 //!   🤖 explore   (12s)  · Read src/auth.rs
 //!   🤖 verify    ( 4s)  · Bash cargo test --lib
 //!   🐚 process:42 ( 8s) · cargo build --release
-//!   + 2 more  ·  Esc cancel all
+//!   + 2 more  ·  Esc to interrupt · /stop to stop background processes
 //! ```
 //!
 //! ## Why this widget exists
@@ -31,11 +31,9 @@
 //!
 //! ## What this widget does NOT do
 //!
-//! - Does NOT navigate / select / cancel rows. Esc and Ctrl+C cancel
-//!   everything shown; to stop one background process, ask the model.
-//!   `/cancel <id>` used to do that and was removed on 2026-11-06: it
-//!   only ran at idle, when no sub-agent exists, so its `agent:N` form
-//!   could never reach one.
+//! - Does NOT navigate / select / cancel rows. Its hint row says what
+//!   does: Esc interrupts the turn and its sub-agents, `/stop` stops the
+//!   background processes; to stop one process, ask the model.
 //! - Does NOT auto-refresh — caller drives a redraw on each
 //!   `ChildAgentActivity` / `ChildTaskUpdate` event (already wired via
 //!   `frame_requester`).
@@ -106,6 +104,8 @@ pub struct ChildActivityOverlay<'a> {
     /// Total live work count (may exceed `rows.len()`); drives
     /// the `+ N more` overflow hint.
     total: usize,
+    /// What stops the rows shown, for the hint row.
+    hint: &'a str,
 }
 
 impl<'a> ChildActivityOverlay<'a> {
@@ -113,8 +113,8 @@ impl<'a> ChildActivityOverlay<'a> {
     ///
     /// `rows.len() <= MAX_VISIBLE` is the caller's invariant; this
     /// widget will silently truncate to the visible area if violated.
-    pub fn new(rows: &'a [ActivityRow], total: usize) -> Self {
-        Self { rows, total }
+    pub fn new(rows: &'a [ActivityRow], total: usize, hint: &'a str) -> Self {
+        Self { rows, total, hint }
     }
 
     /// How many terminal rows this widget occupies for `total` live
@@ -206,7 +206,7 @@ impl Widget for ChildActivityOverlay<'_> {
             ));
         }
         spans.push(Span::styled(
-            "Esc cancel all",
+            self.hint.to_string(),
             Style::default().fg(Color::Rgb(80, 80, 80)),
         ));
         Line::from(spans).render(Rect::new(area.x, hint_y, area.width, 1), buf);
@@ -256,7 +256,7 @@ mod tests {
         let height = ChildActivityOverlay::height_for(total).max(1);
         let area = Rect::new(0, 0, width, height);
         let mut buf = Buffer::empty(area);
-        ChildActivityOverlay::new(rows, total).render(area, &mut buf);
+        ChildActivityOverlay::new(rows, total, "Esc to interrupt").render(area, &mut buf);
         (0..height)
             .map(|y| {
                 (0..width)
@@ -344,8 +344,8 @@ mod tests {
         let lines = render(&rows, 1, 80);
         let hint = lines.last().unwrap();
         assert!(
-            hint.contains("Esc cancel all"),
-            "hint row should always show Esc keybinding: {hint:?}"
+            hint.contains("Esc to interrupt"),
+            "hint row should always show the caller's hint: {hint:?}"
         );
     }
 
@@ -422,6 +422,6 @@ mod tests {
         // keybindings only. That's an acceptable edge — caller is
         // expected to omit the layout slot entirely when total=0
         // (the height_for(0)==0 contract).
-        assert!(lines[0].contains("Esc cancel all") || lines[0].is_empty());
+        assert!(lines[0].contains("Esc to interrupt") || lines[0].is_empty());
     }
 }

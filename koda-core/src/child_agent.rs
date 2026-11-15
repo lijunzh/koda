@@ -284,6 +284,9 @@ pub struct ChildAgentRegistry {
 #[derive(Clone)]
 pub struct ChildStatusEmitter {
     task_id: u32,
+    /// The agent's name, carried on each `ChildTaskUpdate` so a client
+    /// can label its row from the events alone.
+    agent_name: String,
     spawner: Option<u32>,
     is_background: bool,
     status_tx: watch::Sender<AgentStatus>,
@@ -302,11 +305,18 @@ impl ChildStatusEmitter {
     ) -> Self {
         Self {
             task_id,
+            agent_name: String::new(),
             spawner,
             is_background,
             status_tx,
             registry,
         }
+    }
+
+    /// Name the agent, for the events this emitter sends.
+    pub fn with_agent_name(mut self, agent_name: &str) -> Self {
+        self.agent_name = agent_name.to_string();
+        self
     }
 
     /// Drive a status transition.
@@ -329,6 +339,7 @@ impl ChildStatusEmitter {
         self.registry
             .push_status_event(EngineEvent::ChildTaskUpdate {
                 task_id: self.task_id,
+                agent_name: self.agent_name.clone(),
                 spawner: self.spawner,
                 is_background: self.is_background,
                 status,
@@ -509,7 +520,8 @@ impl ChildAgentRegistry {
         let (status_tx, status_rx) = watch::channel(AgentStatus::Pending);
         let cancel = parent_cancel.child_token();
         let task_id = self.insert(agent_name, prompt, cancel, status_rx, spawner);
-        let emitter = ChildStatusEmitter::new(task_id, spawner, false, status_tx, self.clone());
+        let emitter = ChildStatusEmitter::new(task_id, spawner, false, status_tx, self.clone())
+            .with_agent_name(agent_name);
         let guard = FgRegistrationGuard {
             registry: self.clone(),
             task_id,
@@ -813,6 +825,7 @@ mod tests {
                 spawner,
                 is_background,
                 status,
+                ..
             } => (*task_id, *spawner, *is_background, status),
             other => panic!("expected ChildTaskUpdate, got {other:?}"),
         }
@@ -953,6 +966,7 @@ mod tests {
         ] {
             let event = EngineEvent::ChildTaskUpdate {
                 task_id: 1,
+                agent_name: String::new(),
                 spawner: Some(2),
                 is_background: true,
                 status: status.clone(),
@@ -965,6 +979,7 @@ mod tests {
                     spawner,
                     is_background,
                     status: round_tripped,
+                    ..
                 } => {
                     assert_eq!(task_id, 1);
                     assert_eq!(spawner, Some(2));
@@ -1141,6 +1156,7 @@ mod tests {
         // caller.
         reg.push_status_event(EngineEvent::ChildTaskUpdate {
             task_id: 1,
+            agent_name: String::new(),
             spawner: None,
             is_background: true,
             status: AgentStatus::Pending,
@@ -1212,6 +1228,7 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(40)).await;
                 reg_p.push_status_event(EngineEvent::ChildTaskUpdate {
                     task_id: 7,
+                    agent_name: String::new(),
                     spawner: None,
                     is_background: true,
                     status: AgentStatus::Running { iter },

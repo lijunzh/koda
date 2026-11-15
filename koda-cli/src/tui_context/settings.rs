@@ -234,16 +234,9 @@ impl TuiContext {
             .request::<methods::SessionUnsubscribe>(SessionUnsubscribeParams { session_id: left })
             .await;
         let instruction_sources = started.session.instruction_sources.unwrap_or_default();
-        let id = started.session.id;
-        let bg_agents = self
-            .client
-            .session_handles(&id)
-            .map(|handles| handles.bg_agents)
-            .unwrap_or_else(koda_core::child_agent::new_shared);
         self.session = TuiSession {
-            id,
+            id: started.session.id,
             db: self.session.db.clone(),
-            bg_agents,
             instruction_sources,
         };
         if let Err(e) = self.sync_settings(true).await {

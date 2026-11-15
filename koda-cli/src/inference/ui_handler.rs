@@ -102,8 +102,17 @@ pub(super) fn handle_inference_ui_inline(
             // overlay instead). Done here so every fall-through engine
             // event passes through the same tap point — no risk of a
             // future variant-specific arm bypassing it.
-            if let EngineEvent::ChildAgentActivity { task_id, kind, .. } = &event {
-                child_activity.record_activity(*task_id, kind);
+            match &event {
+                EngineEvent::ChildAgentActivity { task_id, kind, .. } => {
+                    child_activity.record_activity(*task_id, kind);
+                }
+                EngineEvent::ChildTaskUpdate {
+                    task_id,
+                    agent_name,
+                    status,
+                    ..
+                } => child_activity.record_status(*task_id, agent_name, status),
+                _ => {}
             }
             renderer.render_to_buffer(event, buffer);
         }

@@ -1,258 +1,177 @@
-//! Live tracker for background-work activity (#1210).
+//! What the activity overlay shows: the turn's sub-agents and the
+//! session's background processes (#1210).
 //!
 //! Stateful counterpart to the pure-render
-//! [`crate::widgets::child_activity_overlay`] widget. Absorbs
-//! `ChildAgentActivity` and `ChildTaskUpdate` engine events into a
-//! per-task last-activity map, then projects (alongside the engine's
-//! `ChildAgentRegistry` + `BgRegistry` snapshots) into a flat list of
-//! [`crate::widgets::child_activity_overlay::ActivityRow`]s the widget
-//! can render.
+//! [`crate::widgets::child_activity_overlay`] widget. Both kinds of row
+//! come from what the host sends, not from the engine's registries:
 //!
-//! ## Why a separate module
+//! - **Sub-agents** from the `ChildTaskUpdate` and `ChildAgentActivity`
+//!   events of the running turn. A row appears with the first status
+//!   and goes with the last (`Completed`, `Errored`, `Cancelled`). Sub-
+//!   agents run inside the turn, so the turn's end clears any left.
+//! - **Background processes** from `session/backgroundTerminals/list`,
+//!   which the TUI asks for about once a second while a turn runs or a
+//!   process is listed. They outlive the turn; `/stop` stops them.
 //!
-//! The widget is a pure renderer with zero engine dependencies; the
-//! tracker holds frame-spanning state and bridges the engine event
-//! stream to the render layer.
-//! Keeps the widget testable without faking up engine snapshots, and
-//! keeps the tracker testable without spinning up ratatui buffers.
-//!
-//! ## Lifecycle
-//!
-//! 1. Construct empty (`ChildActivityTracker::default()`) at TUI start.
-//! 2. On every `EngineEvent::ChildAgentActivity`, call
-//!    [`ChildActivityTracker::record_activity`].
-//! 3. On every `EngineEvent::ChildTaskUpdate`, call
-//!    [`ChildActivityTracker::record_status`].
-//! 4. Each frame, call [`ChildActivityTracker::build_rows`] with the
-//!    current registry snapshots to get visible rows + total count.
-//!
-//! Pruning is implicit: rows are derived from the registry snapshot,
-//! so terminal tasks fall off the overlay as soon as the registry
-//! drops them. The tracker's internal map is bounded by registry
-//! membership at projection time (see `build_rows`).
+//! The hint row says what stops what: Esc interrupts the turn and its
+//! sub-agents, `/stop` the background processes. Codex's TUI draws the
+//! same split.
 
 use crate::widgets::child_activity_overlay::{ActivityRow, ActivityStatus, MAX_VISIBLE};
-use koda_core::child_agent::{AgentStatus, ChildTaskSnapshot};
+use koda_client::protocol::background::BackgroundTerminal;
+use koda_core::child_agent::AgentStatus;
 use koda_core::engine::event::ChildAgentActivityKind;
-use koda_core::tools::bg_process::{BgProcessSnapshot, BgProcessStatus};
-use std::collections::HashMap;
-use std::time::Duration;
+use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
 
-/// Per-task last-known activity description. Populated from
-/// `ChildAgentActivity` events. Bounded by registry membership: rows
-/// for task ids no longer in the agent registry are dropped at
-/// projection time.
+/// A sub-agent of the running turn, as its events describe it.
 #[derive(Debug, Clone)]
-struct LastActivity {
-    /// Pre-formatted single-line activity preview (e.g. "Read foo.rs",
-    /// "Bash cargo test", info-line message). Truncated for display
-    /// downstream — stored verbatim here.
-    description: String,
+struct AgentRow {
+    name: String,
+    /// When its first status arrived.
+    started: Instant,
+    /// Its latest tool call or info line, if any yet.
+    activity: Option<String>,
+    /// Still queued (`Pending`).
+    pending: bool,
+    /// Esc asked the turn to stop; the row goes red until its last
+    /// status arrives.
+    cancelling: bool,
 }
 
-/// Stateful tracker. Cheap to construct; carry one as a field on
-/// `TuiContext`.
+/// The overlay's state. Carry one on `TuiContext`.
 #[derive(Debug, Clone, Default)]
 pub struct ChildActivityTracker {
-    /// Latest activity per agent task_id. Process tasks have no
-    /// activity stream (they're shells, not LLM agents) — their
-    /// "activity" is the static command string from
-    /// [`BgProcessSnapshot::command`], computed at projection time.
-    per_agent: HashMap<u32, LastActivity>,
-    /// Tasks the user (or the engine) has fired the cancel token on
-    /// but the future hasn't observed yet. Distinguishes "you asked
-    /// to cancel" from "still running" so the overlay icon flips
-    /// red the moment the cancel is requested, not when it lands.
-    cancelling: std::collections::HashSet<u32>,
+    /// The turn's sub-agents, by task id, so they keep spawn order.
+    agents: BTreeMap<u32, AgentRow>,
+    /// The background processes, as the host last listed them, oldest
+    /// first.
+    processes: Vec<BackgroundTerminal>,
+    /// When the host last listed them.
+    listed_at: Option<Instant>,
 }
 
+/// How often the TUI asks the host for its background processes.
+const LIST_EVERY: Duration = Duration::from_secs(1);
+
 impl ChildActivityTracker {
-    /// Absorb a `ChildAgentActivity` event. Idempotent — re-recording
-    /// the same activity overwrites the previous entry.
-    pub fn record_activity(&mut self, task_id: u32, kind: &ChildAgentActivityKind) {
-        let description = match kind {
-            ChildAgentActivityKind::ToolStart { summary, .. } => summary.clone(),
-            ChildAgentActivityKind::ToolEnd { tool_name, success } => {
-                // ToolEnd would normally be a no-op (we want to keep
-                // showing the most recent ToolStart, not "Read foo
-                // ✓"), but if it's a *failure* we surface that so the
-                // user sees something went wrong without reaching for
-                // the post-completion bullets. Successes leave the
-                // existing ToolStart in place.
-                if *success {
-                    tracing::debug!(
-                        target: "koda_cli::diag::child_activity",
-                        stage = "record_activity",
-                        task_id = task_id,
-                        kind = "ToolEnd(success)",
-                        "no-op (preserving prior ToolStart)"
-                    );
-                    return;
-                }
-                format!("{tool_name} \u{2717}")
-            }
-            ChildAgentActivityKind::Info { message } => message.clone(),
-            // Forward-compat: future activity kinds are dropped from
-            // the live overlay until we know how to render them. Same
-            // shape as the success ToolEnd case above (#1224).
+    /// Absorb a `ChildTaskUpdate`: a first status adds the row, a last
+    /// one drops it.
+    pub fn record_status(&mut self, task_id: u32, agent_name: &str, status: &AgentStatus) {
+        let pending = match status {
+            AgentStatus::Pending => true,
+            AgentStatus::Running { .. } => false,
+            // Terminal, or a status this build doesn't know (#1224):
+            // either way the row goes rather than stick.
             _ => {
-                tracing::debug!(
-                    target: "koda_cli::diag::child_activity",
-                    stage = "record_activity",
-                    task_id = task_id,
-                    "unknown ChildAgentActivityKind variant \u{2014} dropping"
-                );
+                self.agents.remove(&task_id);
                 return;
             }
         };
-        tracing::debug!(
-            target: "koda_cli::diag::child_activity",
-            stage = "record_activity",
-            task_id = task_id,
-            description = %description,
-            "per_agent updated"
-        );
-        self.per_agent.insert(task_id, LastActivity { description });
-    }
-
-    /// Mark a task as cancelling. Called when the user fires
-    /// Esc / Ctrl+C cancel-all (#1200). The icon flips
-    /// red until the registry snapshot transitions the task to a
-    /// terminal status (at which point it falls off the overlay
-    /// entirely).
-    pub fn mark_cancelling(&mut self, task_id: u32) {
-        self.cancelling.insert(task_id);
-    }
-
-    /// Forget per-task state for a terminal task. Called by
-    /// `build_rows` for any tracker entry not present in the agent
-    /// registry (i.e. the registry has dropped it after completion
-    /// or cancellation cleanup).
-    fn forget(&mut self, task_id: u32) {
-        self.per_agent.remove(&task_id);
-        self.cancelling.remove(&task_id);
-    }
-
-    /// Project current state + registry snapshots into renderable
-    /// rows. Returns `(visible_rows, total_count)` matching the
-    /// widget's `ChildActivityOverlay::new` signature.
-    ///
-    /// Sort order: agents first (sorted by task_id ascending, so the
-    /// fan-out spawn order is preserved), then processes (sorted by
-    /// pid ascending). Agents come first because they're the more
-    /// common subject of the user's attention during a multi-agent
-    /// wait — fan-out workflows are the headline use case for this
-    /// overlay (#1201).
-    ///
-    /// Side effect: prunes per-agent activity entries whose task_id
-    /// is no longer in the agent registry. Bounds the internal map
-    /// so it can't grow unbounded across a long session of
-    /// fan-out → drain cycles.
-    pub fn build_rows(
-        &mut self,
-        agents: &[ChildTaskSnapshot],
-        processes: &[BgProcessSnapshot],
-    ) -> (Vec<ActivityRow>, usize) {
-        // ── Prune stale tracker entries (registry has dropped these tasks) ──
-        let live_ids: std::collections::HashSet<u32> = agents.iter().map(|a| a.task_id).collect();
-        let stale: Vec<u32> = self
-            .per_agent
-            .keys()
-            .copied()
-            .filter(|id| !live_ids.contains(id))
-            .collect();
-        for id in stale {
-            self.forget(id);
+        let row = self.agents.entry(task_id).or_insert_with(|| AgentRow {
+            name: agent_name.to_string(),
+            started: Instant::now(),
+            activity: None,
+            pending,
+            cancelling: false,
+        });
+        row.pending = pending;
+        if row.name.is_empty() {
+            row.name = agent_name.to_string();
         }
+    }
 
-        // ── Build agent rows (skip terminal statuses) ──
-        let mut agent_rows: Vec<(u32, ActivityRow)> = agents
-            .iter()
-            .filter_map(|s| {
-                let status = match s.status {
-                    AgentStatus::Pending => ActivityStatus::Pending,
-                    AgentStatus::Running { .. } => {
-                        if self.cancelling.contains(&s.task_id) {
-                            ActivityStatus::Cancelling
-                        } else {
-                            ActivityStatus::Running
-                        }
-                    }
-                    // Terminal statuses are excluded from the live
-                    // overlay — they're a "done" surface, not a
-                    // "what's happening" surface. The registry will
-                    // drop them shortly anyway.
-                    AgentStatus::Cancelled
-                    | AgentStatus::Completed { .. }
-                    | AgentStatus::Errored { .. } => return None,
-                    // Forward-compat: an unknown future status is
-                    // treated as terminal so the overlay never
-                    // surfaces a row we can't classify (#1224). Safer
-                    // than guessing Running and getting a stuck row.
-                    _ => return None,
-                };
-                let activity = self
-                    .per_agent
-                    .get(&s.task_id)
-                    .map(|a| a.description.clone());
-                Some((
-                    s.task_id,
-                    ActivityRow {
-                        icon: "\u{1f916}", // 🤖
-                        label: s.agent_name.clone(),
-                        age: format_age(s.age),
-                        activity,
-                        status,
-                    },
-                ))
-            })
-            .collect();
-        agent_rows.sort_by_key(|(id, _)| *id);
+    /// Absorb a `ChildAgentActivity` for a sub-agent already shown.
+    pub fn record_activity(&mut self, task_id: u32, kind: &ChildAgentActivityKind) {
+        let description = match kind {
+            ChildAgentActivityKind::ToolStart { summary, .. } => summary.clone(),
+            // A success keeps showing the call that started; a failure
+            // says so, so the user sees it without waiting for the end.
+            ChildAgentActivityKind::ToolEnd { success: true, .. } => return,
+            ChildAgentActivityKind::ToolEnd { tool_name, .. } => format!("{tool_name} \u{2717}"),
+            ChildAgentActivityKind::Info { message } => message.clone(),
+            // A kind this build can't render (#1224).
+            _ => return,
+        };
+        if let Some(row) = self.agents.get_mut(&task_id) {
+            row.activity = Some(description);
+        }
+    }
 
-        // ── Build process rows (skip terminal statuses) ──
-        let mut process_rows: Vec<(u32, ActivityRow)> = processes
-            .iter()
-            .filter_map(|p| {
-                let status = match p.status {
-                    BgProcessStatus::Running => ActivityStatus::Running,
-                    // Killed/Exited are terminal — excluded for the
-                    // same reason as terminal agent statuses.
-                    BgProcessStatus::Killed | BgProcessStatus::Exited { .. } => return None,
-                };
-                Some((
-                    p.pid,
-                    ActivityRow {
-                        icon: "\u{1f41a}", // 🐚
-                        label: format!("process:{}", p.pid),
-                        age: format_age(p.age),
-                        // Processes have no activity event stream;
-                        // surface the spawn command verbatim so the
-                        // user knows which `cargo build` is the slow
-                        // one when there are several.
-                        activity: Some(p.command.clone()),
-                        status,
-                    },
-                ))
-            })
-            .collect();
-        process_rows.sort_by_key(|(pid, _)| *pid);
+    /// Esc or Ctrl+C stopped the turn: its sub-agents' rows go red until
+    /// their last statuses arrive.
+    pub fn mark_agents_cancelling(&mut self) {
+        for row in self.agents.values_mut() {
+            row.cancelling = true;
+        }
+    }
 
-        let mut all: Vec<ActivityRow> = agent_rows.into_iter().map(|(_, r)| r).collect();
-        all.extend(process_rows.into_iter().map(|(_, r)| r));
+    /// The turn ended, and its sub-agents with it.
+    pub fn clear_agents(&mut self) {
+        self.agents.clear();
+    }
 
+    /// The background processes the host now lists.
+    pub fn set_processes(&mut self, processes: Vec<BackgroundTerminal>) {
+        self.processes = processes;
+        self.listed_at = Some(Instant::now());
+    }
+
+    /// Whether to ask the host for the background processes again: about
+    /// once a second while a turn runs, which may start one, or while one
+    /// is listed, which may exit.
+    pub fn list_due(&self, turn_running: bool) -> bool {
+        (turn_running || self.has_processes())
+            && self.listed_at.is_none_or(|at| at.elapsed() >= LIST_EVERY)
+    }
+
+    /// Whether any background process is listed.
+    pub fn has_processes(&self) -> bool {
+        !self.processes.is_empty()
+    }
+
+    /// The rows to draw, at most [`MAX_VISIBLE`], and how many there are
+    /// in all: sub-agents in spawn order, then processes, oldest first.
+    pub fn build_rows(&self) -> (Vec<ActivityRow>, usize) {
+        let now_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let agents = self.agents.values().map(|a| ActivityRow {
+            icon: "\u{1f916}", // 🤖
+            label: a.name.clone(),
+            age: format_age(a.started.elapsed()),
+            activity: a.activity.clone(),
+            status: if a.cancelling {
+                ActivityStatus::Cancelling
+            } else if a.pending {
+                ActivityStatus::Pending
+            } else {
+                ActivityStatus::Running
+            },
+        });
+        let processes = self.processes.iter().map(|p| ActivityRow {
+            icon: "\u{1f41a}", // 🐚
+            label: format!("process:{}", p.process_id),
+            age: format_age(Duration::from_secs((now_unix - p.started_at).max(0) as u64)),
+            // Processes have no activity stream; the command tells two
+            // `cargo build`s apart.
+            activity: Some(p.command.clone()),
+            status: ActivityStatus::Running,
+        });
+        let mut all: Vec<ActivityRow> = agents.chain(processes).collect();
         let total = all.len();
         all.truncate(MAX_VISIBLE);
-        tracing::debug!(
-            target: "koda_cli::diag::child_activity",
-            stage = "build_rows",
-            agent_snapshot_len = agents.len(),
-            tracker_state_len = self.per_agent.len(),
-            total = total,
-            visible = all.len(),
-            first_activity = all.first().and_then(|r| r.activity.as_deref()).unwrap_or("<none>"),
-            "build_rows result"
-        );
         (all, total)
+    }
+
+    /// What the hint row says stops the rows shown.
+    pub fn hint(&self) -> &'static str {
+        match (!self.agents.is_empty(), self.has_processes()) {
+            (true, true) => "Esc to interrupt \u{b7} /stop to stop background processes",
+            (true, false) => "Esc to interrupt",
+            _ => "/stop to stop",
+        }
     }
 }
 
@@ -306,75 +225,72 @@ fn format_age(d: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use koda_core::engine::event::ChildAgentActivityKind;
 
-    fn agent(task_id: u32, name: &str, age_secs: u64, status: AgentStatus) -> ChildTaskSnapshot {
-        ChildTaskSnapshot::for_testing(
-            task_id,
-            name.to_string(),
-            "x".into(),
-            Duration::from_secs(age_secs),
-            status,
-            None,
-        )
+    fn process(pid: u32, command: &str, age_secs: i64) -> BackgroundTerminal {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        BackgroundTerminal {
+            process_id: pid.to_string(),
+            command: command.to_string(),
+            cwd: "/tmp".into(),
+            os_pid: pid,
+            started_at: now - age_secs,
+        }
     }
 
-    fn process(pid: u32, command: &str, age_secs: u64) -> BgProcessSnapshot {
-        BgProcessSnapshot {
-            pid,
-            command: command.to_string(),
-            age: Duration::from_secs(age_secs),
-            status: BgProcessStatus::Running,
-            spawner: None,
-            members: Vec::new(),
+    fn tool_start(summary: &str) -> ChildAgentActivityKind {
+        ChildAgentActivityKind::ToolStart {
+            tool_name: "Read".into(),
+            summary: summary.into(),
         }
     }
 
     #[test]
-    fn empty_tracker_with_empty_registry_yields_no_rows() {
-        let mut t = ChildActivityTracker::default();
-        let (rows, total) = t.build_rows(&[], &[]);
+    fn nothing_running_draws_nothing() {
+        let (rows, total) = ChildActivityTracker::default().build_rows();
         assert!(rows.is_empty());
         assert_eq!(total, 0);
     }
 
     #[test]
-    fn running_agent_without_recorded_activity_renders_with_no_activity() {
+    fn a_sub_agent_row_comes_with_its_first_status_and_goes_with_its_last() {
         let mut t = ChildActivityTracker::default();
-        let snap = vec![agent(1, "explore", 5, AgentStatus::Running { iter: 1 })];
-        let (rows, total) = t.build_rows(&snap, &[]);
-        assert_eq!(total, 1);
-        assert_eq!(rows.len(), 1);
+        t.record_status(1, "explore", &AgentStatus::Pending);
+        let (rows, _) = t.build_rows();
         assert_eq!(rows[0].label, "explore");
-        assert!(rows[0].activity.is_none());
-        assert_eq!(rows[0].status, ActivityStatus::Running);
+        assert_eq!(rows[0].status, ActivityStatus::Pending);
+        assert_eq!(rows[0].activity, None);
+
+        t.record_status(1, "explore", &AgentStatus::Running { iter: 0 });
+        assert_eq!(t.build_rows().0[0].status, ActivityStatus::Running);
+
+        t.record_status(
+            1,
+            "explore",
+            &AgentStatus::Completed {
+                summary: "done".into(),
+            },
+        );
+        assert_eq!(t.build_rows().1, 0);
     }
 
     #[test]
-    fn tool_start_event_populates_activity() {
+    fn an_errored_or_cancelled_sub_agent_goes_too() {
         let mut t = ChildActivityTracker::default();
-        t.record_activity(
-            1,
-            &ChildAgentActivityKind::ToolStart {
-                tool_name: "Read".into(),
-                summary: "Read src/auth.rs".into(),
-            },
-        );
-        let snap = vec![agent(1, "explore", 5, AgentStatus::Running { iter: 2 })];
-        let (rows, _) = t.build_rows(&snap, &[]);
-        assert_eq!(rows[0].activity.as_deref(), Some("Read src/auth.rs"));
+        t.record_status(1, "a", &AgentStatus::Running { iter: 1 });
+        t.record_status(2, "b", &AgentStatus::Running { iter: 1 });
+        t.record_status(1, "a", &AgentStatus::Errored { error: "x".into() });
+        t.record_status(2, "b", &AgentStatus::Cancelled);
+        assert_eq!(t.build_rows().1, 0);
     }
 
     #[test]
-    fn tool_end_success_does_not_overwrite_last_tool_start() {
+    fn activity_shows_the_latest_call_and_keeps_it_through_a_success() {
         let mut t = ChildActivityTracker::default();
-        t.record_activity(
-            1,
-            &ChildAgentActivityKind::ToolStart {
-                tool_name: "Read".into(),
-                summary: "Read foo.rs".into(),
-            },
-        );
+        t.record_status(1, "explore", &AgentStatus::Running { iter: 1 });
+        t.record_activity(1, &tool_start("Read src/auth.rs"));
         t.record_activity(
             1,
             &ChildAgentActivityKind::ToolEnd {
@@ -382,21 +298,9 @@ mod tests {
                 success: true,
             },
         );
-        let snap = vec![agent(1, "explore", 5, AgentStatus::Running { iter: 2 })];
-        let (rows, _) = t.build_rows(&snap, &[]);
-        // Successful end → preserve the in-progress description.
-        assert_eq!(rows[0].activity.as_deref(), Some("Read foo.rs"));
-    }
-
-    #[test]
-    fn tool_end_failure_surfaces_failure_marker() {
-        let mut t = ChildActivityTracker::default();
-        t.record_activity(
-            1,
-            &ChildAgentActivityKind::ToolStart {
-                tool_name: "Bash".into(),
-                summary: "Bash cargo test".into(),
-            },
+        assert_eq!(
+            t.build_rows().0[0].activity.as_deref(),
+            Some("Read src/auth.rs")
         );
         t.record_activity(
             1,
@@ -405,158 +309,91 @@ mod tests {
                 success: false,
             },
         );
-        let snap = vec![agent(1, "verify", 12, AgentStatus::Running { iter: 3 })];
-        let (rows, _) = t.build_rows(&snap, &[]);
-        let activity = rows[0].activity.as_deref().unwrap();
-        assert!(
-            activity.contains("Bash") && activity.contains('\u{2717}'),
-            "expected failure marker in activity: {activity:?}"
-        );
-    }
-
-    #[test]
-    fn info_event_overrides_previous_activity() {
-        let mut t = ChildActivityTracker::default();
-        t.record_activity(
-            1,
-            &ChildAgentActivityKind::ToolStart {
-                tool_name: "Read".into(),
-                summary: "Read foo.rs".into(),
-            },
-        );
-        t.record_activity(
-            1,
-            &ChildAgentActivityKind::Info {
-                message: "Cache hit, skipping".into(),
-            },
-        );
-        let snap = vec![agent(1, "explore", 5, AgentStatus::Running { iter: 2 })];
-        let (rows, _) = t.build_rows(&snap, &[]);
-        assert_eq!(rows[0].activity.as_deref(), Some("Cache hit, skipping"));
-    }
-
-    /// #1354: tracker must accept the user's observed Info\u2192ToolStart
-    /// sequence (worktree-isolation `Info` event followed by sub-agent
-    /// `Glob`/`Read` ToolStart events). Bug 1 of #1349 reported the
-    /// pill freezing on the `Info` text \u2014 if this test passes, the
-    /// tracker logic is correct and the bug is downstream of
-    /// `record_activity` (event delivery, not state mutation).
-    #[test]
-    fn tool_start_event_overrides_previous_info() {
-        let mut t = ChildActivityTracker::default();
-        t.record_activity(
-            1,
-            &ChildAgentActivityKind::Info {
-                message: "explore: isolated in worktree".into(),
-            },
-        );
-        t.record_activity(
-            1,
-            &ChildAgentActivityKind::ToolStart {
-                tool_name: "Glob".into(),
-                summary: "Glob src/**/*.rs".into(),
-            },
-        );
-        let snap = vec![agent(1, "explore", 5, AgentStatus::Running { iter: 1 })];
-        let (rows, _) = t.build_rows(&snap, &[]);
         assert_eq!(
-            rows[0].activity.as_deref(),
-            Some("Glob src/**/*.rs"),
-            "#1354: ToolStart after Info must override the Info text in the pill"
+            t.build_rows().0[0].activity.as_deref(),
+            Some("Bash \u{2717}")
         );
-    }
-
-    #[test]
-    fn terminal_agents_are_excluded_from_overlay() {
-        let mut t = ChildActivityTracker::default();
-        let snap = vec![
-            agent(1, "explore", 5, AgentStatus::Running { iter: 2 }),
-            agent(
-                2,
-                "verify",
-                7,
-                AgentStatus::Completed {
-                    summary: "done".into(),
-                },
-            ),
-            agent(
-                3,
-                "lint",
-                3,
-                AgentStatus::Errored {
-                    error: "boom".into(),
-                },
-            ),
-            agent(4, "scan", 9, AgentStatus::Cancelled),
-        ];
-        let (rows, total) = t.build_rows(&snap, &[]);
-        assert_eq!(total, 1, "only the running agent should count: {rows:?}");
-        assert_eq!(rows[0].label, "explore");
-    }
-
-    #[test]
-    fn cancelling_marker_flips_status_color() {
-        let mut t = ChildActivityTracker::default();
-        t.mark_cancelling(7);
-        let snap = vec![agent(7, "explore", 5, AgentStatus::Running { iter: 2 })];
-        let (rows, _) = t.build_rows(&snap, &[]);
-        assert_eq!(rows[0].status, ActivityStatus::Cancelling);
-    }
-
-    #[test]
-    fn stale_tracker_entries_pruned_when_registry_drops_task() {
-        let mut t = ChildActivityTracker::default();
         t.record_activity(
-            42,
-            &ChildAgentActivityKind::ToolStart {
-                tool_name: "Read".into(),
-                summary: "stale".into(),
+            1,
+            &ChildAgentActivityKind::Info {
+                message: "thinking".into(),
             },
         );
-        t.mark_cancelling(42);
-        // Registry no longer reports task 42 → tracker should prune.
-        let _ = t.build_rows(&[], &[]);
-        assert!(!t.per_agent.contains_key(&42));
-        assert!(!t.cancelling.contains(&42));
+        assert_eq!(t.build_rows().0[0].activity.as_deref(), Some("thinking"));
     }
 
     #[test]
-    fn agents_sorted_before_processes_in_render_order() {
+    fn activity_for_an_unknown_task_adds_no_row() {
         let mut t = ChildActivityTracker::default();
-        let agents = vec![
-            agent(2, "verify", 2, AgentStatus::Running { iter: 1 }),
-            agent(1, "explore", 4, AgentStatus::Running { iter: 1 }),
-        ];
-        let procs = vec![process(99, "cargo build", 8)];
-        let (rows, _) = t.build_rows(&agents, &procs);
-        assert_eq!(rows[0].label, "explore", "task_id=1 should sort first");
-        assert_eq!(rows[1].label, "verify", "task_id=2 should sort second");
+        t.record_activity(9, &tool_start("Read x"));
+        assert_eq!(t.build_rows().1, 0);
+    }
+
+    #[test]
+    fn interrupting_turns_the_sub_agents_red_and_the_turns_end_clears_them() {
+        let mut t = ChildActivityTracker::default();
+        t.record_status(1, "a", &AgentStatus::Running { iter: 1 });
+        t.mark_agents_cancelling();
+        assert_eq!(t.build_rows().0[0].status, ActivityStatus::Cancelling);
+        t.clear_agents();
+        assert_eq!(t.build_rows().1, 0);
+    }
+
+    #[test]
+    fn sub_agents_come_in_spawn_order_before_processes() {
+        let mut t = ChildActivityTracker::default();
+        t.set_processes(vec![process(42, "cargo build", 8)]);
+        t.record_status(2, "verify", &AgentStatus::Running { iter: 1 });
+        t.record_status(1, "explore", &AgentStatus::Running { iter: 1 });
+        let labels: Vec<String> = t.build_rows().0.into_iter().map(|r| r.label).collect();
+        assert_eq!(labels, ["explore", "verify", "process:42"]);
+    }
+
+    #[test]
+    fn a_process_row_shows_its_command_and_age() {
+        let mut t = ChildActivityTracker::default();
+        t.set_processes(vec![process(42, "npm run dev", 12)]);
+        let (rows, _) = t.build_rows();
+        assert_eq!(rows[0].activity.as_deref(), Some("npm run dev"));
         assert!(
-            rows[2].label.starts_with("process:"),
-            "processes should render after agents: {:?}",
-            rows[2].label
+            rows[0].age == "12s" || rows[0].age == "13s",
+            "{}",
+            rows[0].age
         );
     }
 
     #[test]
-    fn overflow_total_exceeds_visible_when_more_than_max_visible() {
+    fn rows_past_the_cap_count_toward_the_total() {
         let mut t = ChildActivityTracker::default();
-        let agents: Vec<_> = (0..(MAX_VISIBLE as u32 + 4))
-            .map(|i| agent(i, &format!("ag{i}"), 1, AgentStatus::Running { iter: 1 }))
-            .collect();
-        let (rows, total) = t.build_rows(&agents, &[]);
+        t.set_processes((1..=7).map(|pid| process(pid, "sleep 30", 1)).collect());
+        let (rows, total) = t.build_rows();
         assert_eq!(rows.len(), MAX_VISIBLE);
-        assert_eq!(total, MAX_VISIBLE + 4);
+        assert_eq!(total, 7);
     }
 
     #[test]
-    fn process_row_uses_command_as_activity() {
+    fn processes_are_listed_again_each_second_while_a_turn_runs_or_one_is_listed() {
         let mut t = ChildActivityTracker::default();
-        let procs = vec![process(123, "cargo test --release", 4)];
-        let (rows, _) = t.build_rows(&[], &procs);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].label, "process:123");
-        assert_eq!(rows[0].activity.as_deref(), Some("cargo test --release"));
+        assert!(!t.list_due(false));
+        assert!(t.list_due(true));
+        t.set_processes(vec![process(42, "sleep 30", 1)]);
+        assert!(!t.list_due(false) && !t.list_due(true));
+        t.listed_at = Some(Instant::now() - LIST_EVERY);
+        assert!(t.list_due(false));
+        t.set_processes(Vec::new());
+        t.listed_at = Some(Instant::now() - LIST_EVERY);
+        assert!(!t.list_due(false));
+    }
+
+    #[test]
+    fn the_hint_names_what_stops_the_rows_shown() {
+        let mut t = ChildActivityTracker::default();
+        t.set_processes(vec![process(42, "sleep 30", 1)]);
+        assert_eq!(t.hint(), "/stop to stop");
+        t.record_status(1, "a", &AgentStatus::Running { iter: 1 });
+        assert!(t.hint().starts_with("Esc to interrupt \u{b7} /stop"));
+        t.set_processes(Vec::new());
+        assert_eq!(t.hint(), "Esc to interrupt");
     }
 
     #[test]
@@ -619,121 +456,5 @@ mod tests {
                 "format_age({d:?}) = {s:?} exceeds 6-cell column width"
             );
         }
-    }
-
-    // ── PR-A of #1232 §1: foreground sub-agent overlay rows ─────────────
-
-    /// A foreground sub-agent (`is_background == false`) registered
-    /// in the registry must render an overlay row with the same
-    /// shape as a background entry.
-    ///
-    /// **Why this is the headline test for PR-A**: the umbrella bug
-    /// (#1232 §1) was "fg sub-agents have ZERO live progress in the
-    /// master TUI." The overlay's `build_rows` is what the user
-    /// actually sees; if a fg-tagged snapshot doesn't produce a row
-    /// here, the engine-side wiring (`register_fg_with_emitter` +
-    /// `FgForwardingSink`) is invisible end-to-end and the bug isn't
-    /// fixed regardless of how clean the lower layers look.
-    #[test]
-    fn foreground_agent_renders_overlay_row_with_activity_snippet() {
-        let mut t = ChildActivityTracker::default();
-        let snap = vec![ChildTaskSnapshot::for_testing_fg(
-            7,
-            "explore".into(),
-            "audit storage".into(),
-            Duration::from_secs(12),
-            AgentStatus::Running { iter: 3 },
-            None,
-        )];
-        // Drive activity in via the same `record_activity` entrypoint
-        // the inference loop uses for both fg and bg — the tracker
-        // intentionally treats every `ChildAgentActivity` event the
-        // same regardless of `is_background`, so this end-to-end
-        // shape proves there's no fg-specific filter blocking the row.
-        t.record_activity(
-            7,
-            &ChildAgentActivityKind::ToolStart {
-                tool_name: "Read".into(),
-                summary: "Read storage/mod.rs".into(),
-            },
-        );
-        let (rows, total) = t.build_rows(&snap, &[]);
-        assert_eq!(total, 1, "fg snapshot must produce exactly one overlay row");
-        assert_eq!(rows.len(), 1);
-        let row = &rows[0];
-        assert_eq!(row.label, "explore", "label uses agent_name");
-        assert_eq!(
-            row.activity.as_deref(),
-            Some("Read storage/mod.rs"),
-            "fg row must show the same `last activity` snippet as bg \
-             — the headline UX for #1232 §1"
-        );
-        assert_eq!(row.status, ActivityStatus::Running);
-    }
-
-    /// Symmetric removal: when a fg sub-agent's registry entry
-    /// disappears (the `FgRegistrationGuard` dropped on the engine
-    /// side), the overlay must drop the row on the next `build_rows`
-    /// call. Issue acceptance criterion: "Removing the row when the
-    /// sub-agent returns is symmetric with bg path."
-    #[test]
-    fn foreground_row_disappears_when_registry_entry_removed() {
-        let mut t = ChildActivityTracker::default();
-        let snap_running = vec![ChildTaskSnapshot::for_testing_fg(
-            7,
-            "explore".into(),
-            "x".into(),
-            Duration::from_secs(1),
-            AgentStatus::Running { iter: 0 },
-            None,
-        )];
-        t.record_activity(
-            7,
-            &ChildAgentActivityKind::ToolStart {
-                tool_name: "Read".into(),
-                summary: "Read foo".into(),
-            },
-        );
-        let (rows, _) = t.build_rows(&snap_running, &[]);
-        assert_eq!(rows.len(), 1, "row present while registered");
-
-        // Simulate guard drop: registry no longer reports this task.
-        let (rows_after, total_after) = t.build_rows(&[], &[]);
-        assert_eq!(
-            total_after, 0,
-            "row must vanish when fg entry leaves the registry; \
-             without this the overlay would show phantom rows for \
-             every completed fg sub-agent"
-        );
-        assert!(rows_after.is_empty());
-    }
-
-    /// Mixed fg + bg snapshot: both render, both count toward `total`,
-    /// neither shadows the other. Catches a regression where a future
-    /// `is_background` filter accidentally hides one or the other.
-    #[test]
-    fn mixed_foreground_and_background_agents_both_render() {
-        let mut t = ChildActivityTracker::default();
-        let snap = vec![
-            // bg first (id 1)
-            agent(1, "task", 30, AgentStatus::Running { iter: 5 }),
-            // fg next (id 2)
-            ChildTaskSnapshot::for_testing_fg(
-                2,
-                "plan".into(),
-                "y".into(),
-                Duration::from_secs(10),
-                AgentStatus::Running { iter: 1 },
-                None,
-            ),
-        ];
-        let (rows, total) = t.build_rows(&snap, &[]);
-        assert_eq!(total, 2, "both fg and bg agents must be counted");
-        assert_eq!(rows.len(), 2);
-        // Sort by label for stability — build_rows sorts by task_id,
-        // so order is bg(1) then fg(2), but we shouldn't bake that in.
-        let labels: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
-        assert!(labels.contains(&"task"), "bg agent row missing");
-        assert!(labels.contains(&"plan"), "fg agent row missing");
     }
 }

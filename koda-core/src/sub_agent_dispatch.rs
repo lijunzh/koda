@@ -180,8 +180,57 @@ fn available_agents_hint(project_root: &std::path::Path) -> String {
 /// instead of 11 individual ambient args. The parent's `tools` field
 /// is intentionally unused — sub-agents construct their own
 /// `sub_tools` registry from `sub_config.allowed_tools`.
-#[tracing::instrument(skip_all, fields(agent_name, cached = false))]
 pub(crate) fn execute_sub_agent<'a>(
+    parent_tx: ToolExecutionContext<'a>,
+    arguments: &'a str,
+    cmd_rx: &'a mut mpsc::Receiver<EngineCommand>,
+    parent_cache: Option<crate::tools::FileReadCache>,
+    parent_sandbox_policy: &'a koda_sandbox::SandboxPolicy,
+    parent_tool_call_id: Option<&'a str>,
+) -> impl std::future::Future<Output = Result<String>> + Send + 'a {
+    // The sub-agent's last `ChildTaskUpdate` says how it ended, as Codex's
+    // collab item does, so a client can drop its row on that event. Sent
+    // here, once the run has returned whichever way it did; a cache hit
+    // registers nothing and sends nothing.
+    let cancel = parent_tx.turn.cancel.clone();
+    let ended: EndedSlot = Default::default();
+    let run = run_sub_agent(
+        parent_tx,
+        arguments,
+        cmd_rx,
+        parent_cache,
+        parent_sandbox_policy,
+        parent_tool_call_id,
+        ended.clone(),
+    );
+    async move {
+        let result = run.await;
+        if let Some(emitter) = ended.lock().take() {
+            use crate::child_agent::AgentStatus;
+            emitter.send(match &result {
+                _ if cancel.is_cancelled() => AgentStatus::Cancelled,
+                // The full output is the `InvokeAgent` result; the event,
+                // which is stored, carries its start.
+                Ok(output) => AgentStatus::Completed {
+                    summary: output.chars().take(ENDED_SUMMARY_CHARS).collect(),
+                },
+                Err(e) => AgentStatus::Errored {
+                    error: format!("{e:#}"),
+                },
+            });
+        }
+        result
+    }
+}
+
+/// Where [`run_sub_agent`] leaves its status emitter once it registers.
+type EndedSlot = std::sync::Arc<parking_lot::Mutex<Option<crate::child_agent::ChildStatusEmitter>>>;
+
+/// How much of a sub-agent's output its final `ChildTaskUpdate` carries.
+const ENDED_SUMMARY_CHARS: usize = 200;
+
+#[tracing::instrument(skip_all, fields(agent_name, cached = false))]
+fn run_sub_agent<'a>(
     parent_tx: ToolExecutionContext<'a>,
     arguments: &'a str,
     cmd_rx: &'a mut mpsc::Receiver<EngineCommand>,
@@ -197,6 +246,7 @@ pub(crate) fn execute_sub_agent<'a>(
     // id as `parent_tool_call_id`, so the transcript renderer folds
     // them under the parent's `InvokeAgent` tool result.
     parent_tool_call_id: Option<&'a str>,
+    ended: EndedSlot,
 ) -> impl std::future::Future<Output = Result<String>> + Send + 'a {
     async move {
         // #1265 item 4 PR-3: rebind context fields to the same names
@@ -289,6 +339,7 @@ pub(crate) fn execute_sub_agent<'a>(
         // relying on the channel's initial value) means every
         // consumer that reads the event queue sees the transition.
         fg_emitter.send(crate::child_agent::AgentStatus::Pending);
+        *ended.lock() = Some(fg_emitter.clone());
         // Wrap the parent's sink so tool/info events fan out to the
         // overlay's `ChildAgentActivity` stream in addition to the
         // normal forwarded path. The wrapper borrows `sink` for the
@@ -306,19 +357,9 @@ pub(crate) fn execute_sub_agent<'a>(
         // active rather than queued; the loop below pushes
         // `Running { iter }` on every iteration.
         fg_emitter.send(crate::child_agent::AgentStatus::Running { iter: 0 });
-        // Note on terminal status: we deliberately do NOT emit a
-        // `Completed`/`Errored` `ChildTaskUpdate` on return. Reason:
-        // the function has ~half a dozen `return Ok(...)` sites and
-        // many `?`-bubbled errors; instrumenting each is fragile and
-        // refactoring the inference body into an inner async fn just
-        // to capture a Result was ruled out as scope creep. Instead
-        // we lean on the `_fg_guard`'s `Drop` impl, which removes
-        // the entry from the registry at the instant the function
-        // returns. The overlay's `build_rows` prunes activity for
-        // missing task ids on the very next frame — visually
-        // identical to receiving a terminal event. headless
-        // clients that subscribe to the raw `ChildTaskUpdate`
-        // stream see the event flow simply stop for that task_id.
+        // The terminal status goes out from `execute_sub_agent` once this
+        // returns, by whichever of its exits; `_fg_guard`'s `Drop` removes
+        // the registry entry.
 
         // Fork inherits parent config; named agents load their own persona
         // but fall back to the parent's provider and model for anything not

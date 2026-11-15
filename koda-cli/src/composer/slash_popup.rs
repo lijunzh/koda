@@ -41,7 +41,7 @@ use ratatui::text::Line;
 /// ([`crate::completer::InputCompleter`]) and the auto-dropdown
 /// ([`from_input`]).
 pub const SLASH_COMMANDS: &[(&str, &str, Option<&str>)] = &[
-    ("/agent", "Switch to a sub-agent", Some("<name>")),
+    ("/agents", "List the sub-agents Koda can invoke", None),
     (
         "/compact",
         "Summarize conversation to reclaim context",
@@ -78,6 +78,7 @@ pub const SLASH_COMMANDS: &[(&str, &str, Option<&str>)] = &[
         None,
     ),
     ("/skills", "List available skills (search with query)", None),
+    ("/stop", "Stop all background processes (also /clean)", None),
     ("/verbose", "Tool output in full or folded (Ctrl+O)", None),
     ("/vim", "Toggle vim-mode editing in the input", None),
 ];
@@ -231,11 +232,10 @@ mod tests {
 
     #[test]
     fn matches_for_ambiguous_prefix_returns_all_options() {
-        // "/a" should match /agent (and any future /a* commands), but
-        // nothing without the prefix. Used to also expect /agents,
-        // removed in #1210 along with the slash command itself.
+        // "/a" should match /agents (and any future /a* commands), but
+        // nothing without the prefix.
         let m = matches_for("/a");
-        assert!(m.iter().any(|s| s == "/agent"));
+        assert!(m.iter().any(|s| s == "/agents"));
         assert!(
             m.iter().all(|s| s.starts_with("/a")),
             "matches must all share the queried prefix"

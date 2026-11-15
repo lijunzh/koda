@@ -225,11 +225,6 @@ impl TuiContext {
         self.inference_start = Some(std::time::Instant::now());
         self.renderer.last_turn_stats = None;
 
-        // #1158 (b): the overlay reads the session's sub-agents and the
-        // agent's background processes each frame.
-        let bg_agents_for_status = self.session.bg_agents.clone();
-        let agent_for_status = self.agent.clone();
-
         // Ctrl+D asked to quit: the turn was told to stop, and Koda exits
         // once it has.
         let mut quit_requested = false;
@@ -304,11 +299,13 @@ impl TuiContext {
                     let ctx = self.context_pct;
                     let mcp_info = self.mcp.status_bar();
                     // #1210: the overlay above the status bar shows what
-                    // the sub-agents and background processes do now.
-                    let agent_snaps = bg_agents_for_status.snapshot();
-                    let process_snaps = agent_for_status.tools.bg_registry.snapshot();
+                    // the sub-agents and background processes do now. The
+                    // turn may start a process: the host is asked about
+                    // once a second.
+                    self.refresh_background(true).await;
                     let (child_activity_rows, child_activity_total) =
-                        self.child_activity.build_rows(&agent_snaps, &process_snaps);
+                        self.child_activity.build_rows();
+                    let child_activity_hint = self.child_activity.hint();
                     let _ = self.terminal.draw(|f| {
                         draw_viewport(
                             f,
@@ -329,6 +326,7 @@ impl TuiContext {
                             &self.project_root,
                             &child_activity_rows,
                             child_activity_total,
+                            child_activity_hint,
                         );
                     });
                     // #1354: while any sub-agent or background process runs,
@@ -355,8 +353,6 @@ impl TuiContext {
                         &mut self.history_idx,
                         &mut self.paste_blocks,
                         (&self.input_history, &self.session.id),
-                        &bg_agents_for_status,
-                        &agent_for_status.tools.bg_registry,
                         &mut self.child_activity,
                     )
                     .await;
@@ -393,6 +389,16 @@ impl TuiContext {
         while let Ok(raw) = ui_rx.try_recv() {
             self.absorb_turn_event(raw.event, &mut tracker);
         }
+        // Its sub-agents ended with it; what it left running in the
+        // background stays listed.
+        self.child_activity.clear_agents();
+        let requests = self.client.request_handle();
+        crate::tui_context::background::list_background(
+            &requests,
+            &self.session.id,
+            &mut self.child_activity,
+        )
+        .await;
         let failed = if host_stopped {
             Some("Koda's host stopped".to_string())
         } else {

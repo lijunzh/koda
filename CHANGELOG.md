@@ -8,7 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
-- **Background processes and agents through the client protocol.** `session/backgroundTerminals/list`, `terminate` and `clean` list and stop the processes the model started with `Bash {background: true}`, as Codex's `thread/backgroundTerminals/*` do; they outlive the turn that started them. `agent/list` names the sub-agents the model can call, with where each is defined (built-in, user or project). The TUI moves onto them next.
+- **Background processes and agents through the client protocol.** `session/backgroundTerminals/list`, `terminate` and `clean` list and stop the processes the model started with `Bash {background: true}`, as Codex's `thread/backgroundTerminals/*` do; they outlive the turn that started them. `agent/list` names the sub-agents the model can call, with where each is defined (built-in, user or project).
+
+- **`/stop` stops background processes, as in Codex,** with `/clean` as its alias; it runs during a turn too. The overlay above the status bar lists each process with its command and age and says `/stop to stop`; a sub-agent's row says `Esc to interrupt`. `/agents` lists the sub-agents through `agent/list`. A sub-agent's `ChildTaskUpdate` events now carry its name and end with how it finished (`completed`, `errored` or `cancelled`).
 
 - **Memory through the client protocol.** A session now reports the instruction files its prompt carries (`instructionSources`, Codex's field: the global `AGENTS.md`, then the project's from the git root down). `session/memory/read` returns Koda's notes for the session's project and the global ones, with their paths and text; `session/memory/add` saves to either, replacing a section with the same `## Heading` as `MemoryWrite` does. Codex has no request to add a memory, since its memories come only from its background pipeline; Koda's are written by the model or by hand, as Claude Code's are. The TUI's `/memory` uses them and now lists every instruction file the session reads, not only the project root's.
 
@@ -30,6 +32,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **The client protocol runs sessions and turns.** `session/start` opens a new session or resumes one; `turn/start`, `turn/interrupt` and `turn/steer` drive its turns, behaving as Codex's do: a turn's start is answered at once with the turn in progress, an interrupt once the turn has stopped, and steering text shows up as a `userMessage` item when the model receives it. The client reads one ordered queue of notifications and server requests and answers approvals, questions and the loop cap. `session/start` takes `approvalPolicy: never` for a session nobody can answer, in which Koda answers its own requests and says so, and `turn/start` takes images. `koda exec` runs through it; the TUI moves onto it next.
 
 ### Changed
+
+- **Esc and Ctrl+C stop the turn, not background processes,** as in Codex. They stop the turn and its sub-agents; a dev server the model started keeps running until `/stop`, until the model stops it, or until Koda exits. At idle, Esc clears the input and Ctrl+C clears it or arms quit. Before, both also stopped every background process (#1200).
+- **`/agent` is now `/agents`,** as Codex and Claude Code name it. The old name still works for a release and says the new one.
 
 - **Project agents are read from `.koda/agents/`,** as the docs always said and the sandbox's write protection assumed; Koda read `agents/` at the project root instead. Codex keeps its agents in `.codex/agents/` and Claude Code in `.claude/agents/`. The old folder is still read for one release, with a warning. A user's agent (`~/.config/koda/agents/`) is now found even when the project has its own agents folder; before, that folder hid every user agent.
 

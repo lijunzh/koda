@@ -35,7 +35,7 @@ Arguments:
 
 Options:
   -a, --agent <AGENT>
-          Agent to use (matches a JSON file in agents/)
+          Agent to use: a built-in, or a JSON file in .koda/agents/ or ~/.config/koda/agents/
           
           [default: default]
 

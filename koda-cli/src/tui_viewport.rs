@@ -46,6 +46,8 @@ pub(crate) fn draw_viewport(
     // "+ N more" overflow hint.
     child_activity_rows: &[crate::widgets::child_activity_overlay::ActivityRow],
     child_activity_total: usize,
+    // What stops the rows shown, for the overlay's hint row.
+    child_activity_hint: &str,
 ) -> ratatui::layout::Rect {
     let area = frame.area();
 
@@ -252,6 +254,7 @@ pub(crate) fn draw_viewport(
             crate::widgets::child_activity_overlay::ChildActivityOverlay::new(
                 child_activity_rows,
                 child_activity_total,
+                child_activity_hint,
             ),
             child_activity_row,
         );
