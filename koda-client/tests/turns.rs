@@ -14,7 +14,7 @@ use koda_client::protocol::background::{
     BackgroundTerminalsTerminateParams,
 };
 use koda_client::protocol::initialize::ClientInfo;
-use koda_client::protocol::item::{CompactionStatus, CompactionTrigger, Item};
+use koda_client::protocol::item::{CompactionStatus, CompactionTrigger, Item, TurnItem};
 use koda_client::protocol::memory::{MemoryScope, SessionMemoryAddParams, SessionMemoryReadParams};
 use koda_client::protocol::model::{ModelListParams, ModelProviderListParams};
 use koda_client::protocol::rpc::{ErrorObject, RequestId, codes};
@@ -2312,5 +2312,274 @@ async fn skills_list_names_each_skill_its_scope_and_the_files_that_failed() {
     );
     assert!(!names.contains(&"ours"), "{names:?}");
     assert!(elsewhere[0].errors.is_empty());
+    koda.client.shutdown().await;
+}
+
+// ── What a client renders from (6h-a) ───────────────────────────────────
+
+/// An edit's approval carries its diff in Codex's `changes` shape, and so
+/// does the call's item.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_edits_approval_carries_its_diff() {
+    use koda_client::protocol::item::PatchChangeKind;
+    let server = model(vec![
+        // Koda edits only a file the model has read.
+        tool_call("call_r", "Read", json!({"file_path": "a.txt"})),
+        tool_call(
+            "call_e",
+            "Edit",
+            json!({"file_path": "a.txt", "old_str": "two", "new_str": "three"}),
+        ),
+        tool_call(
+            "call_w",
+            "Write",
+            json!({"file_path": "new.txt", "content": "fresh\n"}),
+        ),
+        text("Done."),
+    ])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("project")).unwrap();
+    std::fs::write(dir.path().join("project/a.txt"), "one\ntwo\n").unwrap();
+    let mut config = config(&server);
+    config.trust = koda_core::trust::TrustMode::Safe;
+    let mut koda = Koda::start_in(config, dir).await;
+    koda.turn("Edit a.txt and write new.txt").await;
+    let edit = koda.request().await;
+    let ServerRequest::ToolCallApproval { id, params } = &edit else {
+        panic!("expected an approval, got {edit:?}");
+    };
+    assert_eq!(params.changes.len(), 1, "{params:?}");
+    let change = &params.changes[0];
+    assert_eq!(change.path, "a.txt");
+    assert_eq!(change.kind, PatchChangeKind::Update { move_path: None });
+    assert!(
+        change.diff.starts_with("@@ -1,2 +1,2 @@"),
+        "{}",
+        change.diff
+    );
+    assert!(change.diff.contains("\n-two\n+three\n"), "{}", change.diff);
+    let edit_changes = params.changes.clone();
+    koda.answer(id, json!({"decision": {"type": "approve"}}))
+        .await;
+
+    // The edit completes before the write is asked about.
+    let mut messages = Vec::new();
+    let write = loop {
+        let message = tokio::time::timeout(WAIT, koda.client.next_event())
+            .await
+            .unwrap()
+            .unwrap();
+        match message {
+            Outgoing::Request(request) => break request,
+            other => messages.push(other),
+        }
+    };
+    let ServerRequest::ToolCallApproval { id, params } = &write else {
+        panic!("expected an approval, got {write:?}");
+    };
+    assert_eq!(params.changes[0].kind, PatchChangeKind::Add);
+    assert_eq!(params.changes[0].diff, "fresh\n");
+    koda.answer(id, json!({"decision": {"type": "approve"}}))
+        .await;
+    koda.until("turn/completed").await;
+
+    let edited = completed(&messages)
+        .into_iter()
+        .find_map(|item| match item {
+            Item::ToolCall { id, changes, .. } if id == "call_e" => Some(changes.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(edited, edit_changes);
+    assert_eq!(
+        std::fs::read_to_string(koda.project.join("a.txt")).unwrap(),
+        "one\nthree\n"
+    );
+    koda.client.shutdown().await;
+}
+
+fn token_usage(messages: &[Outgoing]) -> Vec<&koda_client::protocol::session::TokenUsage> {
+    messages
+        .iter()
+        .filter_map(|m| match m {
+            Outgoing::Notification(ServerNotification::SessionTokenUsageUpdated(n)) => {
+                Some(&n.token_usage)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// `session/tokenUsage/updated` goes out before each model call and once
+/// the turn's last is done, with the provider's counts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn token_usage_is_sent_before_each_model_call_and_after_the_last() {
+    let server = model(vec![
+        tool_call("call_1", "List", json!({})),
+        text("Listed."),
+    ])
+    .await;
+    let mut koda = Koda::start(config(&server)).await;
+    koda.turn("List the files").await;
+    let messages = koda.until("turn/completed").await;
+    let usage = token_usage(&messages);
+    assert_eq!(usage.len(), 3, "{}", names(&messages));
+    // Koda's count before the first call; the provider's after the last.
+    assert!(usage[0].context_tokens > 0);
+    assert_eq!(usage[0].total.total_tokens, 0);
+    let last = usage[2];
+    assert_eq!(last.context_tokens, 200);
+    assert_eq!(last.model_context_window, Some(100_000));
+    assert_eq!(last.last.input_tokens, 200);
+    assert_eq!(last.last.output_tokens, 20);
+    assert_eq!(last.total.input_tokens, 300);
+    assert_eq!(last.total.output_tokens, 30);
+    koda.client.shutdown().await;
+}
+
+/// A reply that doesn't stream, as a sub-agent asks for.
+fn whole(message: Value) -> ResponseTemplate {
+    let finish = if message["tool_calls"].is_null() {
+        "stop"
+    } else {
+        "tool_calls"
+    };
+    ResponseTemplate::new(200)
+        .insert_header("content-type", "application/json")
+        .set_body_string(
+            json!({
+                "choices": [{"index": 0, "message": message, "finish_reason": finish}],
+                "usage": {"prompt_tokens": 50, "completion_tokens": 5},
+            })
+            .to_string(),
+        )
+}
+
+/// A resumed session returns its turns exactly as they were sent, a
+/// sub-agent's tool calls under its call; `session/read` returns them
+/// without opening it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_resumed_session_returns_its_turns_as_they_were_sent() {
+    use koda_client::protocol::session::SessionReadParams;
+    let server = model(vec![
+        tool_call(
+            "call_agent",
+            "InvokeAgent",
+            json!({"agent_name": "explore", "prompt": "What does notes.txt say?"}),
+        ),
+        // The sub-agent, which doesn't stream.
+        whole(json!({
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [{
+                "id": "call_read",
+                "type": "function",
+                "function": {"name": "Read", "arguments": json!({"file_path": "notes.txt"}).to_string()},
+            }],
+        })),
+        whole(json!({"role": "assistant", "content": "It says 42."})),
+        // The session again.
+        text("The notes say 42."),
+        text("Yes."),
+    ])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("project")).unwrap();
+    std::fs::write(dir.path().join("project/notes.txt"), "42\n").unwrap();
+    let mut koda = Koda::start_in(config(&server), dir).await;
+    koda.turn("Ask a sub-agent about the notes").await;
+    let first = koda.until("turn/completed").await;
+    koda.turn("Sure?").await;
+    let second = koda.until("turn/completed").await;
+    // Each turn as the client saw it: the turn as it completed, and its
+    // completed items with their parents.
+    let live: Vec<koda_client::protocol::turn::Turn> = [first, second]
+        .iter()
+        .map(|messages| {
+            let mut turn = turn_completed(messages).clone();
+            turn.items = messages
+                .iter()
+                .filter_map(|m| match m {
+                    Outgoing::Notification(ServerNotification::ItemCompleted(n)) => {
+                        Some(TurnItem {
+                            parent_item_id: n.parent_item_id.clone(),
+                            item: n.item.clone(),
+                        })
+                    }
+                    _ => None,
+                })
+                .collect();
+            turn
+        })
+        .collect();
+    // The sub-agent's call and text are under its InvokeAgent call.
+    assert!(
+        live[0].items.iter().any(|i| {
+            i.parent_item_id.as_deref() == Some("call_agent")
+                && matches!(&i.item, Item::ToolCall { id, .. } if id == "call_read")
+        }),
+        "{live:#?}"
+    );
+    assert_eq!(
+        koda.unsubscribe().await,
+        SessionUnsubscribeStatus::Unsubscribed
+    );
+
+    // Read without opening: the stored form, turns only when asked.
+    let read = |include_turns| {
+        koda.client
+            .request::<methods::SessionRead>(SessionReadParams {
+                session_id: koda.session.clone(),
+                include_turns,
+            })
+    };
+    let bare = read(false).await.unwrap().session;
+    assert_eq!(bare.id, koda.session);
+    assert!(bare.turns.is_empty());
+    assert!(
+        bare.model.is_none(),
+        "a closed session isn't running with anything"
+    );
+    let read_back = read(true).await.unwrap().session.turns;
+
+    let resumed = koda
+        .client
+        .request::<methods::SessionStart>(SessionStartParams {
+            session_id: Some(koda.session.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .session
+        .turns;
+    assert_eq!(resumed, read_back);
+    // Exactly as sent: ids, statuses, usage and items.
+    assert_eq!(resumed, live);
+    // A turn run after resuming follows them.
+    koda.turn("And now?").await;
+    koda.until("turn/completed").await;
+    let after = koda
+        .client
+        .request::<methods::SessionRead>(SessionReadParams {
+            session_id: koda.session.clone(),
+            include_turns: true,
+        })
+        .await
+        .unwrap()
+        .session
+        .turns;
+    assert_eq!(after.len(), 3);
+    assert_eq!(after[..2], live[..]);
+    assert_eq!(after[2].status, TurnStatus::Completed);
+    let error = server_error(
+        koda.client
+            .request::<methods::SessionRead>(SessionReadParams {
+                session_id: "no-such-session".to_string(),
+                include_turns: true,
+            })
+            .await,
+    );
+    assert_eq!(error.code, codes::INVALID_PARAMS);
     koda.client.shutdown().await;
 }

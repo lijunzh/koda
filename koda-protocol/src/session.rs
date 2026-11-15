@@ -47,6 +47,23 @@ pub struct Session {
     /// down. Codex's `instructionSources`, as of the session's opening.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instruction_sources: Option<Vec<String>>,
+    /// Its turns, oldest first, each with its items. Filled only by
+    /// `session/start` resuming a session and by `session/read` with
+    /// `includeTurns`, as Codex's `Thread.turns` is.
+    ///
+    /// Each turn is the one the client saw: its id, status, usage and
+    /// completed items, a sub-agent's tool calls under its `InvokeAgent`
+    /// call. A turn that never ended, Koda having stopped mid-way, reads as
+    /// interrupted.
+    ///
+    /// Sessions from before Koda stored turns (0.6.4 and earlier) are
+    /// rebuilt from the messages the model read, which keep less: a turn's id
+    /// is its first message's, an interrupted turn followed by a new prompt
+    /// reads as one turn, a tool call's status is read from its output, its
+    /// `detail` and `changes` are missing, a sub-agent's tool calls and
+    /// compactions aren't listed, and turns have no usage or duration.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub turns: Vec<crate::turn::Turn>,
 }
 
 /// `session/start`.
@@ -250,6 +267,78 @@ pub struct SessionCompactStartParams {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionCompactStartResponse {}
+
+/// `session/read`: a stored session, without opening it. Codex's
+/// `thread/read`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionReadParams {
+    /// The session, by its full id.
+    pub session_id: String,
+    /// Whether to return its turns and their items.
+    #[serde(default)]
+    pub include_turns: bool,
+}
+
+/// The answer to `session/read`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionReadResponse {
+    /// The session as `session/list` gives it, with its turns when asked.
+    pub session: Session,
+}
+
+/// `session/tokenUsage/updated`: what an open session's model calls have
+/// used, and how full its context is. Codex's `thread/tokenUsage/updated`,
+/// sent before each model call and when a turn's last call is done.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionTokenUsageUpdatedNotification {
+    /// The session.
+    pub session_id: String,
+    /// The turn.
+    pub turn_id: String,
+    /// The counts.
+    pub token_usage: TokenUsage,
+}
+
+/// A session's token counts. Codex's `ThreadTokenUsage`, plus
+/// `contextTokens`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenUsage {
+    /// Every model call since the session was opened: its turns,
+    /// sub-agents and compactions.
+    pub total: TokenUsageBreakdown,
+    /// The latest model call of the session's own: not a sub-agent's.
+    pub last: TokenUsageBreakdown,
+    /// The context window, in tokens.
+    pub model_context_window: Option<u64>,
+    /// The tokens in the context now: Koda's count of what goes to the next
+    /// model call, then the provider's count once a turn's last call is
+    /// done. Koda's own. Codex's TUI reads `last.totalTokens`, which moves
+    /// only after a call returns; Koda's meter moves before one, which a
+    /// slow local model makes worth it.
+    pub context_tokens: u64,
+}
+
+/// Tokens of one model call, or added up. Codex's `TokenUsageBreakdown`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenUsageBreakdown {
+    /// Input and output tokens.
+    pub total_tokens: u64,
+    /// Input tokens, cached ones included.
+    pub input_tokens: u64,
+    /// Input tokens read from the provider's cache.
+    pub cached_input_tokens: u64,
+    /// Input tokens written to the provider's cache.
+    pub cache_write_input_tokens: u64,
+    /// Output tokens.
+    pub output_tokens: u64,
+    /// Output tokens spent reasoning.
+    pub reasoning_output_tokens: u64,
+}
 
 /// `session/deleted`: a session was deleted. Codex's `thread/deleted`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

@@ -124,6 +124,11 @@ client_requests! {
         params: crate::session::SessionListParams,
         response: crate::session::SessionListResponse,
     },
+    /// A stored session, without opening it, with its turns when asked.
+    SessionRead => "session/read" {
+        params: crate::session::SessionReadParams,
+        response: crate::session::SessionReadResponse,
+    },
     /// Delete a stored session, closing it first if it is open.
     /// `session/deleted` follows.
     SessionDelete => "session/delete" {

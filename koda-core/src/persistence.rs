@@ -184,6 +184,20 @@ pub enum InterruptionKind {
 /// started it.
 pub const PARENT_SESSION_KEY: &str = "parent_session";
 
+/// One stored part of a turn as a client saw it: the turn as it started or
+/// ended, or an item as it completed. The client host writes them, so
+/// resuming a session replays its turns exactly, as Codex's rollout file
+/// does. The payload is the protocol's JSON, which the core doesn't read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnRecord {
+    /// The turn it belongs to.
+    pub turn_id: String,
+    /// What it is, such as `turn` or `item`.
+    pub kind: String,
+    /// The JSON.
+    pub payload: String,
+}
+
 /// Token usage totals for a session.
 #[derive(Debug, Clone, Default)]
 pub struct SessionUsage {
@@ -405,6 +419,13 @@ pub trait Persistence: Send + Sync {
     async fn get_metadata(&self, session_id: &str, key: &str) -> Result<Option<String>>;
     /// Set a session metadata value.
     async fn set_metadata(&self, session_id: &str, key: &str, value: &str) -> Result<()>;
+
+    // ── Turn records (6h) ──
+
+    /// Append `records` to the session's turn records, in order.
+    async fn append_turn_records(&self, session_id: &str, records: &[TurnRecord]) -> Result<()>;
+    /// The session's turn records, in the order they were written.
+    async fn load_turn_records(&self, session_id: &str) -> Result<Vec<TurnRecord>>;
     /// Get the TODO list for a session.
     async fn get_todo(&self, session_id: &str) -> Result<Option<String>>;
     /// Set the TODO list for a session.

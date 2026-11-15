@@ -765,6 +765,29 @@
       ],
       "type": "object"
     },
+    "FileUpdateChange": {
+      "description": "A change to one file, in Codex's `FileUpdateChange` shape.",
+      "properties": {
+        "diff": {
+          "description": "For a change, the unified diff; for a new file, its content.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/PatchChangeKind",
+          "description": "Added, deleted or changed."
+        },
+        "path": {
+          "description": "The file, as the tool call names it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "kind",
+        "diff"
+      ],
+      "type": "object"
+    },
     "ImageInput": {
       "description": "An image sent with a turn's input.",
       "properties": {
@@ -902,6 +925,13 @@
             "arguments": {
               "description": "The arguments the model gave."
             },
+            "changes": {
+              "description": "The file changes it would make, when Koda asked about it or\nblocked it: Codex's `fileChange` item's `changes`, carried on\nKoda's one tool-call item.",
+              "items": {
+                "$ref": "#/$defs/FileUpdateChange"
+              },
+              "type": "array"
+            },
             "detail": {
               "description": "What the call would do, in a line, when Koda asked about it or\nblocked it.",
               "type": [
@@ -919,6 +949,13 @@
                 "string",
                 "null"
               ]
+            },
+            "progress": {
+              "description": "The notices sent about it as `item/toolCall/progress` while it\nran, in order: a sub-agent's, for an `InvokeAgent` call. Set on\ncompletion. A skill's change of tool scope is sent once its call\nhas completed, so it isn't here.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
             },
             "status": {
               "$ref": "#/$defs/ToolCallStatus",
@@ -1835,6 +1872,57 @@
       ],
       "type": "object"
     },
+    "PatchChangeKind": {
+      "description": "What happens to a file, as Codex's `PatchChangeKind` says.",
+      "oneOf": [
+        {
+          "description": "A new file.",
+          "properties": {
+            "type": {
+              "const": "add",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A file removed.",
+          "properties": {
+            "type": {
+              "const": "delete",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A file changed, and moved when `movePath` is set.",
+          "properties": {
+            "movePath": {
+              "description": "Where it moves to. Koda's tools never move a file.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "update",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "PlanStep": {
       "description": "One step of a plan.",
       "properties": {
@@ -2165,6 +2253,13 @@
             "null"
           ]
         },
+        "turns": {
+          "description": "Its turns, oldest first, each with its items. Filled only by\n`session/start` resuming a session and by `session/read` with\n`includeTurns`, as Codex's `Thread.turns` is.\n\nEach turn is the one the client saw: its id, status, usage and\ncompleted items, a sub-agent's tool calls under its `InvokeAgent`\ncall. A turn that never ended, Koda having stopped mid-way, reads as\ninterrupted.\n\nSessions from before Koda stored turns (0.6.4 and earlier) are\nrebuilt from the messages the model read, which keep less: a turn's id\nis its first message's, an interrupted turn followed by a new prompt\nreads as one turn, a tool call's status is read from its output, its\n`detail` and `changes` are missing, a sub-agent's tool calls and\ncompactions aren't listed, and turns have no usage or duration.",
+          "items": {
+            "$ref": "#/$defs/Turn"
+          },
+          "type": "array"
+        },
         "updatedAt": {
           "description": "When its last message was stored, in Unix seconds.",
           "format": "int64",
@@ -2330,6 +2425,38 @@
       },
       "required": [
         "notes"
+      ],
+      "type": "object"
+    },
+    "SessionReadParams": {
+      "additionalProperties": false,
+      "description": "`session/read`: a stored session, without opening it. Codex's\n`thread/read`.",
+      "properties": {
+        "includeTurns": {
+          "default": false,
+          "description": "Whether to return its turns and their items.",
+          "type": "boolean"
+        },
+        "sessionId": {
+          "description": "The session, by its full id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "type": "object"
+    },
+    "SessionReadResponse": {
+      "description": "The answer to `session/read`.",
+      "properties": {
+        "session": {
+          "$ref": "#/$defs/Session",
+          "description": "The session as `session/list` gives it, with its turns when asked."
+        }
+      },
+      "required": [
+        "session"
       ],
       "type": "object"
     },
@@ -2524,6 +2651,29 @@
         "session",
         "kodaVersion",
         "protocolVersion"
+      ],
+      "type": "object"
+    },
+    "SessionTokenUsageUpdatedNotification": {
+      "description": "`session/tokenUsage/updated`: what an open session's model calls have\nused, and how full its context is. Codex's `thread/tokenUsage/updated`,\nsent before each model call and when a turn's last call is done.",
+      "properties": {
+        "sessionId": {
+          "description": "The session.",
+          "type": "string"
+        },
+        "tokenUsage": {
+          "$ref": "#/$defs/TokenUsage",
+          "description": "The counts."
+        },
+        "turnId": {
+          "description": "The turn.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "turnId",
+        "tokenUsage"
       ],
       "type": "object"
     },
@@ -2779,12 +2929,103 @@
       ],
       "type": "object"
     },
+    "TokenUsage": {
+      "description": "A session's token counts. Codex's `ThreadTokenUsage`, plus\n`contextTokens`.",
+      "properties": {
+        "contextTokens": {
+          "description": "The tokens in the context now: Koda's count of what goes to the next\nmodel call, then the provider's count once a turn's last call is\ndone. Koda's own. Codex's TUI reads `last.totalTokens`, which moves\nonly after a call returns; Koda's meter moves before one, which a\nslow local model makes worth it.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "last": {
+          "$ref": "#/$defs/TokenUsageBreakdown",
+          "description": "The latest model call of the session's own: not a sub-agent's."
+        },
+        "modelContextWindow": {
+          "description": "The context window, in tokens.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "total": {
+          "$ref": "#/$defs/TokenUsageBreakdown",
+          "description": "Every model call since the session was opened: its turns,\nsub-agents and compactions."
+        }
+      },
+      "required": [
+        "total",
+        "last",
+        "contextTokens"
+      ],
+      "type": "object"
+    },
+    "TokenUsageBreakdown": {
+      "description": "Tokens of one model call, or added up. Codex's `TokenUsageBreakdown`.",
+      "properties": {
+        "cacheWriteInputTokens": {
+          "description": "Input tokens written to the provider's cache.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cachedInputTokens": {
+          "description": "Input tokens read from the provider's cache.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "inputTokens": {
+          "description": "Input tokens, cached ones included.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "outputTokens": {
+          "description": "Output tokens.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reasoningOutputTokens": {
+          "description": "Output tokens spent reasoning.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "totalTokens": {
+          "description": "Input and output tokens.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "totalTokens",
+        "inputTokens",
+        "cachedInputTokens",
+        "cacheWriteInputTokens",
+        "outputTokens",
+        "reasoningOutputTokens"
+      ],
+      "type": "object"
+    },
     "ToolCallApprovalParams": {
       "description": "`item/toolCall/requestApproval`: a tool call needs a yes before it runs.",
       "properties": {
         "allowForSession": {
           "description": "Whether `approveForSession` may be answered: only for local changes\ninside the project.",
           "type": "boolean"
+        },
+        "changes": {
+          "description": "The file changes it would make, as on its item.",
+          "items": {
+            "$ref": "#/$defs/FileUpdateChange"
+          },
+          "type": "array"
         },
         "detail": {
           "description": "What the call would do, in a line.",
@@ -2865,6 +3106,34 @@
         "itemId",
         "delta",
         "stream"
+      ],
+      "type": "object"
+    },
+    "ToolCallProgressNotification": {
+      "description": "`item/toolCall/progress`: a notice about a running tool call, such as a\nsub-agent reaching its turn limit. Codex's `item/mcpToolCall/progress`,\nfor Koda's one tool-call item.",
+      "properties": {
+        "itemId": {
+          "description": "The tool call.",
+          "type": "string"
+        },
+        "message": {
+          "description": "The notice, in a line.",
+          "type": "string"
+        },
+        "sessionId": {
+          "description": "The session.",
+          "type": "string"
+        },
+        "turnId": {
+          "description": "The turn.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "turnId",
+        "itemId",
+        "message"
       ],
       "type": "object"
     },
@@ -2983,6 +3252,13 @@
           "description": "The turn's id.",
           "type": "string"
         },
+        "items": {
+          "description": "Its items, in order. Filled only when a stored session is returned\nwith its turns, by `session/start` resuming it or by `session/read`,\nas Codex's `Turn.items` is; empty on `turn/started` and\n`turn/completed`, whose items come as notifications.",
+          "items": {
+            "$ref": "#/$defs/TurnItem"
+          },
+          "type": "array"
+        },
         "status": {
           "$ref": "#/$defs/TurnStatus",
           "description": "Where it stands."
@@ -3057,6 +3333,26 @@
     },
     "TurnInterruptResponse": {
       "description": "The answer to `turn/interrupt`, sent once the turn has stopped.",
+      "type": "object"
+    },
+    "TurnItem": {
+      "description": "An item of a stored turn, as `session/start` (resuming) and\n`session/read` return it: what `item/completed` sent, with its parent.",
+      "properties": {
+        "item": {
+          "$ref": "#/$defs/Item",
+          "description": "The item."
+        },
+        "parentItemId": {
+          "description": "On a sub-agent's items: the tool call that started the sub-agent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "item"
+      ],
       "type": "object"
     },
     "TurnLoopGuardNotification": {
@@ -3541,6 +3837,14 @@
         "$ref": "#/$defs/SessionMemoryReadResponse"
       }
     },
+    "session/read": {
+      "params": {
+        "$ref": "#/$defs/SessionReadParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionReadResponse"
+      }
+    },
     "session/settings/update": {
       "params": {
         "$ref": "#/$defs/SessionSettingsUpdateParams"
@@ -3647,6 +3951,11 @@
         "$ref": "#/$defs/ToolCallOutputDeltaNotification"
       }
     },
+    "item/toolCall/progress": {
+      "params": {
+        "$ref": "#/$defs/ToolCallProgressNotification"
+      }
+    },
     "mcpServer/startupStatus/updated": {
       "params": {
         "$ref": "#/$defs/McpServerStatusUpdatedNotification"
@@ -3670,6 +3979,11 @@
     "session/started": {
       "params": {
         "$ref": "#/$defs/SessionStartedNotification"
+      }
+    },
+    "session/tokenUsage/updated": {
+      "params": {
+        "$ref": "#/$defs/SessionTokenUsageUpdatedNotification"
       }
     },
     "turn/completed": {

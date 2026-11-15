@@ -328,6 +328,10 @@ impl Host {
                 let _ = reply.send(self.list_sessions(params).await.and_then(to_json));
                 return;
             }
+            ClientRequest::SessionRead { params, .. } => {
+                let _ = reply.send(self.read_session(params).await.and_then(to_json));
+                return;
+            }
             ClientRequest::SessionDelete { params, .. } => {
                 let _ = reply.send(
                     self.delete_session(params.session_id)
@@ -443,6 +447,36 @@ impl Host {
         })
     }
 
+    /// `session/read`: a stored session as `session/list` gives it, with its
+    /// turns when asked, as Codex's `thread/read`.
+    async fn read_session(
+        &self,
+        params: koda_protocol::session::SessionReadParams,
+    ) -> Result<koda_protocol::session::SessionReadResponse, ErrorObject> {
+        use koda_core::persistence::Persistence;
+        let stored = self
+            .context
+            .db
+            .get_session(&params.session_id)
+            .await
+            .map_err(|e| internal(format!("couldn't read the session: {e:#}")))?
+            .ok_or_else(|| {
+                ErrorObject::new(
+                    koda_protocol::rpc::codes::INVALID_PARAMS,
+                    format!("no session {:?}", params.session_id),
+                )
+            })?;
+        let mut session = session::describe(&stored);
+        if params.include_turns {
+            // An open session's last turn may still be running.
+            let running = self.sessions.lock().await.contains_key(&session.id);
+            session.turns = crate::history::turns(&self.context.db, &session.id, running)
+                .await
+                .map_err(history_error)?;
+        }
+        Ok(koda_protocol::session::SessionReadResponse { session })
+    }
+
     /// Delete session `id`, closing it first if it is open, as Codex's
     /// `thread/delete` does, and say so with `session/deleted`.
     async fn delete_session(&self, id: String) -> Result<SessionDeleteResponse, ErrorObject> {
@@ -531,8 +565,17 @@ impl Host {
             base_url: params.base_url,
             model: params.model,
         };
-        let opened = session::open(self.context.clone(), params.session_id, policy, choice).await?;
+        let resuming = params.session_id.is_some();
+        let mut opened =
+            session::open(self.context.clone(), params.session_id, policy, choice).await?;
         let id = opened.session.id.clone();
+        // A resumed session comes back with its turns, as Codex's
+        // `thread/resume` does.
+        if resuming {
+            opened.session.turns = crate::history::turns_for_resume(&self.context.db, &id)
+                .await
+                .map_err(history_error)?;
+        }
         let mut sessions = self.sessions.lock().await;
         // A prefix may have resolved to a session opened meanwhile.
         if sessions.contains_key(&id) {
@@ -604,6 +647,10 @@ impl Host {
             },
         })
     }
+}
+
+fn history_error(e: String) -> ErrorObject {
+    internal(format!("couldn't read the session's history: {e}"))
 }
 
 pub(crate) fn protocol_mode(mode: koda_core::trust::TrustMode) -> TrustMode {

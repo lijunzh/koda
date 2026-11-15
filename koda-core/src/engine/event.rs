@@ -357,7 +357,7 @@ pub enum EngineEvent {
     /// Tokens one model call used, for the turn's meter.
     ///
     /// Sent by the main loop, compaction and sub-agents. [`TurnMeter`] sums
-    /// these into [`EngineEvent::TurnSummary`] and doesn't pass them on.
+    /// these into [`EngineEvent::TurnSummary`] and passes them on.
     ///
     /// [`TurnMeter`]: crate::engine::sink::TurnMeter
     ModelUsage {

@@ -140,6 +140,8 @@ below as described, and Ctrl+C sends `turn/interrupt`.
 | `item/agentMessage/delta` | `itemId`, `delta` | Only with `--json-deltas` |
 | `item/reasoning/textDelta` | `itemId`, `delta` | Only with `--json-deltas` |
 | `item/toolCall/outputDelta` | `itemId`, `delta`, `stream` (`stdout` or `stderr`) | A line of a running command. Only with `--json-deltas` |
+| `item/toolCall/progress` | `itemId`, `message` | A notice about a call, such as a sub-agent reaching its turn limit, or a skill restricting the tools. Codex's `item/mcpToolCall/progress` |
+| `session/tokenUsage/updated` | `tokenUsage`: `total`, `last`, `modelContextWindow`, `contextTokens` | Before each model call and when the turn's last is done, as Codex's `thread/tokenUsage/updated`. `total` adds up every call since the session opened, sub-agents' and compactions' included; `last` is the session's latest call. Each counts `totalTokens`, `inputTokens`, `cachedInputTokens`, `cacheWriteInputTokens`, `outputTokens` and `reasoningOutputTokens`. `contextTokens`, Koda's own, is how full the context is: Koda's count before a call, the provider's once the turn's last call is done |
 | `turn/plan/updated` | `plan`: `{step, status}` | The model's todo list, whole. `status` is `pending`, `inProgress` or `completed` |
 | `turn/loopGuard` | `action`, `detail` | The model repeated itself. `action` is `feedback`, or `stop` when it didn't change course. Koda's own |
 | `error` | `error.message`, `willRetry`, `retry` | With `willRetry`, Koda tries the model call again and the turn goes on. `retry` has `reason` (`rateLimit`, `network`, `serverError`, `streamFailed`, `contextOverflow`, `emptyResponse`), `attempt` (the one that failed, from 1), `maxAttempts` and `delayMs` |
@@ -155,12 +157,12 @@ below as described, and Ctrl+C sends `turn/interrupt`.
 | `userMessage` | `id`, `text`, `clientMessageIds` | What the user said, as the model received it: a turn's prompt, or steering text sent during it (texts that arrived together are one item) |
 | `agentMessage` | `id`, `text` | Text is empty when it starts and complete when it completes |
 | `reasoning` | `id`, `text` | Where the provider shows reasoning |
-| `toolCall` | `id`, `tool`, `arguments`, `status`, `output`, `detail` | One item for every tool, named by `tool`. `status` ends as `completed`, `failed` (it ran and failed, or a command exited non-zero), `declined` (refused at an approval, by `--mode plan` or by a sub-agent's limits) or `cancelled`. `output` is what the model read. `detail` is the one-line description Koda showed when it asked about or blocked the call |
+| `toolCall` | `id`, `tool`, `arguments`, `status`, `output`, `detail`, `changes`, `progress` | One item for every tool, named by `tool`. `status` ends as `completed`, `failed` (it ran and failed, or a command exited non-zero), `declined` (refused at an approval, by `--mode plan` or by a sub-agent's limits) or `cancelled`. `output` is what the model read. `detail` is the one-line description Koda showed when it asked about or blocked the call; `changes` the file changes it showed then, each `{path, kind, diff}` as Codex's `fileChange` item has them (`kind` is `{"type": "add"}` with the new file as `diff`, or `{"type": "update"}` with a unified diff). `progress` lists the call's notices, on completion. The last three are left out when empty |
 | `contextCompaction` | `id`, `trigger`, `status`, `contextPercent`, `messagesRemoved`, `summaryTokens`, `reason` | `trigger` is `threshold`, `overflow`, `window` or `idle`. `status` ends as `completed`, `skipped` or `failed` (`reason` says why) |
 
 Codex has an item per kind of call (`commandExecution`, `fileChange`,
-`mcpToolCall`, …). Koda's tools share one shape, so it has one; typed fields
-such as a diff will be added when a client needs them.
+`mcpToolCall`, …). Koda's tools share one shape, so it has one, and adds
+typed fields such as `changes` when a client needs them.
 
 ### Requests
 
@@ -168,7 +170,7 @@ Koda asks with JSON-RPC requests, which have an `id`:
 
 | Method | Carries | Answer |
 |--------|---------|--------|
-| `item/toolCall/requestApproval` | `itemId`, `tool`, `detail`, `effect`, `allowForSession` | `decision`: `approve`, `approveForSession`, `reject` or `rejectWithFeedback` |
+| `item/toolCall/requestApproval` | `itemId`, `tool`, `detail`, `changes`, `effect`, `allowForSession` | `decision`: `approve`, `approveForSession`, `reject` or `rejectWithFeedback`. `changes` is the edit's diff, as on the item |
 | `item/tool/requestUserInput` | `itemId`, `question`, `options` | `answer` |
 | `turn/loopCap/requestDecision` | `cap`, `recentTools` | `decision`: `continue50`, `continue200` or `stop` |
 

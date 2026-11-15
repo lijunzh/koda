@@ -967,6 +967,11 @@ impl Persistence for Database {
             .execute(&mut *tx)
             .await?;
 
+        sqlx::query("DELETE FROM turn_records WHERE session_id = ?")
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await?;
+
         let result = sqlx::query("DELETE FROM sessions WHERE id = ?")
             .bind(session_id)
             .execute(&mut *tx)
@@ -1098,6 +1103,50 @@ impl Persistence for Database {
                 .fetch_optional(&self.pool)
                 .await?;
         Ok(row.map(|r| r.0))
+    }
+
+    async fn append_turn_records(
+        &self,
+        session_id: &str,
+        records: &[crate::persistence::TurnRecord],
+    ) -> Result<()> {
+        if records.is_empty() {
+            return Ok(());
+        }
+        let mut tx = self.pool.begin().await?;
+        for record in records {
+            sqlx::query(
+                "INSERT INTO turn_records (session_id, turn_id, kind, payload) VALUES (?, ?, ?, ?)",
+            )
+            .bind(session_id)
+            .bind(&record.turn_id)
+            .bind(&record.kind)
+            .bind(&record.payload)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn load_turn_records(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<crate::persistence::TurnRecord>> {
+        let rows: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT turn_id, kind, payload FROM turn_records WHERE session_id = ? ORDER BY id ASC",
+        )
+        .bind(session_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(turn_id, kind, payload)| crate::persistence::TurnRecord {
+                turn_id,
+                kind,
+                payload,
+            })
+            .collect())
     }
 
     /// Set a session metadata value (upsert).

@@ -378,7 +378,8 @@ impl EngineSink for FgForwardingSink<'_> {
 ///
 /// Stored totals cover the whole session, and a call whose reply is thrown
 /// away is never stored. The meter sees every call of this turn as it
-/// finishes. The events stop here: clients read the total on
+/// finishes, and passes each on: the client's host reports them per call
+/// (`session/tokenUsage/updated`), and the turn's total goes out on
 /// [`EngineEvent::TurnSummary`].
 pub struct TurnMeter<'a> {
     inner: &'a dyn EngineSink,
@@ -402,16 +403,14 @@ impl<'a> TurnMeter<'a> {
             .clone()
     }
 
-    /// Count `event` if it's usage. Returns the event otherwise.
-    fn count(&self, event: EngineEvent) -> Option<EngineEvent> {
-        let EngineEvent::ModelUsage { usage } = &event else {
-            return Some(event);
-        };
-        self.usage
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .add(usage);
-        None
+    /// Count `event` if it's usage.
+    fn count(&self, event: &EngineEvent) {
+        if let EngineEvent::ModelUsage { usage } = event {
+            self.usage
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .add(usage);
+        }
     }
 }
 
@@ -421,15 +420,13 @@ impl EngineSink for TurnMeter<'_> {
     }
 
     fn emit(&self, event: EngineEvent) {
-        if let Some(event) = self.count(event) {
-            self.inner.emit(event);
-        }
+        self.count(&event);
+        self.inner.emit(event);
     }
 
     fn emit_child(&self, parent_id: &str, event: EngineEvent) {
-        if let Some(event) = self.count(event) {
-            self.inner.emit_child(parent_id, event);
-        }
+        self.count(&event);
+        self.inner.emit_child(parent_id, event);
     }
 }
 
@@ -564,9 +561,13 @@ impl<'a> PersistingSink<'a> {
     /// Spawn a fire-and-forget DB insert. Any error is logged via
     /// `tracing::warn!` and otherwise swallowed (see struct doc).
     fn persist(&self, kind: &'static str, payload: String) {
+        self.persist_under(kind, payload, self.parent_tool_call_id.as_deref());
+    }
+
+    fn persist_under(&self, kind: &'static str, payload: String, parent: Option<&str>) {
         let db = self.db.clone();
         let session_id = self.session_id.clone();
-        let parent = self.parent_tool_call_id.clone();
+        let parent = parent.map(str::to_string);
         tokio::spawn(async move {
             if let Err(e) = db
                 .insert_session_event(&session_id, kind, &payload, parent.as_deref())
@@ -661,11 +662,12 @@ impl EngineSink for PersistingSink<'_> {
         self.inner.emit(event);
     }
 
+    /// An event from the sub-agent that tool call `parent_id` started, or a
+    /// notice about that call: stored under the call, as a sub-agent's
+    /// events are. (They were stored as the session's own until 6h.)
     fn emit_child(&self, parent_id: &str, event: EngineEvent) {
-        if let Some((kind, payload)) =
-            classify_for_persist(&event, self.parent_tool_call_id.as_deref())
-        {
-            self.persist(kind, payload);
+        if let Some((kind, payload)) = classify_for_persist(&event, Some(parent_id)) {
+            self.persist_under(kind, payload, Some(parent_id));
         }
         self.inner.emit_child(parent_id, event);
     }
@@ -1120,7 +1122,7 @@ mod tests {
     }
 
     #[test]
-    fn turn_meter_adds_up_usage_and_passes_everything_else_on() {
+    fn turn_meter_adds_up_usage_and_passes_every_event_on() {
         let inner = ParentRecorder::default();
         let meter = TurnMeter::new(&inner);
 
@@ -1132,7 +1134,15 @@ mod tests {
         let usage = meter.usage();
         assert_eq!(usage.prompt_tokens, 130);
         assert_eq!(usage.api_calls, 2);
-        assert_eq!(inner.parents(), [None, Some("call-1".to_string())]);
+        assert_eq!(
+            inner.parents(),
+            [
+                None,
+                Some("call-1".to_string()),
+                None,
+                Some("call-1".to_string())
+            ]
+        );
     }
 
     #[test]

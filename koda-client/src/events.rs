@@ -7,9 +7,11 @@
 //! takes: the turn in progress, the open message and reasoning items, the
 //! open tool calls, and the server requests waiting for an answer.
 //!
-//! Not on the protocol: spinners, the status bar, the footer, `Info` lines
-//! and context usage are presentation or state a client reads; a
-//! sub-agent's own turn events are folded into its parent's tool call.
+//! Not on the protocol: spinners, the status bar and the footer are
+//! presentation; the session's own `Info` lines (tools run in parallel,
+//! steering text injected) say what the items already show. A sub-agent's
+//! own turn events are folded into its parent's tool call, and its notices,
+//! like a skill's change of tool scope, are that call's progress.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -21,14 +23,19 @@ use koda_core::engine::event::{
     ToolOutcome, UsageTotals,
 };
 use koda_core::engine::{EngineEvent, TurnEndReason};
+use koda_core::preview::DiffPreview;
 use koda_protocol::item::{
-    CompactionStatus, CompactionTrigger, Item, ItemCompletedNotification, ItemStartedNotification,
-    OutputStream, TextDeltaNotification, ToolCallApprovalParams, ToolCallOutputDeltaNotification,
+    CompactionStatus, CompactionTrigger, FileUpdateChange, Item, ItemCompletedNotification,
+    ItemStartedNotification, OutputStream, PatchChangeKind, TextDeltaNotification,
+    ToolCallApprovalParams, ToolCallOutputDeltaNotification, ToolCallProgressNotification,
     ToolCallStatus, ToolEffect, UserInputParams,
 };
 use koda_protocol::rpc::RequestId;
 use koda_protocol::server::{
     ErrorNotification, Retry, RetryReason, ServerRequestResolvedNotification, WarningNotification,
+};
+use koda_protocol::session::{
+    SessionTokenUsageUpdatedNotification, TokenUsage, TokenUsageBreakdown,
 };
 use koda_protocol::turn::{
     LoopCapParams, LoopGuardAction, PlanStep, PlanStepStatus, Turn, TurnCompletedNotification,
@@ -78,6 +85,10 @@ struct OpenCall {
     parent: Option<String>,
     /// Set when Koda asked about the call or blocked it.
     detail: Option<String>,
+    /// The file changes Koda showed when it asked or blocked.
+    changes: Vec<FileUpdateChange>,
+    /// The notices sent about it.
+    progress: Vec<String>,
 }
 
 /// An open message or reasoning item.
@@ -112,6 +123,8 @@ pub struct EventProjector {
     /// Request ids shared with the host's other sessions, so a response
     /// names one session's request. `None` numbers them per projector.
     shared_request_ids: Option<Arc<AtomicI64>>,
+    /// The session's token counts since it was opened.
+    tokens: TokenUsage,
 }
 
 impl EventProjector {
@@ -129,6 +142,7 @@ impl EventProjector {
             next_item: 0,
             next_request: 0,
             shared_request_ids: None,
+            tokens: TokenUsage::default(),
         }
     }
 
@@ -214,6 +228,7 @@ impl EventProjector {
                             error: None,
                             usage: None,
                             duration_ms: None,
+                            items: Vec::new(),
                         },
                     },
                 )));
@@ -245,6 +260,7 @@ impl EventProjector {
                             error,
                             usage,
                             duration_ms,
+                            items: Vec::new(),
                         },
                     },
                 )));
@@ -287,6 +303,8 @@ impl EventProjector {
                     status: ToolCallStatus::InProgress,
                     output: None,
                     detail: None,
+                    changes: Vec::new(),
+                    progress: Vec::new(),
                 };
                 self.calls.insert(
                     id,
@@ -295,6 +313,8 @@ impl EventProjector {
                         arguments: args,
                         parent: parent.clone(),
                         detail: None,
+                        changes: Vec::new(),
+                        progress: Vec::new(),
                     },
                 );
                 out.push(self.item_started(parent, item));
@@ -323,9 +343,16 @@ impl EventProjector {
                 outcome,
             } => {
                 let call = self.calls.remove(&id);
-                let (tool, arguments, call_parent, detail) = match call {
-                    Some(c) => (c.tool, c.arguments, c.parent, c.detail),
-                    None => (name, Value::Null, parent, None),
+                let (tool, arguments, call_parent, detail, changes, progress) = match call {
+                    Some(c) => (
+                        c.tool,
+                        c.arguments,
+                        c.parent,
+                        c.detail,
+                        c.changes,
+                        c.progress,
+                    ),
+                    None => (name, Value::Null, parent, None, Vec::new(), Vec::new()),
                 };
                 let item = Item::ToolCall {
                     id,
@@ -334,16 +361,20 @@ impl EventProjector {
                     status: status_of(outcome),
                     output: Some(output),
                     detail,
+                    changes,
+                    progress,
                 };
                 out.push(self.item_completed(call_parent, item));
             }
             EngineEvent::ActionBlocked {
                 tool_call_id,
                 detail,
+                preview,
                 ..
             } => {
                 if let Some(call) = self.calls.get_mut(&tool_call_id) {
                     call.detail = Some(detail);
+                    call.changes = changes_of(preview.as_ref());
                 }
             }
             EngineEvent::ApprovalRequest {
@@ -351,12 +382,14 @@ impl EventProjector {
                 tool_call_id,
                 tool_name,
                 detail,
+                preview,
                 effect,
                 allow_for_session,
-                ..
             } => {
+                let changes = changes_of(preview.as_ref());
                 if let Some(call) = self.calls.get_mut(&tool_call_id) {
                     call.detail = Some(detail.clone());
+                    call.changes = changes.clone();
                 }
                 let request_id = self.request_id(id);
                 out.push(Outgoing::Request(ServerRequest::ToolCallApproval {
@@ -367,6 +400,7 @@ impl EventProjector {
                         item_id: tool_call_id,
                         tool: tool_name,
                         detail,
+                        changes,
                         effect: effect_of(effect),
                         allow_for_session,
                     },
@@ -474,6 +508,41 @@ impl EventProjector {
                             EngineLoopGuardAction::Stop => LoopGuardAction::Stop,
                         },
                         detail,
+                    },
+                )));
+            }
+            // A notice about a call: its sub-agent's, or a skill's scope.
+            EngineEvent::Info { message } => {
+                if let Some(item_id) = parent {
+                    let message = message.trim().to_string();
+                    if let Some(call) = self.calls.get_mut(&item_id) {
+                        call.progress.push(message.clone());
+                    }
+                    out.push(notification(ServerNotification::ToolCallProgress(
+                        ToolCallProgressNotification {
+                            session_id: self.session_id.clone(),
+                            turn_id: self.turn(),
+                            item_id,
+                            message,
+                        },
+                    )));
+                }
+            }
+            EngineEvent::ModelUsage { usage } => {
+                let call = breakdown_of(&usage);
+                add(&mut self.tokens.total, &call);
+                if parent.is_none() {
+                    self.tokens.last = call;
+                }
+            }
+            EngineEvent::ContextUsage { used, max } if parent.is_none() => {
+                self.tokens.context_tokens = used as u64;
+                self.tokens.model_context_window = Some(max as u64);
+                out.push(notification(ServerNotification::SessionTokenUsageUpdated(
+                    SessionTokenUsageUpdatedNotification {
+                        session_id: self.session_id.clone(),
+                        turn_id: self.turn(),
+                        token_usage: self.tokens.clone(),
                     },
                 )));
             }
@@ -684,6 +753,8 @@ impl EventProjector {
                 status: ToolCallStatus::Cancelled,
                 output: None,
                 detail: call.detail,
+                changes: call.changes,
+                progress: call.progress,
             };
             out.push(self.item_completed(call.parent, item));
         }
@@ -771,6 +842,47 @@ fn retry_reason_of(reason: EngineRetryReason) -> RetryReason {
         EngineRetryReason::ContextOverflow => RetryReason::ContextOverflow,
         EngineRetryReason::EmptyResponse => RetryReason::EmptyResponse,
     }
+}
+
+/// The file changes a preview shows, in Codex's shape.
+fn changes_of(preview: Option<&DiffPreview>) -> Vec<FileUpdateChange> {
+    match preview {
+        Some(DiffPreview::UnifiedDiff(diff)) => vec![FileUpdateChange {
+            path: diff.path.clone(),
+            kind: PatchChangeKind::Update { move_path: None },
+            diff: diff.unified_text(),
+        }],
+        Some(DiffPreview::WriteNew(new)) => vec![FileUpdateChange {
+            path: new.path.clone(),
+            kind: PatchChangeKind::Add,
+            diff: new.content.clone(),
+        }],
+        Some(DiffPreview::FileNotYetExists) | None => Vec::new(),
+    }
+}
+
+/// One model call's tokens, in Codex's breakdown.
+fn breakdown_of(usage: &UsageTotals) -> TokenUsageBreakdown {
+    let count = |n: i64| n.max(0) as u64;
+    let input = count(usage.prompt_tokens);
+    let output = count(usage.completion_tokens);
+    TokenUsageBreakdown {
+        total_tokens: input + output,
+        input_tokens: input,
+        cached_input_tokens: count(usage.cache_read_tokens),
+        cache_write_input_tokens: count(usage.cache_creation_tokens),
+        output_tokens: output,
+        reasoning_output_tokens: count(usage.thinking_tokens),
+    }
+}
+
+fn add(total: &mut TokenUsageBreakdown, call: &TokenUsageBreakdown) {
+    total.total_tokens += call.total_tokens;
+    total.input_tokens += call.input_tokens;
+    total.cached_input_tokens += call.cached_input_tokens;
+    total.cache_write_input_tokens += call.cache_write_input_tokens;
+    total.output_tokens += call.output_tokens;
+    total.reasoning_output_tokens += call.reasoning_output_tokens;
 }
 
 #[cfg(test)]
@@ -1128,5 +1240,115 @@ mod tests {
         let turn = &lines[6]["params"]["turn"];
         assert_eq!(turn["status"], "failed");
         assert_eq!(turn["error"]["message"], "gave up");
+    }
+
+    /// A sub-agent's notice is its call's progress: sent at once, and kept
+    /// on the completed item. The session's own `Info` lines aren't sent.
+    #[test]
+    fn a_notice_about_a_call_is_its_progress() {
+        let mut p = EventProjector::new("s1");
+        let info = |m: &str| EngineEvent::Info { message: m.into() };
+        let lines = run(
+            &mut p,
+            vec![
+                (
+                    None,
+                    EngineEvent::TurnStart {
+                        turn_id: "t1".into(),
+                    },
+                ),
+                (None, start("call-1", "InvokeAgent")),
+                (
+                    Some("call-1"),
+                    info("  \u{23f3} explore: reached max turns (3)"),
+                ),
+                (None, info("Running 2 tools in parallel...")),
+                (None, result("call-1", ToolOutcome::Success)),
+            ],
+        );
+        assert_eq!(
+            methods(&lines),
+            [
+                "turn/started",
+                "item/started toolCall",
+                "item/toolCall/progress",
+                "item/completed toolCall",
+            ]
+        );
+        assert_eq!(lines[2]["params"]["itemId"], "call-1");
+        assert_eq!(
+            lines[2]["params"]["message"],
+            "\u{23f3} explore: reached max turns (3)"
+        );
+        assert_eq!(
+            lines[3]["params"]["item"]["progress"],
+            json!(["\u{23f3} explore: reached max turns (3)"])
+        );
+    }
+
+    /// Token counts go out with each context reading: the session's own
+    /// calls as `last`, every call in `total`, a sub-agent's included.
+    #[test]
+    fn token_usage_counts_every_call_and_reads_the_context() {
+        let mut p = EventProjector::new("s1");
+        let call = |prompt: i64, completion: i64| EngineEvent::ModelUsage {
+            usage: UsageTotals {
+                prompt_tokens: prompt,
+                completion_tokens: completion,
+                api_calls: 1,
+                ..Default::default()
+            },
+        };
+        let lines = run(
+            &mut p,
+            vec![
+                (
+                    None,
+                    EngineEvent::TurnStart {
+                        turn_id: "t1".into(),
+                    },
+                ),
+                (
+                    None,
+                    EngineEvent::ContextUsage {
+                        used: 90,
+                        max: 1000,
+                    },
+                ),
+                (None, call(100, 10)),
+                (Some("call-1"), call(50, 5)),
+                (
+                    Some("call-1"),
+                    EngineEvent::ContextUsage {
+                        used: 40,
+                        max: 1000,
+                    },
+                ),
+                (
+                    None,
+                    EngineEvent::ContextUsage {
+                        used: 120,
+                        max: 1000,
+                    },
+                ),
+            ],
+        );
+        assert_eq!(
+            methods(&lines),
+            [
+                "turn/started",
+                "session/tokenUsage/updated",
+                "session/tokenUsage/updated"
+            ]
+        );
+        assert_eq!(lines[1]["params"]["tokenUsage"]["contextTokens"], 90);
+        let usage = &lines[2]["params"]["tokenUsage"];
+        assert_eq!(usage["contextTokens"], 120);
+        assert_eq!(usage["modelContextWindow"], 1000);
+        assert_eq!(usage["last"]["inputTokens"], 100);
+        assert_eq!(usage["last"]["totalTokens"], 110);
+        assert_eq!(usage["total"]["inputTokens"], 150);
+        assert_eq!(usage["total"]["outputTokens"], 15);
+        assert_eq!(lines[2]["params"]["turnId"], "t1");
     }
 }

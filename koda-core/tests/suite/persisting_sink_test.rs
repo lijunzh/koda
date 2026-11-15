@@ -110,8 +110,9 @@ async fn wait_for_events(
 
 // ── Top-level routing (parent_tool_call_id = None) ───────────────────
 
-/// A sub-agent's event is persisted the same way as a plain one, and its
-/// parent reaches the sink underneath.
+/// A sub-agent's event is stored under the call that started it, as a
+/// sub-agent's trace, and its parent reaches the sink underneath. Until 6h
+/// it was stored as the session's own, so a resumed session lost the link.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn child_event_persists_and_is_forwarded() {
     let (_tmp, db, session_id) = fresh_db().await;
@@ -127,6 +128,8 @@ async fn child_event_persists_and_is_forwarded() {
 
     let events = wait_for_events(&db, &session_id, 1).await;
     assert_eq!(events[0].payload, "from a sub-agent");
+    assert_eq!(events[0].kind, sek::SUB_AGENT_EVENT);
+    assert_eq!(events[0].parent_tool_call_id.as_deref(), Some("call-1"));
     assert_eq!(inner.len(), 1);
 }
 

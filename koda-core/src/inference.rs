@@ -2037,21 +2037,27 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
                 .collect();
             let was_active = skill_scope.is_active();
             skill_scope.update_from_tool_calls(&scope_calls, &tools.skill_registry);
-            // Log scope transitions
-            match (was_active, skill_scope.is_active()) {
-                (false, true) => {
-                    sink.emit(EngineEvent::Info {
-                        message: "\u{1f512} Skill tool scope activated — tool set restricted"
-                            .into(),
-                    });
-                }
+            // Say so on the `ActivateSkill` call that changed the scope, as
+            // its progress.
+            let skill_call = tool_calls
+                .iter()
+                .rev()
+                .find(|tc| tc.function_name == "ActivateSkill")
+                .map(|tc| tc.id.as_str());
+            let notice = match (was_active, skill_scope.is_active()) {
+                (false, true) => Some("\u{1f512} Skill tool scope activated — tool set restricted"),
                 (true, false) => {
-                    sink.emit(EngineEvent::Info {
-                        message: "\u{1f513} Skill tool scope cleared — full tool set restored"
-                            .into(),
-                    });
+                    Some("\u{1f513} Skill tool scope cleared — full tool set restored")
                 }
-                _ => {}
+                _ => None,
+            };
+            if let Some(message) = notice {
+                sink.emit_from(
+                    skill_call,
+                    EngineEvent::Info {
+                        message: message.into(),
+                    },
+                );
             }
         }
 
