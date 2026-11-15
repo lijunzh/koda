@@ -224,6 +224,12 @@ client_requests! {
         params: crate::skills::SkillsListParams,
         response: crate::skills::SkillsListResponse,
     },
+    /// Write a feedback report, and with consent the session's logs and
+    /// history, to a ZIP on the host, as Codex's does.
+    FeedbackSave => "feedback/save" {
+        params: crate::feedback::FeedbackSaveParams,
+        response: crate::feedback::FeedbackSaveResponse,
+    },
     /// Close a session the client is done with, stopping its running turn.
     SessionUnsubscribe => "session/unsubscribe" {
         params: crate::session::SessionUnsubscribeParams,

@@ -26,6 +26,8 @@ mod background;
 pub mod builtin_skills;
 mod config_file;
 pub mod events;
+/// `feedback/save`: a report ZIP, as Codex writes one.
+pub mod feedback;
 mod history;
 mod host;
 mod mcp;

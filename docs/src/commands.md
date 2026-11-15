@@ -189,77 +189,38 @@ Defaults to the most recent response (`n=1`).
 Reads from the full session DB, so compacted (summarised) responses are
 included in the count. A one-line preview is shown in the confirmation.
 
-## `/debug-bundle`
+## `/feedback`
 
-Writes a self-contained `.zip` artifact capturing everything a debugger
-(human or LLM) needs to reason about the current session. Replaces the
-`/export` command removed in v0.2.26 (RFC #1167).
+Saves a report about this session as a `.zip` you can attach to an issue, as
+Codex's `/feedback` does. It asks three things:
 
-```text
-/debug-bundle
-```
+1. **How was this?** `bug`, `bad result`, `good result` or `other`.
+2. **Include logs and session history?** They may hold your prompts, commands
+   and tool output. Say no and the ZIP holds only the report.
+3. **A note** (optional): what happened, in your words.
 
-The bundle is written to:
-
-```text
-~/.config/koda/debug-bundles/koda-debug-{timestamp}-{slug}.zip
-```
-
-where `{slug}` is derived from the first user message. The success
-message prints the full path and how to read the session's whole log:
-
-```text
-Wrote debug bundle → /Users/you/.config/koda/debug-bundles/koda-debug-20260429-082303-fix-the-auth-bug.zip
-  every line: koda-logs --session 3f2a9c1e-…
-```
-
-### Bundle layout
+It saves to `~/.config/koda/feedback/koda-feedback-<time>-<id>.zip`, readable
+by you only, and prints the path. For anything but a good result it also gives
+the link to open an issue. Nothing is sent anywhere.
 
 | File | What's in it |
 |---|---|
-| `README.md` | Human-orientation: what each file is, when to share, the env-var redaction caveat |
-| `conversation.md` | Full session rendered via the same `history_render` pipeline as the live TUI — byte-for-byte identical to what you saw on screen |
-| `messages.json` | Raw per-message DB rows (role, content, tool calls, tool results) |
-| `metadata.json` | Session ID, title, started-at, model, provider, current PID, capture timestamp |
-| `env.txt` | Allowlist-filtered environment variables (see below) |
-| `logs/koda.log` | The session's lines from the log database, with this process's lines outside any session (startup, the TUI, a crash) |
+| `report.json` | The category and note, the session, Koda's version, OS and time |
+| `attachments/…/koda-logs.log` | The session's lines from the log database, its sub-agents' too, and this process's startup lines (with consent) |
+| `attachments/…/session-<id>.json` | The session's stored rows, and each sub-agent session's: its session row, every message (compacted ones too), its turns, their items and settings, and its events (with consent) |
+| `attachments/…/diagnostics.txt` | Versions, OS, sandbox, whether the log lost lines, and the environment (with consent) |
+| `manifest.json` | What each attachment is |
 
-The `.zip` format was chosen for **random-access reads** — LLM debugging
-workflows that poke at one file at a time pay O(file) instead of
-O(bundle), and the artifact opens cleanly in Finder Quick Look,
-Windows Explorer, and any unzip CLI.
+The environment goes through an allowlist (`koda-client/src/feedback/env_filter.rs`):
 
-### Environment-variable redaction
+- **Kept as is:** `KODA_*`, `RUST_*`, `LC_*`, `LANG`, `TERM`, `SHELL`, `PATH`.
+- **Kept by length only:** known keys such as `ANTHROPIC_API_KEY` and
+  `GITHUB_TOKEN`, and the proxy variables, as `<redacted, N bytes>`.
+- **Left out:** everything else, including `HOME`, `USER` and `PWD`.
 
-`env.txt` is filtered through an **allowlist by default** in
-`koda-cli/src/debug_bundle/env_filter.rs`. The filter has three
-categories:
-
-- **Pass through verbatim**: `KODA_*`, `RUST_*`, `LC_*`, `LANG`,
-  `TERM`, `SHELL`, `PATH`, proxy vars (`HTTP_PROXY` / `HTTPS_PROXY` /
-  `NO_PROXY`).
-- **Length-redact**: known credential vars (`OPENAI_API_KEY`,
-  `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, `GEMINI_API_KEY`, etc.) appear
-  as `<redacted, N bytes>` so their *presence* is visible to the
-  debugger but the *value* never leaks.
-- **Drop entirely**: PII (`HOME`, `USER`, `PWD`, `LOGNAME`) and any
-  unknown variable. Defaulting unknown to *drop* protects against
-  unanticipated future credential names.
-
-There is **no runtime opt-in to disable this filter**. Embedding raw
-`std::env::vars()` in a sharable artifact is a foot-gun even with
-opt-in flags; the bundle README also reminds you to re-check `env.txt`
-before sharing externally.
-
-### When to use it
-
-- Reporting a bug to the koda issue tracker — attach the `.zip` so
-  maintainers see your exact session, panic context, and runtime
-  environment.
-- Asking another LLM (Claude, ChatGPT, Gemini) to help debug a koda
-  session — the model can `unzip` and read `conversation.md` directly.
-- Capturing a known-bad state for later analysis (the timestamped
-  filename + slug make bundles trivially sortable).
+Any client can save one with the `feedback/save` request (Codex's), which takes
+the category, note, session, whether to include logs, and an absolute path
+that doesn't exist yet. `/debug-bundle`, which `/feedback` replaces, is gone.
 
 ## `/verbose [on|off]`
 

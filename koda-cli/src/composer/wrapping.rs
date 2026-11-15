@@ -24,9 +24,8 @@
 //!   These are the only wrapping primitives [`super::textarea::TextArea`]
 //!   needs to drive its cursor-position math.
 //! - **Dropped:** all the URL-aware adaptive wrapping (~1,300 LoC of
-//!   codex's `wrapping.rs`). koda's history-render path uses different
-//!   wrapping logic (`koda-cli/src/history_render.rs`) and the URL
-//!   helpers there are not needed inside the composer's textarea
+//!   codex's `wrapping.rs`). koda's renderer wraps output its own way,
+//!   and the URL helpers are not needed inside the composer's textarea
 //!   (which renders user-typed input, not agent output). If we later
 //!   want URL-aware wrapping in the composer, we can port more.
 //! - **Dropped:** `wrap_ranges_trim` (used by codex but not by the

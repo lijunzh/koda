@@ -2197,3 +2197,50 @@ async fn a_prompt_given_to_koda_is_sent_when_the_tui_opens() {
     assert!(sent.contains("say hello from the command line"), "{sent}");
     tui.wait_for_screen("All done.");
 }
+
+/// `/feedback` asks Codex's three questions (what kind, logs or not, a
+/// note) and saves a ZIP with the report, the log and the session's rows.
+#[tokio::test(flavor = "multi_thread")]
+async fn feedback_saves_a_report_with_the_session() {
+    let server = scripted_model(vec![]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    tui.submit_and_finish("hello", "All done.");
+
+    tui.type_text("/feedback");
+    tui.type_text("\r");
+    tui.wait_for_screen("How was this?");
+    // "bug" comes first, then "yes" to the logs.
+    tui.type_text("\r");
+    tui.wait_for_screen("Include logs and session history?");
+    tui.type_text("\r");
+    tui.wait_for_screen("Note (optional)");
+    tui.type_text("it hung");
+    tui.type_text("\r");
+    tui.wait_for_screen("Feedback saved");
+    tui.wait_for_screen("open an issue");
+
+    let dir = home.path().join(".config/koda/feedback");
+    let zip = std::fs::read_dir(&dir)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "zip"))
+        .expect("a feedback ZIP");
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(&zip).unwrap()).unwrap();
+    let names: Vec<String> = archive
+        .file_names()
+        .map(|name| name.unwrap().to_string())
+        .collect();
+    assert!(names.contains(&"report.json".to_string()), "{names:?}");
+    assert!(
+        names.iter().any(|n| n.ends_with("/koda-logs.log")),
+        "{names:?}"
+    );
+    assert!(names.iter().any(|n| n.contains("/session-")), "{names:?}");
+    let mut report = String::new();
+    std::io::Read::read_to_string(&mut archive.by_name("report.json").unwrap(), &mut report)
+        .unwrap();
+    assert!(report.contains("\"reason\": \"it hung\""), "{report}");
+    assert!(report.contains("\"classification\": \"bug\""), "{report}");
+}

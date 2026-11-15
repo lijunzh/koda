@@ -18,7 +18,7 @@ you set that variable.
 | Log database | `<config>/db/logs_1.db` | Every line Koda logs, filed under the session it was logged in; `koda-logs` reads it (below). A crash is an `ERROR` line from `koda_cli::panic` with its backtrace. |
 | Log file | `<log_dir>/koda.log` | Only when `config.toml` sets `log_dir`, as Codex's log file: every line at `RUST_LOG`'s level, appended run after run. |
 | Database | `<config>/db/koda.db` | Every message of every session, with token usage. |
-| Debug bundle | `<config>/debug-bundles/*.zip` | Written by [`/debug-bundle`](./commands.md#debug-bundle) in the TUI. |
+| Feedback report | `<config>/feedback/*.zip` | Written by [`/feedback`](./commands.md#feedback) in the TUI: the report, and with consent the session's log, stored rows and diagnostics. |
 | Headless output | stdout | The protocol with `koda exec --json`, ending with the run summary, `exec/summary`. |
 
 ### The log
@@ -463,9 +463,9 @@ see the end-to-end tests in `koda-core/tests/`.
    or `<log_dir>/koda.log` if you set `log_dir`. It holds your
    prompts and the files Koda read, so check it before you post it.
 2. **The `exec/summary` line**, for a `koda exec --json` run.
-3. **The debug bundle**, for a TUI session: run `/debug-bundle` before you quit.
-   It holds the conversation and the session's log. A headless run has no
-   bundle, so send its log from `koda-logs`.
+3. **The feedback report**, for a TUI session: run `/feedback` and say yes to
+   logs. It holds the session's log and stored rows. A headless run has none,
+   so send its log from `koda-logs`.
 4. **Which lines show the problem**, by name, such as
    `compaction branch="cut_off" attempts=2`. Say which of the questions above
    you can't answer.

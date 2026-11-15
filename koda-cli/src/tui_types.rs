@@ -64,6 +64,13 @@ pub enum MenuContent {
     Key(ProviderDropdown),
     /// Session picker dropdown (`/resume` with no args).
     Session(SessionDropdown),
+    /// `/feedback`: the kind of report, then, once `classification` is
+    /// chosen, whether to include logs and session history.
+    Feedback {
+        dropdown:
+            crate::widgets::dropdown::DropdownState<crate::widgets::feedback_menu::FeedbackItem>,
+        classification: Option<&'static str>,
+    },
     /// File picker dropdown (auto-appears when the user types `@`).
     File {
         dropdown: FileDropdown,
@@ -137,6 +144,11 @@ pub(crate) enum PromptMode {
 /// Provider setup wizard state machine.
 /// Each variant holds the data collected so far.
 pub(crate) enum ProviderWizard {
+    /// `/feedback`'s last step: the note to send with the report.
+    FeedbackNote {
+        classification: &'static str,
+        include_logs: bool,
+    },
     /// Step 1: provider selected, now need API key (or URL for local providers).
     ApiKey {
         provider_type: koda_core::config::ProviderType,

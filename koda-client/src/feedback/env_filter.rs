@@ -1,4 +1,5 @@
-//! Environment variable filter for debug bundles.
+//! Environment variable filter for feedback reports (`diagnostics.txt`),
+//! moved from the debug bundle `/feedback` replaced.
 //!
 //! Applies a hardcoded **allowlist** to `std::env::vars()`. Per RFC #1167
 //! decision D5, there is intentionally **no runtime opt-in** to expose more
@@ -75,7 +76,7 @@ pub(super) const REDACT_NAMES: &[&str] = &[
 /// Filter an iterator of `(name, value)` pairs through the allowlist.
 ///
 /// Returns a `BTreeMap` (sorted output is reproducible across runs, which
-/// makes diffing two bundles meaningful). Names that match neither the
+/// makes diffing two reports meaningful). Names that match neither the
 /// allowlist nor the redact list are dropped entirely.
 ///
 /// # Examples
@@ -120,7 +121,7 @@ fn classify(name: &str, value: &str) -> Option<String> {
 
 /// Render the filtered map to a deterministic `KEY=VALUE\n` text format
 /// suitable for direct inclusion in `env.txt`. Lines are sorted by key
-/// (BTreeMap iteration order) so two bundles diff cleanly.
+/// (BTreeMap iteration order) so two reports diff cleanly.
 pub(super) fn render(filtered: &BTreeMap<String, String>) -> String {
     let mut out = String::new();
     for (key, value) in filtered {
@@ -208,7 +209,7 @@ mod tests {
     #[test]
     fn pii_corp_id_dropped_entirely() {
         // HOME, USER, PWD all contain corp ID at Walmart and shouldn't
-        // appear in a bundle that might be shared cross-team or with
+        // appear in a report that might be shared cross-team or with
         // an external LLM for debugging.
         let result = filter([
             ("HOME", "/Users/l0z05rg"),
@@ -225,7 +226,7 @@ mod tests {
     #[test]
     fn unknown_var_with_credential_in_value_dropped_by_default() {
         // The whole point of allowlist > denylist: a future variable name
-        // we never anticipated stays out of the bundle even when its
+        // we never anticipated stays out of the report even when its
         // value looks credential-like.
         let result = filter([
             ("FUTURE_API_KEY", "sk-something-secret"),
@@ -247,7 +248,7 @@ mod tests {
     #[test]
     fn render_produces_sorted_key_eq_value_lines() {
         // BTreeMap iteration is sorted, which renders as sorted lines.
-        // This makes diffing two bundles meaningful.
+        // This makes diffing two reports meaningful.
         let mut input = BTreeMap::new();
         input.insert("ZULU".to_string(), "z".to_string());
         input.insert("ALPHA".to_string(), "a".to_string());

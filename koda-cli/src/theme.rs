@@ -89,8 +89,8 @@ pub const ACCENT_AMBER: Style = Style::new().fg(Color::Rgb(255, 191, 0));
 
 /// Color of the `●` glyph that prefixes a tool call header.
 ///
-/// Single source of truth — [`tui_render::tool_call_styles`] and
-/// [`history_render::render_tool_call_headers`] both call this.
+/// Single source of truth — [`tui_render::tool_call_styles`] calls this,
+/// for live turns and resumed ones alike.
 ///
 /// Colors are grouped by [`ToolEffect`] when possible, plus a few special
 /// cases that don't map cleanly to effects (network, agent dispatch,
@@ -233,7 +233,7 @@ mod tests {
     #[test]
     fn tool_dot_groups_read_only_tools() {
         // Cyan family for read-only tools — single source of truth that
-        // history_render and tui_render now both consume.
+        // tui_render consumes, live and on resume.
         assert_eq!(tool_dot_color("Read"), ACCENT_READ);
         assert_eq!(tool_dot_color("Grep"), ACCENT_READ);
         assert_eq!(tool_dot_color("List"), ACCENT_READ);

@@ -717,7 +717,7 @@ async fn dedupe_via_load_context_keeps_only_latest_bg_completion() {
     );
 
     // The full transcript (load_all_messages) preserves both rows for
-    // debug-bundle / forensic use.
+    // feedback reports and forensic use.
     let all = db.load_all_messages(&session).await.unwrap();
     let all_tool_rows: Vec<&Message> = all.iter().filter(|m| m.role == Role::Tool).collect();
     assert_eq!(

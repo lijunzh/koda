@@ -20,7 +20,74 @@ mod store;
 pub use layer::{LogDbLayer, default_filter};
 pub use store::{BUDGET_BYTES, LogStore, PARTITION_BYTES, PARTITION_ROWS, RETENTION_SECS};
 
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
+
+/// The log database this process writes, once [`install`] has run.
+static INSTALLED: OnceLock<(LogDbLayer, Arc<LogStore>)> = OnceLock::new();
+
+/// Start storing this process's log in `store`, and keep the handle so the
+/// rest of the process can flush and read it: the panic hook, and the host
+/// for `feedback/save`. Returns the layer to add to the subscriber. Needs a
+/// Tokio runtime. A second call starts another writer but keeps the first
+/// handle.
+pub fn install(store: Arc<LogStore>) -> LogDbLayer {
+    store.start_maintenance();
+    let layer = LogDbLayer::start(store.clone());
+    let _ = INSTALLED.set((layer.clone(), store));
+    layer
+}
+
+/// The installed writer and store, if [`install`] has run.
+pub fn installed() -> Option<(&'static LogDbLayer, &'static Arc<LogStore>)> {
+    INSTALLED.get().map(|(layer, store)| (layer, store))
+}
+
+/// Store what's queued, as before reading the log back.
+pub async fn flush() {
+    if let Some((layer, _)) = installed() {
+        layer.flush().await;
+    }
+}
+
+/// [`flush`] for code that can't `.await`, waiting at most `limit`.
+pub fn flush_blocking(limit: Duration) {
+    if let Some((layer, _)) = installed() {
+        layer.flush_blocking(limit);
+    }
+}
+
+/// The lines of `session_ids`, with this process's lines outside any
+/// session (startup, the TUI, a panic), in the order they were stored: what
+/// a report about those sessions needs, as Codex's feedback logs take a
+/// thread's lines and its process's threadless ones. Empty without an
+/// installed log database.
+pub async fn session_lines(session_ids: &[String]) -> anyhow::Result<Vec<LogRow>> {
+    let Some((_, store)) = installed() else {
+        return Ok(Vec::new());
+    };
+    flush().await;
+    let mut rows = Vec::new();
+    if !session_ids.is_empty() {
+        rows = store
+            .query(&LogQuery {
+                session_ids: session_ids.to_vec(),
+                ..LogQuery::default()
+            })
+            .await?;
+    }
+    rows.extend(
+        store
+            .query(&LogQuery {
+                sessionless: true,
+                process_uuid: Some(process_uuid().to_string()),
+                ..LogQuery::default()
+            })
+            .await?,
+    );
+    rows.sort_by_key(|row| row.id);
+    Ok(rows)
+}
 
 /// One line to store.
 #[derive(Debug, Clone, PartialEq)]

@@ -849,9 +849,9 @@ fn numbered_read_lines(
 }
 
 /// A finished tool result as the TUI shows it, each line tagged with the
-/// view it belongs to. The live renderer pushes these into the buffer and
-/// `history_render` returns them for a resumed session, so both look alike
-/// and Ctrl+O switches both.
+/// view it belongs to. The renderer pushes these into the buffer, for live
+/// turns and resumed ones alike, so both look alike and Ctrl+O switches
+/// both.
 ///
 /// - **Read:** one dim summary line (`└ 123 lines`, `└ lines 40–80 of
 ///   1,340`); the highlighted content is in the full view only. Most reads

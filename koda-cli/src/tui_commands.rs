@@ -27,6 +27,8 @@ pub enum SlashAction {
     Continue,
     Quit,
     OpenKeyMenu,
+    /// `/feedback`: open its picker.
+    OpenFeedback,
     /// `/model <name>`: the host changes the session's model.
     ChangeModel(String),
     /// Compact the session on the host, as a turn the TUI follows.
@@ -186,10 +188,7 @@ pub async fn handle_slash_command(
             SlashAction::Continue
         }
 
-        "/debug-bundle" => {
-            handle_debug_bundle(buffer, session, config).await;
-            SlashAction::Continue
-        }
+        "/feedback" => SlashAction::OpenFeedback,
 
         _ => {
             tui_output::warn_msg(buffer, format!("Unknown command: {cmd}. Try /help."));
@@ -618,120 +617,6 @@ async fn handle_copy_response(buffer: &mut ScrollBuffer, session: &TuiSession, n
         }
         Err(e) => tui_output::err_msg(buffer, e),
     }
-}
-
-/// `/debug-bundle` — write a self-contained `.zip` debug artifact to
-/// `~/.config/koda/debug-bundles/`.
-///
-/// See [`crate::debug_bundle`] module docs for the bundle layout, design
-/// rationale, and security policy. This handler's job is solely to
-/// translate the live session into a [`debug_bundle::BundleInput`] and
-/// surface success/failure to the TUI.
-async fn handle_debug_bundle(buffer: &mut ScrollBuffer, session: &TuiSession, config: &KodaConfig) {
-    use crate::debug_bundle::{BundleInput, write_bundle};
-
-    // Load the same data /debug-bundle uses — messages from DB, plus session info
-    // for the metadata header.
-    let messages = match session.db.load_all_messages(&session.id).await {
-        Ok(m) => m,
-        Err(e) => {
-            tui_output::err_msg(buffer, format!("Could not load messages: {e}"));
-            return;
-        }
-    };
-
-    // #1344 issue A: load persisted sub-agent events so the bundle's
-    // `conversation.md` can fold them under each parent `InvokeAgent`
-    // tool result. DB hiccup is non-fatal — ship a bundle without
-    // sub-agent activity blocks rather than failing the whole export.
-    let events = session
-        .db
-        .load_session_events(&session.id)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!(error = %e, session_id = %session.id,
-                "failed to load session_events for debug bundle; \
-                 sub-agent activity blocks will be omitted");
-            Vec::new()
-        });
-
-    let (session_title, session_started_at): (Option<String>, Option<String>) = match session
-        .db
-        .list_sessions(200, std::path::Path::new("/"))
-        .await
-    {
-        Ok(sessions) => {
-            let found = sessions.into_iter().find(|s| s.id == session.id);
-            (
-                found.as_ref().and_then(|s| s.title.clone()),
-                found.map(|s| s.created_at),
-            )
-        }
-        Err(_) => (None, None),
-    };
-
-    let config_dir = match koda_core::db::config_dir() {
-        Ok(d) => d,
-        Err(e) => {
-            tui_output::err_msg(buffer, format!("Could not resolve config dir: {e}"));
-            return;
-        }
-    };
-    let output_dir = config_dir.join("debug-bundles");
-
-    let captured_at = chrono_like_now_iso();
-    let log = crate::logging::session_log(&session.id).await;
-
-    let input = BundleInput {
-        session_id: &session.id,
-        session_title: session_title.as_deref(),
-        session_started_at: session_started_at.as_deref(),
-        model: Some(config.model.as_str()),
-        provider: Some(config.provider_type.meta().name),
-        context_window: None, // PR α: not surfacing yet; PR β can wire from provider
-        messages: &messages,
-        events: &events,
-        log: log.as_deref(),
-        captured_at: &captured_at,
-        output_dir: &output_dir,
-    };
-
-    match write_bundle(&input) {
-        Ok(path) => {
-            tui_output::ok_msg(
-                buffer,
-                format!("Wrote debug bundle \u{2192} {}", path.display()),
-            );
-            // Discoverability hint (RFC #1167 §D7 alternative): instead of
-            // a dedicated /logs slash command, say how to read the whole
-            // log exactly when the user is thinking about debug artifacts.
-            tui_output::dim_msg(
-                buffer,
-                format!("  every line: koda-logs --session {}", session.id),
-            );
-        }
-        Err(e) => {
-            tui_output::err_msg(buffer, format!("Could not write debug bundle: {e}"));
-        }
-    }
-}
-
-/// Best-effort RFC-3339 "now" using the shared [`crate::util::utc_now`]
-/// helper (per #818, hand-rolled date math is banned in koda-cli).
-///
-/// Format: `YYYY-MM-DDTHH:MM:SSZ` (UTC). Used for `captured_at` in the
-/// debug bundle metadata + bundle filename.
-fn chrono_like_now_iso() -> String {
-    let dt = crate::util::utc_now();
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        dt.year(),
-        dt.month() as u8,
-        dt.day(),
-        dt.hour(),
-        dt.minute(),
-        dt.second(),
-    )
 }
 
 #[cfg(test)]

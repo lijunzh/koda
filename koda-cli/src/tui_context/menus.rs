@@ -5,6 +5,11 @@
 use super::settings::ModelScope;
 use super::*;
 
+/// Where `/feedback` sends a report about a problem, as Codex's TUI links
+/// its CLI bug template.
+const FEEDBACK_ISSUE_URL: &str =
+    "https://github.com/lijunzh/koda/issues/new?template=bug_report.md";
+
 /// Available providers for the interactive picker.
 ///
 /// Tuple: `(internal_key, display_name)`. Descriptions like "Local, no API key"
@@ -151,6 +156,133 @@ impl TuiContext {
             .collect();
         let dd = crate::widgets::dropdown::DropdownState::new(items, "\u{1f511} Set API key for");
         self.menu = MenuContent::Key(dd);
+    }
+
+    /// `/feedback`, step 1: what kind of report, in Codex's words.
+    pub(crate) fn open_feedback_picker(&mut self) {
+        let dd = crate::widgets::dropdown::DropdownState::new(
+            crate::widgets::feedback_menu::categories(),
+            "How was this?",
+        );
+        self.menu = MenuContent::Feedback {
+            dropdown: dd,
+            classification: None,
+        };
+    }
+
+    /// `/feedback`, step 2: Codex's question about logs and history.
+    fn open_feedback_consent(&mut self, classification: &'static str) {
+        let dd = crate::widgets::dropdown::DropdownState::new(
+            crate::widgets::feedback_menu::consent(),
+            "Include logs and session history? They may hold prompts, commands and tool output",
+        );
+        self.menu = MenuContent::Feedback {
+            dropdown: dd,
+            classification: Some(classification),
+        };
+    }
+
+    /// `/feedback`, step 3: an optional note, then the report is saved.
+    fn start_feedback_note(&mut self, classification: &'static str, include_logs: bool) {
+        self.menu = MenuContent::WizardTrail(vec![
+            ("Feedback".into(), classification.replace('_', " ")),
+            (
+                "Logs and history".into(),
+                if include_logs { "yes" } else { "no" }.into(),
+            ),
+        ]);
+        self.prompt_mode = PromptMode::WizardInput {
+            label: "Note (optional)".into(),
+            mask: false,
+        };
+        self.provider_wizard = Some(ProviderWizard::FeedbackNote {
+            classification,
+            include_logs,
+        });
+        self.textarea.set_text_clearing_elements("");
+    }
+
+    /// Save the report through `feedback/save` to
+    /// `<config>/feedback/koda-feedback-<time>-<id>.zip`, as Codex's TUI saves
+    /// to `<codex home>/feedback/`, and say where. A report about a problem
+    /// also gets the link to file it.
+    async fn save_feedback(
+        &mut self,
+        classification: &'static str,
+        include_logs: bool,
+        note: String,
+    ) {
+        use koda_client::protocol::{feedback::FeedbackSaveParams, methods};
+        let dir = match koda_core::db::config_dir() {
+            Ok(dir) => dir.join("feedback"),
+            Err(e) => {
+                crate::tui_output::err_msg(&mut self.scroll_buffer, format!("{e:#}"));
+                return;
+            }
+        };
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            crate::tui_output::err_msg(
+                &mut self.scroll_buffer,
+                format!("Couldn't create {}: {e}", dir.display()),
+            );
+            return;
+        }
+        let now = crate::util::utc_now();
+        // Codex adds part of a fresh UUID; the clock's nanoseconds and the
+        // pid tell two reports in the same second apart as well.
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or_default();
+        let suffix = format!("{:08x}", nanos ^ std::process::id());
+        let path = dir.join(format!(
+            "koda-feedback-{:04}-{:02}-{:02}T{:02}-{:02}-{:02}Z-{}.zip",
+            now.year(),
+            now.month() as u8,
+            now.day(),
+            now.hour(),
+            now.minute(),
+            now.second(),
+            &suffix[..8]
+        ));
+        let note = note.trim();
+        let saved = self
+            .client
+            .request::<methods::FeedbackSave>(FeedbackSaveParams {
+                classification: classification.to_string(),
+                reason: (!note.is_empty()).then(|| note.to_string()),
+                session_id: Some(self.session.id.clone()),
+                include_logs,
+                save_path: path.display().to_string(),
+            })
+            .await;
+        match saved {
+            Ok(saved) => {
+                crate::tui_output::ok_msg(
+                    &mut self.scroll_buffer,
+                    format!("Feedback saved \u{2192} {}", saved.saved_path),
+                );
+                if include_logs {
+                    crate::tui_output::dim_msg(
+                        &mut self.scroll_buffer,
+                        "It holds your prompts, commands and tool output: check it before you share it."
+                            .into(),
+                    );
+                }
+                if classification != "good_result" {
+                    crate::tui_output::dim_msg(
+                        &mut self.scroll_buffer,
+                        format!(
+                            "To report it, open an issue and attach the ZIP: {FEEDBACK_ISSUE_URL}"
+                        ),
+                    );
+                }
+            }
+            Err(e) => crate::tui_output::err_msg(
+                &mut self.scroll_buffer,
+                format!("Couldn't save the feedback: {e}"),
+            ),
+        }
     }
 
     pub(crate) fn start_provider_wizard(&mut self, name: &str) {
@@ -423,6 +555,7 @@ impl TuiContext {
             MenuContent::Provider(dd) => nav!(dd),
             MenuContent::ProviderModels(dd, _) => nav!(dd),
             MenuContent::Key(dd) => nav!(dd),
+            MenuContent::Feedback { dropdown, .. } => nav!(dropdown),
             MenuContent::Session(dd) => nav!(dd),
             MenuContent::File { dropdown: dd, .. } => nav!(dd),
             MenuContent::Approval { .. }
@@ -504,6 +637,22 @@ impl TuiContext {
                         env_name,
                     });
                     self.textarea.set_text_clearing_elements("");
+                }
+                return;
+            }
+            MenuContent::Feedback {
+                dropdown,
+                classification,
+            } => {
+                let chosen = dropdown.selected_item().map(|item| item.value);
+                let classification = *classification;
+                if let Some(value) = chosen {
+                    match classification {
+                        None => self.open_feedback_consent(value),
+                        Some(classification) => {
+                            self.start_feedback_note(classification, value == "yes")
+                        }
+                    }
                 }
                 return;
             }
@@ -591,6 +740,16 @@ impl TuiContext {
 
         if let Some(wizard) = self.provider_wizard.take() {
             match wizard {
+                ProviderWizard::FeedbackNote {
+                    classification,
+                    include_logs,
+                } => {
+                    self.prompt_mode = PromptMode::Chat;
+                    self.menu = MenuContent::None;
+                    self.save_feedback(classification, include_logs, value)
+                        .await;
+                    return;
+                }
                 ProviderWizard::ApiKey {
                     provider_type,
                     base_url,

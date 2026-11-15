@@ -6,6 +6,7 @@
 
 pub mod child_activity_overlay;
 pub mod dropdown;
+pub mod feedback_menu;
 pub mod file_menu;
 pub mod model_menu;
 pub mod provider_menu;

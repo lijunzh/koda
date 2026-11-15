@@ -38,7 +38,7 @@ koda exec "your prompt here"
   before you post them. Never attach koda.db: it holds your API keys.
 -->
 - **Log:** <!-- paste from `koda-logs --session <id>` (`koda-logs --backfill 300` for the newest lines), or attach <log_dir>/koda.log if you set log_dir -->
-- **Debug bundle:** <!-- TUI: attach the .zip from /debug-bundle -->
+- **Feedback report:** <!-- TUI: attach the .zip /feedback saves (say yes to logs if you can) -->
 - **`exec/summary`:** <!-- headless: the last line of koda exec --json -->
 - **Lines that show the problem:** <!-- by name, e.g. compaction branch="cut_off", turn end outcome="stopped" -->
 

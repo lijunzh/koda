@@ -1074,6 +1074,45 @@ impl SessionStore for Database {
         Ok(row.map(|r| r.0))
     }
 
+    async fn child_session_ids(&self, parent: &str) -> Result<Vec<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT m.session_id FROM session_metadata m \
+             JOIN sessions s ON s.id = m.session_id \
+             WHERE m.key = ? AND m.value = ? ORDER BY s.created_at, s.id",
+        )
+        .bind(crate::session_store::PARENT_SESSION_KEY)
+        .bind(parent)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|r| r.0).collect())
+    }
+
+    async fn export_session(&self, session_id: &str) -> Result<serde_json::Value> {
+        // The tables that hold a session's own rows, by the column naming it.
+        const TABLES: [(&str, &str); 5] = [
+            ("sessions", "id"),
+            ("session_metadata", "session_id"),
+            ("messages", "session_id"),
+            ("turn_records", "session_id"),
+            ("session_events", "session_id"),
+        ];
+        let mut export = serde_json::Map::new();
+        for (table, column) in TABLES {
+            // Safe: the table and column names are the constants above.
+            let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+                "SELECT * FROM {table} WHERE {column} = ? ORDER BY rowid"
+            )))
+            .bind(session_id)
+            .fetch_all(&self.pool)
+            .await?;
+            export.insert(
+                table.to_string(),
+                serde_json::Value::Array(rows.iter().map(row_to_json).collect()),
+            );
+        }
+        Ok(serde_json::Value::Object(export))
+    }
+
     async fn append_turn_records(
         &self,
         session_id: &str,
@@ -1181,4 +1220,38 @@ impl SessionStore for Database {
         .await?;
         Ok(rows.into_iter().map(SessionEvent::from).collect())
     }
+}
+
+/// One row as JSON, every column by name, each value as SQLite stored it:
+/// integers and reals as numbers, text as strings, a blob by its length.
+fn row_to_json(row: &sqlx::sqlite::SqliteRow) -> serde_json::Value {
+    use sqlx::{Column, Row, TypeInfo, ValueRef};
+    let mut object = serde_json::Map::new();
+    for column in row.columns() {
+        let index = column.ordinal();
+        let value = match row.try_get_raw(index) {
+            Ok(raw) if raw.is_null() => serde_json::Value::Null,
+            Ok(raw) => match raw.type_info().name() {
+                "INTEGER" => row
+                    .try_get::<i64, _>(index)
+                    .map(serde_json::Value::from)
+                    .unwrap_or_default(),
+                "REAL" => row
+                    .try_get::<f64, _>(index)
+                    .map(serde_json::Value::from)
+                    .unwrap_or_default(),
+                "BLOB" => row
+                    .try_get::<Vec<u8>, _>(index)
+                    .map(|bytes| serde_json::Value::from(format!("<{} bytes>", bytes.len())))
+                    .unwrap_or_default(),
+                _ => row
+                    .try_get::<String, _>(index)
+                    .map(serde_json::Value::from)
+                    .unwrap_or_default(),
+            },
+            Err(_) => serde_json::Value::Null,
+        };
+        object.insert(column.name().to_string(), value);
+    }
+    serde_json::Value::Object(object)
 }

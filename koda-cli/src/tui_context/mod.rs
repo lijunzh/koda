@@ -855,6 +855,10 @@ impl TuiContext {
                 self.open_key_picker().await;
                 CommandOutcome::Handled
             }
+            SlashAction::OpenFeedback => {
+                self.open_feedback_picker();
+                CommandOutcome::Handled
+            }
             SlashAction::ChangeModel(model) => {
                 self.change_model(&model, settings::ModelScope::Default)
                     .await;
