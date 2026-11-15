@@ -1046,6 +1046,11 @@
     "ItemCompletedNotification": {
       "description": "`item/completed`. Every item that starts completes.",
       "properties": {
+        "completedAtMs": {
+          "description": "When it completed, in Unix milliseconds. Codex's `completedAtMs`.",
+          "format": "int64",
+          "type": "integer"
+        },
         "item": {
           "$ref": "#/$defs/Item",
           "description": "The item, complete."
@@ -1069,7 +1074,8 @@
       "required": [
         "sessionId",
         "turnId",
-        "item"
+        "item",
+        "completedAtMs"
       ],
       "type": "object"
     },
@@ -1091,6 +1097,11 @@
           "description": "The session.",
           "type": "string"
         },
+        "startedAtMs": {
+          "description": "When it started, in Unix milliseconds. Codex's `startedAtMs`.",
+          "format": "int64",
+          "type": "integer"
+        },
         "turnId": {
           "description": "The turn.",
           "type": "string"
@@ -1099,7 +1110,8 @@
       "required": [
         "sessionId",
         "turnId",
-        "item"
+        "item",
+        "startedAtMs"
       ],
       "type": "object"
     },
@@ -3329,8 +3341,16 @@
       "type": "object"
     },
     "TurnItem": {
-      "description": "An item of a stored turn, as `session/start` (resuming) and\n`session/read` return it: what `item/completed` sent, with its parent.",
+      "description": "An item of a stored turn, as `session/start` (resuming) and\n`session/read` return it: what `item/completed` sent, with its parent\nand its times, as Codex's `ThreadItem` keeps them.",
       "properties": {
+        "completedAtMs": {
+          "description": "When it completed, in Unix milliseconds; absent when not recorded.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "item": {
           "$ref": "#/$defs/Item",
           "description": "The item."
@@ -3339,6 +3359,14 @@
           "description": "On a sub-agent's items: the tool call that started the sub-agent.",
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "startedAtMs": {
+          "description": "When it started, in Unix milliseconds; absent when not recorded, as\nin sessions stored before Koda recorded it.",
+          "format": "int64",
+          "type": [
+            "integer",
             "null"
           ]
         }

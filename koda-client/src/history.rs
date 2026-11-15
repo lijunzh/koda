@@ -43,6 +43,8 @@ const ITEM: &str = "item";
 /// of its own so the engine never waits on the database.
 pub(crate) struct HistoryWriter {
     writes: mpsc::UnboundedSender<Write>,
+    /// When each item not yet completed started, for its record.
+    started: std::sync::Mutex<HashMap<String, i64>>,
 }
 
 enum Write {
@@ -69,12 +71,19 @@ impl HistoryWriter {
                 }
             }
         });
-        Self { writes }
+        Self {
+            writes,
+            started: std::sync::Mutex::default(),
+        }
     }
 
     /// Store what `out` adds to the session's turns.
     pub(crate) fn record(&self, out: &[Outgoing]) {
-        let records = records_of(out);
+        let mut started = self
+            .started
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let records = records_of(out, &mut started);
         if !records.is_empty() {
             let _ = self.writes.send(Write::Records(records));
         }
@@ -90,8 +99,9 @@ impl HistoryWriter {
 }
 
 /// The records `out` makes: `turn/started`, `item/completed` and
-/// `turn/completed`.
-fn records_of(out: &[Outgoing]) -> Vec<TurnRecord> {
+/// `turn/completed`. An item's start time is kept in `started` until it
+/// completes, as its record holds both.
+fn records_of(out: &[Outgoing], started: &mut HashMap<String, i64>) -> Vec<TurnRecord> {
     let record = |turn_id: &str, kind: &str, payload: serde_json::Result<String>| {
         payload.ok().map(|payload| TurnRecord {
             turn_id: turn_id.to_string(),
@@ -101,6 +111,10 @@ fn records_of(out: &[Outgoing]) -> Vec<TurnRecord> {
     };
     out.iter()
         .filter_map(|message| match message {
+            Outgoing::Notification(ServerNotification::ItemStarted(n)) => {
+                started.insert(n.item.id().to_string(), n.started_at_ms);
+                None
+            }
             Outgoing::Notification(ServerNotification::TurnStarted(n)) => {
                 record(&n.turn.id, TURN, serde_json::to_string(&n.turn))
             }
@@ -113,6 +127,8 @@ fn records_of(out: &[Outgoing]) -> Vec<TurnRecord> {
                 serde_json::to_string(&TurnItem {
                     parent_item_id: n.parent_item_id.clone(),
                     item: n.item.clone(),
+                    started_at_ms: started.remove(n.item.id()),
+                    completed_at_ms: Some(n.completed_at_ms),
                 }),
             ),
             _ => None,
@@ -234,6 +250,8 @@ fn rebuild_from(messages: &[Message], progress: &mut HashMap<String, Vec<String>
             turn.items.push(TurnItem {
                 parent_item_id: None,
                 item,
+                started_at_ms: None,
+                completed_at_ms: None,
             });
         }
     };
@@ -416,6 +434,8 @@ mod tests {
                     id: format!("message-{text}"),
                     text: text.into(),
                 },
+                started_at_ms: None,
+                completed_at_ms: None,
             })
             .unwrap(),
         }
@@ -576,6 +596,7 @@ mod tests {
                 turn_id: "t1".into(),
                 parent_item_id: None,
                 item: item.clone(),
+                started_at_ms: 1_000,
             })),
             note(ServerNotification::ItemCompleted(
                 ItemCompletedNotification {
@@ -583,6 +604,7 @@ mod tests {
                     turn_id: "t1".into(),
                     parent_item_id: None,
                     item: item.clone(),
+                    completed_at_ms: 3_500,
                 },
             )),
         ]);
@@ -605,5 +627,8 @@ mod tests {
         assert_eq!(turns.len(), 1);
         assert_eq!(turns[0].status, TurnStatus::Completed);
         assert_eq!(turns[0].items[0].item, item);
+        // The item keeps when it started and completed, as Codex's does.
+        assert_eq!(turns[0].items[0].started_at_ms, Some(1_000));
+        assert_eq!(turns[0].items[0].completed_at_ms, Some(3_500));
     }
 }

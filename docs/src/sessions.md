@@ -18,14 +18,18 @@ koda exec -s a3f8bc12-1587-4c6d-a855-46183ca84fba "continue where we left off"
 /resume delete a3f8bc
 ```
 
-## Away summary
+## What a resumed session shows
 
-When you resume a session that was idle, Koda shows:
+Its earlier turns, drawn as they were live, as Codex's TUI replays a
+resumed thread: your prompts, the replies, tool calls folded as they were
+(`Ctrl+O` unfolds them), a sub-agent's `Done (N tool uses · Ns)`, what
+happened to a refused or blocked call, and how long each turn worked. A
+`session resumed` line follows them, and a banner when the last turn was
+interrupted; type `continue` to pick it up. `koda -s`, `/resume` and the
+sessions picker all show them.
 
-- How long you were away
-- Message and tool-call counts
-- Total tokens used
-- A banner if the previous turn was interrupted mid-inference
+Sessions stored before 0.6.5 are rebuilt from their messages, so they show
+less: no reasoning, and no time on a sub-agent's summary.
 
 ## Session title
 

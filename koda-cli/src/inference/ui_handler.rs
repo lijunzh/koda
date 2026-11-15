@@ -26,7 +26,6 @@ pub(super) fn show_request(
 ) {
     match request {
         ServerRequest::UserInput { id, params } => {
-            renderer.question(&params.item_id);
             *prompt_mode = PromptMode::WizardInput {
                 label: "Answer".into(),
                 mask: false,

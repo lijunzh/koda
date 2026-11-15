@@ -69,6 +69,42 @@ pub fn compaction_done(item: &Item) -> Option<(Tone, String)> {
     })
 }
 
+/// What happened to a declined tool call, read from what the model was told
+/// (its item's `output`), as Claude Code reads its stored tool result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Declined<'a> {
+    /// The user refused it at its approval, with feedback or without.
+    Rejected { feedback: Option<&'a str> },
+    /// Koda refused it with no one to ask, and why.
+    AutoRejected { reason: &'a str },
+    /// The mode blocked it, as plan mode blocks a write: it would have run.
+    Blocked,
+    /// Anything else, such as a sub-agent's limits.
+    Other,
+}
+
+/// Which [`Declined`] a call's `output` says it was.
+pub fn declined(output: &str) -> Declined<'_> {
+    if let Some(feedback) = output.strip_prefix("User rejected this action with feedback: ") {
+        return Declined::Rejected {
+            feedback: Some(feedback),
+        };
+    }
+    if output.starts_with("User rejected this action") {
+        return Declined::Rejected { feedback: None };
+    }
+    if let Some(reason) = output
+        .strip_prefix("[auto-rejected: ")
+        .and_then(|rest| rest.strip_suffix(']'))
+    {
+        return Declined::AutoRejected { reason };
+    }
+    if output.starts_with("[plan mode]") || output.starts_with("[safe mode] Action blocked") {
+        return Declined::Blocked;
+    }
+    Declined::Other
+}
+
 /// What `turn/loopGuard` says.
 pub fn loop_guard(action: LoopGuardAction, detail: &str) -> String {
     match action {
@@ -145,6 +181,37 @@ mod tests {
                 .0,
             Tone::Warn
         );
+    }
+
+    #[test]
+    fn a_declined_call_says_what_happened_to_it() {
+        assert_eq!(
+            declined("User rejected this action."),
+            Declined::Rejected { feedback: None }
+        );
+        assert_eq!(
+            declined("User rejected this action with feedback: not that file"),
+            Declined::Rejected {
+                feedback: Some("not that file")
+            }
+        );
+        assert_eq!(
+            declined("[auto-rejected: outside the sandbox]"),
+            Declined::AutoRejected {
+                reason: "outside the sandbox"
+            }
+        );
+        assert_eq!(
+            declined("[plan mode] Not run: this session is read-only"),
+            Declined::Blocked
+        );
+        assert_eq!(declined("[safe mode] Action blocked."), Declined::Blocked);
+        // What Koda tells the model, read from where it is written.
+        assert_eq!(
+            declined(koda_core::trust::PLAN_BLOCKED_MESSAGE),
+            Declined::Blocked
+        );
+        assert_eq!(declined("[cancelled]"), Declined::Other);
     }
 
     #[test]

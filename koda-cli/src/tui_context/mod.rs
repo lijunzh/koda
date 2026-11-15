@@ -160,13 +160,13 @@ pub struct TuiSession {
 
 /// Open session `resume`, or a new one, on the host, with what `named`
 /// gives; the host fills in the rest (the saved choice, or a resumed
-/// session's own).
+/// session's own). A resumed session comes with its earlier turns.
 pub(crate) async fn open_host_session(
     client: &koda_client::InProcessClient,
     resume: Option<String>,
     db: koda_core::db::Database,
     named: &settings::Named,
-) -> Result<TuiSession> {
+) -> Result<(TuiSession, Vec<koda_client::protocol::turn::Turn>)> {
     use koda_client::protocol::{methods, session::SessionStartParams};
     let started = client
         .request::<methods::SessionStart>(SessionStartParams {
@@ -179,11 +179,75 @@ pub(crate) async fn open_host_session(
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let instruction_sources = started.session.instruction_sources.unwrap_or_default();
-    Ok(TuiSession {
-        id: started.session.id,
-        db,
-        instruction_sources,
-    })
+    Ok((
+        TuiSession {
+            id: started.session.id,
+            db,
+            instruction_sources,
+        },
+        started.session.turns,
+    ))
+}
+
+/// Draw `turns`, a session's earlier turns, through the live renderer, and
+/// say so if the last was interrupted.
+pub(crate) fn replay_turns(
+    renderer: &mut TuiRenderer,
+    turns: &[koda_client::protocol::turn::Turn],
+    buffer: &mut ScrollBuffer,
+) {
+    use koda_client::protocol::item::Item;
+    use koda_client::protocol::turn::TurnStatus;
+    for turn in turns {
+        renderer.replay_turn(turn, buffer);
+    }
+    let Some(last) = turns.last() else {
+        return;
+    };
+    // Between the earlier turns and the new ones.
+    buffer.push_lines([
+        ratatui::text::Line::default(),
+        ratatui::text::Line::styled(
+            "  \u{2500}\u{2500}\u{2500} session resumed \u{2500}\u{2500}\u{2500}",
+            crate::tui_output::DIM,
+        ),
+        ratatui::text::Line::default(),
+    ]);
+    if last.status == TurnStatus::Interrupted {
+        // Its prompt when nothing came of it; nothing when something did.
+        let unanswered = match last.items.as_slice() {
+            [only] => match &only.item {
+                Item::UserMessage { text, .. } => Some(text.as_str()),
+                _ => None,
+            },
+            _ => None,
+        };
+        buffer.push_lines(crate::tui_output::interrupted_turn_banner(unanswered));
+    }
+}
+
+/// Draw session `session_id`'s earlier turns, read with `session/read`, as
+/// `/resume` and the sessions picker switch to it; as Codex's picker
+/// replays the thread it opens.
+pub(crate) async fn show_earlier_turns(
+    client: &koda_client::InProcessClient,
+    session_id: &str,
+    renderer: &mut TuiRenderer,
+    buffer: &mut ScrollBuffer,
+) {
+    use koda_client::protocol::{methods, session::SessionReadParams};
+    let read = client
+        .request::<methods::SessionRead>(SessionReadParams {
+            session_id: session_id.to_string(),
+            include_turns: true,
+        })
+        .await;
+    match read {
+        Ok(read) => replay_turns(renderer, &read.session.turns, buffer),
+        Err(e) => {
+            crate::tui_output::warn_msg(buffer, format!("Couldn't read its earlier turns: {e}"))
+        }
+    }
 }
 
 /// What a turn starts with, and what to give back if it can't start.
@@ -310,7 +374,6 @@ impl TuiContext {
             config_file: crate::user_config::file()?,
             project_root: project_root.clone(),
             db: db.clone(),
-            raw_events: false,
             client_info: koda_client::protocol::initialize::ClientInfo {
                 name: "koda-tui".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
@@ -322,7 +385,8 @@ impl TuiContext {
         // The flags given, and nothing else: the host fills in the rest from
         // the saved choice for a new session, or a resumed one's own.
         let named = settings::Named::from_flags(&config, overrides);
-        let session = open_host_session(&client, resume, db.clone(), &named).await?;
+        let (session, earlier_turns) =
+            open_host_session(&client, resume, db.clone(), &named).await?;
 
         // Lines shown under the banner, which waits for the session's settings.
         let mut notices: Vec<Line<'static>> = Vec::new();
@@ -451,68 +515,22 @@ impl TuiContext {
             ));
         }
 
-        // Load and render historical conversation on session resume
-        let (history_lines, oldest_msg_id, interruption, away_banner) = {
-            use koda_core::db::queries::detect_interruption;
-            use koda_core::persistence::{Persistence, Role};
-            // Read idle time BEFORE load_context updates last_accessed_at.
-            let idle_secs = session
-                .db
-                .get_session_idle_secs(&session.id)
-                .await
-                .ok()
-                .flatten();
-            match session.db.load_context(&session.id).await {
-                Ok(msgs) if !msgs.is_empty() => {
-                    let oldest_id = msgs.first().map(|m| m.id);
-                    let interrupted = detect_interruption(&msgs);
-                    // Compute stats for the away-summary banner.
-                    let user_msgs = msgs.iter().filter(|m| m.role == Role::User).count();
-                    let tool_calls = msgs.iter().filter(|m| m.role == Role::Tool).count();
-                    let total_tokens: i64 = msgs
-                        .iter()
-                        .map(|m| m.prompt_tokens.unwrap_or(0) + m.completion_tokens.unwrap_or(0))
-                        .sum();
-                    let banner = crate::tui_output::away_summary_banner(
-                        idle_secs,
-                        None, // title visible in startup hint; keep banner slim
-                        user_msgs,
-                        tool_calls,
-                        total_tokens,
-                    );
-                    let lines = crate::history_render::render_history_folded(&msgs);
-                    (lines, oldest_id, interrupted, banner)
-                }
-                _ => (Vec::new(), None, None, Vec::new()),
-            }
-        };
-
         // Spawn the coalescing draw scheduler (#1138). The inference loop's
         // select consumes from `draw_rx`; everywhere else holds clones of
         // `frame_requester` to fire-and-forget redraw requests.
         let (frame_requester, draw_rx) = crate::frame_requester::spawn_frame_scheduler();
 
+        let mut scroll_buffer = ScrollBuffer::new(2500);
+        scroll_buffer.push_lines(startup_lines);
+        // A resumed session's earlier turns, drawn as they were live, as
+        // Codex's TUI replays a resumed thread.
+        replay_turns(&mut renderer, &earlier_turns, &mut scroll_buffer);
+
         let ctx = Self {
             terminal,
             textarea,
             renderer,
-            scroll_buffer: {
-                let mut buf = ScrollBuffer::new(2500);
-                buf.push_lines(startup_lines);
-                if !history_lines.is_empty() {
-                    buf.push_folded_lines(history_lines);
-                }
-                if let Some(id) = oldest_msg_id {
-                    buf.set_oldest_message_id(id);
-                }
-                if !away_banner.is_empty() {
-                    buf.push_lines(away_banner);
-                }
-                if let Some(kind) = &interruption {
-                    buf.push_lines(crate::tui_output::interrupted_turn_banner(kind));
-                }
-                buf
-            },
+            scroll_buffer,
             crossterm_events: EventStream::new(),
             tui_state: TuiState::Idle,
             menu,

@@ -46,6 +46,8 @@ pub(crate) mod theme;
 pub(crate) mod tool_header;
 pub(crate) mod tool_history;
 pub(crate) mod tool_output_lines;
+pub(crate) mod tool_summary;
+pub(crate) mod truncate;
 pub(crate) mod tui_app;
 pub(crate) mod tui_commands;
 pub(crate) mod tui_context;

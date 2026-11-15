@@ -126,8 +126,6 @@ pub mod tool_dispatch;
 pub mod tool_normalize;
 /// Tool registry, definitions, execution, and path safety.
 pub mod tools;
-/// Token-safe output truncation.
-pub mod truncate;
 /// Unified trust mode — single permission knob replacing ApprovalMode × SandboxMode.
 pub mod trust;
 /// Per-turn ambient context (`TurnContext`, `ToolExecutionContext`)

@@ -609,6 +609,7 @@ impl EventProjector {
             turn_id: self.turn(),
             parent_item_id: parent,
             item,
+            started_at_ms: now_ms(),
         }))
     }
 
@@ -619,6 +620,7 @@ impl EventProjector {
                 turn_id: self.turn(),
                 parent_item_id: parent,
                 item,
+                completed_at_ms: now_ms(),
             },
         ))
     }
@@ -864,6 +866,14 @@ fn changes_of(preview: Option<&DiffPreview>) -> Vec<FileUpdateChange> {
 }
 
 /// One model call's tokens, in Codex's breakdown.
+/// Now, in Unix milliseconds.
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
+}
+
 fn breakdown_of(usage: &UsageTotals) -> TokenUsageBreakdown {
     let count = |n: i64| n.max(0) as u64;
     let input = count(usage.input_tokens());

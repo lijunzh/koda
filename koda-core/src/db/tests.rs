@@ -6,11 +6,10 @@
 
 use super::queries::{HistoryEdit, prune_mismatched_tool_calls, sanitize_history};
 use super::queries::{
-    dedupe_tool_results_by_call_id, detect_interruption, prune_null_content_messages,
-    prune_whitespace_only_messages,
+    dedupe_tool_results_by_call_id, prune_null_content_messages, prune_whitespace_only_messages,
 };
 use crate::db::Database;
-use crate::persistence::{InterruptionKind, Message, Persistence, Role};
+use crate::persistence::{Message, Persistence, Role};
 use tempfile::TempDir;
 
 async fn setup() -> (Database, TempDir) {
@@ -1087,83 +1086,6 @@ async fn test_mark_message_complete_sets_timestamp() {
     );
 }
 
-// ── detect_interruption (#594) ──────────────────────────────
-
-fn msg(role: Role, content: &str) -> Message {
-    Message {
-        id: 0,
-        session_id: String::new(),
-        role,
-        content: Some(content.to_string()),
-        full_content: None,
-        tool_calls: None,
-        tool_call_id: None,
-        prompt_tokens: None,
-        completion_tokens: None,
-        cache_read_tokens: None,
-        cache_creation_tokens: None,
-        thinking_tokens: None,
-        thinking_content: None,
-        thinking_model: None,
-        thinking_blocks: None,
-        created_at: None,
-    }
-}
-
-#[test]
-fn detect_interruption_clean_end() {
-    let msgs = vec![msg(Role::User, "hello"), msg(Role::Assistant, "hi there")];
-    assert_eq!(detect_interruption(&msgs), None);
-}
-
-#[test]
-fn detect_interruption_unanswered_prompt() {
-    let msgs = vec![
-        msg(Role::Assistant, "done"),
-        msg(Role::User, "do something else"),
-    ];
-    assert_eq!(
-        detect_interruption(&msgs),
-        Some(InterruptionKind::Prompt("do something else".into()))
-    );
-}
-
-#[test]
-fn detect_interruption_orphaned_tool_result() {
-    let mut tool_msg = msg(Role::Tool, "ok");
-    tool_msg.tool_call_id = Some("call_123".into());
-    let msgs = vec![msg(Role::Assistant, "calling tool"), tool_msg];
-    assert_eq!(detect_interruption(&msgs), Some(InterruptionKind::Tool));
-}
-
-#[test]
-fn detect_interruption_skips_system() {
-    let msgs = vec![
-        msg(Role::User, "hello"),
-        msg(Role::Assistant, "hi"),
-        msg(Role::System, "injected context"),
-    ];
-    // System message at the end should be ignored — assistant is last real msg
-    assert_eq!(detect_interruption(&msgs), None);
-}
-
-#[test]
-fn detect_interruption_prompt_truncated() {
-    let long = "x".repeat(200);
-    let msgs = vec![msg(Role::User, &long)];
-    match detect_interruption(&msgs) {
-        Some(InterruptionKind::Prompt(preview)) => {
-            assert_eq!(preview.len(), 80, "preview should truncate to 80 chars");
-        }
-        other => panic!("expected Prompt, got {other:?}"),
-    }
-}
-
-#[test]
-fn detect_interruption_empty() {
-    assert_eq!(detect_interruption(&[]), None);
-}
-
 // ── DB methods: extended coverage ────────────────────────────────────────────
 
 #[tokio::test]
@@ -1719,12 +1641,6 @@ async fn interrupted_turn_detected_after_incomplete_filtered() {
     let context = db.load_context(&session).await.unwrap();
     // Should be: [user "hello", assistant "hi!", user "research inference"]
     assert_eq!(context.len(), 3, "incomplete assistant should be filtered");
-
-    let interruption = detect_interruption(&context);
-    assert!(
-        matches!(interruption, Some(InterruptionKind::Prompt(_))),
-        "should detect unanswered user prompt; got {interruption:?}"
-    );
 }
 
 // ── #1022 B20: copy_messages_into_session ────────────────────────────────

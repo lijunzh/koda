@@ -30,12 +30,6 @@ pub fn render_history_messages(messages: &[Message]) -> Vec<Line<'static>> {
     render_history(messages, &[])
 }
 
-/// A resumed session's lines for the TUI, each tagged with the view it
-/// belongs to, so Ctrl+O unfolds old tool output as it does live output.
-pub fn render_history_folded(messages: &[Message]) -> Vec<(Line<'static>, Fold)> {
-    render_history_tagged(messages, &[])
-}
-
 /// Convert historical messages **plus** persisted sub-agent events
 /// into styled `Line`s.
 ///
@@ -524,7 +518,7 @@ mod tests {
                 "     1\tfn a() {}\n     2\tfn b() {}\n     3\tfn c() {}",
             )
         };
-        let tagged = render_history_folded(&[call, result]);
+        let tagged = render_history_tagged(&[call, result], &[]);
         let text = |want: Fold| -> String {
             tagged
                 .iter()

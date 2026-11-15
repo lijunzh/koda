@@ -18,12 +18,8 @@
 //! [`events::EventProjector`] turns a session's engine events into those
 //! messages; `koda exec --json` prints them.
 //!
-//! In process only, and only for now, a front end whose renderer still
-//! reads engine events can ask for them as they are
-//! ([`StartArgs::raw_events`]), as Codex's TUI read its old events while it
-//! moved onto its app-server. They go when the TUI renders items. For the same
-//! move, a front end can hand the host its own agent ([`StartArgs::agent`])
-//! and set what its next turns run with
+//! In process only, and only for now, a front end can hand the host its own
+//! agent ([`StartArgs::agent`]) and set what its next turns run with
 //! ([`InProcessClient::configure_session`]).
 
 mod background;
@@ -73,9 +69,6 @@ pub struct StartArgs {
     pub project_root: PathBuf,
     /// Where sessions are stored.
     pub db: Database,
-    /// Also hand out every engine event as it is
-    /// ([`InProcessClient::take_raw_events`]). In process only.
-    pub raw_events: bool,
     /// Who the client is, sent in `initialize`.
     pub client_info: ClientInfo,
     /// In process only: the agent every session uses, for a front end that
@@ -89,20 +82,7 @@ pub struct InProcessClient {
     requests: RequestHandle,
     host: JoinHandle<()>,
     events: mpsc::UnboundedReceiver<Outgoing>,
-    raw_events: Option<mpsc::UnboundedReceiver<RawEvent>>,
     server: InitializeResponse,
-}
-
-/// An engine event as the engine sent it, for a front end whose renderer
-/// still reads them ([`StartArgs::raw_events`]).
-#[derive(Debug, Clone)]
-pub struct RawEvent {
-    /// The session it came from.
-    pub session_id: String,
-    /// The tool call that started the sub-agent it came from, if one did.
-    pub parent: Option<String>,
-    /// The event.
-    pub event: koda_core::engine::EngineEvent,
 }
 
 /// Sends requests to the host. Cheap to clone, so a task can send one
@@ -162,12 +142,6 @@ impl InProcessClient {
             tracing::warn!("couldn't load the stored API keys: {e:#}");
         }
         let (events_tx, events) = mpsc::unbounded_channel();
-        let (raw_tx, raw_events) = if args.raw_events {
-            let (tx, rx) = mpsc::unbounded_channel();
-            (Some(tx), Some(rx))
-        } else {
-            (None, None)
-        };
         let (commands, host) = host::spawn(HostArgs {
             config: args.config,
             config_file: args.config_file,
@@ -175,7 +149,6 @@ impl InProcessClient {
             project_root: args.project_root,
             db: args.db,
             events: events_tx,
-            raw: raw_tx,
             agent: args.agent,
         });
         let mut client = Self {
@@ -185,7 +158,6 @@ impl InProcessClient {
             },
             host,
             events,
-            raw_events,
             server: InitializeResponse {
                 server_info: koda_protocol::initialize::ServerInfo {
                     name: String::new(),
@@ -215,12 +187,6 @@ impl InProcessClient {
     /// A handle that sends requests, for another task.
     pub fn request_handle(&self) -> RequestHandle {
         self.requests.clone()
-    }
-
-    /// The engine events, as they are, when [`StartArgs::raw_events`] asked
-    /// for them. Only the first call gets them.
-    pub fn take_raw_events(&mut self) -> Option<mpsc::UnboundedReceiver<RawEvent>> {
-        self.raw_events.take()
     }
 
     /// In process only: what session `session_id`'s next turns run with
@@ -396,7 +362,6 @@ mod tests {
             config_file: ConfigFile::in_dir(dir.path()),
             project_root: dir.path().to_path_buf(),
             db,
-            raw_events: false,
             client_info: ClientInfo {
                 name: "koda-client-test".to_string(),
                 version: "0".to_string(),

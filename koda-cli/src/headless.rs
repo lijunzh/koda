@@ -114,7 +114,6 @@ pub async fn run_headless(
         config_file: crate::user_config::file()?,
         project_root,
         db: db.clone(),
-        raw_events: false,
         client_info: ClientInfo {
             name: "koda-exec".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -630,7 +629,7 @@ fn notice((tone, text): (Tone, String)) {
 
 /// A tool's output, its middle cut when it is long.
 fn print_output(output: &str) {
-    use koda_core::truncate::{Truncated, truncate_for_display};
+    use crate::truncate::{Truncated, truncate_for_display};
     match truncate_for_display(output) {
         Truncated::Full(_) => {
             for line in output.lines() {
@@ -648,7 +647,7 @@ fn print_output(output: &str) {
             }
             eprintln!(
                 "\x1b[2m{}\x1b[0m",
-                koda_core::truncate::separator(hidden, total)
+                crate::truncate::separator(hidden, total)
             );
             for line in &tail {
                 eprintln!("  \u{2502} {line}");
@@ -702,6 +701,7 @@ mod tests {
                 changes: Vec::new(),
                 progress: Vec::new(),
             },
+            started_at_ms: 0,
         }))
     }
 

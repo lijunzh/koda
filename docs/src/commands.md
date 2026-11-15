@@ -106,8 +106,9 @@ Named `/sessions` before; that name still works and says the new one. A
 resumed session reopens on its own provider and model, as in Codex.
 
 Session IDs are UUIDs; you only need 6–8 characters to be unambiguous.
-On resume, Koda shows an away-summary: idle time, message count, token
-usage, and a banner if the previous turn was interrupted mid-inference.
+On resume, Koda draws the session's earlier turns as they were drawn live,
+as Codex does, then a `session resumed` line, and a banner if the last turn
+was interrupted.
 
 ## `/memory [add|global <text>]`
 

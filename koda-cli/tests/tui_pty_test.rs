@@ -599,6 +599,8 @@ async fn n_rejects_and_lets_the_model_go_on() {
 
     let sent = wait_for_model_call(&server, 2).await;
     assert!(sent.contains("User rejected this action."), "{sent}");
+    // The scrollback says so, as Claude Code's does (6h-b3).
+    tui.wait_for_screen("Rejected: ");
 }
 
 fn bash(command: &str) -> ResponseTemplate {
@@ -1476,6 +1478,9 @@ async fn sessions_resume_and_delete_by_id() {
     let mut tui = Tui::start_with_model(home.path(), &server.url());
     run_command(&mut tui, &format!("/resume {bravo}"));
     tui.wait_for_screen("bravo session words");
+    // Its earlier turn is drawn as it was live (6h-b3).
+    tui.wait_for_screen("session resumed");
+    assert!(tui.screen().contains("Worked for"), "{}", tui.screen());
     tui.submit_and_finish("bravo again", "All done.");
     let sent = wait_for_model_call(&server, 3).await;
     assert!(sent.contains("bravo session words"), "{sent}");
@@ -2036,6 +2041,23 @@ async fn a_sub_agents_calls_fold_into_done() {
 
     tui.type_text(CTRL_O);
     tui.wait_for_screen("WOMBAT-NOTES");
+    let session = quit_and_read_session_id(&mut tui);
+
+    // Resumed, it reads the same, its time from the stored item times
+    // (6h-b3).
+    let tui = Tui::start_with_args(
+        home.path(),
+        &server.url(),
+        &["--resume", &session],
+        IDLE_HINT,
+    );
+    tui.wait_for_screen("session resumed");
+    assert!(
+        tui.screen().contains("Done (1 tool use \u{00b7}"),
+        "{}",
+        tui.screen()
+    );
+    assert!(!tui.screen().contains("WOMBAT-NOTES"), "{}", tui.screen());
 }
 
 /// An edit's approval shows its diff above the dialog, drawn from the
