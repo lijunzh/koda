@@ -54,8 +54,6 @@ pub(super) async fn handle_crossterm_event_inline(
     history_idx: &mut Option<usize>,
     paste_blocks: &mut Vec<input::PasteBlock>,
     input_history: (&crate::input_history::InputHistory, &str),
-    bg_agents: &koda_core::child_agent::ChildAgentRegistry,
-    bg_processes: &koda_core::tools::bg_process::BgRegistry,
     child_activity: &mut crate::child_activity::ChildActivityTracker,
 ) -> bool {
     use crossterm::event::MouseEventKind;
@@ -103,8 +101,6 @@ pub(super) async fn handle_crossterm_event_inline(
                 history,
                 history_idx,
                 input_history,
-                bg_agents,
-                bg_processes,
                 child_activity,
             )
             .await;
@@ -131,8 +127,6 @@ async fn handle_inference_key_inline(
     history: &mut Vec<String>,
     history_idx: &mut Option<usize>,
     input_history: (&crate::input_history::InputHistory, &str),
-    bg_agents: &koda_core::child_agent::ChildAgentRegistry,
-    bg_processes: &koda_core::tools::bg_process::BgRegistry,
     child_activity: &mut crate::child_activity::ChildActivityTracker,
 ) -> bool {
     // Vim insert-mode Escape (PR 3 of #1178). Same rationale as in
@@ -313,7 +307,13 @@ async fn handle_inference_key_inline(
                 // the queue-as-text path would inject them as raw user
                 // input. Surface a visible warning so the user can
                 // either Esc-interrupt or strip the leading slash to
-                // queue as a real steer message.
+                // queue as a real steer message. `/stop` is the one that
+                // runs mid-turn, as in Codex: the overlay offers it.
+                if matches!(text.trim(), "/stop" | "/clean") {
+                    textarea.set_text_clearing_elements("");
+                    stop.stop_background(scroll_buffer, child_activity).await;
+                    return false;
+                }
                 if is_slash_command_attempt(&text) {
                     textarea.set_text_clearing_elements("");
                     crate::tui_output::warn_msg(
@@ -340,17 +340,11 @@ async fn handle_inference_key_inline(
             }
         }
         (KeyCode::Esc, _) => {
-            // `turn/interrupt` stops the turn, and its sub-agents with it.
-            // `cancel_all_bg_work` also stops background processes and
-            // marks the overlay's rows as stopping at once, before their
-            // status arrives.
+            // `turn/interrupt` stops the turn, and its sub-agents with it;
+            // their rows turn red until their last status arrives.
+            // Background processes keep running until `/stop` (6f).
             stop.interrupt();
-            crate::tui_bg_tasks::cancel_all_bg_work(
-                scroll_buffer,
-                bg_agents,
-                bg_processes,
-                child_activity,
-            );
+            child_activity.mark_agents_cancelling();
         }
         (KeyCode::Char('d'), m)
             if m.contains(KeyModifiers::CONTROL) && textarea.text().trim().is_empty() =>
@@ -362,17 +356,11 @@ async fn handle_inference_key_inline(
             return true;
         }
         (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
-            // Same cascade as Esc — during inference both keys are
-            // intentional aliases. The asymmetry shows up at idle
-            // (Esc dismisses popups, Ctrl+C arms quit), see the idle
-            // handler in `tui_context::events`.
+            // The same as Esc during a turn. The asymmetry shows up at
+            // idle (Esc clears the composer, Ctrl+C arms quit); see the
+            // idle handler in `tui_context::events`.
             stop.interrupt();
-            crate::tui_bg_tasks::cancel_all_bg_work(
-                scroll_buffer,
-                bg_agents,
-                bg_processes,
-                child_activity,
-            );
+            child_activity.mark_agents_cancelling();
         }
         (KeyCode::Char('o'), m) if m.contains(KeyModifiers::CONTROL) => {
             // Ctrl+O: tool output in full, or folded again, as at idle.

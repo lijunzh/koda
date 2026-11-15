@@ -58,6 +58,8 @@ mid-inference** (#1211/#1222). Type `/compact` while the model is
 thinking and you'll see a transient "slash commands disabled during
 inference — press `Esc` first" hint instead of the text being silently
 steered to the model. Press `Esc` to interrupt, then run the slash.
+`/stop`, which stops background processes, is the exception: it runs
+mid-turn, as in Codex.
 
 To add work for after the current task, say so: "when you're done, update the
 docs". To stop first, press `Esc`.

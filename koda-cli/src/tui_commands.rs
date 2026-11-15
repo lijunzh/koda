@@ -118,8 +118,28 @@ pub async fn handle_slash_command(
             SlashAction::Continue
         }
 
-        "/agent" => {
-            crate::tui_wizards::handle_list_agents(buffer, project_root);
+        "/agents" | "/agent" => {
+            if cmd == "/agent" {
+                tui_output::dim_msg(buffer, "/agent is now /agents.".into());
+            }
+            crate::tui_context::background::show_agents(
+                &client.request_handle(),
+                &session.id,
+                buffer,
+            )
+            .await;
+            SlashAction::Continue
+        }
+
+        // Codex's `/stop`, with its `/clean` alias.
+        "/stop" | "/clean" => {
+            crate::tui_context::background::stop_background(
+                &client.request_handle(),
+                &session.id,
+                buffer,
+                child_activity,
+            )
+            .await;
             SlashAction::Continue
         }
 

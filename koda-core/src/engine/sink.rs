@@ -1542,6 +1542,7 @@ mod tests {
     fn child_task_update_event() -> EngineEvent {
         EngineEvent::ChildTaskUpdate {
             task_id: 42,
+            agent_name: String::new(),
             spawner: Some(7),
             is_background: true,
             status: AgentStatus::Pending,

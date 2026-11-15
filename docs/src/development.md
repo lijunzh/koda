@@ -112,14 +112,14 @@ koda/
 │   │   ├── theme.rs        # Semantic color tokens
 │   │   ├── tui_context/    # TUI shared mutable state (split into submodules)
 │   │   │   ├── mod.rs      # TuiContext struct, event loop, command dispatch
+│   │   │   ├── background.rs # /stop, /agents and the overlay's process list
 │   │   │   ├── events.rs   # Key/mouse handling, clipboard, history persistence
 │   │   │   ├── idle_ui_events.rs # UI events while no turn is running
 │   │   │   └── menus.rs    # Model/provider/session pickers, provider wizard
 │   │   ├── tui_render.rs   # EngineEvent → ratatui Line/Span rendering
 │   │   ├── tui_commands.rs # Slash command dispatch (/help, /model, /resume, etc.)
-│   │   ├── tui_bg_tasks.rs # Esc / Ctrl+C cancel-all for background work
 │   │   ├── tui_mcp.rs      # /mcp slash commands
-│   │   ├── tui_wizards.rs  # Interactive wizards (/provider, /compact, /agent)
+│   │   ├── tui_wizards.rs  # Interactive wizards (/provider, /key, /skills)
 │   │   ├── tui_output.rs   # Output bridge: scroll_buffer push helpers
 │   │   ├── tui_viewport.rs # Fullscreen viewport layout + rendering
 │   │   ├── tui_types.rs    # MenuContent, PromptMode, TuiState, shared TUI types

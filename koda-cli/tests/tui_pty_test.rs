@@ -1885,6 +1885,129 @@ async fn a_finished_sub_agent_starts_no_other_turn() {
     assert_no_more_calls(&server, 3).await;
 }
 
+/// A background process outlives Esc and Ctrl+C, during a turn and at idle,
+/// with the overlay reminding that `/stop` stops it; `/stop` does (6f, as
+/// in Codex). Before, Esc and Ctrl+C stopped every background process.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_background_process_runs_until_stop() {
+    // 35 s: no other test sleeps that long, so pgrep finds only this one.
+    let started = tool_calls(&[("Bash", json!({"command": "sleep 35", "background": true}))]);
+    let slow = final_text().set_delay(Duration::from_secs(10));
+    let server = scripted_model(vec![started, final_text(), slow]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.submit("start it");
+    tui.approve_until(|| running("sleep 35"));
+    tui.wait_for_screen("All done.");
+    tui.wait_for_screen_without(BUSY_PROMPT);
+    tui.wait_for_screen("/stop to stop");
+    assert!(tui.screen().contains("sleep 35"), "{}", tui.screen());
+
+    // Esc during a turn stops the turn, not the process.
+    tui.submit("another");
+    wait_for_model_call(&server, 3).await;
+    tui.stop_turn(ESC);
+    // At idle, Esc does nothing here and Ctrl+C arms quit.
+    tui.type_text(ESC);
+    tui.type_text(CTRL_C);
+    tui.wait_for_screen("Press Ctrl+C again");
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(running("sleep 35"), "{}", tui.screen());
+    assert!(tui.screen().contains("/stop to stop"), "{}", tui.screen());
+
+    tui.submit("/stop");
+    tui.wait_for_screen("Stopped 1 background process.");
+    tui.wait_for_screen_without("/stop to stop");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while running("sleep 35") {
+        assert!(Instant::now() < deadline, "/stop left it running");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    tui.submit("/stop");
+    tui.wait_for_screen("No background processes running.");
+}
+
+/// `/stop` runs during a turn, as Codex's does, and the turn goes on.
+#[tokio::test(flavor = "multi_thread")]
+async fn stop_works_during_a_turn() {
+    // 36 s: no other test sleeps that long, so pgrep finds only this one.
+    let started = tool_calls(&[("Bash", json!({"command": "sleep 36", "background": true}))]);
+    let slow = final_text().set_delay(Duration::from_secs(5));
+    let server = scripted_model(vec![started, slow]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.submit("start it");
+    tui.approve_until(|| running("sleep 36"));
+    wait_for_model_call(&server, 2).await;
+    tui.submit("/stop");
+    tui.wait_for_screen("Stopped 1 background process.");
+    assert!(tui.screen().contains(BUSY_PROMPT), "{}", tui.screen());
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while running("sleep 36") {
+        assert!(Instant::now() < deadline, "/stop left it running");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    tui.wait_for_screen("All done.");
+}
+
+/// A sub-agent's row shows above the status bar while it works, with Esc
+/// as what stops it, and goes when it returns. The row comes from the
+/// turn's events, not from the engine's registry (6f).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sub_agent_row_shows_while_it_works() {
+    let invoke = tool_calls(&[(
+        "InvokeAgent",
+        json!({"agent_name": "explore", "prompt": "look around"}),
+    )]);
+    // Sub-agents call the model without streaming.
+    let answer = json_reply("SUB-AGENT-ANSWER").set_delay(Duration::from_secs(3));
+    let server = scripted_model(vec![invoke, answer]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.submit("first prompt");
+    tui.wait_for_screen_that(
+        |screen| {
+            screen
+                .lines()
+                .any(|line| line.contains("explore") && line.contains("(") && line.contains("s)"))
+                && screen.contains("Esc to interrupt")
+        },
+        "show the sub-agent's row",
+    );
+    tui.wait_for_screen("All done.");
+    tui.wait_for_screen_without("Esc to interrupt");
+}
+
+/// `/agents` lists the built-in agents and the project's own, through the
+/// host's `agent/list`; `/agent`, its old name, says the new one.
+#[tokio::test(flavor = "multi_thread")]
+async fn agents_lists_the_sub_agents() {
+    let server = scripted_model(vec![]).await;
+    let home = home();
+    let agents = home.path().join(".koda/agents");
+    std::fs::create_dir_all(&agents).unwrap();
+    let reviewer = json!({
+        "name": "reviewer",
+        "description": "Reviews diffs for the project",
+        "system_prompt": "Review.",
+    });
+    std::fs::write(agents.join("reviewer.json"), reviewer.to_string()).unwrap();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.submit("/agents");
+    tui.wait_for_screen("Reviews diffs for the project [project]");
+    tui.wait_for_screen("explore");
+    // With the popup open, Enter on `/agent` runs `/agents`; with it closed,
+    // the old name reaches the command itself.
+    tui.type_text("/agent");
+    tui.type_text(ESC);
+    tui.type_text("\r");
+    tui.wait_for_screen("/agent is now /agents.");
+}
+
 /// `koda "prompt"` opens the TUI and sends the prompt, as `codex "prompt"`
 /// does.
 #[tokio::test(flavor = "multi_thread")]

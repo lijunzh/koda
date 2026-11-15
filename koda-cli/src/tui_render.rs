@@ -309,10 +309,8 @@ impl TuiRenderer {
             | EngineEvent::TodoUpdate { .. }
             | EngineEvent::ChildAgentActivity { .. } => {
                 // Handled by the event loop, not the renderer.
-                // (#1076) ChildTaskUpdate is routed to the bg-task panel,
-                // which still reads from the registry snapshot for its
-                // primary render. Future cleanup may have it consume
-                // the event stream directly and drop the polling.
+                // ChildTaskUpdate and ChildAgentActivity feed the activity
+                // overlay's sub-agent rows (6f).
                 // (#1077 Phase A) TodoUpdate is rendered by the TUI's
                 // todo-list panel from the tool-result message stream;
                 // the structured event is for headless clients

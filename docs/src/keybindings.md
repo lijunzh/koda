@@ -25,10 +25,11 @@
 
 | Key | Action |
 |-----|--------|
-| `Esc` | Cancel current inference |
-| `Ctrl+C` | Cancel current inference |
+| `Esc` | Cancel current inference and its sub-agents |
+| `Ctrl+C` | Cancel current inference and its sub-agents |
 | `Ctrl+D` | Quit koda (on an empty input; a running turn stops first) |
 
+Background processes keep running; `/stop` stops them, during a turn too.
 `Esc` and `Ctrl+C` also stop the turn while an approval, a question or the
 loop-cap prompt is open. To say no and let the model carry on, press `n` at an
 approval, or `f` to tell it why. To skip a question, press `Enter` with no answer.

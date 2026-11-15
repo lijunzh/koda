@@ -131,16 +131,11 @@ impl TuiContext {
                 // #1216: Esc is the *contextual* cancel — dismiss
                 // the thing you're in. Popup-Esc is already handled
                 // upstream by `handle_menu_key`, so by the time we
-                // reach this arm there's no popup. Priority order:
-                //
-                //   1. Composer has text → clear it (typical "oops,
-                //      let me start over" gesture).
-                //   2. Bg work is running → session-wide cascade
-                //      (Gemini-style: kill everything below us).
-                //   3. Otherwise → no-op (Esc on a blank composer
-                //      with nothing running is genuinely nothing
-                //      to do; we don't arm quit on Esc — that's
-                //      Ctrl+C's job, see below).
+                // reach this arm there's no popup. With text in the
+                // composer it clears it; otherwise there is nothing to
+                // do. Background processes keep running: `/stop` stops
+                // them, as in Codex (6f). Esc doesn't arm quit; that's
+                // Ctrl+C's job, below.
                 //
                 // Any Esc resets the quit-arm because the user is
                 // clearly steering, not asking to exit.
@@ -148,45 +143,18 @@ impl TuiContext {
                 if !self.textarea.text().trim().is_empty() {
                     self.textarea.set_text_clearing_elements("");
                     self.history_idx = None;
-                } else if crate::tui_bg_tasks::active_bg_count(
-                    &self.session.bg_agents,
-                    &self.agent.tools.bg_registry,
-                ) > 0
-                {
-                    crate::tui_bg_tasks::cancel_all_bg_work(
-                        &mut self.scroll_buffer,
-                        &self.session.bg_agents,
-                        &self.agent.tools.bg_registry,
-                        &mut self.child_activity,
-                    );
                 }
             }
             (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
                 // #1216: Ctrl+C is the *hard interrupt* — the Unix
-                // "abort / get me out" gesture. Priority order:
-                //
-                //   1. Bg work is running → session-wide cascade.
-                //      Reset quit-arm: the user is clearly using
-                //      Ctrl+C as cancel, not as quit-confirm.
-                //   2. Composer has text → clear it. Same reset.
-                //   3. Empty composer + no bg → arm quit on first
-                //      press, confirm on second within QUIT_ARM_WINDOW.
-                //      Matches codex/claude-code/gemini-cli muscle
-                //      memory: a single Ctrl+C never silently exits.
-                let bg_alive = crate::tui_bg_tasks::active_bg_count(
-                    &self.session.bg_agents,
-                    &self.agent.tools.bg_registry,
-                ) > 0;
+                // "abort / get me out" gesture. With text in the
+                // composer it clears it; on an empty one it arms quit
+                // on the first press and confirms on a second within
+                // QUIT_ARM_WINDOW, as in Codex and Claude Code: a single
+                // Ctrl+C never silently exits. Background processes keep
+                // running until `/stop`, or until Koda exits (6f).
                 let composer_dirty = !self.textarea.text().trim().is_empty();
-                if bg_alive {
-                    self.quit_armed_at = None;
-                    crate::tui_bg_tasks::cancel_all_bg_work(
-                        &mut self.scroll_buffer,
-                        &self.session.bg_agents,
-                        &self.agent.tools.bg_registry,
-                        &mut self.child_activity,
-                    );
-                } else if composer_dirty {
+                if composer_dirty {
                     self.quit_armed_at = None;
                     self.textarea.set_text_clearing_elements("");
                     self.history_idx = None;

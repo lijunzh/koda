@@ -156,6 +156,11 @@ pub enum EngineEvent {
         /// Monotonic id assigned at `reserve()` time, stable for the
         /// lifetime of the task.
         task_id: u32,
+        /// The agent's name, such as `explore`, so a client can label the
+        /// task from its events. Empty in events stored before it was
+        /// added.
+        #[serde(default)]
+        agent_name: String,
         /// Sub-agent invocation id of the spawner, or `None` if the
         /// task was launched from the top-level loop. See
         /// [`crate::child_agent::ChildTaskSnapshot::spawner`].

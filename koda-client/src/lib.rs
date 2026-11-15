@@ -22,9 +22,9 @@
 //! reads engine events can ask for them as they are
 //! ([`StartArgs::raw_events`]), as Codex's TUI read its old events while it
 //! moved onto its app-server. They go when the TUI renders items. For the same
-//! move, a front end can hand the host its own agent ([`StartArgs::agent`]),
-//! reach a session's sub-agents ([`InProcessClient::session_handles`]) and set
-//! what its next turns run with ([`InProcessClient::configure_session`]).
+//! move, a front end can hand the host its own agent ([`StartArgs::agent`])
+//! and set what its next turns run with
+//! ([`InProcessClient::configure_session`]).
 
 mod background;
 pub mod builtin_skills;
@@ -55,7 +55,6 @@ pub use koda_protocol as protocol;
 
 use events::Outgoing;
 use host::{HostArgs, HostCommand};
-pub use session::SessionHandles;
 
 /// How long [`InProcessClient::shutdown`] waits before stopping the host by force.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -89,7 +88,6 @@ pub struct InProcessClient {
     host: JoinHandle<()>,
     events: mpsc::UnboundedReceiver<Outgoing>,
     raw_events: Option<mpsc::UnboundedReceiver<RawEvent>>,
-    handles: host::HandleMap,
     server: InitializeResponse,
 }
 
@@ -168,7 +166,6 @@ impl InProcessClient {
         } else {
             (None, None)
         };
-        let handles = host::HandleMap::default();
         let (commands, host) = host::spawn(HostArgs {
             config: args.config,
             config_file: args.config_file,
@@ -178,7 +175,6 @@ impl InProcessClient {
             events: events_tx,
             raw: raw_tx,
             agent: args.agent,
-            handles: Arc::clone(&handles),
         });
         let mut client = Self {
             requests: RequestHandle {
@@ -188,7 +184,6 @@ impl InProcessClient {
             host,
             events,
             raw_events,
-            handles,
             server: InitializeResponse {
                 server_info: koda_protocol::initialize::ServerInfo {
                     name: String::new(),
@@ -224,16 +219,6 @@ impl InProcessClient {
     /// for them. Only the first call gets them.
     pub fn take_raw_events(&mut self) -> Option<mpsc::UnboundedReceiver<RawEvent>> {
         self.raw_events.take()
-    }
-
-    /// In process only: open session `session_id`'s handles, for a front end
-    /// that still reaches into a session while it moves onto the protocol.
-    pub fn session_handles(&self, session_id: &str) -> Option<SessionHandles> {
-        self.handles
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(session_id)
-            .cloned()
     }
 
     /// In process only: what session `session_id`'s next turns run with

@@ -87,8 +87,6 @@ pub(crate) struct HostArgs {
     pub raw: Option<mpsc::UnboundedSender<crate::RawEvent>>,
     /// In process only: the agent every session uses, if the client built it.
     pub agent: Option<Arc<koda_core::agent::KodaAgent>>,
-    /// Where open sessions' handles go, for the client.
-    pub handles: HandleMap,
 }
 
 /// Start a host on its own task.
@@ -106,7 +104,7 @@ pub(crate) fn spawn(args: HostArgs) -> (mpsc::Sender<HostCommand>, JoinHandle<()
             raw: args.raw,
             agent: args.agent,
         },
-        handles: args.handles,
+        handles: HandleMap::default(),
         client: OnceLock::new(),
         config_warnings: std::sync::Mutex::new(args.config_warnings),
         sessions: Mutex::new(HashMap::new()),
@@ -631,7 +629,6 @@ mod tests {
             events,
             raw: None,
             agent: None,
-            handles: HandleMap::default(),
         });
         (tx, handle, dir)
     }

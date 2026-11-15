@@ -740,23 +740,35 @@ impl Koda {
             .unwrap()
             .status
     }
+
+    /// Whether the host still has the session open, as a request that
+    /// needs it tells: one for a closed session is refused.
+    async fn is_open(&self) -> bool {
+        use koda_client::protocol::background::BackgroundTerminalsListParams;
+        self.client
+            .request::<methods::SessionBackgroundTerminalsList>(BackgroundTerminalsListParams {
+                session_id: self.session.clone(),
+            })
+            .await
+            .is_ok()
+    }
 }
 
-/// `session/unsubscribe` closes a session: its handles go, a turn on it is
-/// refused, and it opens again by id.
+/// `session/unsubscribe` closes a session: its requests are refused, a turn
+/// on it is refused, and it opens again by id.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unsubscribe_closes_a_session_and_it_opens_again() {
     let server = model(vec![text("Hello.")]).await;
     let mut koda = Koda::start(config(&server)).await;
     koda.turn("hi").await;
     koda.until("turn/completed").await;
-    assert!(koda.client.session_handles(&koda.session).is_some());
+    assert!(koda.is_open().await);
 
     assert_eq!(
         koda.unsubscribe().await,
         SessionUnsubscribeStatus::Unsubscribed
     );
-    assert!(koda.client.session_handles(&koda.session).is_none());
+    assert!(!koda.is_open().await);
     let refused = server_error(koda.turn_with("again", None).await);
     assert!(refused.message.contains("no open session"), "{refused:?}");
     assert_eq!(
@@ -948,7 +960,7 @@ async fn deleting_an_open_session_stops_its_turn_and_deletes_it() {
     assert_eq!(turn_completed(&seen).status, TurnStatus::Interrupted);
     koda.until("session/deleted").await;
     assert!(koda.list().await.is_empty());
-    assert!(koda.client.session_handles(&koda.session).is_none());
+    assert!(!koda.is_open().await);
     let refused = server_error(koda.turn_with("again", None).await);
     assert!(refused.message.contains("no open session"), "{refused:?}");
 
@@ -2090,8 +2102,8 @@ async fn background_processes_are_listed_and_stopped_through_the_client() {
         )
     };
     let server = model(vec![
-        bash("call_1", 30),
-        bash("call_2", 31),
+        bash("call_1", 41),
+        bash("call_2", 42),
         text("Started."),
     ])
     .await;
@@ -2118,8 +2130,8 @@ async fn background_processes_are_listed_and_stopped_through_the_client() {
     };
     let running = list().await.unwrap().data;
     assert_eq!(running.len(), 2, "{running:?}");
-    assert!(running[0].command.contains("sleep 30"), "{running:?}");
-    assert!(running[1].command.contains("sleep 31"), "{running:?}");
+    assert!(running[0].command.contains("sleep 41"), "{running:?}");
+    assert!(running[1].command.contains("sleep 42"), "{running:?}");
     assert!(running[0].cwd.ends_with("project"), "{running:?}");
     assert_eq!(running[0].process_id, running[0].os_pid.to_string());
     let now_ms = std::time::SystemTime::now()
@@ -2148,7 +2160,7 @@ async fn background_processes_are_listed_and_stopped_through_the_client() {
     assert!(bad.message.contains("no background process"), "{bad:?}");
     let left = list().await.unwrap().data;
     assert_eq!(left.len(), 1, "{left:?}");
-    assert!(left[0].command.contains("sleep 31"), "{left:?}");
+    assert!(left[0].command.contains("sleep 42"), "{left:?}");
 
     let cleaned = koda
         .client

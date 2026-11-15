@@ -57,6 +57,22 @@ impl TurnStop {
         });
     }
 
+    /// `/stop` during the turn: stop the session's background processes,
+    /// which the turn's own interruption leaves running.
+    pub(crate) async fn stop_background(
+        &self,
+        buffer: &mut crate::scroll_buffer::ScrollBuffer,
+        tracker: &mut crate::child_activity::ChildActivityTracker,
+    ) {
+        crate::tui_context::background::stop_background(
+            &self.requests,
+            &self.session_id,
+            buffer,
+            tracker,
+        )
+        .await;
+    }
+
     /// Send the mode Shift+Tab chose during the turn; the host applies it
     /// once the turn has ended. Not waited for.
     pub(crate) fn set_mode(&self, mode: koda_core::trust::TrustMode) {

@@ -83,6 +83,32 @@ async fn test_sub_agent_invocation_e2e() {
         last.contains("Sub-agent says"),
         "final response should reference sub-agent output: {last}"
     );
+
+    // Its status events name it, and the last says how it ended, so a
+    // client can show and drop its row from the events alone.
+    let updates: Vec<_> = events
+        .iter()
+        .cloned()
+        .chain(env.bg_agents.drain_status_events())
+        .filter_map(|e| match e {
+            EngineEvent::ChildTaskUpdate {
+                agent_name, status, ..
+            } => Some((agent_name, status)),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !updates.is_empty() && updates.iter().all(|(name, _)| name == "echo-agent"),
+        "{updates:?}"
+    );
+    assert!(
+        matches!(
+            updates.last(),
+            Some((_, koda_core::child_agent::AgentStatus::Completed { summary }))
+                if summary.contains("Echo: review the auth module")
+        ),
+        "{updates:?}"
+    );
 }
 
 /// Regression for koda#1101: the sub-agent dispatch loop forgot to
@@ -628,10 +654,8 @@ async fn test_sub_agent_grace_turn_terminates_runaway_explorer() {
     // surface as `ChildAgentActivity` on the parent's sink (same as
     // pre-#1366 bg behavior). The sub-agent's final output now flows
     // back as `ToolCallResult.output` on the parent's `InvokeAgent`
-    // call instead of `AgentStatus::Completed.summary` — the FG path
-    // deliberately doesn't emit terminal `ChildTaskUpdate` events
-    // (sub_agent_dispatch.rs:1075 documents the rationale). All
-    // assertions below pivot to the sync-path event shape.
+    // call; its terminal `ChildTaskUpdate` carries only the start of it.
+    // All assertions below pivot to the sync-path event shape.
     runtime_env::remove("KODA_MOCK_RESPONSES");
 
     // The visible UX signal of a triggered grace turn: an `Info` line

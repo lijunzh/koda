@@ -76,7 +76,8 @@ struct Cli {
     #[arg(long, value_name = "FORMAT", hide = true)]
     output_format: Option<String>,
 
-    /// Agent to use (matches a JSON file in agents/)
+    /// Agent to use: a built-in, or a JSON file in .koda/agents/ or
+    /// ~/.config/koda/agents/
     #[arg(short, long, default_value = "default", global = true)]
     agent: String,
 

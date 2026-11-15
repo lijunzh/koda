@@ -196,6 +196,7 @@ async fn top_level_bg_task_update_persists_as_json_with_null_parent() {
 
     let event = EngineEvent::ChildTaskUpdate {
         task_id: 42,
+        agent_name: String::new(),
         spawner: None,
         is_background: true,
         status: AgentStatus::Running { iter: 7 },
@@ -420,6 +421,7 @@ async fn sub_agent_forwards_child_task_update_unconditionally() {
 
     sink.emit(EngineEvent::ChildTaskUpdate {
         task_id: 1,
+        agent_name: String::new(),
         spawner: Some(99),
         is_background: true,
         status: AgentStatus::Pending,
