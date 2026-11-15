@@ -159,6 +159,7 @@ koda/
 ├── koda-protocol/          # The client protocol: JSON-RPC messages and their types
 ├── koda-client/            # The client API and Koda's host: sessions, config, MCP
 ├── koda-config/            # config.toml: reading, checking and editing it, keeping comments
+├── koda-state/             # SQLite files and the diagnostic log database
 ├── koda-sandbox/           # Sandbox runtime: kernel-level FS, network and exec policies
 ├── koda-test-utils/        # Shared test helpers
 ├── DESIGN.md               # Architecture decisions
@@ -344,9 +345,10 @@ security-boundary tests ran rather than being skipped, look for each name in
   advisory fails the audit on release day (`rustix` in 0.6.3).
 - Run the release check on that commit, and release the commit it checked.
 - Move CHANGELOG.md `[Unreleased]` to a versioned section.
-- Bump the version in the three published crates (koda-sandbox, koda-core,
-  koda-cli; release.yml checks all three) and in the path-dependency `version =`
-  fields that point at them, including koda-test-utils.
+- Bump the version in every published crate (koda-config, koda-protocol,
+  koda-state, koda-sandbox, koda-core, koda-client, koda-cli; release.yml checks
+  them all) and in the path-dependency `version =` fields that point at them,
+  including koda-test-utils.
 - Verify README quick-start examples still work.
 - Check that CHANGELOG entries match what's documented in README/DESIGN.md.
 

@@ -2,7 +2,7 @@
 //! limits with `session_id` where Codex has `thread_id`.
 
 use super::{LogEntry, LogQuery, LogRow};
-use crate::db::sqlite::LOGS_DB;
+use crate::sqlite::LOGS_DB;
 use anyhow::Result;
 use sqlx::sqlite::SqlitePool;
 use sqlx::{QueryBuilder, Row, Sqlite, SqliteConnection};

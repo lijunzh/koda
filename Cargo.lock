@@ -1881,6 +1881,7 @@ dependencies = [
  "koda-client",
  "koda-config",
  "koda-core",
+ "koda-state",
  "koda-test-utils",
  "libc",
  "pretty_assertions",
@@ -1951,6 +1952,7 @@ dependencies = [
  "koda-config",
  "koda-protocol",
  "koda-sandbox",
+ "koda-state",
  "koda-test-utils",
  "parking_lot 0.13.0",
  "path-clean",
@@ -1999,6 +2001,20 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "koda-state"
+version = "0.6.4"
+dependencies = [
+ "anyhow",
+ "sqlx",
+ "tempfile",
+ "time",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

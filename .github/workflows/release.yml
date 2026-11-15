@@ -31,7 +31,7 @@ jobs:
         run: |
           TAG="${GITHUB_REF#refs/tags/v}"
           # Every crate the publish job publishes, in its order.
-          for CRATE in koda-config koda-sandbox koda-core koda-protocol koda-client koda-cli; do
+          for CRATE in koda-config koda-protocol koda-state koda-sandbox koda-core koda-client koda-cli; do
             VER=$(grep '^version' "$CRATE/Cargo.toml" | head -1 | sed 's/.*"\(.*\)"/\1/')
             if [ "$TAG" != "$VER" ]; then
               echo "::error::Tag v$TAG does not match $CRATE version $VER"
@@ -67,7 +67,7 @@ jobs:
         # bridge the log crate into tracing and flip our exposure). Fail the
         # release if that assumption is ever violated. See #1050.
         run: |
-          if grep -rn 'LogTracer\|tracing_log' koda-cli/src/ koda-core/src/ koda-sandbox/src/; then
+          if grep -rn 'LogTracer\|tracing_log' koda-cli/src/ koda-core/src/ koda-state/src/ koda-sandbox/src/; then
             echo "::error::RUSTSEC-2026-0097 suppression invalid: LogTracer/tracing_log found in workspace src. Remove the usage or drop the suppression in .cargo/audit.toml."
             exit 1
           fi
@@ -178,8 +178,9 @@ jobs:
         with:
           toolchain: 1.99.1 # = rust-toolchain.toml (pin guarded in ci.yml)
       # Publish order follows dependency graph:
-      # koda-config → koda-sandbox → koda-core → koda-protocol → koda-client → koda-cli.
-      # koda-config depends on no other Koda crate.
+      # koda-config → koda-protocol → koda-state → koda-sandbox → koda-core →
+      # koda-client → koda-cli. koda-config, koda-protocol, koda-state and
+      # koda-sandbox depend on no other Koda crate; koda-core needs all four.
       # Each crate waits for its dep to appear in the sparse index before publishing,
       # otherwise cargo resolve will fail with "no matching version".
       - name: Publish koda-config
@@ -200,6 +201,42 @@ jobs:
             sleep 15
           done
           echo "⚠️ timed out after 300s — koda-config $VERSION may still propagate"
+      - name: Publish koda-protocol
+        run: cargo publish -p koda-protocol
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Wait for koda-protocol in sparse index
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          URL="https://index.crates.io/ko/da/koda-protocol"
+          echo "Polling $URL for koda-protocol $VERSION ..."
+          for i in $(seq 1 20); do
+            if curl -sf "$URL" | grep -q "\"vers\":\"${VERSION}\""; then
+              echo "✅ koda-protocol $VERSION is in the index (attempt $i)"
+              exit 0
+            fi
+            echo "  attempt $i/20 — not yet, sleeping 15s"
+            sleep 15
+          done
+          echo "⚠️ timed out after 300s — koda-protocol $VERSION may still propagate"
+      - name: Publish koda-state
+        run: cargo publish -p koda-state
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Wait for koda-state in sparse index
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          URL="https://index.crates.io/ko/da/koda-state"
+          echo "Polling $URL for koda-state $VERSION ..."
+          for i in $(seq 1 20); do
+            if curl -sf "$URL" | grep -q "\"vers\":\"${VERSION}\""; then
+              echo "✅ koda-state $VERSION is in the index (attempt $i)"
+              exit 0
+            fi
+            echo "  attempt $i/20 — not yet, sleeping 15s"
+            sleep 15
+          done
+          echo "⚠️ timed out after 300s — koda-state $VERSION may still propagate"
       - name: Publish koda-sandbox
         run: cargo publish -p koda-sandbox
         env:
@@ -223,9 +260,6 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
       - name: Wait for koda-core in sparse index
-        # cargo publish waits up to ~60s for the index; we poll on top of that.
-        # The sparse index URL is the canonical source of truth — same thing
-        # cargo-workspaces and cargo-release query internally.
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
           URL="https://index.crates.io/ko/da/koda-core"
@@ -239,24 +273,6 @@ jobs:
             sleep 15
           done
           echo "⚠️ timed out after 300s — koda-core $VERSION may still propagate"
-      - name: Publish koda-protocol
-        run: cargo publish -p koda-protocol
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - name: Wait for koda-protocol in sparse index
-        run: |
-          VERSION="${GITHUB_REF#refs/tags/v}"
-          URL="https://index.crates.io/ko/da/koda-protocol"
-          echo "Polling $URL for koda-protocol $VERSION ..."
-          for i in $(seq 1 20); do
-            if curl -sf "$URL" | grep -q "\"vers\":\"${VERSION}\""; then
-              echo "✅ koda-protocol $VERSION is in the index (attempt $i)"
-              exit 0
-            fi
-            echo "  attempt $i/20 — not yet, sleeping 15s"
-            sleep 15
-          done
-          echo "⚠️ timed out after 300s — koda-protocol $VERSION may still propagate"
       - name: Publish koda-client
         run: cargo publish -p koda-client
         env:

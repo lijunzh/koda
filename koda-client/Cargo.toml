@@ -19,7 +19,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync", "macros", "time"] }
 tracing = { workspace = true }
-uuid = { version = "1", features = ["v4"] }
+uuid = { workspace = true }
 # feedback/save: the ZIP, written through a temp file, as Codex writes its own.
 tempfile = { workspace = true }
 zip = { version = "9", default-features = false, features = ["deflate"] }

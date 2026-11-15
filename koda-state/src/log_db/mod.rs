@@ -1,8 +1,8 @@
 //! Koda's diagnostic logs in a SQLite database of their own, as Codex keeps
 //! its logs in `logs_2.sqlite`.
 //!
-//! A `tracing` layer ([`LogDbLayer`](crate::log_db::LogDbLayer)) queues every event and a background
-//! task stores them in batches ([`LogStore`](crate::log_db::LogStore)). Each line carries the session
+//! A `tracing` layer ([`LogDbLayer`]) queues every event and a background
+//! task stores them in batches ([`LogStore`]). Each line carries the session
 //! it was logged in, read from the `session_id` field of the spans around
 //! it, so one session's lines can be read alone, as Codex reads a thread's
 //! for `/feedback`. Lines outside any session belong to the process.

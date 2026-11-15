@@ -23,7 +23,7 @@ path = "src/lib.rs"
 tokio = { workspace = true, features = ["full"] }
 
 # Database
-sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "macros"] }
+sqlx = { workspace = true }
 
 # Serialization
 serde = { workspace = true }
@@ -53,10 +53,10 @@ glob = { workspace = true }
 url = "2"
 
 # Date/time — already in the tree via koda-cli and ratatui
-time = "0.3"
+time = { workspace = true }
 
 # Unique IDs
-uuid = { version = "1", features = ["v4"] }
+uuid = { workspace = true }
 
 # SHA-256 content hashing (edit staleness detection — Gemini CLI strategy)
 sha2 = "0.10"
@@ -96,6 +96,7 @@ http = "1"
 koda-config = { path = "../koda-config", version = "0.6.4" }
 koda-protocol = { path = "../koda-protocol", version = "0.6.4" }
 koda-sandbox = { path = "../koda-sandbox", version = "0.6.4" }
+koda-state = { path = "../koda-state", version = "0.6.4" }
 
 # Async trait support
 async-trait = { workspace = true }
