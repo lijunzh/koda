@@ -517,12 +517,19 @@ impl TuiContext {
                     } else {
                         let target_id = item.id.clone();
                         let short = item.short_id.clone();
-                        self.session.id = target_id;
+                        self.session.id = target_id.clone();
                         self.scroll_buffer.push(Line::from(vec![
                             Span::styled("  \u{2714} ", Style::default().fg(Color::Green)),
                             Span::raw("Resumed session "),
                             Span::styled(short, Style::default().fg(Color::Cyan)),
                         ]));
+                        super::show_earlier_turns(
+                            &self.client,
+                            &target_id,
+                            &mut self.renderer,
+                            &mut self.scroll_buffer,
+                        )
+                        .await;
                     }
                 }
             }

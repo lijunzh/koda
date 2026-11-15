@@ -39,7 +39,6 @@ use koda_protocol::turn::{
 use koda_protocol::{PROTOCOL_VERSION, ServerNotification, ServerRequest};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::RawEvent;
 use crate::events::{EventProjector, Outgoing};
 use crate::host::{Answer, protocol_mode, to_json};
 use koda_core::mcp::manager::SharedMcpManager;
@@ -117,8 +116,6 @@ pub(crate) struct SessionContext {
     pub events: mpsc::UnboundedSender<Outgoing>,
     pub request_ids: Arc<AtomicI64>,
     pub open_requests: OpenRequests,
-    /// Where engine events go as they are, for a front end that asked.
-    pub raw: Option<mpsc::UnboundedSender<RawEvent>>,
     /// In process only: the agent every session uses, when the front end
     /// built it. Without one, each session builds its own.
     pub agent: Option<Arc<KodaAgent>>,
@@ -147,7 +144,6 @@ pub(crate) async fn open(
         events,
         request_ids,
         open_requests,
-        raw,
         agent,
     } = context;
 
@@ -304,7 +300,6 @@ pub(crate) async fn open(
         session_id: id.clone(),
         events,
         open_requests,
-        raw,
         history: Some(history),
         // Koda answers itself only when nobody is there to ask.
         answers: (policy == ApprovalPolicy::Never).then(|| engine_tx.clone()),
@@ -871,7 +866,6 @@ pub(crate) struct HostSink {
     session_id: String,
     events: mpsc::UnboundedSender<Outgoing>,
     open_requests: OpenRequests,
-    raw: Option<mpsc::UnboundedSender<RawEvent>>,
     /// Where the session's turns are stored as they are sent, for resuming
     /// it. `None` in tests that need no database.
     history: Option<crate::history::HistoryWriter>,
@@ -959,13 +953,6 @@ impl HostSink {
 
     fn handle(&self, parent: Option<&str>, event: EngineEvent) {
         let mut state = self.lock();
-        if let Some(raw) = &self.raw {
-            let _ = raw.send(RawEvent {
-                session_id: self.session_id.clone(),
-                parent: parent.map(str::to_string),
-                event: event.clone(),
-            });
-        }
         let own_answer = self.answers.as_ref().and_then(|_| policy_answer(&event));
         let out = match (parent, event) {
             (None, EngineEvent::SteerDelivered { texts }) => {
@@ -1205,7 +1192,6 @@ mod tests {
             session_id: "s1".to_string(),
             events,
             open_requests: OpenRequests::default(),
-            raw: None,
             history: None,
             answers,
             state: Mutex::new(SinkState {

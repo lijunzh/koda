@@ -63,11 +63,6 @@ pub struct ScrollBuffer {
     /// scroll back to the bottom.
     sticky_bottom: bool,
 
-    /// Oldest DB message ID currently rendered in the buffer.
-    /// Used by virtual scroll to know which page to fetch next.
-    /// `None` means no DB messages have been loaded yet.
-    oldest_message_id: Option<i64>,
-
     /// Cached terminal width for eviction offset adjustment.
     /// Updated on scroll operations and used by `enforce_capacity()`
     /// to compute visual height of evicted lines.
@@ -83,7 +78,6 @@ impl ScrollBuffer {
             full: false,
             scroll_offset: 0,
             sticky_bottom: true,
-            oldest_message_id: None,
             cached_term_width: 80,
         }
     }
@@ -328,17 +322,6 @@ impl ScrollBuffer {
     /// Whether sticky bottom is active.
     pub fn is_sticky(&self) -> bool {
         self.sticky_bottom
-    }
-
-    /// Get the oldest DB message ID rendered in this buffer.
-    #[allow(dead_code)] // wired when virtual scroll pagination lands
-    pub fn oldest_message_id(&self) -> Option<i64> {
-        self.oldest_message_id
-    }
-
-    /// Set the oldest DB message ID (called after rendering history).
-    pub fn set_oldest_message_id(&mut self, id: i64) {
-        self.oldest_message_id = Some(id);
     }
 
     /// Clear all lines and reset scroll state.

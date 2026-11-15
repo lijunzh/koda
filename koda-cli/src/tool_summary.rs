@@ -39,9 +39,10 @@
 //! No rendering knowledge — no `ratatui::Span`, no ANSI colors, no
 //! truncation. Renderers (currently `koda-cli/src/tool_header.rs`)
 //! pattern-match on the `ToolCallKind` enum and produce their own
-//! medium-specific output. This keeps `koda-core` headless and means
-//! a future JSON renderer can plug in without touching this
-//! module at all.
+//! medium-specific output. It lives in `koda-cli`, beside its renderers,
+//! since 6h-b3: the TUI reads tool calls from the client protocol and
+//! imports no display helper from `koda-core`, as Codex's TUI imports no
+//! core crate.
 
 use serde_json::Value;
 
@@ -141,7 +142,7 @@ impl ToolCallSummary {
             // Shown like a shell command (`cargo test -p koda-core`): the
             // model's arguments are the subcommand and its options.
             "Cargo" => ToolCallKind::Bash {
-                command: super::cargo::describe(args),
+                command: koda_core::tools::cargo::describe(args),
             },
             "Read" | "Write" | "Edit" => ToolCallKind::Path {
                 path: first_string(args, &["file_path", "path"]).unwrap_or_default(),

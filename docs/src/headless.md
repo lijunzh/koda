@@ -140,7 +140,7 @@ below as described, and Ctrl+C sends `turn/interrupt`.
 |--------|---------|-------|
 | `session/started` | `session` (`id`, `name`, `preview`, `createdAt`, `updatedAt`, `cwd`, and while open `model`, `provider`, `contextWindow`, `mode`, `tools`), `kodaVersion`, `protocolVersion` | Always first. Stop on a `protocolVersion` you don't support. Times are Unix seconds; `name` is the title, `preview` the first prompt |
 | `turn/started` | `turn`, in progress | |
-| `item/started`, `item/completed` | `item`, `parentItemId` on a sub-agent's items | Every item that starts completes, once |
+| `item/started`, `item/completed` | `item`, `parentItemId` on a sub-agent's items, `startedAtMs` or `completedAtMs` | Every item that starts completes, once. The times are Unix milliseconds, as Codex's; a stored turn's items keep both |
 | `item/agentMessage/delta` | `itemId`, `delta` | Only with `--json-deltas` |
 | `item/reasoning/textDelta` | `itemId`, `delta` | Only with `--json-deltas` |
 | `item/toolCall/outputDelta` | `itemId`, `delta`, `stream` (`stdout` or `stderr`) | A line of a running command. Only with `--json-deltas` |

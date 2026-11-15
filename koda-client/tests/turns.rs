@@ -132,7 +132,6 @@ async fn client_with(
         config_file: koda_client::ConfigFile::in_dir(&dir.path().join("config")),
         project_root: project,
         db,
-        raw_events: false,
         client_info: ClientInfo {
             name: "turns-test".to_string(),
             version: "0".to_string(),
@@ -2496,6 +2495,16 @@ async fn a_resumed_session_returns_its_turns_as_they_were_sent() {
         .iter()
         .map(|messages| {
             let mut turn = turn_completed(messages).clone();
+            // When each item started, from its `item/started`.
+            let started: std::collections::HashMap<String, i64> = messages
+                .iter()
+                .filter_map(|m| match m {
+                    Outgoing::Notification(ServerNotification::ItemStarted(n)) => {
+                        Some((n.item.id().to_string(), n.started_at_ms))
+                    }
+                    _ => None,
+                })
+                .collect();
             turn.items = messages
                 .iter()
                 .filter_map(|m| match m {
@@ -2503,6 +2512,8 @@ async fn a_resumed_session_returns_its_turns_as_they_were_sent() {
                         Some(TurnItem {
                             parent_item_id: n.parent_item_id.clone(),
                             item: n.item.clone(),
+                            started_at_ms: started.get(n.item.id()).copied(),
+                            completed_at_ms: Some(n.completed_at_ms),
                         })
                     }
                     _ => None,

@@ -154,13 +154,14 @@ pub async fn handle_slash_command(
                 }
                 Some(sub) if sub.starts_with("resume ") => {
                     let id = sub.strip_prefix("resume ").unwrap().trim().to_string();
-                    handle_resume_session(buffer, session, client, &id, shared_mode).await;
+                    handle_resume_session(buffer, session, client, &id, shared_mode, renderer)
+                        .await;
                 }
                 // Bare ID shorthand: /resume <hex-id>
                 Some(id)
                     if !id.is_empty() && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') =>
                 {
-                    handle_resume_session(buffer, session, client, id, shared_mode).await;
+                    handle_resume_session(buffer, session, client, id, shared_mode, renderer).await;
                 }
                 _ => {} // no-op: session list is opened by the TUI context
             }
@@ -311,6 +312,7 @@ async fn handle_resume_session(
     client: &koda_client::InProcessClient,
     id: &str,
     shared_mode: &trust::SharedTrustMode,
+    renderer: &mut TuiRenderer,
 ) {
     use tui_output::GREEN;
     if session.id.starts_with(id) {
@@ -391,35 +393,11 @@ async fn handle_resume_session(
                             }
                             trust::set_trust(shared_mode, m);
                         }
-                        // Read idle time BEFORE load_context updates last_accessed_at.
-                        let idle_secs = session
-                            .db
-                            .get_session_idle_secs(&session.id)
-                            .await
-                            .ok()
-                            .flatten();
-                        // Show away-summary + interrupted-turn banners (#590, #594)
-                        if let Ok(msgs) = session.db.load_context(&session.id).await {
-                            use koda_core::persistence::Role;
-                            let user_msgs = msgs.iter().filter(|m| m.role == Role::User).count();
-                            let tool_calls = msgs.iter().filter(|m| m.role == Role::Tool).count();
-                            let total_tokens: i64 = msgs
-                                .iter()
-                                .map(|m| {
-                                    m.prompt_tokens.unwrap_or(0) + m.completion_tokens.unwrap_or(0)
-                                })
-                                .sum();
-                            buffer.push_lines(tui_output::away_summary_banner(
-                                idle_secs,
-                                None, // title already in the confirmation line above
-                                user_msgs,
-                                tool_calls,
-                                total_tokens,
-                            ));
-                            if let Some(kind) = koda_core::db::queries::detect_interruption(&msgs) {
-                                buffer.push_lines(tui_output::interrupted_turn_banner(&kind));
-                            }
-                        }
+                        // Its earlier turns, as they were drawn live.
+                        crate::tui_context::show_earlier_turns(
+                            client, &target.id, renderer, buffer,
+                        )
+                        .await;
                     }
                     n => tui_output::err_msg(
                         buffer,

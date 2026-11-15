@@ -194,6 +194,8 @@ pub struct ItemStartedNotification {
     pub parent_item_id: Option<String>,
     /// The item as it starts.
     pub item: Item,
+    /// When it started, in Unix milliseconds. Codex's `startedAtMs`.
+    pub started_at_ms: i64,
 }
 
 /// `item/completed`. Every item that starts completes.
@@ -209,10 +211,13 @@ pub struct ItemCompletedNotification {
     pub parent_item_id: Option<String>,
     /// The item, complete.
     pub item: Item,
+    /// When it completed, in Unix milliseconds. Codex's `completedAtMs`.
+    pub completed_at_ms: i64,
 }
 
 /// An item of a stored turn, as `session/start` (resuming) and
-/// `session/read` return it: what `item/completed` sent, with its parent.
+/// `session/read` return it: what `item/completed` sent, with its parent
+/// and its times, as Codex's `ThreadItem` keeps them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnItem {
@@ -221,6 +226,13 @@ pub struct TurnItem {
     pub parent_item_id: Option<String>,
     /// The item.
     pub item: Item,
+    /// When it started, in Unix milliseconds; absent when not recorded, as
+    /// in sessions stored before Koda recorded it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<i64>,
+    /// When it completed, in Unix milliseconds; absent when not recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at_ms: Option<i64>,
 }
 
 /// `item/toolCall/progress`: a notice about a running tool call, such as a

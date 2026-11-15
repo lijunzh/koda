@@ -41,7 +41,7 @@
 //! ## Verbose mode
 //!
 //! Set `TuiRenderer::verbose = true` to suppress the
-//! [`koda_core::truncate`]-based collapsing. Every output line is shown.
+//! [`crate::truncate`]-based collapsing. Every output line is shown.
 
 use crate::ansi_parse::parse_ansi_spans;
 use crate::protocol_text::{self, Tone};
@@ -50,13 +50,13 @@ use crate::scroll_buffer::ScrollBuffer;
 use crate::theme;
 use crate::tui_output::{self, CYAN, DIM, RED, TOOL_PREFIX, YELLOW};
 use koda_client::protocol::ServerNotification;
-use koda_client::protocol::item::{FileUpdateChange, Item, OutputStream, ToolCallStatus};
+use koda_client::protocol::item::{FileUpdateChange, Item, OutputStream, ToolCallStatus, TurnItem};
+use koda_client::protocol::turn::{Turn, TurnStatus};
 use ratatui::{
     style::{Color, Style},
     text::{Line, Span},
 };
 use std::collections::{HashMap, HashSet};
-use std::time::Instant;
 
 /// A tool call the renderer saw start.
 struct Call {
@@ -72,7 +72,8 @@ struct Call {
 
 /// A sub-agent at work: its `InvokeAgent` call, for the line that sums it up.
 struct AgentRun {
-    started: Instant,
+    /// When its call started, in Unix milliseconds, if recorded.
+    started_ms: Option<i64>,
     /// Tool calls it has made.
     calls: usize,
 }
@@ -99,8 +100,6 @@ pub struct TuiRenderer {
     reasoning: HashSet<String>,
     /// Tool calls started and not yet completed, by item id.
     calls: HashMap<String, Call>,
-    /// Calls an approval asked about: a refusal is the user's, not a block.
-    asked: HashSet<String>,
     /// Calls whose changes an approval drew, so a finished Write or Edit
     /// says only how long it is.
     changes_shown: HashSet<String>,
@@ -129,7 +128,6 @@ impl TuiRenderer {
             messages: HashSet::new(),
             reasoning: HashSet::new(),
             calls: HashMap::new(),
-            asked: HashSet::new(),
             changes_shown: HashSet::new(),
             agents: HashMap::new(),
             error_shown: false,
@@ -159,26 +157,99 @@ impl TuiRenderer {
         changes: &[FileUpdateChange],
         buffer: &mut ScrollBuffer,
     ) {
-        self.asked.insert(item_id.to_string());
         if !changes.is_empty() {
             self.changes_shown.insert(item_id.to_string());
             push_changes(changes, buffer);
         }
     }
 
-    /// A question to the user: what the call does is the question.
-    pub fn question(&mut self, item_id: &str) {
-        self.asked.insert(item_id.to_string());
+    /// Draw a stored turn as it was drawn live, as Codex's TUI replays a
+    /// resumed thread's turns through its live handlers: the prompt, each
+    /// item started and completed, then how the turn ended.
+    pub fn replay_turn(&mut self, turn: &Turn, buffer: &mut ScrollBuffer) {
+        self.start_turn();
+        let by_id: HashMap<&str, &TurnItem> = turn.items.iter().map(|t| (t.item.id(), t)).collect();
+        let mut started = HashSet::new();
+        for stored in &turn.items {
+            self.replay_start(stored.item.id(), &by_id, &mut started, buffer);
+            match &stored.item {
+                Item::AgentMessage { id, text } if self.messages.contains(id) => {
+                    self.reply_text(text, buffer);
+                }
+                Item::Reasoning { id, text } if self.reasoning.contains(id) => {
+                    self.thinking_text(text, buffer);
+                }
+                _ => {}
+            }
+            self.item_completed(
+                stored.parent_item_id.as_deref(),
+                &stored.item,
+                stored.completed_at_ms,
+                buffer,
+            );
+        }
+        match (&turn.status, &turn.error) {
+            (TurnStatus::Failed, Some(error)) => {
+                tui_output::emit_line(buffer, turn_failed_line(&error.message));
+            }
+            (TurnStatus::Failed, None) => {
+                tui_output::emit_line(buffer, turn_failed_line("the turn failed"));
+            }
+            _ => {}
+        }
+        if let Some(ms) = turn.duration_ms {
+            tui_output::emit_line(buffer, worked_for_line(ms));
+        }
+    }
+
+    /// Start stored item `id` as it started live. Items are stored as they
+    /// complete, so a sub-agent's items come before its call: the call is
+    /// started first, as it was live.
+    fn replay_start(
+        &mut self,
+        id: &str,
+        by_id: &HashMap<&str, &TurnItem>,
+        started: &mut HashSet<String>,
+        buffer: &mut ScrollBuffer,
+    ) {
+        let Some(stored) = by_id.get(id) else {
+            return;
+        };
+        if !started.insert(id.to_string()) {
+            return;
+        }
+        if let Some(parent) = stored.parent_item_id.as_deref() {
+            self.replay_start(parent, by_id, started, buffer);
+        }
+        match &stored.item {
+            Item::UserMessage { text, .. } => buffer.push_lines(prompt_lines(text)),
+            item => self.item_started(
+                stored.parent_item_id.as_deref(),
+                item,
+                stored.started_at_ms,
+                buffer,
+            ),
+        }
     }
 
     /// Draw one of the session's notifications.
     pub fn render(&mut self, notification: &ServerNotification, buffer: &mut ScrollBuffer) {
         match notification {
             ServerNotification::ItemStarted(started) => {
-                self.item_started(started.parent_item_id.as_deref(), &started.item, buffer);
+                self.item_started(
+                    started.parent_item_id.as_deref(),
+                    &started.item,
+                    Some(started.started_at_ms),
+                    buffer,
+                );
             }
             ServerNotification::ItemCompleted(done) => {
-                self.item_completed(done.parent_item_id.as_deref(), &done.item, buffer);
+                self.item_completed(
+                    done.parent_item_id.as_deref(),
+                    &done.item,
+                    Some(done.completed_at_ms),
+                    buffer,
+                );
             }
             ServerNotification::AgentMessageDelta(delta)
                 if self.messages.contains(&delta.item_id) =>
@@ -188,12 +259,7 @@ impl TuiRenderer {
             ServerNotification::ReasoningTextDelta(delta)
                 if self.reasoning.contains(&delta.item_id) =>
             {
-                self.think_buf.push_str(&delta.delta);
-                while let Some(pos) = self.think_buf.find('\n') {
-                    let line = self.think_buf[..pos].to_string();
-                    self.think_buf.drain(..=pos);
-                    tui_output::emit_line(buffer, thinking_line(line));
-                }
+                self.thinking_text(&delta.delta, buffer);
             }
             ServerNotification::ToolCallOutputDelta(delta) => {
                 self.output(&delta.item_id, &delta.delta, delta.stream, buffer);
@@ -235,7 +301,13 @@ impl TuiRenderer {
         }
     }
 
-    fn item_started(&mut self, parent: Option<&str>, item: &Item, buffer: &mut ScrollBuffer) {
+    fn item_started(
+        &mut self,
+        parent: Option<&str>,
+        item: &Item,
+        started_ms: Option<i64>,
+        buffer: &mut ScrollBuffer,
+    ) {
         match item {
             Item::AgentMessage { id, .. } if parent.is_none() => {
                 self.messages.insert(id.clone());
@@ -272,7 +344,7 @@ impl TuiRenderer {
                     self.agents.insert(
                         id.clone(),
                         AgentRun {
-                            started: Instant::now(),
+                            started_ms,
                             calls: 0,
                         },
                     );
@@ -303,7 +375,13 @@ impl TuiRenderer {
         }
     }
 
-    fn item_completed(&mut self, parent: Option<&str>, item: &Item, buffer: &mut ScrollBuffer) {
+    fn item_completed(
+        &mut self,
+        parent: Option<&str>,
+        item: &Item,
+        completed_ms: Option<i64>,
+        buffer: &mut ScrollBuffer,
+    ) {
         match item {
             Item::AgentMessage { id, .. } if self.messages.remove(id) => {
                 if !self.text_buf.is_empty() {
@@ -335,20 +413,16 @@ impl TuiRenderer {
                 ..
             } => {
                 let call = self.calls.remove(id);
-                let asked = self.asked.remove(id);
                 let changes_shown = self.changes_shown.remove(id);
-                // Blocked without asking: what it would have done.
-                if *status == ToolCallStatus::Declined && !asked {
-                    if let Some(detail) = detail {
-                        tui_output::emit_line(
-                            buffer,
-                            Line::from(vec![
-                                Span::raw("  "),
-                                Span::styled(format!("\u{1f50d} Would execute: {detail}"), YELLOW),
-                            ]),
-                        );
-                    }
-                    push_changes(changes, buffer);
+                // What happened to it, as both peers show a declined call:
+                // what the model was told says which it was.
+                if *status == ToolCallStatus::Declined {
+                    let what = detail.as_deref().unwrap_or(tool);
+                    let outcome = protocol_text::declined(output.as_deref().unwrap_or(""));
+                    // The diff, unless the approval drew it already, as when
+                    // the turn is replayed.
+                    let diff = (!changes_shown).then_some(changes.as_slice());
+                    declined_lines(outcome, what, diff, buffer);
                     return;
                 }
                 // A sub-agent's results aren't shown: its answer is.
@@ -360,7 +434,11 @@ impl TuiRenderer {
                     return;
                 }
                 if let Some(run) = self.agents.remove(id) {
-                    tui_output::emit_line(buffer, agent_summary(&run, failed));
+                    let ms = run
+                        .started_ms
+                        .zip(completed_ms)
+                        .map(|(started, done)| done.saturating_sub(started).max(0) as u64);
+                    tui_output::emit_line(buffer, agent_summary(run.calls, ms, failed));
                 }
                 let output = output.as_deref().unwrap_or("");
                 self.result(tool, call, output, failed, changes_shown, buffer);
@@ -477,6 +555,16 @@ impl TuiRenderer {
         }
     }
 
+    /// Reasoning text: complete lines are drawn as they arrive.
+    fn thinking_text(&mut self, text: &str, buffer: &mut ScrollBuffer) {
+        self.think_buf.push_str(text);
+        while let Some(pos) = self.think_buf.find('\n') {
+            let line = self.think_buf[..pos].to_string();
+            self.think_buf.drain(..=pos);
+            tui_output::emit_line(buffer, thinking_line(line));
+        }
+    }
+
     /// The `───` line before a reply's first words.
     fn rule(&mut self, text: &str, buffer: &mut ScrollBuffer) {
         if !self.ruled && !text.trim().is_empty() {
@@ -484,6 +572,37 @@ impl TuiRenderer {
             tui_output::emit_line(buffer, Line::styled("  \u{2500}\u{2500}\u{2500}", DIM));
         }
     }
+}
+
+/// A prompt from an earlier turn: its first line after `❯`, the rest
+/// indented, after a blank line.
+fn prompt_lines(text: &str) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::default()];
+    let mut rest = text.lines();
+    if let Some(first) = rest.next() {
+        lines.push(Line::from(vec![
+            Span::styled(
+                "  \u{276f} ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ),
+            Span::styled(
+                first.to_string(),
+                Style::default().add_modifier(ratatui::style::Modifier::BOLD),
+            ),
+        ]));
+    }
+    lines.extend(rest.map(|line| Line::from(vec![Span::raw("    "), Span::raw(line.to_string())])));
+    lines
+}
+
+/// The line a failed turn ends with.
+pub(crate) fn turn_failed_line(error: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::raw("  "),
+        Span::styled(format!("\u{2717} Turn failed: {error}"), RED),
+    ])
 }
 
 /// A line of reasoning, dim behind a bar.
@@ -514,24 +633,71 @@ fn push_changes(changes: &[FileUpdateChange], buffer: &mut ScrollBuffer) {
 }
 
 /// What a finished sub-agent did, as Claude Code sums one up:
-/// `Done (3 tool uses · 12s)`.
-fn agent_summary(run: &AgentRun, failed: bool) -> Line<'static> {
-    let uses = if run.calls == 1 {
+/// `Done (3 tool uses · 12s)`. Without its call's times, as in a session
+/// stored before Koda recorded them, the time is left out.
+fn agent_summary(calls: usize, ms: Option<u64>, failed: bool) -> Line<'static> {
+    let uses = if calls == 1 {
         "1 tool use".to_string()
     } else {
-        format!("{} tool uses", run.calls)
+        format!("{calls} tool uses")
     };
     let what = if failed { "Failed" } else { "Done" };
+    let summary = match ms {
+        Some(ms) => format!("{what} ({uses} \u{00b7} {})", worked_for(ms)),
+        None => format!("{what} ({uses})"),
+    };
     Line::from(vec![
         Span::styled("  \u{2514} ", DIM),
-        Span::styled(
-            format!(
-                "{what} ({uses} \u{00b7} {})",
-                worked_for(run.started.elapsed().as_millis() as u64)
-            ),
-            DIM,
-        ),
+        Span::styled(summary, DIM),
     ])
+}
+
+/// A declined call: what happened to it, and its diff when there is one to
+/// draw. A refusal shows its diff first, as the approval did live; a block
+/// says what the call would have done, then shows it.
+fn declined_lines(
+    outcome: protocol_text::Declined<'_>,
+    what: &str,
+    diff: Option<&[FileUpdateChange]>,
+    buffer: &mut ScrollBuffer,
+) {
+    use protocol_text::Declined;
+    let line = |text: String, style| Line::from(vec![Span::raw("  "), Span::styled(text, style)]);
+    match outcome {
+        Declined::Blocked => {
+            tui_output::emit_line(
+                buffer,
+                line(format!("\u{1f50d} Would execute: {what}"), YELLOW),
+            );
+            push_changes(diff.unwrap_or_default(), buffer);
+        }
+        Declined::Rejected { feedback } => {
+            push_changes(diff.unwrap_or_default(), buffer);
+            tui_output::emit_line(buffer, line(format!("\u{2717} Rejected: {what}"), RED));
+            if let Some(feedback) = feedback {
+                tui_output::emit_line(
+                    buffer,
+                    Line::from(vec![
+                        Span::styled("  \u{2514} ", DIM),
+                        Span::styled(format!("Feedback: {feedback}"), DIM),
+                    ]),
+                );
+            }
+        }
+        Declined::AutoRejected { reason } => {
+            push_changes(diff.unwrap_or_default(), buffer);
+            tui_output::emit_line(
+                buffer,
+                line(
+                    format!("\u{2717} Auto-rejected: {what} \u{2014} {reason}"),
+                    RED,
+                ),
+            );
+        }
+        Declined::Other => {
+            tui_output::emit_line(buffer, line(format!("\u{2717} Declined: {what}"), RED));
+        }
+    }
 }
 
 /// A duration as Codex's TUI writes it: `<1s`, `12s`, `3m 4s`, `1h 2m 3s`.
@@ -704,7 +870,7 @@ pub(crate) fn tool_output_view(
     file_ext: Option<&str>,
     grep_pattern: Option<&str>,
 ) -> Vec<(Line<'static>, Fold)> {
-    use koda_core::truncate::{Truncated, truncate_for_display};
+    use crate::truncate::{Truncated, truncate_for_display};
 
     if output.is_empty() {
         return Vec::new();
@@ -795,7 +961,7 @@ pub(crate) fn tool_output_view(
             } => {
                 let mut lines: Vec<_> = head.iter().map(|l| always(render_line(l))).collect();
                 lines.push(always(Line::from(vec![Span::styled(
-                    koda_core::truncate::separator(hidden, total),
+                    crate::truncate::separator(hidden, total),
                     DIM,
                 )])));
                 lines.extend(tail.iter().map(|l| always(render_line(l))));
@@ -899,12 +1065,16 @@ mod tests {
         }
     }
 
+    /// When every test item starts; each completes 2 s later.
+    const STARTED_MS: i64 = 1_700_000_000_000;
+
     fn started(parent: Option<&str>, item: Item) -> ServerNotification {
         ServerNotification::ItemStarted(ItemStartedNotification {
             session_id: "s".into(),
             turn_id: "t".into(),
             parent_item_id: parent.map(str::to_string),
             item,
+            started_at_ms: STARTED_MS,
         })
     }
 
@@ -914,6 +1084,7 @@ mod tests {
             turn_id: "t".into(),
             parent_item_id: parent.map(str::to_string),
             item,
+            completed_at_ms: STARTED_MS + 2_000,
         })
     }
 
@@ -1093,22 +1264,61 @@ mod tests {
         assert_eq!(text(&buffer).len(), 22);
     }
 
-    /// A call the user refused, or one stopped, adds nothing to its header:
-    /// the dialog was the refusal.
+    /// A refused call says so under its approval's diff, which it doesn't
+    /// draw again; a stopped call adds nothing.
     #[test]
-    fn refused_and_stopped_calls_add_nothing() {
-        for status in [ToolCallStatus::Declined, ToolCallStatus::Cancelled] {
+    fn a_refused_call_says_so_and_a_stopped_one_adds_nothing() {
+        let change = FileUpdateChange {
+            path: "a.txt".into(),
+            kind: PatchChangeKind::Add,
+            diff: "x\n".into(),
+        };
+        for (status, output, says) in [
+            (
+                ToolCallStatus::Declined,
+                "User rejected this action.",
+                Some("\u{2717} Rejected: Write a.txt"),
+            ),
+            (
+                ToolCallStatus::Declined,
+                "User rejected this action with feedback: use b.txt",
+                Some("Feedback: use b.txt"),
+            ),
+            (ToolCallStatus::Cancelled, "[cancelled]", None),
+        ] {
             let mut renderer = TuiRenderer::new();
             let mut buffer = ScrollBuffer::new(256);
             let write = call("w1", "Write", json!({ "file_path": "a.txt" }));
             renderer.render(&started(None, write.clone()), &mut buffer);
-            renderer.approval("w1", &[], &mut buffer);
-            let header = buffer.all_lines().count();
-            renderer.render(
-                &completed(None, finished(write, status, "User rejected this action.")),
-                &mut buffer,
-            );
-            assert_eq!(buffer.all_lines().count(), header, "{status:?}");
+            renderer.approval("w1", std::slice::from_ref(&change), &mut buffer);
+            let before = buffer.all_lines().count();
+            let Item::ToolCall {
+                id,
+                tool,
+                arguments,
+                ..
+            } = write
+            else {
+                unreachable!()
+            };
+            let done = Item::ToolCall {
+                id,
+                tool,
+                arguments,
+                status,
+                output: Some(output.into()),
+                detail: Some("Write a.txt".into()),
+                changes: vec![change.clone()],
+                progress: Vec::new(),
+            };
+            renderer.render(&completed(None, done), &mut buffer);
+            let added: Vec<String> = text(&buffer).split_off(before);
+            match says {
+                Some(says) => assert!(added.iter().any(|l| l.contains(says)), "{added:?}"),
+                None => assert!(added.is_empty(), "{added:?}"),
+            }
+            // The diff isn't drawn twice.
+            assert!(!added.iter().any(|l| l.contains("+ x")), "{added:?}");
             assert!(renderer.calls.is_empty());
         }
     }
@@ -1133,7 +1343,7 @@ mod tests {
             tool,
             arguments,
             status: ToolCallStatus::Declined,
-            output: None,
+            output: Some("[plan mode] Not run: this session is read-only".into()),
             detail: Some("Write a.txt".into()),
             changes: vec![FileUpdateChange {
                 path: "a.txt".into(),
@@ -1215,7 +1425,8 @@ mod tests {
             .iter()
             .find(|l| l.contains("Done (2 tool uses"))
             .unwrap_or_else(|| panic!("{folded:?}"));
-        assert!(done.ends_with("<1s)"), "{done}");
+        // From the call's item times, as on a resumed session.
+        assert!(done.ends_with("2 tool uses \u{00b7} 2s)"), "{done}");
         assert!(folded.iter().any(|l| l.contains("Found it.")), "{folded:?}");
         buffer.set_full(true);
         let full = text(&buffer);
@@ -1249,6 +1460,158 @@ mod tests {
         // Another item's text isn't this reply's.
         renderer.render(&reply("other", "stray\n"), &mut buffer);
         assert_eq!(text(&buffer).len(), 3);
+    }
+
+    fn stored(parent: Option<&str>, item: Item, times: Option<(i64, i64)>) -> TurnItem {
+        TurnItem {
+            parent_item_id: parent.map(str::to_string),
+            item,
+            started_at_ms: times.map(|(s, _)| s),
+            completed_at_ms: times.map(|(_, c)| c),
+        }
+    }
+
+    fn turn(items: Vec<TurnItem>, status: TurnStatus, duration_ms: Option<u64>) -> Turn {
+        Turn {
+            id: "t".into(),
+            status,
+            error: None,
+            usage: None,
+            duration_ms,
+            items,
+        }
+    }
+
+    /// A stored turn is drawn as it was live: its prompt, reply, calls and
+    /// how long it worked. A sub-agent's items are stored before its call,
+    /// as they complete first, and still fold into its summary, timed from
+    /// the call's stored times.
+    #[test]
+    fn a_stored_turn_replays_as_it_was_drawn_live() {
+        let agent = finished(
+            call(
+                "a1",
+                "InvokeAgent",
+                json!({"agent_name": "explore", "prompt": "look"}),
+            ),
+            ToolCallStatus::Completed,
+            "Found it.",
+        );
+        let read = finished(
+            call("r1", "Read", json!({"file_path": "WOMBAT.md"})),
+            ToolCallStatus::Completed,
+            "     1\tx",
+        );
+        let items = vec![
+            stored(
+                None,
+                Item::UserMessage {
+                    id: "u1".into(),
+                    text: "look around".into(),
+                    client_message_ids: Vec::new(),
+                },
+                None,
+            ),
+            stored(Some("a1"), read, Some((1_000, 2_000))),
+            stored(None, agent, Some((0, 12_000))),
+            stored(
+                None,
+                Item::AgentMessage {
+                    id: "m1".into(),
+                    text: "All done.".into(),
+                },
+                None,
+            ),
+        ];
+        let mut renderer = TuiRenderer::new();
+        let mut buffer = ScrollBuffer::new(256);
+        renderer.replay_turn(
+            &turn(items, TurnStatus::Completed, Some(13_000)),
+            &mut buffer,
+        );
+        let folded = text(&buffer);
+        let at = |needle: &str| {
+            folded
+                .iter()
+                .position(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("no {needle:?} in {folded:?}"))
+        };
+        assert!(at("\u{276f} look around") < at("InvokeAgent"));
+        assert!(at("InvokeAgent") < at("Done (1 tool use \u{00b7} 12s)"));
+        assert!(at("Done (1 tool use") < at("Found it."));
+        assert!(at("Found it.") < at("All done."));
+        assert!(at("All done.") < at("Worked for 13s"));
+        assert!(!folded.iter().any(|l| l.contains("WOMBAT")), "{folded:?}");
+        buffer.set_full(true);
+        let full = text(&buffer);
+        let header = full.iter().position(|l| l.contains("InvokeAgent")).unwrap();
+        let child = full.iter().position(|l| l.contains("WOMBAT")).unwrap();
+        assert!(
+            header < child,
+            "the call starts before its sub-agent's: {full:?}"
+        );
+    }
+
+    /// On replay a refused edit shows its diff, which the approval drew
+    /// live, then that it was refused; a failed turn says why.
+    #[test]
+    fn a_replayed_refusal_shows_its_diff_and_a_failed_turn_its_error() {
+        let refused = Item::ToolCall {
+            id: "e1".into(),
+            tool: "Edit".into(),
+            arguments: json!({"file_path": "a.rs"}),
+            status: ToolCallStatus::Declined,
+            output: Some("User rejected this action.".into()),
+            detail: Some("Edit a.rs".into()),
+            changes: vec![FileUpdateChange {
+                path: "a.rs".into(),
+                kind: PatchChangeKind::Update { move_path: None },
+                diff: "@@ -1,1 +1,1 @@\n-old\n+new\n".into(),
+            }],
+            progress: Vec::new(),
+        };
+        let mut failed = turn(vec![stored(None, refused, None)], TurnStatus::Failed, None);
+        failed.error = Some(koda_client::protocol::turn::TurnError {
+            message: "the provider went away".into(),
+        });
+        let mut renderer = TuiRenderer::new();
+        let mut buffer = ScrollBuffer::new(256);
+        renderer.replay_turn(&failed, &mut buffer);
+        let lines = text(&buffer);
+        let at = |needle: &str| lines.iter().position(|l| l.contains(needle)).unwrap();
+        assert!(
+            at("   1 + new") < at("\u{2717} Rejected: Edit a.rs"),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("Turn failed: the provider went away"))
+        );
+        // A turn with no recorded duration says nothing of it.
+        assert!(!lines.iter().any(|l| l.contains("Worked for")), "{lines:?}");
+    }
+
+    /// A sub-agent stored without times, as before Koda recorded them, is
+    /// summed up without its time.
+    #[test]
+    fn a_sub_agent_without_times_is_summed_up_without_one() {
+        let agent = finished(
+            call("a1", "InvokeAgent", json!({"agent_name": "explore"})),
+            ToolCallStatus::Completed,
+            "ok",
+        );
+        let mut renderer = TuiRenderer::new();
+        let mut buffer = ScrollBuffer::new(256);
+        renderer.replay_turn(
+            &turn(vec![stored(None, agent, None)], TurnStatus::Completed, None),
+            &mut buffer,
+        );
+        assert!(
+            text(&buffer)
+                .iter()
+                .any(|l| l.ends_with("Done (0 tool uses)"))
+        );
     }
 
     #[test]

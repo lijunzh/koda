@@ -102,6 +102,7 @@ mod tests {
                     text: "joined".into(),
                     client_message_ids: ids.iter().map(|id| id.to_string()).collect(),
                 },
+                completed_at_ms: 0,
             },
         ))
     }

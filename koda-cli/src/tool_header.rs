@@ -30,7 +30,7 @@
 
 use crate::highlight;
 use crate::theme::{self, BOLD, DIM};
-use koda_core::tools::summary::{ToolCallKind, ToolCallSummary};
+use crate::tool_summary::{ToolCallKind, ToolCallSummary};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 
@@ -74,7 +74,7 @@ pub fn build_header_line_from_str(indent: &str, name: &str, args_json: &str) -> 
 /// (e.g. unknown tool with no string args).
 ///
 /// Implementation: parses args once into a [`ToolCallSummary`] (which
-/// owns *all* arg-key conventions, see `koda_core::tools::summary`)
+/// owns *all* arg-key conventions, see `crate::tool_summary`)
 /// and renders the styled spans by pattern-matching on the resulting
 /// [`ToolCallKind`]. Pre-#1100 each tool had its own inline
 /// `first_string(args, &[...])` lookup duplicated between here and
@@ -90,7 +90,7 @@ pub fn detail_spans(name: &str, args: &Value) -> Vec<Span<'static>> {
 // can't drift on which arg key means "the path" or "the query." If a
 // tool's display shape changes, both surfaces follow from one edit
 // here. If a new tool needs a specialized shape, add a variant in
-// `koda_core::tools::summary` and pattern-match it in BOTH renderers
+// `crate::tool_summary` and pattern-match it in BOTH renderers
 // below — the compiler will fail the missing arm and tell you about it.
 
 /// Render a [`ToolCallSummary`] as styled TUI spans.
@@ -481,7 +481,7 @@ mod tests {
     // on); their renderer-vs-dispatch agreement is pinned by
     // `path_bearing_tools_render_actual_dispatch_key` above. The full
     // structural fix landed in #1100: both renderers now consume a
-    // single `koda_core::tools::summary::ToolCallSummary` parsed once
+    // single `crate::tool_summary::ToolCallSummary` parsed once
     // from the args, so they cannot drift on which key means "the
     // path." `every_tool_call_kind_renders_in_both_surfaces` above
     // pins the consolidation.

@@ -342,6 +342,7 @@ mod tests {
                 changes: Vec::new(),
                 progress: Vec::new(),
             },
+            started_at_ms: 1_700_000_000_000,
         });
         let wire = serde_json::to_value(n.to_rpc().unwrap()).unwrap();
         assert_eq!(
@@ -357,6 +358,7 @@ mod tests {
                         "arguments": {"filePath": "a"}, "status": "inProgress",
                         "output": null, "detail": null,
                     },
+                    "startedAtMs": 1_700_000_000_000_i64,
                 },
             })
         );

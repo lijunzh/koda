@@ -122,10 +122,6 @@ pub mod shell;
 pub mod skill_tools;
 /// Sub-agent spawn tool — codex v2 peer-style (`SpawnAgent`). (#1325 Phase 5a)
 pub mod spawn_agent;
-/// Renderer-agnostic tool-call display payload (the single source of
-/// truth for "what does a tool call show?"). See [`summary`] for the
-/// drift problem this exists to solve.
-pub mod summary;
 /// Session-scoped task list tool (`TodoWrite`).
 pub mod todo;
 /// Pre-flight validation for tool calls (runs before approval).

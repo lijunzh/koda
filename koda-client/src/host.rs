@@ -83,8 +83,6 @@ pub(crate) struct HostArgs {
     pub db: Database,
     /// The client's queue of notifications and server requests.
     pub events: mpsc::UnboundedSender<Outgoing>,
-    /// Where engine events go as they are, if the client asked for them.
-    pub raw: Option<mpsc::UnboundedSender<crate::RawEvent>>,
     /// In process only: the agent every session uses, if the client built it.
     pub agent: Option<Arc<koda_core::agent::KodaAgent>>,
 }
@@ -101,7 +99,6 @@ pub(crate) fn spawn(args: HostArgs) -> (mpsc::Sender<HostCommand>, JoinHandle<()
             events: args.events,
             request_ids: Arc::new(AtomicI64::new(0)),
             open_requests: OpenRequests::default(),
-            raw: args.raw,
             agent: args.agent,
         },
         handles: HandleMap::default(),
@@ -683,7 +680,6 @@ mod tests {
             project_root: dir.path().to_path_buf(),
             db,
             events,
-            raw: None,
             agent: None,
         });
         (tx, handle, dir)

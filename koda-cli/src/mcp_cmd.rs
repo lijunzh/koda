@@ -137,7 +137,6 @@ impl McpCli {
             config_file: crate::user_config::file()?,
             project_root,
             db,
-            raw_events: false,
             client_info: ClientInfo {
                 name: "koda-mcp".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),

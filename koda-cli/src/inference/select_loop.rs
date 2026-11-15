@@ -40,10 +40,6 @@ use koda_client::protocol::methods;
 use koda_client::protocol::session::SessionCompactStartParams;
 use koda_client::protocol::turn::{ImageInput, TurnStartParams, TurnSteerParams};
 use koda_core::trust;
-use ratatui::{
-    style::{Color, Style},
-    text::{Line, Span},
-};
 use tokio::sync::mpsc;
 
 /// Outcome of one inner-loop `tokio::select!` poll inside `run_inference_turn`.
@@ -136,7 +132,8 @@ impl TuiContext {
                 koda_client::protocol::session::SessionUnsubscribeParams { session_id: left },
             )
             .await;
-        let opened = crate::tui_context::open_host_session(
+        // Its earlier turns were drawn when `/resume` chose it.
+        let (opened, _) = crate::tui_context::open_host_session(
             &self.client,
             Some(self.session.id.clone()),
             self.session.db.clone(),
@@ -433,13 +430,8 @@ impl TuiContext {
                 .map(|error| error.message.clone())
         };
         if let Some(error) = failed {
-            self.scroll_buffer.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(
-                    format!("\u{2717} Turn failed: {error}"),
-                    Style::default().fg(Color::Red),
-                ),
-            ]));
+            self.scroll_buffer
+                .push(crate::tui_render::turn_failed_line(&error));
         }
 
         // The turn's end, as Codex's TUI marks it: how long it worked.

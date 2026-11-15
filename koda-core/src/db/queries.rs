@@ -9,9 +9,7 @@ use anyhow::Result;
 use std::path::Path;
 
 use super::{Database, MessageRow, SessionEventRow, SessionInfoRow};
-use crate::persistence::{
-    InterruptionKind, Message, Persistence, Role, SessionEvent, SessionInfo, SessionUsage,
-};
+use crate::persistence::{Message, Persistence, Role, SessionEvent, SessionInfo, SessionUsage};
 
 // ── Private helpers ─────────────────────────────────────────────────────────
 
@@ -421,35 +419,6 @@ pub(crate) fn dedupe_tool_results_by_call_id(messages: &mut Vec<Message>) {
             .get(call_id)
             .is_none_or(|&max_id| msg.id == max_id)
     });
-}
-
-// ── Interrupted turn detection (#594) ─────────────────────────────────────
-
-/// Inspect the tail of a message history to detect an interrupted turn.
-///
-/// Returns `None` when the conversation ended cleanly (last meaningful
-/// message is an assistant response). Returns `Some(kind)` when the
-/// user’s prompt was never answered or a tool result was never processed.
-///
-/// System messages are skipped — they’re injected by the engine and
-/// don’t reflect user or model activity.
-pub fn detect_interruption(messages: &[Message]) -> Option<InterruptionKind> {
-    let last = messages.iter().rev().find(|m| m.role != Role::System)?;
-
-    match last.role {
-        Role::User => {
-            let preview = last
-                .content
-                .as_deref()
-                .unwrap_or("")
-                .chars()
-                .take(80)
-                .collect::<String>();
-            Some(InterruptionKind::Prompt(preview))
-        }
-        Role::Tool => Some(InterruptionKind::Tool),
-        _ => None,
-    }
 }
 
 // ── Persistence trait ───────────────────────────────────────────────────────────────
