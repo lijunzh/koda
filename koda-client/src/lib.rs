@@ -143,6 +143,32 @@ impl InProcessClient {
     /// settings earlier versions kept in the database move into the file
     /// first, once.
     pub async fn start(args: StartArgs) -> Result<Self, RequestError> {
+        // The check may start a process, so it runs off the async threads.
+        let sandbox = tokio::task::spawn_blocking(settings::probe_sandbox)
+            .await
+            .unwrap_or_else(|e| koda_protocol::state::SandboxState {
+                backend: "none".to_string(),
+                available: false,
+                reason: Some(format!("the sandbox check failed: {e}")),
+                setup_hint: None,
+            });
+        Self::start_on(args, sandbox).await
+    }
+
+    /// [`Self::start`] on a machine whose sandbox is `sandbox`, for tests
+    /// of the mode rules: a host with no sandbox refuses Auto.
+    #[doc(hidden)]
+    pub async fn start_with_sandbox(
+        args: StartArgs,
+        sandbox: koda_protocol::state::SandboxState,
+    ) -> Result<Self, RequestError> {
+        Self::start_on(args, sandbox).await
+    }
+
+    async fn start_on(
+        args: StartArgs,
+        sandbox: koda_protocol::state::SandboxState,
+    ) -> Result<Self, RequestError> {
         let db = Database::init(&args.home)
             .await
             .map_err(|e| RequestError::Database(format!("{e:#}")))?;
@@ -166,6 +192,7 @@ impl InProcessClient {
             config_warnings,
             project_root: args.project_root,
             db,
+            sandbox,
             events: events_tx,
         });
         let mut client = Self {

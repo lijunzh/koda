@@ -26,7 +26,8 @@ koda exec "your prompt here"
 ```
 
 ## Environment
-- **Koda version + sandbox state:** <!-- output of `koda --version` (one line, includes sandbox availability) -->
+- **Koda version:** <!-- output of `koda --version` -->
+- **Sandbox state:** <!-- 🛡 sandboxed or ⚠ unsandboxed in the TUI status bar; a `/feedback` report records it too -->
 - **OS:** <!-- e.g., macOS 15.2 arm64, Ubuntu 24.04, Windows 11 -->
 - **Provider/model:** <!-- e.g., anthropic / claude-haiku-5-5 -->
 - **Mode:** <!-- safe / auto (Plan is sub-agent-only, not selectable at top level) -->

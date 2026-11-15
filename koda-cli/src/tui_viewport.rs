@@ -12,7 +12,7 @@ use crate::widgets::status_bar::StatusBar;
 
 use crate::composer::textarea::TextArea;
 use anyhow::Result;
-use koda_core::trust::TrustMode;
+use koda_client::protocol::state::TrustMode;
 use ratatui::{
     Terminal, TerminalOptions, Viewport,
     backend::CrosstermBackend,
@@ -30,6 +30,8 @@ pub(crate) fn draw_viewport(
     textarea: &TextArea,
     model: &str,
     mode: TrustMode,
+    // Whether the host has a sandbox, from `state/read`.
+    sandbox_available: bool,
     context_left: u32,
     state: TuiState,
     prompt_mode: &PromptMode,
@@ -265,13 +267,12 @@ pub(crate) fn draw_viewport(
     // shows it; static info doesn't earn its keep in the persistent
     // footer. `project_root` is still threaded through `draw_viewport`
     // because `render_history` uses it to resolve hyperlink paths.
-    let mut sb = StatusBar::new(model, mode.label(), context_left)
-        // #860 visibility companion: surface kernel sandbox state next
-        // to the trust badge so users on unsandboxed systems can see
+    let mut sb = StatusBar::new(model, crate::mode::label(mode), context_left)
+        // #860 visibility companion: surface the host's sandbox state
+        // next to the trust badge so users on unsandboxed systems can see
         // at a glance why Auto refuses (and why Safe is their only
-        // top-level option there). `is_available()` is cached after
-        // first probe so this is a cheap function call per draw.
-        .with_sandbox_status(Some(koda_core::sandbox::is_available()));
+        // top-level option there).
+        .with_sandbox_status(Some(sandbox_available));
     if elapsed_secs > 0 {
         sb = sb.with_elapsed(elapsed_secs);
     }

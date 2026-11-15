@@ -94,6 +94,7 @@ http = "1"
 
 # Sandbox runtime — kernel-level FS/net/exec policies (#934)
 koda-config = { path = "../koda-config", version = "0.6.4" }
+koda-protocol = { path = "../koda-protocol", version = "0.6.4" }
 koda-sandbox = { path = "../koda-sandbox", version = "0.6.4" }
 
 # Async trait support

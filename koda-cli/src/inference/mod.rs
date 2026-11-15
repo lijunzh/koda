@@ -99,16 +99,11 @@ impl TurnStop {
 
     /// Send the mode Shift+Tab chose during the turn; the host applies it
     /// once the turn has ended. Not waited for.
-    pub(crate) fn set_mode(&self, mode: koda_core::trust::TrustMode) {
-        use koda_client::protocol::state::TrustMode as P;
+    pub(crate) fn set_mode(&self, mode: koda_client::protocol::state::TrustMode) {
         let requests = self.requests.clone();
         let params = koda_client::protocol::session::SessionSettingsUpdateParams {
             session_id: self.session_id.clone(),
-            mode: Some(match mode {
-                koda_core::trust::TrustMode::Plan => P::Plan,
-                koda_core::trust::TrustMode::Safe => P::Safe,
-                koda_core::trust::TrustMode::Auto => P::Auto,
-            }),
+            mode: Some(mode),
             ..Default::default()
         };
         tokio::spawn(async move {

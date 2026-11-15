@@ -212,12 +212,8 @@ impl TrustMode {
 }
 
 /// What the model reads in place of a tool's result when Plan refuses the
-/// call. It says why and what to do instead, and nothing about switching
-/// modes: a headless run can't, and an interactive session never sits in
-/// Plan.
-pub const PLAN_BLOCKED_MESSAGE: &str = "[plan mode] Not run: this session is read-only, so \
-     only tools that read are allowed. Don't retry it or try another way to make the change; \
-     say in your answer what you would do instead.";
+/// call: the protocol's [`koda_protocol::item::PLAN_BLOCKED_MESSAGE`].
+pub use koda_protocol::item::PLAN_BLOCKED_MESSAGE;
 
 /// Coerce a candidate trust mode to one valid for the **top-level**
 /// session, returning `(coerced, warning)`.

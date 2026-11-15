@@ -54,4 +54,8 @@ pub struct SandboxState {
     /// Why not, when it doesn't.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// What to do about it, when it doesn't: how to install or enable the
+    /// backend, or to use Safe mode. For a person, a few lines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_hint: Option<String>,
 }

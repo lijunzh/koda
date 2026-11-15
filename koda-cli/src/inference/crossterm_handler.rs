@@ -27,8 +27,8 @@ use super::TurnCommand;
 use crossterm::event::{Event, KeyCode, KeyModifiers};
 use koda_client::protocol::item::{ApprovalDecision, ToolCallApprovalResponse, UserInputResponse};
 use koda_client::protocol::rpc::RequestId;
+use koda_client::protocol::state::{SandboxState, TrustMode};
 use koda_client::protocol::turn::{LoopCapDecision, LoopCapResponse};
-use koda_core::trust::{self, TrustMode};
 use ratatui::{
     style::{Color, Style},
     text::{Line, Span},
@@ -51,7 +51,7 @@ pub(super) async fn handle_crossterm_event_inline(
     prompt_mode: &mut PromptMode,
     pending_approval_id: &mut Option<RequestId>,
     textarea: &mut crate::composer::textarea::TextArea,
-    shared_mode: &koda_core::trust::SharedTrustMode,
+    mode: (&mut TrustMode, &SandboxState),
     completer: &mut crate::completer::InputCompleter,
     history: &mut Vec<String>,
     history_idx: &mut Option<usize>,
@@ -99,7 +99,7 @@ pub(super) async fn handle_crossterm_event_inline(
                 prompt_mode,
                 pending_approval_id,
                 textarea,
-                shared_mode,
+                mode,
                 completer,
                 history,
                 history_idx,
@@ -125,7 +125,7 @@ async fn handle_inference_key_inline(
     prompt_mode: &mut PromptMode,
     pending_approval_id: &mut Option<RequestId>,
     textarea: &mut crate::composer::textarea::TextArea,
-    shared_mode: &koda_core::trust::SharedTrustMode,
+    mode: (&mut TrustMode, &SandboxState),
     completer: &mut crate::completer::InputCompleter,
     history: &mut Vec<String>,
     history_idx: &mut Option<usize>,
@@ -178,14 +178,15 @@ async fn handle_inference_key_inline(
                 // state visible; the warn-level log line here aids
                 // debugging when users wonder why pressing 'a' didn't
                 // persist.
-                if let Err(msg) = trust::set_trust_checked(
-                    shared_mode,
-                    TrustMode::Auto,
-                    koda_core::sandbox::is_available(),
-                ) {
-                    tracing::warn!(
+                match crate::mode::allow(TrustMode::Auto, mode.1) {
+                    // The host applies it once this turn ends.
+                    Ok(auto) => {
+                        *mode.0 = auto;
+                        stop.set_mode(auto);
+                    }
+                    Err(msg) => tracing::warn!(
                         "Approve+Always pressed but Auto refused: {msg} \u{2014} approving one-shot only"
-                    );
+                    ),
                 }
                 Some(ApprovalDecision::Approve)
             }
@@ -373,10 +374,13 @@ async fn handle_inference_key_inline(
             // Sandbox-aware cycle (#860 hard refusal). Keep the user
             // in the current mode and surface a visible warning if
             // Auto isn't safe to enter on this system.
-            match trust::cycle_trust_checked(shared_mode, koda_core::sandbox::is_available()) {
+            match crate::mode::next(*mode.0, mode.1) {
                 // The host applies it once this turn ends, as Codex's
                 // settings update does.
-                Ok(mode) => stop.set_mode(mode),
+                Ok(next) => {
+                    *mode.0 = next;
+                    stop.set_mode(next);
+                }
                 Err(msg) => {
                     scroll_buffer.push(Line::styled(
                         format!("\u{26a0} {msg}"),

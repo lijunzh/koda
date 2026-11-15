@@ -39,7 +39,6 @@ use koda_client::protocol::item::{Item, ToolCallStatus};
 use koda_client::protocol::methods;
 use koda_client::protocol::session::SessionCompactStartParams;
 use koda_client::protocol::turn::{ImageInput, TurnStartParams, TurnSteerParams};
-use koda_core::trust;
 use tokio::sync::mpsc;
 
 /// Outcome of one inner-loop `tokio::select!` poll inside `run_inference_turn`.
@@ -316,7 +315,7 @@ impl TuiContext {
                     let hist_viewport = (self.history_area_height as usize).max(1);
                     self.scroll_buffer.clamp_offset(term_w, hist_viewport);
 
-                    let mode = trust::read_trust(&self.shared_mode);
+                    let mode = self.mode;
                     let ctx = self.context_left;
                     let mcp_info = self.mcp.status_bar();
                     // #1210: the overlay above the status bar shows what
@@ -333,6 +332,7 @@ impl TuiContext {
                             &self.textarea,
                             &self.config.model,
                             mode,
+                            self.sandbox.available,
                             ctx,
                             self.tui_state,
                             &self.prompt_mode,
@@ -367,7 +367,7 @@ impl TuiContext {
                         &mut self.prompt_mode,
                         &mut self.pending_approval_id,
                         &mut self.textarea,
-                        &self.shared_mode,
+                        (&mut self.mode, &self.sandbox),
                         &mut self.completer,
                         &mut self.history,
                         &mut self.history_idx,

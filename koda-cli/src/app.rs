@@ -230,31 +230,6 @@ Run `koda` in a terminal, or `koda exec --json <prompt>` from a script.
 See https://lijunzh.github.io/koda/acp.html";
 
 pub(crate) async fn run() -> Result<()> {
-    // Intercept --version / -V before clap so we can append the
-    // platform sandbox state to the version line. clap's derive
-    // version handling only supports a static string, but we want
-    // bug filers to see whether their kernel sandbox is available
-    // (the most common variable affecting trust-mode behavior).
-    // This replaces the dedicated `koda doctor` subcommand removed
-    // in #1259-followup — same bug-report-aid value, no extra
-    // command for users to remember.
-    //
-    // Only matches the bare flag: `koda --version` / `koda -V`. We
-    // don't scan all positions to avoid colliding with prompts that
-    // happen to contain the literal token (e.g. `koda "what is the
-    // --version flag?"`).
-    let raw: Vec<String> = std::env::args().collect();
-    if raw.len() == 2 && (raw[1] == "--version" || raw[1] == "-V") {
-        let report = koda_core::sandbox::dependency_report();
-        let sandbox = if report.available {
-            format!("sandbox: available [{}]", report.backend)
-        } else {
-            format!("sandbox: UNAVAILABLE [{}]", report.backend)
-        };
-        println!("koda {} ({sandbox})", env!("CARGO_PKG_VERSION"));
-        return Ok(());
-    }
-
     let mut cli = Cli::parse();
     crate::user_config::set_overrides(cli.config.clone());
 
@@ -486,39 +461,14 @@ fn check_typed_reasoning(
     Ok(())
 }
 
-/// Parse the `--mode` CLI flag and coerce to a top-level-valid trust
-/// mode, emitting a warning to stderr if Plan was requested.
-///
-/// **#1244**: this is the single CLI-side coercion point. The
-/// `with_trust(...)` call sites in this file used to call
-/// `TrustMode::parse(&cli.mode).unwrap_or_default()` directly, which
-/// silently let `--mode plan` through to the top-level session —
-/// where Plan is sub-agent-only and just makes every write tool fail.
-/// Funneling them through here ensures the rule lives in one
-/// place (DRY) and the warning is consistent across headless and
-/// TUI launch modes.
-///
-/// **#860 / Auto-requires-sandbox**: after the Plan coercion, also
-/// validate that Auto isn't requested on a system without kernel
-/// sandbox support. The check is a hard fail (process exits 1)
-/// rather than a silent coerce because:
-///   - Headless: `koda exec --mode auto "..."` silently becoming Safe
-///     would `RejectAuto` every mutation and abort the task halfway.
-///   - Interactive: explicit user intent should never be silently
-///     reinterpreted (Zen of Python: errors should never pass
-///     silently). The error message is enriched with a
-///     platform-specific install hint via
-///     [`koda_core::sandbox::setup_hint`] so users see the exact fix
-///     (e.g. `apt install bubblewrap`) right at the failure site —
-///     no extra subcommand to remember (#1259 follow-up).
-///
-/// A headless run (`headless`) keeps Plan: `koda exec --mode plan "..."` is
-/// a run that may only read, with every write refused, as `codex exec`'s
-/// read-only sandbox and the plan modes of Claude Code, Gemini CLI and Qwen
-/// Code allow. There it isn't a trap, since nobody is waiting to approve
-/// a write anyway. Asked for by flag in an interactive session, Plan is
-/// refused outright rather than turned into Safe: the person typed it, and
-/// can fix the command.
+/// The `--mode` asked for, as the config the host starts sessions from.
+/// The host enforces the rules whichever client asks (Auto needs the
+/// sandbox, with the setup hint in its refusal; a session a person answers
+/// runs in Safe rather than Plan). Only the flag itself is checked here:
+/// asked for in an interactive session, Plan is refused outright rather
+/// than turned into Safe, since the person typed it and can fix the
+/// command. A headless run keeps Plan: `koda exec --mode plan "..."` may
+/// only read, as `codex exec`'s read-only sandbox allows.
 fn parse_top_level_trust_mode(cli_mode: &str, headless: bool) -> koda_core::trust::TrustMode {
     let parsed = koda_core::trust::TrustMode::parse(cli_mode).unwrap_or_default();
     if parsed == koda_core::trust::TrustMode::Plan && !headless {
@@ -528,31 +478,7 @@ fn parse_top_level_trust_mode(cli_mode: &str, headless: bool) -> koda_core::trus
         );
         std::process::exit(1);
     }
-    let (mode, warning) = if headless {
-        (parsed, None)
-    } else {
-        koda_core::trust::coerce_for_top_level(parsed)
-    };
-    if let Some(w) = warning {
-        eprintln!("warning: {w}");
-    }
-    let report = koda_core::sandbox::dependency_report();
-    match koda_core::trust::require_sandbox_for_auto(mode, report.available) {
-        Ok(m) => m,
-        Err(msg) => {
-            eprintln!("error: {msg}");
-            // Inline the platform-specific install hint so the user
-            // doesn't need a second command (the old `koda doctor`)
-            // to learn what to type next. Hint comes from
-            // `koda-core::sandbox::setup_hint` so it stays DRY with
-            // the docs and the bug-report template guidance.
-            eprintln!(
-                "\nSetup:\n{}",
-                koda_core::sandbox::setup_hint(report.backend)
-            );
-            std::process::exit(1);
-        }
-    }
+    parsed
 }
 
 /// `koda exec`'s run: its prompt, from the argument or stdin, and output.

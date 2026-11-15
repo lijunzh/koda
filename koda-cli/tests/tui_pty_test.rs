@@ -954,6 +954,36 @@ async fn a_resumed_session_shows_and_keeps_its_history() {
     assert!(sent.contains("and now?"), "{sent}");
 }
 
+/// Shift+Tab switches Safe to Auto through the host, which records it with
+/// the session; on a machine without a sandbox the host's setup hint is
+/// shown instead and the mode stays Safe.
+#[tokio::test(flavor = "multi_thread")]
+async fn shift_tab_switches_the_mode_through_the_host() {
+    use koda_core::session_store::SessionStore;
+    let server = scripted_model(vec![final_text()]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    tui.wait_for_screen("SAFE");
+    tui.type_text("\x1b[Z");
+    tui.wait_for_screen_that(
+        |screen| screen.contains("AUTO") || screen.contains("Auto mode requires"),
+        "show Auto, or why it isn't available",
+    );
+    let switched = tui.screen().contains("AUTO");
+    tui.submit("hello");
+    tui.wait_for_screen("All done.");
+    let session = quit_and_read_session_id(&mut tui);
+    let db = koda_core::db::Database::init(&home.path().join(".config/koda"))
+        .await
+        .unwrap();
+    let stored = db.get_session_mode(&session).await.unwrap();
+    if switched {
+        assert_eq!(stored.as_deref(), Some("auto"));
+    } else {
+        assert_ne!(stored.as_deref(), Some("auto"));
+    }
+}
+
 /// A session resumed by an id prefix opens in the mode it last ran in, as
 /// the host reports it, and `/copy` copies its earlier reply: the TUI keeps
 /// the replies it was sent, as Codex's `/copy` does, and reads no database.

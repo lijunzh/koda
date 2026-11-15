@@ -41,16 +41,6 @@ fn host_error(error: koda_client::RequestError) -> anyhow::Error {
     }
 }
 
-/// The protocol's name for a trust mode.
-fn protocol_mode(mode: koda_core::trust::TrustMode) -> koda_client::protocol::state::TrustMode {
-    use koda_client::protocol::state::TrustMode as P;
-    match mode {
-        koda_core::trust::TrustMode::Plan => P::Plan,
-        koda_core::trust::TrustMode::Safe => P::Safe,
-        koda_core::trust::TrustMode::Auto => P::Auto,
-    }
-}
-
 impl TuiContext {
     /// Ask the host to change the session's model and/or take the TUI's
     /// mode, then mirror what it reports. Returns the alias the model is
@@ -62,8 +52,7 @@ impl TuiContext {
         send_mode: bool,
         show_warnings: bool,
     ) -> anyhow::Result<Option<String>> {
-        let mode =
-            send_mode.then(|| protocol_mode(koda_core::trust::read_trust(&self.shared_mode)));
+        let mode = send_mode.then_some(self.mode);
         self.client
             .request::<methods::SessionSettingsUpdate>(SessionSettingsUpdateParams {
                 session_id: self.session.id.clone(),
@@ -107,12 +96,14 @@ impl TuiContext {
     /// Mirror the host's settings into the TUI's own config.
     async fn adopt(&mut self, settings: SessionSettings) {
         mirror(&mut self.config, &settings);
+        // The host's word on the mode: it may have changed what was asked.
+        self.mode = settings.mode;
         self.renderer.model = settings.model;
         self.refresh_model_names().await;
     }
 
-    /// After opening a session: give the host the TUI's mode, which it has
-    /// checked against the sandbox, and mirror the session's settings,
+    /// After opening a session: give the host the TUI's mode, which the
+    /// host checks against its rules, and mirror the session's settings,
     /// which a resumed session brings back from its last run. The host's
     /// warnings are shown when `show_warnings`; at startup the banner has
     /// said the same.
@@ -276,20 +267,20 @@ impl Named {
     }
 }
 
-/// Give a just-opened session the TUI's `mode`, which it has checked
-/// against the sandbox, and return what the session runs with, with any
+/// Give a just-opened session the TUI's `mode`, which the host checks
+/// against its rules, and return what the session runs with, with any
 /// warnings the host sent meanwhile (an assumed context window, say).
 pub(crate) async fn fetch_settings(
     client: &mut koda_client::InProcessClient,
     session_id: &str,
-    mode: koda_core::trust::TrustMode,
+    mode: koda_client::protocol::state::TrustMode,
 ) -> anyhow::Result<(SessionSettings, Vec<String>)> {
     client
         .request::<methods::SessionSettingsUpdate>(SessionSettingsUpdateParams {
             session_id: session_id.to_string(),
             model: None,
             effort: None,
-            mode: Some(protocol_mode(mode)),
+            mode: Some(mode),
         })
         .await
         .map_err(host_error)?;
