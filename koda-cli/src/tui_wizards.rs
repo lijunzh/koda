@@ -84,27 +84,15 @@ pub(crate) fn handle_diff(buffer: &mut ScrollBuffer) {
 
 // ── API key management (/key) ─────────────────────────
 
-/// Key providers to show in /key, with their env var names.
-const KEY_PROVIDERS: &[(&str, &str)] = &[
-    ("Anthropic", "ANTHROPIC_API_KEY"),
-    ("OpenAI", "OPENAI_API_KEY"),
-    ("Google Gemini", "GEMINI_API_KEY"),
-    ("Groq", "GROQ_API_KEY"),
-    ("Grok (xAI)", "XAI_API_KEY"),
-    ("DeepSeek", "DEEPSEEK_API_KEY"),
-    ("Mistral", "MISTRAL_API_KEY"),
-    ("MiniMax", "MINIMAX_API_KEY"),
-    ("OpenRouter", "OPENROUTER_API_KEY"),
-    ("Together", "TOGETHER_API_KEY"),
-    ("Fireworks", "FIREWORKS_API_KEY"),
-];
-
-pub(crate) fn handle_keys(buffer: &mut ScrollBuffer) {
+/// `/key`'s table: each provider that takes a key, its variable, and
+/// whether the host has a key for it (`modelProvider/list`).
+pub(crate) fn handle_keys(buffer: &mut ScrollBuffer, providers: &crate::providers::Providers) {
     tui_output::emit_line(buffer, Line::styled("  \u{1f511} API Keys", BOLD));
     tui_output::blank(buffer);
 
-    for (name, env_var) in KEY_PROVIDERS {
-        let is_set = koda_config::runtime_env::is_set(env_var);
+    for provider in providers.all().iter().filter(|p| p.requires_api_key) {
+        let (name, env_var) = (&provider.name, &provider.env_key);
+        let is_set = provider.has_api_key;
         let status = if is_set {
             Span::styled("\u{2714} set", tui_output::GREEN)
         } else {

@@ -191,6 +191,24 @@ impl Host {
                             koda_protocol::ServerNotification::ConfigWarning(warning),
                         ));
                     }
+                    // A Claude model Anthropic has released that this Koda
+                    // doesn't support yet, said once, when the Models API
+                    // answers (it needs a key; without one, nothing).
+                    let events = self.context.events.clone();
+                    tokio::spawn(async move {
+                        if let Some(ids) = koda_core::model_alias::ensure_live_claude_ids().await {
+                            for message in koda_core::model_alias::new_model_notices(ids) {
+                                let _ = events.send(Outgoing::Notification(
+                                    koda_protocol::ServerNotification::Warning(
+                                        koda_protocol::server::WarningNotification {
+                                            session_id: None,
+                                            message,
+                                        },
+                                    ),
+                                ));
+                            }
+                        }
+                    });
                 }
                 return;
             }

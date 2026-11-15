@@ -59,7 +59,10 @@ pub enum MenuContent {
     /// Provider picker dropdown (`/provider` with no args).
     Provider(ProviderDropdown),
     /// Provider model list — second step of `/provider` (pick provider → list its models).
-    ProviderModels(ModelDropdown, koda_core::config::ProviderType),
+    ProviderModels(
+        ModelDropdown,
+        koda_client::protocol::model::ModelProviderSummary,
+    ),
     /// Key management — pick a provider to set its API key (`/key`).
     Key(ProviderDropdown),
     /// Session picker dropdown (`/resume` with no args).
@@ -151,17 +154,14 @@ pub(crate) enum ProviderWizard {
     },
     /// Step 1: provider selected, now need API key (or URL for local providers).
     ApiKey {
-        provider_type: koda_core::config::ProviderType,
-        base_url: String,
-        env_name: String,
+        provider: koda_client::protocol::model::ModelProviderSummary,
     },
     /// Key-only mode from `/key` — set key and return, no model list.
     ApiKeyOnly {
-        provider_type: koda_core::config::ProviderType,
-        env_name: String,
+        provider: koda_client::protocol::model::ModelProviderSummary,
     },
     /// Step 1 (local): provider selected, now need URL.
     Url {
-        provider_type: koda_core::config::ProviderType,
+        provider: koda_client::protocol::model::ModelProviderSummary,
     },
 }

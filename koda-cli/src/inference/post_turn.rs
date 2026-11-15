@@ -51,8 +51,7 @@ impl TuiContext {
         // the meter and the next turns use it. Not saved:
         // the server may be restarted with another size.
         if let Some(tokens) = self.learned_context_window.take() {
-            self.config.max_context_tokens = tokens;
-            self.config.model_settings.max_context_tokens = tokens;
+            self.settings.context_window = tokens as u64;
         }
     }
 }

@@ -4,7 +4,6 @@
 //! into the scroll buffer during `TuiContext::new()`.
 
 use crate::tui_output::{DIM, WARM_ACCENT, WARM_INFO, WARM_MUTED, WARM_TITLE};
-use koda_core::config::KodaConfig;
 use ratatui::{
     style::{Color, Style},
     text::{Line, Span},
@@ -55,17 +54,22 @@ pub fn build_banner_lines(model: &str, provider: &str, cwd: &str) -> Vec<Line<'s
     ]
 }
 
-/// Collect all startup lines (banner + warnings + notices).
-pub fn collect_startup_lines(config: &KodaConfig) -> Vec<Line<'static>> {
+/// Collect all startup lines (banner + warnings + notices), for the
+/// session's settings as the host reports them.
+pub fn collect_startup_lines(
+    settings: &koda_client::protocol::session::SessionSettings,
+    providers: &crate::providers::Providers,
+) -> Vec<Line<'static>> {
     let cwd = pretty_cwd();
-    let mut lines = build_banner_lines(&config.model, &config.provider_type.to_string(), &cwd);
+    let provider = providers.name(&settings.model_provider).to_string();
+    let mut lines = build_banner_lines(&settings.model, &settings.model_provider, &cwd);
 
     // Model warnings
-    if config.model == "(no model loaded)" {
+    if settings.model == "(no model loaded)" {
         lines.push(Line::from(vec![
             Span::styled("  \u{26a0} ", Style::new().fg(Color::Yellow)),
             Span::styled(
-                format!("No model loaded in {}.", config.provider_type),
+                format!("No model loaded in {provider}."),
                 Style::new().fg(Color::Yellow),
             ),
         ]));
@@ -73,14 +77,11 @@ pub fn collect_startup_lines(config: &KodaConfig) -> Vec<Line<'static>> {
             "  Load a model, then use /model to select it.",
             DIM,
         ));
-    } else if config.model == "(connection failed)" {
+    } else if settings.model == "(connection failed)" {
         lines.push(Line::from(vec![
             Span::styled("  \u{2717} ", Style::new().fg(Color::Red)),
             Span::styled(
-                format!(
-                    "Could not connect to {} at {}",
-                    config.provider_type, config.base_url
-                ),
+                format!("Could not connect to {provider} at {}", settings.base_url),
                 Style::new().fg(Color::Red),
             ),
         ]));

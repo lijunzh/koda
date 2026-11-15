@@ -4,34 +4,32 @@
 
 use super::settings::ModelScope;
 use super::*;
+use koda_client::protocol::model::ModelProviderSummary;
 
 /// Where `/feedback` sends a report about a problem, as Codex's TUI links
 /// its CLI bug template.
 const FEEDBACK_ISSUE_URL: &str =
     "https://github.com/lijunzh/koda/issues/new?template=bug_report.md";
 
-/// Available providers for the interactive picker.
-///
-/// Tuple: `(internal_key, display_name)`. Descriptions like "Local, no API key"
-/// are derived from `ProviderType::requires_api_key()` at render time.
-pub(crate) const PROVIDERS: &[(&str, &str)] = &[
-    ("lmstudio", "LM Studio"),
-    ("ollama", "Ollama"),
-    ("llamacpp", "llama.cpp"),
-    ("openai", "OpenAI"),
-    ("anthropic", "Anthropic"),
-    ("deepseek", "DeepSeek"),
-    ("gemini", "Google Gemini"),
-    ("groq", "Groq"),
-    ("grok", "Grok (xAI)"),
-    ("mistral", "Mistral"),
-    ("minimax", "MiniMax"),
-    ("openrouter", "OpenRouter"),
-    ("together", "Together"),
-    ("fireworks", "Fireworks"),
-    ("vllm", "vLLM"),
-];
-
+/// The provider picker's items, from the host's providers: with
+/// `keys_only`, the ones that take a key, each saying whether it has one
+/// (`/key`).
+pub(crate) fn provider_items(
+    providers: &crate::providers::Providers,
+    keys_only: bool,
+) -> Vec<crate::widgets::provider_menu::ProviderItem> {
+    providers
+        .all()
+        .iter()
+        .filter(|p| !keys_only || p.requires_api_key)
+        .map(|p| crate::widgets::provider_menu::ProviderItem {
+            key: p.id.clone(),
+            name: p.name.clone(),
+            local: !p.requires_api_key,
+            key_set: keys_only && p.has_api_key,
+        })
+        .collect()
+}
 /// Whether a `/provider` argument is an endpoint URL rather than a provider
 /// name. A URL sets `base_url` and the provider type is re-detected from it.
 pub(crate) fn is_provider_url(arg: &str) -> bool {
@@ -91,16 +89,19 @@ impl TuiContext {
     /// model is a new session (`/provider`). Enter makes the pick the
     /// default too; `s` changes only this session, as in Codex.
     pub(crate) async fn open_model_picker(&mut self) {
-        let ptype = self.config.provider_type;
-        let models = self.list_models(ptype, &self.config.base_url.clone()).await;
+        let provider = self.settings.model_provider.clone();
+        let models = self
+            .list_models(&provider, &self.settings.base_url.clone())
+            .await;
+        let name = self.providers.name(&provider).to_string();
         if models.is_empty() {
             crate::tui_output::warn_msg(
                 &mut self.scroll_buffer,
-                format!("{} lists no models. Is it running?", ptype.display_name()),
+                format!("{name} lists no models. Is it running?"),
             );
             return;
         }
-        let items = model_items(&models, ptype, &self.config.model);
+        let items = model_items(&models, &name, &self.settings.model);
         let mut dd = crate::widgets::dropdown::DropdownState::new(
             items,
             "\u{1f43b} Select a model (/provider for another provider)",
@@ -117,43 +118,18 @@ impl TuiContext {
     }
 
     pub(crate) fn open_provider_picker(&mut self) {
-        let providers = PROVIDERS;
-        let items: Vec<crate::widgets::provider_menu::ProviderItem> = providers
-            .iter()
-            .map(|(key, name)| {
-                let ptype = koda_core::config::ProviderType::from_url_or_name("", Some(key));
-                crate::widgets::provider_menu::ProviderItem {
-                    key,
-                    name,
-                    local: !ptype.requires_api_key(),
-                    key_set: false,
-                }
-            })
-            .collect();
+        let items = provider_items(&self.providers, false);
         let dd = crate::widgets::dropdown::DropdownState::new(items, "\u{1f43b} Select a provider");
         self.menu = MenuContent::Provider(dd);
     }
 
+    /// `/key`: the providers that take a key, whether the host has one for
+    /// each, and a picker to set one.
     pub(crate) async fn open_key_picker(&mut self) {
-        // Only show cloud providers (ones that need API keys)
-        let providers = PROVIDERS;
-        let items: Vec<crate::widgets::provider_menu::ProviderItem> = providers
-            .iter()
-            .filter(|&&(name, _)| {
-                let ptype = koda_core::config::ProviderType::from_url_or_name("", Some(name));
-                ptype.requires_api_key()
-            })
-            .map(|&(key, name)| {
-                let ptype = koda_core::config::ProviderType::from_url_or_name("", Some(key));
-                let has_key = koda_config::runtime_env::is_set(ptype.env_key_name());
-                crate::widgets::provider_menu::ProviderItem {
-                    key,
-                    name,
-                    local: false,
-                    key_set: has_key,
-                }
-            })
-            .collect();
+        // Asked again: a key may have been set elsewhere meanwhile.
+        self.providers = crate::providers::Providers::fetch(&self.client).await;
+        crate::tui_wizards::handle_keys(&mut self.scroll_buffer, &self.providers);
+        let items = provider_items(&self.providers, true);
         let dd = crate::widgets::dropdown::DropdownState::new(items, "\u{1f511} Set API key for");
         self.menu = MenuContent::Key(dd);
     }
@@ -285,70 +261,67 @@ impl TuiContext {
         }
     }
 
+    /// `/provider <name>`: a provider that takes a key asks for it (Enter
+    /// keeps one already set); a local one asks for its address.
     pub(crate) fn start_provider_wizard(&mut self, name: &str) {
-        let ptype = koda_core::config::ProviderType::from_url_or_name("", Some(name));
-        let base_url = ptype.default_base_url().to_string();
-        let provider_name = ptype.to_string();
-
-        if ptype.requires_api_key() {
-            let env_name = ptype.env_key_name().to_string();
-            let has_key = koda_config::runtime_env::is_set(&env_name);
-            let label = if has_key {
-                format!("API key for {} (Enter to keep current)", ptype)
+        let Some(provider) = self.providers.find(name).cloned() else {
+            let known: Vec<&str> = self.providers.all().iter().map(|p| p.id.as_str()).collect();
+            crate::tui_output::err_msg(
+                &mut self.scroll_buffer,
+                format!("No provider '{name}'. Koda offers: {}.", known.join(", ")),
+            );
+            return;
+        };
+        self.menu = MenuContent::WizardTrail(vec![("Provider".into(), provider.id.clone())]);
+        self.textarea.set_text_clearing_elements("");
+        if provider.requires_api_key {
+            let label = if provider.has_api_key {
+                format!("API key for {} (Enter to keep current)", provider.id)
             } else {
-                format!("API key for {}", ptype)
+                format!("API key for {}", provider.id)
             };
-            self.menu = MenuContent::WizardTrail(vec![("Provider".into(), provider_name)]);
             // PR 6 of #1178: API key entry is the one masked wizard
             // path. The textarea renders `*` chars instead of the
             // actual keystrokes so over-the-shoulder onlookers and
             // screen recordings don't capture the secret.
             self.prompt_mode = PromptMode::WizardInput { label, mask: true };
-            self.provider_wizard = Some(ProviderWizard::ApiKey {
-                provider_type: ptype,
-                base_url,
-                env_name,
-            });
-            self.textarea.set_text_clearing_elements("");
+            self.provider_wizard = Some(ProviderWizard::ApiKey { provider });
         } else {
-            self.menu = MenuContent::WizardTrail(vec![("Provider".into(), provider_name)]);
             self.prompt_mode = PromptMode::WizardInput {
-                label: format!("{} URL", ptype),
+                label: format!("{} URL", provider.id),
                 mask: false,
             };
-            self.provider_wizard = Some(ProviderWizard::Url {
-                provider_type: ptype,
-            });
-            self.textarea.set_text_clearing_elements("");
-            self.textarea.insert_str(&base_url);
+            self.textarea.insert_str(&provider.base_url);
+            self.provider_wizard = Some(ProviderWizard::Url { provider });
         }
     }
 
-    /// Where to reach `ptype`: the address Koda is running with when that's
-    /// the provider in use (`--base-url`, or one saved earlier), else the
-    /// provider's default. Always taking the default listed and switched to
-    /// the default port's server, not the one the user pointed Koda at.
-    fn base_url_for(&self, ptype: koda_core::config::ProviderType) -> String {
-        if ptype == self.config.provider_type {
-            self.config.base_url.clone()
+    /// Where to reach `provider`: the address the session runs with when
+    /// it's the session's provider (`--base-url`, or one saved earlier),
+    /// else the provider's default. Always taking the default listed and
+    /// switched to the default port's server, not the one the user pointed
+    /// Koda at.
+    fn base_url_for(&self, provider: &ModelProviderSummary) -> String {
+        if provider.id == self.settings.model_provider {
+            self.settings.base_url.clone()
         } else {
-            ptype.default_base_url().to_string()
+            provider.base_url.clone()
         }
     }
 
     /// List a provider's models (`model/list`) to pick one from.
-    async fn open_provider_model_list(&mut self, ptype: koda_core::config::ProviderType) {
-        let base_url = self.base_url_for(ptype);
-        let models = self.list_models(ptype, &base_url).await;
+    async fn open_provider_model_list(&mut self, provider: ModelProviderSummary) {
+        let base_url = self.base_url_for(&provider);
+        let models = self.list_models(&provider.id, &base_url).await;
         if models.is_empty() {
             self.scroll_buffer.push(Line::styled(
-                format!("  \u{26a0} No models available from {ptype}"),
+                format!("  \u{26a0} No models available from {}", provider.id),
                 Style::default().fg(Color::Yellow),
             ));
             return;
         }
-        let items = model_items(&models, ptype, &self.config.model);
-        let title = format!("\u{1f43b} {} models", ptype.display_name());
+        let items = model_items(&models, &provider.name, &self.settings.model);
+        let title = format!("\u{1f43b} {} models", provider.name);
         let mut dd = crate::widgets::dropdown::DropdownState::new(items, &title);
         if let Some(idx) = dd.filtered.iter().position(|m| m.is_current) {
             dd.selected = idx;
@@ -357,7 +330,7 @@ impl TuiContext {
                 dd.scroll_offset = idx + 1 - max_vis;
             }
         }
-        self.menu = MenuContent::ProviderModels(dd, ptype);
+        self.menu = MenuContent::ProviderModels(dd, provider);
     }
 
     /// The `/resume` picker.
@@ -600,42 +573,37 @@ impl TuiContext {
                 }
             }
             MenuContent::Provider(dd) => {
-                if let Some(item) = dd.selected_item() {
-                    let key = item.key;
-                    let ptype = koda_core::config::ProviderType::from_url_or_name("", Some(key));
-
-                    if ptype.requires_api_key()
-                        && !koda_config::runtime_env::is_set(ptype.env_key_name())
-                    {
+                let picked = dd
+                    .selected_item()
+                    .and_then(|item| self.providers.find(&item.key))
+                    .cloned();
+                if let Some(provider) = picked {
+                    if provider.requires_api_key && !provider.has_api_key {
                         // Need API key first — enter wizard
-                        self.start_provider_wizard(key);
+                        self.start_provider_wizard(&provider.id);
                     } else {
                         // Key is set (or not needed) — list models from this provider
-                        self.open_provider_model_list(ptype).await;
+                        self.open_provider_model_list(provider).await;
                     }
                 }
                 return;
             }
             MenuContent::Key(dd) => {
-                if let Some(item) = dd.selected_item() {
-                    let ptype =
-                        koda_core::config::ProviderType::from_url_or_name("", Some(item.key));
-                    let env_name = ptype.env_key_name().to_string();
-                    let provider_name = ptype.to_string();
-                    let has_key = koda_config::runtime_env::is_set(&env_name);
-                    let label = if has_key {
-                        format!("API key for {} (Enter to keep current)", provider_name)
+                let picked = dd
+                    .selected_item()
+                    .and_then(|item| self.providers.find(&item.key))
+                    .cloned();
+                if let Some(provider) = picked {
+                    let label = if provider.has_api_key {
+                        format!("API key for {} (Enter to keep current)", provider.id)
                     } else {
-                        format!("API key for {}", provider_name)
+                        format!("API key for {}", provider.id)
                     };
-                    self.menu = MenuContent::WizardTrail(vec![("Key".into(), provider_name)]);
+                    self.menu = MenuContent::WizardTrail(vec![("Key".into(), provider.id.clone())]);
                     // PR 6 of #1178: second API-key entry path (re-enter
                     // an existing key from the /key picker). Also masked.
                     self.prompt_mode = PromptMode::WizardInput { label, mask: true };
-                    self.provider_wizard = Some(ProviderWizard::ApiKeyOnly {
-                        provider_type: ptype,
-                        env_name,
-                    });
+                    self.provider_wizard = Some(ProviderWizard::ApiKeyOnly { provider });
                     self.textarea.set_text_clearing_elements("");
                 }
                 return;
@@ -682,12 +650,13 @@ impl TuiContext {
                     }
                 }
             }
-            MenuContent::ProviderModels(dd, ptype) => {
+            MenuContent::ProviderModels(dd, provider) => {
                 if let Some(item) = dd.selected_item() {
                     let choice = item.label.clone();
-                    let ptype = *ptype;
-                    let base_url = self.base_url_for(ptype);
-                    self.switch_provider(ptype, base_url, Some(choice)).await;
+                    let provider = provider.clone();
+                    let base_url = self.base_url_for(&provider);
+                    self.switch_provider(Some(&provider), Some(base_url), Some(choice))
+                        .await;
                 }
             }
             MenuContent::File { dropdown, prefix } => {
@@ -710,21 +679,17 @@ impl TuiContext {
 
     // ── Wizard submit ──────────────────────────────────────────
 
-    /// Store `ptype`'s key through the host, which also makes it this run's,
-    /// and say so with the key masked. Returns whether it was stored.
-    async fn store_key(
-        &mut self,
-        ptype: koda_core::config::ProviderType,
-        env_name: &str,
-        value: &str,
-    ) -> bool {
-        match super::settings::set_api_key(&self.client, ptype, value).await {
+    /// Store `provider`'s key through the host, which also makes it this
+    /// run's, and say so with the key masked. Returns whether it was stored.
+    async fn store_key(&mut self, provider: &ModelProviderSummary, value: &str) -> bool {
+        match super::settings::set_api_key(&self.client, &provider.id, value).await {
             Ok(()) => {
-                let masked = koda_core::keystore::mask_key(value);
                 self.scroll_buffer.push(Line::styled(
-                    format!("  \u{2714} {env_name} set to {masked}"),
+                    format!("  \u{2714} {} set to {}", provider.env_key, mask_key(value)),
                     Style::default().fg(Color::Green),
                 ));
+                // Whether a provider has a key is the host's to say.
+                self.providers = crate::providers::Providers::fetch(&self.client).await;
                 true
             }
             Err(e) => {
@@ -750,12 +715,8 @@ impl TuiContext {
                         .await;
                     return;
                 }
-                ProviderWizard::ApiKey {
-                    provider_type,
-                    base_url,
-                    env_name,
-                } => {
-                    if value.is_empty() && !koda_config::runtime_env::is_set(&env_name) {
+                ProviderWizard::ApiKey { provider } => {
+                    if value.is_empty() && !provider.has_api_key {
                         self.scroll_buffer.push(Line::styled(
                             "  \u{2716} No API key provided.",
                             Style::default().fg(Color::Red),
@@ -764,35 +725,33 @@ impl TuiContext {
                         self.menu = MenuContent::None;
                         return;
                     }
-                    if !value.is_empty() && !self.store_key(provider_type, &env_name, &value).await
-                    {
+                    if !value.is_empty() && !self.store_key(&provider, &value).await {
                         self.prompt_mode = PromptMode::Chat;
                         self.menu = MenuContent::None;
                         return;
                     }
-                    self.switch_provider(provider_type, base_url, None).await;
+                    let base_url = provider.base_url.clone();
+                    self.switch_provider(Some(&provider), Some(base_url), None)
+                        .await;
                 }
-                ProviderWizard::ApiKeyOnly {
-                    provider_type,
-                    env_name,
-                } => {
-                    if value.is_empty() && !koda_config::runtime_env::is_set(&env_name) {
+                ProviderWizard::ApiKeyOnly { provider } => {
+                    if value.is_empty() && !provider.has_api_key {
                         self.scroll_buffer.push(Line::styled(
                             "  \u{2716} No API key provided.",
                             Style::default().fg(Color::Red),
                         ));
                     } else if !value.is_empty() {
-                        self.store_key(provider_type, &env_name, &value).await;
+                        self.store_key(&provider, &value).await;
                     }
                     // Key-only mode: just return to chat, no provider switch
                 }
-                ProviderWizard::Url { provider_type } => {
+                ProviderWizard::Url { provider } => {
                     let url = if value.is_empty() {
-                        provider_type.default_base_url().to_string()
+                        provider.base_url.clone()
                     } else {
                         value
                     };
-                    self.switch_provider(provider_type, url, None).await;
+                    self.switch_provider(Some(&provider), Some(url), None).await;
                 }
             }
         }
@@ -801,10 +760,11 @@ impl TuiContext {
     }
 }
 
-/// Picker items for `models`: an alias by its name, a model by its id.
+/// Picker items for `models`, of the provider named `provider`: an alias
+/// by its name, a model by its id.
 fn model_items(
     models: &[koda_client::protocol::model::Model],
-    ptype: koda_core::config::ProviderType,
+    provider: &str,
     current: &str,
 ) -> Vec<crate::widgets::model_menu::ModelItem> {
     models
@@ -812,15 +772,35 @@ fn model_items(
         .map(|m| crate::widgets::model_menu::ModelItem {
             label: m.alias.clone().unwrap_or_else(|| m.id.clone()),
             model_id: m.id.clone(),
-            provider: ptype.display_name().to_string(),
+            provider: provider.to_string(),
             is_current: m.id == current,
         })
         .collect()
 }
 
+/// A key shown as it was stored: its first and last four characters, or
+/// `****` for a short one. Only what was typed is shown, so the TUI does
+/// this itself.
+fn mask_key(key: &str) -> String {
+    let chars: Vec<char> = key.chars().collect();
+    if chars.len() > 8 {
+        let head: String = chars[..4].iter().collect();
+        let tail: String = chars[chars.len() - 4..].iter().collect();
+        format!("{head}...{tail}")
+    } else {
+        "****".to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{history_search_matches, is_provider_url};
+    use super::{history_search_matches, is_provider_url, mask_key};
+
+    #[test]
+    fn a_stored_key_is_shown_masked() {
+        assert_eq!(mask_key("sk-ant-api03-longkey1234"), "sk-a...1234");
+        assert_eq!(mask_key("short"), "****");
+    }
 
     fn hist(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()

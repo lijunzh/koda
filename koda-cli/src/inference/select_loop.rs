@@ -330,7 +330,7 @@ impl TuiContext {
                         draw_viewport(
                             f,
                             &self.textarea,
-                            &self.config.model,
+                            &self.settings.model,
                             mode,
                             self.sandbox.available,
                             ctx,
@@ -490,7 +490,7 @@ impl TuiContext {
         // A window the host learned, as after an overflow; adopted once the
         // turn has ended.
         let window = window as usize;
-        if window != self.config.max_context_tokens {
+        if window != self.settings.context_window as usize {
             self.learned_context_window = Some(window);
         }
     }

@@ -1631,9 +1631,26 @@ async fn models_and_providers_are_listed() {
     let lm = providers.data.iter().find(|p| p.id == "lm-studio").unwrap();
     assert_eq!(lm.name, "LM Studio");
     assert!(!lm.requires_api_key);
-    assert!(providers.data.iter().any(|p| p.id == "anthropic"));
+    // Where each provider's key comes from, as Codex's `env_key`.
+    let anthropic = providers.data.iter().find(|p| p.id == "anthropic").unwrap();
+    assert_eq!(anthropic.env_key, "ANTHROPIC_API_KEY");
+    assert!(anthropic.requires_api_key);
     let raw = serde_json::to_string(&providers).unwrap();
     assert!(!raw.contains("sk-"), "a key leaked: {raw}");
+
+    // An endpoint alone names its provider, as `koda --base-url` does. The
+    // `.invalid` name never resolves, so nothing is reached.
+    let by_address = koda
+        .client
+        .request::<methods::SessionStart>(SessionStartParams {
+            base_url: Some("https://api.deepseek.com.invalid/v1".to_string()),
+            model: Some("stub".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .session;
+    assert_eq!(by_address.provider.as_deref(), Some("deepseek"));
     koda.client.shutdown().await;
 }
 

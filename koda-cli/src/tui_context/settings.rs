@@ -11,12 +11,13 @@
 use std::time::Duration;
 
 use koda_client::events::Outgoing;
+use koda_client::protocol::model::ModelProviderSummary;
 use koda_client::protocol::model::{Model, ModelListParams};
 use koda_client::protocol::session::{
     SessionSettings, SessionSettingsUpdateParams, SessionStartParams, SessionUnsubscribeParams,
 };
 use koda_client::protocol::{ServerNotification, methods};
-use koda_core::config::{KodaConfig, ProviderType};
+use koda_core::config::KodaConfig;
 
 use super::{TuiContext, TuiSession};
 
@@ -95,10 +96,10 @@ impl TuiContext {
 
     /// Mirror the host's settings into the TUI's own config.
     async fn adopt(&mut self, settings: SessionSettings) {
-        mirror(&mut self.config, &settings);
         // The host's word on the mode: it may have changed what was asked.
         self.mode = settings.mode;
-        self.renderer.model = settings.model;
+        self.renderer.model = settings.model.clone();
+        self.settings = settings;
         self.refresh_model_names().await;
     }
 
@@ -132,11 +133,11 @@ impl TuiContext {
         {
             Ok(alias) => {
                 if scope == ModelScope::Default {
-                    save_choice(&self.client, &self.config, alias.as_deref()).await;
+                    save_choice(&self.client, &self.settings, &self.providers).await;
                 }
                 let shown = match &alias {
-                    Some(alias) => format!("{alias} ({})", self.config.model),
-                    None => self.config.model.clone(),
+                    Some(alias) => format!("{alias} ({})", self.settings.model),
+                    None => self.settings.model.clone(),
                 };
                 let scope = match scope {
                     ModelScope::Default => "default",
@@ -157,11 +158,11 @@ impl TuiContext {
         }
     }
 
-    /// `model/list` for `ptype` at `base_url`.
-    pub(crate) async fn list_models(&self, ptype: ProviderType, base_url: &str) -> Vec<Model> {
+    /// `model/list` for provider `provider` at `base_url`.
+    pub(crate) async fn list_models(&self, provider: &str, base_url: &str) -> Vec<Model> {
         self.client
             .request::<methods::ModelList>(ModelListParams {
-                model_provider: Some(ptype.to_string()),
+                model_provider: Some(provider.to_string()),
                 base_url: Some(base_url.to_string()),
             })
             .await
@@ -174,38 +175,44 @@ impl TuiContext {
     /// as switching provider means in Codex. Without a model, a local server
     /// gets the one it has loaded (its first listed) and a cloud provider
     /// its default.
+    ///
+    /// Without `provider`, the host takes it from `base_url`, as
+    /// `koda --base-url` does (`/provider <url>`).
     pub(crate) async fn switch_provider(
         &mut self,
-        ptype: ProviderType,
-        base_url: String,
+        provider: Option<&ModelProviderSummary>,
+        base_url: Option<String>,
         model: Option<String>,
     ) {
-        let same = ptype == self.config.provider_type && base_url == self.config.base_url;
-        if same {
+        let same = provider.is_none_or(|p| p.id == self.settings.model_provider)
+            && base_url
+                .as_deref()
+                .is_none_or(|url| url == self.settings.base_url);
+        if same && provider.is_some() {
             match model {
                 Some(model) => self.change_model(&model, ModelScope::Default).await,
                 None => crate::tui_output::dim_msg(
                     &mut self.scroll_buffer,
-                    format!("Already on {ptype}."),
+                    format!("Already on {}.", self.settings.model_provider),
                 ),
             }
             return;
         }
-        let model = match model {
-            Some(model) => Some(model),
-            None if !ptype.requires_api_key() => self
-                .list_models(ptype, &base_url)
+        let model = match (model, provider) {
+            (Some(model), _) => Some(model),
+            (None, Some(p)) if !p.requires_api_key => self
+                .list_models(&p.id, base_url.as_deref().unwrap_or(&p.base_url))
                 .await
                 .into_iter()
                 .find(|m| m.alias.is_none())
                 .map(|m| m.id),
-            None => None,
+            (None, _) => None,
         };
         let started = self
             .client
             .request::<methods::SessionStart>(SessionStartParams {
-                model_provider: Some(ptype.to_string()),
-                base_url: Some(base_url),
+                model_provider: provider.map(|p| p.id.clone()),
+                base_url,
                 model,
                 ..Default::default()
             })
@@ -233,14 +240,14 @@ impl TuiContext {
         if let Err(e) = self.sync_settings(true).await {
             crate::tui_output::warn_msg(&mut self.scroll_buffer, format!("{e:#}"));
         }
-        let alias = koda_core::model_alias::following_alias(&self.config.model);
-        save_choice(&self.client, &self.config, alias).await;
+        // Saved by the alias the host says it follows, if any.
+        save_choice(&self.client, &self.settings, &self.providers).await;
         crate::tui_output::ok_msg(
             &mut self.scroll_buffer,
             format!(
                 "New session on {} ({}). The one you left is in /resume.",
-                self.config.provider_type.display_name(),
-                self.config.model
+                self.providers.name(&self.settings.model_provider),
+                self.settings.model
             ),
         );
     }
@@ -307,27 +314,16 @@ pub(crate) async fn fetch_settings(
     }
 }
 
-/// Copy the host's settings into the TUI's config, which the status bar,
-/// the banner and the completer read.
-pub(crate) fn mirror(config: &mut KodaConfig, settings: &SessionSettings) {
-    let window = settings.context_window as usize;
-    config.provider_type = ProviderType::from_url_or_name("", Some(&settings.model_provider));
-    config.base_url = settings.base_url.clone();
-    config.model = settings.model.clone();
-    config.model_settings.model = settings.model.clone();
-    config.max_context_tokens = window;
-    config.model_settings.max_context_tokens = window;
-}
-
-/// Save `config`'s provider and model as the choice a new session starts
-/// from (`config/batchWrite` into config.toml); the model by `alias` when
-/// it was chosen by one, so it follows its line. The endpoint is saved as
-/// the provider's `[model_providers.<id>] base_url` when it isn't the
-/// provider's default, and removed when it is, so the file stays short.
+/// Save the session's provider and model as the choice a new session
+/// starts from (`config/batchWrite` into config.toml); the model by the
+/// alias it follows, when the host says it follows one, so it follows its
+/// line. The endpoint is saved as the provider's
+/// `[model_providers.<id>] base_url` when it isn't the provider's default,
+/// and removed when it is, so the file stays short.
 pub(crate) async fn save_choice(
     client: &koda_client::InProcessClient,
-    config: &KodaConfig,
-    alias: Option<&str>,
+    settings: &SessionSettings,
+    providers: &crate::providers::Providers,
 ) {
     use koda_client::protocol::config::{ConfigBatchWriteParams, ConfigEdit, MergeStrategy};
     use serde_json::Value;
@@ -336,21 +332,20 @@ pub(crate) async fn save_choice(
         value,
         merge_strategy: MergeStrategy::Replace,
     };
-    let ptype = config.provider_type;
-    let endpoint = if config.base_url == ptype.default_base_url() {
+    let id = &settings.model_provider;
+    let default = providers.find(id).map(|p| p.base_url.as_str());
+    let endpoint = if default == Some(settings.base_url.as_str()) {
         Value::Null
     } else {
-        Value::String(config.base_url.clone())
+        Value::String(settings.base_url.clone())
     };
+    let model = settings.alias.as_deref().unwrap_or(&settings.model);
     let saved = client
         .request::<methods::ConfigBatchWrite>(ConfigBatchWriteParams {
             edits: vec![
-                edit("model_provider".into(), Value::String(ptype.to_string())),
-                edit(format!("model_providers.{ptype}.base_url"), endpoint),
-                edit(
-                    "model".into(),
-                    Value::String(alias.unwrap_or(&config.model).to_string()),
-                ),
+                edit("model_provider".into(), Value::String(id.clone())),
+                edit(format!("model_providers.{id}.base_url"), endpoint),
+                edit("model".into(), Value::String(model.to_string())),
             ],
             expected_version: None,
         })
@@ -360,17 +355,18 @@ pub(crate) async fn save_choice(
     }
 }
 
-/// Store `ptype`'s API key through the host (`modelProvider/apiKey/set`),
-/// which also makes it the one this run uses. Returns the host's error.
+/// Store provider `provider`'s API key through the host
+/// (`modelProvider/apiKey/set`), which also makes it the one this run uses.
+/// Returns the host's error.
 pub(crate) async fn set_api_key(
     client: &koda_client::InProcessClient,
-    ptype: ProviderType,
+    provider: &str,
     key: &str,
 ) -> anyhow::Result<()> {
     use koda_client::protocol::config::ModelProviderApiKeySetParams;
     client
         .request::<methods::ModelProviderApiKeySet>(ModelProviderApiKeySetParams {
-            provider_id: ptype.to_string(),
+            provider_id: provider.to_string(),
             api_key: key.to_string(),
         })
         .await

@@ -102,8 +102,10 @@ pub(crate) struct TuiContext {
     pub paste_burst: crate::composer::paste_burst::PasteBurst,
 
     // ── Session state (shared references) ────────────────────
-    /// What the session runs with, mirrored from the host.
-    pub config: KodaConfig,
+    /// What the session runs with, as the host reports it.
+    pub settings: koda_client::protocol::session::SessionSettings,
+    /// The host's providers, for `/provider` and `/key`.
+    pub providers: crate::providers::Providers,
     pub session: TuiSession,
     /// Koda's host, in process: it runs the session's turns.
     pub client: koda_client::InProcessClient,
@@ -304,7 +306,7 @@ impl TuiContext {
     /// onboarding, and everything that `run()` used to do before `loop {`.
     pub async fn new(
         project_root: PathBuf,
-        mut config: KodaConfig,
+        config: KodaConfig,
         overrides: ProviderOverrides,
         resume: Option<String>,
         version_check: tokio::task::JoinHandle<Option<String>>,
@@ -363,11 +365,12 @@ impl TuiContext {
         // choice, a resumed session's own, or the flags. The TUI mirrors it.
         let (session_settings, host_warnings) =
             settings::fetch_settings(&mut client, &session.id, initial_mode).await?;
-        settings::mirror(&mut config, &session_settings);
+        let providers = crate::providers::Providers::fetch(&client).await;
         // Flags are for this run only, as Codex's are: only `/model` and
         // `/provider` save a choice into config.toml.
 
-        let mut startup_lines = crate::startup::collect_startup_lines(&config);
+        let mut startup_lines =
+            crate::startup::collect_startup_lines(&session_settings, &providers);
         for warning in host_warnings {
             startup_lines.push(crate::startup::warning_line(warning));
         }
@@ -382,19 +385,6 @@ impl TuiContext {
             && let Some((current, latest)) = koda_core::version::update_available(&latest)
         {
             startup_lines.extend(crate::startup::update_notice_lines(current, &latest));
-        }
-        // A model Anthropic has released that this Koda doesn't support yet,
-        // at every start until Koda is updated for it.
-        if let Some(ids) = koda_core::model_alias::ensure_live_claude_ids().await {
-            for notice in koda_core::model_alias::new_model_notices(ids) {
-                startup_lines.push(crate::startup::warning_line(notice));
-            }
-            // A model pinned by id while its line has moved on.
-            if config.provider_type == koda_core::config::ProviderType::Anthropic
-                && let Some(notice) = koda_core::model_alias::pinned_older_notice(&config.model)
-            {
-                startup_lines.push(crate::startup::warning_line(notice));
-            }
         }
 
         // Terminal + textarea
@@ -418,7 +408,7 @@ impl TuiContext {
         textarea.set_keymap_bindings(&RuntimeKeymap::defaults());
 
         let mut renderer = TuiRenderer::new();
-        renderer.model = config.model.clone();
+        renderer.model = session_settings.model.clone();
 
         let completer = crate::completer::InputCompleter::new(project_root.clone());
 
@@ -426,19 +416,7 @@ impl TuiContext {
         if first_run {
             // Onboarding: auto-open provider dropdown
             // (emit_above happens after terminal is created below)
-            let providers = menus::PROVIDERS;
-            let items: Vec<crate::widgets::provider_menu::ProviderItem> = providers
-                .iter()
-                .map(|(key, name)| {
-                    let ptype = koda_core::config::ProviderType::from_url_or_name("", Some(key));
-                    crate::widgets::provider_menu::ProviderItem {
-                        key,
-                        name,
-                        local: !ptype.requires_api_key(),
-                        key_set: false,
-                    }
-                })
-                .collect();
+            let items = menus::provider_items(&providers, false);
             menu = MenuContent::Provider(crate::widgets::dropdown::DropdownState::new(
                 items,
                 "\u{1f43b} Choose your LLM provider",
@@ -482,7 +460,8 @@ impl TuiContext {
             history_area_y: 0,
             history_area_height: 0,
             paste_burst: crate::composer::paste_burst::PasteBurst::default(),
-            config,
+            settings: session_settings,
+            providers,
             host_session: session.id.clone(),
             session,
             client,
@@ -503,7 +482,10 @@ impl TuiContext {
     /// provider: the host's list, aliases and ids, as `/model` offers them.
     pub(crate) async fn refresh_model_names(&mut self) {
         let models = self
-            .list_models(self.config.provider_type, &self.config.base_url.clone())
+            .list_models(
+                &self.settings.model_provider.clone(),
+                &self.settings.base_url.clone(),
+            )
             .await;
         let mut names: Vec<String> = Vec::new();
         for model in models {
@@ -542,7 +524,7 @@ impl TuiContext {
         let menu = &self.menu;
         let scroll_buffer = &self.scroll_buffer;
         let textarea = &self.textarea;
-        let config = &self.config;
+        let settings = &self.settings;
         let selection = self.mouse_selection.as_ref();
         let mcp_info = self.mcp.status_bar();
         let project_root = self.project_root.clone();
@@ -557,7 +539,7 @@ impl TuiContext {
             history_rect = Some(draw_viewport(
                 f,
                 textarea,
-                &config.model,
+                &settings.model,
                 mode,
                 self.sandbox.available,
                 ctx,
@@ -665,6 +647,16 @@ impl TuiContext {
                 // turn drops them when it starts.
                 Some(message) = self.client.next_event() => {
                     self.mcp.observe(&self.session.id, &message);
+                    // A warning about no session, such as a Claude model
+                    // this Koda doesn't support yet, which the host says
+                    // once the Models API has answered.
+                    if let koda_client::events::Outgoing::Notification(
+                        koda_client::protocol::ServerNotification::Warning(w),
+                    ) = message
+                        && w.session_id.is_none()
+                    {
+                        crate::tui_output::warn_msg(&mut self.scroll_buffer, w.message);
+                    }
                 }
                 // #1354: bg-activity overlay self-perpetuating tick.
                 // `TuiContext::draw()` calls `schedule_frame_in(1 s)`
@@ -736,24 +728,11 @@ impl TuiContext {
         if let Some(arg) = input.trim().strip_prefix("/provider ") {
             let arg = arg.trim();
             if menus::is_provider_url(arg) {
-                // A URL is the endpoint itself: re-detect the provider type
-                // from it and save the choice, like a name picked from the
-                // wizard.
-                let ptype = koda_core::config::ProviderType::from_url_or_name(arg, None);
-                if ptype.requires_api_key()
-                    && !koda_config::runtime_env::is_set(ptype.env_key_name())
-                {
-                    self.scroll_buffer.push(Line::styled(
-                        format!(
-                            "  \u{2716} {} not set. Run /key to configure.",
-                            ptype.env_key_name()
-                        ),
-                        Style::default().fg(Color::Red),
-                    ));
-                } else {
-                    self.switch_provider(ptype, arg.trim_end_matches('/').to_string(), None)
-                        .await;
-                }
+                // A URL is the endpoint itself: the host tells the provider
+                // from it, as `koda --base-url` does, and the choice is saved
+                // like a name picked from the wizard.
+                self.switch_provider(None, Some(arg.trim_end_matches('/').to_string()), None)
+                    .await;
             } else {
                 self.start_provider_wizard(arg);
             }
@@ -781,7 +760,6 @@ impl TuiContext {
         let action = tui_commands::handle_slash_command(
             &mut self.scroll_buffer,
             input,
-            &mut self.config,
             &mut self.session,
             (&mut self.mode, &self.sandbox),
             &mut self.renderer,
@@ -830,7 +808,7 @@ impl TuiContext {
         // Fullscreen mode: no terminal reinit needed.
         // Just refresh completer state and model name.
         self.refresh_model_names().await;
-        self.renderer.model = self.config.model.clone();
+        self.renderer.model = self.settings.model.clone();
     }
 
     async fn prepare_inference_start(&mut self, input: &str) -> CommandOutcome {

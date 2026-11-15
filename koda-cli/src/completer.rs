@@ -110,12 +110,11 @@ impl InputCompleter {
 
         if token_key != self.token {
             self.token = token_key;
-            // Complete against alias names + cached provider model names
-            let alias_names = koda_core::model_alias::alias_names();
-            self.matches = alias_names
+            // The session's provider's aliases and model ids, from
+            // `model/list`: another provider's model is a new session.
+            self.matches = self
+                .model_names
                 .iter()
-                .map(|s| s.to_string())
-                .chain(self.model_names.iter().cloned())
                 .filter(|name| name.contains(partial) && name.as_str() != partial)
                 .map(|name| format!("/model {name}"))
                 .collect();
@@ -512,7 +511,7 @@ mod tests {
     fn test_model_no_names_returns_none() {
         let tmp = tempdir().unwrap();
         let mut c = InputCompleter::new(tmp.path().to_path_buf());
-        // No provider model names set; "gpt" matches no aliases (we only have gemini/claude)
+        // No model names from the host yet: nothing to complete.
         assert!(c.complete("/model gpt").is_none());
     }
 
@@ -520,7 +519,7 @@ mod tests {
     fn test_model_no_match_returns_none() {
         let tmp = tempdir().unwrap();
         let mut c = InputCompleter::new(tmp.path().to_path_buf());
-        // "zzz" matches no aliases or model names
+        // "zzz" matches no model names
         assert!(c.complete("/model zzz").is_none());
     }
 
@@ -528,9 +527,14 @@ mod tests {
     fn test_model_substring_match() {
         let tmp = tempdir().unwrap();
         let mut c = InputCompleter::new(tmp.path().to_path_buf());
-        c.set_model_names(vec!["claude-sonnet-5".into(), "claude-opus-5".into()]);
+        c.set_model_names(vec![
+            "claude-opus".into(),
+            "claude-sonnet-5".into(),
+            "claude-opus-5".into(),
+        ]);
         let result = c.complete("/model opus");
-        // "opus" matches both the alias "claude-opus" and "claude-opus-5" from model_names
+        // "opus" matches the alias "claude-opus" and the id "claude-opus-5",
+        // both from `model/list`
         assert!(result.is_some());
         let text = result.unwrap();
         assert!(text.contains("opus"), "got: {text}");

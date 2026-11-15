@@ -15,7 +15,6 @@ use crate::tui_render::TuiRenderer;
 use koda_client::protocol::state::{SandboxState, TrustMode};
 
 use crate::tui_context::TuiSession;
-use koda_core::config::KodaConfig;
 use ratatui::text::{Line, Span};
 
 pub enum SlashAction {
@@ -40,7 +39,6 @@ use tui_output::{BOLD, CYAN, DIM};
 pub async fn handle_slash_command(
     buffer: &mut ScrollBuffer,
     input: &str,
-    config: &mut KodaConfig,
     session: &mut TuiSession,
     mode: (&mut TrustMode, &SandboxState),
     renderer: &mut TuiRenderer,
@@ -170,7 +168,7 @@ pub async fn handle_slash_command(
         }
 
         "/key" | "/keys" => {
-            crate::tui_wizards::handle_keys(buffer);
+            // The key picker prints the providers' key table first.
             SlashAction::OpenKeyMenu
         }
 
