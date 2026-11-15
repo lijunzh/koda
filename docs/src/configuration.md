@@ -71,6 +71,7 @@ Every key, in Codex's names where Codex has one:
 | `[model_providers.<id>]` | Per provider: `base_url`, `request_max_retries`, `stream_max_retries`, `stream_idle_timeout_ms` (0 turns the limit off) |
 | `[mcp_servers.<name>]` | An MCP server every new session starts |
 | `[tui] syntax_highlight` | `false` shows code and diffs without colour. Read by the TUI from its own machine's file |
+| `log_dir` | Also write the log to `<log_dir>/koda.log`, at `RUST_LOG`'s level, as Codex's `log_dir` does; relative to `~/.config/koda/`. Unset, the log database is the only log (see [Debugging a run](./debugging.md#the-log)) |
 | `[sandbox] allow_local_binding` | `true` lets sandboxed commands on macOS use any local port (see [Sandbox](./sandbox.md#when-a-command-needs-to-leave-the-sandbox)) |
 
 **`-c key=value` overrides a key for one run,** as Codex's `-c` does, and is
@@ -129,8 +130,8 @@ Everything lives in `~/.config/koda/`:
 |------|---------|
 | `config.toml` | Your settings: the model choice, provider endpoints, MCP servers (see [The config file](#the-config-file)) |
 | `db/koda.db` | SQLite — sessions, messages, API keys |
+| `db/logs_1.db` | SQLite — the log, by session, read with `koda-logs` (see [Debugging a run](./debugging.md#the-log)) |
 | `history.jsonl` | What you typed in the TUI, for ↑ / ↓: the newest 500 entries, one JSON object per line, readable by you only |
-| `logs/koda-<pid>.log` | Tracing log, one per process; `logs/latest` links to the newest (see [Debugging a run](./debugging.md)) |
 | `agents/` | Global custom agent JSON definitions |
 | `skills/` | Global custom skill markdown files |
 | `AGENTS.md` | Your instructions for every project (sent with every request) |

@@ -15,11 +15,34 @@ you set that variable.
 
 | Artifact | Where | What it holds |
 |---|---|---|
-| Log | `<config>/logs/koda-<pid>.log` | One file per process. `latest` in the same folder is a symlink to the newest (Unix only). Startup keeps the 50 newest and deletes the rest. |
-| Panic log | `<config>/logs/panic.log` | Crash records from every process. See [Troubleshooting](./troubleshooting.md). |
+| Log database | `<config>/db/logs_1.db` | Every line Koda logs, filed under the session it was logged in; `koda-logs` reads it (below). A crash is an `ERROR` line from `koda_cli::panic` with its backtrace. |
+| Log file | `<log_dir>/koda.log` | Only when `config.toml` sets `log_dir`, as Codex's log file: every line at `RUST_LOG`'s level, appended run after run. |
 | Database | `<config>/db/koda.db` | Every message of every session, with token usage. |
 | Debug bundle | `<config>/debug-bundles/*.zip` | Written by [`/debug-bundle`](./commands.md#debug-bundle) in the TUI. |
 | Headless output | stdout | The protocol with `koda exec --json`, ending with the run summary, `exec/summary`. |
+
+### The log
+
+Koda logs to a SQLite database of its own, as Codex does, and every line
+carries the session it was logged in. Lines outside any session (startup, the
+TUI) belong to their process. `koda-logs` reads it, oldest first:
+
+```sh
+koda-logs --session <id>                 # one session's lines
+koda-logs --session <id> --sessionless   # with startup and the TUI's
+koda-logs --level warn --since 2h        # warnings and errors, last two hours
+koda-logs --search "model call" --follow # and new ones as they come
+```
+
+`--backfill N` sets how many of the newest matching lines print first
+(200 by default); `--target koda_core::compact` keeps one module's.
+
+The database keeps, as Codex's does, a session's newest 1,000 lines and
+10 MiB, ten days of lines, and 64 MiB in all. It records every level down to
+`TRACE`, except request bodies. For a complete record of a long run, set
+`log_dir` in `config.toml` (or `-c log_dir=…` for one run): Koda then also
+appends every line, at `RUST_LOG`'s level, to `<log_dir>/koda.log`. A relative
+`log_dir` is under `<config>`.
 
 ### The database
 
@@ -66,19 +89,20 @@ the log. A turn stopped by the loop guard or the iteration cap reports
 
 ## The log lines
 
-Each line is a timestamp, a level, a target and a message, then `name=value`
-fields:
+Each line is a timestamp, a level, a target, the spans it was logged in (the
+session, the turn) and a message, then `name=value` fields. `koda-logs` prints
+the target first; the log file prints the spans first, as `tracing` does:
 
 ```text
-2026-11-01T12:19:14.608345Z  INFO koda_core::inference_helpers: model call purpose="turn" system_hash="7d3978775a2b4855" tools_hash="21353a598ffba47b" provider="openai-compat" model="stub" messages=2 estimated_tokens=9058 context_tokens=1000 first_chunk_ms=2 elapsed_ms=2 prompt_tokens=1000 completion_tokens=10 cache_read_tokens=0 thinking_tokens=0 stop_reason=tool_calls failed_stop=false tool_calls=1 text_chars=0
+2026-11-01T12:19:14.608345Z  INFO koda_core::inference_helpers: session{session_id=3f2a…}:turn{session_id=3f2a… turn_id=9b1c…}: model call purpose="turn" system_hash="7d3978775a2b4855" tools_hash="21353a598ffba47b" provider="openai-compat" model="stub" messages=2 estimated_tokens=9058 context_tokens=1000 first_chunk_ms=2 elapsed_ms=2 prompt_tokens=1000 completion_tokens=10 cache_read_tokens=0 thinking_tokens=0 stop_reason=tool_calls failed_stop=false tool_calls=1 text_chars=0
 ```
 
-These five lines are on at the default level and hold no conversation text.
-Tests pin them field by field, so they are safe to grep:
+These five lines are at `info` and hold no conversation text. Tests pin them
+field by field, so they are safe to grep:
 
 ```sh
-grep -E ' (model call|context assembled|compaction|history edited|turn end)' \
-  ~/.config/koda/logs/latest
+koda-logs --session <id> --backfill 1000 \
+  | grep -E ' (model call|context assembled|compaction|history edited|turn end)'
 ```
 
 Read a run as a sequence: `context assembled`, then `model call`, once per
@@ -238,15 +262,17 @@ Plain-text lines worth a search:
 
 ## Turning up the level
 
-`RUST_LOG` sets the log filter. The default is `koda_core=info,koda_cli=info`.
-Setting it replaces the default, so name everything you want:
+The log database records every level, down to `TRACE`, except request
+bodies, so the `debug` lines below are there already. `RUST_LOG` sets the level
+of the log file, which `log_dir` turns on. Its default is every Koda crate at
+`info`. Setting it replaces the default, so name everything you want:
 
 ```sh
 # Prompts and summaries, as text
-RUST_LOG=koda_core=debug,koda_cli=info koda exec "…"
+RUST_LOG=koda_core=debug,koda_cli=info koda exec -c log_dir=logs "…"
 
-# Those, plus every request body
-RUST_LOG=koda_core=debug,koda_cli=info,koda_core::providers=trace koda exec "…"
+# Those, plus every request body (the file only)
+RUST_LOG=koda_core=debug,koda_cli=info,koda_core::providers=trace koda exec -c log_dir=logs "…"
 ```
 
 `koda_core=debug` adds these lines, whose text runs on over the following lines
@@ -418,7 +444,8 @@ async fn the_turn_finishes_after_the_read() {
 }
 ```
 
-`log_line` returns the first line with the message and every field, or panics
+`read_log` reads every line of the run's log database, as `koda-logs` prints
+them. `log_line` returns the first line with the message and every field, or panics
 with the lines it did find. Write a field as `name=value`, or `name=` when the
 value varies. `server.received_requests()` returns what Koda sent, for asserting
 on the request itself. A smaller `--max-context-tokens` is the way to reach
@@ -432,14 +459,13 @@ see the end-to-end tests in `koda-core/tests/`.
 
 ## What to put in a bug report
 
-1. **The log at debug level.** Re-run with `RUST_LOG=koda_core=debug,koda_cli=info`
-   if you can, then copy `~/.config/koda/logs/latest` with `cp -L`. It holds your
+1. **The session's log.** `koda-logs --session <id> --sessionless --backfill 1000`,
+   or `<log_dir>/koda.log` if you set `log_dir`. It holds your
    prompts and the files Koda read, so check it before you post it.
 2. **The `exec/summary` line**, for a `koda exec --json` run.
 3. **The debug bundle**, for a TUI session: run `/debug-bundle` before you quit.
-   It holds the conversation and that process's log. A headless run has no
-   bundle, and one written later holds the later process's log, so send that
-   run's log yourself.
+   It holds the conversation and the session's log. A headless run has no
+   bundle, so send its log from `koda-logs`.
 4. **Which lines show the problem**, by name, such as
    `compaction branch="cut_off" attempts=2`. Say which of the questions above
    you can't answer.

@@ -50,15 +50,12 @@ Read in this order if you're a human debugging:
 4. **`messages.json`** — the raw DB dump of every message row. The
    model's-eye view of the session. Consult when `conversation.md`
    leaves a question unanswered ("did the model actually see X?").
-5. **`logs/koda-<PID>.log`** — the full per-process tracing log for the
-   koda invocation that wrote this bundle. Look here for engine events
-   (sub-agent spawn, tool dispatch, retry, cancel) and warnings.
-6. **`logs/panic.log`** (if present) — forensic record of any panics
-   captured during the lifetime of THIS koda config dir. Not just this
-   session — the panic log is shared across all koda processes that
-   share `~/.config/koda/`. Filter by timestamp if you need to scope to
-   one session. Absent file means no panics ever recorded.
-7. **`env.txt`** — environment variables filtered through a hardcoded
+5. **`logs/koda.log`** — this session's lines from Koda's log database,
+   with this process's lines outside any session (startup, the TUI, a
+   panic with its backtrace). Look here for engine events (sub-agent
+   spawn, tool dispatch, retry, cancel) and warnings. The database keeps a
+   session's newest 1,000 lines.
+6. **`env.txt`** — environment variables filtered through a hardcoded
    allowlist. Credentials are length-redacted (the question "is
    $OPENAI_API_KEY set?" is debuggable; the value is not in the bundle).
    Most user/path env vars are omitted entirely to avoid corp-ID leakage.
@@ -149,8 +146,7 @@ mod tests {
             "metadata.json",
             "conversation.md",
             "messages.json",
-            "logs/koda-",
-            "panic.log",
+            "logs/koda.log",
             "env.txt",
         ] {
             assert!(

@@ -2,40 +2,23 @@
 
 ## Koda crashed — where do I find the diagnostic info?
 
-When koda hits an unrecoverable error and exits, it leaves a forensic
-record in:
+A crash is logged as an `ERROR` line from `koda_cli::panic`, with Koda's
+version, where it panicked, the message and the backtrace, in the log
+database with the session it happened in:
 
-```
-~/.config/koda/logs/panic.log
-```
-
-Each crash appends a delimited block:
-
-```
-======================================================================
-[2026-04-29T20:55:32Z] PANIC
-version:    koda 0.2.26
-location:   koda-core/src/foo.rs:42:8
-thread:     <unnamed>
-message:    assertion failed: x > 0
-backtrace:
-  0: ...
-  1: ...
-======================================================================
+```sh
+koda-logs --target koda_cli::panic --since 1d
 ```
 
-The most recent panic is always at the **bottom** of the file.
+Koda stores it before exiting, so it's there even though a release build
+stops at once. Before the log database, crashes went to
+`~/.config/koda/logs/panic.log`, which is no longer written.
 
 ### Getting a useful backtrace
 
-By default, the backtrace section will say:
-
-```
-backtrace:
-  (disabled — re-run with RUST_BACKTRACE=1 to capture)
-```
-
-To capture a full backtrace, re-run koda with:
+By default the line says the backtrace is
+`(disabled; run with RUST_BACKTRACE=1 to capture it)`. To capture one, re-run
+koda with:
 
 ```sh
 RUST_BACKTRACE=1 koda
@@ -52,33 +35,19 @@ RUST_BACKTRACE=full koda
 When filing an issue at <https://github.com/lijunzh/koda/issues>, please
 include:
 
-1. The most recent panic block from `~/.config/koda/logs/panic.log`
-   (with `RUST_BACKTRACE=1` if possible)
-2. The contents of `~/.config/koda/logs/latest` (the per-process log
-   for the crashed run — symlinks to the most recent `koda-<pid>.log`)
-3. Your provider + model (e.g. `gemini gemini-2.5-pro`,
-   `anthropic claude-sonnet-4-5`)
-
-### Log file rotation
-
-Koda caps `panic.log` at 5 MB. When it exceeds that, it's rotated:
-
-- `panic.log.3` — dropped (oldest)
-- `panic.log.2` → `panic.log.3`
-- `panic.log.1` → `panic.log.2`
-- `panic.log`   → `panic.log.1`
-- `panic.log`   → recreated empty on the next crash
-
-Three generations are kept. If you want to archive a panic before
-rotation, copy `panic.log.1` somewhere safe.
+1. The crash line from `koda-logs --target koda_cli::panic`, with
+   `RUST_BACKTRACE=1` if possible.
+2. The lines before it: `koda-logs --session <id> --sessionless --backfill 300`
+   (the session id is on the crash line).
+3. Your provider and model (e.g. `anthropic claude-sonnet-4-5`).
 
 ## Koda's terminal looks corrupted after a crash
 
 Koda installs a panic hook that **restores the terminal** (disables raw
 mode, leaves the alternate screen, drops mouse capture) before the
 panic message prints. If you ever see a corrupted terminal after a
-crash, that's a bug — please file an issue including the panic.log
-entry above so we can fix the affected code path.
+crash, that's a bug — please file an issue including the crash line
+above so we can fix the affected code path.
 
 A quick local recovery:
 
@@ -88,21 +57,20 @@ stty sane && tput cnorm && printf '\033[?1049l\033[?1000l\033[?1006l'
 
 ## Where else does koda log?
 
-| Path                                       | Contents                            |
-|--------------------------------------------|-------------------------------------|
-| `~/.config/koda/logs/panic.log`            | Forensic crash records (this page)  |
-| `~/.config/koda/logs/koda-<pid>.log`       | Per-process tracing logs            |
-| `~/.config/koda/logs/latest` *(symlink)*   | Most recent per-process tracing log |
+| Path | Contents |
+|------|----------|
+| `~/.config/koda/db/logs_1.db` | Every line, by session; read it with `koda-logs` |
+| `<log_dir>/koda.log` | Only when `config.toml` sets `log_dir`: every line at `RUST_LOG`'s level |
 
-Tracing verbosity is controlled by the `RUST_LOG` environment variable;
-the default is `koda_core=info,koda_cli=info`. Common debug recipes:
+See [Debugging a run](./debugging.md#the-log). `RUST_LOG` sets the log file's
+level; the default is every Koda crate at `info`. Common debug recipes:
 
 ```sh
-# Prompts, summaries and more from the inference loop
-RUST_LOG=koda_core=debug,koda_cli=info koda
+# A log file at ~/.config/koda/logs/koda.log, with prompts and summaries
+RUST_LOG=koda_core=debug,koda_cli=info koda -c log_dir=logs
 
-# Quiet everything but warnings
-RUST_LOG=warn koda
+# A log file with warnings only
+RUST_LOG=warn koda -c log_dir=logs
 ```
 
 To work out what a run did from its log, see

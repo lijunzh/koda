@@ -741,11 +741,11 @@ pub(crate) fn restore_terminal(_terminal: &mut Term) {
 /// Pattern lifted from `codex-rs/tui/src/tui.rs`; see issue #1119 for the
 /// comparative analysis.
 fn set_panic_hook() {
-    // Production callers always restore the real terminal and write the
-    // real panic.log. The inner helper takes both as parameters so the
-    // regression test in #1124 can substitute spies without depending on
-    // a real TTY or writing to the user's `~/.config/koda/logs`.
-    install_panic_hook(restore_terminal_modes, crate::panic_log::write_panic_log);
+    // Production callers always restore the real terminal and log the
+    // panic. The inner helper takes both as parameters so the regression
+    // test in #1124 can substitute spies without depending on a real TTY
+    // or logging into the user's log database.
+    install_panic_hook(restore_terminal_modes, crate::panic_log::record_panic);
 }
 
 /// Install a panic hook that calls `restore` (best-effort) and records the
@@ -758,18 +758,9 @@ fn install_panic_hook(restore: fn(), log: fn(&std::panic::PanicHookInfo<'_>)) {
     std::panic::set_hook(Box::new(move |info| {
         // Best-effort: ignore errors here, we're already failing.
         restore();
-        // Forensic breadcrumb in the per-process tracing log
-        // (`koda-{PID}.log`). The panic.log written below has the
-        // multi-line record + backtrace; this single line is what
-        // makes the panic correlatable with surrounding tracing
-        // events when both files end up in a /debug-bundle
-        // (RFC #1167 §D3). If the global subscriber isn't installed
-        // (headless tests, very early panics), tracing::error! is a
-        // no-op — safe.
-        tracing::error!("{}", crate::panic_log::panic_breadcrumb(info));
-        // Forensic record for post-mortem debugging (#1122). Wrapped
-        // in a `let _ =` chain inside the helper so any I/O error here
-        // cannot turn into panic-in-panic-hook.
+        // Log it, with version and backtrace, and store it before the
+        // abort a release build does next (#1122). Without a subscriber
+        // (headless tests, very early panics) this is a no-op.
         log(info);
         original(info);
     }));
@@ -987,8 +978,8 @@ mod panic_hook_tests {
         RESTORE_CALLED.store(true, Ordering::SeqCst);
     }
 
-    /// Stands in for `panic_log::write_panic_log`, which would append
-    /// this deliberate panic to the user's real `panic.log`.
+    /// Stands in for `panic_log::record_panic`, which would log this
+    /// deliberate panic.
     fn spy_log(_: &panic::PanicHookInfo<'_>) {
         LOGGED.store(true, Ordering::SeqCst);
     }

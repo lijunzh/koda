@@ -33,6 +33,7 @@ pub(crate) mod inference;
 pub(crate) mod input;
 pub(crate) mod input_history;
 pub(crate) mod legacy_clones;
+pub(crate) mod logging;
 pub(crate) mod mcp_cmd;
 pub(crate) mod md_render;
 pub(crate) mod mouse_select;

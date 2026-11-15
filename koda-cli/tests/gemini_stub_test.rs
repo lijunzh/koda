@@ -185,6 +185,12 @@ async fn compaction_leaves_the_system_prompt_alone() {
         .arg("--project-root")
         .arg(tmp.path())
         .env("XDG_CONFIG_HOME", tmp.path())
+        // Request bodies are logged at TRACE, which the log database
+        // leaves out, as Codex's does: they go to the opt-in file.
+        .args([
+            "-c",
+            &format!("log_dir={}", tmp.path().join("file-log").display()),
+        ])
         .env("RUST_LOG", "koda_core=debug,koda_core::providers=trace")
         .env("GEMINI_API_KEY", "test-key")
         .kill_on_drop(true)
@@ -211,8 +217,13 @@ async fn compaction_leaves_the_system_prompt_alone() {
     assert!(log.contains("Compaction prompt:"), "{log}");
     assert!(log.contains("Compaction reply:"), "{log}");
     assert!(log.contains("System prompt:"), "{log}");
-    assert!(log.contains("request body"), "{log}");
     assert!(!log.contains("test-key"), "a key reached the log: {log}");
+    let file = std::fs::read_to_string(tmp.path().join("file-log/koda.log")).unwrap();
+    assert!(file.contains("request body"), "{file}");
+    assert!(
+        !file.contains("test-key"),
+        "a key reached the log file: {file}"
+    );
 
     log_line(
         &log,

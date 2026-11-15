@@ -7,7 +7,7 @@ use crate::*;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 const LONG_ABOUT: &str = "Koda runs in two modes:
 
@@ -286,48 +286,30 @@ pub(crate) async fn run() -> Result<()> {
         .unwrap_or_else(|| std::env::current_dir().expect("Failed to get current directory"));
     let project_root = std::fs::canonicalize(&project_root)?;
 
-    // Initialize logging to a per-process file (invisible to user).
-    //
-    // Each koda invocation gets its own log file named koda-<PID>.log.
-    // A 'latest' symlink is updated to point to it so users can always
-    // tail the current session without knowing the filename:
-    //   tail -f ~/.config/koda/logs/latest
     // A first run is one with no config directory yet. Ask before anything
-    // below creates it: the log directory and the database both live there,
-    // so asking after them (as Koda did since #693) never found a first run
-    // and onboarding never opened.
+    // below creates it: the log database and the session database both live
+    // there, so asking after them (as Koda did since #693) never found a
+    // first run and onboarding never opened.
     let first_run = onboarding::is_first_run();
-    let log_dir = koda_core::db::config_dir()?.join("logs");
-    std::fs::create_dir_all(&log_dir)?;
-    prune_old_logs(&log_dir, 50);
-    let log_filename = format!("koda-{}.log", std::process::id());
-    let file_appender = tracing_appender::rolling::never(&log_dir, &log_filename);
-    let (non_blocking, log_guard) = tracing_appender::non_blocking(file_appender);
-    // Best-effort symlink — silently skip on non-unix or permission errors.
-    #[cfg(unix)]
-    {
-        let latest = log_dir.join("latest");
-        let _ = std::fs::remove_file(&latest);
-        let _ = std::os::unix::fs::symlink(log_dir.join(&log_filename), &latest);
-    }
-    tracing_subscriber::fmt()
-        .with_writer(non_blocking)
-        .with_ansi(false)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                tracing_subscriber::EnvFilter::new("koda_core=info,koda_cli=info")
-            }),
-        )
-        .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
-        .init();
-
-    tracing::info!("Koda starting. Project root: {:?}", project_root);
 
     // The config file, with this run's `-c` values: a broken file or an
     // unknown `-c` key stops the start here, before any terminal setup.
     let user_config = crate::user_config::file()?
         .load()
         .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    // Logs go to the log database, and to `<log_dir>/koda.log` when the
+    // config file sets `log_dir`, as Codex's do (see `logging`).
+    let config_dir = koda_core::db::config_dir()?;
+    let log_dir = user_config
+        .config
+        .log_dir
+        .as_deref()
+        .map(|dir| crate::logging::resolve_log_dir(dir, &config_dir));
+    let _logging = crate::logging::init(&config_dir, log_dir).await?;
+
+    tracing::info!("Koda starting. Project root: {:?}", project_root);
+
     // The mode: --mode, else the file's (or `-c mode=`), else auto. Resolved
     // here because Auto needs the sandbox, which is checked before start.
     let mode = cli
@@ -417,9 +399,10 @@ pub(crate) async fn run() -> Result<()> {
             None => None,
         };
         let exit_code = headless::run_headless(project_root, config, db, resume, run).await?;
-        // `exit` runs no destructors, and the guard's drop is what writes out
-        // the buffered lines, the last of which say how the run ended.
-        drop(log_guard);
+        // `exit` runs no destructors: store the queued lines first, the last
+        // of which say how the run ended, and write out the file's.
+        crate::logging::flush().await;
+        drop(_logging);
         std::process::exit(exit_code);
     }
 
@@ -617,35 +600,6 @@ fn read_stdin() -> Result<String> {
         .read_to_string(&mut input)
         .context("Failed to read from stdin")?;
     Ok(input.trim().to_string())
-}
-
-/// Prune old `koda-<PID>.log` files, keeping only the `keep` most recent by mtime.
-///
-/// Called on startup before the new log file is created. Prevents unbounded
-/// file-count accumulation (e.g. 18 000+ files after a year of heavy use).
-/// All errors are silently discarded — a prune failure is never fatal.
-fn prune_old_logs(log_dir: &Path, keep: usize) {
-    let Ok(entries) = std::fs::read_dir(log_dir) else {
-        return;
-    };
-    let mut files: Vec<_> = entries
-        .filter_map(|e| e.ok())
-        .filter(|e| {
-            let name = e.file_name();
-            let s = name.to_string_lossy();
-            s.starts_with("koda-") && s.ends_with(".log")
-        })
-        .filter_map(|e| {
-            e.metadata()
-                .ok()
-                .and_then(|m| m.modified().ok())
-                .map(|t| (t, e.path()))
-        })
-        .collect();
-    files.sort_by_key(|e| std::cmp::Reverse(e.0)); // newest first
-    for (_, path) in files.into_iter().skip(keep) {
-        let _ = std::fs::remove_file(path);
-    }
 }
 
 /// Check if stdin is a terminal (not piped).

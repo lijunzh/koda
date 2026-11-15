@@ -37,6 +37,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- **Logs go to a database of their own, by session, as Codex's do.** Every line Koda logs is stored in `~/.config/koda/db/logs_1.db` with the session it was logged in. Lines outside a session, such as startup and the TUI, are kept by process. `koda-logs` reads it, with filters (`--session`, `--level`, `--since`, `--target`, `--search`) and `--follow`, and ships beside `koda`. The database keeps Codex's limits: a session's newest 1,000 lines and 10 MiB, ten days, and 64 MiB in all. It records every level except request bodies.
+  - **Log files are opt-in, as Codex's is.** `koda-<pid>.log` and the `latest` link are no longer written. Set `log_dir` in `config.toml`, or `-c log_dir=…` for one run, to append every line to `<log_dir>/koda.log` at `RUST_LOG`'s level. That file is the complete record of a long run.
+  - **Crashes are logged with their backtrace** as `ERROR` lines from `koda_cli::panic`, stored before the process exits. `panic.log` is no longer written.
+  - **Lines that were dropped are now logged.** The host's, the sandbox's and the config's `info` lines had been dropped by the old default filter.
+  - **`/debug-bundle`** includes the session's lines in place of the process's log file.
+  - Existing files under `~/.config/koda/logs/` are left alone; delete them when you no longer need them.
+- **Each turn records the settings it ran with,** as Codex records a `TurnContextItem`: model, provider, effort and limits, trust mode, tools offered, and hashes of the system prompt and project memory. Compactions and sub-agents record theirs too. It is stored with the session for debugging and isn't part of the protocol.
+
 - **A resumed session looks like a live one,** as in Codex: `koda -s`, `/resume` and the sessions picker draw its earlier turns through the TUI's live renderer, from the turns the host stores. `/resume` and the picker showed none before. The away banner (idle time, counts, tokens) is gone: neither Codex nor Claude Code shows one, and the turns show what happened.
 - **A declined call says what happened to it,** live and on resume, as Codex and Claude Code show one: `✗ Rejected: <call>` with your feedback, `✗ Auto-rejected: <call> — <reason>`, or `🔍 Would execute` for a call plan mode blocked. A refusal used to leave only its diff in the scrollback.
 - **The TUI draws a turn from the client protocol,** as Codex's TUI does, not from Koda's engine events, and its dialogs answer the host's requests. What changes on screen:

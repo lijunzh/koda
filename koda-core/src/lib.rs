@@ -82,6 +82,8 @@ pub mod inference_helpers;
 pub mod keystore;
 /// Last-used provider recall (stored in SQLite KV store, not a config file).
 pub mod last_provider;
+/// Diagnostic logs in their own SQLite database, read by `koda-logs`.
+pub mod log_db;
 /// Loop detection — catches runaway repeated tool calls.
 pub mod loop_guard;
 /// MCP client — connect to external MCP servers (#662).

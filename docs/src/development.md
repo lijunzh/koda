@@ -28,8 +28,10 @@ koda/
 │   │   │   ├── mod.rs      # Database struct, migrations, schema (WAL mode)
 │   │   │   ├── context_cache.rs # Per-session context cache
 │   │   │   ├── queries.rs  # SessionStore trait impl (all SQL queries)
+│   │   │   ├── sqlite.rs   # How each SQLite file is opened: one spec per file (koda.db, logs_1.db)
 │   │   │   └── tests.rs    # Database integration tests
 │   │   ├── git.rs          # Read-only git context for the system prompt (branch, diff, recent commits)
+│   │   ├── log_db/         # The log database: store, limits, and the tracing layer that fills it
 │   │   ├── inference.rs    # Streaming inference loop + tool execution
 │   │   ├── inference_helpers.rs # Token estimation, message assembly, overflow detection
 │   │   ├── instructions.md # Behavioral instructions in the system prompt
@@ -98,6 +100,7 @@ koda/
 ├── koda-cli/               # CLI binary
 │   ├── src/
 │   │   ├── main.rs         # CLI entry point (clap)
+│   │   ├── bin/koda_logs.rs # `koda-logs`: read the log database, with filters and --follow
 │   │   ├── lib.rs          # Crate root
 │   │   ├── tui_app.rs      # Main TUI event loop (ratatui Viewport::Fullscreen)
 │   │   ├── app.rs          # App struct: aggregated TUI state + lifecycle
@@ -108,7 +111,8 @@ koda/
 │   │   ├── frame_requester.rs # Frame draw scheduling
 │   │   ├── hyperlink.rs    # OSC 8 hyperlink post-render pass
 │   │   ├── inference/      # Inference turn lifecycle: inner event loop + post-turn cleanup
-│   │   ├── panic_log.rs    # Forensic record of a panic in ~/.config/koda/logs/panic.log
+│   │   ├── logging.rs      # Where tracing goes: the log database, and the log file if log_dir is set
+│   │   ├── panic_log.rs    # A panic logged as an error, with its backtrace, and stored at once
 │   │   ├── theme.rs        # Semantic color tokens
 │   │   ├── tui_context/    # TUI shared mutable state (split into submodules)
 │   │   │   ├── mod.rs      # TuiContext struct, event loop, command dispatch

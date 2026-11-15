@@ -16,6 +16,11 @@ authors.workspace = true
 name = "koda"
 path = "src/main.rs"
 
+# Reads the log database, as Codex's `logs_client` reads its own.
+[[bin]]
+name = "koda-logs"
+path = "src/bin/koda_logs.rs"
+
 [dependencies]
 # Core engine
 koda-core = { path = "../koda-core", version = "0.6.4" }

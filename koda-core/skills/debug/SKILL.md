@@ -20,20 +20,17 @@ If no issue was described, read the config, logs, and environment and summarise 
 
 ## Step 1: Session Log
 
-Koda writes a per-process log to `~/.config/koda/logs/`. A `latest` symlink always points to the current session's file:
+Koda logs to a database, `~/.config/koda/db/logs_1.db`, which `koda-logs` reads. Each line is filed under the session it was logged in:
 
 ```bash
-# Tail the current session log
-tail -50 ~/.config/koda/logs/latest 2>/dev/null || echo "(no log file found)"
+# The newest lines, every session
+koda-logs --backfill 50 2>/dev/null || echo "(no log database found)"
 
-# List recent log files
-ls -lt ~/.config/koda/logs/ | head -10
+# Errors and warnings from the last two hours
+koda-logs --level warn --since 2h
 ```
 
-Search for errors and warnings:
-```bash
-grep -E "ERROR|WARN" ~/.config/koda/logs/latest 2>/dev/null | tail -20
-```
+If `config.toml` sets `log_dir`, the same lines are also in `<log_dir>/koda.log`.
 
 ## Step 2: Environment and API Keys
 

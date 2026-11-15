@@ -680,6 +680,7 @@ async fn handle_debug_bundle(buffer: &mut ScrollBuffer, session: &TuiSession, co
     let output_dir = config_dir.join("debug-bundles");
 
     let captured_at = chrono_like_now_iso();
+    let log = crate::logging::session_log(&session.id).await;
 
     let input = BundleInput {
         session_id: &session.id,
@@ -690,8 +691,7 @@ async fn handle_debug_bundle(buffer: &mut ScrollBuffer, session: &TuiSession, co
         context_window: None, // PR α: not surfacing yet; PR β can wire from provider
         messages: &messages,
         events: &events,
-        config_dir: &config_dir,
-        current_pid: std::process::id(),
+        log: log.as_deref(),
         captured_at: &captured_at,
         output_dir: &output_dir,
     };
@@ -703,13 +703,11 @@ async fn handle_debug_bundle(buffer: &mut ScrollBuffer, session: &TuiSession, co
                 format!("Wrote debug bundle \u{2192} {}", path.display()),
             );
             // Discoverability hint (RFC #1167 §D7 alternative): instead of
-            // a dedicated /logs slash command, surface the raw log path
-            // exactly when the user is thinking about debug artifacts.
-            // The bundle README documents this too — this is the
-            // belt-and-braces in-TUI surface.
+            // a dedicated /logs slash command, say how to read the whole
+            // log exactly when the user is thinking about debug artifacts.
             tui_output::dim_msg(
                 buffer,
-                format!("  raw logs: {}/logs/latest", config_dir.display()),
+                format!("  every line: koda-logs --session {}", session.id),
             );
         }
         Err(e) => {

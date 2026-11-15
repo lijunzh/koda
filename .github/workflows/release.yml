@@ -153,7 +153,7 @@ jobs:
       - name: Package
         run: |
           mkdir koda-${{ matrix.target }}
-          cp target/${{ matrix.target }}/release/koda koda-${{ matrix.target }}/
+          cp target/${{ matrix.target }}/release/koda target/${{ matrix.target }}/release/koda-logs koda-${{ matrix.target }}/
           cp README.md LICENSE koda-${{ matrix.target }}/
           tar czf koda-${{ matrix.target }}.tar.gz koda-${{ matrix.target }}
 
@@ -373,7 +373,7 @@ jobs:
             end
 
             def install
-              bin.install "koda"
+              bin.install "koda", "koda-logs"
             end
 
             test do
