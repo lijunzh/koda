@@ -276,7 +276,7 @@ struct RunStats {
     /// earlier turns and sub-agents included.
     usage: TokenUsage,
     /// The last reply of the session's own, as `codex exec` takes its
-    /// final agent message.
+    /// final agent message: none unless the turn completed.
     last_reply: Option<String>,
 }
 
@@ -439,6 +439,11 @@ impl View {
                 }
             }
             Outgoing::Notification(ServerNotification::TurnCompleted(done)) => {
+                // Only a completed turn has a final reply, as in `codex
+                // exec`: a failed one's partial reply was discarded.
+                if done.turn.status != TurnStatus::Completed {
+                    self.stats.last_reply = None;
+                }
                 self.stats.turn_end = Some((
                     done.turn.status,
                     done.turn.error.as_ref().map(|e| e.message.clone()),
