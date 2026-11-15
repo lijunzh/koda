@@ -448,7 +448,7 @@ mod tests {
     /// one, a call's stored notices are its progress, and a turn left
     /// mid-way is interrupted. Resuming it stores the rebuilt turns, which
     /// later reads replay.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_older_session_is_rebuilt_then_stored_on_resume() {
         let (_dir, db, session) = db().await;
         insert(&db, &session, Role::System, "system prompt").await;
@@ -547,7 +547,7 @@ mod tests {
 
     /// The writer stores what the host sends, in order, by the time a flush
     /// returns.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_writer_stores_turns_and_completed_items_only() {
         use koda_protocol::item::{ItemCompletedNotification, ItemStartedNotification};
         use koda_protocol::turn::{TurnCompletedNotification, TurnStartedNotification};
