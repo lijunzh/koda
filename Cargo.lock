@@ -1868,7 +1868,7 @@ dependencies = [
 
 [[package]]
 name = "koda-cli"
-version = "0.6.4"
+version = "0.7.0"
 dependencies = [
  "ansi-to-tui",
  "anyhow",
@@ -1911,7 +1911,7 @@ dependencies = [
 
 [[package]]
 name = "koda-client"
-version = "0.6.4"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "koda-config",
@@ -1930,7 +1930,7 @@ dependencies = [
 
 [[package]]
 name = "koda-config"
-version = "0.6.4"
+version = "0.7.0"
 dependencies = [
  "serde",
  "serde_ignored",
@@ -1943,7 +1943,7 @@ dependencies = [
 
 [[package]]
 name = "koda-core"
-version = "0.6.4"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1982,7 +1982,7 @@ dependencies = [
 
 [[package]]
 name = "koda-protocol"
-version = "0.6.4"
+version = "0.7.0"
 dependencies = [
  "schemars",
  "serde",
@@ -1991,7 +1991,7 @@ dependencies = [
 
 [[package]]
 name = "koda-sandbox"
-version = "0.6.4"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2009,7 +2009,7 @@ dependencies = [
 
 [[package]]
 name = "koda-state"
-version = "0.6.4"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "async-trait",

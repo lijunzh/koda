@@ -2292,7 +2292,7 @@
           "type": "string"
         },
         "version": {
-          "description": "The Koda release, such as `0.6.4`.",
+          "description": "The Koda release, such as `0.7.0`.",
           "type": "string"
         }
       },

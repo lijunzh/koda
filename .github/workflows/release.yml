@@ -169,7 +169,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: crates-io
-    continue-on-error: true
+    # No continue-on-error: a crate that fails to publish fails the release,
+    # so a missing koda-cli on crates.io can't pass unnoticed.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

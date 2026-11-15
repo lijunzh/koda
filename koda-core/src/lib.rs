@@ -38,6 +38,11 @@
 //! ```
 //!
 //! See `DESIGN.md` in the repository root for the full architectural rationale.
+//!
+//! **Versioning:** published so that `cargo install koda-cli` builds. It
+//! follows koda-cli's version, and its Rust API makes no semver promise of
+//! its own: a 0.7.x release may change it. The Koda crates pin each other
+//! exactly, so every koda-cli builds against the crates it shipped with.
 
 // koda-core requires a Unix-like OS (macOS or Linux).
 // The built-in shell tool uses `sh` which does not exist on Windows.

@@ -1,6 +1,6 @@
 [package]
 name = "koda-state"
-version = "0.6.4"
+version = "0.7.0"
 edition.workspace = true
 rust-version.workspace = true
 description = "The stored state of the Koda AI coding agent: its sessions, SQLite files and diagnostic log database"

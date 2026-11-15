@@ -27,6 +27,11 @@
 //!
 //! This crate knows nothing of the rest of Koda: the host maps
 //! [`ConfigToml`] to the client protocol and to what sessions run with.
+//!
+//! **Versioning:** published so that `cargo install koda-cli` builds. It
+//! follows koda-cli's version, and its Rust API makes no semver promise of
+//! its own: a 0.7.x release may change it. The Koda crates pin each other
+//! exactly, so every koda-cli builds against the crates it shipped with.
 
 use std::collections::BTreeMap;
 use std::fmt;

@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-15
+
 ### Added
 
 - **`@` mentions are read by Koda's host, under the `Read` tool's rules, as Claude Code ties `@` to its Read tool.** The TUI and `koda exec` send the paths as `turn/start`'s new `mentions`, and the host reads them on its own machine, so a client of `koda serve` elsewhere works. A file is read as Read reads it (numbered lines, Read's limit with a note on how to read on; the TUI cut at 40,000 bytes before), a directory gives its listing, an image is sent as an image, and a binary file sends the path with what it is. A mention may name any path Read can, any but Koda's own secret folders, where the TUI allowed only the project and temp folders. Your message now keeps the `@path` as typed, and the `userMessage` item lists the paths under `mentions`; the contents go to the model, not onto the item. `file_mentions = false` sends only the paths, for the model to read, as Codex does. See [File & image attachments](https://lijunzh.github.io/koda/attachments.html#mentioning-files).

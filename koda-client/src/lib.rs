@@ -22,6 +22,11 @@
 //! pipe, `koda serve --stdio`, as `codex app-server` serves stdio.
 //!
 //! The host builds every session's agent; a front end never hands it one.
+//!
+//! **Versioning:** published so that `cargo install koda-cli` builds. It
+//! follows koda-cli's version, and its Rust API makes no semver promise of
+//! its own: a 0.7.x release may change it. The Koda crates pin each other
+//! exactly, so every koda-cli builds against the crates it shipped with.
 
 mod background;
 pub mod builtin_skills;
