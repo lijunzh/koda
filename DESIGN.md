@@ -193,7 +193,7 @@ limitations — they'll be obsolete before they're stable.
 P1 says "build only what we need." P3 says design for the bets. These
 can conflict. When they do: P1 wins on **timing** (don't build it yet),
 but P3 wins on **architecture** (design so it's easy to add). The
-`Persistence` trait exists because P3 says the storage backend will
+`SessionStore` trait exists because P3 says the storage backend will
 change — but there's only one implementation because P1 says we don't
 need a second one yet.
 
@@ -474,10 +474,19 @@ embeddings, knowledge graph, email/calendar), those should be *new files*
 alongside `db/` (e.g. `vector_store.rs`), not splits of the existing module.
 Split by domain divergence, not by line count.
 
-### Database Backend: SQLite + Persistence Trait (P3)
+### Database Backend: SQLite + Store Traits (P3)
 
-Keep SQLite for now. The `Persistence` trait lets the backend be swapped
+Keep SQLite for now. The `SessionStore` trait (Codex's `ThreadStore`;
+Koda says session where Codex says thread) lets the backend be swapped
 later and enables trait-based testing (mock DB). Cost is minimal (~50 lines).
+
+As Codex does, each kind of stored data gets its own SQLite file and, once
+it needs a second backend, its own trait (`SessionStore`, later others).
+There is no shared base trait: each backend writes its own queries for its
+own domain rather than meeting a lowest common denominator. What the files
+share is how they are opened. Diagnostic logs stay concrete SQLite, as
+Codex's do; logs leave the machine through an exporter, not a different
+database.
 
 SQLite is excellent for conversations, sessions, and AST cache. But email,
 calendar, documents, and knowledge graphs may require full-text search (FTS5),
@@ -840,7 +849,7 @@ shapes remain, distinguished only by what the model writes:
    and batched** (#1022 B20): a single sqlx transaction inserts every
    parent row with `completed_at` written inline for assistant rows,
    so an N-message fork costs N+3 queries with one fsync instead of
-   ~3N queries with N fsyncs. `Persistence::copy_messages_into_session`
+   ~3N queries with N fsyncs. `SessionStore::copy_messages_into_session`
    is the only fork-copy path; the row-by-row loop it replaced was a
    hot path the user waits on synchronously, and partial writes on
    error are impossible because the transaction is dropped without

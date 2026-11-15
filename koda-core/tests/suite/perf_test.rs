@@ -6,7 +6,7 @@
 //! their wall-clock bounds failed.
 //! Run with: cargo test -p koda-core --test all -- perf_test
 
-use koda_core::persistence::Persistence;
+use koda_core::session_store::SessionStore;
 use std::time::Instant;
 use tempfile::TempDir;
 

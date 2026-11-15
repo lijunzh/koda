@@ -1,6 +1,6 @@
 //! E2E tests: sub-agent invocation and caching.
 
-use koda_core::{engine::EngineEvent, persistence::Persistence, runtime_env};
+use koda_core::{engine::EngineEvent, runtime_env, session_store::SessionStore};
 use koda_test_utils::{ENV_MUTEX, Env, MockProvider, MockResponse};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -218,7 +218,7 @@ async fn sub_agent_marks_assistant_messages_complete_so_loop_progresses() {
     let context = env.db.load_context(&sub_session.id).await.unwrap();
     let assistant_turns = context
         .iter()
-        .filter(|m| matches!(m.role, koda_core::persistence::Role::Assistant))
+        .filter(|m| matches!(m.role, koda_core::session_store::Role::Assistant))
         .count();
     assert!(
         assistant_turns >= 1,
@@ -234,7 +234,7 @@ async fn sub_agent_marks_assistant_messages_complete_so_loop_progresses() {
     let all = env.db.load_all_messages(&sub_session.id).await.unwrap();
     let all_assistant = all
         .iter()
-        .filter(|m| matches!(m.role, koda_core::persistence::Role::Assistant))
+        .filter(|m| matches!(m.role, koda_core::session_store::Role::Assistant))
         .count();
     assert_eq!(
         all_assistant, assistant_turns,

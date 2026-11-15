@@ -53,8 +53,8 @@ mod readme;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use koda_core::persistence::Message;
-use koda_core::persistence::SessionEvent;
+use koda_core::session_store::Message;
+use koda_core::session_store::SessionEvent;
 use ratatui::text::Line;
 use serde_json::{Value, json};
 use zip::CompressionMethod;
@@ -354,7 +354,7 @@ pub(crate) use lines_to_text as _ensure_pub_visible;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use koda_core::persistence::Message;
+    use koda_core::session_store::Message;
     use ratatui::text::Span;
 
     fn temp_dir(label: &str) -> PathBuf {
@@ -367,7 +367,7 @@ mod tests {
         p
     }
 
-    fn fixture_message(id: i64, role: koda_core::persistence::Role, content: &str) -> Message {
+    fn fixture_message(id: i64, role: koda_core::session_store::Role, content: &str) -> Message {
         Message {
             id,
             session_id: "sess-1".to_string(),
@@ -484,7 +484,7 @@ mod tests {
 
     #[test]
     fn compute_totals_walks_messages_once() {
-        use koda_core::persistence::Role;
+        use koda_core::session_store::Role;
         let messages = vec![
             fixture_message(1, Role::User, "hello"),
             fixture_message(2, Role::Assistant, "hi back"),
@@ -501,7 +501,7 @@ mod tests {
 
     #[test]
     fn messages_to_json_round_trips_required_fields() {
-        use koda_core::persistence::Role;
+        use koda_core::session_store::Role;
         let messages = vec![fixture_message(1, Role::User, "hello")];
         let value = messages_to_json(&messages);
         let arr = value["messages"].as_array().unwrap();
@@ -519,10 +519,10 @@ mod tests {
         use std::io::Read;
 
         let messages = vec![
-            fixture_message(1, koda_core::persistence::Role::User, "Hello koda"),
+            fixture_message(1, koda_core::session_store::Role::User, "Hello koda"),
             fixture_message(
                 2,
-                koda_core::persistence::Role::Assistant,
+                koda_core::session_store::Role::Assistant,
                 "Hi! What can I help with?",
             ),
         ];

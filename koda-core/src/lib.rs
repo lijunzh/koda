@@ -96,8 +96,6 @@ pub mod model_context;
 pub mod model_effort;
 /// Context-scaled output caps for tool results.
 pub mod output_caps;
-/// `Persistence` trait — the database contract.
-pub mod persistence;
 /// Diff preview generation for file mutations.
 pub mod preview;
 /// System prompt construction.
@@ -112,6 +110,8 @@ pub mod runtime_env;
 pub mod sandbox;
 /// Session lifecycle — create, resume, list, delete.
 pub mod session;
+/// `SessionStore` trait — the session storage contract.
+pub mod session_store;
 /// Skill-scoped tool filtering — hard enforcement of `allowed_tools`.
 pub mod skill_scope;
 /// Skill discovery and activation (project, user, built-in).

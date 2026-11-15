@@ -1,6 +1,6 @@
-//! `Persistence` trait implementation for `Database`.
+//! `SessionStore` trait implementation for `Database`.
 //!
-//! All SQL queries that fulfill the `Persistence` contract live here,
+//! All SQL queries that fulfill the `SessionStore` contract live here,
 //! along with message sanitisation helpers that run on every `load_context`
 //! call: orphan tool-call pruning, null-content cleanup, and whitespace-only
 //! message removal.
@@ -9,7 +9,7 @@ use anyhow::Result;
 use std::path::Path;
 
 use super::{Database, MessageRow, SessionEventRow, SessionInfoRow};
-use crate::persistence::{Message, Persistence, Role, SessionEvent, SessionInfo, SessionUsage};
+use crate::session_store::{Message, Role, SessionEvent, SessionInfo, SessionStore, SessionUsage};
 
 // ── Private helpers ─────────────────────────────────────────────────────────
 
@@ -421,7 +421,7 @@ pub(crate) fn dedupe_tool_results_by_call_id(messages: &mut Vec<Message>) {
     });
 }
 
-// ── Persistence trait ───────────────────────────────────────────────────────────────
+// ── SessionStore trait ──────────────────────────────────────────────────────────────
 
 /// A session's summary: [`SessionInfoRow`]'s columns, before a filter. A
 /// macro, so queries are built with `concat!` and stay static SQL.
@@ -444,7 +444,7 @@ macro_rules! session_info_select {
 }
 
 #[async_trait::async_trait]
-impl Persistence for Database {
+impl SessionStore for Database {
     /// Create a new session, returning the generated session ID.
     async fn create_session(&self, agent_name: &str, project_root: &Path) -> Result<String> {
         let id = uuid::Uuid::new_v4().to_string();
@@ -795,7 +795,7 @@ impl Persistence for Database {
                AND (prompt_tokens IS NOT NULL OR completion_tokens IS NOT NULL)",
         )
         .bind(session_id)
-        .bind(crate::persistence::PARENT_SESSION_KEY)
+        .bind(crate::session_store::PARENT_SESSION_KEY)
         .bind(session_id)
         .fetch_one(&self.pool)
         .await?;
@@ -836,7 +836,7 @@ impl Persistence for Database {
         )
         .bind(session_id)
         .bind(session_id)
-        .bind(crate::persistence::PARENT_SESSION_KEY)
+        .bind(crate::session_store::PARENT_SESSION_KEY)
         .bind(session_id)
         .fetch_all(&self.pool)
         .await?;
@@ -1077,7 +1077,7 @@ impl Persistence for Database {
     async fn append_turn_records(
         &self,
         session_id: &str,
-        records: &[crate::persistence::TurnRecord],
+        records: &[crate::session_store::TurnRecord],
     ) -> Result<()> {
         if records.is_empty() {
             return Ok(());
@@ -1101,7 +1101,7 @@ impl Persistence for Database {
     async fn load_turn_records(
         &self,
         session_id: &str,
-    ) -> Result<Vec<crate::persistence::TurnRecord>> {
+    ) -> Result<Vec<crate::session_store::TurnRecord>> {
         let rows: Vec<(String, String, String)> = sqlx::query_as(
             "SELECT turn_id, kind, payload FROM turn_records WHERE session_id = ? ORDER BY id ASC",
         )
@@ -1110,11 +1110,13 @@ impl Persistence for Database {
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(turn_id, kind, payload)| crate::persistence::TurnRecord {
-                turn_id,
-                kind,
-                payload,
-            })
+            .map(
+                |(turn_id, kind, payload)| crate::session_store::TurnRecord {
+                    turn_id,
+                    kind,
+                    payload,
+                },
+            )
             .collect())
     }
 

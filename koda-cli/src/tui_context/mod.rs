@@ -396,7 +396,7 @@ impl TuiContext {
         // constant) so `--mode safe` is honored on first run when there's no
         // persisted mode yet. Fixes #982.
         let (initial_mode, initial_mode_warning) = {
-            use koda_core::persistence::Persistence;
+            use koda_core::session_store::SessionStore;
             let persisted = session
                 .db
                 .get_session_mode(&session.id)

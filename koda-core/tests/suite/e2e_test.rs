@@ -9,8 +9,8 @@ use koda_core::{
     config::ModelSettings,
     engine::{EngineCommand, EngineEvent},
     inference::{self, InferenceContext},
-    persistence::Persistence,
     providers::{LlmResponse, ModelInfo},
+    session_store::SessionStore,
     trust::TrustMode,
 };
 use koda_test_utils::{ChatMessage, Env, LlmProvider, MockProvider, MockResponse, ToolDefinition};

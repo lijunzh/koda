@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::inference_helpers::{CHARS_PER_TOKEN, PER_MESSAGE_OVERHEAD};
-use crate::persistence::Message;
+use crate::session_store::Message;
 
 /// Per-tool and per-role token breakdown of a conversation context.
 #[derive(Debug, Clone, Default)]
@@ -143,7 +143,7 @@ pub fn analyze_context(messages: &[Message]) -> ContextAnalysis {
     let mut read_tool_paths: HashMap<String, PathBuf> = HashMap::new();
 
     for msg in messages {
-        if msg.role == crate::persistence::Role::Assistant
+        if msg.role == crate::session_store::Role::Assistant
             && let Some(ref tc_json) = msg.tool_calls
         {
             extract_tool_call_ids(tc_json, &mut id_to_tool, &mut read_tool_paths);
@@ -159,10 +159,10 @@ pub fn analyze_context(messages: &[Message]) -> ContextAnalysis {
         analysis.total += tokens;
 
         match msg.role {
-            crate::persistence::Role::User => {
+            crate::session_store::Role::User => {
                 analysis.human_tokens += tokens;
             }
-            crate::persistence::Role::Assistant => {
+            crate::session_store::Role::Assistant => {
                 if let Some(ref tc_json) = msg.tool_calls {
                     // Split tokens between text content and tool requests.
                     let text_tokens = msg.content.as_deref().map_or(0, estimate_str_tokens);
@@ -179,7 +179,7 @@ pub fn analyze_context(messages: &[Message]) -> ContextAnalysis {
                     analysis.assistant_tokens += tokens;
                 }
             }
-            crate::persistence::Role::Tool => {
+            crate::session_store::Role::Tool => {
                 // Look up which tool produced this result.
                 let tool_name = msg
                     .tool_call_id
@@ -211,7 +211,7 @@ pub fn analyze_context(messages: &[Message]) -> ContextAnalysis {
                     entry.total_tokens += tokens;
                 }
             }
-            crate::persistence::Role::System => {
+            crate::session_store::Role::System => {
                 // System prompt — count toward total but not any category.
             }
         }
@@ -328,7 +328,7 @@ fn distribute_tool_request_tokens(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persistence::{Message, Role};
+    use crate::session_store::{Message, Role};
 
     fn msg(
         role: Role,

@@ -683,8 +683,8 @@ impl From<&crate::providers::TokenUsage> for UsageTotals {
     }
 }
 
-impl From<&crate::persistence::SessionUsage> for UsageTotals {
-    fn from(usage: &crate::persistence::SessionUsage) -> Self {
+impl From<&crate::session_store::SessionUsage> for UsageTotals {
+    fn from(usage: &crate::session_store::SessionUsage) -> Self {
         Self {
             prompt_tokens: usage.prompt_tokens,
             completion_tokens: usage.completion_tokens,

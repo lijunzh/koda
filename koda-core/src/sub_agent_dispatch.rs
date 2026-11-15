@@ -11,10 +11,10 @@ use crate::db::Role;
 use crate::engine::event::ToolOutcome;
 use crate::engine::{ApprovalDecision, EngineCommand, EngineEvent};
 use crate::memory;
-use crate::persistence::Persistence;
 use crate::preview;
 use crate::prompt::build_system_prompt;
 use crate::providers::ChatMessage;
+use crate::session_store::SessionStore;
 use crate::tool_dispatch::execute_one_tool;
 use crate::tools::{self, ToolRegistry};
 use crate::trust::{self, ToolApproval, TrustMode, derive_child_trust};
@@ -511,7 +511,7 @@ fn run_sub_agent<'a>(
                 .await?;
             db.set_metadata(
                 &sid,
-                crate::persistence::PARENT_SESSION_KEY,
+                crate::session_store::PARENT_SESSION_KEY,
                 parent_session_id,
             )
             .await?;

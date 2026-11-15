@@ -15,8 +15,8 @@
 use std::collections::HashMap;
 
 use koda_core::db::Database;
-use koda_core::persistence::{Message, Persistence, Role, TurnRecord, session_event_kind};
 use koda_core::providers::ToolCall;
+use koda_core::session_store::{Message, Role, SessionStore, TurnRecord, session_event_kind};
 use koda_protocol::ServerNotification;
 use koda_protocol::item::{Item, ToolCallStatus, TurnItem};
 use koda_protocol::turn::{Turn, TurnStatus};
@@ -142,7 +142,7 @@ fn records_of(out: &[Outgoing], started: &mut HashMap<String, i64>) -> Vec<TurnR
 /// progress in its records ended without the host seeing it end, unless
 /// `running` says the session is open and the turn is going on.
 pub(crate) async fn turns(
-    db: &dyn Persistence,
+    db: &dyn SessionStore,
     session_id: &str,
     running: bool,
 ) -> Result<Vec<Turn>> {
@@ -156,7 +156,7 @@ pub(crate) async fn turns(
 /// [`turns`] for a session the host is opening again: a session without
 /// records gets its rebuilt turns stored first, so the turns it runs now
 /// follow them.
-pub(crate) async fn turns_for_resume(db: &dyn Persistence, session_id: &str) -> Result<Vec<Turn>> {
+pub(crate) async fn turns_for_resume(db: &dyn SessionStore, session_id: &str) -> Result<Vec<Turn>> {
     let records = checked(db.load_turn_records(session_id).await)?;
     if !records.is_empty() {
         return Ok(replay(&records, false));
@@ -237,7 +237,7 @@ fn replay(records: &[TurnRecord], running: bool) -> Vec<Turn> {
 /// opens a turn, a reply's reasoning and text are items, and a tool call is
 /// an item where its result was stored. Less is kept than a record keeps:
 /// [`koda_protocol::session::Session::turns`] says what.
-async fn rebuild(db: &dyn Persistence, session_id: &str) -> Result<Vec<Turn>> {
+async fn rebuild(db: &dyn SessionStore, session_id: &str) -> Result<Vec<Turn>> {
     let messages = checked(db.load_all_messages(session_id).await)?;
     let mut progress = progress_by_call(db, session_id).await?;
     Ok(rebuild_from(&messages, &mut progress))
@@ -355,7 +355,7 @@ fn rebuild_from(messages: &[Message], progress: &mut HashMap<String, Vec<String>
 /// The notices stored for each call. A sub-agent's stored trace also names
 /// each tool it started; those aren't notices, so they're left out.
 async fn progress_by_call(
-    db: &dyn Persistence,
+    db: &dyn SessionStore,
     session_id: &str,
 ) -> Result<HashMap<String, Vec<String>>> {
     let mut by_call: HashMap<String, Vec<String>> = HashMap::new();

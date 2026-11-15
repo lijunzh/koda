@@ -1299,7 +1299,7 @@ async fn a_settings_update_reaches_the_next_turn() {
     let db = Database::init(&koda._dir.path().join("config"))
         .await
         .unwrap();
-    use koda_core::persistence::Persistence;
+    use koda_core::session_store::SessionStore;
     let stored = db.get_session(&koda.session).await.unwrap().unwrap();
     assert_eq!(stored.model.as_deref(), Some("other-model"));
     assert_eq!(stored.mode.as_deref(), Some("plan"));

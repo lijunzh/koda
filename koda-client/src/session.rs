@@ -22,9 +22,9 @@ use koda_core::config::KodaConfig;
 use koda_core::db::{Database, Role};
 use koda_core::engine::{ApprovalDecision, EngineCommand, EngineEvent, EngineSink};
 use koda_core::loop_guard::LoopContinuation;
-use koda_core::persistence::Persistence;
 use koda_core::providers::ImageData;
 use koda_core::session::KodaSession;
+use koda_core::session_store::SessionStore;
 use koda_protocol::item::{self, ToolCallApprovalResponse, UserInputResponse};
 use koda_protocol::rpc::{ErrorObject, RequestId, codes};
 use koda_protocol::server::WarningNotification;
@@ -819,7 +819,7 @@ pub(crate) struct SessionHandles {
 
 /// A stored session as the protocol describes it, without what an open one
 /// runs with.
-pub(crate) fn describe(stored: &koda_core::persistence::SessionInfo) -> Session {
+pub(crate) fn describe(stored: &koda_core::session_store::SessionInfo) -> Session {
     Session {
         id: stored.id.clone(),
         name: stored.title.clone(),

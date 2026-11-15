@@ -241,7 +241,7 @@ const COMPACTION_CONTINUATION_HINT: &str = "Your context was compacted. The text
 fn compaction_message(history: &[crate::db::Message]) -> Option<String> {
     let summaries: Vec<&str> = history
         .iter()
-        .filter(|m| m.role == crate::persistence::Role::System)
+        .filter(|m| m.role == crate::session_store::Role::System)
         .filter_map(|m| m.content.as_deref())
         .collect();
     (!summaries.is_empty()).then(|| {
@@ -282,7 +282,7 @@ pub fn assemble_messages(
 
     for msg in history
         .iter()
-        .filter(|m| m.role != crate::persistence::Role::System)
+        .filter(|m| m.role != crate::session_store::Role::System)
     {
         let role = msg.role.as_str();
         let is_plain_user = role == "user" && msg.tool_call_id.is_none();
@@ -494,7 +494,7 @@ pub fn rate_limit_backoff(attempt: u32) -> std::time::Duration {
 mod tests {
     use super::*;
 
-    use crate::persistence::{Message, Role};
+    use crate::session_store::{Message, Role};
 
     /// Every provider sees one `system` message and the summary ahead of the
     /// tail, whatever the tail opens with (#1444).

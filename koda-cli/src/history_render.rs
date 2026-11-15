@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use koda_core::persistence::{Message, Role, SessionEvent};
+use koda_core::session_store::{Message, Role, SessionEvent};
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -89,7 +89,7 @@ fn render_history_tagged(
     // (events are loaded ASC by id from `load_session_events`), so
     // sub-agent activity appears in chronological emit order.
     let mut events_by_parent: HashMap<&str, Vec<&SessionEvent>> = HashMap::new();
-    use koda_core::persistence::session_event_kind as sek;
+    use koda_core::session_store::session_event_kind as sek;
     for ev in events {
         if ev.kind != sek::SUB_AGENT_EVENT {
             // Other event kinds (Info, BgTaskUpdate) aren't part of
@@ -690,7 +690,7 @@ mod tests {
     }
 
     fn sub_agent_event(parent_call_id: &str, payload: &str) -> SessionEvent {
-        use koda_core::persistence::session_event_kind as sek;
+        use koda_core::session_store::session_event_kind as sek;
         SessionEvent {
             id: 0,
             session_id: "test".into(),
@@ -835,7 +835,7 @@ mod tests {
         // other kinds are out of scope for #1344-A. Guards against
         // an over-eager match dropping every persisted event into
         // every InvokeAgent block.
-        use koda_core::persistence::session_event_kind as sek;
+        use koda_core::session_store::session_event_kind as sek;
         let (assistant, tool_result, call_id) = invoke_agent_pair("call_1", "explore");
         let messages = vec![assistant, tool_result];
         let events = vec![

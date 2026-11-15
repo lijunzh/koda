@@ -1,6 +1,6 @@
 //! SQLite persistence layer.
 //!
-//! Implements the [`crate::persistence::Persistence`] trait for SQLite via sqlx.
+//! Implements the [`crate::session_store::SessionStore`] trait for SQLite via sqlx.
 //! Uses WAL mode for concurrent read/write access.
 //!
 //! ## Database location
@@ -21,7 +21,7 @@
 //! ## Module layout
 //!
 //! - **mod.rs** — `Database` struct, init/open, schema migrations, row types
-//! - **queries.rs** — `Persistence` trait implementation (all SQL queries)
+//! - **queries.rs** — `SessionStore` trait implementation (all SQL queries)
 
 mod context_cache;
 pub mod queries;
@@ -35,8 +35,10 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use std::path::Path;
 use std::str::FromStr;
 
-/// Re-export persistence types for backward compatibility.
-pub use crate::persistence::{Message, Persistence, Role, SessionEvent, SessionInfo, SessionUsage};
+/// Re-export the session store types for backward compatibility.
+pub use crate::session_store::{
+    Message, Role, SessionEvent, SessionInfo, SessionStore, SessionUsage,
+};
 
 /// Wrapper around the SQLite connection pool.
 ///

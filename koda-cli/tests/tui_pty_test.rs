@@ -1181,7 +1181,7 @@ async fn startup_flags_are_not_saved() {
 /// goes to Auto, which needs the sandbox.
 #[tokio::test(flavor = "multi_thread")]
 async fn shift_tab_sends_the_mode_to_the_host() {
-    use koda_core::persistence::Persistence;
+    use koda_core::session_store::SessionStore;
     if !koda_core::sandbox::is_available() {
         eprintln!("skipped: Auto needs the sandbox, which isn't here");
         return;
@@ -1220,7 +1220,7 @@ async fn shift_tab_sends_the_mode_to_the_host() {
 /// the way a mistyped `--resume` id once did.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_message_that_cant_be_saved_isnt_sent() {
-    use koda_core::persistence::Persistence;
+    use koda_core::session_store::SessionStore;
     let server = scripted_model(vec![]).await;
     let home = home();
     // Koda stores the project root canonicalized (/var is /private/var on macOS).

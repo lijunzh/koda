@@ -27,7 +27,7 @@ koda/
 │   │   ├── db/             # SQLite persistence (split into submodules)
 │   │   │   ├── mod.rs      # Database struct, migrations, schema (WAL mode)
 │   │   │   ├── context_cache.rs # Per-session context cache
-│   │   │   ├── queries.rs  # Persistence trait impl (all SQL queries)
+│   │   │   ├── queries.rs  # SessionStore trait impl (all SQL queries)
 │   │   │   └── tests.rs    # Database integration tests
 │   │   ├── git.rs          # Read-only git context for the system prompt (branch, diff, recent commits)
 │   │   ├── inference.rs    # Streaming inference loop + tool execution
@@ -41,7 +41,7 @@ koda/
 │   │   ├── model_alias.rs  # Curated model aliases (e.g. "sonnet" → exact model ID)
 │   │   ├── model_context.rs# Model → context window size lookup table (fallback)
 │   │   ├── output_caps.rs  # Output cap scaling based on context window size
-│   │   ├── persistence.rs  # Persistence trait — the database contract
+│   │   ├── session_store.rs  # SessionStore trait — the session storage contract
 │   │   ├── preview.rs      # Pre-confirmation diff previews for Edit/Write
 │   │   ├── prompt.rs       # System prompt construction
 │   │   ├── provider_catalog.rs # Static metadata for every supported provider

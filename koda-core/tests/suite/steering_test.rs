@@ -5,10 +5,10 @@
 use koda_core::engine::sink::TestSink;
 use koda_core::engine::{ApprovalDecision, EngineCommand, EngineEvent, EngineSink};
 use koda_core::loop_guard::LoopContinuation;
-use koda_core::persistence::Persistence;
 use koda_core::providers::mock::{MockProvider, MockResponse};
 use koda_core::providers::{ChatMessage, LlmProvider};
 use koda_core::session::KodaSession;
+use koda_core::session_store::SessionStore;
 use koda_core::tools::{ToolCatalog, ToolRegistry};
 use koda_core::trust::TrustMode;
 use koda_test_utils::Env;

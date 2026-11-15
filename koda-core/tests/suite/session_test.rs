@@ -7,9 +7,9 @@ use anyhow::Result;
 use async_trait::async_trait;
 use koda_core::{
     engine::{EngineCommand, EngineEvent, event::TurnEndReason},
-    persistence::Persistence,
     providers::{LlmResponse, ModelInfo},
     session::{KodaSession, SessionCancel},
+    session_store::SessionStore,
     tools::ToolRegistry,
     trust::TrustMode,
 };
@@ -404,11 +404,11 @@ async fn session_persists_messages_across_two_turns() {
         .expect("turn 2 should succeed");
 
     // Verify both turns' messages are in the DB.
-    let messages: Vec<koda_core::persistence::Message> =
+    let messages: Vec<koda_core::session_store::Message> =
         env.db.load_context(&env.session_id).await.unwrap();
     let contents: Vec<String> = messages
         .iter()
-        .filter_map(|m: &koda_core::persistence::Message| m.content.clone())
+        .filter_map(|m: &koda_core::session_store::Message| m.content.clone())
         .collect();
 
     assert!(

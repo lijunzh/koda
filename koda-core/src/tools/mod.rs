@@ -1185,7 +1185,7 @@ mod tests {
         std::sync::Arc<crate::db::Database>,
         String,
     ) {
-        use crate::persistence::Persistence;
+        use crate::session_store::SessionStore;
         let dir = tempfile::TempDir::new().unwrap();
         let db = std::sync::Arc::new(
             crate::db::Database::open(&dir.path().join("test.db"))
