@@ -18,7 +18,7 @@ koda-core = { path = "../koda-core", version = "0.6.4" }
 koda-protocol = { path = "../koda-protocol", version = "0.6.4" }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["rt", "sync", "macros", "time"] }
+tokio = { workspace = true, features = ["rt", "sync", "macros", "time", "io-util"] }
 tracing = { workspace = true }
 uuid = { workspace = true }
 # feedback/save: the ZIP, written through a temp file, as Codex writes its own.

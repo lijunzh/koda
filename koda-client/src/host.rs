@@ -2,7 +2,7 @@
 //!
 //! It takes requests in their wire form and answers with a JSON value or a
 //! JSON-RPC error, whatever the transport, so the in-process client and a
-//! later `koda serve` share one contract. Codex's in-process app-server
+//! `koda serve --stdio` ([`crate::stdio`]) share one contract. Codex's in-process app-server
 //! does the same (`app-server/src/in_process.rs`).
 //!
 //! Each request is answered on its own task, so a slow one never holds up

@@ -282,9 +282,10 @@ keeps its messages in its own session, linked to its parent by the
 
 ### One Client Protocol, and ACP Removed (P2)
 
-Koda has one client protocol, `koda-protocol` (below). `koda exec --json`
-prints it; it is output only so far, since the only clients are scripts and the
-eval harness, and the TUI runs in-process. It replaced `stream-json` in 0.7.0.
+Koda has one client protocol, `koda-protocol` (below). The TUI and `koda exec`
+speak it to a host in their own process, `koda exec --json` prints it, and
+`koda serve --stdio` serves it to another program on stdin and stdout, as
+`codex app-server` does. It replaced `stream-json` in 0.7.0.
 
 Koda used to speak ACP through `koda server --stdio`, on the theory that it
 would give us Zed integration for free. It was removed on 2026-11-01. Its input
@@ -293,9 +294,10 @@ ignored the requested workspace and session. Fixing that meant building a
 second protocol for a client nobody was using, and two half-built systems are
 worse than one working one (P2).
 
-Input over the wire waits for a client that needs it, and it has to start with
-a reader that never awaits the turn. Editor support, if it's ever wanted, is an
-adapter outside the core.
+Input over the wire had to start with a reader that never awaits the turn.
+`koda serve --stdio` has one: the host answers each request on its own task,
+so an approval's answer is read while the turn waits for it. Editor support,
+if it's ever wanted, is an adapter outside the core.
 
 ### The Client API: `koda-protocol` and `koda-client` (P2, P3)
 
@@ -303,8 +305,8 @@ Every client is to reach Koda through one API, as every Codex front end goes
 through its app-server. `koda-protocol` defines the messages; `koda-client`
 starts Koda's host and talks to it. The host owns the engine, and a client sends
 requests and reads answers. In process, a request and its response still pass
-through their JSON form, so the TUI, a spawned `koda serve --stdio` and a later
-shared server keep one contract.
+through their JSON form, so the TUI, `koda serve --stdio` and a later shared server
+keep one contract.
 
 The framing is JSON-RPC 2.0 with Codex's conventions: `initialize` first,
 `noun/verb` method names, camelCase fields, and Codex's error codes. Two things

@@ -18,6 +18,9 @@
 //! [`events::EventProjector`] turns a session's engine events into those
 //! messages; `koda exec --json` prints them.
 //!
+//! [`stdio::serve`] runs the same host for a client on the other end of a
+//! pipe, `koda serve --stdio`, as `codex app-server` serves stdio.
+//!
 //! The host builds every session's agent; a front end never hands it one.
 
 mod background;
@@ -33,6 +36,7 @@ mod memory;
 mod session;
 mod settings;
 mod skills;
+pub mod stdio;
 
 use std::fmt;
 use std::path::PathBuf;
@@ -176,57 +180,26 @@ impl InProcessClient {
         config: Option<KodaConfig>,
         sandbox: Option<koda_protocol::state::SandboxState>,
     ) -> Result<Self, RequestError> {
-        let db = Database::init(&args.home)
-            .await
-            .map_err(|e| RequestError::Database(format!("{e:#}")))?;
-        config_file::migrate(&db, &args.config_file).await;
-        let loaded = args.config_file.load().map_err(RequestError::Config)?;
-        let config = match config {
-            Some(config) => config,
-            None => config_file::host_config(&args.project_root, &loaded)
-                .map_err(RequestError::Agent)?,
-        };
-        let sandbox = match sandbox {
-            Some(sandbox) => sandbox,
-            // The check may start a process, so it runs off the async
-            // threads.
-            None => tokio::task::spawn_blocking(settings::probe_sandbox)
-                .await
-                .unwrap_or_else(|e| koda_protocol::state::SandboxState {
-                    backend: "none".to_string(),
-                    available: false,
-                    reason: Some(format!("the sandbox check failed: {e}")),
-                    setup_hint: None,
-                }),
-        };
-        let config_warnings = config_file::warnings(&args.config_file, &loaded);
-        // Commands any session starts may use local ports if the file says
-        // so; each new session takes the file again.
-        koda_core::sandbox::set_local_binding_configured(
-            loaded.config.sandbox.allow_local_binding.unwrap_or(false),
-        );
-        // Stored API keys reach the sessions through the environment; one
-        // already set there wins.
-        if let Err(e) = koda_core::keystore::inject_into_env(&db).await {
-            tracing::warn!("couldn't load the stored API keys: {e:#}");
-        }
-        let (events_tx, events) = mpsc::unbounded_channel();
-        let (commands, host) = host::spawn(HostArgs {
-            config,
-            config_file: args.config_file,
-            config_warnings,
-            project_root: args.project_root,
-            db,
-            sandbox,
-            events: events_tx,
-        });
-        let mut client = Self {
-            requests: RequestHandle {
-                commands,
-                next_id: Arc::new(AtomicI64::new(1)),
+        let StartArgs {
+            config_file,
+            project_root,
+            home,
+            client_info,
+        } = args;
+        let launched = launch(
+            HostStart {
+                config_file,
+                project_root,
+                home,
             },
-            host,
-            events,
+            config,
+            sandbox,
+        )
+        .await?;
+        let mut client = Self {
+            requests: launched.requests,
+            host: launched.host,
+            events: launched.events,
             server: InitializeResponse {
                 server_info: koda_protocol::initialize::ServerInfo {
                     name: String::new(),
@@ -236,9 +209,7 @@ impl InProcessClient {
             },
         };
         client.server = client
-            .request::<methods::Initialize>(InitializeParams {
-                client_info: args.client_info,
-            })
+            .request::<methods::Initialize>(InitializeParams { client_info })
             .await?;
         Ok(client)
     }
@@ -305,21 +276,101 @@ impl InProcessClient {
     /// running. Waits up to five
     /// seconds, then stops it by force.
     pub async fn shutdown(self) {
-        let Self {
-            requests, mut host, ..
-        } = self;
-        let commands = requests.commands;
-        let (done, stopped) = oneshot::channel();
-        if commands.send(HostCommand::Shutdown { done }).await.is_ok() {
-            let _ = tokio::time::timeout(SHUTDOWN_TIMEOUT, stopped).await;
+        stop_host(&self.requests.commands, self.host).await;
+    }
+}
+
+/// Where a host keeps its state and works.
+pub(crate) struct HostStart {
+    pub config_file: ConfigFile,
+    pub project_root: PathBuf,
+    pub home: PathBuf,
+}
+
+/// A running host, not yet initialized: the way in, its task, and its
+/// queue of notifications and server requests.
+pub(crate) struct Launched {
+    pub requests: RequestHandle,
+    pub host: JoinHandle<()>,
+    pub events: mpsc::UnboundedReceiver<Outgoing>,
+}
+
+/// Open the database, read the config and start a host. Its client sends
+/// `initialize`: the in-process client itself, a `koda serve` client over
+/// the wire.
+pub(crate) async fn launch(
+    args: HostStart,
+    config: Option<KodaConfig>,
+    sandbox: Option<koda_protocol::state::SandboxState>,
+) -> Result<Launched, RequestError> {
+    let db = Database::init(&args.home)
+        .await
+        .map_err(|e| RequestError::Database(format!("{e:#}")))?;
+    config_file::migrate(&db, &args.config_file).await;
+    let loaded = args.config_file.load().map_err(RequestError::Config)?;
+    let config = match config {
+        Some(config) => config,
+        None => {
+            config_file::host_config(&args.project_root, &loaded).map_err(RequestError::Agent)?
         }
-        if tokio::time::timeout(SHUTDOWN_TIMEOUT, &mut host)
+    };
+    let sandbox = match sandbox {
+        Some(sandbox) => sandbox,
+        // The check may start a process, so it runs off the async
+        // threads.
+        None => tokio::task::spawn_blocking(settings::probe_sandbox)
             .await
-            .is_err()
-        {
-            tracing::warn!("Koda's host didn't stop in time; stopping it by force");
-            host.abort();
-        }
+            .unwrap_or_else(|e| koda_protocol::state::SandboxState {
+                backend: "none".to_string(),
+                available: false,
+                reason: Some(format!("the sandbox check failed: {e}")),
+                setup_hint: None,
+            }),
+    };
+    let config_warnings = config_file::warnings(&args.config_file, &loaded);
+    // Commands any session starts may use local ports if the file says
+    // so; each new session takes the file again.
+    koda_core::sandbox::set_local_binding_configured(
+        loaded.config.sandbox.allow_local_binding.unwrap_or(false),
+    );
+    // Stored API keys reach the sessions through the environment; one
+    // already set there wins.
+    if let Err(e) = koda_core::keystore::inject_into_env(&db).await {
+        tracing::warn!("couldn't load the stored API keys: {e:#}");
+    }
+    let (events_tx, events) = mpsc::unbounded_channel();
+    let (commands, host) = host::spawn(HostArgs {
+        config,
+        config_file: args.config_file,
+        config_warnings,
+        project_root: args.project_root,
+        db,
+        sandbox,
+        events: events_tx,
+    });
+    Ok(Launched {
+        requests: RequestHandle {
+            commands,
+            next_id: Arc::new(AtomicI64::new(1)),
+        },
+        host,
+        events,
+    })
+}
+
+/// Stop a host, stopping running turns and cancelling requests still
+/// running. Waits up to five seconds, then stops it by force.
+pub(crate) async fn stop_host(commands: &mpsc::Sender<HostCommand>, mut host: JoinHandle<()>) {
+    let (done, stopped) = oneshot::channel();
+    if commands.send(HostCommand::Shutdown { done }).await.is_ok() {
+        let _ = tokio::time::timeout(SHUTDOWN_TIMEOUT, stopped).await;
+    }
+    if tokio::time::timeout(SHUTDOWN_TIMEOUT, &mut host)
+        .await
+        .is_err()
+    {
+        tracing::warn!("Koda's host didn't stop in time; stopping it by force");
+        host.abort();
     }
 }
 
