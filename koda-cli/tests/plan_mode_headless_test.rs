@@ -13,11 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 fn koda_bin() -> String {
-    let mut path = std::env::current_exe().unwrap();
-    path.pop(); // test binary name
-    path.pop(); // deps/
-    path.push("koda");
-    path.to_string_lossy().to_string()
+    env!("CARGO_BIN_EXE_koda").to_string()
 }
 
 fn sse(chunks: &[Value]) -> ResponseTemplate {

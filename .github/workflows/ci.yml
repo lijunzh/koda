@@ -55,7 +55,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
-          toolchain: 1.99.1 # = rust-toolchain.toml (pin guarded in ci.yml)
+          toolchain: 1.100.0 # = rust-toolchain.toml (pin guarded in ci.yml)
           components: rustfmt
       # No rust-cache — fmt doesn't compile anything. Skipping cache saves
       # the ~10s setup overhead and keeps the job at ~30s end-to-end.
@@ -113,7 +113,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
-          toolchain: 1.99.1 # = rust-toolchain.toml (pin guarded in ci.yml)
+          toolchain: 1.100.0 # = rust-toolchain.toml (pin guarded in ci.yml)
           components: clippy
       - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2.8.1
         with:
@@ -134,7 +134,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
-          toolchain: 1.99.1 # = rust-toolchain.toml (pin guarded in ci.yml)
+          toolchain: 1.100.0 # = rust-toolchain.toml (pin guarded in ci.yml)
       - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2.8.1
         with:
           shared-key: check-Linux
@@ -160,7 +160,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
-          toolchain: 1.99.1 # = rust-toolchain.toml (pin guarded in ci.yml)
+          toolchain: 1.100.0 # = rust-toolchain.toml (pin guarded in ci.yml)
       - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2.8.1
         with:
           shared-key: ci-${{ runner.os }}
@@ -315,7 +315,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
-          toolchain: 1.99.1 # = rust-toolchain.toml (pin guarded in ci.yml)
+          toolchain: 1.100.0 # = rust-toolchain.toml (pin guarded in ci.yml)
       - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2.8.1
         with:
           shared-key: doc  # stable across branches & workflow edits
@@ -387,7 +387,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         if: steps.scope.outputs.run == 'true'
         with:
-          toolchain: 1.99.1 # = rust-toolchain.toml (pin guarded in ci.yml)
+          toolchain: 1.100.0 # = rust-toolchain.toml (pin guarded in ci.yml)
       # A prebuilt cargo-audit: `cargo install` compiled it from source each
       # time a cache missed. It reads Cargo.lock and builds nothing, so the
       # job needs no Rust cache.
