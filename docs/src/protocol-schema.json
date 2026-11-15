@@ -2930,14 +2930,8 @@
       "type": "object"
     },
     "TokenUsage": {
-      "description": "A session's token counts. Codex's `ThreadTokenUsage`, plus\n`contextTokens`.",
+      "description": "A session's token counts. Codex's `ThreadTokenUsage`.",
       "properties": {
-        "contextTokens": {
-          "description": "The tokens in the context now: Koda's count of what goes to the next\nmodel call, then the provider's count once a turn's last call is\ndone. Koda's own. Codex's TUI reads `last.totalTokens`, which moves\nonly after a call returns; Koda's meter moves before one, which a\nslow local model makes worth it.",
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
         "last": {
           "$ref": "#/$defs/TokenUsageBreakdown",
           "description": "The latest model call of the session's own: not a sub-agent's."
@@ -2958,8 +2952,7 @@
       },
       "required": [
         "total",
-        "last",
-        "contextTokens"
+        "last"
       ],
       "type": "object"
     },

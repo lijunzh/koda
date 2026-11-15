@@ -75,7 +75,8 @@ pub enum MenuContent {
     /// Approval hotkey bar — shown during inference when the engine requests
     /// a tool approval (`y`/`s`/`n`/`f`/`a`).
     Approval {
-        id: String,
+        /// The host's request this answers.
+        id: koda_client::protocol::rpc::RequestId,
         tool_name: String,
         detail: String,
         /// Whether `s` (yes for the rest of the session) is offered.
@@ -83,14 +84,15 @@ pub enum MenuContent {
     },
     /// AskUser input bar — the model is asking a clarifying question.
     AskUser {
-        id: String,
+        /// The host's request this answers.
+        id: koda_client::protocol::rpc::RequestId,
         question: String,
         options: Vec<String>,
     },
     /// Loop cap hotkey bar — continue or stop after the iteration limit is hit.
     LoopCap {
         /// The request this answers.
-        id: String,
+        id: koda_client::protocol::rpc::RequestId,
     },
     /// Ctrl+R reverse history search overlay.
     HistorySearch {

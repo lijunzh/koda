@@ -41,7 +41,6 @@ pub(crate) mod panic_log;
 pub(crate) mod protocol_text;
 pub(crate) mod retired_env;
 pub(crate) mod scroll_buffer;
-pub(crate) mod sink;
 pub(crate) mod startup;
 pub(crate) mod theme;
 pub(crate) mod tool_header;

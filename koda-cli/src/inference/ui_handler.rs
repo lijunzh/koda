@@ -1,90 +1,60 @@
-//! Engine→UI rendering during inference.
+//! The host's requests during inference become the TUI's dialogs.
 //!
 //! One free function called from
-//! [`super::select_loop::TuiContext::run_inference_turn`]'s
-//! `SelectArm::Ui` arm (and again inside the bounded drain that
-//! amortises a flood of events into one redraw).
-//!
-//! Variant-specific arms handle approval prompts, ask-user, and the
-//! loop-cap pill. The fall-through arm is the firehose: every other
-//! engine event passes through `TuiRenderer::render_to_buffer`, with a
-//! mandatory tap into `ChildActivityTracker` for `ChildAgentActivity`
-//! events so the bg-activity overlay stays live (#1207, #1210).
+//! [`super::select_loop::TuiContext::run_inference_turn`] for each request
+//! of the running turn: an approval (its diff drawn above the dialog), a
+//! question from the model, and the loop cap. The dialog keeps the
+//! request's id, and its answer goes back as the response to it
+//! ([`super::TurnCommand::Answer`]).
 
 use crate::scroll_buffer::ScrollBuffer;
-use crate::sink::UiEvent;
 use crate::tui_types::{MenuContent, PromptMode};
 
-use koda_core::engine::EngineEvent;
+use koda_client::protocol::ServerRequest;
 use ratatui::{
     style::{Color, Style},
     text::{Line, Span},
 };
 
-/// Handle a UI event during inference (field-level borrows).
-pub(super) fn handle_inference_ui_inline(
-    ui_event: UiEvent,
+/// Show `request` as its dialog (field-level borrows).
+pub(super) fn show_request(
+    request: &ServerRequest,
     buffer: &mut ScrollBuffer,
     menu: &mut MenuContent,
     prompt_mode: &mut PromptMode,
     renderer: &mut crate::tui_render::TuiRenderer,
-    child_activity: &mut crate::child_activity::ChildActivityTracker,
 ) {
-    match ui_event {
-        UiEvent::Engine(EngineEvent::AskUserRequest {
-            id,
-            question,
-            options,
-            ..
-        }) => {
+    match request {
+        ServerRequest::UserInput { id, params } => {
+            renderer.question(&params.item_id);
             *prompt_mode = PromptMode::WizardInput {
                 label: "Answer".into(),
                 mask: false,
             };
             *menu = MenuContent::AskUser {
-                id,
-                question,
-                options,
+                id: id.clone(),
+                question: params.question.clone(),
+                options: params.options.clone(),
             };
         }
-        UiEvent::Engine(EngineEvent::ApprovalRequest {
-            id,
-            tool_name,
-            detail,
-            preview,
-            allow_for_session,
-            ..
-        }) => {
-            if preview.is_some() {
-                renderer.preview_shown = true;
-            }
-            if let Some(ref prev) = preview {
-                let diff_lines = crate::diff_render::render_lines(prev);
-                let gutter = crate::diff_render::GUTTER_WIDTH;
-                for line in diff_lines {
-                    buffer.push_with_gutter(line, gutter);
-                }
-            }
+        ServerRequest::ToolCallApproval { id, params } => {
+            renderer.approval(&params.item_id, &params.changes, buffer);
             *menu = MenuContent::Approval {
-                id,
-                tool_name,
-                detail,
-                allow_for_session,
+                id: id.clone(),
+                tool_name: params.tool.clone(),
+                detail: params.detail.clone(),
+                allow_for_session: params.allow_for_session,
             };
         }
-        UiEvent::Engine(EngineEvent::LoopCapReached {
-            id,
-            cap,
-            recent_tools,
-        }) => {
+        ServerRequest::LoopCap { id, params } => {
             buffer.push(Line::from(vec![
                 Span::raw("  "),
                 Span::styled(
-                    format!("\u{26a0} Hard cap reached ({cap} iterations)"),
+                    format!("\u{26a0} Hard cap reached ({} iterations)", params.cap),
                     Style::default().fg(Color::Yellow),
                 ),
             ]));
-            for name in &recent_tools {
+            for name in &params.recent_tools {
                 buffer.push(Line::from(vec![
                     Span::raw("    "),
                     Span::styled(
@@ -93,28 +63,7 @@ pub(super) fn handle_inference_ui_inline(
                     ),
                 ]));
             }
-            *menu = MenuContent::LoopCap { id };
-        }
-        UiEvent::Engine(event) => {
-            // Tap bg-activity events into the live tracker BEFORE the
-            // renderer no-ops them (#1207 dropped scroll output for
-            // ChildAgentActivity; #1210 routes them to the activity
-            // overlay instead). Done here so every fall-through engine
-            // event passes through the same tap point — no risk of a
-            // future variant-specific arm bypassing it.
-            match &event {
-                EngineEvent::ChildAgentActivity { task_id, kind, .. } => {
-                    child_activity.record_activity(*task_id, kind);
-                }
-                EngineEvent::ChildTaskUpdate {
-                    task_id,
-                    agent_name,
-                    status,
-                    ..
-                } => child_activity.record_status(*task_id, agent_name, status),
-                _ => {}
-            }
-            renderer.render_to_buffer(event, buffer);
+            *menu = MenuContent::LoopCap { id: id.clone() };
         }
     }
 }

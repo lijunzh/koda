@@ -1811,8 +1811,9 @@ async fn a_compaction_during_a_turn_lets_the_turn_go_on() {
     let mut tui = Tui::start_with_model(home.path(), &server.url());
 
     tui.submit("first prompt");
-    // The replies scroll it off the screen; it is in the output.
-    tui.wait_for_output("compacting before sending");
+    // The replies scroll it off the screen; it is in the output. The words
+    // are the TUI's own, from the compaction item (`protocol_text`).
+    tui.wait_for_output("% \u{2014} compacting...");
     let sent = wait_for_model_call(&server, 7).await;
     assert!(
         sent.contains("OLDEST-REPLY-MARKER"),
@@ -1988,6 +1989,102 @@ async fn a_sub_agent_row_shows_while_it_works() {
     );
     tui.wait_for_screen("All done.");
     tui.wait_for_screen_without("Esc to interrupt");
+}
+
+/// A non-streamed reply that calls `name` with `arguments`, as a sub-agent
+/// asks for one.
+fn json_tool_call(name: &str, arguments: Value) -> ResponseTemplate {
+    ResponseTemplate::new(200)
+        .insert_header("content-type", "application/json")
+        .set_body_string(
+            json!({
+                "id": "c", "object": "chat.completion", "model": "stub-model",
+                "choices": [{"index": 0, "finish_reason": "tool_calls",
+                             "message": {"role": "assistant", "content": null,
+                                         "tool_calls": [{"id": "sub_call_1", "type": "function",
+                                                         "function": {"name": name,
+                                                                      "arguments": arguments.to_string()}}]}}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
+            })
+            .to_string(),
+        )
+}
+
+/// A sub-agent's calls are in the full view only, and its call sums it up
+/// when it ends, as Claude Code shows a sub-agent (6h-b2).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sub_agents_calls_fold_into_done() {
+    let invoke = tool_calls(&[(
+        "InvokeAgent",
+        json!({"agent_name": "explore", "prompt": "look around"}),
+    )]);
+    // Sub-agents call the model without streaming.
+    let server = scripted_model(vec![
+        invoke,
+        json_tool_call("Read", json!({"file_path": "WOMBAT-NOTES.md"})),
+        json_reply("SUB-AGENT-ANSWER"),
+    ])
+    .await;
+    let home = home();
+    std::fs::write(home.path().join("WOMBAT-NOTES.md"), "a line\n").unwrap();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.submit("first prompt");
+    tui.wait_for_screen("All done.");
+    tui.wait_for_screen("Done (1 tool use");
+    assert!(!tui.screen().contains("WOMBAT-NOTES"), "{}", tui.screen());
+
+    tui.type_text(CTRL_O);
+    tui.wait_for_screen("WOMBAT-NOTES");
+}
+
+/// An edit's approval shows its diff above the dialog, drawn from the
+/// request's `changes` (6h-b2), and the edit runs once approved.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_edits_approval_shows_its_diff() {
+    let edit = json!({"file_path": "a.txt", "old_str": "old line", "new_str": "new line"});
+    let server = scripted_model(vec![
+        // Koda edits only a file the model has read.
+        tool_calls(&[("Read", json!({"file_path": "a.txt"}))]),
+        tool_calls(&[("Edit", edit)]),
+    ])
+    .await;
+    let home = home();
+    std::fs::write(home.path().join("a.txt"), "old line\n").unwrap();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.submit("edit it");
+    tui.wait_for_output("approve");
+    tui.wait_for_screen("1 - old line");
+    tui.wait_for_screen("1 + new line");
+    tui.type_text("y");
+    tui.wait_for_screen("All done.");
+    let content = std::fs::read_to_string(home.path().join("a.txt")).unwrap();
+    assert_eq!(content, "new line\n");
+}
+
+/// The status bar says how much context is left after a call, as Codex's
+/// footer does, and the turn ends saying how long it worked (6h-b2).
+#[tokio::test(flavor = "multi_thread")]
+async fn the_status_bar_says_how_much_context_is_left() {
+    // 38,000 of the 64,000-token window: with Codex's 12,000-token
+    // baseline left out of both, half is left.
+    let reply = sse(&[
+        json!({"choices": [{"delta": {"content": "All done."}}]}),
+        json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+        json!({"choices": [], "usage": {
+            "prompt_tokens": 37_990, "completion_tokens": 10, "total_tokens": 38_000,
+        }}),
+    ]);
+    let server = scripted_model(vec![reply]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.wait_for_screen("100% context left");
+    tui.submit("first prompt");
+    tui.wait_for_screen("All done.");
+    tui.wait_for_screen("50% context left");
+    tui.wait_for_screen("Worked for");
 }
 
 /// `/agents` lists the built-in agents and the project's own, through the

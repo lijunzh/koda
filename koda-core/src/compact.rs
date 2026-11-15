@@ -289,6 +289,7 @@ pub async fn compact_session_with_provider(
     let mut cap = first_cap;
     let mut attempts = 0u32;
     let mut usage = crate::providers::TokenUsage::default();
+    let mut context_tokens = 0;
     let (summary, reply) = loop {
         attempts += 1;
         let compact_settings = ModelSettings {
@@ -308,6 +309,7 @@ pub async fn compact_session_with_provider(
         usage.cache_read_tokens += response.usage.cache_read_tokens;
         usage.cache_creation_tokens += response.usage.cache_creation_tokens;
         usage.thinking_tokens += response.usage.thinking_tokens;
+        context_tokens += provider.context_tokens(&response.usage);
         crate::inference_helpers::ModelCall {
             purpose: "compaction",
             system_hash: None,
@@ -441,6 +443,7 @@ pub async fn compact_session_with_provider(
         no_summary,
         usage: crate::engine::UsageTotals {
             api_calls: i64::from(attempts),
+            context_tokens,
             ..(&usage).into()
         },
     }))

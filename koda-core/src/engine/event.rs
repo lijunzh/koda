@@ -625,9 +625,37 @@ pub struct UsageTotals {
     pub thinking_tokens: i64,
     /// Model calls that finished.
     pub api_calls: i64,
+    /// Input tokens with the cached ones: what the calls put in the context
+    /// window, as [`LlmProvider::context_tokens`] reads the provider's
+    /// report. Anthropic leaves cached tokens out of `prompt_tokens`; the
+    /// others count them in. Zero when unknown.
+    ///
+    /// [`LlmProvider::context_tokens`]: crate::providers::LlmProvider::context_tokens
+    pub context_tokens: i64,
 }
 
 impl UsageTotals {
+    /// One finished call, read with its provider's rule for cached tokens.
+    pub fn of_call(
+        provider: &dyn crate::providers::LlmProvider,
+        usage: &crate::providers::TokenUsage,
+    ) -> Self {
+        Self {
+            context_tokens: provider.context_tokens(usage),
+            ..usage.into()
+        }
+    }
+
+    /// Input tokens with the cached ones: `context_tokens` when the
+    /// provider's rule gave it, `prompt_tokens` otherwise.
+    pub fn input_tokens(&self) -> i64 {
+        if self.context_tokens > 0 {
+            self.context_tokens
+        } else {
+            self.prompt_tokens
+        }
+    }
+
     /// Add `other` to these totals.
     pub fn add(&mut self, other: &Self) {
         self.prompt_tokens += other.prompt_tokens;
@@ -636,6 +664,7 @@ impl UsageTotals {
         self.cache_creation_tokens += other.cache_creation_tokens;
         self.thinking_tokens += other.thinking_tokens;
         self.api_calls += other.api_calls;
+        self.context_tokens += other.context_tokens;
     }
 }
 
@@ -649,6 +678,7 @@ impl From<&crate::providers::TokenUsage> for UsageTotals {
             cache_creation_tokens: usage.cache_creation_tokens,
             thinking_tokens: usage.thinking_tokens,
             api_calls: 1,
+            context_tokens: 0,
         }
     }
 }
@@ -662,6 +692,7 @@ impl From<&crate::persistence::SessionUsage> for UsageTotals {
             cache_creation_tokens: usage.cache_creation_tokens,
             thinking_tokens: usage.thinking_tokens,
             api_calls: usage.api_calls,
+            context_tokens: 0,
         }
     }
 }

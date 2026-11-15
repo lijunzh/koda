@@ -1,4 +1,5 @@
-//! TUI renderer: converts EngineEvents to native ratatui `Line`s.
+//! TUI renderer: draws a turn from the client protocol's messages as
+//! native ratatui `Line`s.
 //!
 //! All output is rendered as `ratatui::text::Line` / `Span` and written
 //! above the viewport via `insert_before()`. No ANSI strings.
@@ -6,9 +7,9 @@
 //! ## Pipeline
 //!
 //! ```text
-//! EngineEvent (from koda_core)
+//! ServerNotification (from Koda's host), approval requests
 //!     ↓
-//! TuiRenderer::render_to_buffer()
+//! TuiRenderer::render(), TuiRenderer::approval()
 //!     ↓  assembles styled Line<'static> values
 //! ScrollBuffer::push()            ← render cache (VecDeque)
 //!     ↓
@@ -19,16 +20,23 @@
 //!
 //! ## Streaming text
 //!
-//! `TextDelta` events accumulate in `text_buf`. Complete lines (split at `\n`)
-//! are flushed through the markdown renderer ([`crate::md_render`]) immediately
-//! so the user sees progressive output. The partial tail is flushed on `TextDone`.
+//! `item/agentMessage/delta` text accumulates in `text_buf`. Complete lines
+//! (split at `\n`) are flushed through the markdown renderer
+//! ([`crate::md_render`]) immediately so the user sees progressive output.
+//! The partial tail is flushed when the item completes.
 //!
 //! ## Tool output
 //!
-//! `ToolOutputLine` events stream output in real time during long-running
-//! tool calls (e.g. `cargo build`). When `ToolCallResult` arrives, if output
-//! was already streamed the renderer just shows a compact exit-line summary
-//! rather than duplicating all output.
+//! `item/toolCall/outputDelta` streams output in real time during
+//! long-running tool calls (e.g. `cargo build`). When the call's item
+//! completes, if output was already streamed the renderer folds it and
+//! shows the exit line rather than drawing all output again.
+//!
+//! ## Sub-agents
+//!
+//! A sub-agent's calls (`parentItemId` set) go in the full view only, as
+//! Claude Code lists them when expanded; the overlay shows the latest while
+//! it runs. When it ends, its call sums it up: `Done (3 tool uses · 12s)`.
 //!
 //! ## Verbose mode
 //!
@@ -36,48 +44,70 @@
 //! [`koda_core::truncate`]-based collapsing. Every output line is shown.
 
 use crate::ansi_parse::parse_ansi_spans;
+use crate::protocol_text::{self, Tone};
 use crate::scroll_buffer::Fold;
 use crate::scroll_buffer::ScrollBuffer;
 use crate::theme;
-use crate::tui_output::{self, CYAN, DIM, MAGENTA, RED, TOOL_PREFIX, YELLOW};
-use crate::widgets::status_bar::TurnStats;
-use koda_core::engine::EngineEvent;
+use crate::tui_output::{self, CYAN, DIM, RED, TOOL_PREFIX, YELLOW};
+use koda_client::protocol::ServerNotification;
+use koda_client::protocol::item::{FileUpdateChange, Item, OutputStream, ToolCallStatus};
 use ratatui::{
     style::{Color, Style},
     text::{Line, Span},
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
-/// TUI-aware renderer that outputs above the viewport.
+/// A tool call the renderer saw start.
+struct Call {
+    tool: String,
+    arguments: serde_json::Value,
+    /// The call it runs under: a sub-agent's `InvokeAgent`.
+    parent: Option<String>,
+    /// Where in the buffer its first streamed output line went. The finished
+    /// result isn't drawn again; the streamed lines are folded in place
+    /// ([`ScrollBuffer::fold_since`]).
+    stream_start: Option<u64>,
+}
+
+/// A sub-agent at work: its `InvokeAgent` call, for the line that sums it up.
+struct AgentRun {
+    started: Instant,
+    /// Tool calls it has made.
+    calls: usize,
+}
+
+/// Draws a turn from the protocol's messages into the scroll buffer.
 pub struct TuiRenderer {
     /// Recent tool outputs for `/expand` replay.
     pub tool_history: crate::tool_history::ToolOutputHistory,
-    /// Last turn stats for status bar display.
-    pub last_turn_stats: Option<TurnStats>,
     /// Current model name displayed in the status bar.
     pub model: String,
-    /// Buffer for streaming text deltas (flushed line-by-line).
+    /// Reply text not yet drawn: everything after its last `\n`.
     text_buf: String,
-    /// Buffer for streaming thinking deltas.
+    /// Reasoning text not yet drawn.
     think_buf: String,
-    /// Set when an ApprovalRequest with a preview was shown.
-    pub preview_shown: bool,
-    /// Whether we've emitted any text content for the current response.
+    /// Whether the reply item has drawn a line yet.
     has_emitted_text: bool,
-    /// Whether we've emitted the response banner for this turn.
-    response_started: bool,
+    /// Whether the reply item has drawn its `───` line yet.
+    ruled: bool,
     /// Streaming markdown renderer.
     md: crate::md_render::MarkdownRenderer,
-    /// Pending tool call args: maps tool_call_id → (tool_name, args_json).
-    /// Used to extract file paths for syntax highlighting Read/Grep results.
-    pending_tool_args: HashMap<String, (String, String)>,
-    /// Tool calls that streamed output lines, with where in the buffer the
-    /// first one went. The finished result isn't rendered again; the
-    /// streamed lines are folded in place ([`ScrollBuffer::fold_since`]).
-    stream_starts: HashMap<String, u64>,
-    /// Calls a sub-agent made. Their results aren't shown: the sub-agent's
-    /// answer is.
-    sub_agent_calls: std::collections::HashSet<String>,
+    /// The session's own reply and reasoning items being drawn. A
+    /// sub-agent's text isn't sent: its answer is.
+    messages: HashSet<String>,
+    reasoning: HashSet<String>,
+    /// Tool calls started and not yet completed, by item id.
+    calls: HashMap<String, Call>,
+    /// Calls an approval asked about: a refusal is the user's, not a block.
+    asked: HashSet<String>,
+    /// Calls whose changes an approval drew, so a finished Write or Edit
+    /// says only how long it is.
+    changes_shown: HashSet<String>,
+    /// Sub-agents at work, by their `InvokeAgent` call.
+    agents: HashMap<String, AgentRun>,
+    /// The turn's error was drawn, so its end needn't say it again.
+    error_shown: bool,
 }
 
 impl Default for TuiRenderer {
@@ -90,49 +120,130 @@ impl TuiRenderer {
     pub fn new() -> Self {
         Self {
             tool_history: crate::tool_history::ToolOutputHistory::new(),
-            last_turn_stats: None,
             model: String::new(),
             text_buf: String::new(),
             think_buf: String::new(),
-            preview_shown: false,
             has_emitted_text: false,
-            response_started: false,
+            ruled: false,
             md: crate::md_render::MarkdownRenderer::new(),
-            pending_tool_args: HashMap::new(),
-            stream_starts: HashMap::new(),
-            sub_agent_calls: std::collections::HashSet::new(),
+            messages: HashSet::new(),
+            reasoning: HashSet::new(),
+            calls: HashMap::new(),
+            asked: HashSet::new(),
+            changes_shown: HashSet::new(),
+            agents: HashMap::new(),
+            error_shown: false,
         }
     }
 
-    /// Render an engine event into the scroll buffer.
-    pub fn render_to_buffer(&mut self, event: EngineEvent, buffer: &mut ScrollBuffer) {
-        match event.notice().unwrap_or(event) {
-            EngineEvent::TextDelta { text } => {
-                self.text_buf.push_str(&text);
-                // Flush complete lines (skip leading blank lines)
-                while let Some(pos) = self.text_buf.find('\n') {
-                    let line_text = self.text_buf[..pos].to_string();
-                    self.text_buf = self.text_buf[pos + 1..].to_string();
-                    // Skip empty lines at the very start of a response
-                    if line_text.is_empty() && !self.has_emitted_text {
-                        continue;
-                    }
-                    self.has_emitted_text = true;
-                    tui_output::emit_line(buffer, self.md.render_line(&line_text));
+    /// Forget the last turn's state as a new one starts.
+    pub fn start_turn(&mut self) {
+        let tool_history = std::mem::take(&mut self.tool_history);
+        let model = std::mem::take(&mut self.model);
+        *self = Self {
+            tool_history,
+            model,
+            ..Self::new()
+        };
+    }
+
+    /// Whether the turn's error was drawn already.
+    pub fn error_shown(&self) -> bool {
+        self.error_shown
+    }
+
+    /// An approval request: its diff goes above the dialog.
+    pub fn approval(
+        &mut self,
+        item_id: &str,
+        changes: &[FileUpdateChange],
+        buffer: &mut ScrollBuffer,
+    ) {
+        self.asked.insert(item_id.to_string());
+        if !changes.is_empty() {
+            self.changes_shown.insert(item_id.to_string());
+            push_changes(changes, buffer);
+        }
+    }
+
+    /// A question to the user: what the call does is the question.
+    pub fn question(&mut self, item_id: &str) {
+        self.asked.insert(item_id.to_string());
+    }
+
+    /// Draw one of the session's notifications.
+    pub fn render(&mut self, notification: &ServerNotification, buffer: &mut ScrollBuffer) {
+        match notification {
+            ServerNotification::ItemStarted(started) => {
+                self.item_started(started.parent_item_id.as_deref(), &started.item, buffer);
+            }
+            ServerNotification::ItemCompleted(done) => {
+                self.item_completed(done.parent_item_id.as_deref(), &done.item, buffer);
+            }
+            ServerNotification::AgentMessageDelta(delta)
+                if self.messages.contains(&delta.item_id) =>
+            {
+                self.reply_text(&delta.delta, buffer);
+            }
+            ServerNotification::ReasoningTextDelta(delta)
+                if self.reasoning.contains(&delta.item_id) =>
+            {
+                self.think_buf.push_str(&delta.delta);
+                while let Some(pos) = self.think_buf.find('\n') {
+                    let line = self.think_buf[..pos].to_string();
+                    self.think_buf.drain(..=pos);
+                    tui_output::emit_line(buffer, thinking_line(line));
                 }
             }
-            EngineEvent::TextDone => {
-                // Flush remaining partial line
-                if !self.text_buf.is_empty() {
-                    let remaining = std::mem::take(&mut self.text_buf);
-                    tui_output::emit_line(buffer, self.md.render_line(&remaining));
-                }
-                self.response_started = false;
+            ServerNotification::ToolCallOutputDelta(delta) => {
+                self.output(&delta.item_id, &delta.delta, delta.stream, buffer);
+            }
+            ServerNotification::ToolCallProgress(progress) => {
+                tui_output::emit_line(
+                    buffer,
+                    Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(progress.message.clone(), CYAN),
+                    ]),
+                );
+            }
+            ServerNotification::TurnLoopGuard(guard) => notice(
+                (
+                    Tone::Warn,
+                    protocol_text::loop_guard(guard.action, &guard.detail),
+                ),
+                buffer,
+            ),
+            ServerNotification::Warning(warning) => {
+                notice((Tone::Warn, warning.message.clone()), buffer);
+            }
+            // A retry's notice says what happened and when Koda tries again.
+            ServerNotification::Error(error) if error.will_retry => {
+                notice((Tone::Warn, error.error.message.clone()), buffer);
+            }
+            ServerNotification::Error(error) => {
+                self.error_shown = true;
+                tui_output::emit_line(
+                    buffer,
+                    Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(format!("\u{2717} {}", error.error.message), RED),
+                    ]),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    fn item_started(&mut self, parent: Option<&str>, item: &Item, buffer: &mut ScrollBuffer) {
+        match item {
+            Item::AgentMessage { id, .. } if parent.is_none() => {
+                self.messages.insert(id.clone());
                 self.has_emitted_text = false;
-                // Reset markdown state for the next response
-                self.md = crate::md_render::MarkdownRenderer::new();
+                self.ruled = false;
             }
-            EngineEvent::ThinkingStart => {
+            Item::Reasoning { id, .. } if parent.is_none() => {
+                self.reasoning.insert(id.clone());
                 self.think_buf.clear();
                 tui_output::emit_line(
                     buffer,
@@ -142,272 +253,326 @@ impl TuiRenderer {
                     ]),
                 );
             }
-            EngineEvent::ThinkingDelta { text } => {
-                self.think_buf.push_str(&text);
-                // Emit complete lines immediately
-                while let Some(pos) = self.think_buf.find('\n') {
-                    let line_text = self.think_buf[..pos].to_string();
-                    self.think_buf = self.think_buf[pos + 1..].to_string();
-                    tui_output::emit_line(
-                        buffer,
-                        Line::from(vec![
-                            Span::styled("  \u{2502} ", DIM),
-                            Span::styled(line_text, DIM),
-                        ]),
-                    );
-                }
-            }
-            EngineEvent::ThinkingDone if !self.think_buf.is_empty() => {
-                let remaining = std::mem::take(&mut self.think_buf);
-                tui_output::emit_line(
-                    buffer,
-                    Line::from(vec![
-                        Span::styled("  \u{2502} ", DIM),
-                        Span::styled(remaining, DIM),
-                    ]),
-                );
-            }
-            EngineEvent::ResponseStart => {
-                self.response_started = true;
-                tui_output::emit_line(buffer, Line::styled("  \u{2500}\u{2500}\u{2500}", DIM));
-            }
-            EngineEvent::ToolCallStart {
+            Item::ToolCall {
                 id,
-                name,
-                args,
-                is_sub_agent,
-            } => {
-                // Track args for syntax highlighting in ToolCallResult
-                self.pending_tool_args
-                    .insert(id.clone(), (name.clone(), args.to_string()));
-                if is_sub_agent {
-                    self.sub_agent_calls.insert(id.clone());
-                }
-                let indent = if is_sub_agent { "  " } else { "" };
-                let line = crate::tool_header::build_header_line(indent, &name, &args);
-                tui_output::emit_line(buffer, line);
-            }
-            EngineEvent::ToolOutputLine {
-                id,
-                line,
-                is_stderr,
-            } => {
-                self.stream_starts
-                    .entry(id.clone())
-                    .or_insert_with(|| buffer.next_seq());
-                // Pull the body color from the central theme module so
-                // read-only output stays legible (#804) and stderr is
-                // always red regardless of which tool produced it.
-                let tool_name = self
-                    .pending_tool_args
-                    .get(&id)
-                    .map(|(n, _)| n.as_str())
-                    .unwrap_or("");
-                let prefix = if is_stderr {
-                    "  \u{2502}e "
-                } else {
-                    "  \u{2502} "
-                };
-                let content_style = theme::content_style_for(tool_name, is_stderr);
-                tui_output::emit_line(
-                    buffer,
-                    Line::from(vec![
-                        Span::styled(prefix, TOOL_PREFIX),
-                        Span::styled(line, content_style),
-                    ]),
-                );
-            }
-            EngineEvent::ToolCallResult {
-                id,
-                name,
-                output,
-                outcome,
-            } => {
-                // A call that never ran was shown as its approval or block;
-                // a sub-agent's call shows as its header and live lines.
-                let sub_agent = self.sub_agent_calls.remove(&id);
-                if sub_agent || !outcome.ran() {
-                    self.stream_starts.remove(&id);
-                    self.pending_tool_args.remove(&id);
-                    return;
-                }
-                let failed = outcome == koda_core::engine::event::ToolOutcome::Error;
-                // If we streamed output lines, skip rendering the full result
-                // (the user already saw it in real-time): fold what streamed,
-                // as finished output is, and show the exit code.
-                let stream_start = self.stream_starts.remove(&id);
-                let pending = self.pending_tool_args.remove(&id);
-                let file_ext = pending
-                    .as_ref()
-                    .and_then(|(_, args)| extract_file_extension(args));
-                // Grep needs the search pattern at render time so we can
-                // bold the matched substring inside each result line.
-                let grep_pattern = if name == "Grep" {
-                    pending.as_ref().and_then(|(_, args)| {
-                        serde_json::from_str::<serde_json::Value>(args)
-                            .ok()
-                            .and_then(|v| v["pattern"].as_str().map(str::to_string))
-                    })
-                } else {
-                    None
-                };
-
-                self.tool_history.push(&name, &output);
-                if let Some(start) = stream_start {
-                    let tail = if failed { FOLD_TAIL } else { 0 };
-                    buffer.fold_since(start, FOLD_HEAD, tail, fold_marker);
-                    let exit_line = output.lines().next().unwrap_or("");
-                    tui_output::emit_line(
-                        buffer,
-                        Line::from(vec![
-                            Span::styled("  \u{2514} ", DIM),
-                            Span::styled(exit_line.to_string(), DIM),
-                        ]),
-                    );
-                } else {
-                    let is_diff_tool = matches!(name.as_str(), "Write" | "Edit" | "MemoryWrite");
-                    if self.preview_shown && is_diff_tool {
-                        // Compact: just show line count
-                        let line_count = output.lines().count();
-                        tui_output::emit_line(
-                            buffer,
-                            Line::from(vec![
-                                Span::styled("  \u{2514} ", DIM),
-                                Span::styled(format!("{name}: {line_count} line(s)"), DIM),
-                            ]),
-                        );
-                    } else {
-                        buffer.push_folded_lines(tool_output_view(
-                            &name,
-                            &output,
-                            failed,
-                            file_ext.as_deref(),
-                            grep_pattern.as_deref(),
-                        ));
-                    }
-                }
-                self.preview_shown = false;
-            }
-            EngineEvent::SubAgentStart { agent_name } => {
-                tui_output::emit_line(
-                    buffer,
-                    Line::from(vec![
-                        Span::raw("  "),
-                        Span::styled(format!("\u{1f916} Sub-agent: {agent_name}"), MAGENTA),
-                    ]),
-                );
-            }
-            EngineEvent::ApprovalRequest { .. }
-            | EngineEvent::AskUserRequest { .. }
-            | EngineEvent::StatusUpdate { .. }
-            | EngineEvent::ContextUsage { .. }
-            | EngineEvent::ContextWindowChanged { .. }
-            | EngineEvent::TurnStart { .. }
-            | EngineEvent::TurnEnd { .. }
-            | EngineEvent::LoopCapReached { .. }
-            | EngineEvent::ChildTaskUpdate { .. }
-            | EngineEvent::TodoUpdate { .. }
-            | EngineEvent::ChildAgentActivity { .. } => {
-                // Handled by the event loop, not the renderer.
-                // ChildTaskUpdate and ChildAgentActivity feed the activity
-                // overlay's sub-agent rows (6f).
-                // (#1077 Phase A) TodoUpdate is rendered by the TUI's
-                // todo-list panel from the tool-result message stream;
-                // the structured event is for headless clients
-                // that want diff-driven animation. Same future-cleanup
-                // path as ChildTaskUpdate.
-                // (#1201 B2) ChildAgentActivity is dropped from TUI
-                // scrollback render. The B1 inline-line render
-                // (`[bg N] 🔧 Read foo.rs` per event) was redundant
-                // with the post-completion `✅ Background agent X
-                // completed\n<bullet trace>` Info line emitted by
-                // `inference.rs` — a 50-tool bg agent surfaced 100
-                // dim lines live + the same trace again at the end.
-                // The Info line is the durable record; the status
-                // pill and `/agents` panel cover "is it still
-                // running". Headless keep the live lines because
-                // those contexts are tail-friendly. A future Phase
-                // B3 may add a Gemini-style live overlay above the
-                // composer that renders activity from state without
-                // touching scrollback.
-            }
-            EngineEvent::ActionBlocked {
-                detail, preview, ..
-            } => {
-                tui_output::emit_line(
-                    buffer,
-                    Line::from(vec![
-                        Span::raw("  "),
-                        Span::styled(format!("\u{1f50d} Would execute: {detail}"), YELLOW),
-                    ]),
-                );
-                if let Some(preview) = preview {
-                    let diff_lines = crate::diff_render::render_lines(&preview);
-                    let gutter = crate::diff_render::GUTTER_WIDTH;
-                    for line in diff_lines {
-                        buffer.push_with_gutter(line, gutter);
-                    }
-                }
-            }
-            EngineEvent::Footer {
-                prompt_tokens,
-                completion_tokens,
-                cache_read_tokens,
-                total_chars,
-                elapsed_ms,
-                rate,
+                tool,
+                arguments,
                 ..
             } => {
-                let tokens_out = if completion_tokens > 0 {
-                    completion_tokens
-                } else {
-                    (total_chars / 4) as i64
-                };
-                self.last_turn_stats = Some(TurnStats {
-                    tokens_in: prompt_tokens,
-                    tokens_out,
-                    cache_read: cache_read_tokens,
-                    elapsed_ms,
-                    rate,
-                });
-            }
-            EngineEvent::SpinnerStart { .. } | EngineEvent::SpinnerStop => {
-                // TUI mode: spinner state is in the status bar.
-            }
-            EngineEvent::Info { message } => {
-                tui_output::emit_line(
-                    buffer,
-                    Line::from(vec![Span::raw("  "), Span::styled(message, CYAN)]),
+                self.calls.insert(
+                    id.clone(),
+                    Call {
+                        tool: tool.clone(),
+                        arguments: arguments.clone(),
+                        parent: parent.map(str::to_string),
+                        stream_start: None,
+                    },
                 );
+                if tool == "InvokeAgent" {
+                    self.agents.insert(
+                        id.clone(),
+                        AgentRun {
+                            started: Instant::now(),
+                            calls: 0,
+                        },
+                    );
+                }
+                match parent {
+                    // A sub-agent's call is in the full view only, as Claude
+                    // Code lists a sub-agent's calls when expanded; the
+                    // overlay shows the latest while it runs.
+                    Some(parent) => {
+                        if let Some(run) = self.agents.get_mut(parent) {
+                            run.calls += 1;
+                        }
+                        let line = crate::tool_header::build_header_line("  ", tool, arguments);
+                        buffer.push_folded(line, Fold::Full);
+                    }
+                    None => {
+                        let line = crate::tool_header::build_header_line("", tool, arguments);
+                        tui_output::emit_line(buffer, line);
+                    }
+                }
             }
-            EngineEvent::Warn { message } => {
-                tui_output::emit_line(
-                    buffer,
-                    Line::from(vec![
-                        Span::raw("  "),
-                        Span::styled(format!("\u{26a0} {message}"), YELLOW),
-                    ]),
-                );
+            item @ Item::ContextCompaction { .. } => {
+                if let Some(line) = protocol_text::compaction_started(item) {
+                    notice(line, buffer);
+                }
             }
-            EngineEvent::Error { message } => {
-                tui_output::emit_line(
-                    buffer,
-                    Line::from(vec![
-                        Span::raw("  "),
-                        Span::styled(format!("\u{2717} {message}"), RED),
-                    ]),
-                );
-            }
-            // Forward-compat: future EngineEvent variants are dropped
-            // from scrollback until we wire a render. Same shape as
-            // the SpinnerStart/Stop no-op arms above (#1224).
             _ => {}
         }
     }
 
-    /// Stop any running spinner (no-op in TUI mode).
-    #[allow(dead_code)]
-    pub fn stop_spinner(&mut self) {}
+    fn item_completed(&mut self, parent: Option<&str>, item: &Item, buffer: &mut ScrollBuffer) {
+        match item {
+            Item::AgentMessage { id, .. } if self.messages.remove(id) => {
+                if !self.text_buf.is_empty() {
+                    let rest = std::mem::take(&mut self.text_buf);
+                    self.rule(&rest, buffer);
+                    tui_output::emit_line(buffer, self.md.render_line(&rest));
+                }
+                self.has_emitted_text = false;
+                self.md = crate::md_render::MarkdownRenderer::new();
+            }
+            Item::Reasoning { id, .. } if self.reasoning.remove(id) => {
+                if !self.think_buf.is_empty() {
+                    let rest = std::mem::take(&mut self.think_buf);
+                    tui_output::emit_line(buffer, thinking_line(rest));
+                }
+            }
+            item @ Item::ContextCompaction { .. } => {
+                if let Some(line) = protocol_text::compaction_done(item) {
+                    notice(line, buffer);
+                }
+            }
+            Item::ToolCall {
+                id,
+                tool,
+                status,
+                output,
+                detail,
+                changes,
+                ..
+            } => {
+                let call = self.calls.remove(id);
+                let asked = self.asked.remove(id);
+                let changes_shown = self.changes_shown.remove(id);
+                // Blocked without asking: what it would have done.
+                if *status == ToolCallStatus::Declined && !asked {
+                    if let Some(detail) = detail {
+                        tui_output::emit_line(
+                            buffer,
+                            Line::from(vec![
+                                Span::raw("  "),
+                                Span::styled(format!("\u{1f50d} Would execute: {detail}"), YELLOW),
+                            ]),
+                        );
+                    }
+                    push_changes(changes, buffer);
+                    return;
+                }
+                // A sub-agent's results aren't shown: its answer is.
+                if parent.is_some() {
+                    return;
+                }
+                let failed = *status == ToolCallStatus::Failed;
+                if !(failed || *status == ToolCallStatus::Completed) {
+                    return;
+                }
+                if let Some(run) = self.agents.remove(id) {
+                    tui_output::emit_line(buffer, agent_summary(&run, failed));
+                }
+                let output = output.as_deref().unwrap_or("");
+                self.result(tool, call, output, failed, changes_shown, buffer);
+            }
+            _ => {}
+        }
+    }
+
+    /// A finished call's output: folded in place if it streamed, otherwise
+    /// drawn as the finished output is ([`tool_output_view`]).
+    #[allow(clippy::too_many_arguments)]
+    fn result(
+        &mut self,
+        tool: &str,
+        call: Option<Call>,
+        output: &str,
+        failed: bool,
+        changes_shown: bool,
+        buffer: &mut ScrollBuffer,
+    ) {
+        self.tool_history.push(tool, output);
+        if let Some(start) = call.as_ref().and_then(|c| c.stream_start) {
+            let tail = if failed { FOLD_TAIL } else { 0 };
+            buffer.fold_since(start, FOLD_HEAD, tail, fold_marker);
+            let exit_line = output.lines().next().unwrap_or("");
+            tui_output::emit_line(
+                buffer,
+                Line::from(vec![
+                    Span::styled("  \u{2514} ", DIM),
+                    Span::styled(exit_line.to_string(), DIM),
+                ]),
+            );
+            return;
+        }
+        if changes_shown && matches!(tool, "Write" | "Edit" | "MemoryWrite") {
+            // The diff is above the dialog: just how long the result is.
+            let line_count = output.lines().count();
+            tui_output::emit_line(
+                buffer,
+                Line::from(vec![
+                    Span::styled("  \u{2514} ", DIM),
+                    Span::styled(format!("{tool}: {line_count} line(s)"), DIM),
+                ]),
+            );
+            return;
+        }
+        let arguments = call.map(|c| c.arguments).unwrap_or_default();
+        let file_ext = extract_file_extension(&arguments.to_string());
+        // Grep bolds the pattern it searched for.
+        let grep_pattern = (tool == "Grep")
+            .then(|| arguments["pattern"].as_str().map(str::to_string))
+            .flatten();
+        buffer.push_folded_lines(tool_output_view(
+            tool,
+            output,
+            failed,
+            file_ext.as_deref(),
+            grep_pattern.as_deref(),
+        ));
+    }
+
+    /// A chunk of a call's live output, one line at a time.
+    fn output(
+        &mut self,
+        item_id: &str,
+        delta: &str,
+        stream: OutputStream,
+        buffer: &mut ScrollBuffer,
+    ) {
+        let Some(call) = self.calls.get_mut(item_id) else {
+            return;
+        };
+        let stderr = stream == OutputStream::Stderr;
+        let prefix = if stderr {
+            "  \u{2502}e "
+        } else {
+            "  \u{2502} "
+        };
+        // Pull the body color from the central theme module so read-only
+        // output stays legible (#804) and stderr is always red whatever
+        // the tool.
+        let style = theme::content_style_for(&call.tool, stderr);
+        let sub_agent = call.parent.is_some();
+        if !sub_agent {
+            call.stream_start.get_or_insert_with(|| buffer.next_seq());
+        }
+        for text in delta.strip_suffix('\n').unwrap_or(delta).split('\n') {
+            let line = Line::from(vec![
+                Span::styled(prefix, TOOL_PREFIX),
+                Span::styled(text.to_string(), style),
+            ]);
+            if sub_agent {
+                buffer.push_folded(line, Fold::Full);
+            } else {
+                tui_output::emit_line(buffer, line);
+            }
+        }
+    }
+
+    /// Reply text: complete lines are drawn as they arrive, through the
+    /// markdown renderer, so the reply shows as it streams.
+    fn reply_text(&mut self, text: &str, buffer: &mut ScrollBuffer) {
+        self.text_buf.push_str(text);
+        while let Some(pos) = self.text_buf.find('\n') {
+            let line = self.text_buf[..pos].to_string();
+            self.text_buf.drain(..=pos);
+            // Blank lines at the very start of a reply are skipped.
+            if line.is_empty() && !self.has_emitted_text {
+                continue;
+            }
+            self.rule(&line, buffer);
+            self.has_emitted_text = true;
+            tui_output::emit_line(buffer, self.md.render_line(&line));
+        }
+    }
+
+    /// The `───` line before a reply's first words.
+    fn rule(&mut self, text: &str, buffer: &mut ScrollBuffer) {
+        if !self.ruled && !text.trim().is_empty() {
+            self.ruled = true;
+            tui_output::emit_line(buffer, Line::styled("  \u{2500}\u{2500}\u{2500}", DIM));
+        }
+    }
+}
+
+/// A line of reasoning, dim behind a bar.
+fn thinking_line(text: String) -> Line<'static> {
+    Line::from(vec![
+        Span::styled("  \u{2502} ", DIM),
+        Span::styled(text, DIM),
+    ])
+}
+
+/// A notice: news in cyan, a warning in yellow.
+fn notice((tone, text): (Tone, String), buffer: &mut ScrollBuffer) {
+    let line = match tone {
+        Tone::Info => Line::from(vec![Span::raw("  "), Span::styled(text, CYAN)]),
+        Tone::Warn => Line::from(vec![
+            Span::raw("  "),
+            Span::styled(format!("\u{26a0} {text}"), YELLOW),
+        ]),
+    };
+    tui_output::emit_line(buffer, line);
+}
+
+/// A call's changes, with the gutter copying leaves out.
+fn push_changes(changes: &[FileUpdateChange], buffer: &mut ScrollBuffer) {
+    for line in crate::diff_render::render_changes(changes) {
+        buffer.push_with_gutter(line, crate::diff_render::GUTTER_WIDTH);
+    }
+}
+
+/// What a finished sub-agent did, as Claude Code sums one up:
+/// `Done (3 tool uses · 12s)`.
+fn agent_summary(run: &AgentRun, failed: bool) -> Line<'static> {
+    let uses = if run.calls == 1 {
+        "1 tool use".to_string()
+    } else {
+        format!("{} tool uses", run.calls)
+    };
+    let what = if failed { "Failed" } else { "Done" };
+    Line::from(vec![
+        Span::styled("  \u{2514} ", DIM),
+        Span::styled(
+            format!(
+                "{what} ({uses} \u{00b7} {})",
+                worked_for(run.started.elapsed().as_millis() as u64)
+            ),
+            DIM,
+        ),
+    ])
+}
+
+/// A duration as Codex's TUI writes it: `<1s`, `12s`, `3m 4s`, `1h 2m 3s`.
+pub(crate) fn worked_for(ms: u64) -> String {
+    let secs = ms / 1000;
+    let (hours, minutes, seconds) = (secs / 3600, (secs % 3600) / 60, secs % 60);
+    if hours > 0 {
+        format!("{hours}h {minutes}m {seconds}s")
+    } else if minutes > 0 {
+        format!("{minutes}m {seconds}s")
+    } else if seconds == 0 {
+        "<1s".to_string()
+    } else {
+        format!("{seconds}s")
+    }
+}
+
+/// Tokens always in the context (system prompt, tool definitions), which
+/// Codex leaves out of both sides so the meter starts at 100% left.
+const BASELINE_TOKENS: u64 = 12_000;
+
+/// How much of the context window is left, in percent, from the last call's
+/// tokens: Codex's `percent_of_context_window_remaining`.
+pub(crate) fn context_left(tokens: u64, window: u64) -> u32 {
+    if window <= BASELINE_TOKENS {
+        return 0;
+    }
+    let effective = window - BASELINE_TOKENS;
+    let used = tokens.saturating_sub(BASELINE_TOKENS);
+    let left = effective.saturating_sub(used);
+    ((left as f64 / effective as f64) * 100.0)
+        .clamp(0.0, 100.0)
+        .round() as u32
+}
+
+/// The line a turn ends with, as Codex's: `─ Worked for 12s ─`.
+pub(crate) fn worked_for_line(ms: u64) -> Line<'static> {
+    Line::styled(
+        format!("  \u{2500} Worked for {} \u{2500}", worked_for(ms)),
+        DIM,
+    )
 }
 
 // ── Helper renderers ──────────────────────────────────
@@ -688,8 +853,95 @@ fn collapse_blank_lines(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use koda_core::engine::event::EngineEvent;
+    use koda_client::protocol::item::{
+        ItemCompletedNotification, ItemStartedNotification, PatchChangeKind, TextDeltaNotification,
+        ToolCallOutputDeltaNotification,
+    };
     use serde_json::json;
+
+    // ── protocol messages ────────────────────────────────────────────────────
+
+    fn call(id: &str, tool: &str, arguments: serde_json::Value) -> Item {
+        Item::ToolCall {
+            id: id.into(),
+            tool: tool.into(),
+            arguments,
+            status: ToolCallStatus::InProgress,
+            output: None,
+            detail: None,
+            changes: Vec::new(),
+            progress: Vec::new(),
+        }
+    }
+
+    /// `item` as it completes, with `status` and `output`.
+    fn finished(item: Item, status: ToolCallStatus, output: &str) -> Item {
+        match item {
+            Item::ToolCall {
+                id,
+                tool,
+                arguments,
+                detail,
+                changes,
+                progress,
+                ..
+            } => Item::ToolCall {
+                id,
+                tool,
+                arguments,
+                status,
+                output: Some(output.into()),
+                detail,
+                changes,
+                progress,
+            },
+            other => other,
+        }
+    }
+
+    fn started(parent: Option<&str>, item: Item) -> ServerNotification {
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            session_id: "s".into(),
+            turn_id: "t".into(),
+            parent_item_id: parent.map(str::to_string),
+            item,
+        })
+    }
+
+    fn completed(parent: Option<&str>, item: Item) -> ServerNotification {
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            session_id: "s".into(),
+            turn_id: "t".into(),
+            parent_item_id: parent.map(str::to_string),
+            item,
+        })
+    }
+
+    fn output(id: &str, delta: &str) -> ServerNotification {
+        ServerNotification::ToolCallOutputDelta(ToolCallOutputDeltaNotification {
+            session_id: "s".into(),
+            turn_id: "t".into(),
+            item_id: id.into(),
+            delta: delta.into(),
+            stream: OutputStream::Stdout,
+        })
+    }
+
+    fn reply(id: &str, delta: &str) -> ServerNotification {
+        ServerNotification::AgentMessageDelta(TextDeltaNotification {
+            session_id: "s".into(),
+            turn_id: "t".into(),
+            item_id: id.into(),
+            delta: delta.into(),
+        })
+    }
+
+    fn text(buffer: &ScrollBuffer) -> Vec<String> {
+        buffer
+            .all_lines()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    }
 
     // ── helpers ──────────────────────────────────────────────────────────────
 
@@ -816,39 +1068,22 @@ mod tests {
     fn streamed_output_folds_when_the_command_ends() {
         let mut renderer = TuiRenderer::new();
         let mut buffer = ScrollBuffer::new(256);
-        renderer.render_to_buffer(
-            EngineEvent::ToolCallStart {
-                id: "b1".into(),
-                name: "Bash".into(),
-                args: json!({ "command": "seq 20" }),
-                is_sub_agent: false,
-            },
-            &mut buffer,
-        );
+        let bash = call("b1", "Bash", json!({ "command": "seq 20" }));
+        renderer.render(&started(None, bash.clone()), &mut buffer);
         for i in 1..=20 {
-            renderer.render_to_buffer(
-                EngineEvent::ToolOutputLine {
-                    id: "b1".into(),
-                    line: format!("{i}"),
-                    is_stderr: false,
-                },
-                &mut buffer,
-            );
+            renderer.render(&output("b1", &format!("{i}\n")), &mut buffer);
         }
-        renderer.render_to_buffer(
-            EngineEvent::ToolCallResult {
-                id: "b1".into(),
-                name: "Bash".into(),
-                output: "Exit code: 0 | stdout: 20 lines".into(),
-                outcome: koda_core::engine::ToolOutcome::Success,
-            },
+        renderer.render(
+            &completed(
+                None,
+                finished(
+                    bash,
+                    ToolCallStatus::Completed,
+                    "Exit code: 0 | stdout: 20 lines",
+                ),
+            ),
             &mut buffer,
         );
-        let text = |b: &ScrollBuffer| -> Vec<String> {
-            b.all_lines()
-                .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
-                .collect()
-        };
         let folded = text(&buffer);
         // Header, 5 lines, the marker, the exit line.
         assert_eq!(folded.len(), 8, "{folded:?}");
@@ -858,45 +1093,187 @@ mod tests {
         assert_eq!(text(&buffer).len(), 22);
     }
 
-    /// A refused call shows as its approval, and a sub-agent's call as its
-    /// header and live lines: their results add nothing.
+    /// A call the user refused, or one stopped, adds nothing to its header:
+    /// the dialog was the refusal.
     #[test]
-    fn refused_and_sub_agent_results_add_nothing() {
-        use koda_core::engine::ToolOutcome;
-        for (is_sub_agent, outcome) in [
-            (false, ToolOutcome::Declined),
-            (false, ToolOutcome::Cancelled),
-            (true, ToolOutcome::Success),
-            (true, ToolOutcome::Error),
-        ] {
+    fn refused_and_stopped_calls_add_nothing() {
+        for status in [ToolCallStatus::Declined, ToolCallStatus::Cancelled] {
             let mut renderer = TuiRenderer::new();
             let mut buffer = ScrollBuffer::new(256);
-            renderer.render_to_buffer(
-                EngineEvent::ToolCallStart {
-                    id: "w1".into(),
-                    name: "Write".into(),
-                    args: json!({ "file_path": "a.txt" }),
-                    is_sub_agent,
-                },
-                &mut buffer,
-            );
+            let write = call("w1", "Write", json!({ "file_path": "a.txt" }));
+            renderer.render(&started(None, write.clone()), &mut buffer);
+            renderer.approval("w1", &[], &mut buffer);
             let header = buffer.all_lines().count();
-            renderer.render_to_buffer(
-                EngineEvent::ToolCallResult {
-                    id: "w1".into(),
-                    name: "Write".into(),
-                    output: "User rejected this action.".into(),
-                    outcome,
-                },
+            renderer.render(
+                &completed(None, finished(write, status, "User rejected this action.")),
                 &mut buffer,
             );
-            assert_eq!(
-                buffer.all_lines().count(),
-                header,
-                "{is_sub_agent} {outcome:?}"
-            );
-            assert!(renderer.pending_tool_args.is_empty());
+            assert_eq!(buffer.all_lines().count(), header, "{status:?}");
+            assert!(renderer.calls.is_empty());
         }
+    }
+
+    /// A call blocked without asking, as in plan mode, says what it would
+    /// have done, with its changes.
+    #[test]
+    fn a_blocked_call_shows_what_it_would_have_done() {
+        let mut renderer = TuiRenderer::new();
+        let mut buffer = ScrollBuffer::new(256);
+        let Item::ToolCall {
+            id,
+            tool,
+            arguments,
+            ..
+        } = call("w1", "Write", json!({ "file_path": "a.txt" }))
+        else {
+            unreachable!()
+        };
+        let blocked = Item::ToolCall {
+            id,
+            tool,
+            arguments,
+            status: ToolCallStatus::Declined,
+            output: None,
+            detail: Some("Write a.txt".into()),
+            changes: vec![FileUpdateChange {
+                path: "a.txt".into(),
+                kind: PatchChangeKind::Add,
+                diff: "hello\n".into(),
+            }],
+            progress: Vec::new(),
+        };
+        renderer.render(&started(None, blocked.clone()), &mut buffer);
+        renderer.render(&completed(None, blocked), &mut buffer);
+        let lines = text(&buffer);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("Would execute: Write a.txt")),
+            "{lines:?}"
+        );
+        assert!(lines.iter().any(|l| l.contains("+ hello")), "{lines:?}");
+    }
+
+    /// An approval draws the diff above its dialog, so the finished Write
+    /// only says how long it is.
+    #[test]
+    fn an_approved_edit_shows_its_diff_once() {
+        let mut renderer = TuiRenderer::new();
+        let mut buffer = ScrollBuffer::new(256);
+        let edit = call("e1", "Edit", json!({ "file_path": "a.rs" }));
+        renderer.render(&started(None, edit.clone()), &mut buffer);
+        let change = FileUpdateChange {
+            path: "a.rs".into(),
+            kind: PatchChangeKind::Update { move_path: None },
+            diff: "@@ -1,1 +1,1 @@\n-old\n+new\n".into(),
+        };
+        renderer.approval("e1", &[change], &mut buffer);
+        renderer.render(
+            &completed(
+                None,
+                finished(edit, ToolCallStatus::Completed, "Edited a.rs"),
+            ),
+            &mut buffer,
+        );
+        let lines = text(&buffer);
+        assert!(lines.iter().any(|l| l.contains("   1 - old")), "{lines:?}");
+        assert!(lines.iter().any(|l| l.contains("   1 + new")), "{lines:?}");
+        assert_eq!(lines.last().unwrap(), "  \u{2514} Edit: 1 line(s)");
+    }
+
+    /// A sub-agent's calls are in the full view only; when it ends, its call
+    /// sums it up in both, as Claude Code does.
+    #[test]
+    fn a_sub_agents_calls_fold_into_its_summary() {
+        let mut renderer = TuiRenderer::new();
+        let mut buffer = ScrollBuffer::new(256);
+        let agent = call(
+            "a1",
+            "InvokeAgent",
+            json!({ "agent_name": "explore", "prompt": "look" }),
+        );
+        renderer.render(&started(None, agent.clone()), &mut buffer);
+        for (id, file) in [("r1", "a.rs"), ("r2", "b.rs")] {
+            let read = call(id, "Read", json!({ "file_path": file }));
+            renderer.render(&started(Some("a1"), read.clone()), &mut buffer);
+            renderer.render(&output(id, "line\n"), &mut buffer);
+            renderer.render(
+                &completed(Some("a1"), finished(read, ToolCallStatus::Completed, "x")),
+                &mut buffer,
+            );
+        }
+        renderer.render(
+            &completed(
+                None,
+                finished(agent, ToolCallStatus::Completed, "Found it."),
+            ),
+            &mut buffer,
+        );
+        let folded = text(&buffer);
+        assert!(!folded.iter().any(|l| l.contains("Read")), "{folded:?}");
+        let done = folded
+            .iter()
+            .find(|l| l.contains("Done (2 tool uses"))
+            .unwrap_or_else(|| panic!("{folded:?}"));
+        assert!(done.ends_with("<1s)"), "{done}");
+        assert!(folded.iter().any(|l| l.contains("Found it.")), "{folded:?}");
+        buffer.set_full(true);
+        let full = text(&buffer);
+        assert!(
+            full.iter()
+                .any(|l| l.contains("Read") && l.contains("b.rs")),
+            "{full:?}"
+        );
+        assert!(full.iter().any(|l| l.contains("\u{2502} line")), "{full:?}");
+    }
+
+    /// The `───` line goes before a reply's first words, and the reply is
+    /// drawn line by line as it streams.
+    #[test]
+    fn a_reply_streams_under_its_rule() {
+        let mut renderer = TuiRenderer::new();
+        let mut buffer = ScrollBuffer::new(256);
+        let message = Item::AgentMessage {
+            id: "m1".into(),
+            text: String::new(),
+        };
+        renderer.render(&started(None, message.clone()), &mut buffer);
+        renderer.render(&reply("m1", "\nHello"), &mut buffer);
+        renderer.render(&reply("m1", " there\nsecond"), &mut buffer);
+        assert_eq!(text(&buffer).len(), 2, "{:?}", text(&buffer));
+        renderer.render(&completed(None, message), &mut buffer);
+        let lines = text(&buffer);
+        assert_eq!(lines[0], "  \u{2500}\u{2500}\u{2500}");
+        assert!(lines[1].contains("Hello there"), "{lines:?}");
+        assert!(lines[2].contains("second"), "{lines:?}");
+        // Another item's text isn't this reply's.
+        renderer.render(&reply("other", "stray\n"), &mut buffer);
+        assert_eq!(text(&buffer).len(), 3);
+    }
+
+    #[test]
+    fn worked_for_reads_as_codex_writes_it() {
+        assert_eq!(worked_for(400), "<1s");
+        assert_eq!(worked_for(12_300), "12s");
+        assert_eq!(worked_for(184_000), "3m 4s");
+        assert_eq!(worked_for(3_723_000), "1h 2m 3s");
+        let line: String = worked_for_line(12_000)
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(line, "  \u{2500} Worked for 12s \u{2500}");
+    }
+
+    /// Codex's meter: the baseline is left out, so a first call reads 100%.
+    #[test]
+    fn context_left_reads_as_codex_reads_it() {
+        assert_eq!(context_left(0, 100_000), 100);
+        assert_eq!(context_left(12_000, 100_000), 100);
+        assert_eq!(context_left(56_000, 100_000), 50);
+        assert_eq!(context_left(100_000, 100_000), 0);
+        assert_eq!(context_left(150_000, 100_000), 0);
+        assert_eq!(context_left(5_000, 10_000), 0);
     }
 
     /// Drive `TuiRenderer` with a complete Read tool call and return all
@@ -904,22 +1281,10 @@ mod tests {
     fn render_read(file_path: &str, content: &str) -> Vec<ratatui::text::Line<'static>> {
         let mut renderer = TuiRenderer::new();
         let mut buffer = ScrollBuffer::new(256);
-        renderer.render_to_buffer(
-            EngineEvent::ToolCallStart {
-                id: "t1".into(),
-                name: "Read".into(),
-                args: json!({ "file_path": file_path }),
-                is_sub_agent: false,
-            },
-            &mut buffer,
-        );
-        renderer.render_to_buffer(
-            EngineEvent::ToolCallResult {
-                id: "t1".into(),
-                name: "Read".into(),
-                output: content.to_string(),
-                outcome: koda_core::engine::ToolOutcome::Success,
-            },
+        let read = call("t1", "Read", json!({ "file_path": file_path }));
+        renderer.render(&started(None, read.clone()), &mut buffer);
+        renderer.render(
+            &completed(None, finished(read, ToolCallStatus::Completed, content)),
             &mut buffer,
         );
         // The content is in the full view; a numbered read's folded view is
@@ -939,22 +1304,10 @@ mod tests {
     ) -> Vec<ratatui::text::Line<'static>> {
         let mut renderer = TuiRenderer::new();
         let mut buffer = ScrollBuffer::new(256);
-        renderer.render_to_buffer(
-            EngineEvent::ToolCallStart {
-                id: "t1".into(),
-                name: tool_name.into(),
-                args,
-                is_sub_agent: false,
-            },
-            &mut buffer,
-        );
-        renderer.render_to_buffer(
-            EngineEvent::ToolCallResult {
-                id: "t1".into(),
-                name: tool_name.into(),
-                output: output.to_string(),
-                outcome: koda_core::engine::ToolOutcome::Success,
-            },
+        let item = call("t1", tool_name, args);
+        renderer.render(&started(None, item.clone()), &mut buffer);
+        renderer.render(
+            &completed(None, finished(item, ToolCallStatus::Completed, output)),
             &mut buffer,
         );
         buffer.all_lines().cloned().collect()
@@ -1248,57 +1601,5 @@ mod tests {
     #[test]
     fn test_collapse_all_blank() {
         assert_eq!(collapse_blank_lines("\n\n\n\n"), "\n");
-    }
-
-    // ── #1201 B2: ChildAgentActivity is a TUI no-op ────────────────────────────
-    //
-    // The B1 PR rendered each child activity event as a dim inline
-    // line in the scroll buffer. That turned out redundant with the
-    // `✅ Background agent X completed\n<bullet trace>` Info line
-    // emitted by `inference.rs` after `drain_completed()` — a 50-tool
-    // bg agent surfaced 100 dim lines live + the same trace again at
-    // the end. B2 drops the live render in TUI scrollback while
-    // leaving headless untouched (those tail-friendly contexts
-    // benefit from per-line streaming).
-    //
-    // This test pins that decision so a future refactor doesn't
-    // accidentally re-introduce the noise.
-    #[test]
-    fn bg_child_activity_does_not_push_lines_to_scroll_buffer() {
-        use koda_core::engine::event::{ChildAgentActivityKind, EngineEvent};
-
-        let mut renderer = TuiRenderer::new();
-        let mut buffer = ScrollBuffer::new(2500);
-
-        for kind in [
-            ChildAgentActivityKind::ToolStart {
-                tool_name: "Read".into(),
-                summary: "src/main.rs".into(),
-            },
-            ChildAgentActivityKind::ToolEnd {
-                tool_name: "Read".into(),
-                success: true,
-            },
-            ChildAgentActivityKind::Info {
-                message: "  \u{1f4cc} note".into(),
-            },
-        ] {
-            renderer.render_to_buffer(
-                EngineEvent::ChildAgentActivity {
-                    task_id: 7,
-                    spawner: None,
-                    is_background: true,
-                    kind,
-                },
-                &mut buffer,
-            );
-        }
-
-        assert_eq!(
-            buffer.len(),
-            0,
-            "ChildAgentActivity must not push to scrollback (#1201 B2); \
-             post-completion `✅ ... completed` Info line is the durable record"
-        );
     }
 }

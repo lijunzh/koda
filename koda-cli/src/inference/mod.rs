@@ -14,11 +14,11 @@
 //!   (resize, mouse, paste, key dispatch) plus the giant
 //!   `handle_inference_key_inline` (approval / loop-cap / ask-user /
 //!   feedback / general keys) and the #1211 slash-guard.
-//! - [`ui_handler`] — engine→UI rendering during inference (approval
-//!   prompts, ask-user, loop cap, fall-through to `TuiRenderer`).
-//! - [`turn_tracker`] — links the TUI's answers to the host's requests and
-//!   keeps steering text until the model receives it (PR 5c: the host runs
-//!   the turn, the TUI is its client).
+//! - [`ui_handler`] — the host's requests during inference become the
+//!   dialogs (approval, ask-user, loop cap).
+//! - [`turn_tracker`] — keeps steering text until the model receives it,
+//!   and the turn's end (PR 5c: the host runs the turn, the TUI is its
+//!   client).
 //!
 //! Multiple `impl TuiContext` blocks (one in `select_loop.rs`, one in
 //! `post_turn.rs`) are stitched together by rustc — same type, same
@@ -31,6 +31,30 @@ mod post_turn;
 mod select_loop;
 mod turn_tracker;
 mod ui_handler;
+
+use koda_client::protocol::rpc::RequestId;
+
+/// What the key handlers send the running turn.
+#[derive(Debug)]
+pub(crate) enum TurnCommand {
+    /// The answer to one of the host's requests: a dialog's.
+    Answer {
+        request: RequestId,
+        response: serde_json::Value,
+    },
+    /// Text for the model, sent with `turn/steer`.
+    Steer { text: String },
+}
+
+impl TurnCommand {
+    /// The answer `response` to `request`.
+    pub(crate) fn answer(request: RequestId, response: impl serde::Serialize) -> Self {
+        Self::Answer {
+            request,
+            response: serde_json::to_value(response).unwrap_or_default(),
+        }
+    }
+}
 
 /// Stops the running turn: sends `turn/interrupt` without waiting, since
 /// the host answers once the turn has stopped and the TUI keeps drawing

@@ -906,7 +906,7 @@ fn run_sub_agent<'a>(
                 };
                 let response = response?;
                 sink.emit(EngineEvent::ModelUsage {
-                    usage: (&response.usage).into(),
+                    usage: crate::engine::UsageTotals::of_call(provider.as_ref(), &response.usage),
                 });
                 sink.emit(EngineEvent::SpinnerStop);
 

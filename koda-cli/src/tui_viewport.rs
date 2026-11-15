@@ -30,11 +30,10 @@ pub(crate) fn draw_viewport(
     textarea: &TextArea,
     model: &str,
     mode: TrustMode,
-    context_pct: u32,
+    context_left: u32,
     state: TuiState,
     prompt_mode: &PromptMode,
     elapsed_secs: u64,
-    last_turn: Option<&crate::widgets::status_bar::TurnStats>,
     menu: &MenuContent,
     scroll_buffer: &ScrollBuffer,
     selection: Option<&crate::mouse_select::Selection>,
@@ -265,7 +264,7 @@ pub(crate) fn draw_viewport(
     // shows it; static info doesn't earn its keep in the persistent
     // footer. `project_root` is still threaded through `draw_viewport`
     // because `render_history` uses it to resolve hyperlink paths.
-    let mut sb = StatusBar::new(model, mode.label(), context_pct)
+    let mut sb = StatusBar::new(model, mode.label(), context_left)
         // #860 visibility companion: surface kernel sandbox state next
         // to the trust badge so users on unsandboxed systems can see
         // at a glance why Auto refuses (and why Safe is their only
@@ -274,9 +273,6 @@ pub(crate) fn draw_viewport(
         .with_sandbox_status(Some(koda_core::sandbox::is_available()));
     if elapsed_secs > 0 {
         sb = sb.with_elapsed(elapsed_secs);
-    }
-    if let Some(stats) = last_turn {
-        sb = sb.with_last_turn(stats);
     }
     // Show scroll position indicator when not at bottom
     if !scroll_buffer.is_sticky() {

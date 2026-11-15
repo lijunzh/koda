@@ -20,7 +20,7 @@ pub use crate::theme::{
     WARM_MUTED, WARM_TITLE,
 };
 // Aliases for legacy ad-hoc names — prefer the semantic ones above.
-pub use crate::theme::{ACCENT_AMBER as AMBER, ACCENT_MAGENTA as MAGENTA};
+pub use crate::theme::ACCENT_AMBER as AMBER;
 
 /// Append a single `Line` to the scroll buffer.
 pub fn emit_line(buffer: &mut ScrollBuffer, line: Line<'static>) {

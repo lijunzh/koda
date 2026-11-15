@@ -8,7 +8,6 @@
 
 pub(crate) mod background;
 mod events;
-mod idle_ui_events;
 mod mcp;
 mod memory;
 mod menus;
@@ -17,7 +16,6 @@ pub(crate) mod skills;
 
 use crate::input;
 use crate::scroll_buffer::ScrollBuffer;
-use crate::sink::UiEvent;
 use crate::tui_commands::{self, SlashAction};
 use crate::tui_render::TuiRenderer;
 use crate::tui_types::{MenuContent, PromptMode, ProviderWizard, Term, TuiState};
@@ -28,7 +26,6 @@ use crossterm::event::{Event, EventStream, KeyCode, KeyModifiers};
 use futures_util::StreamExt;
 use koda_core::agent::KodaAgent;
 use koda_core::config::KodaConfig;
-use koda_core::engine::EngineCommand;
 use koda_core::providers::LlmProvider;
 use koda_core::trust::{self, TrustMode};
 use ratatui::{
@@ -62,7 +59,7 @@ pub(crate) struct TuiContext {
     pub menu: MenuContent,
     pub prompt_mode: PromptMode,
     pub provider_wizard: Option<ProviderWizard>,
-    pub pending_approval_id: Option<String>,
+    pub pending_approval_id: Option<koda_client::protocol::rpc::RequestId>,
 
     // ── Control flow ──────────────────────────────────────────
     pub paste_blocks: Vec<input::PasteBlock>,
@@ -76,11 +73,13 @@ pub(crate) struct TuiContext {
     /// [`QUIT_ARM_WINDOW`] confirms exit. Reset on any other action.
     pub quit_armed_at: Option<std::time::Instant>,
     pub inference_start: Option<std::time::Instant>,
-    /// Context window usage percentage (0-100), updated via EngineEvent::ContextUsage.
-    pub context_pct: u32,
-    /// The server's real context window, learned mid-turn from an overflow
-    /// error (`EngineEvent::ContextWindowChanged`). The turn borrows
-    /// `config`, so it is adopted after the turn (`post_turn_cleanup`).
+    /// How much of the context window is left, in percent, from the last
+    /// `session/tokenUsage/updated` (Codex's reading).
+    pub context_left: u32,
+    /// The context window the host reports when it differs from the
+    /// config's, as after an overflow taught it the server's real one. The
+    /// turn borrows `config`, so it is adopted after the turn
+    /// (`post_turn_cleanup`).
     pub learned_context_window: Option<usize>,
     /// What was typed, oldest first, for Up and Down.
     pub history: Vec<String>,
@@ -311,7 +310,7 @@ impl TuiContext {
             config_file: crate::user_config::file()?,
             project_root: project_root.clone(),
             db: db.clone(),
-            raw_events: true,
+            raw_events: false,
             client_info: koda_client::protocol::initialize::ClientInfo {
                 name: "koda-tui".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
@@ -525,7 +524,7 @@ impl TuiContext {
             should_quit: false,
             quit_armed_at: None,
             inference_start: None,
-            context_pct: 0,
+            context_left: 100,
             learned_context_window: None,
             history: input_history.load(),
             input_history,
@@ -568,14 +567,13 @@ impl TuiContext {
         self.scroll_buffer.clamp_offset(w, vh);
 
         let mode = trust::read_trust(&self.shared_mode);
-        let ctx = self.context_pct;
+        let ctx = self.context_left;
         let tui_state = self.tui_state;
         let prompt_mode = &self.prompt_mode;
         let elapsed = self
             .inference_start
             .map(|s| s.elapsed().as_secs())
             .unwrap_or(0);
-        let last_turn = self.renderer.last_turn_stats.as_ref();
         let menu = &self.menu;
         let scroll_buffer = &self.scroll_buffer;
         let textarea = &self.textarea;
@@ -600,7 +598,6 @@ impl TuiContext {
                 tui_state,
                 prompt_mode,
                 elapsed,
-                last_turn,
                 menu,
                 scroll_buffer,
                 selection,
@@ -645,9 +642,8 @@ impl TuiContext {
     /// The main event loop.
     pub async fn run_event_loop(
         &mut self,
-        ui_rx: &mut mpsc::UnboundedReceiver<koda_client::RawEvent>,
-        cmd_tx: &mpsc::Sender<EngineCommand>,
-        cmd_rx: &mut mpsc::Receiver<EngineCommand>,
+        cmd_tx: &mpsc::Sender<crate::inference::TurnCommand>,
+        cmd_rx: &mut mpsc::Receiver<crate::inference::TurnCommand>,
     ) -> Result<()> {
         loop {
             if self.should_quit {
@@ -670,12 +666,12 @@ impl TuiContext {
                         continue;
                     }
                     CommandOutcome::StartInference(input) => {
-                        self.run_inference_turn(TurnRequest::Prompt(input), ui_rx, cmd_tx, cmd_rx)
+                        self.run_inference_turn(TurnRequest::Prompt(input), cmd_tx, cmd_rx)
                             .await?;
                         continue;
                     }
                     CommandOutcome::Compact => {
-                        self.run_inference_turn(TurnRequest::Compact, ui_rx, cmd_tx, cmd_rx)
+                        self.run_inference_turn(TurnRequest::Compact, cmd_tx, cmd_rx)
                             .await?;
                         continue;
                     }
@@ -694,16 +690,9 @@ impl TuiContext {
             // common case (idle waiting for the user). When a burst IS
             // active and the user stops typing, the timer fires and we
             // commit the buffered text into the textarea as one insert.
-            //
-            // The `ui_rx.recv()` arm (#1349) drains engine events while
-            // idle: sub-agent activity keeps the overlay live, and
-            // narrative events reach the scroll buffer.
             tokio::select! {
                 Some(Ok(ev)) = self.crossterm_events.next() => {
                     self.handle_idle_event(ev).await?;
-                }
-                Some(raw) = ui_rx.recv() => {
-                    self.handle_idle_ui_event(UiEvent::Engine(raw.event));
                 }
                 // The host's notifications while idle: MCP startups move
                 // the status bar; the rest are no turn's business, as a

@@ -34,11 +34,11 @@ pub struct McpStatusBarInfo {
 pub struct StatusBar<'a> {
     model: &'a str,
     mode_label: &'a str,
-    context_pct: u32,
+    /// How much of the context window is left, in percent, as Codex's
+    /// footer says it.
+    context_left: u32,
     /// Elapsed seconds during inference (0 = idle).
     elapsed_secs: u64,
-    /// Last turn stats (shown after inference completes).
-    last_turn: Option<&'a TurnStats>,
     /// Scroll position info (offset, total) — shown when not at bottom.
     scroll_info: Option<(usize, usize)>,
     /// MCP server status (None = no servers configured, hidden).
@@ -60,27 +60,13 @@ pub struct StatusBar<'a> {
     sandbox_available: Option<bool>,
 }
 
-/// Stats from the most recent inference turn.
-#[derive(Debug, Clone, Default)]
-pub struct TurnStats {
-    /// Input tokens for this turn, the cached ones included.
-    pub tokens_in: i64,
-    /// Output tokens generated this turn.
-    pub tokens_out: i64,
-    /// Tokens served from the prompt cache (cost $0).
-    pub cache_read: i64,
-    pub elapsed_ms: u64,
-    pub rate: f64,
-}
-
 impl<'a> StatusBar<'a> {
-    pub fn new(model: &'a str, mode_label: &'a str, context_pct: u32) -> Self {
+    pub fn new(model: &'a str, mode_label: &'a str, context_left: u32) -> Self {
         Self {
             model,
             mode_label,
-            context_pct,
+            context_left,
             elapsed_secs: 0,
-            last_turn: None,
             scroll_info: None,
             mcp_info: None,
             vim_label: None,
@@ -90,11 +76,6 @@ impl<'a> StatusBar<'a> {
 
     pub fn with_elapsed(mut self, secs: u64) -> Self {
         self.elapsed_secs = secs;
-        self
-    }
-
-    pub fn with_last_turn(mut self, stats: &'a TurnStats) -> Self {
-        self.last_turn = Some(stats);
         self
     }
 
@@ -176,12 +157,9 @@ impl Widget for StatusBar<'_> {
         }
         let mode_label_upper = self.mode_label.to_ascii_uppercase();
 
-        let bar_width: u32 = 10;
-        let filled = (self.context_pct * bar_width / 100).min(bar_width);
-        let empty = bar_width - filled;
-        let ctx_color = if self.context_pct >= 90 {
+        let ctx_color = if self.context_left <= 10 {
             Color::Red
-        } else if self.context_pct >= 75 {
+        } else if self.context_left <= 25 {
             Color::Yellow
         } else {
             Color::DarkGray
@@ -244,12 +222,7 @@ impl Widget for StatusBar<'_> {
             ),
             Span::styled("\u{2502}", Style::default().fg(Color::Rgb(60, 60, 60))),
             Span::styled(
-                format!(
-                    " {}{} {}%",
-                    "\u{2588}".repeat(filled as usize),
-                    "\u{2591}".repeat(empty as usize),
-                    self.context_pct,
-                ),
+                format!(" {}% context left ", self.context_left),
                 Style::default().fg(ctx_color),
             ),
         ]);
@@ -304,35 +277,6 @@ impl Widget for StatusBar<'_> {
                 format!(" \u{23f3} {}s ", self.elapsed_secs),
                 Style::default().fg(Color::Cyan),
             ));
-        }
-
-        // Last turn stats (shown after inference, cleared on next turn)
-        if let Some(stats) = self.last_turn {
-            spans.push(Span::styled(
-                "\u{2502}",
-                Style::default().fg(Color::Rgb(60, 60, 60)),
-            ));
-            let time = if stats.elapsed_ms >= 1000 {
-                format!("{:.1}s", stats.elapsed_ms as f64 / 1000.0)
-            } else {
-                format!("{}ms", stats.elapsed_ms)
-            };
-
-            // Show ↑in ↓out token counts so users can see full turn cost.
-            let mut stat_str = format!(
-                " ↑{} ↓{} · {} · {:.0} t/s ",
-                stats.tokens_in, stats.tokens_out, time, stats.rate
-            );
-            // Cache hit indicator — only shown when nonzero (costs nothing).
-            if stats.cache_read > 0 && stats.tokens_in > 0 {
-                // `tokens_in` counts the cached tokens too, so this is a share.
-                let pct = ((stats.cache_read * 100) / stats.tokens_in).min(100);
-                stat_str = format!(
-                    " ↑{} ↓{} 🗄{pct}% · {} · {:.0} t/s ",
-                    stats.tokens_in, stats.tokens_out, time, stats.rate
-                );
-            }
-            spans.push(Span::styled(stat_str, Style::default().fg(Color::DarkGray)));
         }
 
         // Scroll position (when not at bottom)

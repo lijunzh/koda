@@ -5,20 +5,19 @@
 //!
 //!   - `turn/start` starts it, or `session/compact/start` for `/compact`,
 //!     and `turn/completed` ends this loop.
-//!   - The renderer reads the engine's own events, which the client hands
-//!     out in process ([`koda_client::StartArgs::raw_events`]) until the TUI
-//!     renders items. They arrive in order, and all of a turn's before its
-//!     `turn/completed`.
+//!   - The renderer reads the turn's notifications: its items, their
+//!     deltas and notices ([`crate::tui_render::TuiRenderer`]). The host's
+//!     requests become the dialogs ([`super::ui_handler`]).
 //!   - Dialog answers and steering text leave the key handlers as
-//!     [`EngineCommand`]s, as before, and go to the host as answers to its
-//!     requests and `turn/steer` ([`super::turn_tracker`]).
+//!     [`TurnCommand`]s and go to the host as the responses to its requests
+//!     and `turn/steer` ([`super::turn_tracker`] keeps the steers).
 //!   - Esc, Ctrl+C and Ctrl+D send `turn/interrupt` ([`super::TurnStop`]).
 //!
 //! What stays from before:
 //!
 //!   - Rotates which arm is preferred each iteration (`prefer_input`)
-//!     so neither terminal input nor engine events can monopolise the
-//!     executor under sustained load (#1137, #1139, regression of #540).
+//!     so neither terminal input nor the host's messages can monopolise
+//!     the executor under sustained load (#1137, #1139, regression of #540).
 //!   - The `Draw` arm is the *only* place `terminal.draw()` is called;
 //!     every other arm calls `frame_requester.schedule_frame()` so the
 //!     coalescing scheduler caps redraws at ~120 FPS (#1138).
@@ -27,20 +26,19 @@
 //! since the bounded drain only has one production caller and unit
 //! tests are easier to wire when they share the file.
 
+use super::TurnCommand;
 use super::turn_tracker::TurnTracker;
-use crate::sink::UiEvent;
 use crate::tui_context::{TuiContext, TurnInput, TurnRequest};
 use crate::tui_types::TuiState;
 use crate::tui_viewport::draw_viewport;
 
 use futures_util::StreamExt;
-use koda_client::RawEvent;
 use koda_client::events::Outgoing;
 use koda_client::protocol::ServerNotification;
+use koda_client::protocol::item::{Item, ToolCallStatus};
 use koda_client::protocol::methods;
 use koda_client::protocol::session::SessionCompactStartParams;
 use koda_client::protocol::turn::{ImageInput, TurnStartParams, TurnSteerParams};
-use koda_core::engine::{EngineCommand, EngineEvent};
 use koda_core::trust;
 use ratatui::{
     style::{Color, Style},
@@ -50,22 +48,22 @@ use tokio::sync::mpsc;
 
 /// Outcome of one inner-loop `tokio::select!` poll inside `run_inference_turn`.
 ///
-/// Carrying the raw event out of the select arm (rather than handling it
-/// inline) lets us rotate the priority order of the input vs ui arms each
+/// Carrying the message out of the select arm (rather than handling it
+/// inline) lets us rotate the priority order of the input vs host arms each
 /// iteration without duplicating the (large) handler bodies (#1137, #1139).
 enum SelectArm {
     Crossterm(crossterm::event::Event),
-    Ui(RawEvent),
     /// The frame scheduler granted us a draw slot (#1138). Render once.
     Draw,
-    /// A message from the host; `None` once it has stopped.
-    Host(Option<Outgoing>),
+    /// A message from the host; `None` once it has stopped. Boxed: a
+    /// message is far larger than the other arms.
+    Host(Option<Box<Outgoing>>),
     /// An answer or steering text from the key handlers.
-    Command(EngineCommand),
+    Command(TurnCommand),
 }
 
-/// Drain up to `cap` items from an `mpsc::UnboundedReceiver` synchronously,
-/// invoking `on_event` for each.
+/// Take up to `cap` items from `next` synchronously, invoking `on_event` for
+/// each, and stop early when it has none ready.
 ///
 /// Returns the number of items processed (always `<= cap`).
 ///
@@ -76,22 +74,52 @@ enum SelectArm {
 /// `Ok` indefinitely — the parent `tokio::select!` never re-evaluated and
 /// terminal input was starved. Bounding the drain forces a yield back to
 /// the select after a bounded number of events.
-fn drain_bounded<T, F: FnMut(T)>(
-    rx: &mut mpsc::UnboundedReceiver<T>,
+fn drain_bounded<T>(
+    mut next: impl FnMut() -> Option<T>,
     cap: usize,
-    mut on_event: F,
+    mut on_event: impl FnMut(T),
 ) -> usize {
     let mut n = 0;
     for _ in 0..cap {
-        match rx.try_recv() {
-            Ok(item) => {
+        match next() {
+            Some(item) => {
                 on_event(item);
                 n += 1;
             }
-            Err(_) => break,
+            None => break,
         }
     }
     n
+}
+
+/// The turn a notification belongs to, for those that name one.
+fn turn_of(notification: &ServerNotification) -> Option<&str> {
+    Some(match notification {
+        ServerNotification::ItemStarted(n) => &n.turn_id,
+        ServerNotification::ItemCompleted(n) => &n.turn_id,
+        ServerNotification::AgentMessageDelta(n) | ServerNotification::ReasoningTextDelta(n) => {
+            &n.turn_id
+        }
+        ServerNotification::ToolCallOutputDelta(n) => &n.turn_id,
+        ServerNotification::ToolCallProgress(n) => &n.turn_id,
+        ServerNotification::TurnLoopGuard(n) => &n.turn_id,
+        ServerNotification::SessionTokenUsageUpdated(n) => &n.turn_id,
+        ServerNotification::Error(n) => n.turn_id.as_deref()?,
+        _ => return None,
+    })
+}
+
+/// What a sub-agent's call says it does, for the overlay: `Read src/a.rs`.
+fn activity_of(tool: &str, arguments: &serde_json::Value) -> String {
+    let detail: String = crate::tool_header::detail_spans(tool, arguments)
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect();
+    if detail.is_empty() {
+        tool.to_string()
+    } else {
+        format!("{tool} {detail}")
+    }
 }
 
 impl TuiContext {
@@ -128,9 +156,8 @@ impl TuiContext {
     pub(crate) async fn run_inference_turn(
         &mut self,
         request: TurnRequest,
-        ui_rx: &mut mpsc::UnboundedReceiver<RawEvent>,
-        cmd_tx: &mpsc::Sender<EngineCommand>,
-        cmd_rx: &mut mpsc::Receiver<EngineCommand>,
+        cmd_tx: &mpsc::Sender<TurnCommand>,
+        cmd_rx: &mut mpsc::Receiver<TurnCommand>,
     ) -> anyhow::Result<()> {
         // The prompt, and what goes back to the input box if it can't start.
         let (prompt, restore) = match request {
@@ -223,14 +250,14 @@ impl TuiContext {
 
         self.tui_state = TuiState::Inferring;
         self.inference_start = Some(std::time::Instant::now());
-        self.renderer.last_turn_stats = None;
+        self.renderer.start_turn();
 
         // Ctrl+D asked to quit: the turn was told to stop, and Koda exits
         // once it has.
         let mut quit_requested = false;
 
         // Rotate which select arm is preferred each iteration so neither
-        // terminal input nor engine events can monopolise the executor
+        // terminal input nor the host's messages can monopolise the executor
         // under sustained load (#1137, #1139). `biased` alone only chooses
         // priority *within* one select point — it does not prevent one arm
         // from winning N times in a row when both are constantly ready.
@@ -247,10 +274,10 @@ impl TuiContext {
         let host_stopped = loop {
             prefer_input = !prefer_input;
 
-            // Maximum number of engine events to drain in one iteration.
+            // Maximum number of host messages to drain in one iteration.
             // The original drain loop was unbounded, which under sustained
             // event pressure (sub-agent fan-out, fast streaming) let the
-            // ui_rx arm monopolise the executor — terminal events queued
+            // event arm monopolise the executor — terminal events queued
             // up in the OS buffer until the crossterm parser mis-framed
             // partial mouse-report sequences as individual key events,
             // and Ctrl+C took seconds to propagate (#1137).
@@ -266,19 +293,17 @@ impl TuiContext {
 
                     Some(()) = self.draw_rx.recv() => SelectArm::Draw,
                     Some(Ok(ev)) = self.crossterm_events.next() => SelectArm::Crossterm(ev),
-                    Some(raw) = ui_rx.recv() => SelectArm::Ui(raw),
                     Some(command) = cmd_rx.recv() => SelectArm::Command(command),
-                    message = self.client.next_event() => SelectArm::Host(message),
+                    message = self.client.next_event() => SelectArm::Host(message.map(Box::new)),
                 }
             } else {
                 tokio::select! {
                     biased;
 
                     Some(()) = self.draw_rx.recv() => SelectArm::Draw,
-                    Some(raw) = ui_rx.recv() => SelectArm::Ui(raw),
+                    message = self.client.next_event() => SelectArm::Host(message.map(Box::new)),
                     Some(Ok(ev)) = self.crossterm_events.next() => SelectArm::Crossterm(ev),
                     Some(command) = cmd_rx.recv() => SelectArm::Command(command),
-                    message = self.client.next_event() => SelectArm::Host(message),
                 }
             };
 
@@ -296,7 +321,7 @@ impl TuiContext {
                     self.scroll_buffer.clamp_offset(term_w, hist_viewport);
 
                     let mode = trust::read_trust(&self.shared_mode);
-                    let ctx = self.context_pct;
+                    let ctx = self.context_left;
                     let mcp_info = self.mcp.status_bar();
                     // #1210: the overlay above the status bar shows what
                     // the sub-agents and background processes do now. The
@@ -318,7 +343,6 @@ impl TuiContext {
                             self.inference_start
                                 .map(|s| s.elapsed().as_secs())
                                 .unwrap_or(0),
-                            self.renderer.last_turn_stats.as_ref(),
                             &self.menu,
                             &self.scroll_buffer,
                             self.mouse_selection.as_ref(),
@@ -358,26 +382,30 @@ impl TuiContext {
                     .await;
                     self.frame_requester.schedule_frame();
                 }
-                SelectArm::Ui(raw) => {
-                    self.absorb_turn_event(raw.event, &mut tracker);
-                    // Bounded drain — at most MAX_DRAIN extra events per
-                    // iteration so we yield back to the select for input.
-                    // The drain still amortises N events into 1 redraw, but
-                    // cannot monopolise the executor anymore.
-                    let _ = drain_bounded(ui_rx, MAX_DRAIN, |extra| {
-                        self.absorb_turn_event(extra.event, &mut tracker);
-                    });
-                    self.frame_requester.schedule_frame();
-                }
                 SelectArm::Command(command) => {
                     self.send_turn_command(command, &mut tracker).await;
                 }
                 SelectArm::Host(None) => break true,
                 SelectArm::Host(Some(message)) => {
-                    self.mcp.observe(&self.session.id, &message);
-                    tracker.observe_message(message);
-                    // An answer given before its request was read goes now.
-                    self.send_ready_answers(&mut tracker).await;
+                    self.absorb_host_message(*message, &mut tracker);
+                    // Bounded drain — at most MAX_DRAIN more messages per
+                    // iteration so we yield back to the select for input.
+                    // The drain still amortises N messages into 1 redraw,
+                    // but cannot monopolise the executor anymore.
+                    let _ = drain_bounded(
+                        || {
+                            // Nothing of the turn comes after its end.
+                            if tracker.completed().is_some() {
+                                return None;
+                            }
+                            let message = self.client.try_next_event()?;
+                            self.absorb_host_message(message, &mut tracker);
+                            Some(())
+                        },
+                        MAX_DRAIN,
+                        |()| {},
+                    );
+                    self.frame_requester.schedule_frame();
                 }
             }
             if tracker.completed().is_some() {
@@ -385,10 +413,6 @@ impl TuiContext {
             }
         };
 
-        // The turn's events all arrived before its `turn/completed`.
-        while let Ok(raw) = ui_rx.try_recv() {
-            self.absorb_turn_event(raw.event, &mut tracker);
-        }
         // Its sub-agents ended with it; what it left running in the
         // background stays listed.
         self.child_activity.clear_agents();
@@ -405,7 +429,7 @@ impl TuiContext {
             tracker
                 .completed()
                 .and_then(|turn| turn.error.as_ref())
-                .filter(|_| !tracker.error_shown())
+                .filter(|_| !self.renderer.error_shown())
                 .map(|error| error.message.clone())
         };
         if let Some(error) = failed {
@@ -418,6 +442,12 @@ impl TuiContext {
             ]));
         }
 
+        // The turn's end, as Codex's TUI marks it: how long it worked.
+        if let Some(ms) = tracker.completed().and_then(|turn| turn.duration_ms) {
+            self.scroll_buffer
+                .push(crate::tui_render::worked_for_line(ms));
+        }
+
         self.post_turn_cleanup(tracker.take_unsent_steers());
         if quit_requested || host_stopped {
             self.should_quit = true;
@@ -425,45 +455,116 @@ impl TuiContext {
         Ok(())
     }
 
-    /// Take note of one of the turn's engine events, then show it.
-    fn absorb_turn_event(&mut self, event: EngineEvent, tracker: &mut TurnTracker) {
-        tracker.observe_event(&event);
-        if let EngineEvent::ContextUsage { used, max } = &event {
-            self.context_pct = if *max > 0 {
-                (used * 100 / max) as u32
-            } else {
-                0
-            };
+    /// Take note of one of the host's messages, then show it: a request as
+    /// its dialog, a notification of this turn's through the renderer.
+    fn absorb_host_message(&mut self, message: Outgoing, tracker: &mut TurnTracker) {
+        self.mcp.observe(&self.session.id, &message);
+        tracker.observe_message(&message);
+        let notification = match &message {
+            Outgoing::Request(request) => {
+                super::ui_handler::show_request(
+                    request,
+                    &mut self.scroll_buffer,
+                    &mut self.menu,
+                    &mut self.prompt_mode,
+                    &mut self.renderer,
+                );
+                return;
+            }
+            Outgoing::Notification(notification) => notification,
+        };
+        match notification {
+            // A warning names only its session.
+            ServerNotification::Warning(w)
+                if w.session_id.as_deref().is_none_or(|s| s == self.session.id) => {}
+            n if turn_of(n) == Some(tracker.turn_id()) => {}
+            _ => return,
         }
-        if let EngineEvent::ContextWindowChanged { tokens } = &event {
-            self.learned_context_window = Some(*tokens);
-        }
-        super::ui_handler::handle_inference_ui_inline(
-            UiEvent::Engine(event),
-            &mut self.scroll_buffer,
-            &mut self.menu,
-            &mut self.prompt_mode,
-            &mut self.renderer,
-            &mut self.child_activity,
-        );
+        self.observe_tokens(notification);
+        self.observe_agents(notification);
+        self.renderer.render(notification, &mut self.scroll_buffer);
     }
 
-    /// Send what a key handler asked for: steering text as `turn/steer`, an
-    /// answer as the response to its request.
-    async fn send_turn_command(&mut self, command: EngineCommand, tracker: &mut TurnTracker) {
-        let EngineCommand::QueueNext { text } = command else {
-            tracker.answer(command);
-            // Its request was sent with the event the dialog showed, so it
-            // is on the queue already if it isn't read yet.
-            while let Some(message) = self.client.try_next_event() {
-                tracker.observe_message(message);
-            }
-            self.send_ready_answers(tracker).await;
+    /// The status bar's context meter, from `session/tokenUsage/updated`:
+    /// the last call's tokens against the window, as Codex reads it.
+    fn observe_tokens(&mut self, notification: &ServerNotification) {
+        let ServerNotification::SessionTokenUsageUpdated(updated) = notification else {
             return;
+        };
+        let usage = &updated.token_usage;
+        let Some(window) = usage.model_context_window else {
+            return;
+        };
+        self.context_left = crate::tui_render::context_left(usage.last.total_tokens, window);
+        // A window the host learned, as after an overflow; adopted once the
+        // turn has ended.
+        let window = window as usize;
+        if window != self.config.max_context_tokens {
+            self.learned_context_window = Some(window);
+        }
+    }
+
+    /// The overlay's sub-agent rows, from the turn's items.
+    fn observe_agents(&mut self, notification: &ServerNotification) {
+        match notification {
+            ServerNotification::ItemStarted(started) => {
+                if let Item::ToolCall {
+                    id,
+                    tool,
+                    arguments,
+                    ..
+                } = &started.item
+                {
+                    if tool == "InvokeAgent" {
+                        let name = arguments["agent_name"].as_str().unwrap_or("agent");
+                        self.child_activity.agent_started(id, name);
+                    }
+                    if let Some(parent) = &started.parent_item_id {
+                        self.child_activity
+                            .agent_activity(parent, activity_of(tool, arguments));
+                    }
+                }
+            }
+            ServerNotification::ItemCompleted(done) => {
+                if let Item::ToolCall {
+                    id, tool, status, ..
+                } = &done.item
+                {
+                    if tool == "InvokeAgent" {
+                        self.child_activity.agent_ended(id);
+                    }
+                    // A failure shows without waiting for the end.
+                    if let Some(parent) = &done.parent_item_id
+                        && *status == ToolCallStatus::Failed
+                    {
+                        self.child_activity
+                            .agent_activity(parent, format!("{tool} \u{2717}"));
+                    }
+                }
+            }
+            ServerNotification::ToolCallProgress(progress) => {
+                self.child_activity
+                    .agent_activity(&progress.item_id, progress.message.trim().to_string());
+            }
+            _ => {}
+        }
+    }
+
+    /// Send what a key handler asked for: an answer as the response to its
+    /// request, steering text as `turn/steer`.
+    async fn send_turn_command(&mut self, command: TurnCommand, tracker: &mut TurnTracker) {
+        let text = match command {
+            TurnCommand::Answer { request, response } => {
+                if let Err(e) = self.client.resolve_server_request(request, response).await {
+                    tracing::warn!("an answer didn't reach Koda's host: {e}");
+                }
+                return;
+            }
+            TurnCommand::Steer { text } => text,
         };
         // Kept until the model receives it. If the turn has just ended the
         // host refuses it, and it comes back to the input box with the rest.
-        tracker.steer_sent(text.clone());
+        let client_message_id = tracker.steer_sent(text.clone());
         let turn = tracker.turn_id().to_string();
         let steered = self
             .client
@@ -471,19 +572,11 @@ impl TuiContext {
                 session_id: self.session.id.clone(),
                 expected_turn_id: turn,
                 input: text,
-                client_message_id: None,
+                client_message_id: Some(client_message_id),
             })
             .await;
         if let Err(e) = steered {
             tracing::debug!("turn/steer: {e}");
-        }
-    }
-
-    async fn send_ready_answers(&mut self, tracker: &mut TurnTracker) {
-        for (id, response) in tracker.ready_answers() {
-            if let Err(e) = self.client.resolve_server_request(id, response).await {
-                tracing::warn!("an answer didn't reach Koda's host: {e}");
-            }
         }
     }
 }
@@ -505,7 +598,7 @@ mod drain_tests {
     fn drain_returns_zero_on_empty_channel() {
         let (_tx, mut rx) = mpsc::unbounded_channel::<u32>();
         let mut seen = Vec::new();
-        let n = drain_bounded(&mut rx, 64, |item| seen.push(item));
+        let n = drain_bounded(|| rx.try_recv().ok(), 64, |item| seen.push(item));
         assert_eq!(n, 0);
         assert!(seen.is_empty());
     }
@@ -517,7 +610,7 @@ mod drain_tests {
             tx.send(i).unwrap();
         }
         let mut seen = Vec::new();
-        let n = drain_bounded(&mut rx, 64, |item| seen.push(item));
+        let n = drain_bounded(|| rx.try_recv().ok(), 64, |item| seen.push(item));
         assert_eq!(n, 10);
         assert_eq!(seen, (0..10).collect::<Vec<_>>());
     }
@@ -533,7 +626,7 @@ mod drain_tests {
             tx.send(i).unwrap();
         }
         let mut seen = Vec::new();
-        let n = drain_bounded(&mut rx, 64, |item| seen.push(item));
+        let n = drain_bounded(|| rx.try_recv().ok(), 64, |item| seen.push(item));
         assert_eq!(n, 64, "drain must stop at cap, even with 1000 items queued");
         assert_eq!(seen.len(), 64);
         assert_eq!(seen.first(), Some(&0));
@@ -542,7 +635,7 @@ mod drain_tests {
         // The remaining 936 items are still in the channel, ready for the
         // next iteration. Verify by draining again with a huge cap.
         let mut more = Vec::new();
-        let m = drain_bounded(&mut rx, 10_000, |item| more.push(item));
+        let m = drain_bounded(|| rx.try_recv().ok(), 10_000, |item| more.push(item));
         assert_eq!(m, 1_000 - 64);
         assert_eq!(more.first(), Some(&64));
         assert_eq!(more.last(), Some(&999));
@@ -556,7 +649,7 @@ mod drain_tests {
             tx.send(i).unwrap();
         }
         let mut seen = Vec::new();
-        let n = drain_bounded(&mut rx, 0, |item| seen.push(item));
+        let n = drain_bounded(|| rx.try_recv().ok(), 0, |item| seen.push(item));
         assert_eq!(n, 0);
         assert!(seen.is_empty());
     }
@@ -578,7 +671,7 @@ mod drain_tests {
         let mut total_seen = 0;
         let mut iterations = 0;
         loop {
-            let n = drain_bounded(&mut rx, 64, |_| {});
+            let n = drain_bounded(|| rx.try_recv().ok(), 64, |_| {});
             total_seen += n;
             iterations += 1;
             if n == 0 {

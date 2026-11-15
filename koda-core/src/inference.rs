@@ -1555,7 +1555,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
             && stream_result.repeated.is_none()
         {
             sink.emit(EngineEvent::ModelUsage {
-                usage: (&stream_result.usage).into(),
+                usage: crate::engine::UsageTotals::of_call(provider, &stream_result.usage),
             });
         }
         let context_tokens = provider.context_tokens(&stream_result.usage);

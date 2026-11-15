@@ -84,8 +84,6 @@ pub struct ActivityRow {
 /// because the row only appears for live work).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActivityStatus {
-    /// Reserved but not yet started. Dim — typically transient.
-    Pending,
     /// Active — the common case. Yellow.
     Running,
     /// Cancellation in progress (token fired, future hasn't observed
@@ -152,7 +150,6 @@ impl Widget for ChildActivityOverlay<'_> {
             }
 
             let icon_color = match row.status {
-                ActivityStatus::Pending => Color::DarkGray,
                 ActivityStatus::Running => Color::Yellow,
                 ActivityStatus::Cancelling => Color::Red,
             };

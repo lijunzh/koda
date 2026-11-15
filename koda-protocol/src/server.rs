@@ -142,7 +142,7 @@ server_notifications! {
     ToolCallOutputDelta => "item/toolCall/outputDelta" (crate::item::ToolCallOutputDeltaNotification),
     /// A notice about a running tool call.
     ToolCallProgress => "item/toolCall/progress" (crate::item::ToolCallProgressNotification),
-    /// What the session's model calls have used, and how full its context is.
+    /// What the session's model calls have used, sent after each one.
     SessionTokenUsageUpdated => "session/tokenUsage/updated" (crate::session::SessionTokenUsageUpdatedNotification),
     /// A request was answered, by this client or another, or by Koda.
     ServerRequestResolved => "serverRequest/resolved" (ServerRequestResolvedNotification),

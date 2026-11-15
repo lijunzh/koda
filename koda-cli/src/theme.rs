@@ -86,7 +86,6 @@ const ACCENT_AGENT: Color = Color::Magenta;
 // Decorative accent styles — not effect-tied. Used for status banners,
 // approval previews, and other UI moments that don't fit a tool effect.
 pub const ACCENT_AMBER: Style = Style::new().fg(Color::Rgb(255, 191, 0));
-pub const ACCENT_MAGENTA: Style = Style::new().fg(Color::Magenta);
 
 /// Color of the `●` glyph that prefixes a tool call header.
 ///

@@ -1,14 +1,21 @@
-//! Diff preview renderer — native ratatui `Line`/`Span` output.
+//! A tool call's file changes as ratatui `Line`s.
 //!
-//! Takes structured [`DiffPreview`] data from koda-core and produces
-//! `Vec<Line<'static>>` with:
-//! - Proper unified diff with hunk headers and context lines
-//! - Syntax highlighting with cross-hunk context (via pre-highlighted files)
-//! - Dark background tint for diff lines (red removed, green added)
-//! - Gutter metadata for NoSelect copy support
+//! Drawn from the `changes` the protocol carries on an approval request and
+//! on a tool-call item (`FileUpdateChange`): a unified diff for an edit, the
+//! file itself for a new one. Codex's TUI draws its `fileChange` the same
+//! way, and so do these:
+//! - the unified text is read with `diffy`;
+//! - each hunk is highlighted as one block, so a construct that spans its
+//!   lines colors correctly, with no state carried from hunk to hunk;
+//! - the whole diff is shown, never cut at a line count;
+//! - a change too large to highlight cheaply is drawn plain
+//!   ([`highlight::pre_highlight`]'s limits, Codex's).
+//!
+//! Each diff line's gutter (line number and sign) is [`GUTTER_WIDTH`]
+//! columns wide, which the scroll buffer leaves out when text is copied.
 
 use crate::highlight;
-use koda_core::preview::{DiffLine, DiffPreview, DiffTag, UnifiedDiffPreview, WriteNewPreview};
+use koda_client::protocol::item::{FileUpdateChange, PatchChangeKind};
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -25,353 +32,274 @@ const HUNK_HEADER: Style = Style::new().fg(Color::Cyan);
 /// Used by NoSelect to know how many leading columns to skip on copy.
 pub const GUTTER_WIDTH: u16 = 7;
 
+/// What a diff line does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Sign {
+    Context,
+    Delete,
+    Insert,
+}
+
 // ── Public API ────────────────────────────────────────────────
 
-/// Render a [`DiffPreview`] as native ratatui `Line`s.
-///
-/// Each diff line's gutter (line numbers + ±) occupies [`GUTTER_WIDTH`]
-/// columns. The caller can use this to implement NoSelect on copy.
-pub fn render_lines(preview: &DiffPreview) -> Vec<Line<'static>> {
-    match preview {
-        DiffPreview::UnifiedDiff(diff) => render_unified_diff(diff),
-        DiffPreview::WriteNew(w) => render_write_new(w),
-        DiffPreview::FileNotYetExists => {
-            vec![Line::styled("(file does not exist yet)", DIM)]
+/// Draw a call's changes, one file after another.
+pub fn render_changes(changes: &[FileUpdateChange]) -> Vec<Line<'static>> {
+    changes.iter().flat_map(render_change).collect()
+}
+
+fn render_change(change: &FileUpdateChange) -> Vec<Line<'static>> {
+    match &change.kind {
+        PatchChangeKind::Add => render_whole_file(&change.path, &change.diff, Sign::Insert),
+        PatchChangeKind::Delete => render_whole_file(&change.path, &change.diff, Sign::Delete),
+        PatchChangeKind::Update { move_path } => {
+            let path = match move_path {
+                Some(to) => format!("{} \u{2192} {to}", change.path),
+                None => change.path.clone(),
+            };
+            // The language comes from the name the file ends up with.
+            let ext = extension(move_path.as_deref().unwrap_or(&change.path));
+            render_unified(&path, ext, &change.diff)
         }
     }
 }
 
-// ── Unified diff renderer ─────────────────────────────────────
-
-fn render_unified_diff(diff: &UnifiedDiffPreview) -> Vec<Line<'static>> {
-    let ext = std::path::Path::new(&diff.path)
+/// A file's extension, for the highlighter.
+fn extension(path: &str) -> &str {
+    std::path::Path::new(path)
         .extension()
         .and_then(|e| e.to_str())
-        .unwrap_or("");
+        .unwrap_or("")
+}
 
-    // Pre-highlight both files for cross-hunk syntax context
-    let old_highlights = highlight::pre_highlight(&diff.old_content, ext);
-    let new_highlights = highlight::pre_highlight(&diff.new_content, ext);
+// ── Unified diff ──────────────────────────────────────────────
 
-    let mut lines = Vec::new();
-
-    // File header
-    lines.push(Line::styled(format!("╭─── {} ───╮", diff.path), DIM));
-
-    for (i, hunk) in diff.hunks.iter().enumerate() {
-        // Hunk separator (between hunks, not before the first)
-        if i > 0 {
-            lines.push(Line::styled("  ⋯", DIM));
+fn render_unified(path: &str, ext: &str, diff: &str) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::styled(format!("╭─── {path} ───╮"), DIM)];
+    match diffy::Patch::from_str(diff) {
+        Ok(patch) => {
+            for (i, hunk) in patch.hunks().iter().enumerate() {
+                // Between hunks, not before the first.
+                if i > 0 {
+                    lines.push(Line::styled("  ⋯", DIM));
+                }
+                let (old, new) = (hunk.old_range(), hunk.new_range());
+                lines.push(Line::styled(
+                    format!(
+                        "@@ -{},{} +{},{} @@",
+                        old.start(),
+                        old.len(),
+                        new.start(),
+                        new.len()
+                    ),
+                    HUNK_HEADER,
+                ));
+                let parts: Vec<(Sign, &str)> = hunk
+                    .lines()
+                    .iter()
+                    .map(|line| match line {
+                        diffy::Line::Context(text) => (Sign::Context, *text),
+                        diffy::Line::Delete(text) => (Sign::Delete, *text),
+                        diffy::Line::Insert(text) => (Sign::Insert, *text),
+                    })
+                    .collect();
+                // The hunk highlighted as one block, as Codex does.
+                let block: String = parts.iter().map(|(_, text)| *text).collect();
+                let spans = highlight::pre_highlight(&block, ext);
+                let spans = (spans.len() == parts.len()).then_some(spans);
+                let (mut old_line, mut new_line) = (old.start(), new.start());
+                for (n, (sign, text)) in parts.iter().enumerate() {
+                    let number = match sign {
+                        Sign::Context => {
+                            old_line += 1;
+                            new_line += 1;
+                            old_line - 1
+                        }
+                        Sign::Delete => {
+                            old_line += 1;
+                            old_line - 1
+                        }
+                        Sign::Insert => {
+                            new_line += 1;
+                            new_line - 1
+                        }
+                    };
+                    let text = text.trim_end_matches('\n');
+                    lines.push(diff_line(
+                        number,
+                        *sign,
+                        text,
+                        spans.as_ref().map(|s| s[n].as_slice()),
+                    ));
+                }
+            }
         }
-
-        // Hunk header: @@ -old_start,old_count +new_start,new_count @@
-        lines.push(Line::styled(
-            format!(
-                "@@ -{},{} +{},{} @@",
-                hunk.old_start, hunk.old_count, hunk.new_start, hunk.new_count
-            ),
-            HUNK_HEADER,
-        ));
-
-        // Hunk lines
-        for diff_line in &hunk.lines {
-            let rendered = render_diff_line(diff_line, &old_highlights, &new_highlights);
-            lines.push(rendered);
+        // Not a diff diffy can read: its lines as they are, colored by sign.
+        Err(_) => {
+            for text in diff.lines() {
+                let style = match text.chars().next() {
+                    Some('+') => Style::default().fg(Color::Green),
+                    Some('-') => Style::default().fg(Color::Red),
+                    Some('@') => HUNK_HEADER,
+                    _ => Style::default(),
+                };
+                lines.push(Line::styled(text.to_string(), style));
+            }
         }
     }
-
-    // Close frame
-    lines.push(Line::styled(format!("╰─── {} ───╯", diff.path), DIM));
-
-    if diff.truncated {
-        lines.push(Line::styled("... diff truncated (file too large)", DIM));
-    }
-
+    lines.push(Line::styled(format!("╰─── {path} ───╯"), DIM));
     lines
 }
 
-/// Render a single diff line with gutter + syntax-highlighted content.
-///
-/// Uses pre-computed highlights from the full file for correct cross-hunk
-/// syntax context (multiline strings, comments, etc.).
-fn render_diff_line(
-    line: &DiffLine,
-    old_highlights: &[Vec<Span<'static>>],
-    new_highlights: &[Vec<Span<'static>>],
-) -> Line<'static> {
-    let (sigil, sigil_color, bg_color, highlights, line_num) = match line.tag {
-        DiffTag::Context => {
-            let num = line.old_line.unwrap_or(0);
-            (' ', Color::DarkGray, None, old_highlights, num)
-        }
-        DiffTag::Delete => {
-            let num = line.old_line.unwrap_or(0);
-            ('-', Color::Red, Some(LINE_RED_BG), old_highlights, num)
-        }
-        DiffTag::Insert => {
-            let num = line.new_line.unwrap_or(0);
-            ('+', Color::Green, Some(LINE_GREEN_BG), new_highlights, num)
-        }
-    };
+// ── A whole file, added or deleted ────────────────────────────
 
-    let mut spans = Vec::new();
-
-    // Gutter: line number + sigil (GUTTER_WIDTH chars total)
-    let gutter_style = Style::default().fg(sigil_color).add_modifier(Modifier::DIM);
-    spans.push(Span::styled(
-        format!("{:>4} {} ", line_num, sigil),
-        gutter_style,
-    ));
-
-    // Content: use pre-highlighted spans if available, with background tint
-    let idx = line_num.saturating_sub(1); // 0-based index
-    if idx < highlights.len() {
-        for hl_span in &highlights[idx] {
-            let mut style = hl_span.style;
-            if let Some(bg) = bg_color {
-                style = style.bg(bg);
-            }
-            spans.push(Span::styled(hl_span.content.clone(), style));
-        }
+fn render_whole_file(path: &str, content: &str, sign: Sign) -> Vec<Line<'static>> {
+    let count = content.lines().count();
+    let what = if sign == Sign::Insert {
+        "new file"
     } else {
-        // Fallback: no highlighting available
-        let style = match bg_color {
-            Some(bg) => Style::default().bg(bg),
-            None => Style::default(),
-        };
-        spans.push(Span::styled(line.content.clone(), style));
-    }
-
-    Line::from(spans)
-}
-
-// ── Write new file ────────────────────────────────────────────
-
-fn render_write_new(w: &WriteNewPreview) -> Vec<Line<'static>> {
-    let ext = std::path::Path::new(&w.path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
-
+        "deleted"
+    };
     let mut lines = vec![Line::styled(
         format!(
-            "╭─── {} (new file: {} lines, {} bytes) ───╮",
-            w.path, w.line_count, w.byte_count
+            "╭─── {path} ({what}: {count} {}, {} bytes) ───╮",
+            if count == 1 { "line" } else { "lines" },
+            content.len()
         ),
         DIM,
     )];
-
-    let mut hl = crate::highlight::CodeHighlighter::new(ext);
-    for (i, content) in w.first_lines.iter().enumerate() {
-        let mut spans = vec![Span::styled(
-            format!("{:>4} + ", i + 1),
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::DIM),
-        )];
-        let highlighted = hl.highlight_spans(content);
-        for mut s in highlighted {
-            s.style = s.style.bg(LINE_GREEN_BG);
-            spans.push(s);
-        }
-        lines.push(Line::from(spans));
-    }
-
-    if w.truncated {
-        lines.push(Line::styled(
-            format!("... +{} more lines", w.line_count - w.first_lines.len()),
-            DIM,
+    // The whole file highlighted at once, as Codex does.
+    let spans = highlight::pre_highlight(content, extension(path));
+    for (i, text) in content.lines().enumerate() {
+        lines.push(diff_line(
+            i + 1,
+            sign,
+            text,
+            spans.get(i).map(|s| s.as_slice()),
         ));
     }
-
-    lines.push(Line::styled(format!("╰─── {} ───╯", w.path), DIM));
-
+    lines.push(Line::styled(format!("╰─── {path} ───╯"), DIM));
     lines
+}
+
+/// One diff line: the gutter (number and sign), then the text, highlighted
+/// when there are spans for it, on a red or green ground.
+fn diff_line(
+    number: usize,
+    sign: Sign,
+    text: &str,
+    highlighted: Option<&[Span<'static>]>,
+) -> Line<'static> {
+    let (sigil, sigil_color, bg) = match sign {
+        Sign::Context => (' ', Color::DarkGray, None),
+        Sign::Delete => ('-', Color::Red, Some(LINE_RED_BG)),
+        Sign::Insert => ('+', Color::Green, Some(LINE_GREEN_BG)),
+    };
+    let mut spans = vec![Span::styled(
+        format!("{number:>4} {sigil} "),
+        Style::default().fg(sigil_color).add_modifier(Modifier::DIM),
+    )];
+    let ground = |style: Style| match bg {
+        Some(bg) => style.bg(bg),
+        None => style,
+    };
+    match highlighted {
+        Some(highlighted) => spans.extend(
+            highlighted
+                .iter()
+                .map(|s| Span::styled(s.content.clone(), ground(s.style))),
+        ),
+        None => spans.push(Span::styled(text.to_string(), ground(Style::default()))),
+    }
+    Line::from(spans)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use koda_core::preview::*;
 
-    #[test]
-    fn test_unified_diff_has_hunk_headers() {
-        let preview = DiffPreview::UnifiedDiff(UnifiedDiffPreview {
-            path: "test.rs".into(),
-            old_content: "fn main() {\n    println!(\"hello\");\n}\n".into(),
-            new_content: "fn main() {\n    println!(\"world\");\n}\n".into(),
-            hunks: vec![DiffHunk {
-                old_start: 1,
-                old_count: 3,
-                new_start: 1,
-                new_count: 3,
-                lines: vec![
-                    DiffLine {
-                        tag: DiffTag::Context,
-                        content: "fn main() {".into(),
-                        old_line: Some(1),
-                        new_line: Some(1),
-                    },
-                    DiffLine {
-                        tag: DiffTag::Delete,
-                        content: "    println!(\"hello\");".into(),
-                        old_line: Some(2),
-                        new_line: None,
-                    },
-                    DiffLine {
-                        tag: DiffTag::Insert,
-                        content: "    println!(\"world\");".into(),
-                        old_line: None,
-                        new_line: Some(2),
-                    },
-                    DiffLine {
-                        tag: DiffTag::Context,
-                        content: "}".into(),
-                        old_line: Some(3),
-                        new_line: Some(3),
-                    },
-                ],
-            }],
-            truncated: false,
-        });
-
-        let lines = render_lines(&preview);
-        let text: Vec<String> = lines
+    fn text(lines: &[Line<'static>]) -> Vec<String> {
+        lines
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
-            .collect();
+            .collect()
+    }
 
-        // Should have file header
-        assert!(text[0].contains("test.rs"), "header: {}", text[0]);
-        // Should have hunk header
-        assert!(
-            text.iter().any(|t| t.contains("@@")),
-            "should have hunk header"
-        );
-        // Should have line numbers with sigils
-        assert!(
-            text.iter().any(|t| t.contains(" - ")),
-            "should have delete marker"
-        );
-        assert!(
-            text.iter().any(|t| t.contains(" + ")),
-            "should have insert marker"
-        );
+    fn update(path: &str, diff: &str) -> FileUpdateChange {
+        FileUpdateChange {
+            path: path.into(),
+            kind: PatchChangeKind::Update { move_path: None },
+            diff: diff.into(),
+        }
     }
 
     #[test]
-    fn test_write_new_rendering() {
-        let preview = DiffPreview::WriteNew(WriteNewPreview {
-            path: "new.rs".into(),
-            line_count: 10,
-            byte_count: 200,
-            first_lines: vec!["fn main() {}".into()],
-            truncated: true,
-            content: String::new(),
-        });
-        let lines = render_lines(&preview);
-        let text: Vec<String> = lines
-            .iter()
-            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
-            .collect();
-        assert!(text[0].contains("new.rs"));
-        assert!(text.iter().any(|t| t.contains("more lines")));
+    fn an_edit_shows_its_hunk_with_line_numbers() {
+        // What `similar` writes, as the host sends it: no file headers.
+        let diff = "@@ -1,3 +1,3 @@\n fn main() {\n-    println!(\"hello\");\n+    println!(\"world\");\n }\n";
+        let lines = text(&render_changes(&[update("test.rs", diff)]));
+        assert!(lines[0].contains("test.rs"), "header: {}", lines[0]);
+        assert_eq!(lines[1], "@@ -1,3 +1,3 @@");
+        assert!(lines[2].starts_with("   1   fn main()"), "{}", lines[2]);
+        assert!(lines[3].starts_with("   2 - "), "{}", lines[3]);
+        assert!(lines[3].contains("hello"));
+        assert!(lines[4].starts_with("   2 + "), "{}", lines[4]);
+        assert!(lines[4].contains("world"));
+        assert!(lines[5].starts_with("   3   }"), "{}", lines[5]);
+        assert!(lines[6].contains("test.rs"));
     }
 
     #[test]
-    fn test_hunk_separator_between_hunks() {
-        let preview = DiffPreview::UnifiedDiff(UnifiedDiffPreview {
-            path: "test.rs".into(),
-            old_content: String::new(),
-            new_content: String::new(),
-            hunks: vec![
-                DiffHunk {
-                    old_start: 1,
-                    old_count: 1,
-                    new_start: 1,
-                    new_count: 1,
-                    lines: vec![DiffLine {
-                        tag: DiffTag::Context,
-                        content: "a".into(),
-                        old_line: Some(1),
-                        new_line: Some(1),
-                    }],
-                },
-                DiffHunk {
-                    old_start: 50,
-                    old_count: 1,
-                    new_start: 50,
-                    new_count: 1,
-                    lines: vec![DiffLine {
-                        tag: DiffTag::Context,
-                        content: "b".into(),
-                        old_line: Some(50),
-                        new_line: Some(50),
-                    }],
-                },
-            ],
-            truncated: false,
-        });
-        let lines = render_lines(&preview);
-        let text: Vec<String> = lines
-            .iter()
-            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
-            .collect();
+    fn hunks_are_separated_and_the_whole_diff_is_shown() {
+        let mut diff = String::from("@@ -1,1 +1,1 @@\n-a\n+b\n@@ -50,200 +50,200 @@\n");
+        for i in 0..200 {
+            diff.push_str(&format!("-old {i}\n"));
+        }
+        for i in 0..200 {
+            diff.push_str(&format!("+new {i}\n"));
+        }
+        let lines = text(&render_changes(&[update("big.txt", &diff)]));
+        assert!(lines.iter().any(|l| l.contains('⋯')), "hunk separator");
         assert!(
-            text.iter().any(|t| t.contains('⋯')),
-            "should have hunk separator"
+            lines.iter().any(|l| l.contains("new 199")),
+            "nothing is cut: {}",
+            lines.len()
         );
+        assert!(lines.iter().any(|l| l.starts_with(" 249 + new 199")));
     }
 
     #[test]
-    fn test_unified_diff_truncated_flag() {
-        // When truncated=true the render should include some truncation indicator.
-        let preview = DiffPreview::UnifiedDiff(UnifiedDiffPreview {
-            path: "big.rs".into(),
-            old_content: String::new(),
-            new_content: String::new(),
-            hunks: vec![DiffHunk {
-                old_start: 1,
-                old_count: 1,
-                new_start: 1,
-                new_count: 1,
-                lines: vec![DiffLine {
-                    tag: DiffTag::Insert,
-                    content: "new line".into(),
-                    old_line: None,
-                    new_line: Some(1),
-                }],
-            }],
-            truncated: true,
-        });
-        let lines = render_lines(&preview);
-        let text: Vec<String> = lines
-            .iter()
-            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
-            .collect();
-        // Check that there's at least a line indicating truncation
+    fn a_new_file_shows_every_line() {
+        let content: String = (1..=100).map(|i| format!("line {i}\n")).collect();
+        let lines = text(&render_changes(&[FileUpdateChange {
+            path: "new.txt".into(),
+            kind: PatchChangeKind::Add,
+            diff: content,
+        }]));
         assert!(
-            text.iter().any(|t| {
-                t.to_lowercase().contains("truncat")
-                    || t.contains('…')
-                    || t.contains("more")
-                    || t.contains("⋯")
-            }),
-            "truncated diff should have an indicator: {text:?}"
+            lines[0].contains("new.txt (new file: 100 lines"),
+            "{}",
+            lines[0]
         );
+        assert!(lines[100].starts_with(" 100 + line 100"), "{}", lines[100]);
+        assert!(lines[101].contains("new.txt"));
     }
 
     #[test]
-    fn test_file_not_yet_exists_variant() {
-        let preview = DiffPreview::FileNotYetExists;
-        let lines = render_lines(&preview);
-        let text: Vec<String> = lines
-            .iter()
-            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
-            .collect();
-        assert!(
-            text.iter().any(|t| t.contains("not exist")),
-            "FileNotYetExists should say the file does not exist: {text:?}"
-        );
+    fn a_moved_file_names_both_paths() {
+        let change = FileUpdateChange {
+            path: "a.rs".into(),
+            kind: PatchChangeKind::Update {
+                move_path: Some("b.rs".into()),
+            },
+            diff: "@@ -1,1 +1,1 @@\n-x\n+y\n".into(),
+        };
+        let lines = text(&render_changes(&[change]));
+        assert!(lines[0].contains("a.rs \u{2192} b.rs"), "{}", lines[0]);
+    }
+
+    #[test]
+    fn text_diffy_cannot_read_is_shown_as_it_is() {
+        let lines = text(&render_changes(&[update("x", "@@ nonsense\n+added\n")]));
+        assert!(lines.iter().any(|l| l == "+added"), "{lines:?}");
     }
 }
