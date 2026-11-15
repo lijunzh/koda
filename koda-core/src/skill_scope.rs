@@ -157,6 +157,7 @@ mod tests {
                     user_invocable: true,
                     argument_hint: None,
                     source: SkillSource::BuiltIn,
+                    path: None,
                 },
                 content: "scoped content".to_string(),
             },

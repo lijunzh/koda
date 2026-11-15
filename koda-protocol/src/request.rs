@@ -214,6 +214,11 @@ client_requests! {
         params: crate::agent::AgentListParams,
         response: crate::agent::AgentListResponse,
     },
+    /// The skills for some folders, the host's project by default. Codex's.
+    SkillsList => "skills/list" {
+        params: crate::skills::SkillsListParams,
+        response: crate::skills::SkillsListResponse,
+    },
     /// Close a session the client is done with, stopping its running turn.
     SessionUnsubscribe => "session/unsubscribe" {
         params: crate::session::SessionUnsubscribeParams,

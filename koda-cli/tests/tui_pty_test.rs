@@ -1903,6 +1903,15 @@ async fn a_background_process_runs_until_stop() {
     tui.wait_for_screen_without(BUSY_PROMPT);
     tui.wait_for_screen("/stop to stop");
     assert!(tui.screen().contains("sleep 35"), "{}", tui.screen());
+    // Its age counts up: `startedAt` is in milliseconds.
+    tui.wait_for_screen_that(
+        |screen| {
+            screen.lines().any(|line| {
+                line.contains("process:") && line.contains("s)") && !line.contains("<1s")
+            })
+        },
+        "show the process's age",
+    );
 
     // Esc during a turn stops the turn, not the process.
     tui.submit("another");
@@ -2006,6 +2015,51 @@ async fn agents_lists_the_sub_agents() {
     tui.type_text(ESC);
     tui.type_text("\r");
     tui.wait_for_screen("/agent is now /agents.");
+}
+
+/// `/skills` lists the skills a person picks, through the host's
+/// `skills/list`: built-in and the project's, not a model-only one, and it
+/// names a skill file that didn't load. `/skills <query>` filters them (6g).
+#[tokio::test(flavor = "multi_thread")]
+async fn skills_lists_them_and_names_a_broken_file() {
+    let server = scripted_model(vec![]).await;
+    let home = home();
+    let skills = home.path().join(".koda/skills");
+    let skill = |folder: &str, text: &str| {
+        std::fs::create_dir_all(skills.join(folder)).unwrap();
+        std::fs::write(skills.join(folder).join("SKILL.md"), text).unwrap();
+    };
+    skill(
+        "deploy",
+        "---\nname: deploy\ndescription: Ships the release\n---\nBody",
+    );
+    skill(
+        "hidden",
+        "---\nname: hidden\ndescription: Model only\nuser_invocable: false\n---\nBody",
+    );
+    skill("broken", "No frontmatter here.");
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    run_command(&mut tui, "/skills");
+    tui.wait_for_screen("deploy \u{2014} Ships the release [project]");
+    tui.wait_for_screen("code-review");
+    // The path is long enough to wrap; its end and the reason's start share
+    // a line.
+    tui.wait_for_screen("broken/SKILL.md: it doesn't");
+    assert!(!tui.screen().contains("Model only"), "{}", tui.screen());
+
+    run_command(&mut tui, "/skills release");
+    tui.wait_for_screen_that(
+        |screen| screen.matches("Ships the release").count() == 2,
+        "list deploy again",
+    );
+    assert!(
+        tui.screen().matches("code-review").count() <= 1,
+        "{}",
+        tui.screen()
+    );
+    run_command(&mut tui, "/skills nothing-like-it");
+    tui.wait_for_screen("No skills matching 'nothing-like-it'.");
 }
 
 /// `koda "prompt"` opens the TUI and sends the prompt, as `codex "prompt"`

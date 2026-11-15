@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 - **Background processes and agents through the client protocol.** `session/backgroundTerminals/list`, `terminate` and `clean` list and stop the processes the model started with `Bash {background: true}`, as Codex's `thread/backgroundTerminals/*` do; they outlive the turn that started them. `agent/list` names the sub-agents the model can call, with where each is defined (built-in, user or project).
 
+- **`skills/list` lists the skills, as Codex's does:** each skill's name, description, file, scope (`system`, `user` or `repo`, Codex's names) and whether a person can pick it, plus the skill files that couldn't be loaded and why. With no `cwds`, the host's project. `/skills` uses it. Search in `/skills` now matches name and description only, as Codex's skills have no tags; the model's `ListSkills` still searches tags.
+
 - **`/stop` stops background processes, as in Codex,** with `/clean` as its alias; it runs during a turn too. The overlay above the status bar lists each process with its command and age and says `/stop to stop`; a sub-agent's row says `Esc to interrupt`. `/agents` lists the sub-agents through `agent/list`. A sub-agent's `ChildTaskUpdate` events now carry its name and end with how it finished (`completed`, `errored` or `cancelled`).
 
 - **Memory through the client protocol.** A session now reports the instruction files its prompt carries (`instructionSources`, Codex's field: the global `AGENTS.md`, then the project's from the git root down). `session/memory/read` returns Koda's notes for the session's project and the global ones, with their paths and text; `session/memory/add` saves to either, replacing a section with the same `## Heading` as `MemoryWrite` does. Codex has no request to add a memory, since its memories come only from its background pipeline; Koda's are written by the model or by hand, as Claude Code's are. The TUI's `/memory` uses them and now lists every instruction file the session reads, not only the project root's.
@@ -74,6 +76,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **A skill file that can't be loaded is reported** instead of skipped silently: `/skills` names the file and the reason (no frontmatter, no closing `---`, no `name:`), and so does `skills/list`.
+- **`/skills` no longer lists model-only skills** (`user_invocable: false`), as its documentation always said.
 - **Koda tidies `~/.koda/clones`, unused since 0.6.0.** Sub-agents on macOS used to work in copies of the project there, and folders were left behind, most of them empty. At TUI start Koda now removes the empty ones, and `~/.koda` once nothing is left in it. A folder that still holds a copy is kept, and a startup warning names it so you can check it and delete it yourself.
 - **Running Koda's tests no longer writes to your `panic.log`.** A panic-hook test appended a deliberate panic to `~/.config/koda/logs/panic.log` on every run.
 

@@ -170,7 +170,7 @@ pub async fn handle_slash_command(
         "/memory" => SlashAction::Memory(arg.map(str::to_string)),
 
         "/skills" => {
-            crate::tui_wizards::handle_list_skills(buffer, arg, &agent.tools);
+            crate::tui_context::skills::show_skills(&client.request_handle(), arg, buffer).await;
             SlashAction::Continue
         }
 

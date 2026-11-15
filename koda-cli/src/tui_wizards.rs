@@ -13,58 +13,7 @@ use crate::tui_output;
 
 use ratatui::text::{Line, Span};
 
-use tui_output::{BOLD, CYAN, DIM};
-
-// ── Skills ─────────────────────────────────────────
-
-pub(crate) fn handle_list_skills(
-    buffer: &mut ScrollBuffer,
-    query: Option<&str>,
-    tools: &koda_core::tools::ToolRegistry,
-) {
-    let skills = match query {
-        Some(q) if !q.is_empty() => tools.search_skills(q),
-        _ => tools.list_skills(),
-    };
-
-    tui_output::blank(buffer);
-    tui_output::emit_line(buffer, Line::styled("  \u{1f4da} Skills", BOLD));
-    tui_output::blank(buffer);
-
-    if skills.is_empty() {
-        match query {
-            Some(q) => tui_output::dim_msg(buffer, format!("No skills matching '{q}'.")),
-            None => tui_output::dim_msg(buffer, "No skills available.".into()),
-        }
-    } else {
-        for (name, description, source) in &skills {
-            let tag = match source.as_str() {
-                "user" => " [user]",
-                "project" => " [project]",
-                _ => "",
-            };
-            tui_output::emit_line(
-                buffer,
-                Line::from(vec![
-                    Span::styled(format!("  {name}"), CYAN),
-                    Span::raw(format!(" \u{2014} {description}")),
-                    Span::styled(tag, DIM),
-                ]),
-            );
-        }
-    }
-
-    tui_output::blank(buffer);
-    tui_output::dim_msg(
-        buffer,
-        "Ask Koda to activate a skill, or use ActivateSkill tool directly.".into(),
-    );
-    tui_output::dim_msg(
-        buffer,
-        "Create your own: .koda/skills/<name>/SKILL.md or ~/.config/koda/skills/<name>/SKILL.md"
-            .into(),
-    );
-}
+use tui_output::{BOLD, DIM};
 
 // ── Diff (native TUI) ───────────────────────────────
 

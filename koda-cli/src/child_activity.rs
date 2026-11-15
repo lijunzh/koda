@@ -133,9 +133,10 @@ impl ChildActivityTracker {
     /// The rows to draw, at most [`MAX_VISIBLE`], and how many there are
     /// in all: sub-agents in spawn order, then processes, oldest first.
     pub fn build_rows(&self) -> (Vec<ActivityRow>, usize) {
-        let now_unix = std::time::SystemTime::now()
+        // `startedAt` is in Unix milliseconds.
+        let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
+            .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
             .unwrap_or(0);
         let agents = self.agents.values().map(|a| ActivityRow {
             icon: "\u{1f916}", // 🤖
@@ -153,7 +154,9 @@ impl ChildActivityTracker {
         let processes = self.processes.iter().map(|p| ActivityRow {
             icon: "\u{1f41a}", // 🐚
             label: format!("process:{}", p.process_id),
-            age: format_age(Duration::from_secs((now_unix - p.started_at).max(0) as u64)),
+            age: format_age(Duration::from_millis(
+                now_ms.saturating_sub(p.started_at).max(0) as u64,
+            )),
             // Processes have no activity stream; the command tells two
             // `cargo build`s apart.
             activity: Some(p.command.clone()),
@@ -226,17 +229,19 @@ fn format_age(d: Duration) -> String {
 mod tests {
     use super::*;
 
+    /// A process started `age_secs` ago, with `startedAt` in Unix
+    /// milliseconds, as the host sends it.
     fn process(pid: u32, command: &str, age_secs: i64) -> BackgroundTerminal {
-        let now = std::time::SystemTime::now()
+        let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_secs() as i64;
+            .as_millis() as i64;
         BackgroundTerminal {
             process_id: pid.to_string(),
             command: command.to_string(),
             cwd: "/tmp".into(),
             os_pid: pid,
-            started_at: now - age_secs,
+            started_at: now_ms - age_secs * 1000,
         }
     }
 

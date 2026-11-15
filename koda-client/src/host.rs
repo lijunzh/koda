@@ -315,6 +315,15 @@ impl Host {
                 let _ = reply.send(listed.and_then(to_json));
                 return;
             }
+            ClientRequest::SkillsList { params, .. } => {
+                let listed = crate::skills::list(
+                    params,
+                    &self.context.project_root,
+                    self.context.agent.as_deref(),
+                );
+                let _ = reply.send(to_json(listed));
+                return;
+            }
             ClientRequest::SessionList { params, .. } => {
                 let _ = reply.send(self.list_sessions(params).await.and_then(to_json));
                 return;

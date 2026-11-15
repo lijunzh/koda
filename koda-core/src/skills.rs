@@ -78,6 +78,17 @@ pub struct SkillMeta {
     pub argument_hint: Option<String>,
     /// Where this skill was discovered.
     pub source: SkillSource,
+    /// Its `SKILL.md`; `None` for a built-in skill, which has no file.
+    pub path: Option<std::path::PathBuf>,
+}
+
+/// A `SKILL.md` that was found but couldn't be loaded, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillError {
+    /// The file.
+    pub path: std::path::PathBuf,
+    /// What's wrong with it.
+    pub message: String,
 }
 
 /// Where a skill was loaded from.
@@ -104,6 +115,8 @@ pub struct Skill {
 #[derive(Debug, Default)]
 pub struct SkillRegistry {
     pub(crate) skills: HashMap<String, Skill>,
+    /// The skill files found that couldn't be loaded.
+    errors: Vec<SkillError>,
 }
 
 impl SkillRegistry {
@@ -152,7 +165,7 @@ impl SkillRegistry {
         ];
 
         for (name, content) in builtins {
-            if let Some(skill) = parse_skill_md(content, SkillSource::BuiltIn) {
+            if let Ok(skill) = parse_skill_md(content, SkillSource::BuiltIn) {
                 self.skills.insert(name.to_string(), skill);
             }
         }
@@ -169,14 +182,33 @@ impl SkillRegistry {
             if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 continue;
             }
+            // A folder without a SKILL.md isn't a skill.
             let skill_file = entry.path().join("SKILL.md");
-            if let Some(skill) = std::fs::read_to_string(&skill_file)
-                .ok()
-                .and_then(|content| parse_skill_md(&content, source.clone()))
-            {
-                self.skills.insert(skill.meta.name.clone(), skill);
+            if !skill_file.is_file() {
+                continue;
+            }
+            let loaded = std::fs::read_to_string(&skill_file)
+                .map_err(|e| format!("couldn't read it: {e}"))
+                .and_then(|content| parse_skill_md(&content, source.clone()));
+            match loaded {
+                Ok(mut skill) => {
+                    skill.meta.path = Some(skill_file);
+                    self.skills.insert(skill.meta.name.clone(), skill);
+                }
+                Err(message) => {
+                    tracing::warn!("skipped skill {}: {message}", skill_file.display());
+                    self.errors.push(SkillError {
+                        path: skill_file,
+                        message,
+                    });
+                }
             }
         }
+    }
+
+    /// The skill files found that couldn't be loaded, and why.
+    pub fn errors(&self) -> &[SkillError] {
+        &self.errors
     }
 
     /// List all discovered skills (name + description).
@@ -258,6 +290,7 @@ impl SkillRegistry {
                 user_invocable: true,
                 argument_hint: None,
                 source: SkillSource::BuiltIn,
+                path: None,
             },
             content: content.to_string(),
         };
@@ -287,15 +320,17 @@ impl SkillRegistry {
 ///
 /// # Skill content here...
 /// ```
-fn parse_skill_md(raw: &str, source: SkillSource) -> Option<Skill> {
+fn parse_skill_md(raw: &str, source: SkillSource) -> Result<Skill, String> {
     let trimmed = raw.trim_start();
     if !trimmed.starts_with("---") {
-        return None;
+        return Err("it doesn't start with a `---` frontmatter block".to_string());
     }
 
     // Find closing ---
     let after_open = &trimmed[3..];
-    let close_pos = after_open.find("\n---")?;
+    let close_pos = after_open
+        .find("\n---")
+        .ok_or("its frontmatter has no closing `---`")?;
     let frontmatter = &after_open[..close_pos].trim();
     let content = after_open[close_pos + 4..].trim_start().to_string();
 
@@ -361,10 +396,10 @@ fn parse_skill_md(raw: &str, source: SkillSource) -> Option<Skill> {
     }
 
     if name.is_empty() {
-        return None;
+        return Err("its frontmatter has no `name:`".to_string());
     }
 
-    Some(Skill {
+    Ok(Skill {
         meta: SkillMeta {
             name,
             description,
@@ -374,6 +409,7 @@ fn parse_skill_md(raw: &str, source: SkillSource) -> Option<Skill> {
             user_invocable,
             argument_hint,
             source,
+            path: None,
         },
         content,
     })
@@ -477,6 +513,7 @@ Do the review.
                     user_invocable: false,
                     argument_hint: None,
                     source: SkillSource::BuiltIn,
+                    path: None,
                 },
                 content: "secret".to_string(),
             },
@@ -504,13 +541,13 @@ Do the review.
 
     #[test]
     fn test_parse_no_frontmatter() {
-        assert!(parse_skill_md("# Just markdown", SkillSource::BuiltIn).is_none());
+        assert!(parse_skill_md("# Just markdown", SkillSource::BuiltIn).is_err());
     }
 
     #[test]
     fn test_parse_no_name() {
         let raw = "---\ndescription: no name\n---\ncontent";
-        assert!(parse_skill_md(raw, SkillSource::BuiltIn).is_none());
+        assert!(parse_skill_md(raw, SkillSource::BuiltIn).is_err());
     }
 
     #[test]
@@ -704,5 +741,42 @@ Do the review.
         registry.load_directory(tmp.path(), SkillSource::Project);
         assert_eq!(registry.len(), 1);
         assert!(registry.activate("my-skill").is_some());
+    }
+
+    #[test]
+    fn a_skill_file_that_doesnt_parse_is_reported_with_its_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = dir.path().join("good");
+        let broken = dir.path().join("broken");
+        let not_a_skill = dir.path().join("notes");
+        for d in [&good, &broken, &not_a_skill] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(
+            good.join("SKILL.md"),
+            "---\nname: good\ndescription: Works\n---\nBody",
+        )
+        .unwrap();
+        std::fs::write(
+            broken.join("SKILL.md"),
+            "---\ndescription: no name\n---\nBody",
+        )
+        .unwrap();
+
+        let mut registry = SkillRegistry::default();
+        registry.load_directory(dir.path(), SkillSource::Project);
+
+        let loaded = registry.get("good").unwrap();
+        assert_eq!(
+            loaded.meta.path.as_deref(),
+            Some(good.join("SKILL.md").as_path())
+        );
+        assert_eq!(
+            registry.errors(),
+            [SkillError {
+                path: broken.join("SKILL.md"),
+                message: "its frontmatter has no `name:`".into(),
+            }]
+        );
     }
 }

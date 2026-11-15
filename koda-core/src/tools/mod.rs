@@ -494,38 +494,6 @@ impl ToolRegistry {
         self.catalog.has_tool(name)
     }
 
-    /// List all available skills as `(name, description, source)` tuples.
-    pub fn list_skills(&self) -> Vec<(String, String, String)> {
-        self.skill_registry
-            .list()
-            .into_iter()
-            .map(|m| {
-                let source = match m.source {
-                    crate::skills::SkillSource::BuiltIn => "built-in",
-                    crate::skills::SkillSource::User => "user",
-                    crate::skills::SkillSource::Project => "project",
-                };
-                (m.name.clone(), m.description.clone(), source.to_string())
-            })
-            .collect()
-    }
-
-    /// Search skills by query, returning `(name, description, source)` tuples.
-    pub fn search_skills(&self, query: &str) -> Vec<(String, String, String)> {
-        self.skill_registry
-            .search(query)
-            .into_iter()
-            .map(|m| {
-                let source = match m.source {
-                    crate::skills::SkillSource::BuiltIn => "built-in",
-                    crate::skills::SkillSource::User => "user",
-                    crate::skills::SkillSource::Project => "project",
-                };
-                (m.name.clone(), m.description.clone(), source.to_string())
-            })
-            .collect()
-    }
-
     /// Get tool definitions, optionally filtered by allow/deny lists.
     ///
     /// Includes MCP tool definitions if a manager is attached.

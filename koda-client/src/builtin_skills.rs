@@ -18,7 +18,13 @@ const KODA_DOCS_URL: &str = "https://lijunzh.github.io/koda/";
 /// This is the only place that knows about the docs URL — keeping
 /// `koda-core` completely decoupled from CLI-specific content.
 pub fn inject_builtin_skills(agent: &mut KodaAgent) {
-    agent.tools.skill_registry.add_builtin(
+    add_builtin_skills(&mut agent.tools.skill_registry);
+}
+
+/// Add the built-in skills to a registry: what an agent the host builds
+/// gets, for `skills/list` too.
+pub(crate) fn add_builtin_skills(registry: &mut koda_core::skills::SkillRegistry) {
+    registry.add_builtin(
         "koda-docs",
         "Koda user manual: commands, TUI, configuration, security, sandbox, privacy, sessions, providers, and more.",
         Some(

@@ -13,6 +13,7 @@ mod mcp;
 mod memory;
 mod menus;
 pub(crate) mod settings;
+pub(crate) mod skills;
 
 use crate::input;
 use crate::scroll_buffer::ScrollBuffer;
