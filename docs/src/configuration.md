@@ -163,6 +163,7 @@ TUI starts; restart Koda after changing it.
 > **Removed in v0.2.26**: `KODA_TRANSCRIPT_HYPERLINKS` and
 > `KODA_EXPORT_VERBOSE` previously controlled `/export` output
 > formatting. Both were removed alongside `/export` itself when RFC
-> #1167 collapsed transcript export into [`/debug-bundle`](commands.md#debug-bundle).
+> #1167 collapsed transcript export into `/debug-bundle`, since replaced by
+> [`/feedback`](commands.md#feedback).
 > Setting either var is now a silent no-op; remove them from your
 > shell rc files.

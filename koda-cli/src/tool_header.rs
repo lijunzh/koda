@@ -59,15 +59,6 @@ pub fn build_header_line(indent: &str, name: &str, args: &Value) -> Line<'static
     Line::from(spans)
 }
 
-/// Same as [`build_header_line`] but accepts the JSON args as a string
-/// (for the history-replay path which stores OpenAI-style call payloads).
-///
-/// Invalid JSON degrades to an empty detail rather than panicking.
-pub fn build_header_line_from_str(indent: &str, name: &str, args_json: &str) -> Line<'static> {
-    let parsed: Value = serde_json::from_str(args_json).unwrap_or(Value::Null);
-    build_header_line(indent, name, &parsed)
-}
-
 /// Build only the styled detail spans for a tool call (no dot/name).
 ///
 /// Returns an empty vec if the args don't carry a useful detail
@@ -419,25 +410,6 @@ mod tests {
         // Stays under cap (chars ≤ bytes for ASCII; ellipsis is multi-byte
         // but the byte-slice cuts strictly below MAX_DETAIL_BYTES first).
         assert!(out.chars().count() <= MAX_DETAIL_BYTES);
-    }
-
-    // ── live ↔ history equivalence ───────────────────────────────────
-
-    #[test]
-    fn from_str_matches_typed_args_path_tools() {
-        let v = json!({"file_path": "x.rs"});
-        let typed = build_header_line("", "Read", &v);
-        let stringly = build_header_line_from_str("", "Read", &v.to_string());
-        assert_eq!(span_texts(&typed.spans), span_texts(&stringly.spans));
-        assert_eq!(span_styles(&typed.spans), span_styles(&stringly.spans));
-    }
-
-    #[test]
-    fn from_str_invalid_json_degrades_gracefully() {
-        let line = build_header_line_from_str("", "Read", "{not json");
-        // Header still has dot + bold name, just no detail.
-        let texts = span_texts(&line.spans);
-        assert!(texts.iter().any(|t| t == "Read"));
     }
 
     #[test]

@@ -37,11 +37,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- **`/feedback` replaces `/debug-bundle`,** as in Codex. It asks what kind of report (bug, bad result, good result, other), whether to include logs and session history, and for a note, then saves `~/.config/koda/feedback/koda-feedback-<time>-<id>.zip` to attach to an issue. Nothing is sent anywhere.
+  - **With consent, the ZIP holds the data rather than a rendering of it:** the session's lines from the log database, the stored rows of the session and of each sub-agent session (every message, compacted ones too, plus turns, their items and settings, and events), and diagnostics with the environment through the allowlist.
+  - **Clients** can save one with `feedback/save`, Codex's request.
+  - **`/debug-bundle` is gone,** and so is its rendered `conversation.md`.
+
 - **Logs go to a database of their own, by session, as Codex's do.** Every line Koda logs is stored in `~/.config/koda/db/logs_1.db` with the session it was logged in. Lines outside a session, such as startup and the TUI, are kept by process. `koda-logs` reads it, with filters (`--session`, `--level`, `--since`, `--target`, `--search`) and `--follow`, and ships beside `koda`. The database keeps Codex's limits: a session's newest 1,000 lines and 10 MiB, ten days, and 64 MiB in all. It records every level except request bodies.
   - **Log files are opt-in, as Codex's is.** `koda-<pid>.log` and the `latest` link are no longer written. Set `log_dir` in `config.toml`, or `-c log_dir=…` for one run, to append every line to `<log_dir>/koda.log` at `RUST_LOG`'s level. That file is the complete record of a long run.
   - **Crashes are logged with their backtrace** as `ERROR` lines from `koda_cli::panic`, stored before the process exits. `panic.log` is no longer written.
   - **Lines that were dropped are now logged.** The host's, the sandbox's and the config's `info` lines had been dropped by the old default filter.
-  - **`/debug-bundle`** includes the session's lines in place of the process's log file.
   - Existing files under `~/.config/koda/logs/` are left alone; delete them when you no longer need them.
 - **Each turn records the settings it ran with,** as Codex records a `TurnContextItem`: model, provider, effort and limits, trust mode, tools offered, and hashes of the system prompt and project memory. Compactions and sub-agents record theirs too. It is stored with the session for debugging and isn't part of the protocol.
 

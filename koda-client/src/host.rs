@@ -325,6 +325,11 @@ impl Host {
                 let _ = reply.send(self.list_sessions(params).await.and_then(to_json));
                 return;
             }
+            ClientRequest::FeedbackSave { params, .. } => {
+                let saved = crate::feedback::save(&self.context.db, params).await;
+                let _ = reply.send(saved.and_then(to_json));
+                return;
+            }
             ClientRequest::SessionRead { params, .. } => {
                 let _ = reply.send(self.read_session(params).await.and_then(to_json));
                 return;

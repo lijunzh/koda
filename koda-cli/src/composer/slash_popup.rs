@@ -52,13 +52,13 @@ pub const SLASH_COMMANDS: &[(&str, &str, Option<&str>)] = &[
         "Copy last response to clipboard (/copy 2 for 2nd-last)",
         Some("[n]"),
     ),
-    (
-        "/debug-bundle",
-        "Write a self-contained debug .zip to ~/.config/koda/debug-bundles/",
-        None,
-    ),
     ("/diff", "Show git diff (review, commit)", None),
     ("/exit", "Quit the session (also /quit)", None),
+    (
+        "/feedback",
+        "Save a report, with logs if you agree, to attach to an issue",
+        None,
+    ),
     ("/expand", "Show full output of last tool call", None),
     ("/help", "Show commands and shortcuts", None),
     ("/key", "Manage API keys", None),

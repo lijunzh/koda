@@ -107,7 +107,6 @@ koda/
 │   │   ├── child_activity.rs # Live tracker for background-work activity
 │   │   ├── clipboard.rs    # Clipboard abstraction
 │   │   ├── composer/       # Input box: textarea, paste bursts, history, slash popup (SLASH_COMMANDS)
-│   │   ├── debug_bundle/   # /debug-bundle slash command
 │   │   ├── frame_requester.rs # Frame draw scheduling
 │   │   ├── hyperlink.rs    # OSC 8 hyperlink post-render pass
 │   │   ├── inference/      # Inference turn lifecycle: inner event loop + post-turn cleanup
@@ -133,7 +132,6 @@ koda/
 │   │   ├── scroll_buffer.rs# App-managed scrollback buffer with visual-line scroll
 │   │   ├── mouse_select.rs # Mouse text selection + clipboard copy
 │   │   ├── ansi_parse.rs   # ANSI escape code → ratatui Span conversion
-│   │   ├── history_render.rs # Session history → scroll_buffer replay
 │   │   ├── md_render.rs    # Streaming markdown → ratatui renderer
 │   │   ├── completer.rs    # Tab completion (/commands, @files, /model names)
 │   │   ├── diff_render.rs  # Diff preview → ratatui renderer (syntax highlighted)

@@ -23,6 +23,7 @@
 pub mod agent;
 pub mod background;
 pub mod config;
+pub mod feedback;
 pub mod initialize;
 pub mod item;
 pub mod mcp;

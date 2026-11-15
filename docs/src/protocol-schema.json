@@ -765,6 +765,63 @@
       ],
       "type": "object"
     },
+    "FeedbackSaveParams": {
+      "additionalProperties": false,
+      "description": "`feedback/save`: Codex's fields, less `extraLogFiles` and `tags`, which\nnothing in Koda sends.",
+      "properties": {
+        "classification": {
+          "description": "What kind of report: `bug`, `bad_result`, `good_result` or `other`,\nCodex's names.",
+          "type": "string"
+        },
+        "includeLogs": {
+          "description": "Whether the ZIP holds the logs and session history, which can quote\nprompts, commands and tool output. Without it, only the report.",
+          "type": "boolean"
+        },
+        "reason": {
+          "description": "What happened, in the user's words.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "savePath": {
+          "description": "Where to write the ZIP on the host: an absolute path that doesn't\nexist yet, as Codex requires.",
+          "type": "string"
+        },
+        "sessionId": {
+          "description": "The session it's about, if any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "classification",
+        "savePath"
+      ],
+      "type": "object"
+    },
+    "FeedbackSaveResponse": {
+      "description": "The answer to `feedback/save`.",
+      "properties": {
+        "savedPath": {
+          "description": "Where the ZIP was written.",
+          "type": "string"
+        },
+        "sessionId": {
+          "description": "The session it's about, if any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "savedPath"
+      ],
+      "type": "object"
+    },
     "FileUpdateChange": {
       "description": "A change to one file, in Codex's `FileUpdateChange` shape.",
       "properties": {
@@ -3744,6 +3801,14 @@
       },
       "result": {
         "$ref": "#/$defs/ConfigReadResponse"
+      }
+    },
+    "feedback/save": {
+      "params": {
+        "$ref": "#/$defs/FeedbackSaveParams"
+      },
+      "result": {
+        "$ref": "#/$defs/FeedbackSaveResponse"
       }
     },
     "initialize": {

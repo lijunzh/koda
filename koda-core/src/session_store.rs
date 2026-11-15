@@ -511,6 +511,15 @@ pub trait SessionStore: Send + Sync {
     async fn get_metadata(&self, session_id: &str, key: &str) -> Result<Option<String>>;
     /// Set a session metadata value.
     async fn set_metadata(&self, session_id: &str, key: &str, value: &str) -> Result<()>;
+    /// The sessions whose [`PARENT_SESSION_KEY`] is `parent`: the
+    /// sub-agents it ran, oldest first.
+    async fn child_session_ids(&self, parent: &str) -> Result<Vec<String>>;
+    /// Everything stored for a session, as the backend holds it, for a
+    /// feedback report: its session row, metadata, every message (compacted
+    /// ones too), turn records and events, each a list of rows with every
+    /// column. Never API keys or input history, which aren't a session's.
+    /// Koda's stand-in for the rollout file Codex attaches.
+    async fn export_session(&self, session_id: &str) -> Result<serde_json::Value>;
 
     // ── Turn records (6h) ──
 
