@@ -46,7 +46,9 @@ glob = "0.3"
 ignore = "0.4"
 libc = "0.2"
 regex = "1"
+reqwest = { version = "0.13", features = ["json", "stream"] }
 schemars = "1"
+shlex = "2"
 time = "0.3"
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "macros"] }
 uuid = { version = "1", features = ["v4"] }

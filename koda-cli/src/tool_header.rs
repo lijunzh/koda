@@ -43,8 +43,16 @@ const MAX_DETAIL_BYTES: usize = 120;
 /// Build a complete tool-call header line: dot + name + detail spans.
 ///
 /// `indent` is prepended raw (used by sub-agent rendering).
-pub fn build_header_line(indent: &str, name: &str, args: &Value) -> Line<'static> {
-    let dot_style = theme::tool_dot(name);
+///
+/// `effect` is the call's, as the host classified it: it picks the dot's
+/// colour.
+pub fn build_header_line(
+    indent: &str,
+    name: &str,
+    args: &Value,
+    effect: Option<koda_client::protocol::item::ToolEffect>,
+) -> Line<'static> {
+    let dot_style = theme::tool_dot(name, effect);
     let mut spans: Vec<Span<'static>> = Vec::with_capacity(8);
     if !indent.is_empty() {
         spans.push(Span::raw(indent.to_string()));
@@ -414,13 +422,13 @@ mod tests {
 
     #[test]
     fn build_header_line_indent_threads_through() {
-        let line = build_header_line("  ", "Read", &json!({"file_path": "x.rs"}));
+        let line = build_header_line("  ", "Read", &json!({"file_path": "x.rs"}), None);
         assert_eq!(line.spans[0].content.as_ref(), "  ");
     }
 
     #[test]
     fn build_header_line_no_indent_skips_empty_span() {
-        let line = build_header_line("", "Read", &json!({"file_path": "x.rs"}));
+        let line = build_header_line("", "Read", &json!({"file_path": "x.rs"}), None);
         // First span must not be an empty raw indent.
         assert_ne!(line.spans[0].content.as_ref(), "");
     }
@@ -458,83 +466,40 @@ mod tests {
     // path." `every_tool_call_kind_renders_in_both_surfaces` above
     // pins the consolidation.
 
-    #[tokio::test]
-    async fn list_call_path_appears_in_both_body_and_header() {
-        use std::fs;
-        let tmp = tempfile::TempDir::new().unwrap();
+    /// The List header names the directory listed. What the model reads
+    /// names it too: core's `list_files_includes_directory_header` pins
+    /// that side, so the two can't drift apart (#1094, #1099).
+    #[test]
+    fn list_call_path_appears_in_the_header() {
         // Distinctive name so substring assertions can't accidentally
         // pass on common tokens like "src" or "tests".
         let sub = "zeppelin";
-        fs::create_dir(tmp.path().join(sub)).unwrap();
-        fs::write(tmp.path().join(sub).join("hello.txt"), "hi").unwrap();
-
-        let args = json!({ "file_path": sub });
-
-        // Body: what the LLM sees in the tool response.
-        let body = koda_core::tools::file_tools::list_files(tmp.path(), &args, 100)
-            .await
-            .expect("list_files should succeed against a real tempdir");
-
-        // Header: what the user sees on screen.
-        let header: String = detail_spans("List", &args)
+        let header: String = detail_spans("List", &json!({ "file_path": sub }))
             .iter()
             .map(|s| s.content.as_ref())
             .collect();
-
-        assert!(
-            body.contains(sub),
-            "LLM-facing List body must mention the directory it listed; got: {body:?}"
-        );
         assert!(
             header.contains(sub),
-            "User-facing List header must mention the directory it listed; got: {header:?}. \
-             This is the regression class that hit twice (#1094 then #1099) because no \
-             cross-layer test pinned the body and the header together."
+            "User-facing List header must mention the directory it listed; got: {header:?}"
         );
     }
 
-    #[tokio::test]
-    async fn list_distinct_paths_render_distinct_headers() {
+    #[test]
+    fn list_distinct_paths_render_distinct_headers() {
         // Direct repro of the user-reported symptom: the model called
         // List on multiple subdirectories and the TUI rendered every
         // call as `● List .`, making distinct exploration look like
         // a tight loop on the project root.
-        use std::fs;
-        let tmp = tempfile::TempDir::new().unwrap();
-        for name in ["alpha", "bravo", "charlie"] {
-            fs::create_dir(tmp.path().join(name)).unwrap();
-        }
-
-        let mut headers = Vec::new();
-        let mut bodies = Vec::new();
-        for sub in ["alpha", "bravo", "charlie"] {
-            let args = json!({ "file_path": sub });
-            bodies.push(
-                koda_core::tools::file_tools::list_files(tmp.path(), &args, 100)
-                    .await
-                    .unwrap(),
-            );
-            let header: String = detail_spans("List", &args)
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect();
-            headers.push(header);
-        }
-
+        let headers: Vec<String> = ["alpha", "bravo", "charlie"]
+            .iter()
+            .map(|sub| {
+                detail_spans("List", &json!({ "file_path": sub }))
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect()
+            })
+            .collect();
         // Each header must equal its subdirectory — no `.` fallback.
         assert_eq!(headers, vec!["alpha", "bravo", "charlie"]);
-        // And no two layers can collide on different inputs.
-        assert!(
-            headers[0] != headers[1] && headers[1] != headers[2] && headers[0] != headers[2],
-            "Distinct List calls must produce distinct headers; got {headers:?}"
-        );
-        // Bodies should each name their own directory too (defense
-        // against a future change that drops the body header).
-        for (sub, body) in ["alpha", "bravo", "charlie"].iter().zip(&bodies) {
-            assert!(
-                body.contains(sub),
-                "List body for {sub:?} must mention the directory; got {body:?}"
-            );
-        }
     }
 }

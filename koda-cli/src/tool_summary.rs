@@ -142,7 +142,7 @@ impl ToolCallSummary {
             // Shown like a shell command (`cargo test -p koda-core`): the
             // model's arguments are the subcommand and its options.
             "Cargo" => ToolCallKind::Bash {
-                command: koda_core::tools::cargo::describe(args),
+                command: cargo_command(args),
             },
             "Read" | "Write" | "Edit" => ToolCallKind::Path {
                 path: first_string(args, &["file_path", "path"]).unwrap_or_default(),
@@ -193,8 +193,54 @@ fn first_string_in_object(args: &Value) -> Option<String> {
         .find_map(|(_, v)| v.as_str().map(|s| s.to_string()))
 }
 
+/// A `Cargo` call as the command it runs (`cargo test -p koda-core`), as
+/// the host's Cargo tool builds it; `cargo ?` without a subcommand.
+fn cargo_command(args: &Value) -> String {
+    let arg = |key: &str| {
+        args.get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    };
+    let Some(subcommand) = arg("subcommand") else {
+        return "cargo ?".to_string();
+    };
+    let quote = |s: &str| {
+        shlex::try_quote(s)
+            .map(|q| q.into_owned())
+            .unwrap_or_default()
+    };
+    let mut command = format!("cargo {subcommand}");
+    if let Some(package) = arg("package") {
+        command.push_str(" -p ");
+        command.push_str(&quote(package));
+    }
+    if let Some(filter) = arg("test_filter") {
+        command.push(' ');
+        command.push_str(&quote(filter));
+    }
+    command
+}
+
 #[cfg(test)]
 mod tests {
+    use super::cargo_command;
+
+    #[test]
+    fn a_cargo_call_reads_as_its_command() {
+        assert_eq!(
+            cargo_command(
+                &json!({"subcommand": "test", "package": "koda-core", "test_filter": "a b"})
+            ),
+            "cargo test -p koda-core 'a b'"
+        );
+        assert_eq!(
+            cargo_command(&json!({"subcommand": "check"})),
+            "cargo check"
+        );
+        assert_eq!(cargo_command(&json!({})), "cargo ?");
+    }
+
     use super::*;
     use serde_json::json;
 

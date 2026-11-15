@@ -135,5 +135,3 @@ pub mod trust;
 pub mod turn_context;
 /// Marks content the agent reads but the user didn't write (web, MCP) as data.
 pub mod untrusted;
-/// Version string and update-check helpers.
-pub mod version;

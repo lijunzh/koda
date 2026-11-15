@@ -313,7 +313,8 @@ pub(crate) async fn open(
     // A resumed session's counts go on from what its stored calls used,
     // as Codex restores a thread's. Input tokens count cached ones, by the
     // provider's rule, as live calls do.
-    let mut projector = EventProjector::with_request_ids(&id, request_ids);
+    let mut projector =
+        EventProjector::with_request_ids(&id, request_ids).with_agent(Arc::clone(&session.agent));
     let restored_usage = if resumed {
         let stored = session
             .db

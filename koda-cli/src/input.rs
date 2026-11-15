@@ -3,10 +3,19 @@
 //! Processes user input for `@path` references, loading file contents
 //! as additional context and images for multi-modal prompts.
 
-use koda_core::providers::ImageData;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 // ── @file pre-processor ────────────────────────────────────────
+
+/// An image from an `@path` reference, sent with the prompt as the
+/// protocol's `ImageInput`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageData {
+    /// MIME type (e.g. "image/png", "image/jpeg").
+    pub media_type: String,
+    /// Base64-encoded image bytes.
+    pub base64: String,
+}
 
 /// Content pasted via clipboard (bracketed paste).
 #[derive(Debug, Clone)]
@@ -199,6 +208,35 @@ fn looks_like_file_path(token: &str) -> bool {
     check(cleaned) || check(&unescaped)
 }
 
+/// Where `@requested` points, if it stays inside the project or a temp
+/// folder (`/tmp`, `/var/tmp`, `$TMPDIR`), as Koda's write tools allow:
+/// `..` can't climb out of the project. Resolved by its words alone, as
+/// the path is joined and cleaned, not by following links.
+fn resolve_mention(project_root: &Path, requested: &str) -> Option<PathBuf> {
+    let joined = if Path::new(requested).is_absolute() {
+        PathBuf::from(requested)
+    } else {
+        project_root.join(requested)
+    };
+    let mut clean = PathBuf::new();
+    for part in joined.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                clean.pop();
+            }
+            other => clean.push(other),
+        }
+    }
+    let temp_roots = [
+        std::env::temp_dir(),
+        PathBuf::from("/tmp"),
+        PathBuf::from("/var/tmp"),
+    ];
+    (clean.starts_with(project_root) || temp_roots.iter().any(|t| clean.starts_with(t)))
+        .then_some(clean)
+}
+
 /// Try to load an image file, returning the ImageData if successful.
 fn try_load_image(path: &Path, display_path: &str) -> Option<ImageData> {
     match std::fs::read(path) {
@@ -280,9 +318,9 @@ pub fn process_input(input: &str, project_root: &Path) -> ProcessedInput {
             let clean_path = unescape_path(raw_path);
 
             // Security: reject paths that escape the project root
-            let full_path = match koda_core::tools::safe_resolve_path(project_root, &clean_path) {
-                Ok(p) => p,
-                Err(_) => {
+            let full_path = match resolve_mention(project_root, &clean_path) {
+                Some(p) => p,
+                None => {
                     tracing::warn!("@file path escapes project root: {clean_path}");
                     prompt.push_str(&token);
                     continue;
@@ -490,6 +528,22 @@ pub fn format_paste_blocks(blocks: &[PasteBlock]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_mention_stays_inside_the_project_or_a_temp_folder() {
+        let root = Path::new("/work/project");
+        assert_eq!(
+            resolve_mention(root, "src/main.rs"),
+            Some(PathBuf::from("/work/project/src/main.rs"))
+        );
+        assert_eq!(
+            resolve_mention(root, "./src/../README.md"),
+            Some(PathBuf::from("/work/project/README.md"))
+        );
+        assert_eq!(resolve_mention(root, "../secrets.txt"), None);
+        assert_eq!(resolve_mention(root, "/etc/passwd"), None);
+        assert!(resolve_mention(root, "/tmp/scratch.txt").is_some());
+    }
 
     /// The tokens alone, for the tests that only care where words split.
     fn tokenize_shell_aware(input: &str) -> Vec<String> {

@@ -29,7 +29,7 @@
 //! - **Code highlight kill-switch** — [`syntax_highlight_enabled`] honors
 //!   `[tui] syntax_highlight = false` in the config file.
 
-use koda_core::tools::{ToolCatalog, ToolEffect};
+use koda_client::protocol::item::ToolEffect;
 use ratatui::style::{Color, Modifier, Style};
 
 // ── Status tokens ───────────────────────────────────────────
@@ -96,13 +96,17 @@ pub const ACCENT_AMBER: Style = Style::new().fg(Color::Rgb(255, 191, 0));
 /// cases that don't map cleanly to effects (network, agent dispatch,
 /// shell exec — Bash classifies as `LocalMutation` but visually deserves
 /// its own slot).
-pub fn tool_dot(name: &str) -> Style {
-    Style::new().fg(tool_dot_color(name))
+pub fn tool_dot(name: &str, effect: Option<ToolEffect>) -> Style {
+    Style::new().fg(tool_dot_color(name, effect))
 }
 
 /// Underlying [`Color`] for [`tool_dot`] — exposed for callers that
 /// already use `Style::new().fg(...)` boilerplate.
-pub fn tool_dot_color(name: &str) -> Color {
+///
+/// `effect` is the call's, as the host classified it (the tool-call item's
+/// `effect`); a call without one, from a turn stored before Koda sent it,
+/// looks like a write.
+pub fn tool_dot_color(name: &str, effect: Option<ToolEffect>) -> Color {
     // Name-based special cases first — these override the effect-based
     // bucket below for visual reasons (e.g. WebFetch is ReadOnly per
     // ToolEffect, but we want network I/O to *look* distinct from local
@@ -113,11 +117,11 @@ pub fn tool_dot_color(name: &str) -> Color {
         "Bash" | "Cargo" => return ACCENT_BASH,
         _ => {}
     }
-    match ToolCatalog::default_static().classify_call(name, &serde_json::Value::Null) {
-        ToolEffect::ReadOnly => ACCENT_READ,
-        ToolEffect::RemoteAction => ACCENT_NETWORK,
-        ToolEffect::LocalMutation => ACCENT_WRITE,
-        ToolEffect::Destructive => ACCENT_DESTRUCTIVE,
+    match effect {
+        Some(ToolEffect::ReadOnly) => ACCENT_READ,
+        Some(ToolEffect::RemoteAction) => ACCENT_NETWORK,
+        Some(ToolEffect::LocalMutation) | None => ACCENT_WRITE,
+        Some(ToolEffect::Destructive) => ACCENT_DESTRUCTIVE,
     }
 }
 
@@ -125,13 +129,10 @@ pub fn tool_dot_color(name: &str) -> Color {
 ///
 /// Read-only output gets the light off-white ([`CONTENT_READ`]); mutating
 /// output stays dim ([`CONTENT_WRITE`]). Stderr always wins over both.
-pub fn content_style_for(tool_name: &str, is_stderr: bool) -> Style {
+pub fn content_style_for(effect: Option<ToolEffect>, is_stderr: bool) -> Style {
     if is_stderr {
         STATUS_ERROR
-    } else if matches!(
-        ToolCatalog::default_static().classify_call(tool_name, &serde_json::Value::Null),
-        ToolEffect::ReadOnly
-    ) {
+    } else if effect == Some(ToolEffect::ReadOnly) {
         CONTENT_READ
     } else {
         CONTENT_WRITE
@@ -234,46 +235,71 @@ mod tests {
     fn tool_dot_groups_read_only_tools() {
         // Cyan family for read-only tools — single source of truth that
         // tui_render consumes, live and on resume.
-        assert_eq!(tool_dot_color("Read"), ACCENT_READ);
-        assert_eq!(tool_dot_color("Grep"), ACCENT_READ);
-        assert_eq!(tool_dot_color("List"), ACCENT_READ);
-        assert_eq!(tool_dot_color("Glob"), ACCENT_READ);
+        let read = Some(ToolEffect::ReadOnly);
+        assert_eq!(tool_dot_color("Read", read), ACCENT_READ);
+        assert_eq!(tool_dot_color("Grep", read), ACCENT_READ);
+        assert_eq!(tool_dot_color("List", read), ACCENT_READ);
+        assert_eq!(tool_dot_color("Glob", read), ACCENT_READ);
     }
 
     #[test]
     fn tool_dot_mutating_is_amber() {
-        assert_eq!(tool_dot_color("Write"), ACCENT_WRITE);
-        assert_eq!(tool_dot_color("Edit"), ACCENT_WRITE);
+        let write = Some(ToolEffect::LocalMutation);
+        assert_eq!(tool_dot_color("Write", write), ACCENT_WRITE);
+        assert_eq!(tool_dot_color("Edit", write), ACCENT_WRITE);
+        // A call stored without its effect looks like a write.
+        assert_eq!(tool_dot_color("Read", None), ACCENT_WRITE);
+        assert_eq!(
+            tool_dot_color("Bash", Some(ToolEffect::Destructive)),
+            ACCENT_BASH
+        );
+        assert_eq!(
+            tool_dot_color("Delete", Some(ToolEffect::Destructive)),
+            ACCENT_DESTRUCTIVE
+        );
     }
 
     #[test]
     fn tool_dot_network_distinct_from_read() {
         // External I/O gets its own color so users notice when the
         // model is hitting the wire.
-        assert_eq!(tool_dot_color("WebFetch"), ACCENT_NETWORK);
-        assert_eq!(tool_dot_color("WebSearch"), ACCENT_NETWORK);
-        assert_ne!(tool_dot_color("WebFetch"), ACCENT_READ);
+        let read = Some(ToolEffect::ReadOnly);
+        assert_eq!(tool_dot_color("WebFetch", read), ACCENT_NETWORK);
+        assert_eq!(tool_dot_color("WebSearch", read), ACCENT_NETWORK);
+        assert_ne!(tool_dot_color("WebFetch", read), ACCENT_READ);
+        assert_eq!(
+            tool_dot_color("mcp__mail__send", Some(ToolEffect::RemoteAction)),
+            ACCENT_NETWORK
+        );
     }
 
     #[test]
     fn content_style_uses_read_for_readonly_tools() {
         // The fix from #804 — read-only output is legible, not dim.
-        assert_eq!(content_style_for("Read", false), CONTENT_READ);
-        assert_eq!(content_style_for("Grep", false), CONTENT_READ);
+        assert_eq!(
+            content_style_for(Some(ToolEffect::ReadOnly), false),
+            CONTENT_READ
+        );
     }
 
     #[test]
     fn content_style_uses_write_for_mutating_tools() {
-        assert_eq!(content_style_for("Bash", false), CONTENT_WRITE);
-        assert_eq!(content_style_for("Write", false), CONTENT_WRITE);
+        assert_eq!(
+            content_style_for(Some(ToolEffect::LocalMutation), false),
+            CONTENT_WRITE
+        );
+        assert_eq!(content_style_for(None, false), CONTENT_WRITE);
     }
 
     #[test]
     fn content_style_stderr_always_wins() {
         // Even read-only stderr is an error — color reflects severity,
         // not tool effect.
-        assert_eq!(content_style_for("Read", true), STATUS_ERROR);
-        assert_eq!(content_style_for("Bash", true), STATUS_ERROR);
+        assert_eq!(
+            content_style_for(Some(ToolEffect::ReadOnly), true),
+            STATUS_ERROR
+        );
+        assert_eq!(content_style_for(None, true), STATUS_ERROR);
     }
 
     #[test]

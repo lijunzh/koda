@@ -607,10 +607,10 @@ fn build_ask_user_hint(options: &[String]) -> String {
 ///
 /// Regression coverage for #1024.
 /// Split an approval detail that asks to run outside the sandbox into the
-/// command and the model's reason (see `koda_core::tools::describe_action`).
+/// command and the model's reason (the host's `describe_action`).
 fn outside_sandbox_request(detail: &str) -> Option<(&str, &str)> {
     let rest = detail
-        .strip_prefix(koda_core::tools::OUTSIDE_SANDBOX_TAG)?
+        .strip_prefix(koda_client::protocol::item::OUTSIDE_SANDBOX_TAG)?
         .trim_start();
     // The first dash: a reason often has dashes of its own, a command rarely.
     Some(

@@ -348,6 +348,8 @@ fn rebuild_from(messages: &[Message], progress: &mut HashMap<String, Vec<String>
                         id,
                         tool,
                         arguments,
+                        // Not stored with sessions from before turns were.
+                        effect: None,
                         output: Some(output),
                         detail: None,
                         changes: Vec::new(),
