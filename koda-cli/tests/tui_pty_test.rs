@@ -1737,7 +1737,12 @@ async fn compact_replaces_earlier_turns_with_the_summary() {
     }
 
     run_command(&mut tui, "/compact");
-    tui.wait_for_screen("Compacted");
+    // "Compacted" can be drawn before the compaction's turn ends, and text
+    // entered then is refused as a steer and comes back to the input box.
+    tui.wait_for_screen_that(
+        |screen| screen.contains("Compacted") && !screen.contains(BUSY_PROMPT),
+        "finish the compaction",
+    );
     let sent = wait_for_model_call(&server, 4).await;
     assert!(
         sent.contains("turn one oldest"),
