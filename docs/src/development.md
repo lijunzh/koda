@@ -408,7 +408,7 @@ names what broke, and a seventh gathers them. Wall-clock is set by the slowest
 
 | Job | Check name(s) | Runs |
 |---|---|---|
-| `fmt` | `Format` | `cargo fmt --check`, plus text guards: tokio test flavor (#1109), toolchain pin |
+| `fmt` | `Format` | `cargo fmt --check`, plus text guards: tokio test flavor (#1109), toolchain pin, the TUI's core boundary (`koda-cli`'s `koda_core` uses may only shrink) |
 | `clippy` | `Clippy` | `cargo clippy --workspace --all-targets --features koda-core/test-support -- -D warnings` |
 | `check` | `Check (no features)` | `cargo check --workspace --all-targets` (the crates.io shape, no test-support) |
 | `test` | `Test (ubuntu-latest)`, `Test (macos-latest)` | `cargo nextest run --workspace --features koda-core/test-support --profile ci`, the doc tests with `cargo test --doc`, then asserts from nextest's JUnit report that the security-boundary tests ran |

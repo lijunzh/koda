@@ -42,6 +42,7 @@ async fn make_session(env: &Env, provider: Box<dyn LlmProvider>) -> (KodaSession
         system_prompt: "You are a test assistant.".to_string(),
         prompt_model: String::new(),
         semantic_memory: String::new(),
+        interactive: false,
     });
 
     // Wire the DB+session into the ToolRegistry so RecallContext works.

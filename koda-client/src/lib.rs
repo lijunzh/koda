@@ -18,9 +18,9 @@
 //! [`events::EventProjector`] turns a session's engine events into those
 //! messages; `koda exec --json` prints them.
 //!
-//! In process only, and only for now, a front end can hand the host its own
-//! agent ([`StartArgs::agent`]) and set what its next turns run with
-//! ([`InProcessClient::configure_session`]).
+//! In process only, and only for now, a front end can set what a session's
+//! next turns run with ([`InProcessClient::configure_session`]). The host
+//! builds every session's agent; a front end never hands it one.
 
 mod background;
 pub mod builtin_skills;
@@ -73,10 +73,6 @@ pub struct StartArgs {
     pub db: Database,
     /// Who the client is, sent in `initialize`.
     pub client_info: ClientInfo,
-    /// In process only: the agent every session uses, for a front end that
-    /// builds its own (its tools, MCP servers and system prompt). Without
-    /// one, each session builds an agent from `config`.
-    pub agent: Option<Arc<koda_core::agent::KodaAgent>>,
 }
 
 /// A client with Koda's host running in this process.
@@ -151,7 +147,6 @@ impl InProcessClient {
             project_root: args.project_root,
             db: args.db,
             events: events_tx,
-            agent: args.agent,
         });
         let mut client = Self {
             requests: RequestHandle {
@@ -368,7 +363,6 @@ mod tests {
                 name: "koda-client-test".to_string(),
                 version: "0".to_string(),
             },
-            agent: None,
         };
         (args, dir)
     }

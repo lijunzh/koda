@@ -37,6 +37,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- **The host builds every session's agent; the TUI no longer builds its own,** as Codex's server builds each thread's. The system prompt no longer lists the TUI's slash commands, as Codex's prompt lists none (`/help` does); a session a person answers still gets the short quick reference (trust modes, file history), and `koda exec`'s prompt is unchanged. The TUI's model completions come from `model/list`. `StartArgs::agent` is removed from `koda-client`.
+- **CI keeps new `koda-core` uses out of `koda-cli`** (`scripts/check_tui_core_boundary.sh`), as Codex's CI keeps `codex-core` out of its TUI: the remaining uses are listed and may only shrink, on the way to the TUI reaching the engine only through the client protocol.
+
 - **`/feedback` replaces `/debug-bundle`,** as in Codex. It asks what kind of report (bug, bad result, good result, other), whether to include logs and session history, and for a note, then saves `~/.config/koda/feedback/koda-feedback-<time>-<id>.zip` to attach to an issue. Nothing is sent anywhere.
   - **With consent, the ZIP holds the data rather than a rendering of it:** the session's lines from the log database, the stored rows of the session and of each sub-agent session (every message, compacted ones too, plus turns, their items and settings, and events), and diagnostics with the environment through the allowlist.
   - **Clients** can save one with `feedback/save`, Codex's request.

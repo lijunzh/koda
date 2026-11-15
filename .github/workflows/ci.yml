@@ -68,6 +68,11 @@ jobs:
       # everything-in-Rust workspace free of one-off Python scripts).
       - name: Check tokio test flavor (#1109 F2)
         run: scripts/check_tokio_test_flavor.sh
+      # PR 8: koda-cli reaches core only through the client protocol, as
+      # Codex's CI keeps codex-core out of its TUI. Its remaining koda_core
+      # uses are listed and may only shrink. Pure text scan.
+      - name: Check the TUI's core boundary
+        run: scripts/check_tui_core_boundary.sh
 
       # Toolchain pin guard: every dtolnay/rust-toolchain step in every
       # workflow must install exactly the channel pinned in

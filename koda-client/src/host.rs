@@ -83,8 +83,6 @@ pub(crate) struct HostArgs {
     pub db: Database,
     /// The client's queue of notifications and server requests.
     pub events: mpsc::UnboundedSender<Outgoing>,
-    /// In process only: the agent every session uses, if the client built it.
-    pub agent: Option<Arc<koda_core::agent::KodaAgent>>,
 }
 
 /// Start a host on its own task.
@@ -99,7 +97,6 @@ pub(crate) fn spawn(args: HostArgs) -> (mpsc::Sender<HostCommand>, JoinHandle<()
             events: args.events,
             request_ids: Arc::new(AtomicI64::new(0)),
             open_requests: OpenRequests::default(),
-            agent: args.agent,
         },
         handles: HandleMap::default(),
         client: OnceLock::new(),
@@ -313,11 +310,7 @@ impl Host {
                 return;
             }
             ClientRequest::SkillsList { params, .. } => {
-                let listed = crate::skills::list(
-                    params,
-                    &self.context.project_root,
-                    self.context.agent.as_deref(),
-                );
+                let listed = crate::skills::list(params, &self.context.project_root);
                 let _ = reply.send(to_json(listed));
                 return;
             }
@@ -685,7 +678,6 @@ mod tests {
             project_root: dir.path().to_path_buf(),
             db,
             events,
-            agent: None,
         });
         (tx, handle, dir)
     }

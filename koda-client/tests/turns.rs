@@ -116,14 +116,6 @@ fn config(server: &FakeLlmServer) -> KodaConfig {
 }
 
 async fn client(config: KodaConfig, dir: &tempfile::TempDir) -> InProcessClient {
-    client_with(config, dir, None).await
-}
-
-async fn client_with(
-    config: KodaConfig,
-    dir: &tempfile::TempDir,
-    agent: Option<std::sync::Arc<koda_core::agent::KodaAgent>>,
-) -> InProcessClient {
     let project = dir.path().join("project");
     std::fs::create_dir_all(&project).unwrap();
     let db = Database::init(&dir.path().join("config")).await.unwrap();
@@ -136,7 +128,6 @@ async fn client_with(
             name: "turns-test".to_string(),
             version: "0".to_string(),
         },
-        agent,
     })
     .await
     .unwrap()
@@ -835,40 +826,42 @@ async fn configure_moves_the_next_turn_to_another_server() {
     assert!(error.to_string().contains("no open session"), "{error}");
 }
 
-/// A front end that builds its own agent has every session use it: the
-/// model gets that agent's system prompt.
+/// The host builds every session's agent (PR 8a). A session a person
+/// answers gets the prompt's quick reference; one nobody answers, as
+/// `koda exec` opens, doesn't. Neither lists a client's slash commands.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_shared_agent_is_what_sessions_run_with() {
-    let server = model(vec![text("Hello.")]).await;
-    let dir = tempfile::tempdir().unwrap();
-    let config = config(&server);
-    let project = dir.path().join("project");
-    std::fs::create_dir_all(&project).unwrap();
-    let mut agent = koda_core::agent::KodaAgent::new(&config, project, &["/zebra-command"])
-        .await
-        .unwrap();
-    agent.rebuild_system_prompt(&config, &["/zebra-command"]);
-    let client = client_with(config, &dir, Some(std::sync::Arc::new(agent))).await;
-    let opened = client
-        .request::<methods::SessionStart>(SessionStartParams::default())
-        .await
-        .unwrap()
-        .session;
-    let mut koda = Koda {
-        client,
-        session: opened.id.clone(),
-        opened,
-        project: dir.path().join("project"),
-        _dir: dir,
-    };
-    koda.turn("hi").await;
-    koda.until("turn/completed").await;
-    let sent = chat_requests(&server).await;
-    assert!(
-        sent[0].to_string().contains("/zebra-command"),
-        "not the shared agent's prompt: {}",
-        sent[0]
-    );
+async fn the_host_builds_each_session_s_prompt() {
+    use koda_client::protocol::session::ApprovalPolicy;
+    for policy in [ApprovalPolicy::OnRequest, ApprovalPolicy::Never] {
+        let server = model(vec![text("Hello.")]).await;
+        let dir = tempfile::tempdir().unwrap();
+        let client = client(config(&server), &dir).await;
+        let opened = client
+            .request::<methods::SessionStart>(SessionStartParams {
+                approval_policy: Some(policy),
+                ..SessionStartParams::default()
+            })
+            .await
+            .unwrap()
+            .session;
+        let mut koda = Koda {
+            client,
+            session: opened.id.clone(),
+            opened,
+            project: dir.path().join("project"),
+            _dir: dir,
+        };
+        koda.turn("hi").await;
+        koda.until("turn/completed").await;
+        let prompt = chat_requests(&server).await[0].to_string();
+        assert_eq!(
+            prompt.contains("Koda Quick Reference"),
+            policy == ApprovalPolicy::OnRequest,
+            "{policy:?}: {prompt}"
+        );
+        assert!(!prompt.contains("Slash commands"), "{prompt}");
+        koda.client.shutdown().await;
+    }
 }
 
 // ── Sessions (PR 6a) ─────────────────────────────────────────────────────

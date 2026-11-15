@@ -11,7 +11,7 @@
 //! 1. **Base prompt** — from the agent's `system_prompt` field
 //! 2. **Behavioral instructions** — `instructions.md` (how to act)
 //! 3. **Environment** — working dir, platform, shell, model
-//! 4. **Quick Reference** — slash commands, trust modes and file history (REPL only)
+//! 4. **Quick Reference** — trust modes and file history (interactive sessions only)
 //! 5. **Sub-agents** — available agents with descriptions and delegation guidance
 //! 6. **Skills** — live listing with `when_to_use` hints; model MUST activate before responding
 //! 7. **Memory** — where project and global memory live
@@ -48,9 +48,11 @@ pub struct EnvironmentInfo<'a> {
 
 /// Build the system prompt with instructions, environment, and tool schemas.
 ///
-/// `commands` lists the user-facing slash commands (e.g. `"/help"`). Pass `&[]`
-/// when there is no REPL (sub-agents, headless): the quick reference is
-/// left out.
+/// `interactive` is whether a person answers this session's questions: it
+/// adds a short quick reference (trust modes, file history). Sub-agents
+/// and sessions nobody answers (`koda exec`, approval policy `never`) leave
+/// it out. The client's slash commands aren't listed, as Codex's prompt
+/// lists none: the host builds the prompt, and `/help` lists them.
 ///
 /// `skill_registry` is used to build the live `## Skills` section so the model
 /// sees every available skill — with its `when_to_use` hint — without needing
@@ -63,7 +65,7 @@ pub struct EnvironmentInfo<'a> {
 pub fn build_system_prompt(
     base_prompt: &str,
     env: &EnvironmentInfo<'_>,
-    commands: &[&str],
+    interactive: bool,
     skill_registry: &SkillRegistry,
 ) -> String {
     let mut prompt = base_prompt.to_string();
@@ -88,16 +90,10 @@ pub fn build_system_prompt(
     }
     prompt.push_str(&model_line(env.model));
 
-    // Quick reference for the REPL. Headless runs and sub-agents pass no
-    // commands, and none of this applies to them. Command descriptions live
-    // in `/help` and the manual: the prompt is paid on every call, and "what
-    // can you do?" is a rare question.
-    if !commands.is_empty() {
+    // Quick reference for a session a person is in. Headless runs and
+    // sub-agents leave it out; none of it applies to them.
+    if interactive {
         prompt.push_str("\n## Koda Quick Reference\n\n");
-        prompt.push_str(&format!(
-            "- Slash commands the user can type (`/help` describes them): {}\n",
-            commands.join(" ")
-        ));
         prompt.push_str(
             "- Trust modes, cycled with Shift+Tab: plan (read-only), safe (confirm changes), \
              auto (default; confirm destructive operations only).\n",
@@ -359,7 +355,7 @@ mod tests {
     fn test_build_system_prompt_no_agents_no_memory() {
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("You are helpful.", &env, &[], &registry);
+        let result = build_system_prompt("You are helpful.", &env, false, &registry);
         assert!(result.starts_with("You are helpful."));
         assert!(result.contains("Doing Tasks"));
         assert!(!result.contains("Koda Quick Reference"));
@@ -423,7 +419,7 @@ mod tests {
         .unwrap();
         let env = test_env_with_root(dir.path());
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", &env, &[], &registry);
+        let result = build_system_prompt("Base.", &env, false, &registry);
         assert!(result.contains("scout"));
         assert!(result.contains("Scouting agent."));
         assert!(result.contains("Sub-Agents"));
@@ -446,7 +442,7 @@ mod tests {
         .unwrap();
         let env = test_env_with_root(dir.path());
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", &env, &[], &registry);
+        let result = build_system_prompt("Base.", &env, false, &registry);
         // koda (the main agent) must not appear in the sub-agents listing.
         // Check the full result: the agent formatter produces "- **name**" (with desc)
         // or "- name" (without). Neither should match "koda".
@@ -465,7 +461,7 @@ mod tests {
     fn test_environment_section_present() {
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", &env, &[], &registry);
+        let result = build_system_prompt("Base.", &env, false, &registry);
         assert!(result.contains("## Environment"));
         assert!(result.contains("/test/project"));
         assert!(result.contains("test-model"));
@@ -484,7 +480,7 @@ mod tests {
     fn test_instructions_included() {
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", &env, &[], &registry);
+        let result = build_system_prompt("Base.", &env, false, &registry);
         // Spot-check key sections from instructions.md
         assert!(result.contains("## Doing Tasks"));
         assert!(result.contains("## Executing Actions"));
@@ -493,19 +489,23 @@ mod tests {
     }
 
     #[test]
-    fn test_commands_generated_from_registry() {
+    fn an_interactive_session_gets_the_quick_reference_without_commands() {
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", &env, &["/help", "/exit"], &registry);
+        let result = build_system_prompt("Base.", &env, true, &registry);
         assert!(result.contains("## Koda Quick Reference"));
-        assert!(result.contains("/help /exit"));
+        assert!(result.contains("Shift+Tab"));
+        assert!(
+            !result.contains("Slash commands"),
+            "the host can't know a client's commands"
+        );
     }
 
     #[test]
     fn test_no_quick_reference_without_a_repl() {
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", &env, &[], &registry);
+        let result = build_system_prompt("Base.", &env, false, &registry);
         assert!(!result.contains("Koda Quick Reference"));
         assert!(!result.contains("Shift+Tab"));
     }
@@ -516,7 +516,7 @@ mod tests {
     fn test_quick_reference_names_the_real_trust_modes() {
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", &env, &["/help"], &registry);
+        let result = build_system_prompt("Base.", &env, true, &registry);
         use crate::trust::TrustMode;
         for mode in [TrustMode::Plan, TrustMode::Safe, TrustMode::Auto] {
             assert!(
@@ -531,7 +531,7 @@ mod tests {
     fn test_skills_section_empty_registry() {
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", &env, &[], &registry);
+        let result = build_system_prompt("Base.", &env, false, &registry);
         assert!(result.contains("## Skills"));
         assert!(result.contains("No skills are currently available"));
     }
@@ -546,7 +546,7 @@ mod tests {
             Some("Use when asked to review code or a PR."),
             "# Review\nDo it.",
         );
-        let result = build_system_prompt("Base.", &env, &[], &registry);
+        let result = build_system_prompt("Base.", &env, false, &registry);
         assert!(result.contains("code-review"));
         assert!(result.contains("Senior code review"));
         assert!(result.contains("Use when asked to review code or a PR."));
@@ -559,7 +559,7 @@ mod tests {
         let env = test_env();
         let mut registry = SkillRegistry::default();
         registry.add_builtin("plain", "Plain skill", None, "content");
-        let result = build_system_prompt("Base.", &env, &[], &registry);
+        let result = build_system_prompt("Base.", &env, false, &registry);
         assert!(result.contains("**plain**"));
         assert!(result.contains("Plain skill"));
     }
@@ -588,7 +588,7 @@ mod tests {
                 content: "scoped content".to_string(),
             },
         );
-        let result = build_system_prompt("Base.", &env, &[], &registry);
+        let result = build_system_prompt("Base.", &env, false, &registry);
         assert!(result.contains("**scoped**"), "skill name");
         assert!(result.contains("Scoped skill"), "description");
         assert!(result.contains("Use for scoped work"), "when_to_use");
@@ -620,7 +620,7 @@ mod tests {
         // fresh install with no user or project agents configured.
         let env = test_env_with_root(dir.path());
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", &env, &[], &registry);
+        let result = build_system_prompt("Base.", &env, false, &registry);
 
         assert!(
             result.contains("## Available Sub-Agents"),
@@ -659,7 +659,7 @@ mod tests {
         .unwrap();
         let env = test_env_with_root(dir.path());
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", &env, &[], &registry);
+        let result = build_system_prompt("Base.", &env, false, &registry);
         let alpha_pos = result.find("alpha").unwrap();
         let zebra_pos = result.find("zebra").unwrap();
         assert!(alpha_pos < zebra_pos, "agents should be sorted A→Z");
@@ -752,7 +752,7 @@ mod tests {
         // re-introduction that would re-create the bootstrap-order bug.
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", &env, &[], &registry);
+        let result = build_system_prompt("Base.", &env, false, &registry);
         assert!(
             !result.contains("# MCP Server Instructions"),
             "static system prompt must not contain MCP block (composed per-turn instead)"
@@ -791,13 +791,10 @@ mod tests {
             .get_definitions(&[], &[])
             .len();
 
-        // Realistic slash commands
-        let commands = &["/help", "/skills", "/agents", "/memory", "/compact"];
-
         let prompt = build_system_prompt(
             "You are koda, a helpful coding agent.",
             &env,
-            commands,
+            true,
             &registry,
         );
 
@@ -833,13 +830,12 @@ mod tests {
 
         eprintln!("\n========== SYSTEM PROMPT MEASUREMENT (#920) ==========");
         eprintln!(
-            "Setup: koda default agent, model=claude-sonnet-5, {} bundled agents loaded, {} built-in skills, {} tools (sent via API, not in prompt), {} commands",
+            "Setup: koda default agent, model=claude-sonnet-5, {} bundled agents loaded, {} built-in skills, {} tools (sent via API, not in prompt)",
             std::fs::read_dir(&agents_dir)
                 .map(|d| d.filter_map(|e| e.ok()).count())
                 .unwrap_or(0),
             registry.len(),
-            tool_count,
-            commands.len()
+            tool_count
         );
         eprintln!(
             "\nTOTAL: {} chars \u{2248} {} tokens (~4 chars/token)\n",
@@ -891,7 +887,7 @@ mod tests {
     fn prompt_does_not_lie_about_git_checkpointing() {
         let env = test_env();
         let registry = SkillRegistry::default();
-        let prompt = build_system_prompt("You are koda.", &env, &["/diff"], &registry);
+        let prompt = build_system_prompt("You are koda.", &env, true, &registry);
 
         // Phrases from the old (deleted) lie. If any of these come back,
         // either ship the feature or delete them again — do not just
