@@ -8,12 +8,9 @@ koda-cli/src/app.rs koda_core::model_alias
 koda-cli/src/app.rs koda_core::model_effort
 koda-cli/src/app.rs koda_core::trust
 koda-cli/src/app.rs koda_core::version
-koda-cli/src/bin/koda_logs.rs koda_core::log_db
-koda-cli/src/bin/koda_logs.rs koda_core::providers
 koda-cli/src/headless.rs koda_core::config
 koda-cli/src/input.rs koda_core::providers
 koda-cli/src/input.rs koda_core::tools
-koda-cli/src/logging.rs koda_core::log_db
 koda-cli/src/mcp_cmd.rs koda_core::config
 koda-cli/src/startup.rs koda_core::version
 koda-cli/src/theme.rs koda_core::tools

@@ -9,7 +9,7 @@
 //!   it). It is the complete record of a long run, which the database's
 //!   per-session limits aren't.
 
-use koda_core::log_db::{LogStore, default_filter};
+use koda_state::log_db::{LogStore, default_filter};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,7 +23,7 @@ pub(crate) const LOG_FILE_NAME: &str = "koda.log";
 /// the log database, the default named only `koda_core` and `koda_cli`, so
 /// the host's, the sandbox's and the config's lines were dropped.
 const DEFAULT_FILE_FILTER: &str = "koda_core=info,koda_cli=info,koda_client=info,\
-koda_sandbox=info,koda_config=info,koda_protocol=info";
+koda_sandbox=info,koda_config=info,koda_protocol=info,koda_state=info";
 
 /// What keeps logging running: drop it last. Dropping it stores what's
 /// queued for the log database, since the runtime ends without waiting for
@@ -34,7 +34,7 @@ pub(crate) struct Logging {
 
 impl Drop for Logging {
     fn drop(&mut self) {
-        koda_core::log_db::flush_blocking(Duration::from_secs(2));
+        koda_state::log_db::flush_blocking(Duration::from_secs(2));
     }
 }
 
@@ -43,7 +43,7 @@ impl Drop for Logging {
 /// leaves the file (if any) and is said on stderr: Koda runs without it.
 pub(crate) async fn init(config_dir: &Path, log_dir: Option<PathBuf>) -> anyhow::Result<Logging> {
     let db_layer = match LogStore::open_in(config_dir).await {
-        Ok(store) => Some(koda_core::log_db::install(Arc::new(store))),
+        Ok(store) => Some(koda_state::log_db::install(Arc::new(store))),
         Err(e) => {
             eprintln!("koda: the log database didn't open, so this run isn't logged there: {e:#}");
             None
@@ -109,12 +109,12 @@ pub(crate) fn resolve_log_dir(value: &str, config_dir: &Path) -> PathBuf {
 /// Store what's queued for the log database now, waiting at most two
 /// seconds: for the panic hook, since a release build aborts right after.
 pub(crate) fn flush_for_panic() {
-    koda_core::log_db::flush_blocking(Duration::from_secs(2));
+    koda_state::log_db::flush_blocking(Duration::from_secs(2));
 }
 
 /// Store what's queued for the log database, as before `exit`.
 pub(crate) async fn flush() {
-    koda_core::log_db::flush().await;
+    koda_state::log_db::flush().await;
 }
 
 #[cfg(test)]

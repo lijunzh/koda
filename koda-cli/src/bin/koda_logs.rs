@@ -9,7 +9,7 @@
 //! ```
 
 use clap::{Parser, ValueEnum};
-use koda_core::log_db::{LogQuery, LogStore};
+use koda_state::log_db::{LogQuery, LogStore};
 use std::path::PathBuf;
 use std::time::Duration;
 

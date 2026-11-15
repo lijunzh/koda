@@ -80,12 +80,13 @@ Workspace: `koda-core` (library, pure engine, zero terminal deps), `koda-cli`
 (the client API, the host and its session tasks, and engine events projected
 onto the protocol),
 `koda-config` (the config file `config.toml`: reading, checking and editing it),
-`koda-test-utils`.
+`koda-state` (Koda's SQLite files and the diagnostic log database, as Codex's
+`codex-state`; the session store moves here next), `koda-test-utils`.
 
 **The client boundary:** `koda-cli` (the TUI and `koda exec`) reaches the
 engine only through the client protocol, so other TUIs and GUIs can too, as
 Codex's CI keeps `codex-core` out of its TUI. Shared crates (`koda-protocol`,
-`koda-config`) are fine; `koda-core` is not. Its remaining uses are listed in
+`koda-config`, `koda-state`) are fine; `koda-core` is not. Its remaining uses are listed in
 `scripts/tui_core_boundary.allow`, which `scripts/check_tui_core_boundary.sh`
 (run in CI) lets only shrink: add a protocol request or a shared crate, never
 a new `koda_core::` use.

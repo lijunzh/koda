@@ -351,7 +351,7 @@ mod tests {
         assert!(
             rows[1]
                 .render()
-                .contains(" INFO koda_core::log_db::layer::tests: session{")
+                .contains(" INFO koda_state::log_db::layer::tests: session{")
         );
     }
 

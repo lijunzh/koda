@@ -32,7 +32,10 @@ current() {
     git ls-files 'koda-cli/src/*.rs' 'koda-cli/src/**/*.rs' 'koda-cli/benches/*.rs' \
         | sort -u \
         | while read -r file; do
-            grep -oE 'koda_core::(\{|[A-Za-z_][A-Za-z0-9_]*)' "$file" 2>/dev/null \
+            # Code only: a comment may name a core module, such as a log
+            # target, without using it.
+            grep -vE '^[[:space:]]*//' "$file" 2>/dev/null \
+                | grep -oE 'koda_core::(\{|[A-Za-z_][A-Za-z0-9_]*)' \
                 | sort -u \
                 | sed "s|^|$file |" || true
         done

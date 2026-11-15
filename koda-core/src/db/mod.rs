@@ -25,7 +25,7 @@
 
 mod context_cache;
 pub mod queries;
-pub(crate) mod sqlite;
+pub(crate) use koda_state::sqlite;
 #[cfg(test)]
 mod tests;
 

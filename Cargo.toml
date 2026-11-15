@@ -7,6 +7,7 @@ members = [
     "koda-protocol",
     "koda-client",
     "koda-config",
+    "koda-state",
 ]
 resolver = "3"
 default-members = ["koda-cli"]
@@ -46,6 +47,9 @@ ignore = "0.4"
 libc = "0.2"
 regex = "1"
 schemars = "1"
+time = "0.3"
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "macros"] }
+uuid = { version = "1", features = ["v4"] }
 
 # Dev-only deps shared across crates.
 tempfile = "3"

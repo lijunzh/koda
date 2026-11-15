@@ -1,0 +1,25 @@
+[package]
+name = "koda-state"
+version = "0.6.4"
+edition.workspace = true
+rust-version.workspace = true
+description = "The stored state of the Koda AI coding agent: its SQLite files and diagnostic log database"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords = ["ai", "coding-agent", "sqlite", "logging"]
+categories = ["database", "development-tools"]
+
+[dependencies]
+anyhow = { workspace = true }
+sqlx = { workspace = true }
+time = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["full", "test-util"] }
