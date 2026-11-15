@@ -26,6 +26,7 @@
 //! reach a session's sub-agents ([`InProcessClient::session_handles`]) and set
 //! what its next turns run with ([`InProcessClient::configure_session`]).
 
+mod background;
 pub mod builtin_skills;
 mod config_file;
 pub mod events;

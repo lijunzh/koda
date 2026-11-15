@@ -8,6 +8,11 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use koda_client::events::Outgoing;
+use koda_client::protocol::agent::{AgentListParams, AgentSource};
+use koda_client::protocol::background::{
+    BackgroundTerminalsCleanParams, BackgroundTerminalsListParams,
+    BackgroundTerminalsTerminateParams,
+};
 use koda_client::protocol::initialize::ClientInfo;
 use koda_client::protocol::item::{CompactionStatus, CompactionTrigger, Item};
 use koda_client::protocol::memory::{MemoryScope, SessionMemoryAddParams, SessionMemoryReadParams};
@@ -2067,5 +2072,143 @@ async fn memory_requests_read_and_save_the_notes_the_model_reads() {
     ] {
         assert!(prompt.contains(text), "{text} isn't in {prompt}");
     }
+    koda.client.shutdown().await;
+}
+
+// ── Background processes and agents ─────────────────────────────────────
+
+/// Background processes outlive the turn that started them, and the client
+/// lists and stops them with `session/backgroundTerminals/*`, as Codex's
+/// `thread/backgroundTerminals/*`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn background_processes_are_listed_and_stopped_through_the_client() {
+    let bash = |id, seconds| {
+        tool_call(
+            id,
+            "Bash",
+            json!({"command": format!("sleep {seconds}"), "background": true}),
+        )
+    };
+    let server = model(vec![
+        bash("call_1", 30),
+        bash("call_2", 31),
+        text("Started."),
+    ])
+    .await;
+    let mut config = config(&server);
+    config.trust = koda_core::trust::TrustMode::Safe;
+    let mut koda = Koda::start(config).await;
+    koda.turn("Start two sleeps in the background").await;
+    for _ in 0..2 {
+        let ServerRequest::ToolCallApproval { id, .. } = koda.request().await else {
+            panic!("expected an approval");
+        };
+        koda.answer(&id, json!({"decision": {"type": "approve"}}))
+            .await;
+    }
+    let messages = koda.until("turn/completed").await;
+    assert_eq!(turn_completed(&messages).status, TurnStatus::Completed);
+
+    // Both still run after the turn, oldest first.
+    let list = || {
+        koda.client
+            .request::<methods::SessionBackgroundTerminalsList>(BackgroundTerminalsListParams {
+                session_id: koda.session.clone(),
+            })
+    };
+    let running = list().await.unwrap().data;
+    assert_eq!(running.len(), 2, "{running:?}");
+    assert!(running[0].command.contains("sleep 30"), "{running:?}");
+    assert!(running[1].command.contains("sleep 31"), "{running:?}");
+    assert!(running[0].cwd.ends_with("project"), "{running:?}");
+    assert_eq!(running[0].process_id, running[0].os_pid.to_string());
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    assert!(
+        (now_ms - running[0].started_at).abs() < 60_000,
+        "{running:?}"
+    );
+
+    let terminate = |process_id: &str| {
+        koda.client
+            .request::<methods::SessionBackgroundTerminalsTerminate>(
+                BackgroundTerminalsTerminateParams {
+                    session_id: koda.session.clone(),
+                    process_id: process_id.to_string(),
+                },
+            )
+    };
+    assert!(terminate(&running[0].process_id).await.unwrap().terminated);
+    // Not again, and not a process Koda didn't start.
+    assert!(!terminate(&running[0].process_id).await.unwrap().terminated);
+    assert!(!terminate("1").await.unwrap().terminated);
+    let bad = server_error(terminate("sleep").await);
+    assert!(bad.message.contains("no background process"), "{bad:?}");
+    let left = list().await.unwrap().data;
+    assert_eq!(left.len(), 1, "{left:?}");
+    assert!(left[0].command.contains("sleep 31"), "{left:?}");
+
+    let cleaned = koda
+        .client
+        .request::<methods::SessionBackgroundTerminalsClean>(BackgroundTerminalsCleanParams {
+            session_id: koda.session.clone(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(cleaned.terminated, 1);
+    assert!(list().await.unwrap().data.is_empty());
+    koda.client.shutdown().await;
+}
+
+/// `agent/list` names the sub-agents the model can call: Koda's own, the
+/// user's and the project's, a project's `.koda/agents/` winning.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_list_names_builtin_user_and_project_agents() {
+    let dir = tempfile::tempdir().unwrap();
+    let xdg = dir.path().join("xdg");
+    koda_core::runtime_env::set("XDG_CONFIG_HOME", xdg.display().to_string());
+    let agent = |folder: &std::path::Path, name: &str, description: &str| {
+        std::fs::create_dir_all(folder).unwrap();
+        std::fs::write(
+            folder.join(format!("{name}.json")),
+            json!({"name": name, "description": description, "system_prompt": "You help."})
+                .to_string(),
+        )
+        .unwrap();
+    };
+    let project = dir.path().join("project");
+    agent(&xdg.join("koda/agents"), "mine", "The user's");
+    agent(&xdg.join("koda/agents"), "shared", "The user's version");
+    agent(
+        &project.join(".koda/agents"),
+        "shared",
+        "The project's version",
+    );
+    let server = model(vec![]).await;
+    let koda = Koda::start_in(config(&server), dir).await;
+
+    let listed = koda
+        .client
+        .request::<methods::AgentList>(AgentListParams {
+            session_id: koda.session.clone(),
+        })
+        .await
+        .unwrap()
+        .data;
+    let find = |name: &str| listed.iter().find(|a| a.name == name);
+    assert_eq!(
+        find("explore").map(|a| a.source),
+        Some(AgentSource::Builtin)
+    );
+    assert_eq!(find("mine").map(|a| a.source), Some(AgentSource::User));
+    let shared = find("shared").unwrap();
+    assert_eq!(shared.source, AgentSource::Project);
+    assert_eq!(shared.description, "The project's version");
+    let names: Vec<&str> = listed.iter().map(|a| a.name.as_str()).collect();
+    let mut sorted = names.clone();
+    sorted.sort_unstable();
+    assert_eq!(names, sorted);
     koda.client.shutdown().await;
 }

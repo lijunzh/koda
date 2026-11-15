@@ -1,5 +1,78 @@
 {
   "$defs": {
+    "AgentInfo": {
+      "description": "One agent the model can call.",
+      "properties": {
+        "description": {
+          "description": "What it's for, in one line.",
+          "type": "string"
+        },
+        "name": {
+          "description": "The name `InvokeAgent` takes.",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/AgentSource",
+          "description": "Where it's defined."
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "source"
+      ],
+      "type": "object"
+    },
+    "AgentListParams": {
+      "additionalProperties": false,
+      "description": "`agent/list`.",
+      "properties": {
+        "sessionId": {
+          "description": "An open session; its project's agents are listed.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "type": "object"
+    },
+    "AgentListResponse": {
+      "description": "The answer to `agent/list`, by name.",
+      "properties": {
+        "data": {
+          "description": "The agents.",
+          "items": {
+            "$ref": "#/$defs/AgentInfo"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "data"
+      ],
+      "type": "object"
+    },
+    "AgentSource": {
+      "description": "Where an agent's definition comes from. A project's overrides a\nuser's, which overrides a built-in one of the same name.",
+      "oneOf": [
+        {
+          "const": "builtin",
+          "description": "Koda's own.",
+          "type": "string"
+        },
+        {
+          "const": "user",
+          "description": "The user's `<config>/agents/`.",
+          "type": "string"
+        },
+        {
+          "const": "project",
+          "description": "The project's `.koda/agents/`.",
+          "type": "string"
+        }
+      ]
+    },
     "ApprovalDecision": {
       "description": "Yes or no to a tool call.",
       "oneOf": [
@@ -76,6 +149,133 @@
           "type": "string"
         }
       ]
+    },
+    "BackgroundTerminal": {
+      "description": "A background process that is still running.",
+      "properties": {
+        "command": {
+          "description": "The command the model ran.",
+          "type": "string"
+        },
+        "cwd": {
+          "description": "The folder it started in.",
+          "type": "string"
+        },
+        "osPid": {
+          "description": "The operating system's id for the process leading its group.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "processId": {
+          "description": "Its id, for `terminate`: the process group's id, as a string.",
+          "type": "string"
+        },
+        "startedAt": {
+          "description": "When it started, in Unix milliseconds. Koda's own; Codex has none.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "processId",
+        "command",
+        "cwd",
+        "osPid",
+        "startedAt"
+      ],
+      "type": "object"
+    },
+    "BackgroundTerminalsCleanParams": {
+      "additionalProperties": false,
+      "description": "`session/backgroundTerminals/clean`: stop them all.",
+      "properties": {
+        "sessionId": {
+          "description": "An open session.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "type": "object"
+    },
+    "BackgroundTerminalsCleanResponse": {
+      "description": "The answer to `session/backgroundTerminals/clean`.",
+      "properties": {
+        "terminated": {
+          "description": "How many were running and are now being stopped. Koda's own; Codex\nanswers with nothing.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "terminated"
+      ],
+      "type": "object"
+    },
+    "BackgroundTerminalsListParams": {
+      "additionalProperties": false,
+      "description": "`session/backgroundTerminals/list`.",
+      "properties": {
+        "sessionId": {
+          "description": "An open session.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "type": "object"
+    },
+    "BackgroundTerminalsListResponse": {
+      "description": "The answer to `session/backgroundTerminals/list`: the running ones,\noldest first.",
+      "properties": {
+        "data": {
+          "description": "The running processes.",
+          "items": {
+            "$ref": "#/$defs/BackgroundTerminal"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "data"
+      ],
+      "type": "object"
+    },
+    "BackgroundTerminalsTerminateParams": {
+      "additionalProperties": false,
+      "description": "`session/backgroundTerminals/terminate`: stop one, and whatever it\nstarted.",
+      "properties": {
+        "processId": {
+          "description": "From the list.",
+          "type": "string"
+        },
+        "sessionId": {
+          "description": "An open session.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "processId"
+      ],
+      "type": "object"
+    },
+    "BackgroundTerminalsTerminateResponse": {
+      "description": "The answer to `session/backgroundTerminals/terminate`.",
+      "properties": {
+        "terminated": {
+          "description": "Whether it was running and is now being stopped.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "terminated"
+      ],
+      "type": "object"
     },
     "ClientInfo": {
       "description": "A client's name and version, such as `koda-cli` `0.7.0`.",
@@ -3060,6 +3260,14 @@
     "$ref": "#/$defs/Message"
   },
   "methods": {
+    "agent/list": {
+      "params": {
+        "$ref": "#/$defs/AgentListParams"
+      },
+      "result": {
+        "$ref": "#/$defs/AgentListResponse"
+      }
+    },
     "config/batchWrite": {
       "params": {
         "$ref": "#/$defs/ConfigBatchWriteParams"
@@ -3130,6 +3338,30 @@
       },
       "result": {
         "$ref": "#/$defs/ModelProviderListResponse"
+      }
+    },
+    "session/backgroundTerminals/clean": {
+      "params": {
+        "$ref": "#/$defs/BackgroundTerminalsCleanParams"
+      },
+      "result": {
+        "$ref": "#/$defs/BackgroundTerminalsCleanResponse"
+      }
+    },
+    "session/backgroundTerminals/list": {
+      "params": {
+        "$ref": "#/$defs/BackgroundTerminalsListParams"
+      },
+      "result": {
+        "$ref": "#/$defs/BackgroundTerminalsListResponse"
+      }
+    },
+    "session/backgroundTerminals/terminate": {
+      "params": {
+        "$ref": "#/$defs/BackgroundTerminalsTerminateParams"
+      },
+      "result": {
+        "$ref": "#/$defs/BackgroundTerminalsTerminateResponse"
       }
     },
     "session/compact/start": {

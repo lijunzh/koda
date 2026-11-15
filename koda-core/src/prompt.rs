@@ -346,7 +346,7 @@ mod tests {
 
     /// Build an `EnvironmentInfo` whose `project_root` points at the
     /// given tempdir. Tests that exercise sub-agent discovery need
-    /// this because `discover_all_agents` walks `<project>/agents/`.
+    /// this because `discover_all_agents` walks `<project>/.koda/agents/`.
     fn test_env_with_root(root: &Path) -> EnvironmentInfo<'_> {
         EnvironmentInfo {
             project_root: root,
@@ -414,8 +414,8 @@ mod tests {
         // Write an agent JSON with a description into the project's
         // `agents/` subdir — the canonical location
         // `discover_all_agents` looks for project-level overrides.
-        let agents_dir = dir.path().join("agents");
-        std::fs::create_dir(&agents_dir).unwrap();
+        let agents_dir = dir.path().join(".koda/agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
         std::fs::write(
             agents_dir.join("scout.json"),
             r#"{"name":"scout","description":"Scouting agent.","system_prompt":"You scout."}"#,
@@ -432,8 +432,8 @@ mod tests {
     #[test]
     fn test_build_system_prompt_skips_koda_agent() {
         let dir = TempDir::new().unwrap();
-        let agents_dir = dir.path().join("agents");
-        std::fs::create_dir(&agents_dir).unwrap();
+        let agents_dir = dir.path().join(".koda/agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
         std::fs::write(
             agents_dir.join("koda.json"),
             r#"{"name":"koda","system_prompt":"main"}"#,
@@ -644,8 +644,8 @@ mod tests {
     #[test]
     fn test_agents_sorted_alphabetically() {
         let dir = TempDir::new().unwrap();
-        let agents_dir = dir.path().join("agents");
-        std::fs::create_dir(&agents_dir).unwrap();
+        let agents_dir = dir.path().join(".koda/agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
         std::fs::write(
             agents_dir.join("zebra.json"),
             r#"{"name":"zebra","system_prompt":"z"}"#,

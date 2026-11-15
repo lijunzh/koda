@@ -323,6 +323,7 @@ pub(crate) async fn open(
         commands: commands_tx,
         handles: SessionHandles {
             project_root: session.agent.project_root.clone(),
+            agent: Arc::clone(&session.agent),
             bg_agents: Arc::clone(&session.bg_agents),
             mcp: mcp.clone(),
         },
@@ -812,6 +813,9 @@ pub struct SessionHandles {
     /// The project the session works in, whose notes `session/memory/*`
     /// read and write.
     pub project_root: PathBuf,
+    /// The agent the session runs: its background processes for
+    /// `session/backgroundTerminals/*` and its sub-agents for `agent/list`.
+    pub agent: Arc<koda_core::agent::KodaAgent>,
     /// The session's sub-agents, for showing what they do and stopping them.
     pub bg_agents: Arc<koda_core::child_agent::ChildAgentRegistry>,
     /// The session's MCP servers, for `mcpServerStatus/list`.

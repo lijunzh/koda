@@ -8,7 +8,7 @@ async fn test_sub_agent_invocation_e2e() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::new().await;
 
-    let agents_dir = env.root.join("agents");
+    let agents_dir = env.root.join(".koda/agents");
     std::fs::create_dir_all(&agents_dir).unwrap();
     std::fs::write(
         agents_dir.join("echo-agent.json"),
@@ -119,7 +119,7 @@ async fn sub_agent_marks_assistant_messages_complete_so_loop_progresses() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::new().await;
 
-    let agents_dir = env.root.join("agents");
+    let agents_dir = env.root.join(".koda/agents");
     std::fs::create_dir_all(&agents_dir).unwrap();
     std::fs::write(
         agents_dir.join("loop-test-agent.json"),
@@ -245,7 +245,7 @@ async fn sub_agent_empty_final_response_falls_back_to_recovered_text() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::new().await;
 
-    let agents_dir = env.root.join("agents");
+    let agents_dir = env.root.join(".koda/agents");
     std::fs::create_dir_all(&agents_dir).unwrap();
     std::fs::write(
         agents_dir.join("recovery-agent.json"),
@@ -348,7 +348,7 @@ async fn test_sub_agent_cache_hit_skips_llm() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::new().await;
 
-    let agents_dir = env.root.join("agents");
+    let agents_dir = env.root.join(".koda/agents");
     std::fs::create_dir_all(&agents_dir).unwrap();
     std::fs::write(
         agents_dir.join("echo-agent.json"),
@@ -402,7 +402,7 @@ async fn test_sub_agent_cache_hit_skips_llm() {
 
 /// Helper: creates `agents/<name>.json` under `env.root`.
 fn write_agent_config(env: &Env, name: &str, skip_memory: bool) {
-    let agents_dir = env.root.join("agents");
+    let agents_dir = env.root.join(".koda/agents");
     std::fs::create_dir_all(&agents_dir).unwrap();
     std::fs::write(
         agents_dir.join(format!("{name}.json")),
@@ -574,7 +574,7 @@ async fn test_sub_agent_grace_turn_terminates_runaway_explorer() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::new().await;
 
-    let agents_dir = env.root.join("agents");
+    let agents_dir = env.root.join(".koda/agents");
     std::fs::create_dir_all(&agents_dir).unwrap();
     std::fs::write(
         agents_dir.join("spinner.json"),
@@ -703,7 +703,7 @@ async fn test_sub_agent_grace_turn_drops_tool_calls_when_model_defies() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::new().await;
 
-    let agents_dir = env.root.join("agents");
+    let agents_dir = env.root.join(".koda/agents");
     std::fs::create_dir_all(&agents_dir).unwrap();
     std::fs::write(
         agents_dir.join("defiant.json"),
@@ -799,7 +799,7 @@ async fn test_sub_agent_grace_reminder_is_a_user_message() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::new().await;
 
-    let agents_dir = env.root.join("agents");
+    let agents_dir = env.root.join(".koda/agents");
     std::fs::create_dir_all(&agents_dir).unwrap();
     std::fs::write(
         agents_dir.join("capped.json"),
@@ -887,7 +887,7 @@ async fn sub_agent_preflight_bails_when_context_exceeds_window() {
     // to trip on.
     let env = Env::new().await;
 
-    let agents_dir = env.root.join("agents");
+    let agents_dir = env.root.join(".koda/agents");
     std::fs::create_dir_all(&agents_dir).unwrap();
     std::fs::write(
         agents_dir.join("over-budget-agent.json"),
@@ -998,7 +998,7 @@ async fn sub_agent_preflight_passes_under_normal_budget() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::builder().max_context_tokens(200_000).build().await;
 
-    let agents_dir = env.root.join("agents");
+    let agents_dir = env.root.join(".koda/agents");
     std::fs::create_dir_all(&agents_dir).unwrap();
     std::fs::write(
         agents_dir.join("normal-agent.json"),

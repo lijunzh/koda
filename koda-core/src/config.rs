@@ -2,7 +2,8 @@
 //!
 //! ## Agent discovery order
 //!
-//! 1. **Project agents** — `<project>/agents/*.json` (highest priority)
+//! 1. **Project agents** — `<project>/.koda/agents/*.json` (highest
+//!    priority; the old `<project>/agents/` is read for one more release)
 //! 2. **User agents** — `~/.config/koda/agents/*.json`
 //! 3. **Built-in agents** — embedded at compile time (lowest priority)
 //!
@@ -28,6 +29,55 @@ pub use crate::provider_catalog::{ProviderMeta, ProviderType};
 
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
+
+/// Where a project's agent files live, as Codex's live in `.codex/agents/`
+/// and Claude Code's in `.claude/agents/`.
+pub const PROJECT_AGENTS_DIR: &str = ".koda/agents";
+
+/// Where they lived before, read for one more release.
+const LEGACY_PROJECT_AGENTS_DIR: &str = "agents";
+
+/// The folders agent files come from, lowest priority first, each with
+/// its source as `/agents` names it: the user's `<config>/agents/`, the
+/// project's old `agents/`, then the project's `.koda/agents/`. An old
+/// `agents/` that holds agent files is logged once as deprecated.
+pub fn agent_dirs(project_root: &Path) -> Vec<(PathBuf, &'static str)> {
+    let mut dirs = Vec::new();
+    if let Ok(config) = crate::db::config_dir() {
+        dirs.push((config.join("agents"), "user"));
+    }
+    let legacy = project_root.join(LEGACY_PROJECT_AGENTS_DIR);
+    if holds_agent_files(&legacy) {
+        warn_legacy_agents_dir(&legacy);
+        dirs.push((legacy, "project"));
+    }
+    dirs.push((project_root.join(PROJECT_AGENTS_DIR), "project"));
+    dirs
+}
+
+fn holds_agent_files(dir: &Path) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|entries| {
+        entries
+            .flatten()
+            .any(|e| e.path().extension().is_some_and(|ext| ext == "json"))
+    })
+}
+
+fn warn_legacy_agents_dir(dir: &Path) {
+    static WARNED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<PathBuf>>> =
+        std::sync::OnceLock::new();
+    let mut seen = WARNED
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    if seen.insert(dir.to_path_buf()) {
+        tracing::warn!(
+            "{}: project agents now live in {PROJECT_AGENTS_DIR}/; this folder is read for \
+             one more release, so move its agent files there",
+            dir.display()
+        );
+    }
+}
 
 /// Model-specific settings that control LLM behavior.
 #[derive(Debug, Clone)]
@@ -274,24 +324,24 @@ pub enum ContextSource {
 
 impl KodaConfig {
     /// Load config from the agent JSON file.
-    /// Search order: project agents/ → user ~/.config/koda/agents/ → built-in (embedded).
+    /// Search order: [`Self::agent_file`] (the project's, then the user's),
+    /// then the built-in (embedded) agents.
     pub fn load(project_root: &Path, agent_name: &str) -> Result<Self> {
-        let agents_dir =
-            Self::find_agents_dir(project_root).unwrap_or_else(|_| PathBuf::from("agents"));
+        let agents_dir = project_root.join(PROJECT_AGENTS_DIR);
 
         // 1. Try project-local or user-level agent file on disk
-        let agent_file = agents_dir.join(format!("{agent_name}.json"));
-        let agent: AgentConfig = if agent_file.exists() {
-            let json = std::fs::read_to_string(&agent_file)
-                .with_context(|| format!("Failed to read agent config: {agent_file:?}"))?;
-            serde_json::from_str(&json)
-                .with_context(|| format!("Failed to parse agent config: {agent_file:?}"))?
-        } else if let Some(builtin) = Self::load_builtin(agent_name) {
-            // 2. Fall back to embedded built-in agent
-            builtin
-        } else {
-            anyhow::bail!("Agent '{agent_name}' not found (checked disk and built-ins)");
-        };
+        let agent: AgentConfig =
+            if let Some(agent_file) = Self::agent_file(project_root, agent_name) {
+                let json = std::fs::read_to_string(&agent_file)
+                    .with_context(|| format!("Failed to read agent config: {agent_file:?}"))?;
+                serde_json::from_str(&json)
+                    .with_context(|| format!("Failed to parse agent config: {agent_file:?}"))?
+            } else if let Some(builtin) = Self::load_builtin(agent_name) {
+                // 2. Fall back to embedded built-in agent
+                builtin
+            } else {
+                anyhow::bail!("Agent '{agent_name}' not found (checked disk and built-ins)");
+            };
 
         let default_url = agent
             .base_url
@@ -665,12 +715,9 @@ impl KodaConfig {
     /// distinguish "explicitly set" from "not set" — used by sub-agent
     /// dispatch to decide which parent fields to inherit.
     ///
-    /// Search order mirrors `load`: project agents/ → built-in.
+    /// Search order mirrors `load`: [`Self::agent_file`], then built-in.
     pub fn load_agent_json(project_root: &Path, agent_name: &str) -> Result<AgentConfig> {
-        let agents_dir =
-            Self::find_agents_dir(project_root).unwrap_or_else(|_| PathBuf::from("agents"));
-        let agent_file = agents_dir.join(format!("{agent_name}.json"));
-        if agent_file.exists() {
+        if let Some(agent_file) = Self::agent_file(project_root, agent_name) {
             let json = std::fs::read_to_string(&agent_file)
                 .with_context(|| format!("Failed to read agent config: {agent_file:?}"))?;
             serde_json::from_str(&json)
@@ -717,7 +764,7 @@ impl KodaConfig {
             provider_type,
             max_context_tokens,
             context_override: None,
-            agents_dir: PathBuf::from("agents"),
+            agents_dir: PathBuf::from(PROJECT_AGENTS_DIR),
             model_settings,
             max_iterations: crate::loop_guard::MAX_ITERATIONS_DEFAULT,
             request_max_retries: crate::inference_helpers::DEFAULT_REQUEST_MAX_RETRIES,
@@ -731,35 +778,22 @@ impl KodaConfig {
         }
     }
 
-    /// Locate the agents directory on disk (for project/user overrides).
-    ///
-    /// Search order:
-    /// 1. `<project_root>/agents/`  — repo-local agents
-    /// 2. `~/.config/koda/agents/` — user-level agents
-    ///
-    /// Built-in agents are always available from embedded configs,
-    /// so this may return Err if no disk directory exists (that's fine).
-    fn find_agents_dir(project_root: &Path) -> Result<PathBuf> {
-        // 1. Project-local
-        let local = project_root.join("agents");
-        if local.is_dir() {
-            return Ok(local);
-        }
-
-        // 2. User config dir (~/.config/koda/agents/)
-        let config_agents = Self::user_agents_dir()?;
-        if config_agents.is_dir() {
-            return Ok(config_agents);
-        }
-
-        // No disk directory found — built-in agents still work
-        anyhow::bail!("No agents directory on disk (built-in agents are still available)")
-    }
-
-    /// Return the user-level agents directory path (`<config>/agents/`,
-    /// `~/.config/koda/agents/` unless `XDG_CONFIG_HOME` moves it).
-    fn user_agents_dir() -> Result<PathBuf> {
-        Ok(crate::db::config_dir()?.join("agents"))
+    /// The agent file named `agent_name`, first found of: the project's
+    /// `.koda/agents/`, its old `agents/` (read for one more release, with a
+    /// warning), then the user's `<config>/agents/`. Codex reads
+    /// `.codex/agents/` and Claude Code `.claude/agents/`; the sandbox
+    /// protects `.koda/agents/` from writes.
+    pub fn agent_file(project_root: &Path, agent_name: &str) -> Option<PathBuf> {
+        let file = format!("{agent_name}.json");
+        let mut dirs: Vec<PathBuf> = agent_dirs(project_root)
+            .into_iter()
+            .rev()
+            .map(|(dir, _)| dir)
+            .collect();
+        dirs.dedup();
+        dirs.into_iter()
+            .map(|dir| dir.join(&file))
+            .find(|path| path.is_file())
     }
 }
 
@@ -852,7 +886,7 @@ mod tests {
     #[test]
     fn test_load_valid_agent_config() {
         let tmp = TempDir::new().unwrap();
-        let agents_dir = tmp.path().join("agents");
+        let agents_dir = tmp.path().join(".koda/agents");
         std::fs::create_dir_all(&agents_dir).unwrap();
         std::fs::write(
             agents_dir.join("test.json"),
@@ -873,17 +907,67 @@ mod tests {
     #[test]
     fn test_load_missing_agent_returns_error() {
         let tmp = TempDir::new().unwrap();
-        std::fs::create_dir_all(tmp.path().join("agents")).unwrap();
+        std::fs::create_dir_all(tmp.path().join(".koda/agents")).unwrap();
         assert!(KodaConfig::load(tmp.path(), "nonexistent").is_err());
     }
 
     #[test]
     fn test_load_malformed_json_returns_error() {
         let tmp = TempDir::new().unwrap();
-        let agents_dir = tmp.path().join("agents");
+        let agents_dir = tmp.path().join(".koda/agents");
         std::fs::create_dir_all(&agents_dir).unwrap();
         std::fs::write(agents_dir.join("bad.json"), "NOT JSON").unwrap();
         assert!(KodaConfig::load(tmp.path(), "bad").is_err());
+    }
+
+    // ── Where agent files live ────────────────────────────────
+
+    /// `.koda/agents/` wins over the old `agents/`, which still works, and
+    /// both over the user's folder; a user agent is found even when the
+    /// project has its own folder (it wasn't, when one folder was picked).
+    #[test]
+    fn agent_files_come_from_koda_agents_then_agents_then_the_user() {
+        // Nextest runs each test in its own process, so moving the config
+        // directory here reaches no other test.
+        let tmp = TempDir::new().unwrap();
+        let xdg = tmp.path().join("xdg");
+        crate::runtime_env::set("XDG_CONFIG_HOME", xdg.display().to_string());
+        let project = tmp.path().join("project");
+        let write = |dir: &Path, name: &str| {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(
+                dir.join(format!("{name}.json")),
+                format!(
+                    r#"{{"name": "{name}", "system_prompt": "From {}."}}"#,
+                    dir.display()
+                ),
+            )
+            .unwrap();
+        };
+        let new = project.join(".koda/agents");
+        let old = project.join("agents");
+        let user = xdg.join("koda/agents");
+        write(&new, "both");
+        write(&old, "both");
+        write(&old, "old");
+        write(&user, "mine");
+        write(&user, "old");
+
+        let found = |name| KodaConfig::agent_file(&project, name);
+        assert_eq!(found("both"), Some(new.join("both.json")));
+        assert_eq!(found("old"), Some(old.join("old.json")));
+        assert_eq!(found("mine"), Some(user.join("mine.json")));
+        assert_eq!(found("nobody"), None);
+        let dirs = agent_dirs(&project);
+        assert_eq!(
+            dirs,
+            vec![(user, "user"), (old, "project"), (new.clone(), "project")]
+        );
+
+        // Without agent files, the old folder isn't read at all.
+        std::fs::remove_dir_all(project.join("agents")).unwrap();
+        assert_eq!(agent_dirs(&project).last(), Some(&(new, "project")));
+        crate::runtime_env::remove("XDG_CONFIG_HOME");
     }
 
     // ── Default-deny write access ─────────────────────────────
@@ -914,7 +998,7 @@ mod tests {
     #[test]
     fn test_custom_agent_without_write_access_is_readonly() {
         let tmp = TempDir::new().unwrap();
-        let agents_dir = tmp.path().join("agents");
+        let agents_dir = tmp.path().join(".koda/agents");
         std::fs::create_dir_all(&agents_dir).unwrap();
         std::fs::write(
             agents_dir.join("custom.json"),
@@ -939,7 +1023,7 @@ mod tests {
         // mechanism. If the JSON declares trust:safe, writes should be
         // available (and gated by the trust matrix at call time).
         let tmp = TempDir::new().unwrap();
-        let agents_dir = tmp.path().join("agents");
+        let agents_dir = tmp.path().join(".koda/agents");
         std::fs::create_dir_all(&agents_dir).unwrap();
         std::fs::write(
             agents_dir.join("newstyle.json"),
@@ -969,7 +1053,7 @@ mod tests {
         // (it's the behavioral-floor escape valve — e.g. blocking
         // `InvokeAgent` on read-only agents).
         let tmp = TempDir::new().unwrap();
-        let agents_dir = tmp.path().join("agents");
+        let agents_dir = tmp.path().join(".koda/agents");
         std::fs::create_dir_all(&agents_dir).unwrap();
         std::fs::write(
             agents_dir.join("verifier.json"),
@@ -999,7 +1083,7 @@ mod tests {
         // because that one accidentally also covers this; this is the
         // explicit pin against accidental future regression.
         let tmp = TempDir::new().unwrap();
-        let agents_dir = tmp.path().join("agents");
+        let agents_dir = tmp.path().join(".koda/agents");
         std::fs::create_dir_all(&agents_dir).unwrap();
         std::fs::write(
             agents_dir.join("oldstyle.json"),
@@ -1311,9 +1395,9 @@ mod tests {
     #[test]
     fn agent_json_max_context_tokens_is_a_pin() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("agents")).unwrap();
+        std::fs::create_dir_all(dir.path().join(".koda/agents")).unwrap();
         std::fs::write(
-            dir.path().join("agents/pinned.json"),
+            dir.path().join(".koda/agents/pinned.json"),
             r#"{"name":"pinned","system_prompt":"x","max_context_tokens":32768}"#,
         )
         .unwrap();
@@ -1600,7 +1684,7 @@ mod tests {
     fn test_load_agent_json_project_override_preserves_option() {
         // A project-local agent that explicitly sets a model must preserve it.
         let tmp = tempfile::TempDir::new().unwrap();
-        let agents_dir = tmp.path().join("agents");
+        let agents_dir = tmp.path().join(".koda/agents");
         std::fs::create_dir_all(&agents_dir).unwrap();
         std::fs::write(
             agents_dir.join("myscout.json"),
@@ -1657,7 +1741,7 @@ mod tests {
     #[test]
     fn test_sub_agent_own_provider_is_not_overridden() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let agents_dir = tmp.path().join("agents");
+        let agents_dir = tmp.path().join(".koda/agents");
         std::fs::create_dir_all(&agents_dir).unwrap();
         // Agent explicitly sets its own provider (e.g. a mock / local specialist)
         std::fs::write(
@@ -1699,7 +1783,7 @@ mod tests {
     #[test]
     fn test_sub_agent_explicit_model_is_not_overridden() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let agents_dir = tmp.path().join("agents");
+        let agents_dir = tmp.path().join(".koda/agents");
         std::fs::create_dir_all(&agents_dir).unwrap();
         // Agent sets model preference but no explicit provider
         std::fs::write(
@@ -1751,7 +1835,7 @@ mod tests {
     /// and one tiny JSON literal — the rest is shared scaffolding.
     fn load_with_trust_field(trust_json_value: &str) -> KodaConfig {
         let tmp = tempfile::TempDir::new().unwrap();
-        let agents_dir = tmp.path().join("agents");
+        let agents_dir = tmp.path().join(".koda/agents");
         std::fs::create_dir_all(&agents_dir).unwrap();
         // `trust_json_value` is the literal that goes in the JSON; pass
         // an empty string to omit the field entirely (back-compat path).

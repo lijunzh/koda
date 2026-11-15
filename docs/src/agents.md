@@ -2,7 +2,11 @@
 
 Place JSON files in `.koda/agents/` (project-local) or
 `~/.config/koda/agents/` (global; `$XDG_CONFIG_HOME/koda/agents/` when that's
-set):
+set). A project's agent overrides a global one of the same name, which
+overrides a built-in one. Earlier releases read project agents from
+`agents/` at the project root, despite these docs; that folder is still
+read for one more release, with a warning in the log, so move its files to
+`.koda/agents/`.
 
 ```json
 {
