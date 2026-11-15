@@ -1856,6 +1856,10 @@
           "description": "The default endpoint.",
           "type": "string"
         },
+        "envKey": {
+          "description": "The environment variable its key comes from, such as\n`ANTHROPIC_API_KEY`, as Codex's `ModelProviderInfo.env_key`.",
+          "type": "string"
+        },
         "hasApiKey": {
           "description": "Whether a key is set for it. Never the key itself.",
           "type": "boolean"
@@ -1878,7 +1882,8 @@
         "name",
         "baseUrl",
         "requiresApiKey",
-        "hasApiKey"
+        "hasApiKey",
+        "envKey"
       ],
       "type": "object"
     },
@@ -2676,7 +2681,7 @@
           "description": "Who answers the session's requests. Without one, the client does."
         },
         "baseUrl": {
-          "description": "The provider's endpoint, for a local server or a gateway. Without\none, the provider's default, or a resumed session's own.",
+          "description": "The provider's endpoint, for a local server or a gateway. Without\none, the provider's default, or a resumed session's own. Given\nwithout `modelProvider` for a new session, it names the provider\ntoo, by its host or local port, as `koda --base-url` does.",
           "type": [
             "string",
             "null"

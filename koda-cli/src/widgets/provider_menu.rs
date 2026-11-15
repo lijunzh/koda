@@ -7,10 +7,10 @@ use super::dropdown::DropdownItem;
 /// A provider item for the dropdown.
 #[derive(Clone, Debug)]
 pub struct ProviderItem {
-    /// Internal key (e.g. "anthropic", "openai").
-    pub key: &'static str,
-    /// Display name (e.g. "Anthropic", "OpenAI").
-    pub name: &'static str,
+    /// The provider's id (e.g. "anthropic", "lm-studio").
+    pub key: String,
+    /// Display name (e.g. "Anthropic", "LM Studio").
+    pub name: String,
     /// Whether this is a local provider (no API key needed).
     pub local: bool,
     /// Whether an API key is configured for this provider.
@@ -20,7 +20,7 @@ pub struct ProviderItem {
 
 impl DropdownItem for ProviderItem {
     fn label(&self) -> &str {
-        self.name
+        &self.name
     }
     fn description(&self) -> String {
         let mut desc = if self.local {
@@ -51,8 +51,8 @@ mod tests {
     #[test]
     fn key_set_shows_checkmark() {
         let item = ProviderItem {
-            key: "anthropic",
-            name: "Anthropic",
+            key: "anthropic".to_string(),
+            name: "Anthropic".to_string(),
             local: false,
             key_set: true,
         };
@@ -62,8 +62,8 @@ mod tests {
     #[test]
     fn no_key_no_marker() {
         let item = ProviderItem {
-            key: "openai",
-            name: "OpenAI",
+            key: "openai".to_string(),
+            name: "OpenAI".to_string(),
             local: false,
             key_set: false,
         };
@@ -73,8 +73,8 @@ mod tests {
     #[test]
     fn local_shows_description() {
         let item = ProviderItem {
-            key: "ollama",
-            name: "Ollama",
+            key: "ollama".to_string(),
+            name: "Ollama".to_string(),
             local: true,
             key_set: false,
         };
@@ -84,8 +84,8 @@ mod tests {
     #[test]
     fn filter_matches_key_name_local() {
         let item = ProviderItem {
-            key: "lmstudio",
-            name: "LM Studio",
+            key: "lmstudio".to_string(),
+            name: "LM Studio".to_string(),
             local: true,
             key_set: false,
         };

@@ -87,7 +87,9 @@ pub struct SessionStartParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_provider: Option<String>,
     /// The provider's endpoint, for a local server or a gateway. Without
-    /// one, the provider's default, or a resumed session's own.
+    /// one, the provider's default, or a resumed session's own. Given
+    /// without `modelProvider` for a new session, it names the provider
+    /// too, by its host or local port, as `koda --base-url` does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
     /// The model: an id, or an alias such as `claude-opus`, which follows

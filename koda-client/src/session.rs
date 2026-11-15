@@ -293,7 +293,15 @@ pub(crate) async fn open(
             protocol_version: PROTOCOL_VERSION,
         },
     )));
-    for message in notice.into_iter().chain(mode_warning.map(str::to_string)) {
+    // A Claude model pinned while its line has moved on.
+    let pinned_older = (config.provider_type == koda_core::config::ProviderType::Anthropic)
+        .then(|| koda_core::model_alias::pinned_older_notice(&config.model))
+        .flatten();
+    for message in notice
+        .into_iter()
+        .chain(mode_warning.map(str::to_string))
+        .chain(pinned_older)
+    {
         let _ = events.send(Outgoing::Notification(ServerNotification::Warning(
             WarningNotification {
                 session_id: Some(id.clone()),

@@ -104,10 +104,12 @@ pub(crate) async fn apply_start(
         .as_deref()
         .filter(|m| *m != model_alias::LOCAL_ALIAS)
         .and_then(model_alias::resolve);
-    let ptype = match (&choice.provider, &by_alias) {
-        (Some(id), _) => provider(id)?,
-        (None, Some(resolved)) => resolved.provider,
-        (None, None) => config.provider_type,
+    let ptype = match (&choice.provider, &by_alias, &choice.base_url) {
+        (Some(id), _, _) => provider(id)?,
+        (None, Some(resolved), _) => resolved.provider,
+        // An endpoint alone names its provider, as `--base-url` does.
+        (None, None, Some(url)) => ProviderType::from_url_or_name(url, None),
+        (None, None, None) => config.provider_type,
     };
     // A named endpoint, else the one the config file gives this provider,
     // else the host's for its own provider or the provider's default.
@@ -265,6 +267,7 @@ pub(crate) fn list_providers(host: &KodaConfig) -> ModelProviderListResponse {
                 requires_api_key: p.requires_api_key(),
                 has_api_key: koda_core::runtime_env::get(p.env_key_name())
                     .is_some_and(|k| !k.is_empty()),
+                env_key: p.env_key_name().to_string(),
             })
             .collect(),
         default_provider_id: host.provider_type.to_string(),

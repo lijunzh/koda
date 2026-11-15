@@ -67,4 +67,7 @@ pub struct ModelProviderSummary {
     pub requires_api_key: bool,
     /// Whether a key is set for it. Never the key itself.
     pub has_api_key: bool,
+    /// The environment variable its key comes from, such as
+    /// `ANTHROPIC_API_KEY`, as Codex's `ModelProviderInfo.env_key`.
+    pub env_key: String,
 }
