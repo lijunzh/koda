@@ -37,6 +37,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- **`koda exec`'s text output is drawn from the client protocol,** as `codex exec`'s is, not from Koda's engine events. A sub-agent's tool calls show indented under its `InvokeAgent` call, with its notices, instead of `[bg task N]` lines, and its name shows once it has started. The `[todos]` line counts steps added, changed and removed since the plan before. The last line counts the whole turn's output tokens, sub-agents' and compactions' included. A failed call is marked `✗`, not `✓`. "Running N tools in parallel" and "Injecting N steers" are no longer printed.
 - **Esc and Ctrl+C stop the turn, not background processes,** as in Codex. They stop the turn and its sub-agents; a dev server the model started keeps running until `/stop`, until the model stops it, or until Koda exits. At idle, Esc clears the input and Ctrl+C clears it or arms quit. Before, both also stopped every background process (#1200).
 - **`/agent` is now `/agents`,** as Codex and Claude Code name it. The old name still works for a release and says the new one.
 

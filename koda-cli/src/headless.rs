@@ -11,9 +11,8 @@
 //! ## Output
 //!
 //! - [`Output::Text`] (`koda exec`): the streamed reply on stdout,
-//!   progress (tool calls, footer) on stderr. Rendered from the engine's
-//!   own events, which the client hands out in process until the front ends
-//!   render the protocol's items.
+//!   progress (tool calls, footer) on stderr, drawn from the protocol's
+//!   notifications, as `codex exec`'s human output is.
 //! - [`Output::Events`] (`koda exec --json`): stdout carries only JSON-RPC
 //!   notifications from the client protocol (`koda-protocol`), one per
 //!   line, as the host sends them: `session/started`, the turn and its
@@ -22,22 +21,26 @@
 //!   `--json-deltas`.
 
 use crate::input;
+use crate::protocol_text::{self, Tone};
 use koda_client::events::{Outgoing, usage_of};
 use koda_client::protocol::initialize::ClientInfo;
+use koda_client::protocol::item::{
+    FileUpdateChange, Item, OutputStream, PatchChangeKind, ToolCallStatus, ToolEffect,
+};
 use koda_client::protocol::server::ExecSummary;
 use koda_client::protocol::session::{ApprovalPolicy, SessionStartParams};
 use koda_client::protocol::turn::{
-    ImageInput, Turn, TurnInterruptParams, TurnStartParams, TurnStatus,
+    ImageInput, PlanStep, Turn, TurnInterruptParams, TurnStartParams, TurnStatus,
 };
-use koda_client::protocol::{ServerNotification, methods};
-use koda_client::{InProcessClient, RawEvent, StartArgs};
+use koda_client::protocol::{ServerNotification, ServerRequest, methods};
+use koda_client::{InProcessClient, StartArgs};
 use koda_core::config::KodaConfig;
 use koda_core::db::Database;
-use koda_core::engine::{EngineEvent, TurnEndReason, UsageTotals};
+use koda_core::engine::UsageTotals;
 use koda_core::persistence::{Persistence, SessionUsage};
 
 use anyhow::{Context, Result};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -111,7 +114,7 @@ pub async fn run_headless(
         config_file: crate::user_config::file()?,
         project_root,
         db: db.clone(),
-        raw_events: true,
+        raw_events: false,
         client_info: ClientInfo {
             name: "koda-exec".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -119,9 +122,6 @@ pub async fn run_headless(
         agent: None,
     })
     .await?;
-    let mut raw = client
-        .take_raw_events()
-        .context("the client gave no engine events")?;
     let mut view = View::new(run.output);
 
     let opened = client
@@ -161,9 +161,6 @@ pub async fn run_headless(
     let mut interrupt = None;
     let completed: Turn = loop {
         tokio::select! {
-            // Engine events first, so text keeps up with the protocol.
-            biased;
-            Some(event) = raw.recv() => view.raw(event),
             message = client.next_event() => match message {
                 Some(message) => {
                     if let Some(turn) = view.protocol(message) {
@@ -187,10 +184,6 @@ pub async fn run_headless(
             }
         }
     };
-    // The engine's events for the turn were all sent before its end.
-    while let Ok(event) = raw.try_recv() {
-        view.raw(event);
-    }
     let elapsed_ms = started.elapsed().as_millis() as u64;
 
     let response = db
@@ -286,15 +279,15 @@ impl CtrlC {
 // Run summary: `exec/summary`
 // ---------------------------------------------------------------------------
 
-/// Per-run counters the sink accumulates from the event stream.
+/// Per-run counters, from the turn's notifications.
 #[derive(Debug, Clone, Default, PartialEq)]
 struct RunStats {
     /// Top-level tool calls by tool name.
     tool_calls: BTreeMap<String, u64>,
     /// Tool calls made by sub-agents, by tool name.
     sub_agent_tool_calls: BTreeMap<String, u64>,
-    /// Reason from the top-level `TurnEnd`.
-    turn_end: Option<TurnEndReason>,
+    /// How the turn ended, and why if it failed.
+    turn_end: Option<(TurnStatus, Option<String>)>,
 }
 
 /// Everything a summary needs once the turn is over.
@@ -311,12 +304,16 @@ struct RunOutcome<'a> {
 }
 
 /// Why the run failed, if it did. A turn the engine cut short on a warning
-/// (provider server error, image rejection, dropped connection) returns
-/// `Ok` but ends with `TurnEnd::Error` and no reply, so it counts too.
+/// (provider server error, image rejection, dropped connection) still
+/// returns, but ends `failed`, so it counts too.
 fn run_failure(result: &Result<()>, stats: &RunStats) -> Option<String> {
     match (result, &stats.turn_end) {
         (Err(e), _) => Some(format!("{e:#}")),
-        (Ok(()), Some(TurnEndReason::Error { message })) => Some(message.clone()),
+        (Ok(()), Some((TurnStatus::Failed, error))) => Some(
+            error
+                .clone()
+                .unwrap_or_else(|| "the turn failed".to_string()),
+        ),
         (Ok(()), _) => None,
     }
 }
@@ -332,11 +329,7 @@ fn exec_summary(outcome: RunOutcome<'_>) -> ExecSummary {
         provider: outcome.provider.to_string(),
         model: outcome.model.to_string(),
         response: outcome.response.to_string(),
-        turn_status: outcome.stats.turn_end.as_ref().map(|reason| match reason {
-            TurnEndReason::Complete => TurnStatus::Completed,
-            TurnEndReason::Cancelled => TurnStatus::Interrupted,
-            _ => TurnStatus::Failed,
-        }),
+        turn_status: outcome.stats.turn_end.as_ref().map(|(status, _)| *status),
         duration_ms: outcome.elapsed_ms,
         usage: usage(outcome.usage),
         usage_by_agent: outcome
@@ -353,9 +346,24 @@ fn exec_summary(outcome: RunOutcome<'_>) -> ExecSummary {
 // View — what the run prints, and the counts its summary reports
 // ---------------------------------------------------------------------------
 
+/// Lines from the start of a new file shown in its diff.
+const NEW_FILE_LINES: usize = 60;
+
 struct View {
     output: Output,
     stats: RunStats,
+    /// The plan as last sent, to say how the next one changed it.
+    plan: Vec<PlanStep>,
+    /// Calls Koda was asked about: one declined after that was refused, not
+    /// blocked.
+    asked: HashSet<String>,
+    /// Characters of the reply, for a footer when the provider reports no
+    /// output tokens.
+    reply_chars: usize,
+    /// `InvokeAgent` calls whose agent isn't named yet: named once it shows
+    /// it started (a call of its own, a notice, or an answer), so a call
+    /// refused before it started names none.
+    agents: std::collections::HashMap<String, (String, &'static str)>,
 }
 
 impl View {
@@ -363,6 +371,10 @@ impl View {
         Self {
             output,
             stats: RunStats::default(),
+            plan: Vec::new(),
+            asked: HashSet::new(),
+            reply_chars: 0,
+            agents: std::collections::HashMap::new(),
         }
     }
 
@@ -395,11 +407,14 @@ impl View {
         }
     }
 
-    /// One protocol message during the turn: printed for `--json`. Returns
-    /// the turn once it has completed.
-    fn protocol(&self, message: Outgoing) -> Option<Turn> {
-        if let Output::Events { .. } = self.output {
-            self.print(&message);
+    /// One protocol message during the turn: counted for the summary, and
+    /// printed as JSON or drawn as text. Returns the turn once it has
+    /// completed.
+    fn protocol(&mut self, message: Outgoing) -> Option<Turn> {
+        self.record(&message);
+        match self.output {
+            Output::Events { .. } => self.print(&message),
+            Output::Text => self.render(&message),
         }
         match message {
             Outgoing::Notification(ServerNotification::TurnCompleted(done)) => Some(done.turn),
@@ -407,257 +422,260 @@ impl View {
         }
     }
 
-    /// One engine event: counted for the summary, and rendered for text.
-    fn raw(&mut self, raw: RawEvent) {
-        let RawEvent { parent, event, .. } = raw;
-        self.record(parent.as_deref(), &event);
-        match self.output {
-            Output::Events { .. } => {}
-            // A sub-agent's results aren't shown: its answer is.
-            Output::Text
-                if parent.is_some() && matches!(event, EngineEvent::ToolCallResult { .. }) => {}
-            Output::Text => self.render(event),
-        }
-    }
-
-    fn record(&mut self, parent_id: Option<&str>, event: &EngineEvent) {
-        let stats = &mut self.stats;
-        match event {
-            EngineEvent::ToolCallStart {
-                name, is_sub_agent, ..
-            } => {
-                let counts = if *is_sub_agent {
-                    &mut stats.sub_agent_tool_calls
-                } else {
-                    &mut stats.tool_calls
-                };
-                *counts.entry(name.clone()).or_default() += 1;
+    fn record(&mut self, message: &Outgoing) {
+        match message {
+            Outgoing::Notification(ServerNotification::ItemStarted(started)) => {
+                if let Item::ToolCall { tool, .. } = &started.item {
+                    let counts = if started.parent_item_id.is_some() {
+                        &mut self.stats.sub_agent_tool_calls
+                    } else {
+                        &mut self.stats.tool_calls
+                    };
+                    *counts.entry(tool.clone()).or_default() += 1;
+                }
             }
-            EngineEvent::TurnEnd { reason, .. } if parent_id.is_none() => {
-                stats.turn_end = Some(reason.clone());
+            Outgoing::Notification(ServerNotification::TurnCompleted(done)) => {
+                self.stats.turn_end = Some((
+                    done.turn.status,
+                    done.turn.error.as_ref().map(|e| e.message.clone()),
+                ));
             }
             _ => {}
         }
     }
 
-    /// Human-readable rendering for text and summary output. The streamed
-    /// reply goes to stdout only for text; with a summary, stdout is
-    /// reserved for it.
-    fn render(&self, event: EngineEvent) {
-        let reply_on_stdout = self.output == Output::Text;
-        match event.notice().unwrap_or(event) {
-            EngineEvent::ApprovalRequest {
-                effect,
-                tool_name,
-                detail,
-                ..
-            } => {
-                if effect == koda_core::tools::ToolEffect::Destructive {
+    /// The text output. The streamed reply goes to stdout; everything else
+    /// to stderr.
+    fn render(&mut self, message: &Outgoing) {
+        let notification = match message {
+            Outgoing::Request(ServerRequest::ToolCallApproval { params, .. }) => {
+                self.asked.insert(params.item_id.clone());
+                // Koda refuses these itself when nobody is there to ask.
+                if params.effect == ToolEffect::Destructive {
                     eprintln!(
-                        "\x1b[31m  ✗ Rejected destructive action: {tool_name} — {detail}\x1b[0m"
+                        "\x1b[31m  \u{2717} Rejected destructive action: {} \u{2014} {}\x1b[0m",
+                        params.tool, params.detail
                     );
                 }
+                return;
             }
-            EngineEvent::AskUserRequest { question, .. } => {
-                eprintln!("[koda] AskUser (no interactive session): {question}");
-            }
-            EngineEvent::LoopCapReached { .. } => {}
-
-            // ── Streaming text ──────────────────────────────────
-            EngineEvent::TextDelta { text } => {
-                if reply_on_stdout {
-                    print!("{text}");
-                    let _ = std::io::stdout().flush();
-                } else {
-                    eprint!("{text}");
-                }
-            }
-            EngineEvent::TextDone => {
-                if reply_on_stdout {
-                    println!();
-                } else {
-                    eprintln!();
-                }
-            }
-
-            // ── Thinking ────────────────────────────────────────
-            EngineEvent::ThinkingStart => {
-                eprintln!("\x1b[90m  \u{1f4ad} thinking...\x1b[0m");
-            }
-            EngineEvent::ThinkingDelta { .. } => {}
-            EngineEvent::ThinkingDone => {}
-
-            // ── Tool calls ──────────────────────────────────────
-            EngineEvent::ToolCallStart { name, .. } => {
-                eprintln!("\x1b[36m  \u{26a1} {name}\x1b[0m");
-            }
-            EngineEvent::ToolOutputLine {
-                line, is_stderr, ..
-            } => {
-                if is_stderr {
-                    eprintln!("  \u{2502}e {line}");
-                } else {
-                    eprintln!("  \u{2502} {line}");
-                }
-            }
-            // A call that never ran was shown as its rejection or block.
-            EngineEvent::ToolCallResult { outcome, .. } if !outcome.ran() => {}
-            EngineEvent::ToolCallResult { name, output, .. } => {
-                use koda_core::truncate::{Truncated, truncate_for_display};
-                eprintln!("\x1b[32m  \u{2713} {name}\x1b[0m");
-                match truncate_for_display(&output) {
-                    Truncated::Full(_) => {
-                        for line in output.lines() {
-                            eprintln!("  \u{2502} {line}");
-                        }
-                    }
-                    Truncated::Split {
-                        head,
-                        tail,
-                        hidden,
-                        total,
-                    } => {
-                        for line in &head {
-                            eprintln!("  \u{2502} {line}");
-                        }
-                        eprintln!(
-                            "\x1b[2m{}\x1b[0m",
-                            koda_core::truncate::separator(hidden, total)
-                        );
-                        for line in &tail {
-                            eprintln!("  \u{2502} {line}");
-                        }
-                    }
-                }
-            }
-
-            // ── Sub-agents ──────────────────────────────────────
-            EngineEvent::SubAgentStart { agent_name } => {
-                eprintln!("\x1b[35m  \u{1f916} {agent_name}\x1b[0m");
-            }
-
-            // ── Blocked actions ──────────────────────────────────
-            EngineEvent::ActionBlocked {
-                detail, preview, ..
-            } => {
-                eprintln!("\x1b[33m  \u{1f50d} Would execute: {detail}\x1b[0m");
-                if let Some(ref p) = preview {
-                    let diff_lines = crate::diff_render::render_lines(p);
-                    for line in &diff_lines {
-                        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-                        eprintln!("  {text}");
-                    }
-                }
-            }
-
-            // ── Info/Warn/Error ──────────────────────────────────
-            EngineEvent::Info { message } => eprintln!("\x1b[36m  {message}\x1b[0m"),
-            EngineEvent::Warn { message } => eprintln!("\x1b[33m  \u{26a0} {message}\x1b[0m"),
-            EngineEvent::Error { message } => eprintln!("\x1b[31m  \u{2717} {message}\x1b[0m"),
-
-            // ── Ignored in headless ─────────────────────────────
-            EngineEvent::ResponseStart => {}
-            EngineEvent::SpinnerStart { .. } => {}
-            EngineEvent::SpinnerStop => {}
-            EngineEvent::StatusUpdate { .. } => {}
-            EngineEvent::ContextUsage { .. } => {}
-            // One run; the engine already uses the learned window.
-            EngineEvent::ContextWindowChanged { .. } => {}
-            EngineEvent::TurnStart { .. } => {}
-            EngineEvent::TurnEnd { .. } => {}
-            // (#1076) Bg-task lifecycle in headless: render as a short
-            // status line so a script tailing stdout sees "task 7
-            // running (iter 3)" instead of nothing. The full result
-            // payload is still injected at completion via the
-            // `drain_completed` path — this is just live progress.
-            EngineEvent::ChildTaskUpdate {
-                task_id, status, ..
-            } => {
-                let summary = match status {
-                    koda_core::child_agent::AgentStatus::Pending => "pending".to_string(),
-                    koda_core::child_agent::AgentStatus::Running { iter } => {
-                        if iter == 0 {
-                            "running (starting)".to_string()
-                        } else {
-                            format!("running (iter {iter})")
-                        }
-                    }
-                    koda_core::child_agent::AgentStatus::Cancelled => "cancelled".to_string(),
-                    koda_core::child_agent::AgentStatus::Completed { .. } => {
-                        "completed".to_string()
-                    }
-                    koda_core::child_agent::AgentStatus::Errored { error } => {
-                        let snippet: String = error.chars().take(80).collect();
-                        format!("errored: {snippet}")
-                    }
-                    // Forward-compat: future statuses render as a
-                    // generic label so script tailing stdout sees
-                    // *something* (#1224).
-                    _ => "(unknown status)".to_string(),
-                };
-                eprintln!("\x1b[2m  [bg task {task_id}] {summary}\x1b[0m");
-            }
-            // (#1201 B) Live activity from inside a bg agent. Render
-            // dimly indented under the parent feed so a tailing script
-            // sees "  [bg task 7]   \u{1f527} Read src/auth.rs" without
-            // having to wait for the post-completion drain.
-            EngineEvent::ChildAgentActivity { task_id, kind, .. } => {
-                let line = match kind {
-                    koda_core::engine::event::ChildAgentActivityKind::ToolStart {
-                        summary, ..
-                    } => format!("\u{1f527} {summary}"),
-                    koda_core::engine::event::ChildAgentActivityKind::ToolEnd {
-                        tool_name,
-                        success,
-                    } => {
-                        let icon = if success { "\u{2713}" } else { "\u{2717}" };
-                        format!("{icon} {tool_name}")
-                    }
-                    koda_core::engine::event::ChildAgentActivityKind::Info { message } => message,
-                    // Forward-compat: future activity kinds render as
-                    // a generic line (#1224).
-                    _ => "(activity)".to_string(),
-                };
-                eprintln!("\x1b[2m  [bg task {task_id}] {line}\x1b[0m");
-            }
-            // (#1077 Phase A) TodoWrite lifecycle in headless: render a
-            // dim one-liner with diff counts so a script tailing stdout
-            // sees "todos: +2 ~1 -0 (5 total)" on every accepted change.
-            // The full per-item list still rides on the next tool result
-            // (which the headless `print_tool_result` path renders) —
-            // this is just the structured transition for scripts that
-            // want to grep "added" without parsing the formatted list.
-            EngineEvent::TodoUpdate { items, diff } => {
+            Outgoing::Request(ServerRequest::UserInput { params, .. }) => {
                 eprintln!(
-                    "\x1b[2m  [todos] +{} ~{} -{} ({} total)\x1b[0m",
-                    diff.added.len(),
-                    diff.changed.len(),
-                    diff.removed.len(),
-                    items.len(),
+                    "[koda] AskUser (no interactive session): {}",
+                    params.question
                 );
+                return;
             }
-            EngineEvent::Footer {
-                completion_tokens,
-                total_chars,
-                elapsed_ms,
-                rate,
-                ..
-            } => {
-                let tokens = if completion_tokens > 0 {
-                    completion_tokens
+            Outgoing::Request(ServerRequest::LoopCap { .. }) => return,
+            Outgoing::Notification(notification) => notification,
+        };
+        match notification {
+            ServerNotification::AgentMessageDelta(delta) => {
+                self.reply_chars += delta.delta.chars().count();
+                print!("{}", delta.delta);
+                let _ = std::io::stdout().flush();
+            }
+            ServerNotification::ItemStarted(started) => {
+                if let Some(parent) = &started.parent_item_id {
+                    self.name_agent(parent);
+                }
+                let indent = if started.parent_item_id.is_some() {
+                    "    "
                 } else {
-                    (total_chars / 4) as i64
+                    "  "
                 };
-                let secs = elapsed_ms as f64 / 1000.0;
+                match &started.item {
+                    Item::Reasoning { .. } => {
+                        eprintln!("\x1b[90m  \u{1f4ad} thinking...\x1b[0m");
+                    }
+                    Item::ToolCall {
+                        id,
+                        tool,
+                        arguments,
+                        ..
+                    } => {
+                        eprintln!("\x1b[36m{indent}\u{26a1} {tool}\x1b[0m");
+                        if tool == "InvokeAgent"
+                            && let Some(agent) = arguments["agent_name"].as_str()
+                        {
+                            self.agents.insert(id.clone(), (agent.to_string(), indent));
+                        }
+                    }
+                    item @ Item::ContextCompaction { .. } => {
+                        if let Some(line) = protocol_text::compaction_started(item) {
+                            notice(line);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            ServerNotification::ItemCompleted(done) => match &done.item {
+                Item::AgentMessage { .. } => println!(),
+                item @ Item::ContextCompaction { .. } => {
+                    if let Some(line) = protocol_text::compaction_done(item) {
+                        notice(line);
+                    }
+                }
+                // A sub-agent's results aren't shown: its answer is.
+                Item::ToolCall { id, .. } if done.parent_item_id.is_some() => {
+                    self.agents.remove(id);
+                }
+                Item::ToolCall {
+                    id,
+                    tool,
+                    status,
+                    output,
+                    detail,
+                    changes,
+                    ..
+                } => match status {
+                    ToolCallStatus::Completed | ToolCallStatus::Failed => {
+                        if *status == ToolCallStatus::Completed {
+                            self.name_agent(id);
+                        }
+                        self.agents.remove(id);
+                        let mark = if *status == ToolCallStatus::Completed {
+                            "\x1b[32m  \u{2713}"
+                        } else {
+                            "\x1b[31m  \u{2717}"
+                        };
+                        eprintln!("{mark} {tool}\x1b[0m");
+                        print_output(output.as_deref().unwrap_or(""));
+                    }
+                    // Blocked without asking: what it would have done.
+                    ToolCallStatus::Declined if !self.asked.contains(id) => {
+                        if let Some(detail) = detail {
+                            eprintln!("\x1b[33m  \u{1f50d} Would execute: {detail}\x1b[0m");
+                        }
+                        for change in changes {
+                            print_change(change);
+                        }
+                    }
+                    _ => {}
+                },
+                _ => {}
+            },
+            ServerNotification::ToolCallOutputDelta(delta) => {
+                let line = delta.delta.trim_end_matches('\n');
+                match delta.stream {
+                    OutputStream::Stderr => eprintln!("  \u{2502}e {line}"),
+                    OutputStream::Stdout => eprintln!("  \u{2502} {line}"),
+                }
+            }
+            ServerNotification::ToolCallProgress(progress) => {
+                self.name_agent(&progress.item_id);
+                eprintln!("\x1b[36m    {}\x1b[0m", progress.message);
+            }
+            ServerNotification::TurnPlanUpdated(updated) => {
+                let (added, changed, removed) =
+                    protocol_text::plan_change(&self.plan, &updated.plan);
+                eprintln!(
+                    "\x1b[2m  [todos] +{added} ~{changed} -{removed} ({} total)\x1b[0m",
+                    updated.plan.len()
+                );
+                self.plan = updated.plan.clone();
+            }
+            ServerNotification::TurnLoopGuard(guard) => {
+                notice((
+                    Tone::Warn,
+                    protocol_text::loop_guard(guard.action, &guard.detail),
+                ));
+            }
+            ServerNotification::Warning(w) => notice((Tone::Warn, w.message.clone())),
+            // A retry's notice says what happened and when Koda tries again.
+            ServerNotification::Error(e) if e.will_retry => {
+                notice((Tone::Warn, e.error.message.clone()));
+            }
+            ServerNotification::Error(e) => {
+                eprintln!("\x1b[31m  \u{2717} {}\x1b[0m", e.error.message);
+            }
+            ServerNotification::TurnCompleted(done)
+                if done.turn.status == TurnStatus::Completed =>
+            {
+                let tokens = match done.turn.usage.as_ref().map(|u| u.output_tokens) {
+                    Some(tokens) if tokens > 0 => tokens,
+                    _ => (self.reply_chars / 4) as u64,
+                };
+                let secs = done.turn.duration_ms.unwrap_or(0) as f64 / 1000.0;
+                let rate = if secs > 0.0 {
+                    tokens as f64 / secs
+                } else {
+                    0.0
+                };
                 eprintln!(
                     "\x1b[90m  {tokens} tokens \u{00b7} {secs:.1}s \u{00b7} {rate:.0} t/s\x1b[0m"
                 );
             }
-            // Forward-compat: future EngineEvent variants are silently
-            // dropped from the headless feed until we wire a render
-            // for them. Same shape as the existing ContextUsage /
-            // TurnStart no-op arms (#1224).
             _ => {}
+        }
+    }
+}
+
+impl View {
+    /// Name the agent call `id` started, the first time it shows it ran.
+    fn name_agent(&mut self, id: &str) {
+        if let Some((agent, indent)) = self.agents.remove(id) {
+            eprintln!("\x1b[35m{indent}\u{1f916} {agent}\x1b[0m");
+        }
+    }
+}
+
+/// A notice on stderr.
+fn notice((tone, text): (Tone, String)) {
+    match tone {
+        Tone::Info => eprintln!("\x1b[36m  {text}\x1b[0m"),
+        Tone::Warn => eprintln!("\x1b[33m  \u{26a0} {text}\x1b[0m"),
+    }
+}
+
+/// A tool's output, its middle cut when it is long.
+fn print_output(output: &str) {
+    use koda_core::truncate::{Truncated, truncate_for_display};
+    match truncate_for_display(output) {
+        Truncated::Full(_) => {
+            for line in output.lines() {
+                eprintln!("  \u{2502} {line}");
+            }
+        }
+        Truncated::Split {
+            head,
+            tail,
+            hidden,
+            total,
+        } => {
+            for line in &head {
+                eprintln!("  \u{2502} {line}");
+            }
+            eprintln!(
+                "\x1b[2m{}\x1b[0m",
+                koda_core::truncate::separator(hidden, total)
+            );
+            for line in &tail {
+                eprintln!("  \u{2502} {line}");
+            }
+        }
+    }
+}
+
+/// A file change: a change's unified diff, or a new file's first lines.
+fn print_change(change: &FileUpdateChange) {
+    match change.kind {
+        PatchChangeKind::Add => {
+            eprintln!("  + {} (new file)", change.path);
+            let lines: Vec<&str> = change.diff.lines().collect();
+            for line in lines.iter().take(NEW_FILE_LINES) {
+                eprintln!("  +{line}");
+            }
+            if lines.len() > NEW_FILE_LINES {
+                eprintln!("  \u{2026} {} more lines", lines.len() - NEW_FILE_LINES);
+            }
+        }
+        PatchChangeKind::Delete => eprintln!("  - {} (deleted)", change.path),
+        PatchChangeKind::Update { .. } => {
+            eprintln!("  ~ {}", change.path);
+            for line in change.diff.lines() {
+                eprintln!("  {line}");
+            }
         }
     }
 }
@@ -666,32 +684,57 @@ impl View {
 mod tests {
     use super::*;
 
-    fn tool_start(name: &str, is_sub_agent: bool) -> EngineEvent {
-        EngineEvent::ToolCallStart {
-            id: format!("call-{name}"),
-            name: name.into(),
-            args: serde_json::json!({}),
-            is_sub_agent,
-        }
+    use koda_client::protocol::item::ItemStartedNotification;
+    use koda_client::protocol::turn::{TurnCompletedNotification, TurnError};
+
+    fn tool_start(name: &str, parent: Option<&str>) -> Outgoing {
+        Outgoing::Notification(ServerNotification::ItemStarted(ItemStartedNotification {
+            session_id: "s1".into(),
+            turn_id: "t1".into(),
+            parent_item_id: parent.map(str::to_string),
+            item: Item::ToolCall {
+                id: format!("call-{name}"),
+                tool: name.into(),
+                arguments: serde_json::json!({}),
+                status: ToolCallStatus::InProgress,
+                output: None,
+                detail: None,
+                changes: Vec::new(),
+                progress: Vec::new(),
+            },
+        }))
+    }
+
+    fn turn_completed(status: TurnStatus, error: Option<&str>) -> Outgoing {
+        Outgoing::Notification(ServerNotification::TurnCompleted(
+            TurnCompletedNotification {
+                session_id: "s1".into(),
+                turn: Turn {
+                    id: "t1".into(),
+                    status,
+                    error: error.map(|message| TurnError {
+                        message: message.into(),
+                    }),
+                    usage: None,
+                    duration_ms: None,
+                    items: Vec::new(),
+                },
+            },
+        ))
     }
 
     #[test]
     fn stats_split_top_level_and_sub_agent_tool_calls() {
-        let mut view = View::new(Output::Text);
-        let mut emit = |parent: Option<&str>, event| {
-            view.record(parent, &event);
-        };
-        emit(None, tool_start("Read", false));
-        emit(None, tool_start("Read", false));
-        emit(None, tool_start("Edit", false));
-        emit(Some("call-task"), tool_start("Grep", true));
-        emit(
-            None,
-            EngineEvent::TurnEnd {
-                turn_id: "t1".into(),
-                reason: TurnEndReason::Complete,
-            },
-        );
+        let mut view = View::new(Output::Events { deltas: false });
+        for message in [
+            tool_start("Read", None),
+            tool_start("Read", None),
+            tool_start("Edit", None),
+            tool_start("Grep", Some("call-task")),
+            turn_completed(TurnStatus::Completed, None),
+        ] {
+            view.record(&message);
+        }
 
         let stats = view.stats;
         assert_eq!(
@@ -702,7 +745,7 @@ mod tests {
             stats.sub_agent_tool_calls,
             BTreeMap::from([("Grep".to_string(), 1)])
         );
-        assert_eq!(stats.turn_end, Some(TurnEndReason::Complete));
+        assert_eq!(stats.turn_end, Some((TurnStatus::Completed, None)));
     }
 
     #[test]
@@ -710,7 +753,7 @@ mod tests {
         let stats = RunStats {
             tool_calls: BTreeMap::from([("Read".to_string(), 2)]),
             sub_agent_tool_calls: BTreeMap::new(),
-            turn_end: Some(TurnEndReason::Complete),
+            turn_end: Some((TurnStatus::Completed, None)),
         };
         let usage = SessionUsage {
             prompt_tokens: 120,
@@ -764,8 +807,8 @@ mod tests {
         assert_eq!(summary.turn_status, None);
     }
 
-    /// A turn the engine ended early on a warning returns `Ok` but carries
-    /// `TurnEnd::Error`; the summary must report failure with that message
+    /// A turn the engine ended early on a warning returns `Ok` but ends
+    /// `failed`; the summary must report failure with that message
     /// (server error, image rejection, dropped connection all take this path).
     #[test]
     fn exec_summary_reports_early_stop_as_failure() {
@@ -775,9 +818,7 @@ mod tests {
             "Stream failed mid-reply \u{2014} turn discarded (reset)",
         ] {
             let stats = RunStats {
-                turn_end: Some(TurnEndReason::Error {
-                    message: message.to_string(),
-                }),
+                turn_end: Some((TurnStatus::Failed, Some(message.to_string()))),
                 ..Default::default()
             };
             let result: Result<()> = Ok(());
@@ -802,7 +843,7 @@ mod tests {
     #[test]
     fn cancelled_turn_is_not_a_failure() {
         let stats = RunStats {
-            turn_end: Some(TurnEndReason::Cancelled),
+            turn_end: Some((TurnStatus::Interrupted, None)),
             ..Default::default()
         };
         assert_eq!(run_failure(&Ok(()), &stats), None);

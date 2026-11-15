@@ -131,6 +131,56 @@ fn mock_destructive_bash_rejected_in_safe_and_default_modes_in_headless() {
     }
 }
 
+/// `koda exec`'s text names a sub-agent and shows its tool calls indented
+/// under its `InvokeAgent` call. The mock gives the sub-agent the same
+/// scripted replies: its `InvokeAgent` is refused (explore can't nest), then
+/// it reads and answers.
+#[test]
+fn exec_text_shows_a_sub_agents_calls_under_its_call() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("hello.txt"), "mock test content").unwrap();
+    let responses = r#"[
+        {"tool":"InvokeAgent","args":{"agent_name":"explore","prompt":"read hello.txt"}},
+        {"tool":"Read","args":{"path":"hello.txt"}},
+        {"text":"Found it."}
+    ]"#;
+    let output = Command::new(koda_bin())
+        .args([
+            "exec",
+            "ask a sub-agent",
+            "--provider",
+            "mock",
+            "--project-root",
+        ])
+        .arg(tmp.path())
+        .env("XDG_CONFIG_HOME", tmp.path())
+        .env("KODA_MOCK_RESPONSES", responses)
+        .output()
+        .expect("Failed to run koda");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr: {stderr}");
+    assert!(stderr.contains("  \u{26a1} InvokeAgent"), "{stderr}");
+    assert!(stderr.contains("\u{1f916} explore"), "{stderr}");
+    assert!(stderr.contains("\n\x1b[36m    \u{26a1} Read"), "{stderr}");
+    assert!(!stderr.contains("[bg task"), "{stderr}");
+}
+
+/// A write that plan mode blocks shows what it would have done, with the
+/// new file's lines.
+#[test]
+fn exec_text_shows_a_blocked_write_and_its_content() {
+    let responses = r#"[
+        {"tool":"Write","args":{"path":"new.txt","content":"fresh line\n"}},
+        {"text":"Planned."}
+    ]"#;
+    let (stdout, stderr, success) = run_mock_with_mode("write a file", responses, Some("plan"));
+    assert!(success, "stderr: {stderr}");
+    assert!(stderr.contains("Would execute"), "{stderr}");
+    assert!(stderr.contains("+ new.txt (new file)"), "{stderr}");
+    assert!(stderr.contains("+fresh line"), "{stderr}");
+    assert!(stdout.contains("Planned."), "{stdout}");
+}
+
 #[test]
 fn mock_empty_responses_succeeds() {
     let (stdout, stderr, success) = run_mock("say hi", "[]");

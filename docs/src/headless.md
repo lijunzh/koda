@@ -2,7 +2,11 @@
 
 `koda exec` runs a single prompt, prints the answer, and exits, as Codex's
 `codex exec` does. No TUI: the assistant's reply streams to stdout; tool status
-goes to stderr.
+goes to stderr. That status is drawn from the [client protocol](#the-client-protocol),
+as `codex exec`'s is: each tool call and its output, a sub-agent's calls
+indented under its `InvokeAgent` call with its notices, changes to the
+model's plan as `[todos] +added ~changed -removed`, warnings, and a last line
+with the turn's output tokens, time and speed.
 
 ```bash
 koda exec "what does this codebase do?"
