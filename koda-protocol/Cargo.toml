@@ -1,6 +1,6 @@
 [package]
 name = "koda-protocol"
-version = "0.7.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "The client protocol of the Koda AI coding agent: JSON-RPC 2.0 messages and their types"

@@ -13,6 +13,9 @@ resolver = "3"
 default-members = ["koda-cli"]
 
 [workspace.package]
+# The version of every published crate. A release bumps it here and in the
+# exact pins of the Koda crates below, all in this file.
+version = "0.7.0"
 edition = "2024"
 # The MSRV equals the pinned toolchain in rust-toolchain.toml and moves
 # with it (DESIGN.md P1: latest dependencies, one environment). Koda
@@ -29,6 +32,14 @@ authors = ["Lijun Zhu"]
 # consumer site. Add a dep here once it's used by 3+ crates; before
 # that it's premature DRY (YAGNI).
 [workspace.dependencies]
+# Koda's own crates, pinned exactly, so every koda-cli builds against the
+# crates it shipped with, whatever later 0.7.x versions exist.
+koda-config = { path = "koda-config", version = "=0.7.0" }
+koda-protocol = { path = "koda-protocol", version = "=0.7.0" }
+koda-state = { path = "koda-state", version = "=0.7.0" }
+koda-sandbox = { path = "koda-sandbox", version = "=0.7.0" }
+koda-core = { path = "koda-core", version = "=0.7.0" }
+koda-client = { path = "koda-client", version = "=0.7.0" }
 base64 = "0.23"
 anyhow = "1"
 async-trait = "0.1"
