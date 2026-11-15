@@ -1330,7 +1330,40 @@ async fn a_running_turn_keeps_its_settings() {
     koda.turn("next").await;
     koda.until("turn/completed").await;
     assert_eq!(models_asked(&server).await, ["stub", "later-model"]);
+
+    let config_dir = koda._dir.path().join("config");
+    let session = koda.session.clone();
+    let _dir = koda._dir;
     koda.client.shutdown().await;
+
+    // Each turn's stored context says what it ran with, under the id the
+    // client saw: the update sent during the first turn is in the second's.
+    let records = stored_records(&config_dir, &session).await;
+    let turn_ids: Vec<&str> = records
+        .iter()
+        .filter(|record| record.kind == "turn")
+        .map(|record| record.turn_id.as_str())
+        .collect();
+    let contexts: Vec<koda_core::session_store::TurnContextItem> = records
+        .iter()
+        .filter(|record| record.kind == koda_core::session_store::TURN_CONTEXT_KIND)
+        .map(|record| serde_json::from_str(&record.payload).unwrap())
+        .collect();
+    let models: Vec<&str> = contexts.iter().map(|c| c.model.as_str()).collect();
+    assert_eq!(models, ["stub", "later-model"]);
+    for context in &contexts {
+        assert!(turn_ids.contains(&context.turn_id.as_str()), "{turn_ids:?}");
+    }
+}
+
+/// The turn records stored for `session` under `config_dir`.
+async fn stored_records(
+    config_dir: &std::path::Path,
+    session: &str,
+) -> Vec<koda_core::session_store::TurnRecord> {
+    use koda_core::session_store::SessionStore;
+    let db = Database::init(config_dir).await.unwrap();
+    db.load_turn_records(session).await.unwrap()
 }
 
 /// A session's provider doesn't change: another provider's model is

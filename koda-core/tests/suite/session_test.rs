@@ -540,3 +540,104 @@ async fn session_network_drop_turn_ends_with_error() {
         other => panic!("expected Error, got {other:?}"),
     }
 }
+
+/// The contexts stored for `env`'s session, oldest first.
+async fn stored_contexts(env: &Env) -> Vec<koda_core::session_store::TurnContextItem> {
+    env.db
+        .load_turn_records(&env.session_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|record| record.kind == koda_core::session_store::TURN_CONTEXT_KIND)
+        .map(|record| serde_json::from_str(&record.payload).unwrap())
+        .collect()
+}
+
+/// Each turn stores what it ran with, as Codex stores a `TurnContextItem`
+/// per user turn, so a change of model or mode between turns shows.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn each_turn_stores_the_context_it_ran_with() {
+    let env = Env::new().await;
+
+    env.insert_user_message("first question").await;
+    let provider = Box::new(MockProvider::new(vec![MockResponse::Text("one".into())]));
+    let (mut session, _cancel) = make_session(&env, provider).await;
+    let (_, mut cmd_rx) = mpsc::channel::<EngineCommand>(1);
+    session
+        .run_turn_as(
+            "t1".into(),
+            &env.config,
+            None,
+            &TestSink::new(),
+            &mut cmd_rx,
+            None,
+        )
+        .await
+        .unwrap();
+
+    env.insert_user_message("second question").await;
+    let mut switched = env.config.clone();
+    switched.model = "another-model".into();
+    switched.model_settings.model = "another-model".into();
+    switched.model_settings.reasoning_effort = Some("high".into());
+    let provider = Box::new(MockProvider::new(vec![MockResponse::Text("two".into())]));
+    let (mut session, _cancel) = make_session(&env, provider).await;
+    session.mode = TrustMode::Safe;
+    session
+        .run_turn_as(
+            "t2".into(),
+            &switched,
+            None,
+            &TestSink::new(),
+            &mut cmd_rx,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let contexts = stored_contexts(&env).await;
+    assert_eq!(contexts.len(), 2, "{contexts:#?}");
+    let (first, second) = (&contexts[0], &contexts[1]);
+
+    assert_eq!(first.turn_id, "t1");
+    assert_eq!(first.model, env.config.model);
+    assert_eq!(first.trust_mode, "auto");
+    assert_eq!(first.cwd, env.root.display().to_string());
+    assert_eq!(first.koda_version, env!("CARGO_PKG_VERSION"));
+    assert!(
+        first.tools.iter().any(|tool| tool == "Read"),
+        "{:?}",
+        first.tools
+    );
+    let hash = first.system_prompt_sha256.as_deref().unwrap();
+    assert_eq!(hash.len(), 64);
+    assert!(first.project_memory_sha256.is_some());
+
+    assert_eq!(second.turn_id, "t2");
+    assert_eq!(second.model, "another-model");
+    assert_eq!(second.reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(second.trust_mode, "safe");
+}
+
+/// A compaction turn stores its context too, as Codex's does: the model
+/// that wrote the summary. It offers no tools and sends Koda's own prompt.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_compaction_turn_stores_its_context() {
+    let env = Env::new().await;
+    let provider = Box::new(MockProvider::new(vec![MockResponse::Text(
+        "summary".into(),
+    )]));
+    let (mut session, _cancel) = make_session(&env, provider).await;
+    session
+        .compact_as("c1".into(), &env.config, &TestSink::new(), None)
+        .await
+        .unwrap();
+
+    let contexts = stored_contexts(&env).await;
+    assert_eq!(contexts.len(), 1, "{contexts:#?}");
+    assert_eq!(contexts[0].turn_id, "c1");
+    assert_eq!(contexts[0].model, env.config.model);
+    assert!(contexts[0].tools.is_empty());
+    assert_eq!(contexts[0].system_prompt_sha256, None);
+    assert_eq!(contexts[0].project_memory_sha256, None);
+}

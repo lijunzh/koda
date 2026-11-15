@@ -717,6 +717,24 @@ fn run_sub_agent<'a>(
             &[], // sub-agents have no REPL commands
             &tools.skill_registry,
         );
+        // What this run uses, stored in the sub-agent's own session, as a
+        // Codex sub-agent's thread records its own context: its model,
+        // provider and tools can differ from the parent's, and its trust
+        // is the clamped one. Under the parent's `InvokeAgent` call.
+        let context_turn_id = parent_tool_call_id
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("sub-agent-{my_invocation_id}"));
+        crate::session_store::TurnContextItem::of_turn(
+            &context_turn_id,
+            &sub_config,
+            sub_config.trust,
+            effective_root_ref,
+            &tool_defs,
+            Some(&system_prompt),
+            Some(&semantic_memory),
+        )
+        .store(db, &sub_session)
+        .await;
 
         // #1265 item 4 PR-3: build the sub-agent's own dispatch
         // context once. Used by both `execute_one_tool` callsites in
