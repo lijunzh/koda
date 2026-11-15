@@ -35,6 +35,7 @@ mod mcp;
 mod memory;
 mod session;
 mod settings;
+mod skills;
 
 use std::fmt;
 use std::path::PathBuf;

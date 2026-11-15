@@ -4,9 +4,13 @@ Skills are reusable expertise modules — markdown files loaded into the
 system prompt on demand.
 
 ```text
-/skills                  ← list all available skills
+/skills                  ← list the skills you can pick
 /skills security         ← filter by name or description
 ```
+
+`/skills` leaves out model-only skills (`user_invocable: false`). A
+`SKILL.md` that can't be loaded, such as one without a `name:` in its
+frontmatter, is listed under the skills with the reason.
 
 The model can also activate skills automatically via the `ActivateSkill`
 tool when it determines a skill is relevant.
@@ -51,7 +55,7 @@ When reviewing code, always check:
 |---|---|---|
 | `name` | ✔ | Skill identifier (used with `ActivateSkill`) |
 | `description` | recommended | One-line summary shown in `ListSkills` |
-| `tags` | optional | Searchable tags: `[tag1, tag2]` |
+| `tags` | optional | Tags the model's `ListSkills` searches: `[tag1, tag2]` |
 | `when_to_use` | recommended | Guidance for the model on when to activate |
 | `allowed_tools` | optional | Restrict tools during activation (empty = all) |
 | `user_invocable` | optional | `false` = model-only, hidden from `/skills` |
@@ -82,4 +86,6 @@ Scope transitions are logged as info events (`🔒 scope activated` /
 2. `~/.config/koda/skills/` (global)
 3. Built-in skills bundled with the binary
 
-Project-local skills shadow global ones with the same name.
+Project-local skills shadow global ones with the same name. Skills are found
+when Koda starts; restart it to pick up a new one. Clients list them with
+`skills/list`, as Codex's do.

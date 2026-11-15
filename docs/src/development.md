@@ -115,6 +115,7 @@ koda/
 │   │   │   ├── background.rs # /stop, /agents and the overlay's process list
 │   │   │   ├── events.rs   # Key/mouse handling, clipboard, history persistence
 │   │   │   ├── idle_ui_events.rs # UI events while no turn is running
+│   │   │   ├── skills.rs   # /skills through skills/list
 │   │   │   └── menus.rs    # Model/provider/session pickers, provider wizard
 │   │   ├── tui_render.rs   # EngineEvent → ratatui Line/Span rendering
 │   │   ├── tui_commands.rs # Slash command dispatch (/help, /model, /resume, etc.)

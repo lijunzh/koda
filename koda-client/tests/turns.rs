@@ -2224,3 +2224,93 @@ async fn agent_list_names_builtin_user_and_project_agents() {
     assert_eq!(names, sorted);
     koda.client.shutdown().await;
 }
+
+/// `skills/list`, Codex's request: the host's project by default, with the
+/// built-in, user and project skills in Codex's scopes, the files that
+/// didn't load in `errors`, and any other folder asked about.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn skills_list_names_each_skill_its_scope_and_the_files_that_failed() {
+    use koda_client::protocol::skills::{SkillScope, SkillsListParams};
+    let dir = tempfile::tempdir().unwrap();
+    let xdg = dir.path().join("xdg");
+    koda_core::runtime_env::set("XDG_CONFIG_HOME", xdg.display().to_string());
+    let skill = |root: &std::path::Path, folder: &str, text: &str| {
+        let folder = root.join(folder);
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("SKILL.md"), text).unwrap();
+        folder.join("SKILL.md")
+    };
+    let project = dir.path().join("project");
+    let other = dir.path().join("other");
+    let user_skills = xdg.join("koda/skills");
+    let project_skills = project.join(".koda/skills");
+    skill(
+        &user_skills,
+        "mine",
+        "---\nname: mine\ndescription: The user's\n---\nBody",
+    );
+    let ours = skill(
+        &project_skills,
+        "ours",
+        "---\nname: ours\ndescription: The project's\nuser_invocable: false\n---\nBody",
+    );
+    let broken = skill(&project_skills, "broken", "No frontmatter here.");
+    skill(
+        &other.join(".koda/skills"),
+        "elsewhere",
+        "---\nname: elsewhere\ndescription: Another folder's\n---\nBody",
+    );
+    let server = model(vec![]).await;
+    let koda = Koda::start_in(config(&server), dir).await;
+
+    let listed = koda
+        .client
+        .request::<methods::SkillsList>(SkillsListParams::default())
+        .await
+        .unwrap()
+        .data;
+    assert_eq!(listed.len(), 1);
+    let here = &listed[0];
+    let find = |name: &str| here.skills.iter().find(|s| s.name == name).unwrap();
+    assert_eq!(find("code-review").scope, SkillScope::System);
+    assert_eq!(find("code-review").path, None);
+    assert_eq!(find("koda-docs").scope, SkillScope::System);
+    assert_eq!(find("mine").scope, SkillScope::User);
+    let ours_listed = find("ours");
+    assert_eq!(ours_listed.scope, SkillScope::Repo);
+    assert_eq!(
+        ours_listed.path.as_deref(),
+        Some(ours.display().to_string().as_str())
+    );
+    assert!(!ours_listed.user_invocable && ours_listed.enabled);
+    assert!(here.skills.iter().all(|s| s.name != "elsewhere"));
+    assert_eq!(here.errors.len(), 1, "{:?}", here.errors);
+    assert_eq!(here.errors[0].path, broken.display().to_string());
+    assert!(
+        here.errors[0].message.contains("frontmatter"),
+        "{:?}",
+        here.errors
+    );
+
+    let elsewhere = koda
+        .client
+        .request::<methods::SkillsList>(SkillsListParams {
+            cwds: vec![other.display().to_string()],
+        })
+        .await
+        .unwrap()
+        .data;
+    assert_eq!(elsewhere[0].cwd, other.display().to_string());
+    let names: Vec<&str> = elsewhere[0]
+        .skills
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect();
+    assert!(
+        names.contains(&"elsewhere") && names.contains(&"mine"),
+        "{names:?}"
+    );
+    assert!(!names.contains(&"ours"), "{names:?}");
+    assert!(elsewhere[0].errors.is_empty());
+    koda.client.shutdown().await;
+}

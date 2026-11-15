@@ -32,6 +32,7 @@ mod request;
 pub mod rpc;
 pub mod server;
 pub mod session;
+pub mod skills;
 pub mod state;
 pub mod turn;
 

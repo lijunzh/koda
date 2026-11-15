@@ -2569,6 +2569,143 @@
         }
       ]
     },
+    "SkillErrorInfo": {
+      "description": "A skill file that couldn't be loaded.",
+      "properties": {
+        "message": {
+          "description": "What's wrong with it.",
+          "type": "string"
+        },
+        "path": {
+          "description": "The file.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "message"
+      ],
+      "type": "object"
+    },
+    "SkillMetadata": {
+      "description": "One skill.",
+      "properties": {
+        "description": {
+          "description": "What it's for, in one line.",
+          "type": "string"
+        },
+        "enabled": {
+          "description": "Whether the model may use it. Always true: Koda can't disable a\nskill yet.",
+          "type": "boolean"
+        },
+        "name": {
+          "description": "The name `ActivateSkill` takes.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Its `SKILL.md`. Optional in Koda: a built-in skill has no file.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scope": {
+          "$ref": "#/$defs/SkillScope",
+          "description": "Where it comes from."
+        },
+        "userInvocable": {
+          "description": "Whether a person picks it, as opposed to only the model\n(`user_invocable: false` in its frontmatter). Koda's own; Codex has\nnone.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "scope",
+        "enabled",
+        "userInvocable"
+      ],
+      "type": "object"
+    },
+    "SkillScope": {
+      "description": "Where a skill comes from, in Codex's names. A project's overrides a\nuser's, which overrides a built-in one of the same name. Codex also has\n`admin`, for skills an administrator installs.",
+      "oneOf": [
+        {
+          "const": "user",
+          "description": "The user's `<config>/skills/`.",
+          "type": "string"
+        },
+        {
+          "const": "repo",
+          "description": "The project's `.koda/skills/`.",
+          "type": "string"
+        },
+        {
+          "const": "system",
+          "description": "Koda's own.",
+          "type": "string"
+        }
+      ]
+    },
+    "SkillsListEntry": {
+      "description": "The skills for one folder.",
+      "properties": {
+        "cwd": {
+          "description": "The folder.",
+          "type": "string"
+        },
+        "errors": {
+          "description": "The skill files found there that couldn't be loaded.",
+          "items": {
+            "$ref": "#/$defs/SkillErrorInfo"
+          },
+          "type": "array"
+        },
+        "skills": {
+          "description": "Its skills, by name.",
+          "items": {
+            "$ref": "#/$defs/SkillMetadata"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "cwd",
+        "skills",
+        "errors"
+      ],
+      "type": "object"
+    },
+    "SkillsListParams": {
+      "additionalProperties": false,
+      "description": "`skills/list`. Codex's also takes `forceReload`; Koda finds the model's\nskills once, when its agent is built, so a reload would list skills the\nmodel can't use.",
+      "properties": {
+        "cwds": {
+          "description": "The folders to list skills for; without any, the host's project.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "SkillsListResponse": {
+      "description": "The answer to `skills/list`: one entry per folder asked about.",
+      "properties": {
+        "data": {
+          "description": "The entries, in the order asked.",
+          "items": {
+            "$ref": "#/$defs/SkillsListEntry"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "data"
+      ],
+      "type": "object"
+    },
     "StateReadParams": {
       "additionalProperties": false,
       "description": "No parameters yet.",
@@ -3426,6 +3563,14 @@
       },
       "result": {
         "$ref": "#/$defs/SessionUnsubscribeResponse"
+      }
+    },
+    "skills/list": {
+      "params": {
+        "$ref": "#/$defs/SkillsListParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SkillsListResponse"
       }
     },
     "state/read": {

@@ -583,6 +583,7 @@ mod tests {
                     user_invocable: false,
                     argument_hint: Some("<file_path>".to_string()),
                     source: SkillSource::BuiltIn,
+                    path: None,
                 },
                 content: "scoped content".to_string(),
             },
