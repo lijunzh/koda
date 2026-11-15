@@ -52,28 +52,7 @@ pub enum Truncated<'a> {
 /// Returns `Truncated::Full` if output is within the threshold,
 /// or `Truncated::Split` with head/tail lines and hidden count.
 ///
-/// # Examples
-///
-/// ```
-/// use koda_core::truncate::truncate_for_display;
-/// use koda_core::truncate::Truncated;
-///
-/// // Short output is returned as-is
-/// let short = "line1\nline2\nline3";
-/// assert!(matches!(truncate_for_display(short), Truncated::Full(_)));
-///
-/// // Long output is split into head + tail
-/// let long = (0..100).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
-/// match truncate_for_display(&long) {
-///     Truncated::Split { head, tail, hidden, total } => {
-///         assert_eq!(total, 100);
-///         assert_eq!(head.len(), 20);
-///         assert_eq!(tail.len(), 20);
-///         assert_eq!(hidden, 60);
-///     }
-///     _ => panic!("expected Split"),
-/// }
-/// ```
+/// The tests below show both cases.
 pub fn truncate_for_display(output: &str) -> Truncated<'_> {
     let lines: Vec<&str> = output.lines().collect();
     let total = lines.len();
@@ -104,6 +83,32 @@ pub fn separator(hidden: usize, total: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The doc example from when this lived in `koda-core`: short output as
+    /// it is, long output split into head and tail.
+    #[test]
+    fn short_output_is_whole_and_long_output_is_split() {
+        let short = "line1\nline2\nline3";
+        assert!(matches!(truncate_for_display(short), Truncated::Full(_)));
+        let long = (0..100)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        match truncate_for_display(&long) {
+            Truncated::Split {
+                head,
+                tail,
+                hidden,
+                total,
+            } => {
+                assert_eq!(total, 100);
+                assert_eq!(head.len(), 20);
+                assert_eq!(tail.len(), 20);
+                assert_eq!(hidden, 60);
+            }
+            _ => panic!("expected Split"),
+        }
+    }
 
     #[test]
     fn test_short_output_not_truncated() {
