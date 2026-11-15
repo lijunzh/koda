@@ -547,10 +547,10 @@ async fn a_broken_stdout_ends_the_connection() {
         .unwrap();
 }
 
-/// A slow reader: deltas beyond the backlog are dropped, everything else
-/// arrives, and `item/completed` has the whole reply.
+/// A slow reader loses nothing: what waited arrives in order, every delta
+/// included, once it reads, as Codex's stdio keeps everything.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_slow_reader_loses_only_deltas() {
+async fn a_slow_reader_loses_nothing() {
     let pieces: Vec<String> = (0..600).map(|i| format!("w{i} ")).collect();
     let refs: Vec<&str> = pieces.iter().map(String::as_str).collect();
     let server = model(vec![text_in(&refs)]).await;
@@ -578,15 +578,18 @@ async fn a_slow_reader_loses_only_deltas() {
 
     let lines = wire.until_method("turn/completed").await;
     assert_eq!(turn_completed(&lines)["status"], "completed");
-    let deltas = count(&lines, "item/agentMessage/delta");
+    let streamed: String = lines
+        .iter()
+        .filter(|l| l["method"] == "item/agentMessage/delta")
+        .map(|l| l["params"]["delta"].as_str().unwrap())
+        .collect();
     let whole: String = pieces.concat();
     let reply = lines
         .iter()
         .find(|l| l["method"] == "item/completed" && l["params"]["item"]["type"] == "agentMessage")
         .expect("no completed reply");
     assert_eq!(reply["params"]["item"]["text"], whole);
-    assert!(deltas > 0, "no deltas at all");
-    assert!(deltas < pieces.len(), "no delta was dropped: {deltas}");
+    assert_eq!(streamed, whole, "a delta was lost");
     wire.finish().await;
 }
 

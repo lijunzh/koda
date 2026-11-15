@@ -13,14 +13,14 @@
 //!   a request), with a null id where none can be read. Codex logs such a
 //!   line and drops it; Koda keeps `"jsonrpc"` so that standard libraries
 //!   work, and the standard says to answer. Batches aren't taken.
-//! - **A client that reads slowly:** messages wait in a queue. Once
-//!   [`BACKLOG`] are waiting, streaming deltas are dropped, as Codex's
-//!   in-process server drops notifications when its consumer falls behind;
-//!   `item/completed` carries an item's whole text, so nothing is lost.
-//!   Every other message is kept, so the queue grows only with the work
-//!   done, never with the text streamed. Koda's engine reports events
-//!   synchronously, so waiting for the reader, as Codex's stdio does, would
+//! - **A client that reads slowly:** messages wait in a queue until it
+//!   reads them; none is dropped, and the engine never waits. Codex's stdio
+//!   does the same: its engine's event queue is unbounded and only the
+//!   forwarder to stdout waits. Goose and Pi keep everything too. Koda's
+//!   engine reports events synchronously, so waiting for the reader would
 //!   block engine threads, and a turn `turn/interrupt` could no longer reach.
+//!   The queue grows only while the client lags, and EOF or a broken stdout
+//!   ends it.
 //! - **EOF on stdin, a broken stdout or the caller's stop** ends the
 //!   connection: running turns stop, open server requests are cancelled, what
 //!   is queued is written while the pipe takes it, and [`serve`] returns.
@@ -28,7 +28,7 @@
 use std::collections::VecDeque;
 use std::future::Future;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -39,13 +39,8 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader
 use tokio::sync::{Notify, oneshot};
 use tokio::task::JoinSet;
 
-use crate::events::Outgoing;
 use crate::host::HostCommand;
 use crate::{ConfigFile, HostStart, RequestError, launch, stop_host};
-
-/// How many messages may wait for the client before deltas are dropped:
-/// Codex's queue size.
-pub const BACKLOG: usize = 128;
 
 /// How long, once the connection has ended and the host has stopped, what
 /// is still queued may take to write.
@@ -126,7 +121,10 @@ where
         let outbox = Arc::clone(&outbox);
         tokio::spawn(async move {
             while let Some(message) = events.recv().await {
-                outbox.push_event(message);
+                match message.to_json() {
+                    Ok(line) => outbox.push(line),
+                    Err(e) => tracing::error!("koda serve: a message didn't encode: {e}"),
+                }
             }
         })
     };
@@ -192,7 +190,7 @@ async fn take_line(
     let message = match parse(line) {
         Ok(message) => message,
         Err(error) => {
-            outbox.push_answer(error);
+            outbox.push(error);
             return true;
         }
     };
@@ -220,7 +218,7 @@ async fn take_line(
                     ),
                 };
                 if let Ok(line) = line {
-                    outbox.push_answer(line);
+                    outbox.push(line);
                 }
             };
             if initialize {
@@ -316,8 +314,6 @@ struct Outbox {
     closed: AtomicBool,
     /// Stdout broke: stop reading.
     broken: Notify,
-    /// Deltas dropped since the client last kept up.
-    dropped: AtomicU64,
 }
 
 impl Outbox {
@@ -325,34 +321,8 @@ impl Outbox {
         self.queue.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Queue a notification or server request, dropping a delta when the
-    /// client is [`BACKLOG`] behind.
-    fn push_event(&self, message: Outgoing) {
-        let line = match message.to_json() {
-            Ok(line) => line,
-            Err(e) => {
-                tracing::error!("koda serve: a message didn't encode: {e}");
-                return;
-            }
-        };
-        {
-            let mut queue = self.lock();
-            if message.is_delta() && queue.len() >= BACKLOG {
-                if self.dropped.fetch_add(1, Ordering::Relaxed) == 0 {
-                    tracing::warn!(
-                        "koda serve: the client is {BACKLOG} messages behind; \
-                         dropping deltas until it catches up"
-                    );
-                }
-                return;
-            }
-            queue.push_back(line);
-        }
-        self.ready.notify_one();
-    }
-
-    /// Queue a response; never dropped.
-    fn push_answer(&self, line: String) {
+    /// Queue a line; never dropped.
+    fn push(&self, line: String) {
         self.lock().push_back(line);
         self.ready.notify_one();
     }
@@ -389,12 +359,6 @@ async fn write_lines<W: AsyncWrite + Unpin>(outbox: Arc<Outbox>, mut output: W) 
             tracing::warn!("koda serve: writing stdout failed: {e}");
             outbox.broken.notify_one();
             return;
-        }
-        if outbox.lock().is_empty() {
-            let dropped = outbox.dropped.swap(0, Ordering::Relaxed);
-            if dropped > 0 {
-                tracing::info!("koda serve: the client caught up; {dropped} deltas were dropped");
-            }
         }
     }
     let _ = output.shutdown().await;
@@ -455,30 +419,5 @@ mod tests {
             parse(br#"{"jsonrpc": "2.0", "id": 3, "error": {"code": 1, "message": "no"}}"#)
                 .unwrap();
         assert!(matches!(refusal, Message::Error(_)));
-    }
-
-    fn delta() -> Outgoing {
-        use koda_protocol::ServerNotification;
-        use koda_protocol::item::TextDeltaNotification;
-        Outgoing::Notification(ServerNotification::AgentMessageDelta(
-            TextDeltaNotification {
-                session_id: "s".into(),
-                turn_id: "t".into(),
-                item_id: "i".into(),
-                delta: "x".into(),
-            },
-        ))
-    }
-
-    #[test]
-    fn a_full_outbox_drops_deltas_and_keeps_answers() {
-        let outbox = Outbox::default();
-        for _ in 0..BACKLOG + 10 {
-            outbox.push_event(delta());
-        }
-        assert_eq!(outbox.lock().len(), BACKLOG);
-        assert_eq!(outbox.dropped.load(Ordering::Relaxed), 10);
-        outbox.push_answer("answer".into());
-        assert_eq!(outbox.lock().len(), BACKLOG + 1);
     }
 }

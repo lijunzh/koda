@@ -64,12 +64,10 @@ says to, since it keeps `"jsonrpc"` so that standard libraries can be used.
 
 ## When the client reads slowly
 
-Messages wait in a queue for the client. Once 128 are waiting, streaming deltas
-(`item/agentMessage/delta`, `item/reasoning/textDelta`,
-`item/toolCall/outputDelta`) are dropped until the client catches up, as Codex's
-in-process server drops notifications. Nothing else is dropped, and an item's
-`item/completed` carries its whole text, so a slow client sees text arrive in
-larger steps but loses none of it.
+Messages wait in a queue until the client reads them, in order; none is
+dropped, and Koda's turns don't wait for the client. Codex's stdio does the
+same. The queue grows only while the client lags, so read stdout promptly, on
+its own thread or task if your program blocks elsewhere.
 
 ## Ending
 
