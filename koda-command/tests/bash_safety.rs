@@ -4,8 +4,8 @@
 //! split_command_segments, strip_env_vars) live inline in bash_safety.rs.
 //! These tests cover the *observable contract* of the public classifier.
 
-use koda_core::bash_safety::classify_bash_command;
-use koda_core::tools::ToolEffect;
+use koda_command::ToolEffect;
+use koda_command::bash_safety::classify_bash_command;
 
 // ── ReadOnly ─────────────────────────────────────────────────────────────────
 

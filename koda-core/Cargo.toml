@@ -100,6 +100,9 @@ koda-protocol = { workspace = true }
 # Model providers and the model tables, re-exported as `providers`,
 # `model_alias`, `model_context`, `model_effort` and `provider_catalog`.
 koda-providers = { workspace = true }
+# Shell command classification, re-exported as `bash_safety`,
+# `bash_path_lint` and `tools::ToolEffect`.
+koda-command = { workspace = true }
 # Skills and memory, re-exported as `skills` and `memory`.
 koda-memory = { workspace = true }
 koda-skills = { workspace = true }

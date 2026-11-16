@@ -84,7 +84,8 @@ onto the protocol),
 re-exports as `providers`, `model_alias`, `model_context`, `model_effort` and
 `provider_catalog`),
 `koda-skills` and `koda-memory` (skills, and the instruction files and Koda's
-notes, re-exported by `koda-core` as `skills` and `memory`),
+notes, re-exported by `koda-core` as `skills` and `memory`), `koda-command`
+(shell command classification and path linting, with `ToolEffect`),
 `koda-state` (Koda's stored state: the `SessionStore` trait and its SQLite
 `Database`, how its SQLite files are opened, and the diagnostic log database,
 as Codex keeps its storage outside `codex-core`), `koda-test-utils`.
@@ -110,7 +111,8 @@ In `koda-core/src/`:
   `truncate.rs`
 - **Tools:** `tools/` (`mod.rs` has the registry, dispatcher and
   `safe_resolve_path()`), `tool_dispatch.rs`, `approval_flow.rs`
-- **Safety:** `trust.rs`, `bash_safety.rs`, `bash_path_lint.rs`, `sandbox.rs`
+- **Safety:** `trust.rs`, `sandbox.rs`; shell command classification in
+  `koda-command/src/` (`bash_safety.rs`, `bash_path_lint.rs`, `ToolEffect`)
 - **Sub-agents:** `sub_agent_dispatch.rs`, `child_agent.rs`, `sub_agent_cache.rs`
 - **Providers:** `koda-providers/src/` (all implement the `LlmProvider` trait;
   `provider_catalog.rs`, `model_alias.rs`, `model_context.rs`,

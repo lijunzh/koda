@@ -61,10 +61,6 @@
 pub mod agent;
 /// Approval flow and user interaction during tool execution.
 pub(crate) mod approval_flow;
-/// Heuristic path-escape detection for bash commands.
-pub mod bash_path_lint;
-/// Bash command safety classification — ReadOnly, LocalMutation, Destructive.
-pub mod bash_safety;
 /// Registry of the sub-agents running inside the current turn, for live status.
 pub mod child_agent;
 /// Context compaction — summarise old messages to reclaim token budget.
@@ -94,6 +90,9 @@ pub use koda_state::log_db;
 pub mod loop_guard;
 /// MCP client — connect to external MCP servers (#662).
 pub mod mcp;
+/// Shell command classification and path linting: `koda-command`'s, under
+/// their old paths.
+pub use koda_command::{bash_path_lint, bash_safety};
 /// Instruction files (`AGENTS.md`, `CLAUDE.md`) and Koda's own notes: the
 /// `koda-memory` crate, under its old path.
 pub use koda_memory as memory;

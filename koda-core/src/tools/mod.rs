@@ -41,49 +41,9 @@
 //! [`crate::tools::ToolCatalog::classify_call`] for the per-call entry point and
 //! each tool's `Tool::classify` impl for the actual logic.
 
-/// Effect classification for tool calls.
-///
-/// Two-axis model: what does the tool touch (local vs. remote)
-/// and how severe are its effects (read vs. mutate vs. destroy)?
-///
-/// # Examples
-///
-/// ```
-/// use koda_core::tools::ToolEffect;
-///
-/// assert!(!ToolEffect::ReadOnly.is_mutating());
-/// assert!(ToolEffect::LocalMutation.is_mutating());
-/// assert!(ToolEffect::Destructive.is_mutating());
-/// assert!(ToolEffect::RemoteAction.is_mutating());
-/// ```
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
-#[serde(rename_all = "PascalCase")]
-pub enum ToolEffect {
-    /// No side-effects: file reads, grep, git status.
-    ReadOnly,
-    /// Side-effects on remote services only: GitHub API, WebFetch POST.
-    RemoteAction,
-    /// Mutates local filesystem or state: Write, Edit, MemoryWrite.
-    LocalMutation,
-    /// Irreversible or high-blast-radius: rm -rf, git push --force, DROP TABLE.
-    Destructive,
-}
-
-impl ToolEffect {
-    /// `true` for any effect class **other than** `ReadOnly`.
-    ///
-    /// Replaces the legacy free function `tools::is_mutating_tool`
-    /// (deleted in PR-9 of #1265 item 5). Lifting it onto the enum
-    /// puts the predicate next to the variants it inspects, so any
-    /// future class addition forces the author to think about which
-    /// side of this fence it belongs on.
-    #[inline]
-    pub fn is_mutating(self) -> bool {
-        !matches!(self, ToolEffect::ReadOnly)
-    }
-}
+/// Effect classification for tool calls: `koda-command`'s, under its old
+/// path.
+pub use koda_command::ToolEffect;
 
 /// Classify a built-in tool by name.
 ///

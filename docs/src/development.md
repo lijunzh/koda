@@ -16,8 +16,6 @@ koda/
 │   │   ├── lib.rs          # Crate root
 │   │   ├── agent/          # KodaAgent (shared config: tools, prompt)
 │   │   ├── approval_flow.rs# Approval logic extracted from tool dispatch
-│   │   ├── bash_path_lint.rs # Heuristic path-escape detection for bash commands
-│   │   ├── bash_safety.rs  # Bash command safety classification
 │   │   ├── child_agent.rs  # Background sub-agent registry
 │   │   ├── compact.rs      # Session compaction (summarize old messages)
 │   │   ├── config.rs       # Agent/provider config + provider metadata
@@ -152,6 +150,7 @@ koda/
 │   │   ├── model_effort.rs # Reasoning effort levels per model
 │   │   └── provider_catalog.rs # Static metadata for every supported provider
 │   └── tests/              # Each provider's HTTP behaviour against a stub server
+├── koda-command/           # Shell command classification (bash_safety.rs, ToolEffect) and path linting (bash_path_lint.rs)
 ├── koda-skills/            # Skill discovery and activation
 │   └── skills/             # Built-in skills (SKILL.md files)
 ├── koda-memory/            # Instruction files (AGENTS.md, CLAUDE.md) and Koda's notes → first user message
