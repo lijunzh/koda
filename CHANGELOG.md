@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-11-16
+
 ### Added
 
 - **Fork a session, as in Codex: `/fork`, `koda fork` and `session/fork`.** `/fork` copies the session into a new one, named "Fork of" its name, and switches to it; `koda fork` does the same from the command line, with the session chosen as for `koda resume` (an ID, `--last`, or the list). The copy has the whole history and the same provider, model and mode; the original stays as it was. `session/fork` copies a stored session and opens the copy, as Codex's `thread/fork` does, taking the model overrides `session/start` takes.
@@ -32,7 +34,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **Two new crates, `koda-skills` and `koda-memory`,** hold skill discovery (with the built-in skills) and memory (the instruction files and Koda's notes), split out of `koda-core` as Codex keeps its `skills` and `memories` crates. `koda-core` re-exports them as `skills` and `memory`. Their log lines now carry the targets `koda_skills` and `koda_memory`, which the default log file includes at `info`. Nothing else changes for users.
 - **One trust-mode type,** `TrustMode` in `koda-protocol`, used by the engine, `config.toml` and the protocol alike, as Codex keeps its approval policy in `codex-protocol`; `koda-config` now depends on `koda-protocol`. `koda_core::trust::TrustMode` and `koda_config::TrustMode` re-export it, and `koda_config::Mode` remains as a deprecated alias. Its descriptions now agree with what Auto does: mutating actions run without asking inside the sandbox, while destructive actions and writes outside the project still ask. Two of the three copies said Auto approves everything. Nothing changes for users.
 - **`--max-tokens`, `--temperature` and `--thinking-budget` are deprecated** and go in 0.8, as neither Codex nor Claude Code has them: each still works, with a warning naming the `-c` key that replaces it (`model_max_output_tokens`, `model_temperature`, `model_thinking_budget`). They're no longer listed in `--help`.
-- **One trust-mode type,** `TrustMode` in `koda-protocol`, used by the engine, `config.toml` and the protocol alike, as Codex keeps its approval policy in `codex-protocol`; `koda-config` now depends on `koda-protocol`. `koda_core::trust::TrustMode` and `koda_config::TrustMode` re-export it, and `koda_config::Mode` remains as a deprecated alias. Its descriptions now agree with what Auto does: mutating actions run without asking inside the sandbox, while destructive actions and writes outside the project still ask. Two of the three copies said Auto approves everything. Nothing changes for users.
 - **The release workflow tests as CI does,** with `cargo nextest` and then the doc tests, instead of `cargo test`, which runs the test binaries one after another.
 
 ### Fixed
