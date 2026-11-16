@@ -251,6 +251,11 @@ pub struct KodaConfig {
     /// `model_input_modalities`; `None` for Koda's table
     /// ([`Self::input_modalities`]).
     pub input_modalities: Option<Vec<koda_config::InputModality>>,
+    /// Whether the server said the model takes images, and for which model:
+    /// a local server's answer (LM Studio, llama.cpp, Ollama), between the
+    /// config file's list and Koda's table. Kept with the model's name so a
+    /// switch never uses another model's answer.
+    pub reported_vision: Option<(String, bool)>,
     /// Skip injecting project/global memory into the system prompt.
     /// Set by `skip_memory: true` in agent JSON. Default: `false`.
     pub skip_memory: bool,
@@ -420,6 +425,7 @@ impl KodaConfig {
             post_turn_compact_percent: 0,
             file_mentions: true,
             input_modalities: None,
+            reported_vision: None,
             skip_memory: agent.skip_memory,
             trust: declared_trust,
             stream_idle_timeout_ms: None,
@@ -549,9 +555,18 @@ impl KodaConfig {
     /// `model_input_modalities` if set, else Koda's table for the provider
     /// and model.
     pub fn input_modalities(&self) -> Vec<koda_config::InputModality> {
-        self.input_modalities.clone().unwrap_or_else(|| {
-            koda_providers::model_input::input_modalities(self.provider_type, &self.model).to_vec()
-        })
+        use koda_config::InputModality;
+        if let Some(list) = &self.input_modalities {
+            return list.clone();
+        }
+        match &self.reported_vision {
+            Some((model, true)) if *model == self.model => {
+                vec![InputModality::Text, InputModality::Image]
+            }
+            Some((model, false)) if *model == self.model => vec![InputModality::Text],
+            _ => koda_providers::model_input::input_modalities(self.provider_type, &self.model)
+                .to_vec(),
+        }
     }
 
     /// What `create_provider` needs from this config.
@@ -573,7 +588,11 @@ impl KodaConfig {
         &mut self,
         provider: &dyn crate::providers::LlmProvider,
     ) -> ContextSource {
-        match provider.model_capabilities(&self.model).await {
+        let capabilities = provider.model_capabilities(&self.model).await;
+        if let Ok(caps) = &capabilities {
+            self.reported_vision = caps.vision.map(|vision| (self.model.clone(), vision));
+        }
+        match capabilities {
             Ok(caps) if caps.context_window.is_some() || caps.max_output_tokens.is_some() => {
                 self.apply_provider_capabilities(&caps);
                 if self.context_override.is_some() {
@@ -688,6 +707,7 @@ impl KodaConfig {
             post_turn_compact_percent: 0,
             file_mentions: true,
             input_modalities: None,
+            reported_vision: None,
             skip_memory: false,
             trust: crate::trust::TrustMode::Auto,
             stream_idle_timeout_ms: None,
@@ -1207,7 +1227,33 @@ mod tests {
         crate::providers::ModelCapabilities {
             context_window: Some(window),
             max_output_tokens: None,
+            vision: None,
         }
+    }
+
+    /// What the model takes: the config file's list, else what the server
+    /// said for this model, else the table. Another model's answer counts
+    /// for nothing.
+    #[test]
+    fn input_modalities_prefer_the_config_then_the_server_then_the_table() {
+        use koda_config::InputModality::{Image, Text};
+        let mut config = KodaConfig::default_for_testing(ProviderType::LMStudio);
+        config.model = "qwen3-vl".into();
+        assert_eq!(
+            config.input_modalities(),
+            [Text],
+            "the table: local is text only"
+        );
+
+        config.reported_vision = Some(("qwen3-vl".into(), true));
+        assert_eq!(config.input_modalities(), [Text, Image]);
+
+        config.model = "flashnext".into();
+        assert_eq!(config.input_modalities(), [Text], "another model's answer");
+
+        config.model = "qwen3-vl".into();
+        config.input_modalities = Some(vec![Text]);
+        assert_eq!(config.input_modalities(), [Text], "the config wins");
     }
 
     #[test]

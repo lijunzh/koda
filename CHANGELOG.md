@@ -9,7 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Added
 
 - **An image stays in the conversation, as in Claude Code.** Koda stores a pasted or `@`-mentioned image with your message, so the model still sees it after its first tool call, in later turns and when you resume a session. Before, it reached only the turn's first model call and was never saved. Each image counts about 1,600 tokens toward the context window, and a request carries at most 100, Anthropic's limit; older ones go as a short note.
-- **Koda knows which models take images,** and sends a note in place of an image to one that doesn't, keeping the image for a model that does. Anthropic, Gemini and OpenAI models and Claude or GPT models elsewhere take images; other models, local ones included, are text only unless `config.toml` says otherwise with the new `model_input_modalities` key (`["text", "image"]` for a local vision model). **Before, an image went to every model;** a local vision model now needs that key to keep getting them.
+- **Koda knows which models take images,** and sends a note in place of an image to one that doesn't, keeping the image for a model that does. A local server says whether its model takes images: LM Studio for a vision model, `llama-server` when started with `--mmproj`, Ollama for a model with the `vision` capability. Otherwise Anthropic, Gemini and OpenAI models and Claude or GPT models elsewhere take images, and other models are text only. The new `model_input_modalities` key in `config.toml` overrides both (`["text", "image"]`). **Before, an image went to every model;** a local vision model whose server doesn't say now needs that key.
 
 ### Changed
 

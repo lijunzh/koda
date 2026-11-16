@@ -53,7 +53,17 @@ tokens toward the context window, and compaction summarizes it away like
 any other early message. A request carries at most 100 images, Anthropic's
 limit; older ones beyond that are sent as a short note.
 
-**Which models get images:** Koda keeps a table of what each model takes.
+**Which models get images:** a local server says whether its model takes
+images, and Koda asks it when a session starts or the model changes, as it
+asks for the context window:
+
+- **LM Studio:** a vision model (`"type": "vlm"`, or `vision` among its
+  capabilities).
+- **llama.cpp's `llama-server`:** started with a vision projector
+  (`--mmproj`), which `/props` reports as `"modalities": {"vision": true}`.
+- **Ollama:** a model that lists `vision` among its capabilities.
+
+Otherwise Koda's table decides:
 
 | Provider | Model | Takes |
 |---|---|---|
@@ -63,8 +73,9 @@ limit; older ones beyond that are sent as a short note.
 | any other | anything else, local models included | text |
 
 A model that doesn't take images gets a note where each image was, and the
-stored image comes back if you switch to one that does. For a local vision
-model, say what it takes in `config.toml`:
+stored image comes back if you switch to one that does. If a server doesn't
+say, or says wrong, set what the model takes in `config.toml`, which wins
+over both:
 
 ```toml
 model_input_modalities = ["text", "image"]

@@ -839,6 +839,7 @@ impl OpenAiCompatProvider {
         Ok(super::ModelCapabilities {
             context_window: ctx,
             max_output_tokens: None,
+            vision: lmstudio_entry(&body, model).map(lmstudio_vision),
         })
     }
 
@@ -862,6 +863,9 @@ impl OpenAiCompatProvider {
         Ok(super::ModelCapabilities {
             context_window: ctx,
             max_output_tokens: None,
+            // True when the server was started with a vision projector
+            // (`--mmproj`).
+            vision: body["modalities"]["vision"].as_bool(),
         })
     }
 
@@ -896,6 +900,9 @@ impl OpenAiCompatProvider {
         Ok(super::ModelCapabilities {
             context_window: ctx,
             max_output_tokens: None,
+            vision: body["capabilities"]
+                .as_array()
+                .map(|caps| caps.iter().any(|c| c.as_str() == Some("vision"))),
         })
     }
 }
@@ -917,19 +924,34 @@ impl OpenAiCompatProvider {
 /// other probes. `loaded_context_length` wins over `max_context_length`; a
 /// zero or missing value counts as absent.
 fn lmstudio_context_length(body: &serde_json::Value, model: &str) -> Option<usize> {
+    let entry = lmstudio_entry(body, model)?;
+    ["loaded_context_length", "max_context_length"]
+        .into_iter()
+        .find_map(|field| entry[field].as_u64().filter(|&n| n > 0))
+        .map(|n| n as usize)
+}
+
+/// The `/api/v0/models` entry for `model`: the one whose `id` is `model`,
+/// else the loaded one (the requested name may be an alias).
+fn lmstudio_entry<'a>(body: &'a serde_json::Value, model: &str) -> Option<&'a serde_json::Value> {
     let entries = body["data"].as_array()?;
-    let entry = entries
+    entries
         .iter()
         .find(|m| m["id"].as_str() == Some(model))
         .or_else(|| {
             entries
                 .iter()
                 .find(|m| m["state"].as_str() == Some("loaded"))
-        })?;
-    ["loaded_context_length", "max_context_length"]
-        .into_iter()
-        .find_map(|field| entry[field].as_u64().filter(|&n| n > 0))
-        .map(|n| n as usize)
+        })
+}
+
+/// Whether an LM Studio model entry takes images: a vision-language model
+/// is `"type": "vlm"`, and lists `vision` among its `capabilities`.
+fn lmstudio_vision(entry: &serde_json::Value) -> bool {
+    entry["type"].as_str() == Some("vlm")
+        || entry["capabilities"]
+            .as_array()
+            .is_some_and(|caps| caps.iter().any(|c| c.as_str() == Some("vision")))
 }
 
 /// `default_generation_settings.n_ctx` from a llama-server `/props` body.
@@ -1623,6 +1645,57 @@ mod tests {
             let (provider, ct) = spawn(app).await;
             let caps = provider.model_capabilities("qwen").await.unwrap();
             assert_eq!(caps.context_window, Some(32768));
+            ct.cancel();
+        }
+
+        /// Each local server says whether its model takes images: llama.cpp
+        /// started with a vision projector, a vision model in LM Studio, a
+        /// model Ollama lists as `vision`.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn local_servers_say_whether_the_model_takes_images() {
+            let props = Router::new().route(
+                "/props",
+                get(|| async {
+                    r#"{"default_generation_settings":{"n_ctx":32768},"modalities":{"vision":true}}"#
+                }),
+            );
+            let (provider, ct) = spawn(props).await;
+            assert_eq!(
+                provider.model_capabilities("qwen").await.unwrap().vision,
+                Some(true)
+            );
+            ct.cancel();
+
+            let (provider, ct) =
+                spawn(Router::new().route("/props", get(|| async { PROPS }))).await;
+            assert_eq!(
+                provider.model_capabilities("qwen").await.unwrap().vision,
+                None
+            );
+            ct.cancel();
+
+            let lm =
+                Router::new().route("/api/v0/models", get(|| async { super::LMSTUDIO_MODELS }));
+            let (provider, ct) = spawn(lm).await;
+            let vision = |model: &'static str| {
+                let provider = &provider;
+                async move { provider.model_capabilities(model).await.unwrap().vision }
+            };
+            assert_eq!(vision("mlx-community/qwen3.8-27b").await, Some(true));
+            assert_eq!(vision("recursivesi/flint").await, Some(false));
+            ct.cancel();
+
+            let ollama = Router::new().route(
+                "/api/show",
+                axum::routing::post(|| async {
+                    r#"{"model_info":{"general.context_length":8192},"capabilities":["completion","vision"]}"#
+                }),
+            );
+            let (provider, ct) = spawn(ollama).await;
+            assert_eq!(
+                provider.model_capabilities("gemma3").await.unwrap().vision,
+                Some(true)
+            );
             ct.cancel();
         }
 
