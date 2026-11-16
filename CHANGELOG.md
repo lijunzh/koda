@@ -12,6 +12,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **Koda builds with Rust 1.100.0,** its pinned toolchain and minimum version; `cargo install koda-cli` needs it or newer. The crates' homepage on crates.io is now the documentation site.
 - **The release workflow tests as CI does,** with `cargo nextest` and then the doc tests, instead of `cargo test`, which runs the test binaries one after another.
 
+### Fixed
+
+- **On Linux, an installed Koda keeps each command on its own network, as documented.** The sandbox gives a command its own network namespace through a small helper, `koda-sandbox-stage2`, which Koda looked for next to `koda`. The release archives and `cargo install koda-cli` carry only `koda`, so an installed Koda never found it and fell back to proxy variables alone: a command that ignores them, such as `curl --noproxy '*'`, could reach any server on the machine's loopback. `koda` now runs the helper itself when the sandbox starts it with a marker argument, as Codex's binary runs its Linux sandbox helper, so every install has it. macOS is unaffected.
+
 ## [0.7.0] - 2026-11-15
 
 ### Added
