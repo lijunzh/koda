@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-11-16
+
 ### Added
 
 - **A sample `config.toml` and an environment variables page in the manual.** The sample has every key in one commented file, with what happens when each is unset, checked by loading it in Koda; the variables page lists the API key names, `XDG_CONFIG_HOME`, the proxy variables, `KODA_ACCEPT_INVALID_CERTS`, logging, the terminal variables, and what the commands Koda runs inherit. Installation links both for setting Koda up by hand.
