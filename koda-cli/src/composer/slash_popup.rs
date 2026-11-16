@@ -63,6 +63,11 @@ pub const SLASH_COMMANDS: &[(&str, &str, Option<&str>)] = &[
     ),
     ("/expand", "Show full output of last tool call", None),
     ("/help", "Show commands and shortcuts", None),
+    (
+        "/init",
+        "Have the model write AGENTS.md for this project",
+        None,
+    ),
     ("/key", "Manage API keys", None),
     // No arg hint: with one, Enter on a bare `/mcp` completes instead of
     // running it, as it did for `/resume`.
@@ -73,13 +78,20 @@ pub const SLASH_COMMANDS: &[(&str, &str, Option<&str>)] = &[
     ),
     ("/memory", "View/save project & global memory", None),
     ("/model", "Pick a model (aliases + local)", None),
+    (
+        "/new",
+        "Start a new session on the same model (also /clear)",
+        None,
+    ),
     ("/provider", "Browse all models from a provider", None),
+    ("/rename", "Name this session, for /resume", None),
     (
         "/resume",
         "Resume or delete a session (picker, an id, delete <id>)",
         None,
     ),
     ("/skills", "List available skills (search with query)", None),
+    ("/status", "Show the session, model, mode and context", None),
     ("/stop", "Stop all background processes (also /clean)", None),
     ("/verbose", "Tool output in full or folded (Ctrl+O)", None),
     ("/vim", "Toggle vim-mode editing in the input", None),

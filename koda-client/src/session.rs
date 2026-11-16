@@ -84,6 +84,13 @@ pub(crate) enum SessionCommand {
     /// Store the session's turns sent so far: `done` is dropped once they
     /// are, so a read of the store that follows sees all of them.
     FlushHistory { done: oneshot::Sender<()> },
+    /// `session/name/set`: store the name, after anything queued before
+    /// it, so a first prompt sent earlier can't title the session over it;
+    /// a later one no longer does.
+    Named {
+        name: String,
+        done: oneshot::Sender<Result<(), String>>,
+    },
 }
 
 impl SessionCommand {
@@ -100,7 +107,8 @@ impl SessionCommand {
             Self::Respond { .. }
             | Self::ReloadMcp { .. }
             | Self::Shutdown { .. }
-            | Self::FlushHistory { .. } => {}
+            | Self::FlushHistory { .. }
+            | Self::Named { .. } => {}
         }
     }
 }
@@ -473,6 +481,15 @@ impl SessionTask {
                     self.sink.flush_history().await;
                     drop(done);
                 }
+                SessionCommand::Named { name, done } => {
+                    self.session.title_set = true;
+                    let stored = self
+                        .session
+                        .db
+                        .set_session_title(&self.session.id, &name)
+                        .await;
+                    let _ = done.send(stored.map_err(|e| format!("{e:#}")));
+                }
                 SessionCommand::UpdateSettings { params, reply } => {
                     match self.update_settings(params).await {
                         Ok(()) => {
@@ -735,6 +752,8 @@ impl SessionTask {
             rules,
             ..
         } = self;
+        // For `session/name/set` during the turn, which holds the session.
+        let (db, session_id) = (session.db.clone(), session.id.clone());
         let result = {
             // The turn's error, if it returned one, as text.
             let mut turn: std::pin::Pin<
@@ -855,6 +874,11 @@ impl SessionTask {
                         Some(SessionCommand::FlushHistory { done }) => {
                             sink.flush_history().await;
                             drop(done);
+                        }
+                        // This turn's prompt has titled the session already.
+                        Some(SessionCommand::Named { name, done }) => {
+                            let stored = db.set_session_title(&session_id, &name).await;
+                            let _ = done.send(stored.map_err(|e| format!("{e:#}")));
                         }
                         // Told to stop, or the host is gone: stop the turn and
                         // let it wind down. It bounds that itself.

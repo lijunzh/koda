@@ -119,6 +119,8 @@ server_notifications! {
     SessionStarted => "session/started" (crate::session::SessionStartedNotification),
     /// A session was deleted.
     SessionDeleted => "session/deleted" (crate::session::SessionDeletedNotification),
+    /// A session was named.
+    SessionNameUpdated => "session/name/updated" (crate::session::SessionNameUpdatedNotification),
     SessionSettingsUpdated => "session/settings/updated" (crate::session::SessionSettingsUpdatedNotification),
     /// A session's MCP server started, failed or was stopped while starting.
     McpServerStatusUpdated => "mcpServer/startupStatus/updated" (crate::mcp::McpServerStatusUpdatedNotification),

@@ -1617,6 +1617,60 @@ async fn image_flag_sends_the_image_with_the_first_prompt() {
     drop(tui);
 }
 
+/// `/new` starts a new session on the same model, as Codex's `/new` and
+/// Claude Code's `/clear`: the next prompt goes without the earlier history.
+#[tokio::test(flavor = "multi_thread")]
+async fn new_starts_a_fresh_session() {
+    let server = scripted_model(vec![]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    tui.submit_and_finish("echo topic please", "All done.");
+    run_command(&mut tui, "/new");
+    tui.wait_for_screen("new session");
+    tui.submit_and_finish("a fresh start", "All done.");
+    let sent = wait_for_model_call(&server, 2).await;
+    assert!(sent.contains("a fresh start"), "{sent}");
+    assert!(
+        !sent.contains("echo topic please"),
+        "history carried over: {sent}"
+    );
+}
+
+/// `/rename` names the session and `/status` shows it, with the model and
+/// mode, as Codex's `/status` does.
+#[tokio::test(flavor = "multi_thread")]
+async fn rename_and_status() {
+    let server = scripted_model(vec![]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    run_command(&mut tui, "/rename Parser work");
+    tui.wait_for_screen("Renamed to \"Parser work\"");
+    run_command(&mut tui, "/status");
+    tui.wait_for_screen("Instructions");
+    let screen = tui.screen();
+    assert!(screen.contains("Parser work"), "{screen}");
+    assert!(screen.contains("stub-model"), "{screen}");
+    assert!(screen.contains("safe"), "{screen}");
+}
+
+/// `/init` asks the model to write AGENTS.md, as Codex's `/init` does, and
+/// leaves an existing instruction file alone.
+#[tokio::test(flavor = "multi_thread")]
+async fn init_asks_for_agents_md_unless_there_is_one() {
+    let server = scripted_model(vec![]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    run_command(&mut tui, "/init");
+    let sent = wait_for_model_call(&server, 1).await;
+    assert!(sent.contains("Create an AGENTS.md file"), "{sent}");
+    tui.wait_for_screen_without(BUSY_PROMPT);
+
+    std::fs::write(home.path().join("AGENTS.md"), "# Notes\n").unwrap();
+    run_command(&mut tui, "/init");
+    tui.wait_for_screen("AGENTS.md already exists");
+    assert_eq!(model_calls(&server).await.len(), 1);
+}
+
 /// `/resume <id>` resumes by id; `/resume delete <id>` removes a
 /// session, and the picker no longer offers it.
 #[tokio::test(flavor = "multi_thread")]

@@ -11,6 +11,7 @@ mod events;
 mod mcp;
 mod memory;
 mod menus;
+mod session_cmds;
 pub(crate) mod settings;
 pub(crate) mod skills;
 
@@ -728,6 +729,25 @@ impl TuiContext {
         if input.trim() == "/model" {
             self.open_model_picker().await;
             return CommandOutcome::Handled;
+        }
+        if matches!(input.trim(), "/new" | "/clear") {
+            self.start_new_session().await;
+            return CommandOutcome::Handled;
+        }
+        if input.trim() == "/status" {
+            self.show_status().await;
+            return CommandOutcome::Handled;
+        }
+        if let Some(name) = input
+            .trim()
+            .strip_prefix("/rename")
+            .filter(|rest| rest.is_empty() || rest.starts_with(' '))
+        {
+            self.rename_session(name).await;
+            return CommandOutcome::Handled;
+        }
+        if input.trim() == "/init" {
+            return self.init_project();
         }
         if input.trim() == "/provider" {
             self.open_provider_picker();

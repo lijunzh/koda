@@ -1426,6 +1426,46 @@ async fn deleting_an_open_session_stops_its_turn_and_deletes_it() {
     assert!(gone.message.contains("no session"), "{gone:?}");
 }
 
+/// `session/name/set` names a session, as Codex's `thread/name/set`:
+/// `session/name/updated` follows, and the name outlives the first prompt,
+/// which otherwise titles the session.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_named_session_keeps_its_name_over_the_first_prompt() {
+    use koda_client::protocol::session::SessionNameSetParams;
+    let server = model(vec![]).await;
+    let mut koda = Koda::start(config(&server)).await;
+    let name = |session: &str, name: &str| SessionNameSetParams {
+        session_id: session.to_string(),
+        name: name.to_string(),
+    };
+    koda.client
+        .request::<methods::SessionNameSet>(name(&koda.session, "  Parser work "))
+        .await
+        .unwrap();
+    let seen = koda.until("session/name/updated").await;
+    assert!(
+        matches!(seen.last(), Some(Outgoing::Notification(ServerNotification::SessionNameUpdated(n))) if n.name == "Parser work"),
+        "{seen:?}"
+    );
+    koda.turn("fix the parser please").await;
+    koda.until("turn/completed").await;
+    let listed = koda.list().await;
+    assert_eq!(listed[0].name.as_deref(), Some("Parser work"));
+
+    let empty = server_error(
+        koda.client
+            .request::<methods::SessionNameSet>(name(&koda.session, "  "))
+            .await,
+    );
+    assert!(empty.message.contains("empty"), "{empty:?}");
+    let unknown = server_error(
+        koda.client
+            .request::<methods::SessionNameSet>(name("not-a-session", "x"))
+            .await,
+    );
+    assert!(unknown.message.contains("no session"), "{unknown:?}");
+}
+
 // ── Compaction ──────────────────────────────────────────────────────────
 
 /// A reply to a streamed call, with the prompt size the provider reports.
