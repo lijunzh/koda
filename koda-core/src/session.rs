@@ -290,7 +290,7 @@ impl KodaSession {
         config: &KodaConfig,
         mode: TrustMode,
     ) -> Self {
-        let provider = providers::create_provider(config);
+        let provider = providers::create_provider(&config.provider_settings());
         // Wire db+session into ToolRegistry for RecallContext
         agent.tools.set_session(Arc::new(db.clone()), id.clone());
 
@@ -758,7 +758,7 @@ impl KodaSession {
 
     /// Replace the provider (e.g., after switching models or providers).
     pub fn update_provider(&mut self, config: &KodaConfig) {
-        self.provider = providers::create_provider(config);
+        self.provider = providers::create_provider(&config.provider_settings());
     }
 }
 

@@ -490,6 +490,19 @@ pub fn rate_limit_backoff(attempt: u32) -> std::time::Duration {
     std::time::Duration::from_secs(secs)
 }
 
+/// The counts a message row stores for `usage`.
+pub(crate) fn stored_usage(
+    usage: &crate::providers::TokenUsage,
+) -> koda_state::session_store::MessageUsage {
+    koda_state::session_store::MessageUsage {
+        prompt_tokens: usage.prompt_tokens,
+        completion_tokens: usage.completion_tokens,
+        cache_read_tokens: usage.cache_read_tokens,
+        cache_creation_tokens: usage.cache_creation_tokens,
+        thinking_tokens: usage.thinking_tokens,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

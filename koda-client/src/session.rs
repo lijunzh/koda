@@ -214,7 +214,7 @@ pub(crate) async fn open(
 
     // Ask the provider for the model's window first. A guess is said once
     // the session has started.
-    let probe = koda_core::providers::create_provider(&config);
+    let probe = koda_core::providers::create_provider(&config.provider_settings());
     let source = config.query_and_apply_capabilities(probe.as_ref()).await;
     let notice = config.assumed_context_notice(source);
 
@@ -525,7 +525,7 @@ impl SessionTask {
         }
         let id = self.session.id.clone();
         if model_changed {
-            let probe = koda_core::providers::create_provider(&next);
+            let probe = koda_core::providers::create_provider(&next.provider_settings());
             next.query_and_apply_capabilities(probe.as_ref()).await;
             self.session
                 .db

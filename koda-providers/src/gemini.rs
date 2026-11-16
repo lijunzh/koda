@@ -510,7 +510,7 @@ impl LlmProvider for GeminiProvider {
         &self,
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
-        settings: &crate::config::ModelSettings,
+        settings: &crate::ModelSettings,
     ) -> Result<LlmResponse> {
         let model = &settings.model;
         let (contents, system_instruction) = self.convert_messages(messages);
@@ -610,7 +610,7 @@ impl LlmProvider for GeminiProvider {
         &self,
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
-        settings: &crate::config::ModelSettings,
+        settings: &crate::ModelSettings,
     ) -> Result<super::stream_collector::SseCollector> {
         let model = &settings.model;
         let (contents, system_instruction) = self.convert_messages(messages);
@@ -786,7 +786,7 @@ impl GeminiProvider {
         contents: &[serde_json::Value],
         system_instruction: Option<&serde_json::Value>,
         tools: &[GeminiToolConfig],
-        settings: Option<&crate::config::ModelSettings>,
+        settings: Option<&crate::ModelSettings>,
     ) -> serde_json::Value {
         self.build_request_body_with_cache(contents, system_instruction, tools, settings, None)
     }
@@ -797,7 +797,7 @@ impl GeminiProvider {
         contents: &[serde_json::Value],
         system_instruction: Option<&serde_json::Value>,
         tools: &[GeminiToolConfig],
-        settings: Option<&crate::config::ModelSettings>,
+        settings: Option<&crate::ModelSettings>,
         cached_content_name: Option<&str>,
     ) -> serde_json::Value {
         // No cap unless one was set: thinking counts against it, so a default
@@ -1319,7 +1319,7 @@ mod tests {
     #[test]
     fn test_build_request_includes_thinking_config() {
         let p = make_provider();
-        let settings = crate::config::ModelSettings {
+        let settings = crate::ModelSettings {
             model: "gemini-2.5-flash".into(),
             max_tokens: Some(8192),
             temperature: None,
@@ -1335,7 +1335,7 @@ mod tests {
     #[test]
     fn test_build_request_no_thinking_config_when_unset() {
         let p = make_provider();
-        let settings = crate::config::ModelSettings {
+        let settings = crate::ModelSettings {
             model: "gemini-2.0-flash".into(),
             max_tokens: Some(8192),
             temperature: None,

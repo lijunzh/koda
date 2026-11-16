@@ -273,7 +273,7 @@ pub(crate) async fn list_models(
     };
     let listed = tokio::time::timeout(
         LIST_TIMEOUT,
-        koda_core::providers::create_provider(&config).list_models(),
+        koda_core::providers::create_provider(&config.provider_settings()).list_models(),
     )
     .await;
     match listed {
@@ -408,7 +408,7 @@ pub(crate) async fn detect_model(config: &mut KodaConfig) {
     }
     let listed = tokio::time::timeout(
         LIST_TIMEOUT,
-        koda_core::providers::create_provider(config).list_models(),
+        koda_core::providers::create_provider(&config.provider_settings()).list_models(),
     )
     .await;
     if let Ok(Ok(models)) = listed

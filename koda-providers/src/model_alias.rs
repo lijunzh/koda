@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::time::Duration;
 
-use crate::config::ProviderType;
+use crate::provider_catalog::ProviderType;
 
 /// A Claude model line, as the Anthropic Models API reports it in `line`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -249,12 +249,10 @@ const LIVE_LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
 /// failed or timed out.
 pub async fn ensure_live_claude_ids() -> Option<&'static ClaudeLineIds> {
     let ptype = ProviderType::Anthropic;
-    let key = crate::runtime_env::get(ptype.env_key_name()).filter(|k| !k.is_empty())?;
+    let key = koda_config::runtime_env::get(ptype.env_key_name()).filter(|k| !k.is_empty())?;
     LIVE.get_or_fetch(|| async move {
-        let provider = crate::providers::anthropic::AnthropicProvider::new(
-            key,
-            Some(ptype.default_base_url()),
-        );
+        let provider =
+            crate::anthropic::AnthropicProvider::new(key, Some(ptype.default_base_url()));
         tokio::time::timeout(LIVE_LOOKUP_TIMEOUT, provider.claude_lines())
             .await
             .map_err(|_| anyhow::anyhow!("timed out after {LIVE_LOOKUP_TIMEOUT:?}"))?
@@ -343,8 +341,8 @@ pub fn pinned_older_notice_with(model: &str, lines: &ClaudeLines) -> Option<Stri
 /// succeeded this run, otherwise its pinned id.
 ///
 /// ```
-/// use koda_core::model_alias::resolve;
-/// use koda_core::config::ProviderType;
+/// use koda_providers::model_alias::resolve;
+/// use koda_providers::ProviderType;
 ///
 /// let r = resolve("gemini-flash").unwrap();
 /// assert_eq!(r.provider, ProviderType::Gemini);

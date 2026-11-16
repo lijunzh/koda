@@ -80,6 +80,9 @@ Workspace: `koda-core` (library, pure engine, zero terminal deps), `koda-cli`
 (the client API, the host and its session tasks, and engine events projected
 onto the protocol),
 `koda-config` (the config file `config.toml`: reading, checking and editing it),
+`koda-providers` (the model providers and the model tables, which `koda-core`
+re-exports as `providers`, `model_alias`, `model_context`, `model_effort` and
+`provider_catalog`),
 `koda-state` (Koda's stored state: the `SessionStore` trait and its SQLite
 `Database`, how its SQLite files are opened, and the diagnostic log database,
 as Codex keeps its storage outside `codex-core`), `koda-test-utils`.
@@ -99,14 +102,15 @@ In `koda-core/src/`:
   `agent/` (`KodaAgent`), `loop_guard.rs`, `turn_context.rs`
 - **Prompt and memory:** `prompt.rs`, `instructions.md`, `memory.rs`, `skills.rs`,
   `git.rs` (read-only git context; it never mutates state)
-- **Context:** `context.rs`, `compact.rs`, `microcompact.rs`, `model_context.rs`,
-  `output_caps.rs`, `truncate.rs`
+- **Context:** `context.rs`, `compact.rs`, `microcompact.rs`, `output_caps.rs`,
+  `truncate.rs`
 - **Tools:** `tools/` (`mod.rs` has the registry, dispatcher and
   `safe_resolve_path()`), `tool_dispatch.rs`, `approval_flow.rs`
 - **Safety:** `trust.rs`, `bash_safety.rs`, `bash_path_lint.rs`, `sandbox.rs`
 - **Sub-agents:** `sub_agent_dispatch.rs`, `child_agent.rs`, `sub_agent_cache.rs`
-- **Providers:** `providers/` (all implement the `LlmProvider` trait),
-  `provider_catalog.rs`, `model_alias.rs`, `keystore.rs`
+- **Providers:** `koda-providers/src/` (all implement the `LlmProvider` trait;
+  `provider_catalog.rs`, `model_alias.rs`, `model_context.rs`,
+  `model_effort.rs`); `keystore.rs` stays in `koda-core`
 - **Storage:** `koda-state/src/` (`session_store.rs`, `db/`, `sqlite.rs`,
   `log_db/`), apart from the engine
 - **Protocol and config:** `engine/`, `mcp/`, `config.rs`

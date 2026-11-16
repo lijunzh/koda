@@ -58,7 +58,7 @@ async fn make_real_session(env: &Env) -> KodaSession {
     // Use the regular constructor — this is what we're testing.
     // The provider is built from env.config (Mock by default in our env).
     // No network is touched at session-construction time.
-    let _ = providers::create_provider(&env.config); // smoke-check provider builds
+    let _ = providers::create_provider(&env.config.provider_settings()); // smoke-check provider builds
     KodaSession::new(
         env.session_id.clone(),
         agent,

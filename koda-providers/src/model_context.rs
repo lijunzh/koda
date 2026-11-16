@@ -4,7 +4,7 @@
 //! Falls back to a conservative default (100K) for unknown models.
 //!
 //! Context window size drives:
-//! - Output caps (see [`crate::output_caps`]) — larger windows get more tool output
+//! - Output caps (`koda_core::output_caps`) — larger windows get more tool output
 //! - Auto-compaction threshold — triggers at ~80% of context window
 
 /// Default context window when the model is unknown.
@@ -22,7 +22,7 @@ const MIN_CONTEXT: usize = 4_096;
 /// # Examples
 ///
 /// ```
-/// use koda_core::model_context::context_window_for_model;
+/// use koda_providers::model_context::context_window_for_model;
 ///
 /// assert_eq!(context_window_for_model("claude-sonnet-5-5"), 1_000_000);
 /// assert_eq!(context_window_for_model("gpt-4o"), 128_000);

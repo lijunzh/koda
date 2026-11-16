@@ -6,7 +6,6 @@
 //! runs every test in its own process.
 
 mod agent_memory_cache_test;
-mod anthropic_http_test;
 mod bash_safety_test;
 mod builtin_agent_configs_test;
 mod builtin_proxy_e2e_test;
@@ -14,6 +13,7 @@ mod builtin_proxy_e2e_test;
 #[cfg(feature = "test-support")]
 mod cancel_test;
 mod compact_reasoning_test;
+mod config_capabilities_test;
 mod context_management_e2e_test;
 // Needs the mock providers: --features test-support.
 #[cfg(feature = "test-support")]
@@ -33,7 +33,6 @@ mod e2e_test;
 #[cfg(feature = "test-support")]
 mod e2e_tools_test;
 mod file_tools_test;
-mod gemini_http_test;
 mod golden_test;
 mod guarantee_matrix_test;
 mod http_client_config_test;
@@ -52,7 +51,6 @@ mod mcp_compat_test;
 mod mcp_http_transport_test;
 mod mcp_instructions_bootstrap_test;
 mod new_tools_test;
-mod openai_compat_http_test;
 mod perf_test;
 mod persisting_sink_test;
 mod session_allow_test;

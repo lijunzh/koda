@@ -96,7 +96,7 @@ async fn read_timeout_triggers_auto_retry_not_hard_failure() {
     let mut config = koda_core::config::KodaConfig::default_for_testing(ProviderType::OpenAI);
     config.base_url = server.url();
     config.stream_idle_timeout_ms = Some(1_000);
-    let provider = koda_core::providers::create_provider(&config);
+    let provider = koda_core::providers::create_provider(&config.provider_settings());
 
     let started = Instant::now();
     let (result, events) = test_env.run_inference_result(provider.as_ref()).await;

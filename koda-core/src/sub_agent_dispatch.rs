@@ -542,7 +542,7 @@ fn run_sub_agent<'a>(
             memory::load(project_root)?
         };
 
-        let provider = crate::providers::create_provider(&sub_config);
+        let provider = crate::providers::create_provider(&sub_config.provider_settings());
         // A sub-agent writes in the project, like the main agent and like
         // Claude Code's and Codex's sub-agents, so its edits land where the user
         // expects. Two cases get a git worktree instead: an agent that asks for
@@ -955,7 +955,7 @@ fn run_sub_agent<'a>(
                         response.content.as_deref(),
                         tool_calls_json.as_deref(),
                         None,
-                        Some(&response.usage.stored()),
+                        Some(&crate::inference_helpers::stored_usage(&response.usage)),
                     )
                     .await?;
                 db.mark_message_complete(assistant_msg_id).await?;

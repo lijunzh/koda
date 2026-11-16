@@ -10,9 +10,9 @@
 //!
 //! These tests pin all three behaviors against a real reqwest round-trip.
 
-use koda_core::config::{ModelSettings, ProviderType};
-use koda_core::providers::anthropic::AnthropicProvider;
-use koda_core::providers::{ChatMessage, LlmProvider, StreamChunk};
+use koda_providers::anthropic::AnthropicProvider;
+use koda_providers::{ChatMessage, LlmProvider, StreamChunk};
+use koda_providers::{ModelSettings, ProviderType};
 use koda_test_utils::network::FakeLlmServer;
 use serde_json::{Value, json};
 
@@ -43,7 +43,7 @@ fn user_msg(text: &str) -> ChatMessage {
 #[test]
 fn context_tokens_counts_the_cache() {
     let provider = AnthropicProvider::new("sk-ant-test".into(), None);
-    let usage = koda_core::providers::TokenUsage {
+    let usage = koda_providers::TokenUsage {
         prompt_tokens: 288,
         cache_read_tokens: 20_000,
         cache_creation_tokens: 3_535,
@@ -243,8 +243,8 @@ fn cache_test_conversation() -> Vec<ChatMessage> {
     ]
 }
 
-fn cache_test_tools() -> Vec<koda_core::providers::ToolDefinition> {
-    vec![koda_core::providers::ToolDefinition {
+fn cache_test_tools() -> Vec<koda_providers::ToolDefinition> {
+    vec![koda_providers::ToolDefinition {
         name: "Read".into(),
         description: "Read a file".into(),
         parameters: json!({"type": "object"}),

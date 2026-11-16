@@ -79,39 +79,9 @@ fn warn_legacy_agents_dir(dir: &Path) {
     }
 }
 
-/// Model-specific settings that control LLM behavior.
-#[derive(Debug, Clone)]
-pub struct ModelSettings {
-    /// Model name / ID.
-    pub model: String,
-    /// Maximum output tokens (provider-specific default if None).
-    pub max_tokens: Option<u32>,
-    /// Sampling temperature.
-    pub temperature: Option<f64>,
-    /// Anthropic extended thinking budget (tokens).
-    pub thinking_budget: Option<u32>,
-    /// OpenAI reasoning effort: "low", "medium", or "high".
-    pub reasoning_effort: Option<String>,
-    /// Maximum context window size in tokens.
-    pub max_context_tokens: usize,
-}
-
-impl ModelSettings {
-    /// Build settings with no output limit set: the provider applies its
-    /// own (the Models API's for a Claude model, else 16,384) unless the
-    /// agent or the config sets one.
-    pub fn defaults_for(model: &str, _provider: &ProviderType) -> Self {
-        let max_context_tokens = crate::model_context::context_window_for_model(model);
-        Self {
-            model: model.to_string(),
-            max_tokens: None,
-            temperature: None,
-            thinking_budget: None,
-            reasoning_effort: None,
-            max_context_tokens,
-        }
-    }
-}
+/// Model-specific settings that control LLM behavior: `koda-providers`'s,
+/// under its old path.
+pub use koda_providers::ModelSettings;
 
 /// Top-level agent configuration loaded from JSON.
 ///
@@ -567,6 +537,15 @@ impl KodaConfig {
                 self.model_settings.max_tokens = Some(max_out as u32);
                 tracing::info!("Max output tokens from API: {} for {}", max_out, self.model);
             }
+        }
+    }
+
+    /// What `create_provider` needs from this config.
+    pub fn provider_settings(&self) -> koda_providers::ProviderSettings {
+        koda_providers::ProviderSettings {
+            provider_type: self.provider_type,
+            base_url: self.base_url.clone(),
+            stream_idle_timeout_ms: self.stream_idle_timeout_ms,
         }
     }
 

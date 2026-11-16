@@ -7,7 +7,7 @@ use super::{
     ChatMessage, LlmProvider, LlmResponse, ModelInfo, StreamChunk, TokenUsage, ToolCall,
     ToolDefinition,
 };
-use crate::config::ModelSettings;
+use crate::ModelSettings;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -113,15 +113,16 @@ impl MockProvider {
     ///
     /// Format: `[{"text":"hello"}, {"tool":"Read","args":{"path":"f.txt"}}, {"error":"boom"}]`
     ///
-    /// **#1109 F1**: reads via [`crate::runtime_env::get`] (thread-safe
+    /// **#1109 F1**: reads via [`koda_config::runtime_env::get`] (thread-safe
     /// `RwLock<HashMap>` with fallback to `std::env::var`) instead of
     /// `std::env::var` directly. This lets in-process tests inject the
-    /// script via [`crate::runtime_env::set`] — no `unsafe { set_var }`,
+    /// script via [`koda_config::runtime_env::set`] — no `unsafe { set_var }`,
     /// no Rust 2024 UB. Sub-process tests (e.g. `koda-cli/tests/smoke_test`)
     /// continue to work because `runtime_env::get` falls back to the real
     /// process env when the runtime map has no entry.
     pub fn from_env() -> Self {
-        let json = crate::runtime_env::get("KODA_MOCK_RESPONSES").unwrap_or_else(|| "[]".into());
+        let json =
+            koda_config::runtime_env::get("KODA_MOCK_RESPONSES").unwrap_or_else(|| "[]".into());
         Self::from_json_str(&json)
     }
 
@@ -397,7 +398,10 @@ mod tests {
             .chat_stream(
                 &[],
                 &[],
-                &ModelSettings::defaults_for("mock", &crate::config::ProviderType::LMStudio),
+                &ModelSettings::defaults_for(
+                    "mock",
+                    &crate::provider_catalog::ProviderType::LMStudio,
+                ),
             )
             .await
             .unwrap();
@@ -421,7 +425,10 @@ mod tests {
             .chat_stream(
                 &[],
                 &[],
-                &ModelSettings::defaults_for("mock", &crate::config::ProviderType::LMStudio),
+                &ModelSettings::defaults_for(
+                    "mock",
+                    &crate::provider_catalog::ProviderType::LMStudio,
+                ),
             )
             .await
             .unwrap();
@@ -441,16 +448,17 @@ mod tests {
             .chat_stream(
                 &[],
                 &[],
-                &ModelSettings::defaults_for("mock", &crate::config::ProviderType::LMStudio),
+                &ModelSettings::defaults_for(
+                    "mock",
+                    &crate::provider_catalog::ProviderType::LMStudio,
+                ),
             )
             .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("boom"));
     }
 
-    async fn collect_chunks(
-        collector: crate::providers::stream_collector::SseCollector,
-    ) -> Vec<StreamChunk> {
+    async fn collect_chunks(collector: crate::stream_collector::SseCollector) -> Vec<StreamChunk> {
         let mut rx = collector.rx;
         let mut chunks = Vec::new();
         while let Some(chunk) = rx.recv().await {
@@ -559,7 +567,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_chat_text_response() {
-        let settings = ModelSettings::defaults_for("mock", &crate::config::ProviderType::LMStudio);
+        let settings =
+            ModelSettings::defaults_for("mock", &crate::provider_catalog::ProviderType::LMStudio);
         let provider = MockProvider::new(vec![MockResponse::Text("hi there".into())]);
         let resp = provider.chat(&[], &[], &settings).await.unwrap();
         assert_eq!(resp.content.as_deref(), Some("hi there"));
@@ -568,7 +577,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_chat_empty_queue_returns_empty_text() {
-        let settings = ModelSettings::defaults_for("mock", &crate::config::ProviderType::LMStudio);
+        let settings =
+            ModelSettings::defaults_for("mock", &crate::provider_catalog::ProviderType::LMStudio);
         let provider = MockProvider::new(vec![]);
         let resp = provider.chat(&[], &[], &settings).await.unwrap();
         assert_eq!(resp.content.as_deref(), Some(""));
@@ -576,7 +586,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_chat_rate_limit_is_error() {
-        let settings = ModelSettings::defaults_for("mock", &crate::config::ProviderType::LMStudio);
+        let settings =
+            ModelSettings::defaults_for("mock", &crate::provider_catalog::ProviderType::LMStudio);
         let provider = MockProvider::new(vec![MockResponse::RateLimit]);
         let result = provider.chat(&[], &[], &settings).await;
         assert!(result.is_err());
@@ -592,7 +603,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_chat_tool_calls_response() {
-        let settings = ModelSettings::defaults_for("mock", &crate::config::ProviderType::LMStudio);
+        let settings =
+            ModelSettings::defaults_for("mock", &crate::provider_catalog::ProviderType::LMStudio);
         let provider = MockProvider::new(vec![MockResponse::tool_call(
             "Bash",
             serde_json::json!({"command": "ls"}),
@@ -605,7 +617,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_chat_text_max_tokens_stop_reason() {
-        let settings = ModelSettings::defaults_for("mock", &crate::config::ProviderType::LMStudio);
+        let settings =
+            ModelSettings::defaults_for("mock", &crate::provider_catalog::ProviderType::LMStudio);
         let provider =
             MockProvider::new(vec![MockResponse::TextMaxTokens("truncated text".into())]);
         let resp = provider.chat(&[], &[], &settings).await.unwrap();
@@ -615,7 +628,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_chat_context_overflow_is_error() {
-        let settings = ModelSettings::defaults_for("mock", &crate::config::ProviderType::LMStudio);
+        let settings =
+            ModelSettings::defaults_for("mock", &crate::provider_catalog::ProviderType::LMStudio);
         let provider = MockProvider::new(vec![MockResponse::ContextOverflow]);
         let result = provider.chat(&[], &[], &settings).await;
         assert!(result.is_err());
@@ -627,7 +641,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_chat_network_error() {
-        let settings = ModelSettings::defaults_for("mock", &crate::config::ProviderType::LMStudio);
+        let settings =
+            ModelSettings::defaults_for("mock", &crate::provider_catalog::ProviderType::LMStudio);
         let provider = MockProvider::new(vec![MockResponse::NetworkError {
             partial_text: "partial...".into(),
             error: "connection reset".into(),
@@ -640,7 +655,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_stream_text_max_tokens() {
-        let settings = ModelSettings::defaults_for("mock", &crate::config::ProviderType::LMStudio);
+        let settings =
+            ModelSettings::defaults_for("mock", &crate::provider_catalog::ProviderType::LMStudio);
         let provider = MockProvider::new(vec![MockResponse::TextMaxTokens("hi there".into())]);
         let collector = provider.chat_stream(&[], &[], &settings).await.unwrap();
         let chunks = collect_chunks(collector).await;
@@ -653,7 +669,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_stream_tool_calls_eager() {
-        let settings = ModelSettings::defaults_for("mock", &crate::config::ProviderType::LMStudio);
+        let settings =
+            ModelSettings::defaults_for("mock", &crate::provider_catalog::ProviderType::LMStudio);
         let provider = MockProvider::new(vec![MockResponse::ToolCallsEager(vec![ToolCall {
             id: "tc1".into(),
             function_name: "Read".into(),
@@ -673,7 +690,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_stream_network_error() {
-        let settings = ModelSettings::defaults_for("mock", &crate::config::ProviderType::LMStudio);
+        let settings =
+            ModelSettings::defaults_for("mock", &crate::provider_catalog::ProviderType::LMStudio);
         let provider = MockProvider::new(vec![MockResponse::NetworkError {
             partial_text: "partial output".into(),
             error: "connection dropped".into(),

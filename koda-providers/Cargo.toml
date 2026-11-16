@@ -1,0 +1,38 @@
+[package]
+name = "koda-providers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Model providers for the Koda AI coding agent: Anthropic, Gemini and OpenAI-compatible clients, and the model tables"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords = ["ai", "coding-agent", "llm", "anthropic", "openai"]
+categories = ["api-bindings", "development-tools"]
+
+[features]
+# The mock provider (`ProviderType::Mock`) for other crates' tests.
+test-support = []
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+futures-util = { workspace = true }
+koda-config = { workspace = true }
+regex = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+# Only its stub HTTP server: koda-test-utils' other parts build on koda-core.
+koda-test-utils = { path = "../koda-test-utils", default-features = false }
+serde_json = { workspace = true }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "tower-log"] }
+tokio = { workspace = true, features = ["full", "test-util"] }
+tracing-subscriber = { workspace = true }
