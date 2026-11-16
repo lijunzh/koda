@@ -6,9 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-11-16
+
 ### Fixed
 
-- **koda-mcp, koda-core, koda-server, koda-client and koda-cli reach crates.io.** The 0.7.1 publish stopped at koda-mcp, whose keyword "model-context-protocol" is over crates.io's 20-character limit; it is now "mcp-client". CI checks every crate's keywords against crates.io's rules (`scripts/check_crate_keywords.sh`), which `cargo publish --dry-run` doesn't.
+- **Every Koda crate is on crates.io again.** 0.7.2 is 0.7.1 with its publish fixed: crates.io refused koda-mcp, whose keyword "model-context-protocol" is over its 20-character limit, so koda-mcp, koda-core, koda-server, koda-client and koda-cli 0.7.1 never reached it, and `cargo install koda-cli` still installed 0.7.0. The keyword is now "mcp-client". CI checks every crate's keywords against crates.io's rules (`scripts/check_crate_keywords.sh`), which `cargo publish --dry-run` doesn't.
 
 ## [0.7.1] - 2026-11-16
 
