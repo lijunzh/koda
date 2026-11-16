@@ -128,7 +128,7 @@ pub struct ConfigToml {
     pub model_input_modalities: Option<Vec<InputModality>>,
     /// The mode a new session starts in, as `--mode` gives it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mode: Option<Mode>,
+    pub mode: Option<TrustMode>,
     /// Settings per provider, by provider id.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub model_providers: BTreeMap<String, ModelProviderToml>,
@@ -162,29 +162,14 @@ pub enum InputModality {
     Pdf,
 }
 
-/// The mode a session runs in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Mode {
-    /// Mutating actions run without asking, contained by the sandbox;
-    /// destructive ones still ask.
-    Auto,
-    /// Every mutation asks first.
-    Safe,
-    /// Read-only, for a `koda exec` run that should only look.
-    Plan,
-}
+/// The mode a session runs in: the protocol's [`TrustMode`], Koda's one
+/// trust-mode type.
+pub use koda_protocol::state::TrustMode;
 
-impl Mode {
-    /// The value as written in the file and given to `--mode`.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::Safe => "safe",
-            Self::Plan => "plan",
-        }
-    }
-}
+/// The name this type had before it was shared with the engine and the
+/// protocol.
+#[deprecated(since = "0.7.1", note = "use `TrustMode`")]
+pub type Mode = TrustMode;
 
 /// One provider's settings: `[model_providers.<id>]`, in Codex's names.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

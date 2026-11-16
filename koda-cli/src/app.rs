@@ -1096,7 +1096,7 @@ mod tests {
         assert_eq!(config.model_temperature, Some(0.5));
         assert_eq!(config.model_thinking_budget, Some(2048));
         assert_eq!(config.model_reasoning_effort.as_deref(), Some("high"));
-        assert_eq!(config.mode, Some(koda_config::Mode::Safe));
+        assert_eq!(config.mode, Some(koda_config::TrustMode::Safe));
         // Unset flags set nothing.
         assert_eq!(config_of(&["koda"]), koda_config::ConfigToml::default());
     }

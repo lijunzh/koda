@@ -31,16 +31,117 @@ pub struct StateReadResponse {
     pub sandbox: SandboxState,
 }
 
-/// What Koda may do without asking.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+/// What Koda may do without asking: Koda's one trust mode, used by the
+/// engine, `config.toml`'s `mode` and the protocol alike, as Codex keeps
+/// its approval policy in `codex-protocol`.
+///
+/// Ordered `Plan < Safe < Auto`, so [`TrustMode::clamp`] keeps a sub-agent
+/// from exceeding the session that started it.
+///
+/// ```
+/// use koda_protocol::state::TrustMode;
+///
+/// assert_eq!(TrustMode::Safe.as_str(), "safe");
+/// assert_eq!(TrustMode::Safe.next(), TrustMode::Auto);
+/// assert_eq!(TrustMode::clamp(TrustMode::Plan, TrustMode::Auto), TrustMode::Plan);
+/// ```
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
+#[repr(u8)]
 pub enum TrustMode {
-    /// Read only; anything else is refused.
-    Plan,
-    /// Anything with a side effect needs approval.
-    Safe,
-    /// Everything runs without asking, inside the sandbox.
-    Auto,
+    /// Read only: reads, searches and read-only commands run; anything else
+    /// is refused. For sub-agents and `koda exec` runs that should only
+    /// look.
+    Plan = 0,
+    /// Every action with a side effect asks first.
+    #[default]
+    Safe = 1,
+    /// Mutating actions run without asking, contained by the sandbox;
+    /// destructive actions and writes outside the project still ask.
+    Auto = 2,
+}
+
+impl TrustMode {
+    /// What the keyboard toggle switches to: Safe and Auto in turn. Plan
+    /// stays Plan; an interactive session never runs in it.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Plan => Self::Plan,
+            Self::Safe => Self::Auto,
+            Self::Auto => Self::Safe,
+        }
+    }
+
+    /// The name in `config.toml`, on `--mode` and on the wire.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Plan => "plan",
+            Self::Safe => "safe",
+            Self::Auto => "auto",
+        }
+    }
+
+    /// Short label for display (the same as [`TrustMode::as_str`]).
+    pub fn label(self) -> &'static str {
+        self.as_str()
+    }
+
+    /// One line on what the mode does.
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Plan => "read-only, every write refused",
+            Self::Safe => "confirm every side effect",
+            Self::Auto => {
+                "auto-approve in the sandbox; destructive and outside-project still confirm"
+            }
+        }
+    }
+
+    /// A mode from what a person typed, with the older names Koda took.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "auto" | "yolo" | "accept" => Some(Self::Auto),
+            "safe" | "confirm" | "strict" | "normal" => Some(Self::Safe),
+            "plan" | "readonly" | "read-only" => Some(Self::Plan),
+            _ => None,
+        }
+    }
+
+    /// A child's mode, never above its parent's: `min(parent, child)`.
+    pub fn clamp(parent: TrustMode, child: TrustMode) -> TrustMode {
+        std::cmp::min(parent, child)
+    }
+}
+
+impl From<u8> for TrustMode {
+    fn from(v: u8) -> Self {
+        match v {
+            0 => Self::Plan,
+            1 => Self::Safe,
+            2 => Self::Auto,
+            // Fail-safe: an unknown value is Safe, never Auto (#860).
+            _ => Self::Safe,
+        }
+    }
+}
+
+impl std::fmt::Display for TrustMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// The sandbox commands run in.
