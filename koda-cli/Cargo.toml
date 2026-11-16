@@ -82,6 +82,9 @@ libc = { workspace = true }
 
 # Clipboard (for Ctrl+Y copy)
 arboard = "3"
+# Encode a pasted clipboard image as PNG, scaled down (arboard already
+# brings this crate).
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 # Debug bundle: zip packaging for /debug-bundle slash command (RFC #1167).
 # Chosen over tar.gz for random-access reads (LLM debugging workflows poke

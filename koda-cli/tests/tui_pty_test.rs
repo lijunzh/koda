@@ -2339,3 +2339,36 @@ async fn feedback_saves_a_report_with_the_session() {
     assert!(report.contains("\"reason\": \"it hung\""), "{report}");
     assert!(report.contains("\"classification\": \"bug\""), "{report}");
 }
+
+/// A file dropped on the terminal arrives as a bracketed paste of its
+/// path: the input box shows an `[Image #1]` marker, as Claude Code's
+/// does, and the prompt carries the image with the marker in its text.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dropped_image_becomes_a_marker_and_reaches_the_model() {
+    let server = scripted_model(vec![]).await;
+    let home = home();
+    // A local model that takes images.
+    std::fs::write(
+        home.path().join(".config/koda/config.toml"),
+        "model_input_modalities = [\"text\", \"image\"]\n",
+    )
+    .unwrap();
+    let shot = home.path().join("shot 1.png");
+    std::fs::write(&shot, b"\x89PNG\r\n\x1a\nrest").unwrap();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    // As macOS Terminal drops a file: its path, spaces escaped.
+    let dropped = shot.display().to_string().replace(' ', "\\ ");
+    tui.paste(&format!("\x1b[200~{dropped} \x1b[201~"));
+    tui.wait_for_screen("[Image #1]");
+    assert!(
+        !tui.screen().contains("shot"),
+        "the path stayed:\n{}",
+        tui.screen()
+    );
+
+    tui.submit(" what is this?");
+    let sent = wait_for_model_call(&server, 1).await;
+    assert!(sent.contains("[Image #1] what is this?"), "{sent}");
+    assert!(sent.contains("data:image/png;base64,"), "no image: {sent}");
+}

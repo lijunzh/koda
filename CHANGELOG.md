@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **Paste an image with `Ctrl+V`, as in Claude Code.** Copy a screenshot and press `Ctrl+V` (or `Alt+V`; `Cmd+V` in iTerm2): it goes in the input box as an `[Image #N]` marker where the cursor is, and is sent as a PNG, scaled to 1,568 pixels on its long edge if larger. A file dragged onto the terminal becomes a marker too, instead of its path. Delete a marker and its image stays behind; over SSH Koda can't read your clipboard and says so.
+
 ### Changed
 
 - **No more Intel Mac binary.** Releases build for Apple Silicon Macs and for Linux on x86_64 and ARM64. Apple's last Intel Macs shipped in 2023, and CI has no Intel Mac to test on. On an Intel Mac, `brew install koda` now says the formula needs ARM64; `cargo install koda-cli --locked` still builds Koda there.

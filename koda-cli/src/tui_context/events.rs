@@ -35,6 +35,21 @@ impl TuiContext {
     }
 
     pub(crate) fn handle_idle_paste(&mut self, text: &str) {
+        if !matches!(self.prompt_mode, PromptMode::WizardInput { .. }) {
+            // An empty paste is a clipboard holding an image and no text:
+            // iTerm2's Cmd+V sends one, as Claude Code notes.
+            if text.is_empty() {
+                if let Ok(image) = crate::clipboard_image::read() {
+                    self.attach_image(image);
+                }
+                return;
+            }
+            // A file dropped on the terminal arrives as its path.
+            if let Some(image) = input::dropped_image(text) {
+                self.attach_image(image);
+                return;
+            }
+        }
         let char_count = text.chars().count();
         if matches!(self.prompt_mode, PromptMode::WizardInput { .. })
             || char_count < input::PASTE_BLOCK_THRESHOLD
@@ -62,6 +77,28 @@ impl TuiContext {
                 Span::styled(preview, Style::default().fg(Color::DarkGray)),
             ]));
         }
+    }
+
+    /// Paste the clipboard's image as an `[Image #N]` marker at the
+    /// cursor (Ctrl+V or Alt+V, as Claude Code and Codex bind it), or say
+    /// why there is none.
+    pub(crate) fn paste_clipboard_image(&mut self) {
+        match crate::clipboard_image::read() {
+            Ok(image) => self.attach_image(image),
+            Err(e) => self.scroll_buffer.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(e.to_string(), Style::default().fg(Color::Yellow)),
+            ])),
+        }
+    }
+
+    /// Put `image` in the input box as an `[Image #N]` marker at the
+    /// cursor; it goes with the prompt while the marker stays.
+    pub(crate) fn attach_image(&mut self, image: input::ImageData) {
+        self.image_count += 1;
+        let marker = format!("[Image #{}]", self.image_count);
+        self.textarea.insert_element(&marker);
+        self.pasted_images.push((marker, image));
     }
 
     pub(crate) async fn handle_idle_key(
@@ -101,6 +138,13 @@ impl TuiContext {
         }
 
         match (key.code, key.modifiers) {
+            (KeyCode::Char('v'), m)
+                if m == KeyModifiers::CONTROL
+                    || m == KeyModifiers::ALT
+                    || m == KeyModifiers::CONTROL | KeyModifiers::ALT =>
+            {
+                self.paste_clipboard_image();
+            }
             (KeyCode::Enter, m) if m.contains(KeyModifiers::ALT) => {
                 self.textarea.insert_str("\n");
             }

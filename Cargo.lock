@@ -1878,6 +1878,7 @@ dependencies = [
  "crossterm",
  "diffy",
  "futures-util",
+ "image",
  "koda-client",
  "koda-config",
  "koda-core",

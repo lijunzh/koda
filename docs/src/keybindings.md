@@ -11,6 +11,7 @@
 | `↑ / ↓` | Cycle through input history |
 | `Ctrl+R` | Reverse history search |
 | `Ctrl+O` | Tool output in full, or folded again (works mid-turn) |
+| `Ctrl+V` / `Alt+V` | Paste the image on the clipboard as an `[Image #N]` marker (`Cmd+V` too in iTerm2); see [Images](./attachments.md#images) |
 
 ## Navigation
 

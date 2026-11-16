@@ -20,6 +20,7 @@ pub(crate) mod ansi_parse;
 pub(crate) mod app;
 pub(crate) mod child_activity;
 pub(crate) mod clipboard;
+pub(crate) mod clipboard_image;
 pub(crate) mod completer;
 pub(crate) mod composer;
 pub(crate) mod diff_render;
