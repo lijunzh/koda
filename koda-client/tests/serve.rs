@@ -104,6 +104,10 @@ struct Wire {
     output: Option<BufReader<DuplexStream>>,
     served: JoinHandle<Result<(), koda_client::RequestError>>,
     next_id: i64,
+    /// Lines read while waiting for a request's answer, not yet taken:
+    /// an answer travels apart from the session's messages, so they can
+    /// come before it and still belong to what the test reads next.
+    pending: std::collections::VecDeque<Value>,
     session: String,
     project: std::path::PathBuf,
     _dir: tempfile::TempDir,
@@ -148,6 +152,7 @@ impl Wire {
             output: Some(BufReader::new(output)),
             served,
             next_id: 1,
+            pending: std::collections::VecDeque::new(),
             session: String::new(),
             project,
             _dir: dir,
@@ -191,8 +196,16 @@ impl Wire {
         id
     }
 
-    /// The next line Koda wrote; `None` at EOF.
+    /// The next line Koda wrote, those set aside first; `None` at EOF.
     async fn next(&mut self) -> Option<Value> {
+        if let Some(line) = self.pending.pop_front() {
+            return Some(line);
+        }
+        self.read().await
+    }
+
+    /// The next line from Koda's stdout; `None` at EOF.
+    async fn read(&mut self) -> Option<Value> {
         let output = self.output.as_mut().expect("stdout is closed");
         let mut line = String::new();
         let read = tokio::time::timeout(WAIT, output.read_line(&mut line))
@@ -234,12 +247,20 @@ impl Wire {
         self.until(|l| l["method"] == method).await
     }
 
-    /// The answer to request `id`: its result, or its error.
+    /// The answer to request `id`: its result, or its error. Lines before it
+    /// are set aside for the next read, not dropped.
     async fn response(&mut self, id: i64) -> Result<Value, Value> {
-        let lines = self
-            .until(|l| l["id"] == id && l.get("method").is_none())
-            .await;
-        let answer = lines.last().unwrap();
+        let is_answer = |l: &Value| l["id"] == id && l.get("method").is_none();
+        let answer = match self.pending.iter().position(is_answer) {
+            Some(at) => self.pending.remove(at).unwrap(),
+            None => loop {
+                let line = self.read().await.expect("Koda's stdout ended");
+                if is_answer(&line) {
+                    break line;
+                }
+                self.pending.push_back(line);
+            },
+        };
         match answer.get("error") {
             Some(error) => Err(error.clone()),
             None => Ok(answer["result"].clone()),
