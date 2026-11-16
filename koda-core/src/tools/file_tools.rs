@@ -40,7 +40,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 number, a tab, then the text, like `cat -n`. A file too long for one result \
                 stops at a whole line and says which start_line continues it. \
                 For large files (>500 lines), use start_line and num_lines to read specific \
-                portions instead of the whole file. ALWAYS read a file before editing it — \
+                portions instead of the whole file. A Jupyter notebook (.ipynb) comes back \
+                as its cells with their outputs; give start_line or num_lines to read its \
+                JSON instead, as Edit matches it. ALWAYS read a file before editing it — \
                 never guess at file contents."
                 .to_string(),
             parameters: json!({
@@ -160,6 +162,9 @@ pub async fn read_file(
 ) -> Result<String> {
     match read_text_or_image(project_root, args, cache, fs, max_bytes).await? {
         ReadOutput::Text(text) => Ok(text),
+        ReadOutput::Notebook { path, notebook } => {
+            Ok(rendered_notebook(&path, &notebook, false, max_bytes)?.text)
+        }
         ReadOutput::Image { path, .. } => anyhow::bail!(
             "{path} is an image, which Read can't show here. Inspect it with Bash \
              instead, such as `file {path}`, or a tool that reads its format."
@@ -172,6 +177,13 @@ pub async fn read_file(
 pub enum ReadOutput {
     /// The numbered lines, as Read returns them.
     Text(String),
+    /// A Jupyter notebook read whole, to be shown as its cells.
+    Notebook {
+        /// The path as asked for.
+        path: String,
+        /// The parsed notebook.
+        notebook: Value,
+    },
     /// An image file (PNG, JPEG, GIF, WebP), as read.
     Image {
         /// The path as asked for.
@@ -214,6 +226,15 @@ pub async fn read_text_or_image(
     let size = metadata.len();
     // An image too large to send is refused before it is read, as Claude
     // Code's Read refuses one over 128 MB.
+    if size > super::notebook::MAX_NOTEBOOK_FILE_BYTES
+        && path_str.to_ascii_lowercase().ends_with(".ipynb")
+    {
+        anyhow::bail!(
+            "{path_str} is too large to read as a notebook ({} MB). Read part of it with \
+             Bash, such as `jq '.cells[0:20]' {path_str}`.",
+            size / (1024 * 1024)
+        );
+    }
     if size > super::media::MAX_IMAGE_FILE_BYTES && has_image_extension(path_str) {
         anyhow::bail!(
             "{path_str} is too large to read as an image ({} MB). Resize it or \
@@ -250,6 +271,21 @@ pub async fn read_text_or_image(
         );
     }
     let raw_content = String::from_utf8_lossy(&raw_bytes).into_owned();
+
+    // A notebook read whole comes back as its cells (Claude Code's Read);
+    // with a line range, as its JSON's numbered lines, which Edit matches.
+    if start_line.is_none()
+        && num_lines.is_none()
+        && let Some(notebook) = super::notebook::parse(path_str, &raw_bytes)
+    {
+        let hash = format!("{:x}", Sha256::digest(raw_content.as_bytes()));
+        let mut cache_guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+        cache_guard.insert(cache_key, (size, mtime, hash));
+        return Ok(ReadOutput::Notebook {
+            path: path_str.to_string(),
+            notebook,
+        });
+    }
 
     let output = numbered_window(&raw_content, start_line, num_lines, max_bytes);
     if start_line.is_none() && num_lines.is_none() {
@@ -908,10 +944,49 @@ impl Tool for ReadTool {
                 media_type,
                 bytes,
             }) => read_image(&path, media_type, bytes, ctx.takes_images),
+            Ok(ReadOutput::Notebook { path, notebook }) => {
+                match rendered_notebook(
+                    &path,
+                    &notebook,
+                    ctx.takes_images,
+                    ctx.caps.tool_result_chars,
+                ) {
+                    Ok(rendered) => ToolResult {
+                        output: rendered.text,
+                        success: true,
+                        full_output: None,
+                        images: rendered.images,
+                    },
+                    Err(e) => crate::tools::wrap_result(Err(e)),
+                }
+            }
             Ok(ReadOutput::Text(text)) => crate::tools::wrap_result(Ok(text)),
             Err(e) => crate::tools::wrap_result(Err(e)),
         }
     }
+}
+
+/// A notebook's cells, refused as Claude Code's Read refuses them when they
+/// come to more than 256 KB or more than one result holds (`max_bytes`),
+/// with how to read part of it instead.
+fn rendered_notebook(
+    path: &str,
+    notebook: &Value,
+    takes_images: bool,
+    max_bytes: usize,
+) -> Result<super::notebook::Rendered> {
+    let rendered = super::notebook::render(notebook, takes_images);
+    let limit = super::notebook::MAX_RENDERED_BYTES.min(max_bytes);
+    if rendered.text.len() > limit {
+        anyhow::bail!(
+            "{path}'s cells come to {} KB, more than one read returns ({} KB). Read \
+             part of it with Bash, such as `jq '.cells[0:20]' {path}`, or its JSON with \
+             start_line and num_lines.",
+            rendered.text.len() / 1024,
+            limit / 1024
+        );
+    }
+    Ok(rendered)
 }
 
 /// Read's result for an image file: the image itself where the model takes

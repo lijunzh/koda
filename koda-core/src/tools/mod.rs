@@ -78,6 +78,8 @@ pub mod media;
 pub mod memory;
 /// `@` mentions, read under the Read tool's rules.
 pub mod mention;
+/// What Read returns for a Jupyter notebook.
+pub mod notebook;
 /// On-demand conversation history retrieval (`RecallContext`).
 pub mod recall;
 /// Shell command execution tool (`Bash`).
@@ -1407,6 +1409,100 @@ mod tests {
         assert_eq!(seen.images.len(), 1);
         assert_eq!(seen.images[0].media_type, "image/png");
         assert!(note(&registry));
+    }
+
+    /// Read v2: a notebook read whole comes back as its cells and outputs,
+    /// with an output image as an image for a model that takes images; a
+    /// line range gives its JSON, which an Edit after the whole read
+    /// matches.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn read_shows_a_notebook_as_its_cells() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::RgbImage::from_pixel(4, 4, image::Rgb([20, 20, 220]))
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let encoded =
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, png.into_inner());
+        let notebook = serde_json::json!({
+            "nbformat": 4, "nbformat_minor": 5, "metadata": {},
+            "cells": [
+                {"cell_type": "code", "id": "a", "execution_count": 1, "metadata": {},
+                 "source": ["x = 41\n", "x + 1"],
+                 "outputs": [{"output_type": "execute_result", "execution_count": 1,
+                              "metadata": {}, "data": {"text/plain": ["42"]}}]},
+                {"cell_type": "code", "id": "b", "execution_count": 2, "metadata": {},
+                 "source": "plot()",
+                 "outputs": [{"output_type": "display_data", "metadata": {},
+                              "data": {"image/png": encoded}}]}
+            ]
+        });
+        std::fs::write(
+            dir.path().join("nb.ipynb"),
+            serde_json::to_string_pretty(&notebook).unwrap(),
+        )
+        .unwrap();
+        let registry = ToolRegistry::new(dir.path().to_path_buf(), 100_000);
+        let read = |args: &'static str| registry.execute("Read", args, None, None);
+
+        let text_only = read(r#"{"file_path":"nb.ipynb"}"#).await;
+        assert!(text_only.success, "{}", text_only.output);
+        assert!(
+            text_only
+                .output
+                .contains("x = 41\nx + 1\n<output type=\"result\">\n42\n")
+        );
+        assert!(text_only.output.contains("this model doesn't take images"));
+        assert!(text_only.images.is_empty());
+
+        registry.set_takes_images(true);
+        let seen = read(r#"{"file_path":"nb.ipynb"}"#).await;
+        assert!(seen.success, "{}", seen.output);
+        assert_eq!(seen.images.len(), 1, "{}", seen.output);
+        assert!(
+            seen.output.contains("image 1 of this read, 4×4"),
+            "{}",
+            seen.output
+        );
+
+        let json = read(r#"{"file_path":"nb.ipynb","start_line":1,"num_lines":3}"#).await;
+        assert!(json.output.contains("\"cells\": ["), "{}", json.output);
+
+        // The whole read counts as a read for Edit, which matches the JSON.
+        let edit = registry
+            .execute(
+                "Edit",
+                &edit_json("nb.ipynb", "x = 41", "x = 1"),
+                None,
+                None,
+            )
+            .await;
+        assert!(edit.success, "{edit:?}");
+    }
+
+    /// A notebook whose cells come to more than one read returns is refused
+    /// with how to read part of it, as Claude Code's Read refuses one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn read_refuses_a_notebook_too_large_for_one_result() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let cells: Vec<Value> = (0..40)
+            .map(|i| serde_json::json!({"cell_type": "markdown", "source": format!("{i} {}", "word ".repeat(2000))}))
+            .collect();
+        std::fs::write(
+            dir.path().join("big.ipynb"),
+            serde_json::to_string(&serde_json::json!({"nbformat": 4, "cells": cells})).unwrap(),
+        )
+        .unwrap();
+        let registry = ToolRegistry::new(dir.path().to_path_buf(), 100_000);
+        let result = registry
+            .execute("Read", r#"{"file_path":"big.ipynb"}"#, None, None)
+            .await;
+        assert!(!result.success);
+        assert!(
+            result.output.contains("jq '.cells[0:20]' big.ipynb"),
+            "{}",
+            result.output
+        );
     }
 
     /// A registry over a temp dir holding `f.txt`, already fully read.

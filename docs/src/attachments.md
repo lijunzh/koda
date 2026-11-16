@@ -18,6 +18,8 @@ after your text, as Claude Code does:
 - **A file** is read the way the `Read` tool reads one: numbered lines, up to
   Read's limit (larger with a larger context window), with a note saying how
   to read the rest.
+- **A Jupyter notebook** gives its cells and their outputs, as Read shows
+  one ([Notebooks](#notebooks)); output images become a note.
 - **A directory** gives its listing, as the `List` tool does, not its files.
 - **An image** (PNG, JPEG, GIF, WebP) is sent as an image, for models that
   take them.
@@ -104,6 +106,21 @@ over both:
 ```toml
 model_input_modalities = ["text", "image"]
 ```
+
+## Notebooks
+
+`Read` on a Jupyter notebook (`.ipynb`) returns its cells rather than its
+JSON, as Claude Code's Read does: each cell's type, ID and source, then its
+outputs, meaning printed text, results and error tracebacks (without their
+colour codes). An output image (a plot, say) comes back as an image for a
+model that takes images, scaled like any other, and as a one-line note for
+one that doesn't. An `@` mention of a notebook sends the same cells.
+
+Claude Code's limits apply: cells that come to more than 256 KB, or more
+than one tool result holds, are an error that suggests reading part of the
+notebook with `jq`, and a notebook file over 100 MB is refused. To see the
+JSON itself, as `Edit` matches it, give `Read` a `start_line` or
+`num_lines`.
 
 ## Large pastes
 
