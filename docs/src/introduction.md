@@ -39,6 +39,9 @@ address) or a model alias such as `--model claude-opus`.
 
 ## What's next
 
+- The [Quickstart](./quickstart.md) walks through a first session, and
+  [How Koda works](./how-koda-works.md) explains what happens in one
+- Running a model on your own machine? See [Local models](./local-models.md)
 - Coming from 0.6? Read [Upgrading to 0.7](./upgrading-0.7.md)
 - The [CLI reference](./cli-reference.md) lists every flag
 - [Trust modes](./approval.md) decide what Koda may do without asking

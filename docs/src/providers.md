@@ -60,7 +60,8 @@ koda --base-url http://127.0.0.1:8080/v1
   prints the size it assumed, and if the server rejects a request with a
   stated limit (llama.cpp, vLLM, OpenAI), Koda adopts that limit and says so.
 - **Give llama-server enough context.** Koda's system prompt and tool schemas
-  are about 8K tokens, so start it with `-c 16384` or more. The llama-server
+  are about 12K tokens, so start it with `-c 16384` or more ([Local
+  models](./local-models.md) suggests 65,536 or more for real work). The llama-server
   default of 4096 fails with a 400.
 - Inside the TUI, `/provider http://127.0.0.1:8080/v1` switches to a URL and
   remembers it for the next session, as `[model_providers.llama-cpp] base_url`
