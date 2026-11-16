@@ -74,6 +74,8 @@ pub enum MenuContent {
             crate::widgets::dropdown::DropdownState<crate::widgets::feedback_menu::FeedbackItem>,
         classification: Option<&'static str>,
     },
+    /// "Implement this plan?", after a Plan turn that proposed one.
+    PlanImplement(crate::widgets::dropdown::DropdownState<crate::widgets::plan_menu::PlanChoice>),
     /// File picker dropdown (auto-appears when the user types `@`).
     File {
         dropdown: FileDropdown,

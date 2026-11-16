@@ -584,7 +584,7 @@ impl KodaSession {
         } else {
             String::new()
         };
-        let base_prompt = self.agent.system_prompt_for_model(&config.model);
+        let base_prompt = self.agent.system_prompt_for_turn(&config.model, self.mode);
         let system_prompt = if mcp_section.is_empty() {
             base_prompt
         } else {

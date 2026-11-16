@@ -7,7 +7,7 @@
 | `Enter` | Send message, including during inference, when the model gets it in the current turn (slash commands rejected mid-inference — press `Esc` first) |
 | `Alt+Enter` | Insert newline (multi-line input) |
 | `Tab` | Autocomplete slash commands and `@file` paths |
-| `Shift+Tab` | Cycle trust mode (Safe ↔ Auto) |
+| `Shift+Tab` | Cycle the mode: Safe, Auto, Plan (Auto only with the sandbox) |
 | `↑ / ↓` | Cycle through input history |
 | `Ctrl+R` | Reverse history search |
 | `Ctrl+O` | Tool output in full, or folded again (works mid-turn) |

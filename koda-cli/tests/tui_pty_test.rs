@@ -976,8 +976,8 @@ async fn a_resumed_session_shows_and_keeps_its_history() {
 }
 
 /// Shift+Tab switches Safe to Auto through the host, which records it with
-/// the session; on a machine without a sandbox the host's setup hint is
-/// shown instead and the mode stays Safe.
+/// the session; on a machine without a sandbox it skips Auto for Plan and
+/// says why.
 #[tokio::test(flavor = "multi_thread")]
 async fn shift_tab_switches_the_mode_through_the_host() {
     use koda_state::session_store::SessionStore;
@@ -987,8 +987,8 @@ async fn shift_tab_switches_the_mode_through_the_host() {
     tui.wait_for_screen("SAFE");
     tui.type_text("\x1b[Z");
     tui.wait_for_screen_that(
-        |screen| screen.contains("AUTO") || screen.contains("Auto mode requires"),
-        "show Auto, or why it isn't available",
+        |screen| screen.contains("AUTO") || screen.contains("Auto skipped"),
+        "show Auto, or why it was skipped",
     );
     let switched = tui.screen().contains("AUTO");
     tui.submit("hello");
@@ -1018,8 +1018,7 @@ async fn a_resumed_session_keeps_its_mode_and_copy_takes_its_reply() {
     tui.wait_for_screen("All done.");
     let session = quit_and_read_session_id(&mut tui);
 
-    // Stored as an older Koda could leave it: in Plan, which a top-level
-    // session can't run in.
+    // Stored in Plan, as `/plan` leaves it: it opens in Plan again.
     let db = koda_state::db::Database::init(&home.path().join(".config/koda"))
         .await
         .unwrap();
@@ -1033,7 +1032,7 @@ async fn a_resumed_session_keeps_its_mode_and_copy_takes_its_reply() {
         IDLE_HINT,
     );
     tui.wait_for_screen("session resumed");
-    tui.wait_for_screen("Plan mode is sub-agent-only");
+    tui.wait_for_screen("PLAN");
     run_command(&mut tui, "/copy");
     tui.wait_for_screen("Copied last response");
     let screen = tui.screen();
@@ -2530,4 +2529,79 @@ async fn a_large_paste_is_a_marker_sent_where_it_was_pasted() {
         2,
         "the recalled prompt lost its paste: {again}"
     );
+}
+
+/// A reply that proposes a plan, as Plan's instructions ask.
+fn proposed_plan() -> ResponseTemplate {
+    sse(&[
+        json!({"choices": [{"delta": {"content":
+            "Here is the plan.\n\n<proposed_plan>\n# Greeting\n- Add a hello line\n</proposed_plan>\n"}}]}),
+        json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+    ])
+}
+
+/// `/plan <prompt>` enters Plan and sends the prompt, whose turn tells the
+/// model it plans; a proposed plan is drawn framed, and "Implement this
+/// plan?" switches to Safe and sends "Implement the plan.", as Codex's TUI
+/// does.
+#[tokio::test(flavor = "multi_thread")]
+async fn plan_then_implement_it_in_safe() {
+    use koda_state::session_store::SessionStore;
+    let server = scripted_model(vec![proposed_plan()]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    tui.wait_for_screen("SAFE");
+    run_command(&mut tui, "/plan add a greeting");
+    tui.wait_for_screen("Implement this plan?");
+    let screen = tui.screen();
+    assert!(screen.contains("PLAN"), "{screen}");
+    assert!(screen.contains("Proposed plan"), "{screen}");
+    assert!(!screen.contains("<proposed_plan>"), "{screen}");
+    assert!(screen.contains("No, keep planning"), "{screen}");
+    let planning = wait_for_model_call(&server, 1).await;
+    assert!(planning.contains("add a greeting"), "{planning}");
+    assert!(planning.contains("plan mode"), "{planning}");
+    assert!(planning.contains("<proposed_plan>"), "{planning}");
+
+    // The first choice: implement it in Safe.
+    tui.type_text("\r");
+    tui.wait_for_screen("All done.");
+    let implementing = wait_for_model_call(&server, 2).await;
+    assert!(
+        implementing.contains("Implement the plan."),
+        "{implementing}"
+    );
+    assert!(
+        !implementing.contains("Read-only session"),
+        "still told it plans: {implementing}"
+    );
+    tui.wait_for_screen("SAFE");
+    let session = quit_and_read_session_id(&mut tui);
+    let db = koda_state::db::Database::init(&home.path().join(".config/koda"))
+        .await
+        .unwrap();
+    assert_eq!(
+        db.get_session_mode(&session).await.unwrap().as_deref(),
+        Some("safe")
+    );
+}
+
+/// Typing while "Implement this plan?" is up is a reply: the menu goes,
+/// the text is sent, and the session stays in Plan.
+#[tokio::test(flavor = "multi_thread")]
+async fn typing_a_reply_keeps_planning() {
+    let server = scripted_model(vec![proposed_plan()]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    tui.wait_for_screen("SAFE");
+    run_command(&mut tui, "/plan add a greeting");
+    tui.wait_for_screen("Implement this plan?");
+    tui.submit("use French");
+    tui.wait_for_screen("All done.");
+    let reply = wait_for_model_call(&server, 2).await;
+    assert!(reply.contains("use French"), "{reply}");
+    assert!(reply.contains("plan mode"), "{reply}");
+    let screen = tui.screen();
+    assert!(screen.contains("PLAN"), "{screen}");
+    assert!(!screen.contains("Implement this plan?"), "{screen}");
 }

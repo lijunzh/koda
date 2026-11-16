@@ -83,6 +83,11 @@ pub const SLASH_COMMANDS: &[(&str, &str, Option<&str>)] = &[
         "Start a new session on the same model (also /clear)",
         None,
     ),
+    (
+        "/plan",
+        "Plan with the model before it changes anything (Shift+Tab)",
+        None,
+    ),
     ("/provider", "Browse all models from a provider", None),
     ("/rename", "Name this session, for /resume", None),
     (

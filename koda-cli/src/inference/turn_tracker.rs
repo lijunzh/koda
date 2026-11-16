@@ -26,6 +26,9 @@ pub(crate) struct TurnTracker {
     sent: usize,
     /// `turn/completed`, once it has arrived.
     completed: Option<Turn>,
+    /// The model proposed a plan: one of its replies, not a sub-agent's,
+    /// has a `<proposed_plan>` block.
+    proposed_plan: bool,
 }
 
 impl TurnTracker {
@@ -43,6 +46,12 @@ impl TurnTracker {
             Outgoing::Notification(ServerNotification::ItemCompleted(done))
                 if done.turn_id == self.turn_id =>
             {
+                if let Item::AgentMessage { text, .. } = &done.item
+                    && done.parent_item_id.is_none()
+                    && crate::widgets::plan_menu::proposes_plan(text)
+                {
+                    self.proposed_plan = true;
+                }
                 if let Item::UserMessage {
                     client_message_ids, ..
                 } = &done.item
@@ -68,6 +77,11 @@ impl TurnTracker {
     /// The turn's `turn/completed`, once it has arrived.
     pub(crate) fn completed(&self) -> Option<&Turn> {
         self.completed.as_ref()
+    }
+
+    /// Whether the model proposed a plan this turn.
+    pub(crate) fn proposed_plan(&self) -> bool {
+        self.proposed_plan
     }
 
     /// Keep `text`, about to go with `turn/steer`, until the model receives
@@ -106,6 +120,33 @@ mod tests {
                 completed_at_ms: 0,
             },
         ))
+    }
+
+    fn reply(turn: &str, parent: Option<&str>, text: &str) -> Outgoing {
+        Outgoing::Notification(ServerNotification::ItemCompleted(
+            ItemCompletedNotification {
+                session_id: "s".into(),
+                turn_id: turn.into(),
+                parent_item_id: parent.map(str::to_string),
+                item: Item::AgentMessage {
+                    id: "m".into(),
+                    text: text.into(),
+                },
+                completed_at_ms: 0,
+            },
+        ))
+    }
+
+    #[test]
+    fn a_plan_is_the_model_s_own_in_this_turn() {
+        let plan = "<proposed_plan>\n# Plan\n</proposed_plan>";
+        let mut tracker = TurnTracker::new("t1".into());
+        tracker.observe_message(&reply("t1", None, "Which database?"));
+        tracker.observe_message(&reply("t1", Some("agent-call"), plan));
+        tracker.observe_message(&reply("t0", None, plan));
+        assert!(!tracker.proposed_plan());
+        tracker.observe_message(&reply("t1", None, plan));
+        assert!(tracker.proposed_plan());
     }
 
     #[test]

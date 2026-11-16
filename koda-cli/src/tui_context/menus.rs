@@ -474,6 +474,16 @@ impl TuiContext {
         // live bg-task surface migrated to the always-on activity
         // overlay above the status bar; Esc and Ctrl+C cancel all of it.)
 
+        // Typing while "Implement this plan?" is up is a reply to the
+        // model: the menu goes and the key reaches the input box.
+        if matches!(self.menu, MenuContent::PlanImplement(_))
+            && matches!(key.code, KeyCode::Char(_))
+            && !key.modifiers.contains(KeyModifiers::CONTROL)
+        {
+            self.menu = MenuContent::None;
+            return None;
+        }
+
         let is_up = key.code == KeyCode::Up
             || (key.code == KeyCode::Char('k') && key.modifiers.contains(KeyModifiers::CONTROL));
         let is_down = key.code == KeyCode::Down
@@ -544,6 +554,7 @@ impl TuiContext {
             MenuContent::ProviderModels(dd, _) => nav!(dd),
             MenuContent::Key(dd) => nav!(dd),
             MenuContent::Feedback { dropdown, .. } => nav!(dropdown),
+            MenuContent::PlanImplement(dd) => nav!(dd),
             MenuContent::Session(dd) => nav!(dd),
             MenuContent::File { dropdown: dd, .. } => nav!(dd),
             MenuContent::Approval { .. }
@@ -636,6 +647,14 @@ impl TuiContext {
                             self.start_feedback_note(classification, value == "yes")
                         }
                     }
+                }
+                return;
+            }
+            MenuContent::PlanImplement(dd) => {
+                let mode = dd.selected_item().and_then(|choice| choice.mode);
+                self.menu = MenuContent::None;
+                if let Some(mode) = mode {
+                    self.implement_plan(mode).await;
                 }
                 return;
             }

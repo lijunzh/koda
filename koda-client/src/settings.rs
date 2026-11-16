@@ -613,35 +613,27 @@ pub(crate) fn probe_sandbox() -> SandboxState {
 
 /// The modes a session may run in, which the host enforces whichever
 /// client asks, as Codex's server owns a thread's sandbox policy: Auto
-/// needs the sandbox, and a session a person answers runs in Safe rather
-/// than Plan.
+/// needs the sandbox. Plan is open to every session, a session a person
+/// answers included, as Codex's and Claude Code's plan modes are.
 #[derive(Debug, Clone)]
 pub(crate) struct ModeRules {
-    /// Someone answers the session's requests (approval policy not `never`).
-    pub answered: bool,
     /// This machine's sandbox.
     pub sandbox: SandboxState,
 }
 
 impl ModeRules {
-    /// The mode a session runs in when `asked` is asked for, with a warning
-    /// when it isn't `asked`. Auto without the sandbox is refused, with
-    /// what to do about it.
+    /// The mode a session runs in when `asked` is asked for. Auto without
+    /// the sandbox is refused, with what to do about it.
     pub(crate) fn allow(
         &self,
         asked: koda_core::trust::TrustMode,
-    ) -> Result<(koda_core::trust::TrustMode, Option<&'static str>), ErrorObject> {
-        let (mode, warning) = if self.answered {
-            koda_core::trust::coerce_for_top_level(asked)
-        } else {
-            (asked, None)
-        };
-        koda_core::trust::require_sandbox_for_auto(mode, self.sandbox.available)
-            .map(|mode| (mode, warning))
-            .map_err(|message| match &self.sandbox.setup_hint {
+    ) -> Result<koda_core::trust::TrustMode, ErrorObject> {
+        koda_core::trust::require_sandbox_for_auto(asked, self.sandbox.available).map_err(
+            |message| match &self.sandbox.setup_hint {
                 Some(hint) => invalid(format!("{message}\n\nSetup:\n{hint}")),
                 None => invalid(message),
-            })
+            },
+        )
     }
 }
 
@@ -650,9 +642,8 @@ mod mode_rules_tests {
     use super::*;
     use koda_core::trust::TrustMode as Core;
 
-    fn rules(answered: bool, available: bool) -> ModeRules {
+    fn rules(available: bool) -> ModeRules {
         ModeRules {
-            answered,
             sandbox: SandboxState {
                 backend: "bwrap".to_string(),
                 available,
@@ -664,11 +655,8 @@ mod mode_rules_tests {
 
     #[test]
     fn auto_needs_the_sandbox() {
-        assert_eq!(
-            rules(true, true).allow(Core::Auto).unwrap(),
-            (Core::Auto, None)
-        );
-        let refused = rules(true, false).allow(Core::Auto).unwrap_err();
+        assert_eq!(rules(true).allow(Core::Auto).unwrap(), Core::Auto);
+        let refused = rules(false).allow(Core::Auto).unwrap_err();
         assert!(
             refused.message.contains("Auto mode requires"),
             "{refused:?}"
@@ -677,17 +665,12 @@ mod mode_rules_tests {
             refused.message.contains("install bubblewrap"),
             "{refused:?}"
         );
-        assert_eq!(rules(false, false).allow(Core::Safe).unwrap().0, Core::Safe);
+        assert_eq!(rules(false).allow(Core::Safe).unwrap(), Core::Safe);
     }
 
     #[test]
-    fn plan_is_for_sessions_nobody_answers() {
-        let (mode, warning) = rules(true, true).allow(Core::Plan).unwrap();
-        assert_eq!(mode, Core::Safe);
-        assert!(warning.is_some());
-        assert_eq!(
-            rules(false, false).allow(Core::Plan).unwrap(),
-            (Core::Plan, None)
-        );
+    fn plan_is_open_to_every_session() {
+        assert_eq!(rules(true).allow(Core::Plan).unwrap(), Core::Plan);
+        assert_eq!(rules(false).allow(Core::Plan).unwrap(), Core::Plan);
     }
 }

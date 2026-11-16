@@ -548,6 +548,31 @@ impl ToolRegistry {
         caller_spawner: Option<u32>,
         can_ask: bool,
     ) -> ToolResult {
+        self.execute_in(
+            name,
+            arguments,
+            sink_for_streaming,
+            caller_spawner,
+            can_ask,
+            self.trust,
+        )
+        .await
+    }
+
+    /// [`Self::execute_for`] in the turn's `mode`, which a session a
+    /// person answers can change between turns. A Plan turn on a registry
+    /// built for another mode runs a command under Plan's sandbox policy
+    /// ([`crate::sandbox::policy_for_agent`]), so the project is read-only
+    /// in the kernel too, as in a headless Plan session.
+    pub async fn execute_in(
+        &self,
+        name: &str,
+        arguments: &str,
+        sink_for_streaming: Option<(&dyn crate::engine::EngineSink, &str)>,
+        caller_spawner: Option<u32>,
+        can_ask: bool,
+        mode: crate::trust::TrustMode,
+    ) -> ToolResult {
         let raw = arguments.trim();
         let raw = if raw.is_empty() { "{}" } else { raw };
         let args: Value = match serde_json::from_str(raw) {
@@ -587,7 +612,10 @@ impl ToolRegistry {
             // still see them. The other fields come straight off
             // `self` — same shape every legacy match arm pre-#1265
             // would have read.
-            let policy = self.sandbox_policy();
+            let plan_policy = (mode == crate::trust::TrustMode::Plan
+                && self.trust != crate::trust::TrustMode::Plan)
+                .then(|| crate::sandbox::policy_for_agent(mode, &self.project_root));
+            let policy = plan_policy.as_ref().unwrap_or(self.sandbox_policy());
             let proxy_port = self.proxy_port();
             let socks5_port = self.socks5_port();
             // Snapshot the session pair under one lock-acquisition
@@ -608,7 +636,7 @@ impl ToolRegistry {
                 caller_spawner,
                 can_ask,
                 bg_registry: &self.bg_registry,
-                trust: &self.trust,
+                trust: &mode,
                 sandbox_policy: policy,
                 proxy_port,
                 socks5_port,
@@ -1478,6 +1506,47 @@ mod tests {
             .execute("Read", r#"{"file_path":"f.txt"}"#, None, None)
             .await;
         assert!(read.success && read.output.contains("ONE"), "{read:?}");
+    }
+
+    /// A Plan turn in a session built for Safe, as after `/plan` in the
+    /// TUI, runs a command with the project read-only in the kernel
+    /// sandbox, as a headless Plan session does; a Safe turn can write.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_plan_turn_s_command_cant_write_to_the_project() {
+        if !crate::sandbox::is_available() {
+            eprintln!("skip: needs the kernel sandbox");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let registry =
+            ToolRegistry::with_trust(root.clone(), 128_000, crate::trust::TrustMode::Safe);
+        let write =
+            |name: &str| serde_json::json!({ "command": format!("touch {name}") }).to_string();
+        let run = |args: String, mode| {
+            let registry = &registry;
+            async move {
+                registry
+                    .execute_in("Bash", &args, None, None, true, mode)
+                    .await
+            }
+        };
+        let planned = run(write("planned"), crate::trust::TrustMode::Plan).await;
+        assert!(!planned.success, "{planned:?}");
+        assert!(
+            planned.output.contains("Operation not permitted")
+                || planned.output.contains("Read-only"),
+            "{planned:?}"
+        );
+        assert!(
+            !root.join("planned").exists(),
+            "a Plan turn wrote to the project"
+        );
+        let safe = run(write("made"), crate::trust::TrustMode::Safe).await;
+        assert!(
+            root.join("made").exists(),
+            "a Safe turn couldn't write: {safe:?}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

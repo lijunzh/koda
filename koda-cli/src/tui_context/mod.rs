@@ -11,6 +11,7 @@ mod events;
 mod mcp;
 mod memory;
 mod menus;
+mod plan;
 mod session_cmds;
 pub(crate) mod settings;
 pub(crate) mod skills;
@@ -748,6 +749,13 @@ impl TuiContext {
         }
         if input.trim() == "/init" {
             return self.init_project();
+        }
+        if let Some(prompt) = input
+            .trim()
+            .strip_prefix("/plan")
+            .filter(|rest| rest.is_empty() || rest.starts_with(' '))
+        {
+            return self.enter_plan(prompt.trim()).await;
         }
         if input.trim() == "/provider" {
             self.open_provider_picker();
