@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Model providers for the Koda AI coding agent: Anthropic, Gemini and OpenAI-compatible clients, and the model tables"
+readme = "README.md"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true

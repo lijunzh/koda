@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "The client API of the Koda AI coding agent: start Koda, send requests, read its answers"
+readme = "README.md"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true

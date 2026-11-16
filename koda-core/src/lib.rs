@@ -9,8 +9,8 @@
 //! | Module | What it does |
 //! |---|---|
 //! | [`agent`] | Agent construction and built-in agent catalog |
-//! | [`tools`] | 19 built-in tools (file ops, shell, search, web, memory, agents) |
-//! | [`providers`] | 14 LLM providers (Anthropic, OpenAI, Gemini, local, etc.) |
+//! | [`tools`] | The built-in tools (files, shell, search, web, memory, agents) |
+//! | [`providers`] | `koda-providers`, re-exported: Anthropic, Gemini and OpenAI-compatible clients |
 //! | [`inference`] | Streaming inference loop with tool execution |
 //! | [`config`] | Configuration loading, agent discovery, settings |
 //! | [`trust`] | Safety gates and approval modes |
@@ -25,16 +25,18 @@
 //!
 //! ## Architecture
 //!
+//! Clients don't use this crate directly: the TUI, `koda exec` and
+//! `koda serve` reach the engine through the client API (`koda-client`),
+//! whose host (`koda-server`) drives it with [`engine::EngineCommand`]s and
+//! turns its [`engine::EngineEvent`]s into the client protocol.
+//!
 //! ```text
-//! ┌───────────────┐  EngineEvent   ┌─────────────────┐
-//! │   koda-cli    │ ←───────────── │    koda-core    │
-//! │  (TUI/REPL)   │ ─────────────→ │   (engine lib)  │
-//! └───────────────┘  EngineCommand └────────┬────────┘
-//!                                           │
-//!                                    ┌──────┴──────┐
-//!                                    │  providers  │
-//!                                    │ (LLM APIs)  │
-//!                                    └─────────────┘
+//! ┌──────────────┐  client   ┌─────────────┐  EngineCommand  ┌─────────────┐
+//! │   koda-cli   │ protocol  │ koda-client │ ──────────────→ │  koda-core  │
+//! │ (TUI, exec,  │ ←───────→ │ koda-server │ ←────────────── │  (engine)   │
+//! │   serve)     │           │   (host)    │   EngineEvent   └──────┬──────┘
+//! └──────────────┘           └─────────────┘                        │
+//!                                    koda-providers · koda-sandbox · koda-state
 //! ```
 //!
 //! See `DESIGN.md` in the repository root for the full architectural rationale.

@@ -3,92 +3,103 @@
 [![CI](https://github.com/lijunzh/koda/actions/workflows/ci.yml/badge.svg)](https://github.com/lijunzh/koda/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/koda-cli.svg)](https://crates.io/crates/koda-cli)
 [![Docs](https://img.shields.io/badge/docs-lijunzh.github.io%2Fkoda-blue)](https://lijunzh.github.io/koda/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/lijunzh/koda/blob/main/LICENSE)
 
-**A high-performance, terminal-native AI coding assistant built in Rust.**
+**Koda is an AI coding agent for the terminal, on macOS and Linux.** It reads
+and edits your project, runs commands in a kernel sandbox, and works with
+Claude, OpenAI-compatible servers and local models. One Rust binary.
 
-*Single compiled binary. 15 LLM providers. Zero runtime dependencies. Your data stays local.*
-
----
-
-## Quick Start
-
-### Install
+## Install
 
 ```bash
-# macOS on Apple Silicon / Linux (Homebrew)
+# Homebrew (Apple Silicon Macs and Linux)
 brew tap lijunzh/koda
 brew install koda
 
-# Cargo (requires Rust 1.100.0 or newer; the way to install on an Intel Mac)
+# Cargo (Rust 1.100.0 or newer; also how to install on an Intel Mac)
 cargo install koda-cli --locked
-
-# From source
-git clone https://github.com/lijunzh/koda.git
-cd koda && cargo build --release -p koda-cli
 ```
 
-### Run
+On Linux, Koda's sandbox needs bubblewrap: `apt install bubblewrap` (or your
+distribution's package). Reading PDFs uses poppler, if you want it: `brew
+install poppler`, or `apt install poppler-utils`.
+[Installation](https://lijunzh.github.io/koda/installation.html) has the
+details and building from source.
 
-On first run, an onboarding wizard will guide you through provider and API key setup, unless the command line already chose one (`--provider`, `--base-url`, or a model alias such as `--model claude-opus`).
+## Run
 
 ```bash
-# Open the interactive fullscreen TUI
-koda
-
-# One-shot prompt (headless mode for scripts/CI)
-koda exec "fix the failing test in auth.rs"
-
-# Specific model (an exact model ID; aliases like `claude-opus` are for /model in the TUI)
-koda exec --model claude-opus-5-5 "explain auth.rs"
-
-# Pipe input directly into Koda
-echo "review this diff" | koda exec
+koda                                   # the full-screen TUI
+koda "why do the auth tests fail?"     # the TUI, starting with a prompt
+koda exec "fix the failing test"       # one prompt without the TUI, for scripts and CI
+git diff | koda exec "review this"     # piped input
+koda resume --last                     # pick up this project's latest session
 ```
 
-Inside the TUI, type `/help` to see all commands and keyboard shortcuts.
+On first run Koda opens its provider picker: choose a provider and give it an
+API key, or point it at a local server. Inside the TUI, `/help` lists the
+commands and keys.
 
-Koda reads a project's `AGENTS.md`, or its `CLAUDE.md` if it has none, into
-every request. What Koda saves for itself stays out of the project. Keep it short, especially with a small or local model. In Koda's
-evals, a 24,000-character `CLAUDE.md` cost Haiku about half its passes on one
-task, while Sonnet passed every run. See [what belongs in it](https://lijunzh.github.io/koda/memory.html).
+## What it does
 
-Koda no longer has an ACP server, so `koda server` and editor connections over
-ACP are gone. [What changed, and what to use instead](https://lijunzh.github.io/koda/acp.html).
-A program can drive Koda with `koda serve --stdio`, which serves Koda's client
-protocol on stdin and stdout ([Koda as a server](https://lijunzh.github.io/koda/serve.html)).
+- **Tools for a codebase:** read (text, images, PDFs, notebooks), search,
+  edit, shell commands, the web, sub-agents, a todo list and memory.
+- **Trust modes:** Auto (the default) runs changes inside the sandbox and asks
+  before destructive or outside-project actions; Safe asks before every
+  change; Plan only looks. `Shift+Tab` cycles them.
+- **A kernel sandbox for every command:** Seatbelt on macOS, bubblewrap on
+  Linux. Writes stay in the project and temporary folders, credential folders
+  are blocked, and the network goes through Koda's proxy.
+- **15 providers:** Anthropic, OpenAI, Gemini, OpenRouter, Groq, xAI, DeepSeek,
+  Mistral, and local servers (LM Studio, Ollama, llama.cpp, vLLM) among them.
+- **Your project's instructions:** `AGENTS.md`, or `CLAUDE.md` if there is
+  none; [skills](https://lijunzh.github.io/koda/skills.html), [custom
+  agents](https://lijunzh.github.io/koda/agents.html) and [MCP
+  servers](https://lijunzh.github.io/koda/mcp.html).
+- **Sessions** saved per project, to resume or fork.
+- **For programs:** `koda exec --json` streams the run as JSON-RPC lines, and
+  `koda serve --stdio` serves Koda's [client
+  protocol](https://lijunzh.github.io/koda/serve.html) to a GUI, an editor or a
+  script.
 
----
-
-## Workspace Crates
-
-| Crate | Description |
-|---|---|
-| [**koda-cli**](koda-cli/) | Terminal frontend (TUI + headless) |
-| [**koda-core**](koda-core/) | Engine library — tools, inference loop |
-| [**koda-providers**](koda-providers/) | Model providers (Anthropic, Gemini, OpenAI-compatible) and the model tables |
-| [**koda-protocol**](koda-protocol/) | The client protocol: JSON-RPC 2.0 messages and their types |
-| [**koda-client**](koda-client/) | The client API: Koda in-process, typed requests and the event queue |
-| [**koda-server**](koda-server/) | Koda's host: sessions, config, MCP, and engine events projected onto the protocol; `koda serve` |
-| [**koda-config**](koda-config/) | The config file, `~/.config/koda/config.toml`: reading, checking and editing it |
-| [**koda-command**](koda-command/) | Shell command classification: what a command does, and the paths it touches |
-| [**koda-mcp**](koda-mcp/) | The MCP client: connecting to MCP servers over stdio and HTTP, and bridging their tools |
-| [**koda-skills**](koda-skills/) | Skills: `SKILL.md` files from the project, your config folder and the built-in set |
-| [**koda-memory**](koda-memory/) | Memory: the instruction files people write (`AGENTS.md`, `CLAUDE.md`) and the notes Koda keeps |
-| [**koda-state**](koda-state/) | Stored state — sessions (the `SessionStore` trait and its SQLite `Database`), Koda's SQLite files and the diagnostic log database |
-| [**koda-sandbox**](koda-sandbox/) | Capability-aware sandbox layer — kernel-enforced FS/net/exec policies |
-| [**koda-test-utils**](koda-test-utils/) | Test utilities — a stub HTTP server, mock providers, test sinks, and E2E harness |
+**Where your data goes:** Koda keeps its sessions and settings on your
+machine, in `~/.config/koda`. What you send the model, including the files it
+reads, goes to the provider you choose; with a local server, the conversation
+stays on your machine. Web and MCP tools reach the sites and servers they
+name, and Koda asks crates.io for new versions. No telemetry. See [Privacy &
+data](https://lijunzh.github.io/koda/privacy.html).
 
 ## Documentation
 
-| Resource | Description |
+- [**User manual**](https://lijunzh.github.io/koda/): installation, the TUI,
+  trust modes, the sandbox, configuration and every command.
+- [**Upgrading to 0.7**](https://lijunzh.github.io/koda/upgrading-0.7.html):
+  what changed and what was removed.
+- [**Changelog**](https://github.com/lijunzh/koda/blob/main/CHANGELOG.md)
+- [**Design**](https://github.com/lijunzh/koda/blob/main/DESIGN.md) and
+  [**contributing**](https://github.com/lijunzh/koda/blob/main/CONTRIBUTING.md),
+  for working on Koda.
+
+## Crates
+
+`koda-cli` is the program. The others are its parts, published so it can be;
+their APIs aren't stable before 1.0.
+
+| Crate | What it is |
 |---|---|
-| [**User Manual**](https://lijunzh.github.io/koda/) | CLI reference, slash commands, trust modes, and custom agents |
-| [**Engine API**](https://docs.rs/koda-core) | Developer docs for embedding `koda-core` |
-| [**Design**](DESIGN.md) | Architecture principles and philosophies |
-| [**Contributing**](CONTRIBUTING.md) | Workspace layout, coding conventions, and tests |
-| [**Debugging**](https://lijunzh.github.io/koda/debugging.html) | Triage a run from its logs and reproduce a bug without an API key |
-| [**Changelog**](CHANGELOG.md) | Version history |
+| [koda-cli](https://crates.io/crates/koda-cli) | The `koda` program: the TUI, `koda exec` and `koda serve` |
+| [koda-client](https://crates.io/crates/koda-client) | The client API: Koda in-process, typed requests and the event queue. Start here to embed Koda |
+| [koda-protocol](https://crates.io/crates/koda-protocol) | The client protocol: JSON-RPC 2.0 messages and their types |
+| [koda-server](https://crates.io/crates/koda-server) | Koda's host: sessions, settings and MCP, behind the protocol |
+| [koda-core](https://crates.io/crates/koda-core) | The engine: the agent loop, tools, approval and compaction |
+| [koda-providers](https://crates.io/crates/koda-providers) | Model providers and the model tables |
+| [koda-config](https://crates.io/crates/koda-config) | `~/.config/koda/config.toml`: reading, checking and editing it |
+| [koda-state](https://crates.io/crates/koda-state) | Stored state: sessions, SQLite files and the diagnostic log database |
+| [koda-sandbox](https://crates.io/crates/koda-sandbox) | The kernel sandbox: Seatbelt on macOS, bubblewrap on Linux |
+| [koda-command](https://crates.io/crates/koda-command) | Shell command classification: what a command does and the paths it touches |
+| [koda-mcp](https://crates.io/crates/koda-mcp) | The MCP client, over stdio and HTTP |
+| [koda-skills](https://crates.io/crates/koda-skills) | Skills: `SKILL.md` files from the project, your config folder and the built-in set |
+| [koda-memory](https://crates.io/crates/koda-memory) | Instruction files (`AGENTS.md`, `CLAUDE.md`) and the notes Koda keeps |
 
 ## License
 

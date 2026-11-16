@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Memory for the Koda AI coding agent: the instruction files people write (AGENTS.md, CLAUDE.md) and the notes Koda keeps"
+readme = "README.md"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true

@@ -1,11 +1,17 @@
 # koda-sandbox
 
-> Capability-aware sandbox layer for [Koda](https://github.com/lijunzh/koda).
-> Kernel-enforced FS / network / exec policies, derived from trust mode at compile time.
+> The kernel sandbox of [Koda](https://github.com/lijunzh/koda), the AI coding
+> agent: file-system, network and process limits for every command Koda runs,
+> derived from the trust mode.
 
-This crate owns *kernel-level* sandbox enforcement (Seatbelt on macOS, bwrap on Linux),
-workspace provisioning, and the egress proxy. It implements the design in
-[#934](https://github.com/lijunzh/koda/issues/934).
+This crate owns *kernel-level* sandbox enforcement (Seatbelt on macOS,
+bubblewrap on Linux), workspace provisioning, and the egress proxy. Its design
+history is in [#934](https://github.com/lijunzh/koda/issues/934); what users
+see is in the manual's [Sandbox](https://lijunzh.github.io/koda/sandbox.html)
+chapter.
+
+**Versioning:** published so that `cargo install koda-cli` builds. It follows
+koda-cli's version, and its Rust API makes no semver promise of its own.
 
 ---
 
@@ -46,9 +52,9 @@ exists to keep legitimate workflows working.
 
 | Out-of-scope | Why we don't enforce | Mitigated by |
 |---|---|---|
-| **Reading credential files** (`~/.ssh/id_rsa`, `~/.aws/credentials`) | CLI tools (`gh`, `aws`, `kubectl`, `ssh`) authenticate by reading their own config. Blocking reads breaks normal use. | Egress proxy (Phase 3) prevents exfiltration *over the network*. Blocking reads without blocking egress is security theater (see [#855](https://github.com/lijunzh/koda/issues/855)). |
+| **Reading credential files** (`~/.ssh/id_rsa`, `~/.aws/credentials`) | CLI tools (`gh`, `aws`, `kubectl`, `ssh`) authenticate by reading their own config. Blocking reads breaks normal use. | The egress proxy prevents exfiltration *over the network*. Blocking reads without blocking egress is security theater (see [#855](https://github.com/lijunzh/koda/issues/855)). |
 | **Local filesystem readout of arbitrary `~/Documents`** | The agent operates on the user's project; tight read scoping would break grep across symlinked dotfiles, monorepos, pnpm stores. | Trust mode + user gate (Plan / Safe). Reads stay local until the egress proxy decides. |
-| **CPU spikes** | Wall-time + output caps catch most foot-guns; CPU rlimits add platform-specific gnarliness. | Wall-time ceiling (`MAX_TIMEOUT_SECS = 300s`) bounds blast radius. PR-6 will add CPU rlimits. |
+| **CPU spikes** | Wall-time + output caps catch most foot-guns; CPU rlimits add platform-specific gnarliness. | Wall-time ceiling (`MAX_TIMEOUT_SECS = 300s`) bounds blast radius; `limits.cpu_time_secs`, when a policy sets it, adds `RLIMIT_CPU`. |
 | **Side-channel attacks** (timing, cache) | Out of scope for an LLM agent sandbox. Threat model is *anti-malice*, not *anti-research*. | n/a |
 | **Privileged-user attacks** | The user runs koda — they could just `rm -rf` themselves. The sandbox prevents the *LLM* from doing it, not the user. | Trust model: user is trusted, LLM is not. |
 | **Kernel bugs in Seatbelt / bwrap** | Trusting the kernel's own sandbox primitives is unavoidable. | Defense in depth via app-layer checks; report platform vulns upstream. |
@@ -71,9 +77,9 @@ behavior. Every dial in `SandboxPolicy` is derived from it at compile time via
 
 | Mode | Approval | Wall time | Deny-search depth | Use case |
 |---|---|---|---|---|
-| **Plan** | All mutations rejected | 60s | 3 (perf-tuned) | Read-only exploration, code review |
-| **Safe** | Each mutation user-approved | 60s | 5 (balanced) | Default for general dev work |
-| **Auto** | Auto-approved | 60s | 10 (max paranoia) | CI / unattended runs — *kernel sandbox required* |
+| **Plan** | All mutations rejected | 120s | 3 (perf-tuned) | Read-only exploration, code review |
+| **Safe** | Each mutation user-approved | 120s | 5 (balanced) | A person approves every change; CI with nobody to approve gets refusals |
+| **Auto** (the default) | In-project mutations auto-approved; destructive and outside-project ones still ask | 120s | 10 (max paranoia) | Everyday work — *kernel sandbox required* |
 
 **Security argument for the depth scaling:** more permissive trust mode → less
 human gating → more paranoid sandbox checking. Auto mode runs without a user
@@ -111,7 +117,7 @@ This invariant is mechanically pinned by the test
                       │
                       ▼ outbound traffic
         ┌──────────────────────────────────────┐
-        │ Built-in egress proxy (Phase 3)      │
+        │ Built-in egress proxy                │
         │  • Domain allow/deny lists           │
         │  • Optional MITM via corporate CA    │
         │  • SOCKS5 fallback for non-HTTP apps │
@@ -121,9 +127,10 @@ This invariant is mechanically pinned by the test
 ### Dependency direction
 
 ```text
-koda-cli → koda-core → koda-sandbox
-                          │
-                          └─ no upward dependency
+koda-server → koda-core → koda-sandbox
+koda-cli ──────────────→ koda-sandbox   (only to run Linux's stage 2; see below)
+                              │
+                              └─ no upward dependency
 ```
 
 `koda-sandbox` knows nothing about `SessionStore`, `Provider`, or
@@ -153,8 +160,11 @@ koda-cli → koda-core → koda-sandbox
 
 ### Linux bwrap details
 
-- Stage-2 helper (`koda-sandbox-stage2`) sets up the in-netns TCP↔UDS bridge
-  *inside* the unshare'd namespace, then `execvp`s the user's command.
+- Stage 2 sets up the in-netns TCP↔UDS bridge *inside* the unshare'd
+  namespace, then `execvp`s the user's command. The `koda` binary runs it
+  itself when started with `stage2::STAGE2_ARG1` (as Codex dispatches on
+  `arg0`), so every install has it; the `koda-sandbox-stage2` binary remains
+  for development.
 - Mount namespace gives true read-only `/` with carved-out writable roots.
 - Network namespace + virtual bridge gives kernel-enforced egress: even
   binaries that ignore `HTTPS_PROXY` env vars cannot escape via direct TCP.
@@ -187,54 +197,46 @@ each layer's threat model is documented in its module-level rustdoc.
 
 ## Escape hatches
 
-These are **intentional bypass mechanisms**. They exist for specific
-documented use cases. Each one has a security cost; using one is a deliberate
-acknowledgement that the user accepts that cost.
+Each has a security cost; using one is a deliberate choice to accept it.
 
-### `--no-sandbox` flag
+### Running one command outside the sandbox
 
-Disables kernel sandbox entirely. Used for:
-- **Debugging the sandbox itself** when developing `koda-sandbox`.
-- **Platform-unsupported environments** (CI containers without `bwrap`).
-- **Reproducing customer-reported bugs** where the user can't run with sandbox.
+When the sandbox blocks a command the user needs, such as `git push` over SSH,
+the model can ask to run that one command outside it, with a reason. A person
+approves each such request, in Auto too; sub-agents and headless runs are
+refused.
 
-> **Cost:** No FS / network / exec enforcement. Only the trust-mode approval
-> gate stands between the LLM and your filesystem. Plan mode still rejects
-> mutations, but Safe and Auto allow whatever the LLM asks for.
+> **Cost:** that command runs with the user's full access.
 
-### `fs.allow_git_config = true`
+### `[sandbox] allow_local_binding = true` (config.toml)
 
-Permits writes to `git config`. Off by default because `git config core.fsmonitor`
-can register a hook that runs arbitrary code on the next `git status` → RCE.
+Lets sandboxed commands bind and reach any port on localhost, not only the
+servers Koda started. Codex keeps the same switch in its permission profiles.
 
-> **Cost:** Trades sandbox containment for `git config` ergonomics. Only
-> opt in for workflows that genuinely need to modify git config (rare).
+> **Cost:** a command can talk to every local service, not only Koda's.
 
-### `net.weaker_macos_isolation = true`
+### No sandbox where the platform has none (Plan and Safe only)
 
-macOS-only. Permits Apple `trustd` mach lookups so Go binaries can verify TLS.
+Plan and Safe start *without* a kernel sandbox if the platform doesn't
+support one (`failIfUnavailable = false` for them). Auto refuses to start.
 
-> **Cost:** Widens the network sandbox surface. Opt in if Go binaries don't
-> work otherwise.
+> **Cost:** Plan and Safe then rely on app-layer path defense and the
+> approval gate alone.
 
-### MITM CA bundle (`mitm.ca_bundle`)
+### Policy fields set by Koda, not by users
 
-Configures the egress proxy to terminate TLS using a corporate CA (Zscaler,
-internal PKI). Used for environments where the corporate proxy is mandatory
-and inspects HTTPS.
+`fs.allow_git_config`, `net.weaker_macos_isolation` and `net.mitm` (a
+corporate CA for the egress proxy) are `SandboxPolicy` fields. They are off
+by default and have no config key; see [Configuration
+philosophy](#configuration-philosophy).
 
-> **Cost:** All HTTPS traffic from sandboxed processes is decrypted and
-> re-encrypted by koda. The proxy still applies domain allow/deny rules —
-> MITM is *enforcement*, not an escape — but it materially expands what
-> koda's process can see.
-
-### `failIfUnavailable = false` (implicit, for Plan/Safe modes)
-
-Plan and Safe modes start *without* a kernel sandbox if the platform doesn't
-support one. Auto mode requires kernel enforcement.
-
-> **Cost:** Plan/Safe rely entirely on app-layer path defense + the approval
-> gate when no kernel sandbox is available. Trust mode is the safety net.
+- `fs.allow_git_config` permits writes to git config, which stays denied
+  because `git config core.fsmonitor` can register a hook that runs code on
+  the next `git status`.
+- `net.weaker_macos_isolation` (macOS) permits Apple `trustd` lookups so Go
+  binaries can verify TLS, widening the network surface.
+- `net.mitm` makes the proxy terminate TLS with a corporate CA; it still
+  applies the domain rules, but sees all HTTPS traffic.
 
 ---
 
@@ -244,8 +246,8 @@ support one. Auto mode requires kernel enforcement.
 
 Every behavioral dial in `SandboxPolicy` is derived at compile time from the
 trust mode (Plan / Safe / Auto) via `koda_core::sandbox::policy_for_agent`.
-There is no JSON config file, no CLI override, no env-var dial that the user
-can twiddle.
+There is no CLI override and no env-var dial. The one user setting is
+`[sandbox] allow_local_binding` in `config.toml`, above.
 
 **Why.** Config knobs are foot-guns:
 
@@ -275,9 +277,9 @@ gets a red CI build with a teaching moment baked in.
 
 ## What's enforced today
 
-Honest accounting of which fields actually do something vs. are
-declared-but-not-yet-enforced. This list is meant to drift downward over time
-as enforcement code lands.
+Which `SandboxPolicy` fields do something, and where. Every field is
+enforced; the resource limits apply when a policy sets them (today
+`policy_for_agent` sets the wall time).
 
 | Field | Declared | Enforced |
 |---|---|---|
@@ -297,10 +299,6 @@ as enforcement code lands.
 | `limits.max_open_fds` | ✅ | ✅ setrlimit RLIMIT_NOFILE — EMFILE at cap |
 | `limits.max_output_bytes` | ✅ | ✅ shell tool dispatch — truncates `messages.full_content` at policy-supplied byte cap (default 2 MB when `None`) |
 | `trust` (TrustPreference) | ✅ | ✅ approval gate (`koda-core::trust`) |
-
-Declared-only fields are intentionally inert; setting them today has no
-runtime effect. They're included in `SandboxPolicy` so the type contract
-stays stable while enforcement lands incrementally.
 
 ---
 
@@ -325,14 +323,3 @@ Adding a new defended threat? Add a test next to the relevant module and
 update this table. Removing a defended threat? Update the [threat
 model](#threat-model) table first, then remove the test.
 
----
-
-## Phase status
-
-This crate is the kernel-enforcement implementation of issue
-[#934](https://github.com/lijunzh/koda/issues/934). Phase 5 (current) wraps
-sub-agent policy composition + the per-trust derivation. PR-6 (next) wires
-declared-only resource limits to actual rlimit / SBPL enforcement.
-
-For the full design rationale, threat-model evolution, and per-phase
-acceptance criteria, see the issue.
