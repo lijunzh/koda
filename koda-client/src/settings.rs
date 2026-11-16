@@ -18,7 +18,7 @@ use koda_protocol::model::{
 };
 use koda_protocol::rpc::ErrorObject;
 use koda_protocol::session::SessionSettings;
-use koda_protocol::state::{SandboxState, TrustMode};
+use koda_protocol::state::SandboxState;
 
 use crate::session::{internal, invalid};
 
@@ -238,7 +238,7 @@ pub(crate) fn report(
             &config.model,
             config.model_settings.reasoning_effort.as_deref(),
         ),
-        mode: crate::host::protocol_mode(mode),
+        mode,
     }
 }
 
@@ -310,15 +310,6 @@ pub(crate) fn list_providers(host: &KodaConfig) -> ModelProviderListResponse {
             })
             .collect(),
         default_provider_id: host.provider_type.to_string(),
-    }
-}
-
-/// The protocol's trust mode for the session's mode.
-pub(crate) fn mode_of(mode: TrustMode) -> koda_core::trust::TrustMode {
-    match mode {
-        TrustMode::Plan => koda_core::trust::TrustMode::Plan,
-        TrustMode::Safe => koda_core::trust::TrustMode::Safe,
-        TrustMode::Auto => koda_core::trust::TrustMode::Auto,
     }
 }
 
