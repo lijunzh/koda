@@ -669,8 +669,11 @@ impl KodaSession {
                 crate::engine::event::TurnEndReason::Cancelled
             }
             Ok(TurnOutcome::Finished) => crate::engine::event::TurnEndReason::Complete,
+            // The whole chain, as the log has it: "LLM inference failed"
+            // alone doesn't say that the key was rejected or the server
+            // refused the connection.
             Err(e) => crate::engine::event::TurnEndReason::Error {
-                message: e.to_string(),
+                message: format!("{e:#}"),
             },
         };
         sink.emit(crate::engine::EngineEvent::TurnSummary {

@@ -42,7 +42,7 @@ to 0.7](./upgrading-0.7.md#running-koda).
 | Code | Meaning |
 |------|---------|
 | `0` | Turn completed successfully |
-| `1` | Error (API failure, bad config, a cancelled turn that wouldn't stop, …) |
+| `1` | Error (API failure, bad config, a cancelled turn that wouldn't stop, …), with the reason on stderr and, with `--json`, in `exec/summary`'s `error` |
 
 ## Trust mode in headless mode
 

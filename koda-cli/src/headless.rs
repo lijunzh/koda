@@ -233,7 +233,7 @@ pub async fn run_headless(
     client.shutdown().await;
 
     match result {
-        // An early stop already printed its warning; just fail the exit code.
+        // A failed turn has said why (above); just fail the exit code.
         Ok(()) => Ok(i32::from(run_failure(&Ok(()), &view.stats).is_some())),
         Err(e) => {
             eprintln!("Error: {e}");
@@ -302,6 +302,14 @@ struct RunOutcome<'a> {
     stats: &'a RunStats,
 }
 
+/// What a failed turn says: its error, or that it failed.
+fn failed_turn_message(turn: &Turn) -> String {
+    turn.error
+        .as_ref()
+        .map(|e| e.message.clone())
+        .unwrap_or_else(|| "the turn failed".to_string())
+}
+
 /// Why the run failed, if it did. A turn the engine cut short on a warning
 /// (provider server error, image rejection, dropped connection) still
 /// returns, but ends `failed`, so it counts too.
@@ -368,6 +376,9 @@ struct View {
     /// it started (a call of its own, a notice, or an answer), so a call
     /// refused before it started names none.
     agents: std::collections::HashMap<String, (String, &'static str)>,
+    /// Whether an error that ends the turn was printed, so a failed turn's
+    /// own error isn't printed twice (the TUI's `error_shown`).
+    error_shown: bool,
 }
 
 impl View {
@@ -379,6 +390,7 @@ impl View {
             asked: HashSet::new(),
             reply_chars: 0,
             agents: std::collections::HashMap::new(),
+            error_shown: false,
         }
     }
 
@@ -609,6 +621,20 @@ impl View {
             }
             ServerNotification::Error(e) => {
                 eprintln!("\x1b[31m  \u{2717} {}\x1b[0m", e.error.message);
+                self.error_shown = true;
+            }
+            // A failed turn says why, as Codex's `exec` prints `ERROR:` for
+            // one and Koda's TUI shows the turn's error: a turn that ends on
+            // an error the host sent no notice for (a rejected key, retries
+            // run out) would otherwise exit 1 with nothing said.
+            ServerNotification::TurnCompleted(done)
+                if done.turn.status == TurnStatus::Failed && !self.error_shown =>
+            {
+                eprintln!(
+                    "\x1b[31m  \u{2717} {}\x1b[0m",
+                    failed_turn_message(&done.turn)
+                );
+                self.error_shown = true;
             }
             ServerNotification::TurnCompleted(done)
                 if done.turn.status == TurnStatus::Completed =>
