@@ -630,6 +630,23 @@ impl SessionStore for Database {
         Ok(())
     }
 
+    /// Persist the images sent with a message. A user row is complete when
+    /// it is inserted, so a cached context may already hold it: drop the
+    /// session's cache.
+    async fn set_last_user_message_images(&self, session_id: &str, images: &str) -> Result<()> {
+        sqlx::query(
+            "UPDATE messages SET images = ? WHERE id = (
+                SELECT MAX(id) FROM messages
+                WHERE session_id = ? AND role = 'user' AND tool_call_id IS NULL)",
+        )
+        .bind(images)
+        .bind(session_id)
+        .execute(&self.pool)
+        .await?;
+        self.context_cache.invalidate(session_id);
+        Ok(())
+    }
+
     /// Persist the accumulated thinking/reasoning text for an assistant message.
     ///
     /// Called after `insert_message` so the INSERT signature stays lean —
@@ -696,7 +713,7 @@ impl SessionStore for Database {
                 let new_rows: Vec<Message> = sqlx::query_as::<_, MessageRow>(
                     "SELECT id, session_id, role, content, full_content, tool_calls, tool_call_id,
                             prompt_tokens, completion_tokens,
-                            cache_read_tokens, cache_creation_tokens, thinking_tokens, thinking_content, thinking_model, thinking_blocks,
+                            cache_read_tokens, cache_creation_tokens, thinking_tokens, thinking_content, thinking_model, thinking_blocks, images,
                             created_at
                      FROM messages
                      WHERE session_id = ? AND id > ? AND compacted_at IS NULL
@@ -720,7 +737,7 @@ impl SessionStore for Database {
                 let rows: Vec<Message> = sqlx::query_as::<_, MessageRow>(
                     "SELECT id, session_id, role, content, full_content, tool_calls, tool_call_id,
                             prompt_tokens, completion_tokens,
-                            cache_read_tokens, cache_creation_tokens, thinking_tokens, thinking_content, thinking_model, thinking_blocks,
+                            cache_read_tokens, cache_creation_tokens, thinking_tokens, thinking_content, thinking_model, thinking_blocks, images,
                             created_at
                      FROM messages
                      WHERE session_id = ? AND compacted_at IS NULL
@@ -763,7 +780,7 @@ impl SessionStore for Database {
         let rows: Vec<Message> = sqlx::query_as::<_, MessageRow>(
             "SELECT id, session_id, role, content, full_content, tool_calls, tool_call_id,
                     prompt_tokens, completion_tokens,
-                    cache_read_tokens, cache_creation_tokens, thinking_tokens, thinking_content, thinking_model, thinking_blocks,
+                    cache_read_tokens, cache_creation_tokens, thinking_tokens, thinking_content, thinking_model, thinking_blocks, images,
                     created_at
              FROM messages
              WHERE session_id = ?

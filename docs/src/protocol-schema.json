@@ -1245,6 +1245,16 @@
             "null"
           ]
         },
+        "model_input_modalities": {
+          "description": "What the model takes besides text, `text`, `image` or `pdf`,\nreplacing Koda's table for it; unset for the table.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "model_max_output_tokens": {
           "description": "The most tokens a reply may use.",
           "format": "uint32",

@@ -15,7 +15,7 @@ use serde_json::Value;
 /// Koda takes `model_providers.<id>.<key>` ([`PROVIDERS_KEY`]),
 /// `mcp_servers.<name>`, `tui.<key>` and `sandbox.<key>`; any other is
 /// refused.
-pub const KEYS: [&str; 11] = [
+pub const KEYS: [&str; 12] = [
     "model",
     "model_provider",
     "model_reasoning_effort",
@@ -25,6 +25,7 @@ pub const KEYS: [&str; 11] = [
     "model_thinking_budget",
     "model_post_turn_compact_threshold_percent",
     "file_mentions",
+    "model_input_modalities",
     "mode",
     "agent",
 ];
@@ -131,6 +132,10 @@ pub struct KodaConfigValues {
     /// or only its path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_mentions: Option<bool>,
+    /// What the model takes besides text, `text`, `image` or `pdf`,
+    /// replacing Koda's table for it; unset for the table.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_input_modalities: Option<Vec<String>>,
     /// The mode a new session starts in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<crate::state::TrustMode>,

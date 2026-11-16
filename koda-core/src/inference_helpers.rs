@@ -36,6 +36,61 @@ pub const PER_MESSAGE_OVERHEAD: usize = 10;
 /// (tool schemas, message framing, etc.).
 pub const SYSTEM_PROMPT_OVERHEAD: usize = 100;
 
+/// Tokens one image is counted as: about what Anthropic charges for an
+/// image once its API has scaled it to fit (`width × height / 750`, at most
+/// about 1,600). The estimate errs high for small images.
+pub const IMAGE_TOKENS: usize = 1_600;
+
+/// The most images one request carries, Anthropic's limit per request.
+/// Older ones beyond it are sent as [`IMAGE_OMITTED`].
+pub const MAX_IMAGES_PER_REQUEST: usize = 100;
+
+/// What the model is sent in place of an image it can't take, or one
+/// beyond [`MAX_IMAGES_PER_REQUEST`], as Codex replaces media a model
+/// doesn't support with a short note.
+pub const IMAGE_OMITTED: &str = "[An image was attached here; it isn't sent to this model.]";
+
+/// The images stored with `msg`, if any.
+fn stored_images(msg: &koda_state::db::Message) -> Option<Vec<crate::providers::ImageData>> {
+    let images: Vec<crate::providers::ImageData> = msg
+        .images
+        .as_deref()
+        .and_then(|json| serde_json::from_str(json).ok())?;
+    (!images.is_empty()).then_some(images)
+}
+
+/// Cut the images in `messages` to what the model `takes`: all of them
+/// become [`IMAGE_OMITTED`] for a model that takes no images, and beyond
+/// [`MAX_IMAGES_PER_REQUEST`] the oldest do. The stored history keeps them,
+/// so a later model that takes images gets them back.
+pub fn fit_media(messages: &mut [ChatMessage], takes: &[koda_config::InputModality]) {
+    let mut room = if takes.contains(&koda_config::InputModality::Image) {
+        MAX_IMAGES_PER_REQUEST
+    } else {
+        0
+    };
+    for message in messages.iter_mut().rev() {
+        let Some(images) = message.images.as_mut() else {
+            continue;
+        };
+        let keep = images.len().min(room);
+        let dropped = images.len() - keep;
+        room -= keep;
+        // The newest images in a message are the ones kept.
+        images.drain(..dropped);
+        if images.is_empty() {
+            message.images = None;
+        }
+        if dropped > 0 {
+            let notes = vec![IMAGE_OMITTED; dropped].join("\n");
+            message.content = Some(match message.content.take() {
+                Some(text) if !text.is_empty() => format!("{text}\n\n{notes}"),
+                _ => notes,
+            });
+        }
+    }
+}
+
 /// Estimate token count for a set of messages.
 ///
 /// Uses a calibrated heuristic: `chars / CHARS_PER_TOKEN + PER_MESSAGE_OVERHEAD`.
@@ -67,8 +122,10 @@ pub fn estimate_tokens(messages: &[ChatMessage]) -> usize {
             // Anthropic and Gemini paths don't send it; counting it there
             // errs on the safe, over-estimating side.
             let reasoning_len = m.reasoning.as_deref().map_or(0, |r| r.len());
+            let images = m.images.as_ref().map_or(0, Vec::len);
             ((content_len + tc_len + reasoning_len) as f64 / CHARS_PER_TOKEN) as usize
                 + PER_MESSAGE_OVERHEAD
+                + images * IMAGE_TOKENS
         })
         .sum()
 }
@@ -309,7 +366,7 @@ pub fn assemble_messages(
             content: msg.content.clone(),
             tool_calls,
             tool_call_id: msg.tool_call_id.clone(),
-            images: None,
+            images: stored_images(msg),
             reasoning: msg
                 .thinking_content
                 .clone()
@@ -507,6 +564,72 @@ pub(crate) fn stored_usage(
 mod tests {
     use super::*;
 
+    fn image() -> ImageDataT {
+        ImageDataT {
+            media_type: "image/png".into(),
+            base64: "AAAA".into(),
+        }
+    }
+    type ImageDataT = crate::providers::ImageData;
+
+    fn with_images(text: &str, n: usize) -> ChatMessage {
+        let mut message = ChatMessage::text("user", text);
+        message.images = Some(vec![image(); n]);
+        message
+    }
+
+    /// A model that takes no images gets a placeholder for each, with the
+    /// text kept.
+    #[test]
+    fn fit_media_replaces_images_for_a_text_only_model() {
+        let mut messages = vec![with_images("look", 2)];
+        fit_media(&mut messages, &[koda_config::InputModality::Text]);
+        assert!(messages[0].images.is_none());
+        let text = messages[0].content.as_deref().unwrap();
+        assert!(text.starts_with("look\n\n"), "{text}");
+        assert_eq!(text.matches(IMAGE_OMITTED).count(), 2);
+    }
+
+    /// Past the per-request limit, the oldest images become placeholders.
+    #[test]
+    fn fit_media_keeps_the_newest_images_within_the_limit() {
+        let takes = [
+            koda_config::InputModality::Text,
+            koda_config::InputModality::Image,
+        ];
+        let mut messages = vec![
+            with_images("old", 3),
+            with_images("new", MAX_IMAGES_PER_REQUEST - 1),
+        ];
+        fit_media(&mut messages, &takes);
+        assert_eq!(
+            messages[1].images.as_ref().unwrap().len(),
+            MAX_IMAGES_PER_REQUEST - 1
+        );
+        assert_eq!(messages[0].images.as_ref().unwrap().len(), 1);
+        let old = messages[0].content.as_deref().unwrap();
+        assert_eq!(old.matches(IMAGE_OMITTED).count(), 2, "{old}");
+    }
+
+    /// Images count toward the window, so compaction sees them.
+    #[test]
+    fn estimate_tokens_counts_images() {
+        let plain = estimate_tokens(&[ChatMessage::text("user", "look")]);
+        assert_eq!(
+            estimate_tokens(&[with_images("look", 2)]),
+            plain + 2 * IMAGE_TOKENS
+        );
+    }
+
+    /// Stored images reach the assembled message.
+    #[test]
+    fn assemble_messages_sends_stored_images() {
+        let mut stored = msg("user", Some("look"), None);
+        stored.images = Some(serde_json::to_string(&vec![image()]).unwrap());
+        let out = assemble_messages(&system(), &[stored], "m");
+        assert_eq!(out[1].images.as_ref().map(Vec::len), Some(1));
+    }
+
     use koda_state::session_store::{Message, Role};
 
     /// Every provider sees one `system` message and the summary ahead of the
@@ -602,6 +725,7 @@ mod tests {
             thinking_content: None,
             thinking_model: None,
             thinking_blocks: None,
+            images: None,
             created_at: None,
         }
     }
@@ -644,6 +768,7 @@ mod tests {
         let assistant = ChatMessage {
             reasoning: Some("r".repeat(5)),
             thinking_blocks: None,
+            images: None,
             tool_calls: Some(vec![ToolCall {
                 id: "1".into(),
                 function_name: "Read".into(),
@@ -686,6 +811,7 @@ mod tests {
         let with_reasoning = ChatMessage {
             reasoning: Some("x".repeat(3_500)),
             thinking_blocks: None,
+            images: None,
             ..plain.clone()
         };
         let base = estimate_tokens(&[plain]);

@@ -121,6 +121,11 @@ pub struct ConfigToml {
     /// read, as Codex does. On when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_mentions: Option<bool>,
+    /// What the model takes besides text, replacing Koda's table for it:
+    /// for a local vision model, say, `["text", "image"]`. Codex keeps the
+    /// same on each model as `input_modalities`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_input_modalities: Option<Vec<InputModality>>,
     /// The mode a new session starts in, as `--mode` gives it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<Mode>,
@@ -142,6 +147,19 @@ pub struct ConfigToml {
     /// log database is the only log.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log_dir: Option<String>,
+}
+
+/// What a model takes as input, as Codex's `InputModality`, with PDFs,
+/// which Claude takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InputModality {
+    /// Text.
+    Text,
+    /// Images.
+    Image,
+    /// PDF documents.
+    Pdf,
 }
 
 /// The mode a session runs in.

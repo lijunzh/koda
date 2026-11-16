@@ -1020,6 +1020,7 @@ mod tests {
             thinking_content: None,
             thinking_model: None,
             thinking_blocks: None,
+            images: None,
             created_at: None,
         }
     }

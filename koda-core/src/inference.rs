@@ -87,7 +87,6 @@ struct TurnState<'a> {
     system_message: &'a ChatMessage,
     /// Project memory that opens the first user message, if there is any.
     memory_context: Option<&'a str>,
-    pending_images: Option<&'a [ImageData]>,
     iteration: u32,
     config: &'a KodaConfig,
     /// Context window for this iteration: `config.max_context_tokens`, or
@@ -174,14 +173,9 @@ async fn assemble_context(turn: &TurnState<'_>) -> Result<(Vec<ChatMessage>, usi
     let mut messages = assemble_messages(turn.system_message, &history, &turn.config.model);
     crate::inference_helpers::prepend_project_memory(&mut messages, turn.memory_context);
 
-    // Attach pending images to the last user message (first iteration only)
-    if turn.iteration == 0
-        && let Some(imgs) = turn.pending_images
-        && !imgs.is_empty()
-        && let Some(last_user) = messages.iter_mut().rev().find(|m| m.role == "user")
-    {
-        last_user.images = Some(imgs.to_vec());
-    }
+    // Images live in the history, so every call of the turn and every
+    // later turn sends them; cut them to what this model takes.
+    crate::inference_helpers::fit_media(&mut messages, &turn.config.input_modalities());
 
     let correction = turn.context_correction.load(Ordering::Relaxed);
     let context_used = estimate_tokens(&messages) + estimate_tool_defs(turn.tool_defs) + correction;
@@ -1000,7 +994,8 @@ pub struct InferenceContext<'a> {
     pub tools: &'a ToolRegistry,
     /// Pre-computed tool definitions sent to the LLM.
     pub tool_defs: &'a [ToolDefinition],
-    /// Images attached to the current prompt (consumed on first turn).
+    /// Images sent with the prompt: stored on its message as the turn
+    /// starts, then sent from the history like the rest of it.
     pub pending_images: Option<Vec<ImageData>>,
     /// Current trust mode.
     pub mode: TrustMode,
@@ -1183,6 +1178,15 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
         sub_agent_cache,
     } = ctx;
     let mut cmd_rx = CommandInbox::new(cmd_rx, queued_steers);
+
+    // The prompt's images go on its stored message, so every call of this
+    // turn, every later turn and a resumed session send them, as Claude
+    // Code keeps an image in the conversation (Read v2).
+    if let Some(images) = pending_images.as_ref().filter(|images| !images.is_empty()) {
+        db.set_last_user_message_images(session_id, &serde_json::to_string(images)?)
+            .await
+            .context("couldn't store the prompt's images")?;
+    }
 
     // #1108 P1b: wrap the user-facing sink with `PersistingSink` so
     // every `Info` / `ChildTaskUpdate` event lands in `session_events`
@@ -1394,7 +1398,6 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
             session_id,
             system_message: &system_message,
             memory_context: memory_context.as_deref(),
-            pending_images: pending_images.as_deref(),
             iteration,
             config,
             max_context_tokens: learned_context.unwrap_or(config.max_context_tokens),
@@ -1411,12 +1414,10 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
         // Pre-flight budget check: if context is critically high, compact first
         let messages = preflight_compact_if_needed(&turn, messages, context_used).await?;
 
-        // Track whether this turn carried image attachments so we can surface
-        // a targeted warning if the provider rejects them.
-        let had_images = turn
-            .pending_images
-            .map(|imgs| !imgs.is_empty())
-            .unwrap_or(false);
+        // Whether this request carries images, so a rejection can say why.
+        let had_images = messages
+            .iter()
+            .any(|m| m.images.as_ref().is_some_and(|i| !i.is_empty()));
 
         // Stream the response (with rate limit retry)
         sink.emit(EngineEvent::SpinnerStart {

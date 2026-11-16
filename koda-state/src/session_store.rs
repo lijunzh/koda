@@ -111,6 +111,9 @@ pub struct Message {
     /// Signed thinking blocks, as JSON naming the model that wrote them; the
     /// provider decides which models get them back.
     pub thinking_blocks: Option<String>,
+    /// Images sent with the message, as JSON (`[{media_type, base64}]`):
+    /// replayed on every model call and after a resume. `None` for none.
+    pub images: Option<String>,
     /// ISO 8601 creation timestamp.
     pub created_at: Option<String>,
 }
@@ -461,6 +464,10 @@ pub trait SessionStore: Send + Sync {
     /// Persist signed thinking blocks for an assistant message. Call it before
     /// `mark_message_complete`, so no cached context holds the row yet.
     async fn update_message_thinking_blocks(&self, message_id: i64, blocks: &str) -> Result<()>;
+
+    /// Store `images` (JSON) on the latest user message of `session_id`:
+    /// the prompt a turn was started with.
+    async fn set_last_user_message_images(&self, session_id: &str, images: &str) -> Result<()>;
 
     // ── Token usage ──
 

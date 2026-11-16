@@ -247,6 +247,10 @@ pub struct KodaConfig {
     /// Whether a mentioned file is sent with its contents (`file_mentions`,
     /// on by default, as in Claude Code) or only its path, as in Codex.
     pub file_mentions: bool,
+    /// What the model takes besides text, from the config file's
+    /// `model_input_modalities`; `None` for Koda's table
+    /// ([`Self::input_modalities`]).
+    pub input_modalities: Option<Vec<koda_config::InputModality>>,
     /// Skip injecting project/global memory into the system prompt.
     /// Set by `skip_memory: true` in agent JSON. Default: `false`.
     pub skip_memory: bool,
@@ -415,6 +419,7 @@ impl KodaConfig {
             stream_max_retries: crate::inference_helpers::DEFAULT_STREAM_MAX_RETRIES,
             post_turn_compact_percent: 0,
             file_mentions: true,
+            input_modalities: None,
             skip_memory: agent.skip_memory,
             trust: declared_trust,
             stream_idle_timeout_ms: None,
@@ -538,6 +543,15 @@ impl KodaConfig {
                 tracing::info!("Max output tokens from API: {} for {}", max_out, self.model);
             }
         }
+    }
+
+    /// What the model takes as input: the config file's
+    /// `model_input_modalities` if set, else Koda's table for the provider
+    /// and model.
+    pub fn input_modalities(&self) -> Vec<koda_config::InputModality> {
+        self.input_modalities.clone().unwrap_or_else(|| {
+            koda_providers::model_input::input_modalities(self.provider_type, &self.model).to_vec()
+        })
     }
 
     /// What `create_provider` needs from this config.
@@ -673,6 +687,7 @@ impl KodaConfig {
             stream_max_retries: crate::inference_helpers::DEFAULT_STREAM_MAX_RETRIES,
             post_turn_compact_percent: 0,
             file_mentions: true,
+            input_modalities: None,
             skip_memory: false,
             trust: crate::trust::TrustMode::Auto,
             stream_idle_timeout_ms: None,

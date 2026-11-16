@@ -46,6 +46,30 @@ Supported formats: PNG, JPEG, GIF, WEBP. Images are base64-encoded and
 sent to the model with your message. `@screenshot.png` works too, read by the
 host as above.
 
+**An image stays in the conversation,** as in Claude Code: Koda stores it
+with your message, so the model still sees it after its first tool call, in
+later turns, and when you resume the session. Each image counts about 1,600
+tokens toward the context window, and compaction summarizes it away like
+any other early message. A request carries at most 100 images, Anthropic's
+limit; older ones beyond that are sent as a short note.
+
+**Which models get images:** Koda keeps a table of what each model takes.
+
+| Provider | Model | Takes |
+|---|---|---|
+| Anthropic | any | text, images, PDFs |
+| Gemini, OpenAI | any | text, images |
+| any other | a Claude or GPT model (as through OpenRouter) | text, images |
+| any other | anything else, local models included | text |
+
+A model that doesn't take images gets a note where each image was, and the
+stored image comes back if you switch to one that does. For a local vision
+model, say what it takes in `config.toml`:
+
+```toml
+model_input_modalities = ["text", "image"]
+```
+
 ## Large pastes
 
 Pasting 200 characters or more into the input attaches it as a reference block

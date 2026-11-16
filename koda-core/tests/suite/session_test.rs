@@ -448,6 +448,11 @@ async fn early_stop_turn_end(
     // The subject is how the turn ends; retries would only wait out backoff.
     env.config.request_max_retries = 0;
     env.config.stream_max_retries = 0;
+    // A model the config says takes images, so an image reaches the server.
+    env.config.input_modalities = Some(vec![
+        koda_config::InputModality::Text,
+        koda_config::InputModality::Image,
+    ]);
     env.insert_user_message("hello").await;
 
     let provider = Box::new(MockProvider::new(responses));
@@ -641,4 +646,98 @@ async fn a_compaction_turn_stores_its_context() {
     assert!(contexts[0].tools.is_empty());
     assert_eq!(contexts[0].system_prompt_sha256, None);
     assert_eq!(contexts[0].project_memory_sha256, None);
+}
+
+/// An image sent with a prompt stays in the conversation, as in Claude
+/// Code: the call after a tool call and the next turn still carry it
+/// (before Read v2 only the turn's first call did). A model that takes no
+/// images gets a placeholder instead, and the stored image comes back for
+/// one that does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_image_stays_in_the_conversation() {
+    use koda_config::InputModality;
+    use koda_core::inference_helpers::IMAGE_OMITTED;
+    let mut env = Env::new().await;
+    // A local vision model, which the config says takes images: Koda's
+    // table has local models as text only.
+    let vision = Some(vec![InputModality::Text, InputModality::Image]);
+    env.config.input_modalities = vision.clone();
+    // Room for the image's estimate, so no compaction folds it away.
+    env.config.max_context_tokens = 200_000;
+    env.config.model_settings.max_context_tokens = 200_000;
+    let provider = MockProvider::new(vec![
+        MockResponse::tool_call("Read", serde_json::json!({"file_path": "missing.txt"})),
+        MockResponse::Text("A cat.".into()),
+        MockResponse::Text("Still a cat.".into()),
+        MockResponse::Text("I can't see it.".into()),
+        MockResponse::Text("A cat again.".into()),
+    ]);
+    let calls = provider.recorded_calls_handle();
+    let (mut session, _cancel) = make_session(&env, Box::new(provider)).await;
+    let image = koda_core::providers::ImageData {
+        media_type: "image/png".into(),
+        base64: "AAAA".into(),
+    };
+    let mut turn = async |env: &Env, prompt: &str, images| {
+        env.insert_user_message(prompt).await;
+        let sink = TestSink::new();
+        let (_, mut cmd_rx) = mpsc::channel::<EngineCommand>(1);
+        session
+            .run_turn(&env.config, images, &sink, &mut cmd_rx, None)
+            .await
+            .unwrap();
+    };
+    let images_in = |call: &[koda_core::providers::ChatMessage]| -> usize {
+        call.iter()
+            .map(|m| m.images.as_ref().map_or(0, Vec::len))
+            .sum()
+    };
+
+    turn(&env, "What's this?", Some(vec![image])).await;
+    turn(&env, "And now?", None).await;
+    {
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 3, "a tool call, its answer, the next turn");
+        for (i, call) in calls.iter().enumerate() {
+            assert_eq!(
+                images_in(call),
+                1,
+                "call {i} lost the image: {:?}",
+                call.iter()
+                    .map(|m| (
+                        m.role.clone(),
+                        m.content
+                            .clone()
+                            .unwrap_or_default()
+                            .chars()
+                            .take(40)
+                            .collect::<String>(),
+                        m.images.as_ref().map(Vec::len)
+                    ))
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    // A model that takes text only: the image is a placeholder.
+    env.config.input_modalities = Some(vec![InputModality::Text]);
+    turn(&env, "Describe it again.", None).await;
+    {
+        let calls = calls.lock().unwrap();
+        let last = calls.last().unwrap();
+        assert_eq!(images_in(last), 0);
+        assert!(
+            last.iter().any(|m| m
+                .content
+                .as_deref()
+                .is_some_and(|c| c.contains(IMAGE_OMITTED))),
+            "no placeholder: {last:?}"
+        );
+    }
+
+    // Back to one that takes images: the stored image returns.
+    env.config.input_modalities = vision;
+    turn(&env, "Once more.", None).await;
+    let calls = calls.lock().unwrap();
+    assert_eq!(images_in(calls.last().unwrap()), 1);
 }

@@ -72,6 +72,7 @@ Every key, in Codex's names where Codex has one:
 | `agent` | The agent sessions run, as `--agent` names it: a built-in, or a JSON file in `agents/` (default: `default`) |
 | `model_post_turn_compact_threshold_percent` | Compact after a turn's final reply once this share of the window is used (1–100; 0 turns it off) |
 | `file_mentions` | `false` sends an `@` mention's path only, for the model to read, as Codex does; on by default, sending its contents as Claude Code does (see [File & image attachments](./attachments.md#mentioning-files)) |
+| `model_input_modalities` | What the model takes besides text, replacing Koda's table: `["text", "image"]` for a local vision model; `pdf` is the third value (see [File & image attachments](./attachments.md#images)) |
 | `mode` | The mode a new session starts in: `auto`, `safe`, or `plan` (`koda exec` only) |
 | `[model_providers.<id>]` | Per provider: `base_url`, `request_max_retries`, `stream_max_retries`, `stream_idle_timeout_ms` (0 turns the limit off) |
 | `[mcp_servers.<name>]` | An MCP server every new session starts |

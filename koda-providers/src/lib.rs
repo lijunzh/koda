@@ -64,6 +64,8 @@ pub mod model_alias;
 pub mod model_context;
 /// Reasoning effort per model: the levels it takes and the default sent.
 pub mod model_effort;
+/// What each model takes as input besides text (images, PDFs).
+pub mod model_input;
 /// Static provider catalog: `ProviderType` + `ProviderMeta` lookup tables.
 pub mod provider_catalog;
 
