@@ -55,8 +55,8 @@ names one skips the picker: `--provider`, `--base-url` (Koda takes the
 provider from the address) or a model alias such as `--model claude-opus`.
 See [Providers & model aliases](./providers.md).
 
-Then type a request. `/help` lists the commands and keys; [Interactive
-TUI](./tui.md) is the tour.
+Then type a request, or follow the [Quickstart](./quickstart.md) through a
+first session. `/help` lists the commands and keys.
 
 ## Updating
 
