@@ -21,10 +21,10 @@ edition = "2024"
 # with it (DESIGN.md P1: latest dependencies, one environment). Koda
 # supports one environment, its author's, so there is no separate,
 # lower floor for other consumers. Bump this together with the pin.
-rust-version = "1.99.1"
+rust-version = "1.100.0"
 license = "MIT"
 repository = "https://github.com/lijunzh/koda"
-homepage = "https://github.com/lijunzh/koda"
+homepage = "https://lijunzh.github.io/koda"
 authors = ["Lijun Zhu"]
 
 # Shared dependency versions — single source of truth (DRY).

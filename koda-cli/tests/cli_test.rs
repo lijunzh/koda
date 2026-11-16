@@ -7,12 +7,7 @@ use std::process::Command;
 
 /// Get the path to the built binary.
 fn koda_bin() -> String {
-    // cargo test builds the binary in target/debug/
-    let mut path = std::env::current_exe().unwrap();
-    path.pop(); // remove test binary name
-    path.pop(); // remove deps/
-    path.push("koda");
-    path.to_string_lossy().to_string()
+    env!("CARGO_BIN_EXE_koda").to_string()
 }
 
 #[test]

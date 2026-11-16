@@ -389,16 +389,13 @@ pub(crate) fn is_safe_ip(ip: std::net::IpAddr) -> bool {
         std::net::IpAddr::V4(ipv4) => {
             let octets = ipv4.octets();
             // Loopback, private, link-local, unspecified
-            if octets[0] == 127
+            let internal = octets[0] == 127
                 || octets[0] == 10
                 || (octets[0] == 172 && (16..=31).contains(&octets[1]))
                 || (octets[0] == 192 && octets[1] == 168)
                 || (octets[0] == 169 && octets[1] == 254)
-                || ipv4.is_unspecified()
-            {
-                return false;
-            }
-            true
+                || ipv4.is_unspecified();
+            !internal
         }
         std::net::IpAddr::V6(ipv6) => {
             if ipv6.is_loopback() || ipv6.is_unspecified() {

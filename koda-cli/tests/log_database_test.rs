@@ -8,12 +8,14 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+/// A binary Cargo built for these tests. Cargo says where: since 1.100 a
+/// test binary no longer sits beside them.
 fn bin(name: &str) -> PathBuf {
-    let mut path = std::env::current_exe().unwrap();
-    path.pop(); // test binary name
-    path.pop(); // deps/
-    path.push(name);
-    path
+    PathBuf::from(match name {
+        "koda" => env!("CARGO_BIN_EXE_koda"),
+        "koda-logs" => env!("CARGO_BIN_EXE_koda-logs"),
+        other => panic!("no binary {other}"),
+    })
 }
 
 fn reply() -> ResponseTemplate {

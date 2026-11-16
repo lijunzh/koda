@@ -10,11 +10,7 @@ use std::time::Duration;
 const PROMPT: &str = "Repair:\n```python\ndef f():\n    return 1\n```\n\n- keep this\n";
 
 fn koda_bin() -> String {
-    let mut path = std::env::current_exe().unwrap();
-    path.pop(); // test binary name
-    path.pop(); // deps/
-    path.push("koda");
-    path.to_string_lossy().to_string()
+    env!("CARGO_BIN_EXE_koda").to_string()
 }
 
 #[tokio::test(flavor = "multi_thread")]

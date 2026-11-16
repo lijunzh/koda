@@ -17,6 +17,6 @@
 # its author's, so there is no separate floor for other consumers
 # (DESIGN.md P1).
 [toolchain]
-channel = "1.99.1"
+channel = "1.100.0"
 components = ["clippy", "rustfmt"]
 profile = "minimal"

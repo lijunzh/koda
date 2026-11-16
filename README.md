@@ -20,7 +20,7 @@
 brew tap lijunzh/koda
 brew install koda
 
-# Cargo (requires Rust 1.99.1 or newer; the way to install on an Intel Mac)
+# Cargo (requires Rust 1.100.0 or newer; the way to install on an Intel Mac)
 cargo install koda-cli --locked
 
 # From source
