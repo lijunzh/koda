@@ -121,6 +121,9 @@ pub(crate) struct TuiContext {
     /// The session open on the host. When a command has switched
     /// `session.id`, the TUI opens that one before the next turn.
     pub(crate) host_session: String,
+    /// The sessions picker forks the session picked rather than resuming
+    /// it (`koda fork` without a session).
+    pub(crate) fork_on_pick: bool,
     /// The session's mode, as the host reports it.
     pub mode: TrustMode,
     /// The host's sandbox, from `state/read`: whether Auto is possible.
@@ -195,6 +198,40 @@ pub(crate) async fn open_host_session(
         },
         started.session.turns,
         started.session.mode,
+    ))
+}
+
+/// Fork session `source` on the host (`session/fork`) and open the copy,
+/// for `koda fork`, as [`open_host_session`] opens one, with what `named`
+/// gives over the source's own, as `codex fork` takes `-m`.
+pub(crate) async fn fork_host_session(
+    client: &koda_client::InProcessClient,
+    source: &str,
+    named: &settings::Named,
+) -> Result<(
+    TuiSession,
+    Vec<koda_client::protocol::turn::Turn>,
+    Option<koda_client::protocol::state::TrustMode>,
+)> {
+    use koda_client::protocol::{methods, session::SessionForkParams};
+    let forked = client
+        .request::<methods::SessionFork>(SessionForkParams {
+            session_id: source.to_string(),
+            approval_policy: None,
+            model_provider: named.provider.clone(),
+            base_url: named.base_url.clone(),
+            model: named.model.clone(),
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("couldn't fork session {source}: {e}"))?;
+    let instruction_sources = forked.session.instruction_sources.unwrap_or_default();
+    Ok((
+        TuiSession {
+            id: forked.session.id,
+            instruction_sources,
+        },
+        forked.session.turns,
+        forked.session.mode,
     ))
 }
 
@@ -307,6 +344,7 @@ impl TuiContext {
         project_root: PathBuf,
         named: settings::Named,
         resume: Option<crate::session_id::Resume>,
+        fork: bool,
         version_check: tokio::task::JoinHandle<Option<String>>,
         first_run: bool,
     ) -> Result<Self> {
@@ -349,8 +387,11 @@ impl TuiContext {
             Some(resume) => Some(crate::session_id::resolve_target(&client, resume).await?),
             None => None,
         };
-        let (session, earlier_turns, opened_mode) =
-            open_host_session(&client, resume, &named).await?;
+        // `koda fork` opens a copy of it instead.
+        let (session, earlier_turns, opened_mode) = match resume {
+            Some(source) if fork => fork_host_session(&client, &source, &named).await?,
+            resume => open_host_session(&client, resume, &named).await?,
+        };
 
         // The mode the host opened it in: a resumed session's own, or the
         // flags' or the config's, after the host's rule: Auto needs the
@@ -472,6 +513,7 @@ impl TuiContext {
             settings: session_settings,
             providers,
             host_session: session.id.clone(),
+            fork_on_pick: false,
             session,
             client,
             mode: initial_mode,
@@ -733,6 +775,10 @@ impl TuiContext {
         }
         if matches!(input.trim(), "/new" | "/clear") {
             self.start_new_session().await;
+            return CommandOutcome::Handled;
+        }
+        if input.trim() == "/fork" {
+            self.fork_session().await;
             return CommandOutcome::Handled;
         }
         if input.trim() == "/status" {

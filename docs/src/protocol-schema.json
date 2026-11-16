@@ -2484,6 +2484,65 @@
       ],
       "type": "object"
     },
+    "SessionForkParams": {
+      "additionalProperties": false,
+      "description": "`session/fork`: a new session with a copy of a stored one's history,\nopened and ready for a turn, as Codex's `thread/fork` does. The copy\nis named \"Fork of\" the source's name and keeps its provider, endpoint,\nmodel and mode unless others are named, as `session/start` resumes a\nsession; the source is left as it was. Whatever the source has stored\nis copied, so a turn still running there is copied as far as it has\ngot.",
+      "properties": {
+        "approvalPolicy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApprovalPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Who answers the fork's requests. Without one, the client does."
+        },
+        "baseUrl": {
+          "description": "The provider's endpoint, as `session/start` takes it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "description": "The model: an id or an alias, as `session/start` takes it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "modelProvider": {
+          "description": "The provider, by id, as `session/start` takes it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sessionId": {
+          "description": "The session to fork, by its full id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "type": "object"
+    },
+    "SessionForkResponse": {
+      "description": "The answer to `session/fork`: the fork, opened, with its turns, as\n`session/start` returns a resumed session.",
+      "properties": {
+        "session": {
+          "$ref": "#/$defs/Session",
+          "description": "The fork, ready for a turn."
+        }
+      },
+      "required": [
+        "session"
+      ],
+      "type": "object"
+    },
     "SessionListParams": {
       "additionalProperties": false,
       "description": "`session/list`: stored sessions, newest first. Codex's `thread/list`.",
@@ -4146,6 +4205,14 @@
       },
       "result": {
         "$ref": "#/$defs/SessionDeleteResponse"
+      }
+    },
+    "session/fork": {
+      "params": {
+        "$ref": "#/$defs/SessionForkParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionForkResponse"
       }
     },
     "session/list": {

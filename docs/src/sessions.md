@@ -20,6 +20,12 @@ koda resume a3f8bc "continue where we left off"
 koda exec resume --last "continue where we left off"
 koda exec resume a3f8bc "continue where we left off"
 
+# Fork a session: a copy you continue, the original left as it was, as
+# `codex fork` does: pick from the list, --last, or an ID
+koda fork
+koda fork --last "try it the other way"
+koda fork a3f8bc
+
 # The older flag still works: koda -s <ID>, koda exec -s <ID> "..."
 
 # Delete a session permanently
@@ -41,6 +47,17 @@ interrupted; type `continue` to pick it up. `koda resume`, `koda -s`,
 
 Sessions stored before 0.6.5 are rebuilt from their messages, so they show
 less: no reasoning, and no time on a sub-agent's summary.
+
+## Forking a session
+
+`/fork` copies the session you're in and switches to the copy, as Codex's
+`/fork` does; `koda fork` does the same from the command line. The copy has
+the whole history, its turns drawn as they were, and the same provider,
+model and mode (`koda fork --model` names another model, as
+`koda resume --model` does). It is named "Fork of" the original's name, and
+the original stays as it was, in `/resume`. Over the protocol,
+`session/fork` copies a stored session and opens the copy, as Codex's
+`thread/fork` does.
 
 ## Session title
 

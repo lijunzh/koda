@@ -319,7 +319,7 @@ types, and a test fails when it's stale.
 
 The protocol grows with the code that serves it. It has `initialize`,
 `state/read`, `session/start`, `session/list`, `session/delete`,
-`session/name/set`,
+`session/name/set`, `session/fork`,
 `session/compact/start`, `session/settings/update`, `session/unsubscribe`,
 `model/list`, `modelProvider/list`, `modelProvider/apiKey/set`,
 `modelProvider/apiKey/remove`, `config/read`, `config/batchWrite`,

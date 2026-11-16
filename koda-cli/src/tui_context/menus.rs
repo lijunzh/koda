@@ -361,8 +361,12 @@ impl TuiContext {
                         preview: s.preview.clone(),
                     })
                     .collect();
-                let mut dd =
-                    crate::widgets::dropdown::DropdownState::new(items, "\u{1f43b} Sessions");
+                let title = if self.fork_on_pick {
+                    "\u{1f43b} Fork which session?"
+                } else {
+                    "\u{1f43b} Sessions"
+                };
+                let mut dd = crate::widgets::dropdown::DropdownState::new(items, title);
                 if let Some(idx) = dd.filtered.iter().position(|s| s.is_current) {
                     dd.selected = idx;
                     let max_vis = crate::widgets::dropdown::MAX_VISIBLE;
@@ -529,6 +533,7 @@ impl TuiContext {
             }
             KeyCode::Esc => {
                 self.menu = MenuContent::None;
+                self.fork_on_pick = false;
                 if matches!(self.prompt_mode, PromptMode::WizardInput { .. }) {
                     self.prompt_mode = PromptMode::Chat;
                     self.provider_wizard = None;
@@ -655,6 +660,15 @@ impl TuiContext {
                 self.menu = MenuContent::None;
                 if let Some(mode) = mode {
                     self.implement_plan(mode).await;
+                }
+                return;
+            }
+            MenuContent::Session(dd) if self.fork_on_pick => {
+                let picked = dd.selected_item().map(|item| item.id.clone());
+                self.menu = MenuContent::None;
+                self.fork_on_pick = false;
+                if let Some(source) = picked {
+                    self.fork_from(&source, true).await;
                 }
                 return;
             }

@@ -62,6 +62,11 @@ pub const SLASH_COMMANDS: &[(&str, &str, Option<&str>)] = &[
         None,
     ),
     ("/expand", "Show full output of last tool call", None),
+    (
+        "/fork",
+        "Copy this session into a new one and switch to it",
+        None,
+    ),
     ("/help", "Show commands and shortcuts", None),
     (
         "/init",

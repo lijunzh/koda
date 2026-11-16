@@ -357,6 +357,10 @@ impl Host {
                 let _ = reply.send(self.set_name(params).await.and_then(to_json));
                 return;
             }
+            ClientRequest::SessionFork { params, .. } => {
+                let _ = reply.send(self.fork_session(params).await.and_then(to_json));
+                return;
+            }
             ClientRequest::SessionUnsubscribe { params, .. } => {
                 let status = self.unsubscribe(&params.session_id).await;
                 let _ = reply.send(to_json(SessionUnsubscribeResponse { status }));
@@ -550,6 +554,60 @@ impl Host {
             params.limit,
             params.sort_direction.unwrap_or(SortDirection::Desc),
         )
+    }
+
+    /// `session/fork`: copy the stored session into a new one named "Fork
+    /// of" its name, then open the copy as `session/start` resumes one, as
+    /// Codex's `thread/fork` does. An open source first stores what it has
+    /// sent, so the copy has everything its client has been told.
+    async fn fork_session(
+        &self,
+        params: koda_protocol::session::SessionForkParams,
+    ) -> Result<koda_protocol::session::SessionForkResponse, ErrorObject> {
+        use koda_state::session_store::SessionStore;
+        let source = self
+            .context
+            .db
+            .get_session(&params.session_id)
+            .await
+            .map_err(|e| internal(format!("couldn't read the session: {e:#}")))?
+            .ok_or_else(|| invalid(format!("no session {:?}", params.session_id)))?;
+        let open = self.sessions.lock().await.get(&source.id).cloned();
+        if let Some(commands) = open {
+            let (done, stored) = oneshot::channel();
+            if commands
+                .send(crate::session::SessionCommand::FlushHistory { done })
+                .is_ok()
+            {
+                let _ = stored.await;
+            }
+        }
+        let name = fork_name(source.title.as_deref().or(source.preview.as_deref()));
+        let id = self
+            .context
+            .db
+            .fork_session(&source.id, &name)
+            .await
+            .map_err(|e| internal(format!("couldn't fork the session: {e:#}")))?;
+        let started = self
+            .start_session(SessionStartParams {
+                session_id: Some(id.clone()),
+                approval_policy: params.approval_policy,
+                model_provider: params.model_provider,
+                base_url: params.base_url,
+                model: params.model,
+            })
+            .await;
+        match started {
+            Ok(started) => Ok(koda_protocol::session::SessionForkResponse {
+                session: started.session,
+            }),
+            Err(e) => {
+                // A copy that can't open is no use to anyone.
+                let _ = self.context.db.delete_session(&id).await;
+                Err(e)
+            }
+        }
     }
 
     /// Delete session `id`, closing it first if it is open, as Codex's
@@ -789,6 +847,21 @@ impl Host {
     }
 }
 
+/// A fork's name: "Fork of" what the source is called, within a name's
+/// length, or "Fork" for a source with neither name nor prompt.
+fn fork_name(source: Option<&str>) -> String {
+    let Some(source) = source.map(str::trim).filter(|s| !s.is_empty()) else {
+        return "Fork".to_string();
+    };
+    let name = format!("Fork of {source}");
+    if name.chars().count() <= MAX_SESSION_NAME {
+        return name;
+    }
+    let mut name: String = name.chars().take(MAX_SESSION_NAME - 1).collect();
+    name.push('\u{2026}');
+    name
+}
+
 fn history_error(e: String) -> ErrorObject {
     internal(format!("couldn't read the session's history: {e}"))
 }
@@ -796,6 +869,21 @@ fn history_error(e: String) -> ErrorObject {
 pub(crate) fn to_json<T: serde::Serialize>(response: T) -> Answer {
     serde_json::to_value(response)
         .map_err(|e| ErrorObject::new(codes::INTERNAL_ERROR, format!("response encoding: {e}")))
+}
+
+#[cfg(test)]
+mod fork_name_tests {
+    use super::*;
+
+    #[test]
+    fn a_fork_is_named_after_its_source_within_a_name_s_length() {
+        assert_eq!(fork_name(Some(" Parser work ")), "Fork of Parser work");
+        assert_eq!(fork_name(Some("")), "Fork");
+        assert_eq!(fork_name(None), "Fork");
+        let long = fork_name(Some(&"x".repeat(200)));
+        assert_eq!(long.chars().count(), MAX_SESSION_NAME);
+        assert!(long.ends_with('\u{2026}'));
+    }
 }
 
 #[cfg(test)]

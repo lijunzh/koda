@@ -459,6 +459,70 @@ impl SessionStore for Database {
         Ok(id)
     }
 
+    async fn fork_session(&self, source: &str, title: &str) -> Result<String> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let mut tx = self.pool.begin().await?;
+        let copied = sqlx::query(
+            "INSERT INTO sessions \
+               (id, agent_name, project_root, last_accessed_at, title, mode, provider, base_url, model) \
+             SELECT ?, agent_name, project_root, datetime('now'), ?, mode, provider, base_url, model \
+             FROM sessions WHERE id = ?",
+        )
+        .bind(&id)
+        .bind(title)
+        .bind(source)
+        .execute(&mut *tx)
+        .await?;
+        anyhow::ensure!(copied.rows_affected() == 1, "no session {source}");
+        sqlx::query(
+            "INSERT INTO messages \
+               (session_id, role, content, full_content, tool_calls, tool_call_id, \
+                prompt_tokens, completion_tokens, cache_read_tokens, cache_creation_tokens, \
+                thinking_tokens, thinking_content, thinking_model, thinking_blocks, agent_name, \
+                compacted_at, completed_at, created_at, images) \
+             SELECT ?, role, content, full_content, tool_calls, tool_call_id, \
+                prompt_tokens, completion_tokens, cache_read_tokens, cache_creation_tokens, \
+                thinking_tokens, thinking_content, thinking_model, thinking_blocks, agent_name, \
+                compacted_at, completed_at, created_at, images \
+             FROM messages WHERE session_id = ? ORDER BY id",
+        )
+        .bind(&id)
+        .bind(source)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO turn_records (session_id, turn_id, kind, payload, created_at) \
+             SELECT ?, turn_id, kind, payload, created_at \
+             FROM turn_records WHERE session_id = ? ORDER BY id",
+        )
+        .bind(&id)
+        .bind(source)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO session_metadata (session_id, key, value, updated_at) \
+             SELECT ?, key, value, updated_at FROM session_metadata \
+             WHERE session_id = ? AND key != ?",
+        )
+        .bind(&id)
+        .bind(source)
+        .bind(crate::session_store::PARENT_SESSION_KEY)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO session_events (session_id, kind, payload, parent_tool_call_id, created_at) \
+             SELECT ?, kind, payload, parent_tool_call_id, created_at \
+             FROM session_events WHERE session_id = ? ORDER BY id",
+        )
+        .bind(&id)
+        .bind(source)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        tracing::info!("Forked session {source} as {id}");
+        Ok(id)
+    }
+
     /// Insert a message into the conversation log.
     async fn insert_message(
         &self,

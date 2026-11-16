@@ -346,6 +346,13 @@ pub trait SessionStore: Send + Sync {
     ) -> Result<Vec<SessionInfo>>;
     /// One session by its full id, or `None` if there is none.
     async fn get_session(&self, session_id: &str) -> Result<Option<SessionInfo>>;
+
+    /// Copy `source` into a new session named `title`, and return its id:
+    /// the session's provider, model and mode, its messages (token counts
+    /// included), turn records, metadata and events, as Codex's
+    /// `thread/fork` copies a thread's rollout. One transaction; `source`
+    /// is left as it was.
+    async fn fork_session(&self, source: &str, title: &str) -> Result<String>;
     /// Delete a session by ID. Returns `true` if it existed.
     async fn delete_session(&self, session_id: &str) -> Result<bool>;
     /// Set the auto-generated title for a session.

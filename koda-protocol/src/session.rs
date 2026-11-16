@@ -403,6 +403,41 @@ pub struct TokenUsageBreakdown {
     pub reasoning_output_tokens: u64,
 }
 
+/// `session/fork`: a new session with a copy of a stored one's history,
+/// opened and ready for a turn, as Codex's `thread/fork` does. The copy
+/// is named "Fork of" the source's name and keeps its provider, endpoint,
+/// model and mode unless others are named, as `session/start` resumes a
+/// session; the source is left as it was. Whatever the source has stored
+/// is copied, so a turn still running there is copied as far as it has
+/// got.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionForkParams {
+    /// The session to fork, by its full id.
+    pub session_id: String,
+    /// Who answers the fork's requests. Without one, the client does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_policy: Option<ApprovalPolicy>,
+    /// The provider, by id, as `session/start` takes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_provider: Option<String>,
+    /// The provider's endpoint, as `session/start` takes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    /// The model: an id or an alias, as `session/start` takes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+/// The answer to `session/fork`: the fork, opened, with its turns, as
+/// `session/start` returns a resumed session.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionForkResponse {
+    /// The fork, ready for a turn.
+    pub session: Session,
+}
+
 /// `session/name/set`: name a stored session, as Codex's `thread/name/set`
 /// does. The name replaces the title Koda takes from the first prompt, and
 /// a later prompt doesn't replace it. `session/name/updated` follows.
