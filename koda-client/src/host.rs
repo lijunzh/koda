@@ -520,8 +520,20 @@ impl Host {
                 format!("no session {:?}", params.session_id),
             ));
         }
-        // An open session's last turn may still be running.
-        let running = self.sessions.lock().await.contains_key(&params.session_id);
+        // An open session's last turn may still be running, and what it has
+        // sent may not be stored yet: wait for that, so the list has
+        // everything a client has already been told.
+        let open = self.sessions.lock().await.get(&params.session_id).cloned();
+        let running = open.is_some();
+        if let Some(commands) = open {
+            let (done, stored) = oneshot::channel();
+            if commands
+                .send(crate::session::SessionCommand::FlushHistory { done })
+                .is_ok()
+            {
+                let _ = stored.await;
+            }
+        }
         let turns = crate::history::turns(&self.context.db, &params.session_id, running)
             .await
             .map_err(history_error)?;
