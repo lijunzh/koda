@@ -13,7 +13,8 @@ use serde_json::Value;
 /// A tool call's `output` when Plan mode refused it, with status
 /// `declined`: what the model reads in place of the tool's result. It says
 /// why and what to do instead, and nothing about switching modes: a
-/// headless run can't, and an interactive session never sits in Plan.
+/// headless run can't, and in a session a person answers, leaving Plan is
+/// theirs to do.
 /// Clients read its `[plan mode]` start as "refused by the mode".
 pub const PLAN_BLOCKED_MESSAGE: &str = "[plan mode] Not run: this session is read-only, so \
      only tools that read are allowed. Don't retry it or try another way to make the change; \

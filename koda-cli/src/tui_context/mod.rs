@@ -353,8 +353,8 @@ impl TuiContext {
             open_host_session(&client, resume, &named).await?;
 
         // The mode the host opened it in: a resumed session's own, or the
-        // flags' or the config's, after the host's rules (Auto needs the
-        // sandbox; Plan is Safe here, with a warning the host sends).
+        // flags' or the config's, after the host's rule: Auto needs the
+        // sandbox.
         let initial_mode = opened_mode.unwrap_or(TrustMode::Safe);
         let sandbox = client
             .request::<koda_client::protocol::methods::StateRead>(
