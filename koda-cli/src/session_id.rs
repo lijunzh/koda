@@ -12,6 +12,39 @@ use koda_client::protocol::session::{Session, SessionListParams};
 /// How many sessions one `session/list` page asks for.
 const PAGE: u32 = 100;
 
+/// Which earlier session to open: one named by id (or the start of one),
+/// or the most recent, as `codex resume --last` picks it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Resume {
+    Id(String),
+    Last,
+}
+
+/// The full id `resume` names.
+pub(crate) async fn resolve_target(
+    client: &InProcessClient,
+    resume: &Resume,
+) -> anyhow::Result<String> {
+    match resume {
+        Resume::Id(typed) => resolve(client, typed).await,
+        Resume::Last => last(all_sessions(client).await?)
+            .ok_or_else(|| anyhow::anyhow!("this project has no earlier session to resume")),
+    }
+}
+
+/// The session with the latest activity, as `codex resume --last` sorts
+/// by update time; one where nothing was ever sent (a TUI opened and
+/// closed) doesn't count. On a tie, the newer one: `sessions` is newest
+/// first.
+fn last(sessions: Vec<Session>) -> Option<String> {
+    sessions
+        .into_iter()
+        .enumerate()
+        .filter(|(_, s)| !s.preview.is_empty())
+        .max_by_key(|(at, s)| (s.updated_at, std::cmp::Reverse(*at)))
+        .map(|(_, s)| s.id)
+}
+
 /// The full id `typed` names.
 pub(crate) async fn resolve(client: &InProcessClient, typed: &str) -> anyhow::Result<String> {
     let typed = typed.trim();
@@ -62,9 +95,7 @@ fn pick<'a>(typed: &str, ids: impl Iterator<Item = &'a str>) -> anyhow::Result<&
     }
     match matches[..] {
         [only] => Ok(only),
-        [] => anyhow::bail!(
-            "no session matches '{typed}'. Run `koda` and type /sessions to list them."
-        ),
+        [] => anyhow::bail!("no session matches '{typed}'. Run `koda resume` to pick one."),
         _ => anyhow::bail!("'{typed}' matches more than one session; give more of the id."),
     }
 }
@@ -75,6 +106,25 @@ mod tests {
 
     const A: &str = "28545aaa-0000-4000-8000-000000000001";
     const B: &str = "28545bbb-0000-4000-8000-000000000002";
+
+    #[test]
+    fn last_is_the_latest_activity_and_skips_empty_sessions() {
+        let session = |id: &str, updated_at: i64, preview: &str| {
+            serde_json::from_value::<Session>(serde_json::json!({
+                "id": id, "preview": preview, "createdAt": 0, "updatedAt": updated_at,
+            }))
+            .unwrap()
+        };
+        // Newest first, as `session/list` gives them.
+        let sessions = vec![
+            session("empty", 9, ""),
+            session("newer", 5, "hi"),
+            session("busier", 7, "hi"),
+            session("older", 7, "hi"),
+        ];
+        assert_eq!(last(sessions).as_deref(), Some("busier"));
+        assert_eq!(last(vec![session("empty", 9, "")]), None);
+    }
 
     #[test]
     fn a_full_id_needs_no_lookup() {

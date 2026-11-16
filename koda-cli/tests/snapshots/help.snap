@@ -25,10 +25,11 @@ vars always win over stored keys.
 Usage: koda [OPTIONS] [PROMPT] [COMMAND]
 
 Commands:
-  exec   Run one prompt without the TUI, then exit
-  serve  Serve the client protocol on stdin and stdout, for a GUI, an editor or a script
-  mcp    Manage the MCP servers every session starts: list, get, add, remove
-  help   Print this message or the help of the given subcommand(s)
+  exec    Run one prompt without the TUI, then exit
+  resume  Resume a saved session in the TUI, as `codex resume` does: by its id (or the start of one), the most recent with --last, or pick one from a list
+  serve   Serve the client protocol on stdin and stdout, for a GUI, an editor or a script
+  mcp     Manage the MCP servers every session starts: list, get, add, remove
+  help    Print this message or the help of the given subcommand(s)
 
 Arguments:
   [PROMPT]
@@ -68,6 +69,9 @@ Options:
 
       --mcp-config <FILE|JSON>
           Add MCP servers for this run only, from a JSON file or inline JSON in the `{"mcpServers": {...}}` shape of Claude Code's `.mcp.json`. Repeatable; later servers win a name clash, and all of them win over servers stored with `koda mcp add`. Nothing is saved
+
+  -i, --image <FILE>
+          Images to attach to the first prompt, as Codex's `-i` does: a path, or several separated by commas. Repeatable
 
   -c, --config <KEY=VALUE>
           Override a config.toml value for this run: `-c key=value`, with a dotted key (`-c model_providers.lm-studio.base_url=http://...`). The value is read as TOML, else taken as text, as Codex's `-c` is, and replaces what is at that key. Repeatable; never saved. Flags such as --reasoning-effort are `-c` values too, and win over these

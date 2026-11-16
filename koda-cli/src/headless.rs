@@ -58,6 +58,8 @@ pub enum Output {
 pub struct Run {
     /// The prompt.
     pub prompt: String,
+    /// Images `--image` attached, read already.
+    pub images: Vec<input::ImageData>,
     /// What goes to stdout.
     pub output: Output,
     /// Where to write the last reply (`koda exec -o`).
@@ -80,7 +82,11 @@ pub struct Named {
 /// Run a single prompt and exit. `resume` is an earlier session's id, or
 /// the start of one; without one a new session starts. Returns the process exit code (0 =
 /// success).
-pub async fn run_headless(project_root: PathBuf, resume: Option<String>, run: Run) -> Result<i32> {
+pub async fn run_headless(
+    project_root: PathBuf,
+    resume: Option<crate::session_id::Resume>,
+    run: Run,
+) -> Result<i32> {
     // `@path` mentions go to the host, which reads them; dragged-in images
     // are loaded here.
     let processed = input::process_input(&run.prompt);
@@ -90,9 +96,11 @@ pub async fn run_headless(project_root: PathBuf, resume: Option<String>, run: Ru
         .iter()
         .map(|path| Mention { path: path.clone() })
         .collect();
-    let images = processed
+    let images = run
         .images
-        .into_iter()
+        .iter()
+        .cloned()
+        .chain(processed.images)
         .map(|image| ImageInput {
             media_type: image.media_type,
             data: image.base64,
@@ -111,8 +119,8 @@ pub async fn run_headless(project_root: PathBuf, resume: Option<String>, run: Ru
     .await?;
     let mut view = View::new(run.output);
     // A mistyped id (once, a llama-server pid) stops here, before the turn.
-    let resume = match resume {
-        Some(typed) => Some(crate::session_id::resolve(&client, &typed).await?),
+    let resume = match &resume {
+        Some(resume) => Some(crate::session_id::resolve_target(&client, resume).await?),
         None => None,
     };
 

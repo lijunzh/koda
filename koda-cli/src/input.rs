@@ -194,6 +194,26 @@ fn looks_like_file_path(token: &str) -> bool {
     check(cleaned) || check(&unescaped)
 }
 
+/// The images `--image` names, read in order: a path that isn't an image
+/// file, or can't be read, stops the start, as Codex's
+/// `--image` does.
+pub(crate) fn load_images(paths: &[PathBuf]) -> anyhow::Result<Vec<ImageData>> {
+    paths
+        .iter()
+        .map(|path| {
+            let shown = path.display().to_string();
+            anyhow::ensure!(is_image_file(&shown), "--image {shown}: not an image file");
+            let bytes = std::fs::read(path)
+                .map_err(|e| anyhow::anyhow!("--image {shown}: couldn't read it: {e}"))?;
+            use base64::Engine;
+            Ok(ImageData {
+                media_type: mime_type_for(&shown).to_string(),
+                base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+            })
+        })
+        .collect()
+}
+
 /// Try to load an image file, returning the ImageData if successful.
 fn try_load_image(path: &Path, display_path: &str) -> Option<ImageData> {
     match std::fs::read(path) {

@@ -753,6 +753,93 @@ async fn a_resumed_turn_reports_only_itself() {
     assert_eq!(totals["modelCalls"], 2, "the session: {totals}");
 }
 
+/// `koda exec resume` picks a saved session as `codex exec resume` does:
+/// `--last` the most recent in this project, or an id's first characters.
+#[tokio::test(flavor = "multi_thread")]
+async fn exec_resume_takes_the_last_session_or_an_id() {
+    let server = stub(vec![], no_other_calls).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let session_of = |run: &Run| {
+        run.lines[0]["params"]["session"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let first = finish(command(&server, tmp.path())).await;
+    assert!(first.output.status.success(), "{}", first.stdout);
+    let second = finish(command(&server, tmp.path())).await;
+    assert!(second.output.status.success(), "{}", second.stdout);
+    let (first, second) = (session_of(&first), session_of(&second));
+    assert_ne!(first, second);
+
+    let resume = |args: &[&str]| {
+        let mut command = tokio::process::Command::new(koda_bin());
+        command
+            .args(["exec", "resume"])
+            .args(args)
+            .args(["--json", "--provider", "lmstudio", "--model", "stub"])
+            .args(["--base-url", &server.url()])
+            .arg("--project-root")
+            .arg(tmp.path())
+            .env("XDG_CONFIG_HOME", tmp.path())
+            .kill_on_drop(true);
+        command
+    };
+    let last = finish(resume(&["--last", "Carry on"])).await;
+    assert!(last.output.status.success(), "{}", last.stdout);
+    assert_eq!(session_of(&last), second, "--last");
+
+    let by_id = finish(resume(&[&first[..8], "Carry on"])).await;
+    assert!(by_id.output.status.success(), "{}", by_id.stdout);
+    assert_eq!(session_of(&by_id), first, "by id");
+
+    let neither = finish(resume(&["Carry on"])).await;
+    assert!(
+        !neither.output.status.success(),
+        "a prompt alone names no session"
+    );
+}
+
+/// `koda exec -i` sends the image with the prompt, as `codex exec -i` does.
+#[tokio::test(flavor = "multi_thread")]
+async fn exec_image_goes_with_the_prompt() {
+    let server = stub(vec![], no_other_calls).await;
+    let tmp = tempfile::tempdir().unwrap();
+    // A 1x1 PNG.
+    let png = [
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f,
+        0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8,
+        0xcf, 0xc0, 0xf0, 0x1f, 0x00, 0x05, 0x00, 0x01, 0xff, 0x89, 0x99, 0x3d, 0x1d, 0x00, 0x00,
+        0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+    let image = tmp.path().join("red.png");
+    std::fs::write(&image, png).unwrap();
+    let mut command = command(&server, tmp.path());
+    command
+        .arg("-i")
+        .arg(&image)
+        .args(["-c", r#"model_input_modalities=["text","image"]"#]);
+    let run = finish(command).await;
+    assert!(run.output.status.success(), "{}", run.stdout);
+    let requests = server.received_requests().await;
+    let sent = requests
+        .iter()
+        .map(|r| String::from_utf8_lossy(&r.body).to_string());
+    assert!(
+        sent.clone().any(|b| b.contains("data:image/png;base64,")),
+        "no image in the requests"
+    );
+
+    // A path that isn't an image stops the run before it starts.
+    let mut command = self::command(&server, tmp.path());
+    command.args(["-i", "notes.txt"]);
+    let refused = finish(command).await;
+    assert!(!refused.output.status.success());
+    let stderr = String::from_utf8_lossy(&refused.output.stderr);
+    assert!(stderr.contains("--image notes.txt"), "{stderr}");
+}
+
 /// `koda exec -s` keeps the session's own provider, endpoint and model
 /// unless flags name others, as `codex exec resume` does.
 #[tokio::test(flavor = "multi_thread")]

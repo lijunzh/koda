@@ -82,6 +82,11 @@ struct Cli {
     #[command(flatten)]
     flags: ConfigFlags,
 
+    /// Images to attach to the first prompt, as Codex's `-i` does: a path,
+    /// or several separated by commas. Repeatable.
+    #[arg(short = 'i', long = "image", value_name = "FILE", value_delimiter = ',', action = clap::ArgAction::Append)]
+    images: Vec<PathBuf>,
+
     /// Override a config.toml value for this run: `-c key=value`, with a
     /// dotted key (`-c model_providers.lm-studio.base_url=http://...`).
     /// The value is read as TOML, else taken as text, as Codex's `-c` is,
@@ -288,7 +293,11 @@ enum Command {
     /// answers a question with nothing. The reply goes to stdout, progress
     /// to stderr. With --json, stdout carries the client protocol's
     /// notifications instead, one JSON-RPC message per line.
-    Exec(ExecArgs),
+    Exec(Box<ExecArgs>),
+    /// Resume a saved session in the TUI, as `codex resume` does: by its
+    /// id (or the start of one), the most recent with --last, or pick one
+    /// from a list.
+    Resume(ResumeArgs),
     /// Serve the client protocol on stdin and stdout, for a GUI, an editor
     /// or a script.
     ///
@@ -313,6 +322,56 @@ enum Command {
     },
 }
 
+/// `koda resume`'s flags: which session, a prompt, and `koda`'s own.
+#[derive(clap::Args, Debug)]
+struct ResumeArgs {
+    #[command(flatten)]
+    which: WhichSession,
+
+    #[command(flatten)]
+    session: SessionFlags,
+
+    #[command(flatten)]
+    flags: ConfigFlags,
+
+    /// Images to attach to the prompt, as for `koda`.
+    #[arg(short = 'i', long = "image", value_name = "FILE", value_delimiter = ',', action = clap::ArgAction::Append)]
+    images: Vec<PathBuf>,
+}
+
+/// The session `koda resume` and `koda exec resume` open, and the prompt.
+#[derive(clap::Args, Debug, Default)]
+struct WhichSession {
+    /// The session's id, or the start of one. Without it (or --last), the
+    /// TUI opens a list to pick from.
+    #[arg(value_name = "SESSION")]
+    id: Option<String>,
+
+    /// The most recent session in this project. With --last, a single
+    /// argument is the prompt, as in Codex.
+    #[arg(long)]
+    last: bool,
+
+    /// A prompt to send once the session opens.
+    #[arg(value_name = "PROMPT")]
+    prompt: Option<String>,
+}
+
+impl WhichSession {
+    /// The session to open, and the prompt. With `--last`, a lone
+    /// argument is the prompt, as `codex resume --last "…"` reads it.
+    fn resolve(mut self) -> Result<(Option<crate::session_id::Resume>, Option<String>)> {
+        use crate::session_id::Resume;
+        if self.last {
+            if self.prompt.is_some() {
+                anyhow::bail!("give a session id or --last, not both");
+            }
+            return Ok((Some(Resume::Last), self.id.take()));
+        }
+        Ok((self.id.map(Resume::Id), self.prompt))
+    }
+}
+
 /// `koda serve`'s own flags.
 #[derive(clap::Args, Debug)]
 struct ServeArgs {
@@ -328,7 +387,11 @@ struct ServeArgs {
 /// `koda exec`'s flags: its own, and the same session and config flags as
 /// `koda`'s.
 #[derive(clap::Args, Debug)]
+#[command(args_conflicts_with_subcommands = true)]
 struct ExecArgs {
+    #[command(subcommand)]
+    command: Option<ExecCommand>,
+
     #[command(flatten)]
     session: SessionFlags,
 
@@ -350,9 +413,54 @@ struct ExecArgs {
     #[arg(long, requires = "json")]
     json_deltas: bool,
 
+    #[command(flatten)]
+    output: ExecOutput,
+}
+
+/// `koda exec`'s subcommands.
+#[derive(Subcommand, Debug)]
+enum ExecCommand {
+    /// Run a prompt in a saved session, as `codex exec resume` does: by its
+    /// id (or the start of one), or the most recent with --last.
+    Resume(ExecResumeArgs),
+}
+
+/// `koda exec resume`'s flags: `koda exec`'s, and which session.
+#[derive(clap::Args, Debug)]
+struct ExecResumeArgs {
+    #[command(flatten)]
+    which: WhichSession,
+
+    #[command(flatten)]
+    session: SessionFlags,
+
+    #[command(flatten)]
+    flags: ConfigFlags,
+
+    /// Print the client protocol's notifications on stdout, as `koda exec
+    /// --json` does.
+    #[arg(long)]
+    json: bool,
+
+    /// With --json, also print streaming deltas.
+    #[arg(long, requires = "json")]
+    json_deltas: bool,
+
+    #[command(flatten)]
+    output: ExecOutput,
+}
+
+/// What `koda exec` and `koda exec resume` both take besides the prompt.
+#[derive(clap::Args, Debug, Default)]
+struct ExecOutput {
     /// Write the last reply to this file.
     #[arg(short = 'o', long = "output-last-message", value_name = "FILE")]
     output_last_message: Option<PathBuf>,
+
+    /// Images to attach to the prompt, as `codex exec -i` does: a path, or
+    /// several separated by commas. Repeatable.
+    #[arg(short = 'i', long = "image", value_name = "FILE", value_delimiter = ',', action = clap::ArgAction::Append)]
+    images: Vec<PathBuf>,
 }
 
 const ONE_SHOT_REMOVED: &str = "`koda -p` and `--output-format` were removed in 0.7.0.
@@ -385,16 +493,71 @@ pub(crate) async fn run() -> Result<()> {
     let mut serving = false;
     let mut session = std::mem::take(&mut cli.session);
     let mut flags = std::mem::take(&mut cli.flags);
+    let root_images = std::mem::take(&mut cli.images);
+    // The TUI's start: which session, its first prompt and images, and
+    // whether to open the session list first (`koda resume` alone).
+    let mut tui_prompt = cli.positional_prompt.take();
+    let mut tui_images = Vec::new();
+    let mut pick_session = false;
+    if matches!(cli.command, Some(Command::Serve(_) | Command::Mcp(_))) && !root_images.is_empty() {
+        eprintln!("error: --image goes with a prompt: koda, koda resume or koda exec");
+        std::process::exit(2);
+    }
+    let mut resume = None;
     let headless_run = match cli.command.take() {
-        Some(Command::Exec(mut args)) => {
-            args.session.inherit(&session);
-            args.flags.inherit(&flags);
-            session = std::mem::take(&mut args.session);
-            flags = std::mem::take(&mut args.flags);
-            Some(exec_run(args)?)
+        Some(Command::Exec(args)) => match *args {
+            ExecArgs {
+                command: Some(ExecCommand::Resume(mut r)),
+                ..
+            } => {
+                r.session.inherit(&session);
+                r.flags.inherit(&flags);
+                refuse_resume_flag(&r.session, "koda exec resume");
+                let (which, prompt) = r.which.resolve()?;
+                let Some(which) = which else {
+                    anyhow::bail!("koda exec resume needs a session id, or --last");
+                };
+                resume = Some(which);
+                session = std::mem::take(&mut r.session);
+                flags = std::mem::take(&mut r.flags);
+                let mut output = r.output;
+                if output.images.is_empty() {
+                    output.images = root_images;
+                }
+                Some(exec_run(prompt, r.json, r.json_deltas, output)?)
+            }
+            mut args => {
+                args.session.inherit(&session);
+                args.flags.inherit(&flags);
+                session = std::mem::take(&mut args.session);
+                flags = std::mem::take(&mut args.flags);
+                resume = session.resume.take().map(crate::session_id::Resume::Id);
+                let mut output = args.output;
+                if output.images.is_empty() {
+                    output.images = root_images;
+                }
+                Some(exec_run(args.prompt, args.json, args.json_deltas, output)?)
+            }
+        },
+        Some(Command::Resume(mut r)) => {
+            r.session.inherit(&session);
+            r.flags.inherit(&flags);
+            refuse_resume_flag(&r.session, "koda resume");
+            let (which, prompt) = r.which.resolve()?;
+            pick_session = which.is_none();
+            resume = which;
+            tui_prompt = prompt.or(tui_prompt);
+            session = std::mem::take(&mut r.session);
+            flags = std::mem::take(&mut r.flags);
+            tui_images = if r.images.is_empty() {
+                root_images
+            } else {
+                r.images
+            };
+            None
         }
         Some(Command::Serve(mut args)) => {
-            if let Some(error) = serve_refusal(&args, &session, cli.positional_prompt.is_some()) {
+            if let Some(error) = serve_refusal(&args, &session, tui_prompt.is_some()) {
                 eprintln!("error: {error}");
                 std::process::exit(2);
             }
@@ -404,7 +567,7 @@ pub(crate) async fn run() -> Result<()> {
             None
         }
         Some(Command::Mcp(mcp)) => {
-            if let Some(error) = mcp_refusal(&session, &flags, cli.positional_prompt.is_some()) {
+            if let Some(error) = mcp_refusal(&session, &flags, tui_prompt.is_some()) {
                 eprintln!("error: {error}");
                 std::process::exit(2);
             }
@@ -416,9 +579,13 @@ pub(crate) async fn run() -> Result<()> {
                 eprintln!("{ONE_SHOT_REMOVED}");
                 std::process::exit(2);
             }
+            resume = session.resume.take().map(crate::session_id::Resume::Id);
+            tui_images = root_images;
             None
         }
     };
+    // Read before anything starts, so a bad path stops the run first.
+    let tui_images = crate::input::load_images(&tui_images)?;
 
     // Every flag but the model choice is a config value for this run, as
     // Codex's flags are: after `-c`, so a flag wins over a `-c` value.
@@ -535,7 +702,7 @@ pub(crate) async fn run() -> Result<()> {
         };
         // An unknown id stops the run before its turn (`session_id`). A new
         // session is the host's to create.
-        let exit_code = headless::run_headless(project_root, session.resume, run).await?;
+        let exit_code = headless::run_headless(project_root, resume, run).await?;
         // `exit` runs no destructors: store the queued lines first, the last
         // of which say how the run ended, and write out the file's.
         crate::logging::flush().await;
@@ -569,8 +736,12 @@ pub(crate) async fn run() -> Result<()> {
     tui_app::run(
         project_root,
         named,
-        session.resume,
-        cli.positional_prompt,
+        crate::tui_app::Start {
+            resume,
+            prompt: tui_prompt,
+            images: tui_images,
+            pick_session,
+        },
         version_check,
         first_run,
     )
@@ -688,9 +859,15 @@ fn parse_context_window(raw: &str) -> std::result::Result<u64, String> {
     }
 }
 
-/// `koda exec`'s run: its prompt, from the argument or stdin, and output.
-fn exec_run(args: ExecArgs) -> Result<headless::Run> {
-    let prompt = match args.prompt.as_deref() {
+/// `koda exec`'s run: its prompt, from the argument or stdin, its images,
+/// and output.
+fn exec_run(
+    prompt: Option<String>,
+    json: bool,
+    json_deltas: bool,
+    output: ExecOutput,
+) -> Result<headless::Run> {
+    let prompt = match prompt.as_deref() {
         Some("-") => read_stdin()?,
         Some(prompt) => prompt.to_string(),
         None if !atty_is_terminal() => read_stdin()?,
@@ -701,17 +878,26 @@ fn exec_run(args: ExecArgs) -> Result<headless::Run> {
     }
     Ok(headless::Run {
         prompt,
-        output: if args.json {
+        images: crate::input::load_images(&output.images)?,
+        output: if json {
             headless::Output::Events {
-                deltas: args.json_deltas,
+                deltas: json_deltas,
             }
         } else {
             headless::Output::Text
         },
-        last_message: args.output_last_message,
+        last_message: output.output_last_message,
         // Set once the flags are read.
         named: headless::Named::default(),
     })
+}
+
+/// `koda resume` and `koda exec resume` name the session themselves.
+fn refuse_resume_flag(session: &SessionFlags, command: &str) {
+    if session.resume.is_some() {
+        eprintln!("error: {command} takes the session as its argument, not --resume");
+        std::process::exit(2);
+    }
 }
 
 fn read_stdin() -> Result<String> {
@@ -794,6 +980,60 @@ mod tests {
         };
         let error = serve_refusal(args, &cli.session, false).unwrap();
         assert!(error.contains("--resume"), "{error}");
+    }
+
+    /// `koda resume` and `koda exec resume` read their arguments as Codex's
+    /// do: an id and a prompt, or `--last` and a prompt.
+    #[test]
+    fn resume_reads_an_id_or_last_then_a_prompt() {
+        use crate::session_id::Resume;
+        let which = |args: &[&str]| -> (Option<Resume>, Option<String>) {
+            match Cli::try_parse_from(args).unwrap().command {
+                Some(Command::Resume(r)) => r.which.resolve().unwrap(),
+                Some(Command::Exec(args)) => match *args {
+                    ExecArgs {
+                        command: Some(ExecCommand::Resume(r)),
+                        ..
+                    } => r.which.resolve().unwrap(),
+                    other => panic!("{other:?}"),
+                },
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(which(&["koda", "resume"]), (None, None));
+        assert_eq!(
+            which(&["koda", "resume", "abc", "go on"]),
+            (Some(Resume::Id("abc".into())), Some("go on".into()))
+        );
+        assert_eq!(
+            which(&["koda", "resume", "--last", "go on"]),
+            (Some(Resume::Last), Some("go on".into()))
+        );
+        assert_eq!(
+            which(&["koda", "exec", "resume", "--last", "go on", "--json"]),
+            (Some(Resume::Last), Some("go on".into()))
+        );
+        // A prompt that starts with the word is still a prompt.
+        let cli = Cli::try_parse_from(["koda", "exec", "resume the work"]).unwrap();
+        let Some(Command::Exec(args)) = cli.command else {
+            panic!("not exec");
+        };
+        assert!(args.command.is_none());
+    }
+
+    /// `-i` takes a path or several, comma-separated, and repeats.
+    #[test]
+    fn image_flag_takes_paths_and_lists() {
+        let cli =
+            Cli::try_parse_from(["koda", "-i", "a.png,b.png", "-i", "c.png", "look"]).unwrap();
+        assert_eq!(cli.images.len(), 3);
+        assert_eq!(cli.positional_prompt.as_deref(), Some("look"));
+        let cli = Cli::try_parse_from(["koda", "exec", "-i", "a.png", "look"]).unwrap();
+        let Some(Command::Exec(args)) = cli.command else {
+            panic!("not exec");
+        };
+        assert_eq!(args.output.images.len(), 1);
+        assert_eq!(args.prompt.as_deref(), Some("look"));
     }
 
     /// The flags going in 0.8 still set their key, with a warning naming
