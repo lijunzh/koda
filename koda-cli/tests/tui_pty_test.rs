@@ -2372,3 +2372,41 @@ async fn a_dropped_image_becomes_a_marker_and_reaches_the_model() {
     assert!(sent.contains("[Image #1] what is this?"), "{sent}");
     assert!(sent.contains("data:image/png;base64,"), "no image: {sent}");
 }
+
+/// A large paste shows as `[Pasted text #1 +5 lines]`, as Claude Code's
+/// does, and reaches the model where it was pasted, tagged as pasted. Up
+/// brings the prompt back with its paste, so sending it again sends it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_large_paste_is_a_marker_sent_where_it_was_pasted() {
+    let server = scripted_model(vec![]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    let log = (1..=5)
+        .map(|n| format!("line {n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    tui.type_text("why does ");
+    tui.paste(&format!("\x1b[200~{log}\x1b[201~"));
+    tui.wait_for_screen("[Pasted text #1 +5 lines]");
+    assert!(!tui.screen().contains("line 3"), "{}", tui.screen());
+    tui.submit_and_finish(" fail?", "All done.");
+
+    // The body is JSON: quotes and newlines arrive escaped.
+    let sent = wait_for_model_call(&server, 1).await;
+    assert!(
+        sent.contains(r#"why does <reference type=\"pasted\" chars=\"34\">\nline 1\n"#),
+        "not where it was pasted: {sent}"
+    );
+    assert!(sent.contains(r#"line 5\n</reference> fail?"#), "{sent}");
+
+    tui.type_text("\x1b[A");
+    tui.wait_for_screen("[Pasted text #1 +5 lines]");
+    tui.type_text("\r");
+    let again = wait_for_model_call(&server, 2).await;
+    assert_eq!(
+        again.matches("line 5").count(),
+        2,
+        "the recalled prompt lost its paste: {again}"
+    );
+}

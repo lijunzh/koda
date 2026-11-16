@@ -41,17 +41,29 @@ pub(crate) fn is_provider_url(arg: &str) -> bool {
 
 /// Return up to 6 history entries (newest first) containing `query`
 /// (case-insensitive substring match). Empty query → no results.
-fn history_search_matches(history: &[String], query: &str) -> Vec<String> {
+fn history_search_matches(
+    history: &[String],
+    pastes: &[Vec<(String, String)>],
+    query: &str,
+) -> Vec<String> {
     if query.is_empty() {
         return Vec::new();
     }
     let q = query.to_lowercase();
+    // A word from a paste finds its prompt, as in Claude Code.
+    let pasted = |i: usize| {
+        pastes.get(i).is_some_and(|list| {
+            list.iter()
+                .any(|(_, text)| text.to_lowercase().contains(&q))
+        })
+    };
     history
         .iter()
+        .enumerate()
         .rev()
-        .filter(|s| s.to_lowercase().contains(&q))
+        .filter(|(i, s)| s.to_lowercase().contains(&q) || pasted(*i))
         .take(6)
-        .cloned()
+        .map(|(_, s)| s.clone())
         .collect()
 }
 
@@ -78,9 +90,10 @@ impl TuiContext {
             _ => return,
         };
         let _ = cursor; // suppresses unused warning if selected unused
-        self.textarea.set_text_clearing_elements("");
-        if let Some(t) = text {
-            self.textarea.insert_str(&t);
+        // The match with the pastes behind its markers.
+        match text.and_then(|t| self.history.iter().rposition(|h| *h == t)) {
+            Some(idx) => self.recall(idx),
+            None => self.pastes.restore(&mut self.textarea, "", Vec::new()),
         }
     }
 
@@ -416,14 +429,16 @@ impl TuiContext {
                     if !m.contains(KeyModifiers::CONTROL) && !m.contains(KeyModifiers::ALT) =>
                 {
                     query.push(c);
-                    let new_matches = history_search_matches(&self.history, query);
+                    let new_matches =
+                        history_search_matches(&self.history, &self.history_pastes, query);
                     *selected = 0;
                     *matches = new_matches;
                 }
                 // Backspace → shrink query
                 (KeyCode::Backspace, _) => {
                     query.pop();
-                    let new_matches = history_search_matches(&self.history, query);
+                    let new_matches =
+                        history_search_matches(&self.history, &self.history_pastes, query);
                     *selected = 0;
                     *matches = new_matches;
                 }
@@ -818,13 +833,13 @@ mod tests {
     #[test]
     fn empty_query_returns_nothing() {
         let h = hist(&["foo", "bar"]);
-        assert!(history_search_matches(&h, "").is_empty());
+        assert!(history_search_matches(&h, &[], "").is_empty());
     }
 
     #[test]
     fn newest_first_order() {
         let h = hist(&["first cmd", "second cmd", "third cmd"]);
-        let m = history_search_matches(&h, "cmd");
+        let m = history_search_matches(&h, &[], "cmd");
         assert_eq!(m[0], "third cmd");
         assert_eq!(m[1], "second cmd");
         assert_eq!(m[2], "first cmd");
@@ -833,18 +848,38 @@ mod tests {
     #[test]
     fn case_insensitive_match() {
         let h = hist(&["cargo Build", "cargo test"]);
-        assert_eq!(history_search_matches(&h, "BUILD").len(), 1);
+        assert_eq!(history_search_matches(&h, &[], "BUILD").len(), 1);
     }
 
     #[test]
     fn caps_at_six_results() {
         let h: Vec<String> = (0..10).map(|i| format!("match {i}")).collect();
-        assert_eq!(history_search_matches(&h, "match").len(), 6);
+        assert_eq!(history_search_matches(&h, &[], "match").len(), 6);
     }
 
     #[test]
     fn no_match_returns_empty() {
         let h = hist(&["foo", "bar"]);
-        assert!(history_search_matches(&h, "zzz").is_empty());
+        assert!(history_search_matches(&h, &[], "zzz").is_empty());
+    }
+
+    /// A word from a paste finds the prompt it was pasted into.
+    #[test]
+    fn history_search_looks_inside_pastes() {
+        let h = vec![
+            "fix [Pasted text #1 +4 lines]".to_string(),
+            "other".to_string(),
+        ];
+        let pastes = vec![
+            vec![(
+                "[Pasted text #1 +4 lines]".to_string(),
+                "thread 'main' panicked\nat src/lib.rs\n\n".to_string(),
+            )],
+            vec![],
+        ];
+        assert_eq!(
+            history_search_matches(&h, &pastes, "panicked"),
+            [h[0].clone()]
+        );
     }
 }

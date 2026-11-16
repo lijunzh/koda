@@ -41,7 +41,22 @@ struct Entry {
     session_id: String,
     ts: u64,
     text: String,
+    /// The pastes behind the text's `[Pasted text #N]` markers, so a
+    /// recalled prompt sends them again, as Claude Code's paste cache does.
+    /// Koda's own field; Codex's record has none and ignores it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pastes: Vec<Paste>,
 }
+
+/// One paste kept with an entry: its marker and the text behind it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct Paste {
+    marker: String,
+    text: String,
+}
+
+/// An entry's text and the pastes behind its markers, as `(marker, text)`.
+pub(crate) type HistoryEntry = (String, Vec<(String, String)>);
 
 /// The input history file.
 #[derive(Debug, Clone)]
@@ -62,9 +77,18 @@ impl InputHistory {
         self.path.exists()
     }
 
+    #[cfg(test)]
     /// Every entry's text, oldest first. A line that doesn't parse is
     /// skipped; a file that can't be read is an empty history.
     pub(crate) fn load(&self) -> Vec<String> {
+        self.load_entries()
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect()
+    }
+
+    /// [`Self::load`] with each entry's pastes.
+    pub(crate) fn load_entries(&self) -> Vec<HistoryEntry> {
         let Ok(file) = File::open(&self.path) else {
             return Vec::new();
         };
@@ -72,19 +96,46 @@ impl InputHistory {
             .lines()
             .map_while(Result::ok)
             .filter_map(|line| serde_json::from_str::<Entry>(&line).ok())
-            .map(|entry| entry.text)
+            .map(|entry| {
+                let pastes = entry
+                    .pastes
+                    .into_iter()
+                    .map(|p| (p.marker, p.text))
+                    .collect();
+                (entry.text, pastes)
+            })
             .collect()
     }
 
+    #[cfg(test)]
     /// Append `text`, typed in session `session_id`. The write happens off
     /// the async runtime and isn't waited for, as in Codex; a failure is
     /// logged, since history is a convenience.
     pub(crate) fn push(&self, session_id: &str, text: &str) {
+        self.push_with_pastes(session_id, text, &[]);
+    }
+
+    /// [`Self::push`] with the pastes behind `text`'s markers, those still
+    /// in it.
+    pub(crate) fn push_with_pastes(
+        &self,
+        session_id: &str,
+        text: &str,
+        pastes: &[(String, String)],
+    ) {
         let history = self.clone();
         let entry = Entry {
             session_id: session_id.to_string(),
             ts: now(),
             text: text.to_string(),
+            pastes: pastes
+                .iter()
+                .filter(|(marker, _)| text.contains(marker.as_str()))
+                .map(|(marker, text)| Paste {
+                    marker: marker.clone(),
+                    text: text.clone(),
+                })
+                .collect(),
         };
         let write = move || {
             if let Err(e) = history.append(&[entry]) {
@@ -112,6 +163,7 @@ impl InputHistory {
                 session_id: String::new(),
                 ts,
                 text,
+                pastes: Vec::new(),
             })
             .collect();
         self.append(&entries)
@@ -284,5 +336,35 @@ mod tests {
         assert_eq!(loaded.len(), MAX_ENTRIES);
         assert_eq!(loaded[0], "old 3");
         assert!(history.exists());
+    }
+
+    /// A prompt's pastes are kept with it and come back with it; a line
+    /// without any, as Codex writes, still loads.
+    #[test]
+    fn pastes_are_kept_with_their_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let history = InputHistory::in_dir(dir.path());
+        let pastes = vec![
+            (
+                "[Pasted text #1 +4 lines]".to_string(),
+                "a\nb\nc\nd".to_string(),
+            ),
+            (
+                "[Pasted text #2 900 chars]".to_string(),
+                "deleted".to_string(),
+            ),
+        ];
+        history.push_with_pastes("s", "see [Pasted text #1 +4 lines]", &pastes);
+        history.push("s", "plain");
+        assert_eq!(
+            history.load_entries(),
+            [
+                (
+                    "see [Pasted text #1 +4 lines]".to_string(),
+                    vec![pastes[0].clone()]
+                ),
+                ("plain".to_string(), vec![]),
+            ]
+        );
     }
 }

@@ -50,32 +50,14 @@ impl TuiContext {
                 return;
             }
         }
-        let char_count = text.chars().count();
+        // A large paste goes in as a marker, as Claude Code's does; the
+        // text behind it is sent where the marker is.
         if matches!(self.prompt_mode, PromptMode::WizardInput { .. })
-            || char_count < input::PASTE_BLOCK_THRESHOLD
+            || !input::is_large_paste(text)
         {
             self.textarea.insert_str(text);
         } else {
-            self.paste_blocks.push(input::PasteBlock {
-                content: text.to_string(),
-                char_count,
-            });
-            let label = format!("\u{1f4cb} Pasted text ({char_count} chars)");
-            self.scroll_buffer.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(label, Style::default().fg(Color::Yellow)),
-            ]));
-            let preview: String = text.chars().take(80).collect();
-            let preview = preview.replace('\n', "\u{21b5}");
-            let preview = if char_count > 80 {
-                format!("{preview}\u{2026}")
-            } else {
-                preview
-            };
-            self.scroll_buffer.push(Line::from(vec![
-                Span::raw("    "),
-                Span::styled(preview, Style::default().fg(Color::DarkGray)),
-            ]));
+            self.pastes.insert(&mut self.textarea, text);
         }
     }
 
@@ -384,7 +366,9 @@ impl TuiContext {
         if !text.trim().is_empty() {
             self.textarea.set_text_clearing_elements("");
             self.history.push(text.clone());
-            self.input_history.push(&self.session.id, &text);
+            self.history_pastes.push(self.pastes.list.clone());
+            self.input_history
+                .push_with_pastes(&self.session.id, &text, &self.pastes.list);
             self.history_idx = None;
             let icon = crate::mode::icon(self.mode);
             self.scroll_buffer.push(Line::from(vec![
@@ -514,18 +498,25 @@ impl TuiContext {
             crate::composer::history_nav::history_up_index(self.history_idx, self.history.len())
         {
             self.history_idx = Some(idx);
-            self.textarea.set_text_clearing_elements("");
-            self.textarea.insert_str(&self.history[idx]);
+            self.recall(idx);
         }
+    }
+
+    /// Put history entry `idx` in the input box with the pastes behind its
+    /// markers, so sending it again sends them, as in Claude Code.
+    pub(crate) fn recall(&mut self, idx: usize) {
+        let text = self.history[idx].clone();
+        let pastes = self.history_pastes.get(idx).cloned().unwrap_or_default();
+        self.pastes.restore(&mut self.textarea, &text, pastes);
     }
 
     fn history_down(&mut self) {
         let next =
             crate::composer::history_nav::history_down_index(self.history_idx, self.history.len());
         self.history_idx = next;
-        self.textarea.set_text_clearing_elements("");
-        if let Some(idx) = next {
-            self.textarea.insert_str(&self.history[idx]);
+        match next {
+            Some(idx) => self.recall(idx),
+            None => self.pastes.restore(&mut self.textarea, "", Vec::new()),
         }
     }
 

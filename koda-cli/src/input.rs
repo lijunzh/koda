@@ -19,15 +19,6 @@ pub struct ImageData {
     pub base64: String,
 }
 
-/// Content pasted via clipboard (bracketed paste).
-#[derive(Debug, Clone)]
-pub struct PasteBlock {
-    /// The raw pasted text.
-    pub content: String,
-    /// Character count.
-    pub char_count: usize,
-}
-
 /// Result of processing user input.
 #[derive(Debug)]
 pub struct ProcessedInput {
@@ -39,8 +30,6 @@ pub struct ProcessedInput {
     pub mentions: Vec<String>,
     /// Images dragged in as bare paths, base64-encoded.
     pub images: Vec<ImageData>,
-    /// Pasted content blocks (from bracketed paste).
-    pub paste_blocks: Vec<PasteBlock>,
 }
 
 /// Image file extensions we recognize for multi-modal input.
@@ -346,72 +335,121 @@ pub fn process_input(input: &str) -> ProcessedInput {
         prompt,
         mentions,
         images,
-        paste_blocks: Vec::new(),
     }
 }
 
-/// Pastes shorter than this go inline in the textarea; longer ones become PasteBlocks.
-pub const PASTE_BLOCK_THRESHOLD: usize = 200;
+/// A paste of more than this many characters goes in the input box as a
+/// marker, as Claude Code collapses one: "more than 800 characters or more
+/// than three lines" (see [`PASTE_MARKER_LINES`]).
+pub(crate) const PASTE_MARKER_CHARS: usize = 800;
 
-/// Max chars per paste block (~40k chars, matching file truncation policy).
-const PASTE_BLOCK_MAX_CHARS: usize = 40_000;
+/// A paste of more than this many lines goes in as a marker too.
+pub(crate) const PASTE_MARKER_LINES: usize = 3;
 
-/// Format paste blocks into semantically tagged XML for the LLM.
-///
-/// Each block is wrapped in `<reference type="pasted" chars="N">...</reference>`
-/// so the model can distinguish pasted reference material from direct instructions.
-///
-/// Returns `None` when `blocks` is empty. Content exceeding 40 000 chars is
-/// truncated with a note.
-///
-/// # Examples
-///
-/// ```ignore
-/// // pub(crate): input is not importable from a doc-test binary; illustrative only.
-/// use koda_cli::input::{PasteBlock, format_paste_blocks};
-///
-/// // Empty list → None
-/// assert!(format_paste_blocks(&[]).is_none());
-///
-/// // Single block → tagged output
-/// let blocks = vec![PasteBlock {
-///     content: "SELECT 1;".into(),
-///     char_count: 9,
-/// }];
-/// let out = format_paste_blocks(&blocks).unwrap();
-/// assert!(out.contains("<reference type=\"pasted\" chars=\"9\">"));
-/// assert!(out.contains("SELECT 1;"));
-/// assert!(out.contains("</reference>"));
-/// ```
-pub fn format_paste_blocks(blocks: &[PasteBlock]) -> Option<String> {
-    if blocks.is_empty() {
-        return None;
+/// The most of one paste the model is sent (~40k chars, as for a file).
+const PASTE_MAX_CHARS: usize = 40_000;
+
+/// Whether `pasted` goes in the input box as a marker rather than as text.
+pub(crate) fn is_large_paste(pasted: &str) -> bool {
+    pasted.chars().count() > PASTE_MARKER_CHARS || pasted.lines().count() > PASTE_MARKER_LINES
+}
+
+/// The marker for paste number `n`, as Claude Code labels one:
+/// `[Pasted text #1 +120 lines]`, or its characters for a single line.
+pub(crate) fn paste_marker(n: usize, pasted: &str) -> String {
+    match pasted.lines().count() {
+        0 | 1 => format!("[Pasted text #{n} {} chars]", pasted.chars().count()),
+        lines => format!("[Pasted text #{n} +{lines} lines]"),
+    }
+}
+
+/// `text` with each paste's marker replaced by the paste, where the marker
+/// is, tagged as pasted so the model can tell it from what was typed (the
+/// system prompt says a paste can carry instructions the user didn't write).
+/// A paste whose marker was deleted is left out. More than 40,000
+/// characters of one paste are cut, with a note.
+pub(crate) fn expand_pastes(text: &str, pastes: &[(String, String)]) -> String {
+    let mut out = text.to_string();
+    for (marker, pasted) in pastes {
+        let Some(at) = out.find(marker.as_str()) else {
+            continue;
+        };
+        let chars = pasted.chars().count();
+        let content = match pasted.char_indices().nth(PASTE_MAX_CHARS) {
+            Some((end, _)) => format!("{}\n\n[truncated: {chars} chars in all]", &pasted[..end]),
+            None => pasted.clone(),
+        };
+        let block =
+            format!("<reference type=\"pasted\" chars=\"{chars}\">\n{content}\n</reference>");
+        out.replace_range(at..at + marker.len(), &block);
+    }
+    out
+}
+
+/// Pastes as `(marker, text)`, oldest first.
+pub(crate) type PasteList = Vec<(String, String)>;
+
+/// The pastes behind the input box's `[Pasted text #N]` markers.
+#[derive(Debug, Default)]
+pub(crate) struct Pastes {
+    /// Each marker and the paste behind it, oldest first.
+    pub list: Vec<(String, String)>,
+    /// The last paste number used this session.
+    count: usize,
+}
+
+impl Pastes {
+    /// Put `pasted` in `textarea` as a marker at the cursor.
+    pub(crate) fn insert(
+        &mut self,
+        textarea: &mut crate::composer::textarea::TextArea,
+        pasted: &str,
+    ) {
+        self.count += 1;
+        let marker = paste_marker(self.count, pasted);
+        textarea.insert_element(&marker);
+        self.list.push((marker, pasted.to_string()));
     }
 
-    let parts: Vec<String> = blocks
-        .iter()
-        .map(|b| {
-            let content = if b.content.len() > PASTE_BLOCK_MAX_CHARS {
-                let mut end = PASTE_BLOCK_MAX_CHARS;
-                while !b.content.is_char_boundary(end) {
-                    end -= 1;
-                }
-                format!(
-                    "{}\n\n[truncated — {} chars total]",
-                    &b.content[..end],
-                    b.char_count
-                )
-            } else {
-                b.content.clone()
-            };
-            format!(
-                "<reference type=\"pasted\" chars=\"{}\">{}</reference>",
-                b.char_count, content
-            )
-        })
-        .collect();
+    /// Set `textarea` to `text`, its markers marked again, with `pastes`
+    /// behind them: a recalled or restored prompt.
+    pub(crate) fn restore(
+        &mut self,
+        textarea: &mut crate::composer::textarea::TextArea,
+        text: &str,
+        pastes: Vec<(String, String)>,
+    ) {
+        textarea.set_text_clearing_elements("");
+        textarea.insert_str(text);
+        for (marker, _) in &pastes {
+            if let Some(at) = text.find(marker.as_str()) {
+                textarea.add_element_range(at..at + marker.len());
+            }
+        }
+        self.count = self.count.max(highest_paste_number(&pastes));
+        self.list = pastes;
+    }
 
-    Some(parts.join("\n\n"))
+    /// The pastes, leaving none.
+    pub(crate) fn take(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.list)
+    }
+}
+
+/// The paste numbers `pastes` use, so new markers don't repeat them.
+pub(crate) fn highest_paste_number(pastes: &[(String, String)]) -> usize {
+    pastes
+        .iter()
+        .filter_map(|(marker, _)| {
+            marker
+                .strip_prefix("[Pasted text #")?
+                .split(' ')
+                .next()?
+                .parse()
+                .ok()
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -861,52 +899,64 @@ mod tests {
         assert!(result.prompt.contains("@../../etc/hosts"));
     }
 
+    /// Claude Code's threshold: more than 800 characters or three lines.
     #[test]
-    fn test_format_paste_blocks_empty() {
-        assert!(format_paste_blocks(&[]).is_none());
+    fn a_large_paste_is_over_800_chars_or_3_lines() {
+        assert!(!is_large_paste(&"a".repeat(800)));
+        assert!(is_large_paste(&"a".repeat(801)));
+        assert!(!is_large_paste("one\ntwo\nthree"));
+        assert!(is_large_paste("one\ntwo\nthree\nfour"));
     }
 
     #[test]
-    fn test_format_paste_blocks_single() {
-        let blocks = vec![PasteBlock {
-            content: "hello world".into(),
-            char_count: 11,
-        }];
-        let result = format_paste_blocks(&blocks).unwrap();
-        assert!(result.contains("<reference type=\"pasted\" chars=\"11\">"));
-        assert!(result.contains("hello world"));
-        assert!(result.contains("</reference>"));
+    fn a_marker_names_lines_or_chars() {
+        assert_eq!(paste_marker(1, "a\nb\nc\nd"), "[Pasted text #1 +4 lines]");
+        assert_eq!(
+            paste_marker(2, &"x".repeat(900)),
+            "[Pasted text #2 900 chars]"
+        );
     }
 
+    /// A paste goes where its marker is, tagged; a deleted marker's paste
+    /// stays behind; a very long one is cut with a note.
     #[test]
-    fn test_format_paste_blocks_multiple() {
-        let blocks = vec![
-            PasteBlock {
-                content: "block one".into(),
-                char_count: 9,
-            },
-            PasteBlock {
-                content: "block two".into(),
-                char_count: 9,
-            },
+    fn pastes_expand_in_place() {
+        let pastes = vec![
+            (
+                "[Pasted text #1 +4 lines]".to_string(),
+                "a\nb\nc\nd".to_string(),
+            ),
+            (
+                "[Pasted text #2 9 chars]".to_string(),
+                "gone gone".to_string(),
+            ),
         ];
-        let result = format_paste_blocks(&blocks).unwrap();
-        assert!(result.contains("block one"));
-        assert!(result.contains("block two"));
-        // Joined with double newline
-        assert!(result.contains("</reference>\n\n<reference"));
+        let sent = expand_pastes("before [Pasted text #1 +4 lines] after", &pastes);
+        assert_eq!(
+            sent,
+            "before <reference type=\"pasted\" chars=\"7\">\na\nb\nc\nd\n</reference> after"
+        );
+
+        let long = vec![(
+            "[Pasted text #3 50000 chars]".to_string(),
+            "é".repeat(50_000),
+        )];
+        let sent = expand_pastes("[Pasted text #3 50000 chars]", &long);
+        assert!(
+            sent.contains("[truncated: 50000 chars in all]"),
+            "{}",
+            &sent[sent.len() - 80..]
+        );
+        assert!(sent.chars().count() < 41_000);
     }
 
     #[test]
-    fn test_format_paste_blocks_truncation() {
-        let long_content = "a".repeat(50_000);
-        let blocks = vec![PasteBlock {
-            content: long_content,
-            char_count: 50_000,
-        }];
-        let result = format_paste_blocks(&blocks).unwrap();
-        assert!(result.contains("[truncated — 50000 chars total]"));
-        // Should be capped, not the full 50k
-        assert!(result.len() < 45_000);
+    fn the_highest_paste_number_is_found() {
+        let pastes = vec![
+            ("[Pasted text #2 +4 lines]".to_string(), String::new()),
+            ("[Pasted text #7 900 chars]".to_string(), String::new()),
+        ];
+        assert_eq!(highest_paste_number(&pastes), 7);
+        assert_eq!(highest_paste_number(&[]), 0);
     }
 }
