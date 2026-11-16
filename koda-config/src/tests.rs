@@ -368,7 +368,7 @@ allow_local_binding = true
     assert_eq!(config.model_reasoning_effort.as_deref(), Some("high"));
     assert_eq!(config.model_context_window, Some(131_072));
     assert_eq!(config.model_post_turn_compact_threshold_percent, Some(80));
-    assert_eq!(config.mode, Some(Mode::Safe));
+    assert_eq!(config.mode, Some(TrustMode::Safe));
     let anthropic = &config.model_providers["anthropic"];
     assert_eq!(anthropic.request_max_retries, Some(6));
     assert_eq!(anthropic.stream_max_retries, Some(3));

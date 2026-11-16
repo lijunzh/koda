@@ -25,7 +25,7 @@ use koda_protocol::session::{
     SessionStartParams, SessionStartResponse, SessionUnsubscribeResponse, SessionUnsubscribeStatus,
     SortDirection,
 };
-use koda_protocol::state::{SandboxState, StateReadResponse, TrustMode};
+use koda_protocol::state::{SandboxState, StateReadResponse};
 use koda_protocol::{ClientRequest, PROTOCOL_VERSION};
 use koda_state::db::Database;
 use serde_json::Value;
@@ -715,7 +715,7 @@ impl Host {
             provider: config.provider_type.to_string(),
             base_url: config.base_url.clone(),
             context_window: config.max_context_tokens as u64,
-            mode: protocol_mode(self.new_session_mode()),
+            mode: self.new_session_mode(),
             sandbox: self.context.sandbox.clone(),
         })
     }
@@ -723,14 +723,6 @@ impl Host {
 
 fn history_error(e: String) -> ErrorObject {
     internal(format!("couldn't read the session's history: {e}"))
-}
-
-pub(crate) fn protocol_mode(mode: koda_core::trust::TrustMode) -> TrustMode {
-    match mode {
-        koda_core::trust::TrustMode::Plan => TrustMode::Plan,
-        koda_core::trust::TrustMode::Safe => TrustMode::Safe,
-        koda_core::trust::TrustMode::Auto => TrustMode::Auto,
-    }
 }
 
 pub(crate) fn to_json<T: serde::Serialize>(response: T) -> Answer {
