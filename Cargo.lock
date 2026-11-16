@@ -1976,6 +1976,7 @@ dependencies = [
 name = "koda-config"
 version = "0.7.0"
 dependencies = [
+ "koda-protocol",
  "serde",
  "serde_ignored",
  "serde_json",
