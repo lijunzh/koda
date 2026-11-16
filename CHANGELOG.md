@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **`koda --oss` runs Koda on a local model with nothing to set up, as Codex's `--oss` does.** Koda starts llama.cpp's `llama-server` (`brew install llama.cpp`) with the model, waits until it answers, runs the session on it, and stops it when Koda exits. The model goes by memory: Qwen3.8-Flash-Next on a 128 GB Mac (about 105 GB, at `xhigh` effort; 30 of 31 tasks in Koda's evals), else LFM3-1.7B, a 1 GB quick try that shows Koda working but is too small for real coding. `oss_model` in `config.toml` names another (a Hugging Face `<repo>:<quant>` or a `.gguf` path). llama.cpp downloads the model once into the Hugging Face cache; a copy LM Studio already has is used where it is. A second `koda --oss` on the same model shares the server, and the last to exit stops it; each server listens on localhost with an API key only Koda knows. `--local-provider lm-studio` or `ollama` (or `oss_provider`) connects to those instead. `koda`, `koda exec`, `koda resume` and `koda fork` take `--oss`.
+
+### Fixed
+
+- **A local server started with an API key reports its context window and vision.** Koda sent the key with chat requests but not with its capability checks (llama.cpp's `/props`, LM Studio's model list, Ollama's `/api/show`), so a `llama-server --api-key` was taken to have a 32K window and no image support.
+
 ## [0.7.3] - 2026-11-16
 
 ### Added

@@ -822,8 +822,7 @@ impl OpenAiCompatProvider {
         model: &str,
     ) -> Result<super::ModelCapabilities> {
         let resp = self
-            .client
-            .get(format!("{base}/api/v0/models"))
+            .with_key(self.client.get(format!("{base}/api/v0/models")))
             .send()
             .await?;
 
@@ -845,13 +844,26 @@ impl OpenAiCompatProvider {
         })
     }
 
+    /// `request` with the API key, for a local server started with one
+    /// (`llama-server --api-key`, as `koda --oss` starts it), which refuses
+    /// even its capability endpoints without it.
+    fn with_key(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match &self.api_key {
+            Some(key) => request.bearer_auth(key),
+            None => request,
+        }
+    }
+
     /// Query llama.cpp's `llama-server` for its context window via `/props`.
     ///
     /// The server is started with `-c <n>` and enforces that limit, so the
     /// reported `n_ctx` is the one that matters. Any other answer (404, a
     /// body without `n_ctx`) falls through to the next probe.
     async fn query_llama_cpp_capabilities(&self, base: &str) -> Result<super::ModelCapabilities> {
-        let resp = self.client.get(format!("{base}/props")).send().await?;
+        let resp = self
+            .with_key(self.client.get(format!("{base}/props")))
+            .send()
+            .await?;
 
         if !resp.status().is_success() {
             return Ok(super::ModelCapabilities::default());
@@ -881,8 +893,7 @@ impl OpenAiCompatProvider {
         model: &str,
     ) -> Result<super::ModelCapabilities> {
         let resp = self
-            .client
-            .post(format!("{base}/api/show"))
+            .with_key(self.client.post(format!("{base}/api/show")))
             .json(&serde_json::json!({ "name": model }))
             .send()
             .await?;
@@ -1668,6 +1679,43 @@ mod tests {
             {"id":"other","state":"not-loaded","max_context_length":262144},
             {"id":"m","state":"loaded","max_context_length":262144,"loaded_context_length":65536}
         ]}"#;
+
+        /// A server started with an API key (`llama-server --api-key`, as
+        /// `koda --oss` starts one) refuses `/props` without it; the probe
+        /// sends the key, so the window and vision still come through.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn the_props_probe_sends_the_api_key() {
+            let app = Router::new().route(
+                "/props",
+                get(|headers: axum::http::HeaderMap| async move {
+                    let authorized = headers
+                        .get("authorization")
+                        .is_some_and(|v| v == "Bearer sesame");
+                    if authorized {
+                        (axum::http::StatusCode::OK, PROPS)
+                    } else {
+                        (axum::http::StatusCode::UNAUTHORIZED, "{}")
+                    }
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}/v1", listener.local_addr().unwrap());
+            tokio::spawn(async move { axum::serve(listener, app).await.ok() });
+            let keyed = OpenAiCompatProvider::new(&url, Some("sesame".into()));
+            assert_eq!(
+                keyed.model_capabilities("m").await.unwrap().context_window,
+                Some(32768)
+            );
+            let unkeyed = OpenAiCompatProvider::new(&url, None);
+            assert_eq!(
+                unkeyed
+                    .model_capabilities("m")
+                    .await
+                    .unwrap()
+                    .context_window,
+                None
+            );
+        }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn llama_server_context_comes_from_props() {

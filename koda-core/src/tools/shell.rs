@@ -2775,9 +2775,16 @@ mod tests {
         // Port 0: the server picks a free port and says which, so no other
         // test can take it between a check and the bind. `-u` writes that
         // line to the log at once instead of when a buffer fills.
+        // socketserver's TCPServer rather than `python3 -m http.server`,
+        // whose HTTPServer looks up the host's name (socket.getfqdn) before
+        // it prints: a reverse DNS lookup that has stalled past this test's
+        // 30 s on CI's macOS runners.
         let started = proxied(
             &registry,
-            "python3 -u -m http.server 0 --bind 127.0.0.1",
+            "python3 -u -c 'import http.server as h, socketserver as s; \
+             srv = s.TCPServer((\"127.0.0.1\", 0), h.SimpleHTTPRequestHandler); \
+             print(\"Serving HTTP on 127.0.0.1 port\", srv.server_address[1], flush=True); \
+             srv.serve_forever()'",
             true,
         )
         .await;

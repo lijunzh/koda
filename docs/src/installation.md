@@ -63,6 +63,19 @@ into `~/.config/koda/config.toml`.
 Then type a request, or follow the [Quickstart](./quickstart.md) through a
 first session. `/help` lists the commands and keys.
 
+## Try it free on your Mac
+
+No API key? Run Koda on a local model:
+
+```bash
+brew install llama.cpp
+koda --oss
+```
+
+Koda starts the model, runs your session on it, and stops it when you quit:
+Qwen3.8-Flash-Next on a 128 GB Mac (a 105 GB download, once), or a 1 GB
+quick try anywhere else. See [Local models](./local-models.md).
+
 ## Updating
 
 ```bash

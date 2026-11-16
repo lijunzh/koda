@@ -129,6 +129,16 @@ pub struct ConfigToml {
     /// The mode a new session starts in, as `--mode` gives it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<TrustMode>,
+    /// The local provider `--oss` uses, as Codex's `oss_provider`:
+    /// `llama-cpp` (the default; Koda starts and stops its server),
+    /// `lm-studio` or `ollama`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oss_provider: Option<String>,
+    /// The model `--oss` runs on llama.cpp, as a Hugging Face
+    /// `<repo>:<quant>` such as `LiquidAI/LFM3-1.7B-GGUF:Q4_K_M`. Unset,
+    /// Koda picks by the machine's memory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oss_model: Option<String>,
     /// Settings per provider, by provider id.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub model_providers: BTreeMap<String, ModelProviderToml>,

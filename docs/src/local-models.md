@@ -6,6 +6,52 @@ choosing a server and a model, connecting them, and what to expect next to
 a hosted model such as Claude. [Providers](./providers.md) has the reference
 for each provider.
 
+## One command: `koda --oss`
+
+```bash
+brew install llama.cpp      # once
+koda --oss
+```
+
+`--oss` (as in Codex) runs Koda on a local open-weight model with nothing to
+set up. Koda starts llama.cpp's `llama-server` with the model, waits until it
+answers, runs your session on it, and stops it when Koda exits. `koda exec
+--oss`, `koda resume --oss` and `koda fork --oss` work the same way.
+
+**Which model,** by your machine's memory:
+
+| Memory | Model | Download | What it's for |
+|---|---|---|---|
+| 128 GB or more | **Qwen3.8-Flash-Next** (`unsloth/Qwen3.8-Flash-Next-GGUF:UD-Q4_K_XL`), 262K context, images, at `xhigh` effort | about 105 GB | Real work: 30 of 31 tasks in Koda's evals |
+| Anything less | **LFM3-1.7B** (`LiquidAI/LFM3-1.7B-GGUF:Q4_K_M`), 64K context | about 1.1 GB | A quick try: it reads, runs and edits, but is too small for real coding, and Koda says so |
+
+To run another model, name it in `~/.config/koda/config.toml` (or with `-c`
+for one run) as a Hugging Face `<repo>:<quant>`, or as the path of a `.gguf`
+file:
+
+```toml
+oss_model = "ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M"   # ~22 GB; 79 of 93 in Koda's evals
+```
+
+**The download** happens once, on the first run, into the Hugging Face cache
+(`~/.cache/huggingface/hub/`), done by llama.cpp; Koda shows progress while
+it waits. A model LM Studio has already downloaded (in `~/.lmstudio/models/`)
+is used where it is, with the vision projector beside it, instead of being
+downloaded again.
+
+**One server, shared:** a second `koda --oss` on the same model joins the
+running server instead of loading another copy, and the last Koda to exit
+stops it. A server left behind by a Koda that was killed is stopped at the
+next start. Each server listens on `127.0.0.1` with an API key only Koda
+knows; its log is `~/.config/koda/logs/llama-server-<model>.log`.
+
+**LM Studio or Ollama instead:** they run as services, so `koda --oss
+--local-provider lm-studio` (or `ollama`) connects to the one running, with
+the model it has loaded; `oss_provider` in `config.toml` makes that the
+default. To run your own `llama-server` and keep it running between
+sessions, start Koda without `--oss` and point it at the server (see
+[Connect Koda](#connect-koda) below).
+
 ## What you need
 
 A machine that can hold the model in memory and run it at a usable speed: an
