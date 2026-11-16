@@ -15,10 +15,10 @@ When multiple sources specify the model, provider, or API key, the
 4. Built-in defaults  Claude Sonnet via Anthropic                 (lowest)
 ```
 
-Settings don't come from environment variables, as Codex's don't. The ones
-earlier versions read (`KODA_MODEL`, `KODA_MODE`, `KODA_READ_TIMEOUT_SECS`
-and others) are ignored, with a warning at startup that names each one's
-replacement.
+Settings don't come from environment variables, as Codex's don't. One that
+an earlier version read is ignored, with a warning at startup naming its
+replacement; [Upgrading to 0.7](./upgrading-0.7.md#settings-live-in-configtoml-not-the-environment)
+lists them.
 
 API keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, …) are
 never in the config file. Keys saved with `/key` are kept in Koda's database
@@ -69,11 +69,11 @@ Every key, in Codex's names where Codex has one:
 | `model_max_output_tokens` | The most tokens a reply may use, as the deprecated `--max-tokens` gives it |
 | `model_temperature` | The sampling temperature (0.0–2.0), as the deprecated `--temperature` gives it |
 | `model_thinking_budget` | A thinking budget in tokens, for Gemini models, as the deprecated `--thinking-budget` gives it |
-| `agent` | The agent sessions run, as `--agent` names it: a built-in, or a JSON file in `agents/` (default: `default`) |
+| `agent` | The agent sessions run, as `--agent` names it: a built-in, or a JSON file in `.koda/agents/` or `~/.config/koda/agents/` (default: `default`) |
 | `model_post_turn_compact_threshold_percent` | Compact after a turn's final reply once this share of the window is used (1–100; 0 turns it off) |
 | `file_mentions` | `false` sends an `@` mention's path only, for the model to read, as Codex does; on by default, sending its contents as Claude Code does (see [File & image attachments](./attachments.md#mentioning-files)) |
 | `model_input_modalities` | What the model takes besides text, over what a local server reports and Koda's table: `["text", "image"]` for a vision model the server doesn't report; `pdf` is the third value (see [File & image attachments](./attachments.md#images)) |
-| `mode` | The mode a new session starts in: `auto`, `safe`, or `plan` (`koda exec` only) |
+| `mode` | The [trust mode](./approval.md) a new session starts in: `auto`, `safe` or `plan` |
 | `[model_providers.<id>]` | Per provider: `base_url`, `request_max_retries`, `stream_max_retries`, `stream_idle_timeout_ms` (0 turns the limit off) |
 | `[mcp_servers.<name>]` | An MCP server every new session starts |
 | `[tui] syntax_highlight` | `false` shows code and diffs without colour. Read by the TUI from its own machine's file |
@@ -179,11 +179,3 @@ syntax_highlight = false
 
 It covers `Read` output, `Bash` headers and inline code, and is read when the
 TUI starts; restart Koda after changing it.
-
-> **Removed in v0.2.26**: `KODA_TRANSCRIPT_HYPERLINKS` and
-> `KODA_EXPORT_VERBOSE` previously controlled `/export` output
-> formatting. Both were removed alongside `/export` itself when RFC
-> #1167 collapsed transcript export into `/debug-bundle`, since replaced by
-> [`/feedback`](commands.md#feedback).
-> Setting either var is now a silent no-op; remove them from your
-> shell rc files.

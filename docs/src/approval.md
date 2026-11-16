@@ -21,8 +21,8 @@ confirmation prompt before each mutation. There are no separate
 | Mode | Badge | Mental model |
 |------|-------|---------------|
 | **Plan** | 📋 PLAN (cyan) | "Investigation only — no side effects." Read tools auto-approve; mutating and destructive tools are **blocked** (not just confirmed). Use for code review, exploration, and dry runs. |
-| **Safe** | 🔒 SAFE (yellow) | "Confirm every side effect." Read tools auto-approve; everything that mutates state asks first. Use this in CI, locked-down workstations, or any context where you want a human in every approval loop. |
-| **Auto** | ⚡ **AUTO** (bold green) | "Trust the sandbox." Read and mutating ops auto-approve within the sandbox; destructive ops (`rm -rf`, `git reset --hard`, `git push --force`, `Delete`) still ask. Outside-project writes still ask. **Default since #1241** — the kernel sandbox + outside-project floor + destructive backstop combined provide a solid baseline without nag-by-default friction. Auto requires the kernel sandbox; on unsandboxed platforms koda refuses to start (#860 / #1259). |
+| **Safe** | 🔒 SAFE (yellow) | "Confirm every side effect." Read tools auto-approve; everything that mutates state asks first. Use it when you want a person to approve each change; a headless run in Safe refuses every change, since no one can approve it. |
+| **Auto** | ⚡ **AUTO** (bold green) | "Trust the sandbox." Read and mutating ops auto-approve within the sandbox; destructive ops (`rm -rf`, `git reset --hard`, `git push --force`) still ask. Outside-project writes still ask. **The default:** the kernel sandbox, the outside-project floor and the destructive backstop together are a solid baseline without asking about every edit. Auto requires the kernel sandbox; on unsandboxed platforms koda refuses to start. |
 
 `Shift+Tab` cycles Safe, Auto and Plan; without the kernel sandbox it
 skips Auto and says why. `--mode` and `mode` in `config.toml` choose the
@@ -54,11 +54,7 @@ write there. A session left in Plan reopens in Plan.
 
 All three badges share the same icon + UPPERCASE + bold styling so
 the trust mode is unmissable in the status bar regardless of which
-mode you're in. Auto originally rendered as inverted black-on-green
-for extra loudness, but the hardcoded background clashed with
-terminal color schemes that already use bright green palettes;
-reverted to bold green text for guaranteed readability on every
-scheme. (#1232 §8a, originally #1243; reverted post-merge.)
+mode you're in.
 
 ## Trust mode × tool effect matrix (top-level / master agent)
 
@@ -79,7 +75,7 @@ which the model makes when the sandbox blocks a command you need, such as a
 you approve each one, in Auto too, and the prompt shows the model's reason.
 See [Sandbox](./sandbox.md#when-a-command-needs-to-leave-the-sandbox).
 
-**Why `Auto × Destructive` confirms** (changed in #1251): the user
+**Why `Auto × Destructive` confirms:** the user
 said YOLO for normal work, not for `rm -rf`. Destructive ops by
 definition can't be undone by the sandbox alone (deleting a tracked
 file is "legal" inside the project root), so Auto keeps the prompt
@@ -115,10 +111,7 @@ treat as `⏸ confirm` using a **safe-side rule**:
 **auto-approve** (the user already trusted this sub-agent enough to
 spawn it; nagging would be useless without a UI to nag in), but
 destructive ops **block** (we still want a backstop on the worst
-ops, even when no one's home to confirm). This is the bug fix from
-#1249 — pre-#1251, every Write from a Safe-trust sub-agent was
-auto-rejected with *"requires user confirmation but this sub-agent
-has no channel to the user."*
+ops, even when no one's home to confirm).
 
 The sub-agent matrix is implemented in
 `koda_core::trust::check_tool_for_sub_agent`; the master matrix is
@@ -139,13 +132,10 @@ These apply **regardless of the trust mode**:
 3. **Sandbox-unavailable refusal** — if the platform backend isn't
    installed (e.g. `bwrap` missing on Linux), Auto mode **refuses to
    start** with an actionable error that includes a platform-specific
-   install hint (e.g. `apt install bubblewrap`). The previous
-   "silently downgrade Auto → Safe" plan was replaced (#860) because
-   silent coercion is catastrophic in headless: `koda exec --mode auto
-   "..."` would become Safe and every mutation would hit `RejectAuto`
-   (no human channel), aborting the task halfway. Hard refusal at
-   startup gives a clear error + exit code 1 instead. Safe and Plan
-   are unaffected. The TUI status bar shows the current sandbox state
+   install hint (e.g. `apt install bubblewrap`), and exit code 1. It
+   doesn't fall back to Safe: in a headless run, Safe would refuse
+   every change and stop the task halfway. Safe and Plan are
+   unaffected. The TUI status bar shows the current sandbox state
    (🛡 sandboxed / ⚠ unsandboxed) next to the trust badge so you can
    see at a glance why Auto refuses on your system, and `/feedback`'s
    diagnostics record it for a bug report. Koda's host enforces this
@@ -155,7 +145,7 @@ These apply **regardless of the trust mode**:
    from rewriting an agent's tools or system prompt mid-session.
 5. **Credential scrub** — sandboxed shell calls run with a fixed env
    allowlist; secrets like `OPENAI_API_KEY`, `AWS_SECRET_ACCESS_KEY`,
-   `GITHUB_TOKEN` never reach the child process. (#1228)
+   `GITHUB_TOKEN` never reach the child process.
 
 ## Approval keys
 

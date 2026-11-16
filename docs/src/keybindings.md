@@ -39,8 +39,7 @@ approval, or `f` to tell it why. To skip a question, press `Enter` with no answe
 
 Deletion chords inside the input composer. The redundant variants exist
 so users coming from different terminals / OSes hit a working binding
-on the first try (ported from upstream codex in #1278 to match codex's
-default keymap).
+on the first try, as in Codex's default keymap.
 
 | Key | Action |
 |-----|--------|
@@ -94,4 +93,4 @@ not affect Approval-prompt keys above (those remain `y`/`s`/`n`/`a`/`f`/`Esc`).
 A single-line footer below the input shows context-sensitive key hints
 (e.g. `Enter send · Alt+Enter newline · Tab complete`). The hints update
 based on whether the input is empty, has content, has an active dropdown,
-or is in vim mode. Added in v0.2.27 (#1183).
+or is in vim mode.

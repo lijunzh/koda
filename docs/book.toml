@@ -12,6 +12,10 @@ edit-url-template    = "https://github.com/lijunzh/koda/edit/main/docs/src/{path
 additional-css       = []
 no-section-label     = false
 
+# The ACP page became a section of the upgrade guide; old links land there.
+[output.html.redirect]
+"/acp.html" = "upgrading-0.7.html#acp-is-gone"
+
 [output.html.search]
 enable         = true
 limit-results  = 20

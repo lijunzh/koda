@@ -58,8 +58,8 @@ and is not allowed.
 The token stays in the environment: Koda stores only the variable's name, as
 Codex's `bearer_token_env_var` does, and reads it when the server starts. A
 named variable that isn't set fails the server with that reason. Tokens stored
-by earlier versions (`/mcp add-http --token`) are no longer read; Koda logs a
-warning for such a server.
+by Koda 0.6 (`/mcp add-http --token`) aren't read; Koda logs a warning for
+such a server (see [Upgrading to 0.7](./upgrading-0.7.md#projects-and-agents)).
 
 > **Security note:** Bearer tokens sent over plaintext `http://` are logged as
 > a warning. Use `https://` in production. Koda also blocks connections to
@@ -78,9 +78,9 @@ pill follows the servers as they start.
 servers added with `koda mcp add`, stops removed ones, restarts changed ones,
 and retries ones that failed. During a turn, the turn keeps its servers and
 the change applies when it ends. Codex's TUI has no reconnect; it gets fresh
-servers from a new chat (`/new`), which Koda's TUI doesn't have.
+servers from a new chat (`/new`).
 
-`/mcp add` and `/mcp remove` are gone; they print the `koda mcp` commands.
+`/mcp add` and `/mcp remove` print the `koda mcp` command to run.
 
 ## Tool naming
 
@@ -135,6 +135,16 @@ sessions in line. `/mcp verbose` names the file each server comes from. A
 server Koda can't start (both a `command` and a `url`, say) is reported at
 startup and skipped. Servers that earlier versions stored in the database
 move into the file on the first start.
+
+An HTTP server's table can also carry `http_headers`, sent with every
+request, as Codex's does:
+
+```toml
+[mcp_servers.docs]
+url = "https://mcp.example.com/mcp"
+bearer_token_env_var = "DOCS_MCP_TOKEN"
+http_headers = { "X-Team" = "platform" }
+```
 
 ## Startup
 
