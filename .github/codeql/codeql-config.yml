@@ -1,0 +1,10 @@
+# CodeQL configuration for codeql.yml.
+#
+# Test code is left out: integration tests and the test-only helper crate
+# print screens, session IDs and stub keys on purpose, and every alert there
+# was dismissed as "used in tests" (#36, 2026-11-16). Unit tests inside
+# `src/` (`#[cfg(test)]` modules) are still analysed, since paths can't
+# separate them.
+paths-ignore:
+  - "**/tests/**"
+  - "koda-test-utils/**"

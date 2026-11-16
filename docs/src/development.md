@@ -407,7 +407,7 @@ Seven workflows live in `.github/workflows/`:
 | `coverage.yml` | Push to `main`; PRs touching `koda-core/` or `koda-sandbox/`; nightly (09:17 UTC) + manual | Coverage thresholds, with auto issue creation on `main` |
 | `release.yml` | Tag `v*` | Version verify, Linux test, cross-platform build, publish, Homebrew |
 | `docs.yml` | Push to `main` (docs/ changes) | Build + deploy mdBook to GitHub Pages |
-| `codeql.yml` | Push to `main`, weekly (Mon 14:00 UTC) + manual | CodeQL code scanning of Rust and the workflows; not on PRs |
+| `codeql.yml` | Push to `main`, weekly (Mon 14:00 UTC) + manual | CodeQL code scanning of Rust and the workflows; not on PRs. Test code (`*/tests/`, `koda-test-utils`) is left out by `.github/codeql/codeql-config.yml` |
 | `auto-merge-dependabot.yml` | Dependabot PRs | Enables squash auto-merge; merges once required checks pass |
 
 Release job chain:
