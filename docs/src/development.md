@@ -274,27 +274,29 @@ and their modules are gated on it in `tests/suite/mod.rs`:
 **koda-cli unit tests** are co-located in `src/`: markdown rendering, REPL
 parsing, highlighting.
 
-**koda-cli integration tests**, no feature flag:
+**koda-cli integration tests** are one binary too, `tests/all.rs` with the
+files under `tests/suite/`; run one file with
+`cargo nextest run -p koda-cli -E 'test(/^suite::cli_test::/)'`. No feature flag:
 
-- `tests/cli_test.rs` — binary subprocess invocation
-- `tests/regression_test.rs` — REPL dispatch, input processing
-- `tests/skill_agent_e2e_test.rs` — skill activation + agent switching E2E
+- `tests/suite/cli_test.rs` — binary subprocess invocation
+- `tests/suite/regression_test.rs` — REPL dispatch, input processing
+- `tests/suite/skill_agent_e2e_test.rs` — skill activation + agent switching E2E
 
-**koda-cli smoke tests** (MockProvider, CI-safe): `tests/smoke_test.rs` covers
+**koda-cli smoke tests** (MockProvider, CI-safe): `tests/suite/smoke_test.rs` covers
 headless mode: text responses, tool use, session resume, `--resume` flag. The
 live variants are gated by `KODA_TEST_LMSTUDIO=1` and never run in CI.
 
 **koda-cli stub-server tests** (`FakeLlmServer`, CI-safe):
 
-- `tests/no_summary_compaction_test.rs` — real headless run with the summary call emptied or failed: the task reaches the next request, the run finishes
-- `tests/gemini_stub_test.rs` — real headless run on the Gemini provider: a 503, a tool call and a failed reply in one turn
-- `tests/anthropic_stream_failure_test.rs` — an `error` event or a missing `message_stop` discards the reply, and its tool calls don't run
-- `tests/openai_stream_failure_test.rs` — the same for an OpenAI-compatible server: an error object or a stream with no `finish_reason` or `[DONE]`
-- `tests/prompt_text_test.rs` — a multi-line prompt reaches the provider unchanged
-- `tests/history_edit_log_test.rs` — a tool result dropped by a repeated call id shows as a `history edited` warning
-- `tests/context_count_test.rs` — a reported token count above the estimate triggers compaction; with no count, the estimate decides
-- `tests/headless_interrupt_test.rs` — SIGINT during a model call: the run still reports its turn end and summary
-- `tests/stop_reason_log_test.rs` — the `model call` line keeps the stop reason when usage follows the finish chunk
+- `tests/suite/no_summary_compaction_test.rs` — real headless run with the summary call emptied or failed: the task reaches the next request, the run finishes
+- `tests/suite/gemini_stub_test.rs` — real headless run on the Gemini provider: a 503, a tool call and a failed reply in one turn
+- `tests/suite/anthropic_stream_failure_test.rs` — an `error` event or a missing `message_stop` discards the reply, and its tool calls don't run
+- `tests/suite/openai_stream_failure_test.rs` — the same for an OpenAI-compatible server: an error object or a stream with no `finish_reason` or `[DONE]`
+- `tests/suite/prompt_text_test.rs` — a multi-line prompt reaches the provider unchanged
+- `tests/suite/history_edit_log_test.rs` — a tool result dropped by a repeated call id shows as a `history edited` warning
+- `tests/suite/context_count_test.rs` — a reported token count above the estimate triggers compaction; with no count, the estimate decides
+- `tests/suite/headless_interrupt_test.rs` — SIGINT during a model call: the run still reports its turn end and summary
+- `tests/suite/stop_reason_log_test.rs` — the `model call` line keeps the stop reason when usage follows the finish chunk
 
 ## Testing on Linux locally
 
