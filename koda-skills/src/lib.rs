@@ -1,5 +1,10 @@
 //! Skill discovery and loading.
 //!
+//! Split out of `koda-core` in 0.7.1, which re-exports this crate as
+//! `koda_core::skills`. This crate follows koda-cli's version, and its Rust
+//! API makes no semver promise of its own: it is published for
+//! `cargo install koda-cli`, not as a library to build on.
+//!
 //! Skills are `SKILL.md` files with YAML frontmatter that inject expertise
 //! into the agent's context. Unlike sub-agents, skills don't spawn a
 //! separate inference loop — they're prompt injection, zero extra LLM cost.
@@ -295,6 +300,11 @@ impl SkillRegistry {
             content: content.to_string(),
         };
         self.skills.insert(name.to_string(), skill);
+    }
+
+    /// Add `skill` under its name, replacing one of the same name.
+    pub fn insert(&mut self, skill: Skill) {
+        self.skills.insert(skill.meta.name.clone(), skill);
     }
 
     /// Number of discovered skills.
@@ -646,8 +656,8 @@ Do the review.
         );
         // Reference to a canonical example so the model can crib.
         assert!(
-            skill_body.contains("koda-core/skills/code-review/SKILL.md")
-                || skill_body.contains("koda-core/skills/debug/SKILL.md"),
+            skill_body.contains("koda-skills/skills/code-review/SKILL.md")
+                || skill_body.contains("koda-skills/skills/debug/SKILL.md"),
             "create-skill must point at a reference example"
         );
     }

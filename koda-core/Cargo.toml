@@ -100,6 +100,9 @@ koda-protocol = { workspace = true }
 # Model providers and the model tables, re-exported as `providers`,
 # `model_alias`, `model_context`, `model_effort` and `provider_catalog`.
 koda-providers = { workspace = true }
+# Skills and memory, re-exported as `skills` and `memory`.
+koda-memory = { workspace = true }
+koda-skills = { workspace = true }
 koda-sandbox = { workspace = true }
 koda-state = { workspace = true }
 

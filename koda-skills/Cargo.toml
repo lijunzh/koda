@@ -1,0 +1,19 @@
+[package]
+name = "koda-skills"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Skills for the Koda AI coding agent: finding SKILL.md files in the project, the user's folder and the built-in set"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords = ["ai", "coding-agent", "llm"]
+categories = ["development-tools"]
+
+[dependencies]
+koda-config = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

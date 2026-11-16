@@ -83,6 +83,8 @@ onto the protocol),
 `koda-providers` (the model providers and the model tables, which `koda-core`
 re-exports as `providers`, `model_alias`, `model_context`, `model_effort` and
 `provider_catalog`),
+`koda-skills` and `koda-memory` (skills, and the instruction files and Koda's
+notes, re-exported by `koda-core` as `skills` and `memory`),
 `koda-state` (Koda's stored state: the `SessionStore` trait and its SQLite
 `Database`, how its SQLite files are opened, and the diagnostic log database,
 as Codex keeps its storage outside `codex-core`), `koda-test-utils`.
@@ -100,8 +102,10 @@ integration tests may use core, to set up state.
 In `koda-core/src/`:
 - **Loop:** `inference.rs`, `inference_helpers.rs`, `session.rs` (`KodaSession`),
   `agent/` (`KodaAgent`), `loop_guard.rs`, `turn_context.rs`
-- **Prompt and memory:** `prompt.rs`, `instructions.md`, `memory.rs`, `skills.rs`,
-  `git.rs` (read-only git context; it never mutates state)
+- **Prompt and memory:** `prompt.rs`, `instructions.md`, `git.rs` (read-only
+  git context; it never mutates state); memory and skills are their own
+  crates, `koda-memory` and `koda-skills` (built-in `SKILL.md` files in
+  `koda-skills/skills/`)
 - **Context:** `context.rs`, `compact.rs`, `microcompact.rs`, `output_caps.rs`,
   `truncate.rs`
 - **Tools:** `tools/` (`mod.rs` has the registry, dispatcher and

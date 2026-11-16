@@ -12,7 +12,6 @@ koda/
 ├── Cargo.toml              # Workspace root
 ├── koda-core/              # Engine library (zero terminal deps)
 │   ├── agents/             # Built-in agent configs (default, explore, plan, verify, task)
-│   ├── skills/             # Built-in skills (SKILL.md files)
 │   ├── src/
 │   │   ├── lib.rs          # Crate root
 │   │   ├── agent/          # KodaAgent (shared config: tools, prompt)
@@ -32,14 +31,12 @@ koda/
 │   │   ├── last_provider.rs # The model choice earlier versions saved in the database, moved once into config.toml
 │   │   ├── loop_guard.rs   # Loop detection + iteration hard-cap
 │   │   ├── mcp/            # MCP client: config, manager, tool bridge
-│   │   ├── memory.rs       # Semantic memory (global + project tiers → first user message)
 │   │   ├── output_caps.rs  # Output cap scaling based on context window size
 │   │   ├── preview.rs      # Pre-confirmation diff previews for Edit/Write
 │   │   ├── prompt.rs       # System prompt construction
 │   │   ├── runtime_env.rs  # Thread-safe runtime env for API keys
 │   │   ├── sandbox.rs      # Process sandbox (macOS seatbelt + Linux bwrap, always-on)
 │   │   ├── session.rs      # KodaSession (per-conversation: DB, provider, settings)
-│   │   ├── skills.rs       # Skill discovery and activation
 │   │   ├── skill_scope.rs  # Skill-scoped tool allow/deny enforcement
 │   │   ├── sub_agent_cache.rs # Sub-agent provider/model config cache
 │   │   ├── sub_agent_dispatch.rs # Sub-agent invocation dispatch
@@ -155,6 +152,9 @@ koda/
 │   │   ├── model_effort.rs # Reasoning effort levels per model
 │   │   └── provider_catalog.rs # Static metadata for every supported provider
 │   └── tests/              # Each provider's HTTP behaviour against a stub server
+├── koda-skills/            # Skill discovery and activation
+│   └── skills/             # Built-in skills (SKILL.md files)
+├── koda-memory/            # Instruction files (AGENTS.md, CLAUDE.md) and Koda's notes → first user message
 ├── koda-state/             # Stored state, apart from the engine
 │   └── src/
 │       ├── session_store.rs  # SessionStore trait: the session storage contract, and its types

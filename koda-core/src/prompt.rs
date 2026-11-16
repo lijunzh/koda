@@ -571,23 +571,20 @@ mod tests {
         let env = test_env();
         let mut registry = SkillRegistry::default();
         // Inject a skill with all metadata fields populated
-        registry.skills.insert(
-            "scoped".to_string(),
-            Skill {
-                meta: SkillMeta {
-                    name: "scoped".to_string(),
-                    description: "Scoped skill".to_string(),
-                    tags: vec![],
-                    when_to_use: Some("Use for scoped work".to_string()),
-                    allowed_tools: vec!["Read".to_string(), "Grep".to_string()],
-                    user_invocable: false,
-                    argument_hint: Some("<file_path>".to_string()),
-                    source: SkillSource::BuiltIn,
-                    path: None,
-                },
-                content: "scoped content".to_string(),
+        registry.insert(Skill {
+            meta: SkillMeta {
+                name: "scoped".to_string(),
+                description: "Scoped skill".to_string(),
+                tags: vec![],
+                when_to_use: Some("Use for scoped work".to_string()),
+                allowed_tools: vec!["Read".to_string(), "Grep".to_string()],
+                user_invocable: false,
+                argument_hint: Some("<file_path>".to_string()),
+                source: SkillSource::BuiltIn,
+                path: None,
             },
-        );
+            content: "scoped content".to_string(),
+        });
         let result = build_system_prompt("Base.", &env, false, &registry);
         assert!(result.contains("**scoped**"), "skill name");
         assert!(result.contains("Scoped skill"), "description");

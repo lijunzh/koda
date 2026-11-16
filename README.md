@@ -70,6 +70,8 @@ protocol on stdin and stdout ([Koda as a server](https://lijunzh.github.io/koda/
 | [**koda-protocol**](koda-protocol/) | The client protocol: JSON-RPC 2.0 messages and their types |
 | [**koda-client**](koda-client/) | The client API, and engine events projected onto the protocol |
 | [**koda-config**](koda-config/) | The config file, `~/.config/koda/config.toml`: reading, checking and editing it |
+| [**koda-skills**](koda-skills/) | Skills: `SKILL.md` files from the project, your config folder and the built-in set |
+| [**koda-memory**](koda-memory/) | Memory: the instruction files people write (`AGENTS.md`, `CLAUDE.md`) and the notes Koda keeps |
 | [**koda-state**](koda-state/) | Stored state — sessions (the `SessionStore` trait and its SQLite `Database`), Koda's SQLite files and the diagnostic log database |
 | [**koda-sandbox**](koda-sandbox/) | Capability-aware sandbox layer — kernel-enforced FS/net/exec policies |
 | [**koda-test-utils**](koda-test-utils/) | Test utilities — a stub HTTP server, mock providers, test sinks, and E2E harness |

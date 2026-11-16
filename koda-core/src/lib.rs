@@ -94,8 +94,9 @@ pub use koda_state::log_db;
 pub mod loop_guard;
 /// MCP client — connect to external MCP servers (#662).
 pub mod mcp;
-/// Instruction files (`AGENTS.md`, `CLAUDE.md`) and Koda's own notes.
-pub mod memory;
+/// Instruction files (`AGENTS.md`, `CLAUDE.md`) and Koda's own notes: the
+/// `koda-memory` crate, under its old path.
+pub use koda_memory as memory;
 /// Context-scaled output caps for tool results.
 pub mod output_caps;
 /// Diff preview generation for file mutations.
@@ -115,8 +116,9 @@ pub mod sandbox;
 pub mod session;
 /// Skill-scoped tool filtering — hard enforcement of `allowed_tools`.
 pub mod skill_scope;
-/// Skill discovery and activation (project, user, built-in).
-pub mod skills;
+/// Skill discovery and activation (project, user, built-in): the
+/// `koda-skills` crate, under its old path.
+pub use koda_skills as skills;
 /// Sub-agent result caching — zero-cost retries after compaction.
 pub mod sub_agent_cache;
 /// Sub-agent invocation and lifecycle management.

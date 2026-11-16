@@ -1,5 +1,10 @@
 //! Memory: the instructions people write, and the notes Koda keeps.
 //!
+//! Split out of `koda-core` in 0.7.1, which re-exports this crate as
+//! `koda_core::memory`. This crate follows koda-cli's version, and its Rust
+//! API makes no semver promise of its own: it is published for
+//! `cargo install koda-cli`, not as a library to build on.
+//!
 //! Both are Markdown, sent at the start of the first user message.
 //!
 //! **Instruction files** (written by people, read in this order, Codex's
@@ -217,7 +222,8 @@ pub fn load(project_root: &Path) -> Result<String> {
     load_in(project_root, koda_config::config_dir().ok().as_deref())
 }
 
-pub(crate) fn load_in(project_root: &Path, config: Option<&Path>) -> Result<String> {
+/// [`load`] with an explicit config directory, `None` for none.
+pub fn load_in(project_root: &Path, config: Option<&Path>) -> Result<String> {
     let mut parts: Vec<String> = Vec::new();
     let mut push = |path: &Path, what: &str| -> Result<()> {
         let (content, was_hit) = read_through_cache(path)?;
@@ -313,17 +319,17 @@ pub fn global_notes_path() -> Result<PathBuf> {
 }
 
 /// [`append`] with an explicit config directory.
-pub(crate) fn append_in(config: &Path, project_root: &Path, entry: &str) -> Result<()> {
+pub fn append_in(config: &Path, project_root: &Path, entry: &str) -> Result<()> {
     write_note(&project_notes_file(config, project_root), entry)
 }
 
 /// [`append_global`] with an explicit config directory.
-pub(crate) fn append_global_in(config: &Path, entry: &str) -> Result<()> {
+pub fn append_global_in(config: &Path, entry: &str) -> Result<()> {
     write_note(&global_notes_file(config), entry)
 }
 
 /// [`project_notes_path`] with an explicit config directory.
-pub(crate) fn project_notes_path_in(config: &Path, project_root: &Path) -> PathBuf {
+pub fn project_notes_path_in(config: &Path, project_root: &Path) -> PathBuf {
     project_notes_file(config, project_root)
 }
 

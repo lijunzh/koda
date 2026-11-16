@@ -145,23 +145,20 @@ mod tests {
     fn make_registry() -> SkillRegistry {
         let mut registry = SkillRegistry::default();
         // Scoped skill
-        registry.skills.insert(
-            "scoped".to_string(),
-            Skill {
-                meta: SkillMeta {
-                    name: "scoped".to_string(),
-                    description: "Scoped".to_string(),
-                    tags: vec![],
-                    when_to_use: None,
-                    allowed_tools: vec!["Read".to_string(), "Grep".to_string()],
-                    user_invocable: true,
-                    argument_hint: None,
-                    source: SkillSource::BuiltIn,
-                    path: None,
-                },
-                content: "scoped content".to_string(),
+        registry.insert(Skill {
+            meta: SkillMeta {
+                name: "scoped".to_string(),
+                description: "Scoped".to_string(),
+                tags: vec![],
+                when_to_use: None,
+                allowed_tools: vec!["Read".to_string(), "Grep".to_string()],
+                user_invocable: true,
+                argument_hint: None,
+                source: SkillSource::BuiltIn,
+                path: None,
             },
-        );
+            content: "scoped content".to_string(),
+        });
         // Unscoped skill
         registry.add_builtin("unscoped", "Unscoped", None, "unscoped content");
         registry
