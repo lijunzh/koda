@@ -76,58 +76,114 @@ struct Cli {
     #[arg(long, value_name = "FORMAT", hide = true)]
     output_format: Option<String>,
 
-    /// Agent to use: a built-in, or a JSON file in .koda/agents/ or
-    /// ~/.config/koda/agents/ (default: config.toml's `agent`, else
-    /// `default`)
-    #[arg(short, long, global = true)]
-    agent: Option<String>,
+    #[command(flatten)]
+    session: SessionFlags,
 
+    #[command(flatten)]
+    flags: ConfigFlags,
+
+    /// Override a config.toml value for this run: `-c key=value`, with a
+    /// dotted key (`-c model_providers.lm-studio.base_url=http://...`).
+    /// The value is read as TOML, else taken as text, as Codex's `-c` is,
+    /// and replaces what is at that key. Repeatable; never saved. Flags
+    /// such as --reasoning-effort are `-c` values too, and win over these.
+    #[arg(
+        short = 'c',
+        long = "config",
+        value_name = "KEY=VALUE",
+        value_parser = koda_config::parse_override,
+        action = clap::ArgAction::Append,
+        global = true
+    )]
+    config: Vec<koda_config::Override>,
+}
+
+/// The flags that pick a session: which one, and its model. `koda` and
+/// `koda exec` take them; `koda serve`'s client sends them in
+/// `session/start`, as Codex's do.
+#[derive(clap::Args, Debug, Default, Clone)]
+struct SessionFlags {
     /// Session ID to resume (omit to start a new session)
-    #[arg(short, long = "resume", alias = "session", global = true)]
-    session: Option<String>,
-
-    /// Project root directory (defaults to current directory)
-    #[arg(long, global = true)]
-    project_root: Option<PathBuf>,
+    #[arg(
+        short = 's',
+        long = "resume",
+        alias = "session",
+        value_name = "SESSION"
+    )]
+    resume: Option<String>,
 
     /// LLM provider base URL override
-    #[arg(long, global = true)]
+    #[arg(long)]
     base_url: Option<String>,
 
     /// Model name override
-    #[arg(long, global = true)]
+    #[arg(long)]
     model: Option<String>,
 
     /// LLM provider (openai, anthropic, lmstudio, llama-cpp, gemini, groq, grok, ollama)
-    #[arg(long, global = true)]
+    #[arg(long)]
     provider: Option<String>,
+}
 
-    /// Maximum output tokens
-    #[arg(long, global = true)]
+impl SessionFlags {
+    /// Take what `koda` was given before the subcommand where the
+    /// subcommand wasn't, as Codex's `exec` inherits its root options.
+    fn inherit(&mut self, root: &Self) {
+        inherit(&mut self.resume, &root.resume);
+        inherit(&mut self.base_url, &root.base_url);
+        inherit(&mut self.model, &root.model);
+        inherit(&mut self.provider, &root.provider);
+    }
+
+    /// The flags given, by name.
+    fn given(&self) -> Vec<&'static str> {
+        [
+            ("--resume", self.resume.is_some()),
+            ("--base-url", self.base_url.is_some()),
+            ("--model", self.model.is_some()),
+            ("--provider", self.provider.is_some()),
+        ]
+        .into_iter()
+        .filter_map(|(name, given)| given.then_some(name))
+        .collect()
+    }
+}
+
+/// The flags that are config values for this run: `koda`, `koda exec` and
+/// `koda serve` take them.
+#[derive(clap::Args, Debug, Default, Clone)]
+struct ConfigFlags {
+    /// Agent to use: a built-in, or a JSON file in .koda/agents/ or
+    /// ~/.config/koda/agents/ (default: config.toml's `agent`, else
+    /// `default`)
+    #[arg(short, long)]
+    agent: Option<String>,
+
+    /// Project root directory (defaults to current directory)
+    #[arg(long)]
+    project_root: Option<PathBuf>,
+
+    /// Deprecated, to go in 0.8: `-c model_max_output_tokens=N`.
+    #[arg(long, hide = true)]
     max_tokens: Option<u32>,
 
     /// Context window in tokens, for servers that don't report theirs.
     /// Beats the agent config, the server's answer and the model table.
-    #[arg(
-        long,
-        value_name = "TOKENS",
-        value_parser = parse_context_window,
-        global = true
-    )]
+    #[arg(long, value_name = "TOKENS", value_parser = parse_context_window)]
     max_context_tokens: Option<u64>,
 
-    /// Sampling temperature (0.0 - 2.0)
-    #[arg(long, global = true)]
+    /// Deprecated, to go in 0.8: `-c model_temperature=X`.
+    #[arg(long, hide = true)]
     temperature: Option<f64>,
 
-    /// Gemini thinking budget in tokens. Claude models take --effort instead.
-    #[arg(long, global = true)]
+    /// Deprecated, to go in 0.8: `-c model_thinking_budget=N`.
+    #[arg(long, hide = true)]
     thinking_budget: Option<u32>,
 
     /// Reasoning effort. Claude: low, medium, high, xhigh or max; by default
     /// the level Claude Code uses for the model. OpenAI-compatible servers:
     /// passed through as `reasoning_effort`.
-    #[arg(long, alias = "effort", value_name = "LEVEL", global = true)]
+    #[arg(long, visible_alias = "effort", value_name = "LEVEL")]
     reasoning_effort: Option<String>,
 
     /// Trust mode: auto (the default, unless config.toml sets `mode`), safe,
@@ -146,30 +202,81 @@ struct Cli {
     /// read-only run; everything else is refused, and the kernel
     /// sandbox keeps the project read-only.
     /// Sandbox with credential protection is always active.
-    #[arg(long, value_parser = ["safe", "auto", "plan"], global = true)]
+    #[arg(long, value_parser = ["safe", "auto", "plan"])]
     mode: Option<String>,
-
-    /// Override a config.toml value for this run: `-c key=value`, with a
-    /// dotted key (`-c model_providers.lm-studio.base_url=http://...`).
-    /// The value is read as TOML, else taken as text, as Codex's `-c` is,
-    /// and replaces what is at that key. Repeatable; never saved. Flags
-    /// such as --effort are `-c` values too, and win over these.
-    #[arg(
-        short = 'c',
-        long = "config",
-        value_name = "KEY=VALUE",
-        value_parser = koda_config::parse_override,
-        action = clap::ArgAction::Append,
-        global = true
-    )]
-    config: Vec<koda_config::Override>,
 
     /// Add MCP servers for this run only, from a JSON file or inline JSON
     /// in the `{"mcpServers": {...}}` shape of Claude Code's `.mcp.json`.
     /// Repeatable; later servers win a name clash, and all of them win over
     /// servers stored with `koda mcp add`. Nothing is saved.
-    #[arg(long, value_name = "FILE|JSON", action = clap::ArgAction::Append, global = true)]
+    #[arg(long, value_name = "FILE|JSON", action = clap::ArgAction::Append)]
     mcp_config: Vec<String>,
+}
+
+impl ConfigFlags {
+    /// As [`SessionFlags::inherit`]; MCP servers given before the
+    /// subcommand come first, so the subcommand's win a name clash.
+    fn inherit(&mut self, root: &Self) {
+        inherit(&mut self.agent, &root.agent);
+        inherit(&mut self.project_root, &root.project_root);
+        inherit(&mut self.max_tokens, &root.max_tokens);
+        inherit(&mut self.max_context_tokens, &root.max_context_tokens);
+        inherit(&mut self.temperature, &root.temperature);
+        inherit(&mut self.thinking_budget, &root.thinking_budget);
+        inherit(&mut self.reasoning_effort, &root.reasoning_effort);
+        inherit(&mut self.mode, &root.mode);
+        let mine = std::mem::take(&mut self.mcp_config);
+        self.mcp_config = root.mcp_config.iter().cloned().chain(mine).collect();
+    }
+
+    /// The flags given other than `--project-root`, by name: what
+    /// `koda mcp` refuses.
+    fn given_beyond_project_root(&self) -> Vec<&'static str> {
+        [
+            ("--agent", self.agent.is_some()),
+            ("--max-tokens", self.max_tokens.is_some()),
+            ("--max-context-tokens", self.max_context_tokens.is_some()),
+            ("--temperature", self.temperature.is_some()),
+            ("--thinking-budget", self.thinking_budget.is_some()),
+            ("--reasoning-effort", self.reasoning_effort.is_some()),
+            ("--mode", self.mode.is_some()),
+            ("--mcp-config", !self.mcp_config.is_empty()),
+        ]
+        .into_iter()
+        .filter_map(|(name, given)| given.then_some(name))
+        .collect()
+    }
+
+    /// Notices for the flags that go in 0.8, with what replaces each.
+    fn deprecations(&self) -> Vec<String> {
+        [
+            (
+                "--max-tokens",
+                "model_max_output_tokens",
+                self.max_tokens.is_some(),
+            ),
+            (
+                "--temperature",
+                "model_temperature",
+                self.temperature.is_some(),
+            ),
+            (
+                "--thinking-budget",
+                "model_thinking_budget",
+                self.thinking_budget.is_some(),
+            ),
+        ]
+        .into_iter()
+        .filter(|(_, _, given)| *given)
+        .map(|(flag, key, _)| format!("{flag} is deprecated and goes in 0.8; use -c {key}=<value>"))
+        .collect()
+    }
+}
+
+fn inherit<T: Clone>(mine: &mut Option<T>, root: &Option<T>) {
+    if mine.is_none() {
+        mine.clone_from(root);
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -190,8 +297,8 @@ enum Command {
     /// Runs until stdin closes or a signal stops it.
     ///
     /// The client picks each session's model in `session/start`, so
-    /// --model, --provider and --base-url don't apply; -c and the other
-    /// config flags do.
+    /// --model, --provider, --base-url and --resume aren't taken here; -c
+    /// and the config flags are.
     Serve(ServeArgs),
     /// Manage the MCP servers every session starts: list, get, add, remove.
     ///
@@ -213,12 +320,21 @@ struct ServeArgs {
     /// that `koda serve` alone stays free for the shared server.
     #[arg(long)]
     stdio: bool,
+
+    #[command(flatten)]
+    flags: ConfigFlags,
 }
 
-/// `koda exec`'s own flags. The model, provider, mode and the rest are the
-/// same flags as `koda`'s.
+/// `koda exec`'s flags: its own, and the same session and config flags as
+/// `koda`'s.
 #[derive(clap::Args, Debug)]
 struct ExecArgs {
+    #[command(flatten)]
+    session: SessionFlags,
+
+    #[command(flatten)]
+    flags: ConfigFlags,
+
     /// The prompt. "-" or none reads it from stdin.
     #[arg(value_name = "PROMPT")]
     prompt: Option<String>,
@@ -262,16 +378,36 @@ pub(crate) async fn run() -> Result<()> {
     }
 
     // A one-shot run is `koda exec`, as in Codex. `koda` alone opens the TUI.
+    // Each subcommand takes the flags that apply to it, as Codex's do; a
+    // flag given before `exec` carries over to it, and one given before a
+    // subcommand that can't use it is refused rather than ignored.
     let mut mcp_cli = None;
     let mut serving = false;
+    let mut session = std::mem::take(&mut cli.session);
+    let mut flags = std::mem::take(&mut cli.flags);
     let headless_run = match cli.command.take() {
-        Some(Command::Exec(args)) => Some(exec_run(args)?),
-        Some(Command::Serve(args)) => {
-            check_serve(&args, &cli);
+        Some(Command::Exec(mut args)) => {
+            args.session.inherit(&session);
+            args.flags.inherit(&flags);
+            session = std::mem::take(&mut args.session);
+            flags = std::mem::take(&mut args.flags);
+            Some(exec_run(args)?)
+        }
+        Some(Command::Serve(mut args)) => {
+            if let Some(error) = serve_refusal(&args, &session, cli.positional_prompt.is_some()) {
+                eprintln!("error: {error}");
+                std::process::exit(2);
+            }
+            args.flags.inherit(&flags);
+            flags = std::mem::take(&mut args.flags);
             serving = true;
             None
         }
         Some(Command::Mcp(mcp)) => {
+            if let Some(error) = mcp_refusal(&session, &flags, cli.positional_prompt.is_some()) {
+                eprintln!("error: {error}");
+                std::process::exit(2);
+            }
             mcp_cli = Some(mcp);
             None
         }
@@ -287,14 +423,17 @@ pub(crate) async fn run() -> Result<()> {
     // Every flag but the model choice is a config value for this run, as
     // Codex's flags are: after `-c`, so a flag wins over a `-c` value.
     let mut overrides = std::mem::take(&mut cli.config);
-    for arg in &cli.mcp_config {
+    for arg in &flags.mcp_config {
         overrides.extend(koda_config::mcp_config_overrides(arg).map_err(anyhow::Error::msg)?);
     }
-    overrides.extend(flag_overrides(&cli));
+    overrides.extend(flag_overrides(&flags));
     crate::user_config::set_overrides(overrides);
+    for notice in flags.deprecations() {
+        eprintln!("warning: {notice}");
+    }
 
     // Resolve project root
-    let project_root = cli
+    let project_root = flags
         .project_root
         .take()
         .unwrap_or_else(|| std::env::current_dir().expect("Failed to get current directory"));
@@ -378,9 +517,9 @@ pub(crate) async fn run() -> Result<()> {
     // model to `thread/start`; the host resolves an alias (`claude-haiku`
     // picks Anthropic) and fills in the rest from the saved choice.
     let named = tui_context::settings::Named {
-        provider: cli.provider.take(),
-        base_url: cli.base_url.take(),
-        model: cli.model.take(),
+        provider: session.provider.take(),
+        base_url: session.base_url.take(),
+        model: session.model.take(),
     };
 
     // Headless mode: skip onboarding, banner, version check
@@ -396,7 +535,7 @@ pub(crate) async fn run() -> Result<()> {
         };
         // An unknown id stops the run before its turn (`session_id`). A new
         // session is the host's to create.
-        let exit_code = headless::run_headless(project_root, cli.session, run).await?;
+        let exit_code = headless::run_headless(project_root, session.resume, run).await?;
         // `exit` runs no destructors: store the queued lines first, the last
         // of which say how the run ended, and write out the file's.
         crate::logging::flush().await;
@@ -430,7 +569,7 @@ pub(crate) async fn run() -> Result<()> {
     tui_app::run(
         project_root,
         named,
-        cli.session,
+        session.resume,
         cli.positional_prompt,
         version_check,
         first_run,
@@ -438,31 +577,41 @@ pub(crate) async fn run() -> Result<()> {
     .await
 }
 
-/// Refuse what `koda serve` can't use: the transport left out, or a flag
+/// Why `koda serve` can't run as asked: the transport left out, or a flag
 /// that names a session's model or prompt, which the client sends in
 /// `session/start` and `turn/start`.
-fn check_serve(args: &ServeArgs, cli: &Cli) {
+fn serve_refusal(args: &ServeArgs, session: &SessionFlags, prompt: bool) -> Option<String> {
     if !args.stdio {
-        eprintln!(
-            "error: koda serve needs --stdio, the one transport so far: \
-             koda serve --stdio"
+        return Some(
+            "koda serve needs --stdio, the one transport so far: koda serve --stdio".into(),
         );
-        std::process::exit(2);
     }
-    let named = [
-        ("--model", cli.model.is_some()),
-        ("--provider", cli.provider.is_some()),
-        ("--base-url", cli.base_url.is_some()),
-        ("--resume", cli.session.is_some()),
-        ("a prompt", cli.positional_prompt.is_some()),
-    ];
-    if let Some((flag, _)) = named.iter().find(|(_, given)| *given) {
-        eprintln!(
-            "error: koda serve doesn't take {flag}: the client sends it in \
-             session/start or turn/start. Set a default with -c (as in -c model=...)."
-        );
-        std::process::exit(2);
+    let mut given = session.given();
+    if prompt {
+        given.push("a prompt");
     }
+    given.first().map(|flag| {
+        format!(
+            "koda serve doesn't take {flag}: the client sends it in session/start or \
+             turn/start. Set a default with -c (as in -c model=...)."
+        )
+    })
+}
+
+/// Why `koda mcp` refuses a flag given before it: only `--project-root`
+/// and `-c` apply to the stored servers.
+fn mcp_refusal(session: &SessionFlags, flags: &ConfigFlags, prompt: bool) -> Option<String> {
+    let mut given = session.given();
+    given.extend(flags.given_beyond_project_root());
+    if prompt {
+        given.push("a prompt");
+    }
+    given.first().map(|flag| {
+        format!(
+            "koda mcp doesn't take {flag}; it manages the stored servers. \
+             Only --project-root and -c apply."
+        )
+    })
 }
 
 /// Ctrl-C or, on Unix, SIGTERM: what stops `koda serve`.
@@ -488,11 +637,11 @@ async fn stop_signal() {
     }
 }
 
-/// The flags that set a config value, as `-c` values: `--effort` is
-/// `model_reasoning_effort`, `--max-tokens` is `model_max_output_tokens`,
-/// and so on. The host reads them with the file, and checks an effort or a
-/// thinking budget against the session's model.
-fn flag_overrides(cli: &Cli) -> Vec<koda_config::Override> {
+/// The flags that set a config value, as `-c` values:
+/// `--reasoning-effort` is `model_reasoning_effort`, `--max-tokens` is
+/// `model_max_output_tokens`, and so on. The host reads them with the file,
+/// and checks an effort or a thinking budget against the session's model.
+fn flag_overrides(cli: &ConfigFlags) -> Vec<koda_config::Override> {
     use koda_config::Override;
     let mut overrides = Vec::new();
     if let Some(agent) = &cli.agent {
@@ -584,11 +733,96 @@ fn atty_is_terminal() -> bool {
 mod tests {
     use super::*;
 
+    /// A flag given before `exec` carries over to it; one given after wins.
+    #[test]
+    fn exec_takes_the_flags_given_before_it() {
+        let cli = Cli::try_parse_from([
+            "koda",
+            "--model",
+            "root-model",
+            "--mode",
+            "safe",
+            "--mcp-config",
+            "a.json",
+            "exec",
+            "--model",
+            "own-model",
+            "--mcp-config",
+            "b.json",
+            "hi",
+        ])
+        .unwrap();
+        let Some(Command::Exec(mut args)) = cli.command else {
+            panic!("not exec");
+        };
+        args.session.inherit(&cli.session);
+        args.flags.inherit(&cli.flags);
+        assert_eq!(args.session.model.as_deref(), Some("own-model"));
+        assert_eq!(args.flags.mode.as_deref(), Some("safe"));
+        assert_eq!(args.flags.mcp_config, ["a.json", "b.json"]);
+    }
+
+    /// `koda mcp` takes no session or model flag: after it, clap refuses
+    /// one; before it, Koda does, rather than ignoring it.
+    #[test]
+    fn mcp_refuses_flags_it_cannot_use() {
+        assert!(Cli::try_parse_from(["koda", "mcp", "list", "--temperature", "2"]).is_err());
+        assert!(Cli::try_parse_from(["koda", "mcp", "list", "--model", "x"]).is_err());
+        let cli = Cli::try_parse_from(["koda", "--model", "x", "mcp", "list"]).unwrap();
+        let error = mcp_refusal(&cli.session, &cli.flags, false).unwrap();
+        assert!(error.contains("--model"), "{error}");
+        let cli =
+            Cli::try_parse_from(["koda", "--project-root", "/tmp", "-c", "a=1", "mcp", "list"])
+                .unwrap();
+        assert_eq!(mcp_refusal(&cli.session, &cli.flags, false), None);
+    }
+
+    /// `koda serve` takes the config flags, but not the ones its client
+    /// sends in `session/start`, before or after `serve`.
+    #[test]
+    fn serve_takes_config_flags_but_not_the_session_s() {
+        assert!(Cli::try_parse_from(["koda", "serve", "--stdio", "--model", "x"]).is_err());
+        let cli = Cli::try_parse_from(["koda", "serve", "--stdio", "--mode", "safe"]).unwrap();
+        let Some(Command::Serve(args)) = &cli.command else {
+            panic!("not serve");
+        };
+        assert_eq!(args.flags.mode.as_deref(), Some("safe"));
+        assert_eq!(serve_refusal(args, &cli.session, false), None);
+        let cli = Cli::try_parse_from(["koda", "--resume", "abc", "serve", "--stdio"]).unwrap();
+        let Some(Command::Serve(args)) = &cli.command else {
+            panic!("not serve");
+        };
+        let error = serve_refusal(args, &cli.session, false).unwrap();
+        assert!(error.contains("--resume"), "{error}");
+    }
+
+    /// The flags going in 0.8 still set their key, with a warning naming
+    /// the `-c` that replaces each.
+    #[test]
+    fn deprecated_flags_warn_with_their_replacement() {
+        let cli =
+            Cli::try_parse_from(["koda", "--temperature", "0.5", "--max-tokens", "9"]).unwrap();
+        let notices = cli.flags.deprecations();
+        assert_eq!(notices.len(), 2);
+        assert!(
+            notices[0].contains("-c model_max_output_tokens="),
+            "{notices:?}"
+        );
+        assert!(notices[1].contains("-c model_temperature="), "{notices:?}");
+        assert!(
+            Cli::try_parse_from(["koda", "--effort", "high"])
+                .unwrap()
+                .flags
+                .reasoning_effort
+                .is_some()
+        );
+    }
+
     /// The config the flags give, over an empty file.
     fn config_of(args: &[&str]) -> koda_config::ConfigToml {
         let mut cli = Cli::try_parse_from(args).unwrap();
         let mut overrides = std::mem::take(&mut cli.config);
-        overrides.extend(flag_overrides(&cli));
+        overrides.extend(flag_overrides(&cli.flags));
         let dir = tempfile::tempdir().unwrap();
         koda_config::ConfigFile::in_dir(dir.path())
             .with_overrides(overrides)

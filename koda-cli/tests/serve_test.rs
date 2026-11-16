@@ -198,8 +198,16 @@ fn serve_needs_stdio_and_refuses_a_sessions_flags() {
         &["--base-url", "http://127.0.0.1:9/v1"],
         &["--resume", "abc"],
     ] {
+        // After `serve`, it isn't one of serve's flags.
         let mut args = vec!["serve", "--stdio"];
         args.extend_from_slice(flag);
+        let out = run(&args);
+        assert_eq!(out.status.code(), Some(2), "{flag:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains(flag[0]), "{flag:?}: {stderr}");
+        // Before it, Koda says where it goes instead.
+        let mut args = flag.to_vec();
+        args.extend_from_slice(&["serve", "--stdio"]);
         let out = run(&args);
         assert_eq!(out.status.code(), Some(2), "{flag:?}");
         let stderr = String::from_utf8_lossy(&out.stderr);

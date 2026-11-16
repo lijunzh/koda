@@ -36,7 +36,7 @@ one reply and these servers set no limit of their own:
   asks the model to carry on. Five such replies in a row end the turn. In
   Koda's evals, Ornith once spent a whole 20-minute task repeating one
   paragraph 900 times; the guard stops that within a few repeats.
-- **Each reply is capped at 32,768 tokens** unless you set `--max-tokens`.
+- **Each reply is capped at 32,768 tokens** unless you set `model_max_output_tokens` (`-c model_max_output_tokens=N` for one run).
   A reply cut off at the cap is told so and asked to continue, or to reason
   more briefly if it was cut off before answering.
 
