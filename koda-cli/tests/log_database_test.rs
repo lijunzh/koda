@@ -118,7 +118,7 @@ async fn log_dir_also_writes_a_file() {
     // Appended to, run after run; every Koda crate at info.
     assert_eq!(file.matches("Koda starting").count(), 2, "{file}");
     assert!(
-        file.contains("koda_client"),
+        file.contains("koda_server"),
         "the host's lines are kept: {file}"
     );
 }

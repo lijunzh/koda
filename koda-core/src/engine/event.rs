@@ -2,7 +2,7 @@
 //!
 //! These types form the contract between the Koda engine and any client surface.
 //! They are serde-serializable so they can be sent over in-process channels
-//! (the TUI) or projected onto the client protocol by `koda-client`.
+//! (the TUI) or projected onto the client protocol by `koda-server`.
 //!
 //! ## Design (DESIGN.md)
 //!

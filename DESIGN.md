@@ -257,7 +257,7 @@ documented carve-out it used to be.
 `EngineEvent` is the engine's internal enum and the TUI's in-process interface.
 External clients read the client protocol (`koda-protocol`): sessions, turns,
 and items that start, stream and complete, as in Codex's app-server protocol.
-`koda-client`'s `EventProjector` builds protocol messages from engine events;
+`koda-server`'s `EventProjector` builds protocol messages from engine events;
 because engine events are flat and items aren't, it keeps the open items, the
 turn in progress and the requests waiting for an answer. Every tool call that
 starts ends with a `ToolCallResult` saying how (ran, failed, declined,
@@ -299,12 +299,13 @@ Input over the wire had to start with a reader that never awaits the turn.
 so an approval's answer is read while the turn waits for it. Editor support,
 if it's ever wanted, is an adapter outside the core.
 
-### The Client API: `koda-protocol` and `koda-client` (P2, P3)
+### The Client API: `koda-protocol`, `koda-server` and `koda-client` (P2, P3)
 
 Every client is to reach Koda through one API, as every Codex front end goes
-through its app-server. `koda-protocol` defines the messages; `koda-client`
-starts Koda's host and talks to it. The host owns the engine, and a client sends
-requests and reads answers. In process, a request and its response still pass
+through its app-server. `koda-protocol` defines the messages; `koda-server` is
+Koda's host, which owns the engine, as Codex's `app-server`; `koda-client`
+starts the host in process and talks to it, as Codex's `app-server-client`. A
+client sends requests and reads answers. In process, a request and its response still pass
 through their JSON form, so the TUI, `koda serve --stdio` and a later shared server
 keep one contract.
 

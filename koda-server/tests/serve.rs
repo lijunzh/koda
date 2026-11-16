@@ -9,8 +9,8 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use koda_client::stdio::{ServeArgs, serve_with_config};
 use koda_core::config::{KodaConfig, ProviderType};
+use koda_server::stdio::{ServeArgs, serve_with_config};
 use koda_test_utils::network::{FakeLlmServer, Request, ResponseTemplate};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
@@ -102,7 +102,7 @@ struct Wire {
     input: Option<DuplexStream>,
     /// Koda's stdout.
     output: Option<BufReader<DuplexStream>>,
-    served: JoinHandle<Result<(), koda_client::RequestError>>,
+    served: JoinHandle<Result<(), koda_server::in_process::RequestError>>,
     next_id: i64,
     /// Lines read while waiting for a request's answer, not yet taken:
     /// an answer travels apart from the session's messages, so they can
@@ -136,7 +136,7 @@ impl Wire {
         let (input, koda_in) = tokio::io::duplex(64 * 1024);
         let (koda_out, output) = tokio::io::duplex(output_buffer);
         let args = ServeArgs {
-            config_file: koda_client::ConfigFile::in_dir(&dir.path().join("config")),
+            config_file: koda_server::ConfigFile::in_dir(&dir.path().join("config")),
             project_root: project.clone(),
             home: dir.path().join("config"),
         };
@@ -524,7 +524,7 @@ async fn bad_lines_and_unknown_methods_fail_explicitly() {
         .unwrap();
     assert_eq!(
         init["protocolVersion"],
-        koda_client::protocol::PROTOCOL_VERSION
+        koda_server::protocol::PROTOCOL_VERSION
     );
     let error = wire
         .call(

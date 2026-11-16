@@ -1946,19 +1946,16 @@ dependencies = [
 name = "koda-client"
 version = "0.7.0"
 dependencies = [
- "anyhow",
  "koda-config",
  "koda-core",
  "koda-protocol",
+ "koda-server",
  "koda-state",
  "koda-test-utils",
- "serde",
  "serde_json",
  "tempfile",
  "tokio",
- "tracing",
  "uuid",
- "zip",
 ]
 
 [[package]]
@@ -2108,6 +2105,25 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+]
+
+[[package]]
+name = "koda-server"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "koda-config",
+ "koda-core",
+ "koda-protocol",
+ "koda-state",
+ "koda-test-utils",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+ "zip",
 ]
 
 [[package]]

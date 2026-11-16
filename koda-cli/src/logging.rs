@@ -22,7 +22,7 @@ pub(crate) const LOG_FILE_NAME: &str = "koda.log";
 /// Every Koda crate at `info`: the file's level without `RUST_LOG`. Before
 /// the log database, the default named only `koda_core` and `koda_cli`, so
 /// the host's, the sandbox's and the config's lines were dropped.
-const DEFAULT_FILE_FILTER: &str = "koda_core=info,koda_cli=info,koda_client=info,\
+const DEFAULT_FILE_FILTER: &str = "koda_core=info,koda_cli=info,koda_client=info,koda_server=info,\
 koda_sandbox=info,koda_config=info,koda_protocol=info,koda_state=info,koda_providers=info,koda_skills=info,koda_memory=info,koda_command=info,koda_mcp=info";
 
 /// What keeps logging running: drop it last. Dropping it stores what's

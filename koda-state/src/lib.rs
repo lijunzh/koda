@@ -12,7 +12,7 @@
 //! - [`log_db`]: the diagnostic log database.
 //!
 //! It depends on no other Koda crate. The engine (`koda-core`) and the
-//! host (`koda-client`) use it; a front end that keeps its own logs (the
+//! host (`koda-server`) use it; a front end that keeps its own logs (the
 //! TUI, `koda-logs`) uses it without `koda-core`.
 //!
 //! **Versioning:** published so that `cargo install koda-cli` builds. It

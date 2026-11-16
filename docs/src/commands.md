@@ -252,7 +252,7 @@ the link to open an issue. Nothing is sent anywhere.
 | `attachments/…/diagnostics.txt` | Versions, OS, sandbox, whether the log lost lines, and the environment (with consent) |
 | `manifest.json` | What each attachment is |
 
-The environment goes through an allowlist (`koda-client/src/feedback/env_filter.rs`):
+The environment goes through an allowlist (`koda-server/src/feedback/env_filter.rs`):
 
 - **Kept as is:** `KODA_*`, `RUST_*`, `LC_*`, `LANG`, `TERM`, `SHELL`, `PATH`.
 - **Kept by length only:** known keys such as `ANTHROPIC_API_KEY` and

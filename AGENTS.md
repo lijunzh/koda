@@ -77,8 +77,9 @@ and `EngineCommand` (input); approval flows through async channels.
 Workspace: `koda-core` (library, pure engine, zero terminal deps), `koda-cli`
 (binary `koda`, ratatui TUI), `koda-sandbox` (kernel sandbox runtime),
 `koda-protocol` (the client protocol's messages and schema), `koda-client`
-(the client API, the host and its session tasks, and engine events projected
-onto the protocol),
+(the client API: the in-process client, as Codex's `app-server-client`),
+`koda-server` (the host and its session tasks, engine events projected onto
+the protocol, and `koda serve --stdio`, as Codex's `app-server`),
 `koda-config` (the config file `config.toml`: reading, checking and editing it),
 `koda-providers` (the model providers and the model tables, which `koda-core`
 re-exports as `providers`, `model_alias`, `model_context`, `model_effort` and
@@ -131,7 +132,7 @@ In `koda-cli/src/`:
   `composer/` (input box, `SLASH_COMMANDS`), `widgets/`
 - **Other frontends:** `headless.rs`
 - **Startup:** `main.rs`, `onboarding.rs` (the built-in skills are in
-  `koda-client/src/builtin_skills.rs`)
+  `koda-server/src/builtin_skills.rs`)
 
 ### Approval
 

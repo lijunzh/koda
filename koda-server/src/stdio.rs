@@ -39,8 +39,9 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader
 use tokio::sync::{Notify, oneshot};
 use tokio::task::JoinSet;
 
+use crate::ConfigFile;
 use crate::host::HostCommand;
-use crate::{ConfigFile, HostStart, RequestError, launch, stop_host};
+use crate::in_process::{HostStart, RequestError, launch, stop_host};
 
 /// How long, once the connection has ended and the host has stopped, what
 /// is still queued may take to write.
@@ -49,17 +50,17 @@ const DRAIN: Duration = Duration::from_secs(5);
 /// What [`serve`] needs: where the host keeps its state and works. The
 /// client says who it is in `initialize`.
 pub struct ServeArgs {
-    /// The config file, as [`crate::StartArgs::config_file`].
+    /// The config file, as [`crate::in_process::HostStart::config_file`].
     pub config_file: ConfigFile,
     /// The project sessions work in.
     pub project_root: PathBuf,
-    /// Koda's folder, as [`crate::StartArgs::home`].
+    /// Koda's folder, as [`crate::in_process::HostStart::home`].
     pub home: PathBuf,
 }
 
 /// Serve one client: read its messages from `input`, write Koda's to
 /// `output`, until `input` ends, `output` breaks or `stop` completes. New
-/// sessions start from the config file, as [`crate::InProcessClient::start`]'s do.
+/// sessions start from the config file, as `koda_client::InProcessClient::start`'s do.
 /// A config file or database that can't be opened stops it before anything
 /// is read.
 pub async fn serve<R, W>(

@@ -6,6 +6,7 @@ members = [
     "koda-sandbox",
     "koda-protocol",
     "koda-client",
+    "koda-server",
     "koda-config",
     "koda-state",
     "koda-providers",
@@ -49,6 +50,7 @@ koda-command = { path = "koda-command", version = "=0.7.0" }
 koda-mcp = { path = "koda-mcp", version = "=0.7.0" }
 koda-sandbox = { path = "koda-sandbox", version = "=0.7.0" }
 koda-core = { path = "koda-core", version = "=0.7.0" }
+koda-server = { path = "koda-server", version = "=0.7.0" }
 koda-client = { path = "koda-client", version = "=0.7.0" }
 base64 = "0.23"
 anyhow = "1"
