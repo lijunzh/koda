@@ -289,6 +289,48 @@ async fn only_protocol_messages_reach_stdout() {
     );
 }
 
+/// A turn that fails on an error the host sends no notice for (here a
+/// rejected key) says why: on stderr in text mode, as Codex's `exec` prints
+/// `ERROR:`, and in `--json`'s summary. Before, the text run exited 1 with
+/// nothing said.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_turn_says_why() {
+    let rejected = || {
+        ResponseTemplate::new(401)
+            .set_body_json(json!({"error": {"message": "invalid api key", "type": "auth"}}))
+    };
+    let server = stub(vec![rejected(), rejected(), rejected()], no_other_calls).await;
+    let tmp = tempfile::tempdir().unwrap();
+
+    // The text run: `command` adds --json, so this one is built here.
+    let mut text_run = tokio::process::Command::new(koda_bin());
+    text_run
+        .args(["exec", "Fix the parser"])
+        .args(["--provider", "lmstudio", "--model", "stub"])
+        .args(["--base-url", &server.url()])
+        .args(["-c", "model_providers.lmstudio.request_max_retries=0"])
+        .arg("--project-root")
+        .arg(tmp.path())
+        .env("XDG_CONFIG_HOME", tmp.path())
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(Duration::from_secs(120), text_run.output())
+        .await
+        .expect("koda hung")
+        .expect("failed to run koda");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("401"), "the reason is missing: {stderr}");
+
+    let mut json_run = command(&server, tmp.path());
+    json_run
+        .as_std_mut()
+        .args(["-c", "model_providers.lmstudio.request_max_retries=0"]);
+    let run = finish(json_run).await;
+    assert_eq!(run.summary()["turnStatus"], "failed");
+    let error = run.summary()["error"].as_str().unwrap_or_default();
+    assert!(error.contains("401"), "{error}");
+}
+
 // ── Tools ────────────────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread")]
