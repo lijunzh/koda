@@ -2346,7 +2346,12 @@ async fn agents_lists_the_sub_agents() {
     // With the popup open, Enter on `/agent` runs `/agents`; with it closed,
     // the old name reaches the command itself.
     tui.type_text("/agent");
+    tui.wait_for_screen("List the sub-agents Koda can invoke");
+    // Wait for Esc to close the popup before Enter: sent together, the
+    // terminal reads them as one key (Alt+Enter) on a slow runner, the
+    // popup stays open, and Enter runs `/agents` again.
     tui.type_text(ESC);
+    tui.wait_for_screen_without("List the sub-agents Koda can invoke");
     tui.type_text("\r");
     tui.wait_for_screen("/agent is now /agents.");
 }
