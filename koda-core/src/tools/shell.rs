@@ -2720,14 +2720,25 @@ mod tests {
         assert!(inside.contains("127.0.0.1:31415"), "{inside}");
     }
 
+    /// The project directory the helpers below run commands in. It lives as
+    /// long as the test process, because a background command needs it after
+    /// the call that starts it returns: on Linux the command is
+    /// `bwrap --bind <project> <project> …`, and bwrap mounts the directory
+    /// only after `spawn` has returned. A directory made for the one call,
+    /// `tempdir().unwrap().path()`, is deleted when that statement ends, and
+    /// now and then bwrap found it gone, exited 1 ("Can't bind mount …: No
+    /// such file or directory"), and a `sleep 60` read as not running.
+    fn project() -> &'static Path {
+        static PROJECT: std::sync::LazyLock<tempfile::TempDir> =
+            std::sync::LazyLock::new(|| tempfile::tempdir().unwrap());
+        PROJECT.path()
+    }
+
     /// Run `command` the way the model would, with a proxy port set so the
     /// proxied profile (the one that restricts loopback) is in force.
     async fn proxied(registry: &BgRegistry, command: &str, background: bool) -> ShellOutput {
-        // Outlives the call: a background server keeps working in it.
-        static PROJECT: std::sync::LazyLock<tempfile::TempDir> =
-            std::sync::LazyLock::new(|| tempfile::tempdir().unwrap());
         run_shell_command(
-            PROJECT.path(),
+            project(),
             &serde_json::json!({"command": command, "background": background}),
             256,
             registry,
@@ -2959,7 +2970,7 @@ mod tests {
     async fn start_in_background(registry: &BgRegistry, command: &str) -> u32 {
         let args = serde_json::json!({"command": command, "background": true});
         run_shell_command(
-            tempfile::tempdir().unwrap().path(),
+            project(),
             &args,
             256,
             registry,
@@ -2977,7 +2988,7 @@ mod tests {
 
     async fn bash(registry: &BgRegistry, command: &str) -> ShellOutput {
         run_shell_command(
-            tempfile::tempdir().unwrap().path(),
+            project(),
             &serde_json::json!({"command": command}),
             256,
             registry,
