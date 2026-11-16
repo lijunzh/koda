@@ -33,9 +33,9 @@ Every `koda` flag (`--model`, `--provider`, `--mode`, `-s`, `--mcp-config`, …)
 works with it.
 
 `koda` without `exec` opens the TUI, and `koda "prompt"` opens it with that
-prompt, as `codex "prompt"` does. `koda -p` and `--output-format` were removed
-in 0.7.0 and stop with a pointer here; `koda` with stdin piped stops too, as
-`codex` does.
+prompt, as `codex "prompt"` does; `koda` with stdin piped stops with "stdin is
+not a terminal", as `codex` does. Coming from 0.6's `koda -p`, see [Upgrading
+to 0.7](./upgrading-0.7.md#running-koda).
 
 ## Exit codes
 
@@ -96,10 +96,8 @@ koda exec --json "fix the failing test" \
   | jq -c 'select(.method == "item/completed") | .params.item'
 ```
 
-`--output-format stream-json`, the protocol of Koda 0.6, and `koda -p
---output-format json`'s one summary object were removed in 0.7.0. `koda exec
---json` replaces both: its last line, `exec/summary`, carries what the summary
-object did, in camelCase.
+The last line, `exec/summary`, sums up the run (the session, how the turn
+ended, its time and usage), in camelCase.
 
 ## The client protocol
 

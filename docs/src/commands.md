@@ -63,7 +63,7 @@ Opens the API key manager. Select a provider, then type or paste your key.
 Keys are stored in the local SQLite keystore (file mode 0600) and injected
 as environment variables at every startup.
 
-As of v0.2.27 (#1185), the input is rendered with each character masked
+The input is rendered with each character masked
 as `•` while you type, so a peer glancing at your terminal won't see the
 key itself — useful for screen-sharing or pair-coding sessions. The
 composer still tracks the real characters under the hood; backspace and
@@ -199,12 +199,6 @@ Its last row says what stops them.
   Esc to interrupt · /stop to stop background processes
 ```
 
-## `/cancel`
-
-Removed on 2026-11-06. It only ran while Koda was idle, when no
-sub-agent exists, so `/cancel agent:N` could never reach one. `Esc` stops a
-turn's sub-agents and `/stop` the background processes.
-
 ## `/expand [<n>]`
 
 Shows the full output of one recent tool call again at the bottom. To see
@@ -261,7 +255,7 @@ The environment goes through an allowlist (`koda-server/src/feedback/env_filter.
 
 Any client can save one with the `feedback/save` request (Codex's), which takes
 the category, note, session, whether to include logs, and an absolute path
-that doesn't exist yet. `/debug-bundle`, which `/feedback` replaces, is gone.
+that doesn't exist yet.
 
 ## `/verbose [on|off]`
 
@@ -287,7 +281,7 @@ composer behaves like a single-buffer vi: `Esc` enters Normal mode,
 bindings are honored. Useful when you're already living in vim and
 want the same muscle memory in koda's chat input.
 
-Added in v0.2.27 (#1182). The setting is per-session only; relaunching
+The setting is per-session only; relaunching
 koda starts back in plain insert mode.
 
 See also: [Keybindings → Vim mode](./keybindings.md#vim-mode).

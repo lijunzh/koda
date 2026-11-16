@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Changed
 
 - **The README and the crates.io pages describe Koda as it is in 0.7.** koda-cli's crates.io page is now the repository's README (it had its own, which still called the TUI inline, offered Plan only to agent definitions and suggested the retired `KODA_MODE`). koda-core's README and docs.rs page point embedders to `koda-client` and drop old provider and tool counts; koda-sandbox's drop a `--no-sandbox` flag Koda doesn't have and its phase notes; the ten crates without a README get a short one. The README no longer claims zero runtime dependencies or that your data stays local: with a cloud provider, what you send the model goes to it.
+- **The manual has Installation and Upgrading to 0.7 pages, and drops its history.** Upgrading to 0.7 gathers what changed from 0.6 (commands, retired environment variables, renamed slash commands, ACP, and the crates for code that embeds Koda); the ACP page became its last section, and its old address redirects there. Other pages lose their "removed in" notes and GitHub issue numbers, and stale facts are fixed: Plan mode isn't `koda exec` only (in `--mode`'s help too), agents live in `.koda/agents/`, Safe isn't for CI, there is no `Delete` tool, Koda's TUI has `/new`, and MCP's `http_headers` key is documented. The introduction says where your data goes.
 
 ## [0.7.2] - 2026-11-16
 

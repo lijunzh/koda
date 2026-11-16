@@ -115,7 +115,7 @@ A deprecation warning is logged at load when both `trust` and
 ## Sub-agent budget
 
 Sub-agents are bounded by a per-invocation turn cap to prevent
-runaway exploration (#1135). The default is **30 turns** —
+runaway exploration. The default is **30 turns** —
 empirically enough for any reasonable read-only investigation on a
 moderate codebase, and matching `gemini-cli`'s `DEFAULT_MAX_TURNS`.
 Long-running write agents that legitimately need more can opt up:
@@ -157,7 +157,7 @@ koda --agent testgen     ← run the session as a named agent
 
 The main model dispatches to sub-agents via the `InvokeAgent` tool. Each
 sub-agent gets its own model, tools, and session. Write-capable sub-agents
-also get an [isolated copy of the project](./sandbox.md#workspace-providers).
+write where your mode says: see [Where sub-agents write](./sandbox.md#where-sub-agents-write).
 
 ## Built-in agents
 

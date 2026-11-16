@@ -70,7 +70,7 @@ same perimeter via `safe_resolve_path` (logical check) and
 symlink-aware check). The two layer: the first rejects literal
 `../etc/passwd` style escapes, the second rejects symlink escapes
 (the final path component being a symlink to outside, or any
-parent directory being one). See #1281.
+parent directory being one).
 
 The symlink check runs in-process, so it holds even when the
 kernel sandbox is unavailable. In-project symlinks (e.g. `examples/latest -> v3/`) keep working;
@@ -119,8 +119,8 @@ beyond that.
 > reads without blocking network egress is security theater — the
 > model could also obtain tokens from environment variables, process
 > output, or tool-specific commands like `gh auth token`. Network-level
-> egress restriction ([#844 Gap 4](https://github.com/lijunzh/koda/issues/844))
-> is the proper mitigation and is tracked separately.
+> egress restriction is the proper mitigation, and Koda's proxy provides
+> it: sandboxed commands reach only the hosts it allows.
 >
 > The only exception is `koda/db` — koda's own API keys have no
 > legitimate use inside the sandbox (the koda process runs *outside*
@@ -161,8 +161,7 @@ Linux), behavior depends on your trust mode:
   that includes a platform-specific install hint (e.g. `apt install
   bubblewrap` on Linux). Auto auto-approves mutating tool calls and
   relies on the kernel sandbox to contain them — silently dropping
-  that boundary at startup is a security foot-gun. See
-  [#860](https://github.com/lijunzh/koda/issues/860).
+  that boundary at startup is a security foot-gun.
 - **Safe mode**: koda runs unsandboxed with a one-time warning
   (`tracing::warn!`). The human is the primary boundary in Safe
   (every mutation prompts), so the sandbox is defense-in-depth

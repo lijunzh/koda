@@ -136,7 +136,7 @@ fn the_removed_server_command_says_so() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(!output.status.success(), "{args:?}");
         assert!(stderr.contains("has been removed"), "{args:?}: {stderr}");
-        assert!(stderr.contains("acp.html"), "{args:?}: {stderr}");
+        assert!(stderr.contains("acp-is-gone"), "{args:?}: {stderr}");
     }
 }
 
