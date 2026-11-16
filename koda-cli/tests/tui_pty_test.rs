@@ -2605,3 +2605,89 @@ async fn typing_a_reply_keeps_planning() {
     assert!(screen.contains("PLAN"), "{screen}");
     assert!(!screen.contains("Implement this plan?"), "{screen}");
 }
+
+/// The messages session `id` has stored, as one string.
+async fn stored_messages(home: &Path, id: &str) -> String {
+    use koda_state::session_store::SessionStore;
+    let db = koda_state::db::Database::init(&home.join(".config/koda"))
+        .await
+        .unwrap();
+    db.load_all_messages(id)
+        .await
+        .unwrap()
+        .iter()
+        .filter_map(|m| m.content.clone())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `/fork` copies the session and switches to the copy, as Codex's `/fork`
+/// does: the next prompt goes with the earlier history, and the original
+/// doesn't get it.
+#[tokio::test(flavor = "multi_thread")]
+async fn fork_continues_in_a_copy() {
+    let server = scripted_model(vec![]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    tui.submit_and_finish("pick a colour", "All done.");
+    let source = {
+        use koda_state::session_store::SessionStore;
+        let project = std::fs::canonicalize(home.path()).unwrap();
+        let db = koda_state::db::Database::init(&home.path().join(".config/koda"))
+            .await
+            .unwrap();
+        db.list_sessions(10, &project).await.unwrap()[0].id.clone()
+    };
+    run_command(&mut tui, "/fork");
+    tui.wait_for_screen("Forked into \"Fork of pick a colour\"");
+    tui.submit_and_finish("and another", "All done.");
+    let sent = wait_for_model_call(&server, 2).await;
+    assert!(sent.contains("pick a colour"), "history lost: {sent}");
+    let fork = quit_and_read_session_id(&mut tui);
+    assert_ne!(fork, source);
+    let original = stored_messages(home.path(), &source).await;
+    assert!(!original.contains("and another"), "{original}");
+    assert!(
+        stored_messages(home.path(), &fork)
+            .await
+            .contains("and another")
+    );
+}
+
+/// `koda fork --last "prompt"` forks the latest session and sends the
+/// prompt in the copy, as `codex fork --last` does; `koda fork` alone
+/// opens the list, and the session picked is forked.
+#[tokio::test(flavor = "multi_thread")]
+async fn koda_fork_opens_a_copy_of_the_last_or_the_picked_session() {
+    let server = scripted_model(vec![]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    tui.submit("delta topic please");
+    tui.wait_for_screen("All done.");
+    let source = quit_and_read_session_id(&mut tui);
+
+    let tui = Tui::start_with_args(
+        home.path(),
+        &server.url(),
+        &["fork", "--last", "carry it on"],
+        "session resumed",
+    );
+    let sent = wait_for_model_call(&server, 2).await;
+    assert!(sent.contains("delta topic please"), "history lost: {sent}");
+    assert!(sent.contains("carry it on"), "{sent}");
+    tui.wait_for_screen("All done.");
+    let mut tui = tui;
+    let fork = quit_and_read_session_id(&mut tui);
+    assert_ne!(fork, source);
+    assert!(
+        !stored_messages(home.path(), &source)
+            .await
+            .contains("carry it on")
+    );
+
+    let mut tui =
+        Tui::start_with_args(home.path(), &server.url(), &["fork"], "Fork which session?");
+    highlight(&mut tui, "Fork of delta");
+    tui.type_text("\r");
+    tui.wait_for_screen("Forked into \"Fork of Fork of delta");
+}

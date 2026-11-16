@@ -1464,6 +1464,71 @@ async fn a_named_session_keeps_its_name_over_the_first_prompt() {
     assert!(unknown.message.contains("no session"), "{unknown:?}");
 }
 
+/// `session/fork` copies a stored session into a new one named "Fork of"
+/// it and opens it, as Codex's `thread/fork` does: the fork has the
+/// source's turns, its next turn sends the source's history, and the
+/// source is left as it was.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_fork_takes_the_history_and_leaves_the_source() {
+    use koda_client::protocol::session::{SessionForkParams, SessionReadParams};
+    let server = model(vec![text("Blue."), text("Green, then.")]).await;
+    let mut koda = Koda::start(config(&server)).await;
+    koda.turn("pick a colour").await;
+    koda.until("turn/completed").await;
+    let source = koda.session.clone();
+
+    let fork = koda
+        .client
+        .request::<methods::SessionFork>(SessionForkParams {
+            session_id: source.clone(),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .session;
+    assert_ne!(fork.id, source);
+    assert_eq!(fork.name.as_deref(), Some("Fork of pick a colour"));
+    assert_eq!(fork.turns.len(), 1, "{:?}", fork.turns);
+
+    koda.session = fork.id.clone();
+    koda.turn("another one").await;
+    koda.until("turn/completed").await;
+    let sent = chat_requests(&server).await;
+    let last = sent.last().unwrap().to_string();
+    for said in ["pick a colour", "Blue.", "another one"] {
+        assert!(last.contains(said), "{said:?} not sent: {last}");
+    }
+
+    let read = |id: &str| SessionReadParams {
+        session_id: id.to_string(),
+        include_turns: true,
+    };
+    let left = koda
+        .client
+        .request::<methods::SessionRead>(read(&source))
+        .await
+        .unwrap()
+        .session;
+    assert_eq!(left.turns.len(), 1, "the fork's turn reached the source");
+    let forked = koda
+        .client
+        .request::<methods::SessionRead>(read(&fork.id))
+        .await
+        .unwrap()
+        .session;
+    assert_eq!(forked.turns.len(), 2);
+
+    let unknown = server_error(
+        koda.client
+            .request::<methods::SessionFork>(SessionForkParams {
+                session_id: "not-a-session".to_string(),
+                ..Default::default()
+            })
+            .await,
+    );
+    assert!(unknown.message.contains("no session"), "{unknown:?}");
+}
+
 // ── Compaction ──────────────────────────────────────────────────────────
 
 /// A reply to a streamed call, with the prompt size the provider reports.

@@ -298,6 +298,10 @@ enum Command {
     /// id (or the start of one), the most recent with --last, or pick one
     /// from a list.
     Resume(ResumeArgs),
+    /// Fork a saved session and open the copy in the TUI, as `codex fork`
+    /// does: by its id (or the start of one), the most recent with --last,
+    /// or pick one from a list. The original stays as it was.
+    Fork(ResumeArgs),
     /// Serve the client protocol on stdin and stdout, for a GUI, an editor
     /// or a script.
     ///
@@ -499,6 +503,7 @@ pub(crate) async fn run() -> Result<()> {
     let mut tui_prompt = cli.positional_prompt.take();
     let mut tui_images = Vec::new();
     let mut pick_session = false;
+    let mut fork = false;
     if matches!(cli.command, Some(Command::Serve(_) | Command::Mcp(_))) && !root_images.is_empty() {
         eprintln!("error: --image goes with a prompt: koda, koda resume or koda exec");
         std::process::exit(2);
@@ -539,10 +544,18 @@ pub(crate) async fn run() -> Result<()> {
                 Some(exec_run(args.prompt, args.json, args.json_deltas, output)?)
             }
         },
-        Some(Command::Resume(mut r)) => {
+        Some(command @ (Command::Resume(_) | Command::Fork(_))) => {
+            let mut r = match command {
+                Command::Resume(r) => r,
+                Command::Fork(r) => {
+                    fork = true;
+                    r
+                }
+                _ => unreachable!("matched above"),
+            };
             r.session.inherit(&session);
             r.flags.inherit(&flags);
-            refuse_resume_flag(&r.session, "koda resume");
+            refuse_resume_flag(&r.session, if fork { "koda fork" } else { "koda resume" });
             let (which, prompt) = r.which.resolve()?;
             pick_session = which.is_none();
             resume = which;
@@ -741,6 +754,7 @@ pub(crate) async fn run() -> Result<()> {
             prompt: tui_prompt,
             images: tui_images,
             pick_session,
+            fork,
         },
         version_check,
         first_run,
@@ -984,6 +998,23 @@ mod tests {
 
     /// `koda resume` and `koda exec resume` read their arguments as Codex's
     /// do: an id and a prompt, or `--last` and a prompt.
+    #[test]
+    fn fork_reads_its_session_as_resume_does() {
+        let cli = Cli::try_parse_from(["koda", "fork", "--last", "go on"]).unwrap();
+        let Some(Command::Fork(r)) = cli.command else {
+            panic!("not a fork");
+        };
+        let (which, prompt) = r.which.resolve().unwrap();
+        assert!(matches!(which, Some(crate::session_id::Resume::Last)));
+        assert_eq!(prompt.as_deref(), Some("go on"));
+
+        let cli = Cli::try_parse_from(["koda", "fork", "abc", "--model", "m"]).unwrap();
+        let Some(Command::Fork(r)) = cli.command else {
+            panic!("not a fork");
+        };
+        assert_eq!(r.session.model.as_deref(), Some("m"));
+    }
+
     #[test]
     fn resume_reads_an_id_or_last_then_a_prompt() {
         use crate::session_id::Resume;

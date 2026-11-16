@@ -2160,3 +2160,73 @@ async fn a_tool_results_images_are_stored_on_its_message() {
     let tool = context.iter().find(|m| m.id == result).unwrap();
     assert_eq!(tool.images.as_deref(), Some(images));
 }
+
+// ── session/fork: fork_session ──────────────────────────────────────────
+
+/// A fork is a faithful copy, unlike a sub-agent's: reasoning blocks,
+/// images, turn records and metadata come with the messages, the session's
+/// model and mode too; a parent link doesn't, and the source is untouched.
+#[tokio::test]
+async fn fork_session_copies_everything_a_session_holds() {
+    use crate::session_store::{PARENT_SESSION_KEY, TurnRecord};
+    let (db, tmp) = setup().await;
+    let src = db.create_session("default", tmp.path()).await.unwrap();
+    db.set_session_model(&src, "anthropic", "https://api", "claude-opus")
+        .await
+        .unwrap();
+    db.set_session_mode(&src, "plan").await.unwrap();
+    db.insert_message(&src, &Role::User, Some("look"), None, None, None)
+        .await
+        .unwrap();
+    let reply = insert_complete_assistant(&db, &src, Some("seen"), None).await;
+    db.update_message_thinking_blocks(reply, "[{\"type\":\"thinking\"}]")
+        .await
+        .unwrap();
+    db.set_message_images(&src, reply, "[\"png\"]")
+        .await
+        .unwrap();
+    db.append_turn_records(
+        &src,
+        &[TurnRecord {
+            turn_id: "t1".into(),
+            kind: "turn".into(),
+            payload: "{}".into(),
+        }],
+    )
+    .await
+    .unwrap();
+    db.set_metadata(&src, "todo_seen", "yes").await.unwrap();
+    db.set_metadata(&src, PARENT_SESSION_KEY, "someone")
+        .await
+        .unwrap();
+
+    let fork = db.fork_session(&src, "Fork of look").await.unwrap();
+    assert_ne!(fork, src);
+    let info = db.get_session(&fork).await.unwrap().unwrap();
+    assert_eq!(info.title.as_deref(), Some("Fork of look"));
+    assert_eq!(info.mode.as_deref(), Some("plan"));
+    assert_eq!(info.model.as_deref(), Some("claude-opus"));
+    let copied = db.load_all_messages(&fork).await.unwrap();
+    let contents: Vec<_> = copied.iter().map(|m| m.content.clone()).collect();
+    assert_eq!(contents, [Some("look".into()), Some("seen".into())]);
+    assert_eq!(
+        copied[1].thinking_blocks.as_deref(),
+        Some("[{\"type\":\"thinking\"}]")
+    );
+    assert_eq!(copied[1].images.as_deref(), Some("[\"png\"]"));
+    assert_eq!(db.load_turn_records(&fork).await.unwrap().len(), 1);
+    assert_eq!(
+        db.get_metadata(&fork, "todo_seen")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("yes")
+    );
+    assert_eq!(
+        db.get_metadata(&fork, PARENT_SESSION_KEY).await.unwrap(),
+        None
+    );
+    assert_eq!(db.load_all_messages(&src).await.unwrap().len(), 2);
+
+    assert!(db.fork_session("missing", "x").await.is_err());
+}

@@ -116,6 +116,13 @@ Starts a new session on the same model and mode, as Codex's `/new` and
 Claude Code's `/clear` do. The session you left stays stored, for
 `/resume`.
 
+## `/fork`
+
+Copies the session into a new one and switches to it, as Codex's `/fork`
+does: same history, model and mode, named "Fork of" this session's name.
+The original stays as it was, for `/resume`. See
+[Forking a session](./sessions.md#forking-a-session).
+
 ## `/rename <name>`
 
 Names the session, as Codex's `/rename` does; `/resume` lists it by that

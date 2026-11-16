@@ -36,6 +36,9 @@ pub struct Start {
     pub images: Vec<crate::input::ImageData>,
     /// Open the session list first (`koda resume` with no session named).
     pub pick_session: bool,
+    /// Fork the session rather than resume it (`koda fork`): `resume`'s,
+    /// or the one picked from the list.
+    pub fork: bool,
 }
 
 pub async fn run(
@@ -50,8 +53,10 @@ pub async fn run(
         prompt,
         images,
         pick_session,
+        fork,
     } = start;
-    let mut ctx = TuiContext::new(project_root, named, resume, version_check, first_run).await?;
+    let mut ctx =
+        TuiContext::new(project_root, named, resume, fork, version_check, first_run).await?;
     let first_run = ctx.first_run;
 
     // First-run welcome message (after terminal is initialized)
@@ -96,8 +101,10 @@ pub async fn run(
             }
         }
     }
-    // `koda resume` with no session named: the list, as `/resume` opens it.
+    // `koda resume` or `koda fork` with no session named: the list, as
+    // `/resume` opens it; `koda fork`'s forks the session picked.
     if pick_session {
+        ctx.fork_on_pick = fork;
         ctx.pending_command = Some("/resume".to_string());
     }
 

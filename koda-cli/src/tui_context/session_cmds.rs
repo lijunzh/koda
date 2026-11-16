@@ -1,6 +1,6 @@
 //! Session commands the TUI answers itself: `/new` (and `/clear`),
-//! `/status`, `/rename` and `/init`, as Codex's TUI and Claude Code have
-//! them.
+//! `/fork`, `/status`, `/rename` and `/init`, as Codex's TUI and Claude
+//! Code have them.
 
 use super::{CommandOutcome, TuiContext, TurnInput, settings};
 use crate::tui_output;
@@ -65,6 +65,67 @@ impl TuiContext {
             Line::default(),
         ]);
         // The TUI's mode carries over; the host checks it.
+        if let Err(e) = self.sync_settings(true).await {
+            tui_output::warn_msg(&mut self.scroll_buffer, format!("{e:#}"));
+        }
+    }
+
+    /// `/fork`: a copy of this session, which the TUI switches to, as
+    /// Codex's `/fork` does. The one left stays stored, for `/resume`.
+    pub(crate) async fn fork_session(&mut self) {
+        let source = self.session.id.clone();
+        self.fork_from(&source, false).await;
+    }
+
+    /// Fork `source` on the host (`session/fork`) and switch to the copy.
+    /// With `draw`, its earlier turns are drawn, as when the sessions
+    /// picker or `koda fork` opens one; after `/fork` they're on screen.
+    pub(crate) async fn fork_from(&mut self, source: &str, draw: bool) {
+        use koda_client::protocol::session::SessionForkParams;
+        let forked = self
+            .client
+            .request::<methods::SessionFork>(SessionForkParams {
+                session_id: source.to_string(),
+                ..Default::default()
+            })
+            .await;
+        let forked = match forked {
+            Ok(forked) => forked.session,
+            Err(e) => {
+                tui_output::err_msg(
+                    &mut self.scroll_buffer,
+                    format!("Couldn't fork the session: {e}"),
+                );
+                return;
+            }
+        };
+        let left = std::mem::replace(&mut self.host_session, forked.id.clone());
+        if left != forked.id {
+            let _ = self
+                .client
+                .request::<methods::SessionUnsubscribe>(
+                    koda_client::protocol::session::SessionUnsubscribeParams { session_id: left },
+                )
+                .await;
+        }
+        self.session = super::TuiSession {
+            id: forked.id.clone(),
+            instruction_sources: forked.instruction_sources.clone().unwrap_or_default(),
+        };
+        if let Some(mode) = forked.mode {
+            self.mode = mode;
+        }
+        self.mcp_stale = true;
+        if draw {
+            self.renderer.forget_replies();
+            super::replay_turns(&mut self.renderer, &forked.turns, &mut self.scroll_buffer);
+        }
+        let name = forked.name.unwrap_or_else(|| "Fork".to_string());
+        let short = &forked.id[..8.min(forked.id.len())];
+        tui_output::ok_msg(
+            &mut self.scroll_buffer,
+            format!("Forked into \"{name}\" ({short}). /resume goes back to the original."),
+        );
         if let Err(e) = self.sync_settings(true).await {
             tui_output::warn_msg(&mut self.scroll_buffer, format!("{e:#}"));
         }

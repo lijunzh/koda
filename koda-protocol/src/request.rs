@@ -141,6 +141,12 @@ client_requests! {
         params: crate::session::SessionDeleteParams,
         response: crate::session::SessionDeleteResponse,
     },
+    /// Copy a stored session into a new one and open it, as Codex's
+    /// `thread/fork` does.
+    SessionFork => "session/fork" {
+        params: crate::session::SessionForkParams,
+        response: crate::session::SessionForkResponse,
+    },
     /// Name a stored session; `session/name/updated` follows.
     SessionNameSet => "session/name/set" {
         params: crate::session::SessionNameSetParams,
