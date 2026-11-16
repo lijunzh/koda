@@ -4,7 +4,12 @@
 //! so that `koda-cli` can be tested as a library without pulling in the
 //! binary's argument parsing context.
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    koda_cli::run().await
+fn main() -> anyhow::Result<()> {
+    // First, before any thread starts: `koda` also runs the sandbox's
+    // helpers, as Codex's binary does, so every install has them.
+    koda_sandbox::dispatch_helpers();
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(koda_cli::run())
 }

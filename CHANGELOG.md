@@ -13,6 +13,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **A new crate, `koda-providers`,** holds the model providers (Anthropic, Gemini, OpenAI-compatible) and the model tables (aliases, context windows, reasoning effort, the provider catalog), split out of `koda-core` as Codex keeps its own. `koda-core` re-exports them under their old paths. Their HTTP tests moved with them and build without `koda-core`. **One visible change:** provider log lines now carry the target `koda_providers`, so the request-body trace is `RUST_LOG=koda_providers=trace` (was `koda_core::providers=trace`); the default log file includes the new crate at `info`, and the log database still leaves request bodies out.
 - **The release workflow tests as CI does,** with `cargo nextest` and then the doc tests, instead of `cargo test`, which runs the test binaries one after another.
 
+### Fixed
+
+- **On Linux, an installed Koda keeps each command on its own network, as documented.** The sandbox gives a command its own network namespace through a small helper, `koda-sandbox-stage2`, which Koda looked for next to `koda`. The release archives and `cargo install koda-cli` carry only `koda`, so an installed Koda never found it and fell back to proxy variables alone: a command that ignores them, such as `curl --noproxy '*'`, could reach any server on the machine's loopback. `koda` now runs the helper itself when the sandbox starts it with a marker argument, as Codex's binary runs its Linux sandbox helper, so every install has it. macOS is unaffected.
+- **`session/turns/list` includes everything a client has already been sent.** The session stores its turns on a task of its own, and the list read the store without waiting for it, so a turn that had just started could be missing, even after its approval request had arrived.
+
 ## [0.7.0] - 2026-11-15
 
 ### Added

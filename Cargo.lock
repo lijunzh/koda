@@ -1881,6 +1881,7 @@ dependencies = [
  "koda-client",
  "koda-config",
  "koda-core",
+ "koda-sandbox",
  "koda-state",
  "koda-test-utils",
  "libc",
