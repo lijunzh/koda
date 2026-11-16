@@ -12,9 +12,9 @@
 //! (kicked off in this PR for `openai_compat`; follow-ups extend the same
 //! pattern to `anthropic` and `gemini`).
 
-use koda_core::config::{ModelSettings, ProviderType};
-use koda_core::providers::openai_compat::OpenAiCompatProvider;
-use koda_core::providers::{ChatMessage, LlmProvider, StreamChunk};
+use koda_providers::openai_compat::OpenAiCompatProvider;
+use koda_providers::{ChatMessage, LlmProvider, StreamChunk};
+use koda_providers::{ModelSettings, ProviderType};
 use koda_test_utils::network::FakeLlmServer;
 use serde_json::{Value, json};
 
@@ -116,7 +116,7 @@ async fn sent_max_tokens(
 
 #[tokio::test]
 async fn a_local_server_gets_the_default_reply_cap() {
-    use koda_core::providers::openai_compat::LOCAL_REPLY_TOKEN_CAP;
+    use koda_providers::openai_compat::LOCAL_REPLY_TOKEN_CAP;
     let server = FakeLlmServer::spawn().await;
     server.mount_chat_ok(ok_chat_body()).await;
     let provider = OpenAiCompatProvider::new(&server.url(), None)

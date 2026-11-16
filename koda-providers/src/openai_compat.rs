@@ -528,7 +528,7 @@ impl OpenAiCompatProvider {
         tools: &[ToolDefinition],
         model: &str,
         stream: Option<bool>,
-        settings: &crate::config::ModelSettings,
+        settings: &crate::ModelSettings,
         reasoning_field: ReasoningField,
     ) -> ChatRequest {
         let api_messages: Vec<ApiMessage> = messages
@@ -633,7 +633,7 @@ impl LlmProvider for OpenAiCompatProvider {
         &self,
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
-        settings: &crate::config::ModelSettings,
+        settings: &crate::ModelSettings,
     ) -> Result<LlmResponse> {
         let mut request = Self::build_request(
             messages,
@@ -713,7 +713,7 @@ impl LlmProvider for OpenAiCompatProvider {
         &self,
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
-        settings: &crate::config::ModelSettings,
+        settings: &crate::ModelSettings,
     ) -> Result<super::stream_collector::SseCollector> {
         let mut request = Self::build_request(
             messages,
@@ -977,11 +977,11 @@ struct ModelEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ModelSettings;
-    use crate::providers::{ChatMessage, ImageData};
+    use crate::ModelSettings;
+    use crate::{ChatMessage, ImageData};
 
     fn default_settings() -> ModelSettings {
-        ModelSettings::defaults_for("gpt-4o", &crate::config::ProviderType::OpenAI)
+        ModelSettings::defaults_for("gpt-4o", &crate::provider_catalog::ProviderType::OpenAI)
     }
 
     #[test]
@@ -1083,7 +1083,7 @@ mod tests {
         let messages = vec![ChatMessage {
             role: "assistant".into(),
             content: None,
-            tool_calls: Some(vec![crate::providers::ToolCall {
+            tool_calls: Some(vec![crate::ToolCall {
                 id: "tc_1".into(),
                 function_name: "Read".into(),
                 arguments: r#"{"path":"main.rs"}"#.into(),
@@ -1678,9 +1678,9 @@ mod tests {
             );
             let (provider, ct) = spawn(app).await;
             assert!(cache_full_gate(&provider.base_url).is_none());
-            let settings = crate::config::ModelSettings::defaults_for(
+            let settings = crate::ModelSettings::defaults_for(
                 "m",
-                &crate::config::ProviderType::LMStudio,
+                &crate::provider_catalog::ProviderType::LMStudio,
             );
             let mut collector = provider.chat_stream(&[], &[], &settings).await.unwrap();
             let mut why = None;

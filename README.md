@@ -65,13 +65,14 @@ protocol on stdin and stdout ([Koda as a server](https://lijunzh.github.io/koda/
 | Crate | Description |
 |---|---|
 | [**koda-cli**](koda-cli/) | Terminal frontend (TUI + headless) |
-| [**koda-core**](koda-core/) | Engine library — providers, tools, inference loop |
+| [**koda-core**](koda-core/) | Engine library — tools, inference loop |
+| [**koda-providers**](koda-providers/) | Model providers (Anthropic, Gemini, OpenAI-compatible) and the model tables |
 | [**koda-protocol**](koda-protocol/) | The client protocol: JSON-RPC 2.0 messages and their types |
 | [**koda-client**](koda-client/) | The client API, and engine events projected onto the protocol |
 | [**koda-config**](koda-config/) | The config file, `~/.config/koda/config.toml`: reading, checking and editing it |
 | [**koda-state**](koda-state/) | Stored state — sessions (the `SessionStore` trait and its SQLite `Database`), Koda's SQLite files and the diagnostic log database |
 | [**koda-sandbox**](koda-sandbox/) | Capability-aware sandbox layer — kernel-enforced FS/net/exec policies |
-| [**koda-test-utils**](koda-test-utils/) | Test utilities — mock providers, test sinks, and E2E harness |
+| [**koda-test-utils**](koda-test-utils/) | Test utilities — a stub HTTP server, mock providers, test sinks, and E2E harness |
 
 ## Documentation
 

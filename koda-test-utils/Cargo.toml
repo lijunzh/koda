@@ -10,10 +10,17 @@ publish = false
 name = "koda_test_utils"
 path = "src/lib.rs"
 
+[features]
+# Everything that builds on koda-core: the test environment, the golden
+# and log helpers. Off, only the stub HTTP server (`network`) is left, for
+# crates below koda-core such as koda-providers.
+default = ["core"]
+core = ["dep:koda-core", "dep:koda-state"]
+
 [dependencies]
 async-trait = { workspace = true }
-koda-core = { workspace = true, features = ["test-support"] }
-koda-state = { workspace = true }
+koda-core = { workspace = true, features = ["test-support"], optional = true }
+koda-state = { workspace = true, optional = true }
 serde = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
 tokio-util = { workspace = true }

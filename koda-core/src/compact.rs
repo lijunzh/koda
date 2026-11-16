@@ -603,7 +603,7 @@ async fn replace_with_summary(
         session_id,
         &compact_message,
         keep_from_id,
-        usage.map(crate::providers::TokenUsage::stored).as_ref(),
+        usage.map(crate::inference_helpers::stored_usage).as_ref(),
     )
     .await
 }

@@ -272,7 +272,7 @@ of the log file, which `log_dir` turns on. Its default is every Koda crate at
 RUST_LOG=koda_core=debug,koda_cli=info koda exec -c log_dir=logs "…"
 
 # Those, plus every request body (the file only)
-RUST_LOG=koda_core=debug,koda_cli=info,koda_core::providers=trace koda exec -c log_dir=logs "…"
+RUST_LOG=koda_core=debug,koda_cli=info,koda_providers=trace koda exec -c log_dir=logs "…"
 ```
 
 `koda_core=debug` adds these lines, whose text runs on over the following lines
@@ -287,7 +287,7 @@ of the log:
 | `Stored compaction summary:` | What went into the history |
 | `Discarded partial reply:` | A reply lost to a dropped connection |
 
-`koda_core::providers=trace` adds a `request body` line for each request, as
+`koda_providers=trace` adds a `request body` line for each request, as
 sent. It is the exact answer to what the model saw.
 
 API keys never reach the log, at any level.

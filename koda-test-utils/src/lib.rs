@@ -1,9 +1,10 @@
 //! Test utilities for koda — mock providers, test sinks, and E2E harness.
 //!
 //! This crate is intentionally **not published** and exists only to support
-//! `koda-core` integration tests and downstream test binaries.  It depends on
-//! `koda-core` with the `test-support` feature enabled, so all cfg-gated test
-//! APIs are available.
+//! `koda-core` integration tests and downstream test binaries. Its default
+//! `core` feature depends on `koda-core` with the `test-support` feature
+//! enabled, so all cfg-gated test APIs are available; without it, only the
+//! stub HTTP server ([`network`]) is left, for `koda-providers`' tests.
 //!
 //! # Quick start
 //!
@@ -20,20 +21,30 @@
 //! }
 //! ```
 
+#[cfg(feature = "core")]
 mod env;
+#[cfg(feature = "core")]
 pub mod golden;
+#[cfg(feature = "core")]
 pub mod log;
 pub mod network;
 
 // ── Re-exports from koda-core (test-support gated) ─────────────────────────
 
+#[cfg(feature = "core")]
 pub use koda_core::config::{KodaConfig, ProviderType};
+#[cfg(feature = "core")]
 pub use koda_core::engine::EngineEvent;
+#[cfg(feature = "core")]
 pub use koda_core::engine::sink::TestSink;
+#[cfg(feature = "core")]
 pub use koda_core::providers::mock::{MockProvider, MockResponse};
+#[cfg(feature = "core")]
 pub use koda_core::providers::{ChatMessage, LlmProvider, ToolDefinition};
+#[cfg(feature = "core")]
 pub use koda_state::db::Role;
 
 // ── This crate's own utilities ─────────────────────────────────────────────
 
+#[cfg(feature = "core")]
 pub use env::{ENV_MUTEX, Env, EnvBuilder};

@@ -33,12 +33,9 @@ koda/
 │   │   ├── loop_guard.rs   # Loop detection + iteration hard-cap
 │   │   ├── mcp/            # MCP client: config, manager, tool bridge
 │   │   ├── memory.rs       # Semantic memory (global + project tiers → first user message)
-│   │   ├── model_alias.rs  # Curated model aliases (e.g. "sonnet" → exact model ID)
-│   │   ├── model_context.rs# Model → context window size lookup table (fallback)
 │   │   ├── output_caps.rs  # Output cap scaling based on context window size
 │   │   ├── preview.rs      # Pre-confirmation diff previews for Edit/Write
 │   │   ├── prompt.rs       # System prompt construction
-│   │   ├── provider_catalog.rs # Static metadata for every supported provider
 │   │   ├── runtime_env.rs  # Thread-safe runtime env for API keys
 │   │   ├── sandbox.rs      # Process sandbox (macOS seatbelt + Linux bwrap, always-on)
 │   │   ├── session.rs      # KodaSession (per-conversation: DB, provider, settings)
@@ -56,15 +53,6 @@ koda/
 │   │   │   ├── mod.rs      # Module root + re-exports
 │   │   │   ├── event.rs    # EngineEvent + EngineCommand protocol types
 │   │   │   └── sink.rs     # EngineSink trait (how clients receive events)
-│   │   ├── providers/      # LLM providers
-│   │   │   ├── mod.rs      # LlmProvider trait, ChatMessage, HTTP client builder
-│   │   │   ├── anthropic.rs# Anthropic Claude (prompt caching, extended thinking)
-│   │   │   ├── gemini.rs   # Google Gemini (context caching, key-in-URL)
-│   │   │   ├── http.rs     # Provider-neutral HTTP helpers
-│   │   │   ├── openai_compat.rs # OpenAI-compatible (GPT, DeepSeek, local models)
-│   │   │   ├── mock.rs     # Mock provider for tests
-│   │   │   ├── stream_collector.rs # ChunkParser trait + shared SSE stream collector
-│   │   │   └── stream_tag_filter.rs # Strip XML tool tags from streaming text
 │   │   └── tools/          # Built-in tools
 │   │       ├── mod.rs      # ToolRegistry, ToolEffect, tool definitions
 │   │       ├── agent.rs    # Sub-agent invocation tool
@@ -151,6 +139,22 @@ koda/
 ├── koda-protocol/          # The client protocol: JSON-RPC messages and their types
 ├── koda-client/            # The client API and Koda's host: sessions, config, MCP
 ├── koda-config/            # config.toml: reading, checking and editing it, keeping comments
+├── koda-providers/         # Model providers (Anthropic, Gemini, OpenAI-compatible) and the model tables
+│   ├── src/
+│   │   ├── lib.rs          # LlmProvider trait, ChatMessage, ModelSettings, create_provider
+│   │   ├── anthropic.rs    # Anthropic Claude (prompt caching, extended thinking)
+│   │   ├── error.rs        # Typed provider errors, classified once
+│   │   ├── gemini.rs       # Google Gemini (context caching, key-in-URL)
+│   │   ├── http.rs         # Provider-neutral HTTP helpers
+│   │   ├── openai_compat.rs # OpenAI-compatible (GPT, DeepSeek, local models)
+│   │   ├── mock.rs         # Mock provider for tests (feature test-support)
+│   │   ├── stream_collector.rs # ChunkParser trait + shared SSE stream collector
+│   │   ├── stream_tag_filter.rs # Strip XML tool tags from streaming text
+│   │   ├── model_alias.rs  # Curated model aliases (e.g. "sonnet" → exact model ID)
+│   │   ├── model_context.rs # Model → context window size lookup table (fallback)
+│   │   ├── model_effort.rs # Reasoning effort levels per model
+│   │   └── provider_catalog.rs # Static metadata for every supported provider
+│   └── tests/              # Each provider's HTTP behaviour against a stub server
 ├── koda-state/             # Stored state, apart from the engine
 │   └── src/
 │       ├── session_store.rs  # SessionStore trait: the session storage contract, and its types
@@ -199,9 +203,9 @@ TUI design.
 
 ## Engine notes
 
-- **Context from API** (`providers/`): queries the actual context window from
+- **Context from API** (`koda-providers`): queries the actual context window from
   the provider. Fallback: the `model_context.rs` lookup table.
-- **Request retry:** four retries with backoff (1/2/4/8s) for 429, 5xx and network errors, or the server's `Retry-After` up to five minutes. Errors are classified once, in `providers/error.rs`.
+- **Request retry:** four retries with backoff (1/2/4/8s) for 429, 5xx and network errors, or the server's `Retry-After` up to five minutes. Errors are classified once, in `koda-providers/src/error.rs`.
 - **Stream retry:** five retries of a reply cut off partway, unless the provider rejected the request.
 - **Built-in agents:** `default`, plus the `explore` and `task` sub-agents in
   `koda-core/agents/`, and `fork`. User and project agent configs override them.

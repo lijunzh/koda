@@ -49,7 +49,7 @@ pub fn default_filter() -> Targets {
         // Whole request bodies are logged at TRACE; they'd crowd out
         // everything else a session keeps. A file at RUST_LOG=trace still
         // has them, as Codex keeps its request bodies out of the database.
-        .with_target("koda_core::providers", LevelFilter::DEBUG)
+        .with_target("koda_providers", LevelFilter::DEBUG)
         .with_target("koda_sandbox::bwrap_proxy", LevelFilter::DEBUG)
 }
 
