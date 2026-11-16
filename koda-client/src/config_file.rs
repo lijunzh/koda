@@ -22,7 +22,6 @@ use koda_protocol::config::{
 };
 use koda_protocol::mcp::{McpServerConfigValue, SERVERS_KEY};
 use koda_protocol::rpc::{ErrorObject, codes};
-use koda_protocol::state::TrustMode as ProtocolMode;
 use koda_state::db::Database;
 use serde_json::{Value, json};
 
@@ -57,7 +56,7 @@ pub(crate) fn values(loaded: &Loaded) -> KodaConfigValues {
                 })
                 .collect()
         }),
-        mode: config.mode.map(protocol_mode),
+        mode: config.mode,
         agent: config.agent.clone(),
         model_providers: config
             .model_providers
@@ -82,21 +81,9 @@ pub(crate) fn values(loaded: &Loaded) -> KodaConfigValues {
     }
 }
 
-fn protocol_mode(mode: koda_config::Mode) -> ProtocolMode {
-    match mode {
-        koda_config::Mode::Auto => ProtocolMode::Auto,
-        koda_config::Mode::Safe => ProtocolMode::Safe,
-        koda_config::Mode::Plan => ProtocolMode::Plan,
-    }
-}
-
 /// The mode the file gives a new session, if any.
 pub(crate) fn mode(loaded: &Loaded) -> Option<koda_core::trust::TrustMode> {
-    loaded.config.mode.map(|mode| match mode {
-        koda_config::Mode::Auto => koda_core::trust::TrustMode::Auto,
-        koda_config::Mode::Safe => koda_core::trust::TrustMode::Safe,
-        koda_config::Mode::Plan => koda_core::trust::TrustMode::Plan,
-    })
+    loaded.config.mode
 }
 
 /// What new sessions start from: the agent the file names (`agent`, which
@@ -1023,7 +1010,7 @@ model_max_output_tokens = 4096
         .unwrap();
         let config = file.load().unwrap().config;
         assert_eq!(config.model_context_window, Some(65_536));
-        assert_eq!(config.mode, Some(koda_config::Mode::Safe));
+        assert_eq!(config.mode, Some(koda_config::TrustMode::Safe));
         assert_eq!(
             config.model_providers["anthropic"].request_max_retries,
             Some(6)

@@ -3456,21 +3456,21 @@
       ]
     },
     "TrustMode": {
-      "description": "What Koda may do without asking.",
+      "description": "What Koda may do without asking: Koda's one trust mode, used by the\nengine, `config.toml`'s `mode` and the protocol alike, as Codex keeps\nits approval policy in `codex-protocol`.\n\nOrdered `Plan < Safe < Auto`, so [`TrustMode::clamp`] keeps a sub-agent\nfrom exceeding the session that started it.\n\n```\nuse koda_protocol::state::TrustMode;\n\nassert_eq!(TrustMode::Safe.as_str(), \"safe\");\nassert_eq!(TrustMode::Safe.next(), TrustMode::Auto);\nassert_eq!(TrustMode::clamp(TrustMode::Plan, TrustMode::Auto), TrustMode::Plan);\n```",
       "oneOf": [
         {
           "const": "plan",
-          "description": "Read only; anything else is refused.",
+          "description": "Read only: reads, searches and read-only commands run; anything else\nis refused. For sub-agents and `koda exec` runs that should only\nlook.",
           "type": "string"
         },
         {
           "const": "safe",
-          "description": "Anything with a side effect needs approval.",
+          "description": "Every action with a side effect asks first.",
           "type": "string"
         },
         {
           "const": "auto",
-          "description": "Everything runs without asking, inside the sandbox.",
+          "description": "Mutating actions run without asking, contained by the sandbox;\ndestructive actions and writes outside the project still ask.",
           "type": "string"
         }
       ]

@@ -121,95 +121,9 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 // ── TrustMode ─────────────────────────────────────────────
 
-/// The unified trust mode: Plan (read-only), Safe (confirm), Auto (autonomous).
-///
-/// Derives `Ord` so that `std::cmp::min(parent, child)` implements clamping:
-/// a child agent can never exceed its parent's trust level.
-///
-/// # Examples
-///
-/// ```
-/// use koda_core::trust::TrustMode;
-///
-/// let mode = TrustMode::Safe;
-/// assert_eq!(mode.as_str(), "safe");
-/// assert_eq!(mode.next(), TrustMode::Auto);
-///
-/// // Clamping: child can't exceed parent
-/// assert_eq!(TrustMode::clamp(TrustMode::Plan, TrustMode::Auto), TrustMode::Plan);
-/// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-#[repr(u8)]
-pub enum TrustMode {
-    /// Read-only: deny all non-read tool calls. For investigation agents.
-    Plan = 0,
-    /// Supervised: project-sandboxed writes, confirm all side effects. User default.
-    #[default]
-    Safe = 1,
-    /// Autonomous: project-sandboxed writes, auto-approve all including destructive.
-    Auto = 2,
-}
-
-impl TrustMode {
-    /// Cycle between user-facing modes: Safe ↔ Auto.
-    ///
-    /// Plan is **sub-agent-only** (#1244) and never reachable for the
-    /// top-level session via any path — not the keyboard toggle, not
-    /// the `--mode plan` CLI flag, not `/resume` of a Plan-persisted
-    /// session. All non-toggle entry paths funnel through
-    /// [`coerce_for_top_level`] which coerces Plan → Safe + warns.
-    /// The toggle simply loops Plan → Plan as a defensive no-op for
-    /// the (impossible-by-construction) case where a sub-agent's
-    /// runtime mode somehow gets cycled.
-    pub fn next(self) -> Self {
-        match self {
-            Self::Plan => Self::Plan, // sub-agent-only; #1244
-            Self::Safe => Self::Auto,
-            Self::Auto => Self::Safe,
-        }
-    }
-
-    /// Stable string representation for persistence and wire protocol.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Plan => "plan",
-            Self::Safe => "safe",
-            Self::Auto => "auto",
-        }
-    }
-
-    /// Short label for display (same as `as_str` for now).
-    pub fn label(self) -> &'static str {
-        self.as_str()
-    }
-
-    /// Human-readable description of this mode.
-    pub fn description(self) -> &'static str {
-        match self {
-            Self::Plan => "read-only, deny all writes",
-            Self::Safe => "confirm every side effect",
-            Self::Auto => "auto-approve, confirm outside-project only",
-        }
-    }
-
-    /// Parse a trust mode from a user-provided or config string.
-    pub fn parse(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
-            "auto" | "yolo" | "accept" => Some(Self::Auto),
-            "safe" | "confirm" | "strict" | "normal" => Some(Self::Safe),
-            "plan" | "readonly" | "read-only" => Some(Self::Plan),
-            _ => None,
-        }
-    }
-
-    /// Clamp a child's trust mode to never exceed the parent's.
-    ///
-    /// Since `TrustMode` derives `Ord` with `Plan < Safe < Auto`,
-    /// this is simply `std::cmp::min(parent, child)`.
-    pub fn clamp(parent: TrustMode, child: TrustMode) -> TrustMode {
-        std::cmp::min(parent, child)
-    }
-}
+/// The trust mode, defined once in the protocol crate and used by the
+/// engine, the config file and the wire alike.
+pub use koda_protocol::state::TrustMode;
 
 /// What the model reads in place of a tool's result when Plan refuses the
 /// call: the protocol's [`koda_protocol::item::PLAN_BLOCKED_MESSAGE`].
@@ -487,25 +401,6 @@ pub fn derive_child_trust(parent_runtime: TrustMode, declared: TrustMode) -> Tru
     // `TrustMode::clamp` at call sites** — that re-opens the door
     // for `parent_config.trust` to creep back in.
     TrustMode::clamp(parent_runtime, declared)
-}
-
-impl From<u8> for TrustMode {
-    fn from(v: u8) -> Self {
-        match v {
-            0 => Self::Plan,
-            1 => Self::Safe,
-            2 => Self::Auto,
-            // Fail-safe: unknown values default to Safe (most restrictive
-            // interactive mode) rather than Auto (#860).
-            _ => Self::Safe,
-        }
-    }
-}
-
-impl std::fmt::Display for TrustMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
 }
 
 // ── Shared trust state ────────────────────────────────────
