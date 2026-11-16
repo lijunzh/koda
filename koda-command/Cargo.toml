@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Shell command classification for the Koda AI coding agent: what a command does, and the paths it touches"
+readme = "README.md"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true

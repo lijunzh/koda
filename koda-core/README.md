@@ -1,49 +1,36 @@
 # koda-core
 
-Engine library for the [Koda](https://github.com/lijunzh/koda) AI coding agent.
+The engine of [Koda](https://github.com/lijunzh/koda), the AI coding agent:
+the agent loop, the built-in tools, approval and trust modes, compaction and
+sub-agents.
 
-Pure logic with zero terminal dependencies — communicates exclusively through
-`EngineEvent` (output) and `EngineCommand` (input) enums over async channels.
+**To embed Koda, use [`koda-client`](https://crates.io/crates/koda-client)**,
+the client API the TUI, `koda exec` and `koda serve` use: it starts Koda
+in-process, sends typed requests and reads the client protocol's events. The
+engine sits behind it, driven by `koda-server` through `EngineCommand` and
+`EngineEvent`.
+
+**Versioning:** published so that `cargo install koda-cli` builds. It follows
+koda-cli's version, and its Rust API makes no semver promise of its own: a
+0.7.x release may change it. The Koda crates pin each other exactly.
 
 ## What's inside
 
-- **LLM providers** — 14 providers (Anthropic, OpenAI, Gemini, Groq, Ollama, LM Studio, etc.)
-- **Tool system** — 20+ built-in tools (file ops, shell, search, memory, agents)
-- **Per-tool approval** — three trust modes (Plan/Safe/Auto) with effect-based safety classification
-- **Inference loop** — streaming tool-use loop with parallel execution
-- **SQLite persistence** — sessions, messages, compaction
+- **The agent loop:** streaming inference with tool execution, parallel where
+  it's safe.
+- **Tools:** read (text, images, PDFs, notebooks), search, edit, shell, web,
+  memory, todo and sub-agents.
+- **Approval:** the trust modes (Auto, Safe, Plan) and each tool call's
+  effect, with the kernel sandbox from `koda-sandbox`.
+- **Compaction:** summarizing old messages when the context fills.
 
-**Rust edition:** 2024 (MSRV 1.88)
+Model providers live in `koda-providers` (re-exported here as `providers`),
+stored sessions in `koda-state`, the MCP client in `koda-mcp`, and instruction
+files and skills in `koda-memory` and `koda-skills`.
 
-> **Stability note:** `koda-core` is published primarily to support the
-> `koda-cli` binary distribution. Its public API is **not** stable
-> pre-1.0 and may change in any release, including patch versions. If
-> you embed `koda-core` directly, pin a specific version and review
-> [`CHANGELOG.md`](https://github.com/lijunzh/koda/blob/main/CHANGELOG.md)
-> before upgrading.
-
-## Usage
-
-koda-core is a channel-driven engine. Create async channels, spawn the
-inference loop, and drive the engine through `EngineCommand`/`EngineEvent` pairs:
-
-```rust
-use koda_core::engine::{EngineCommand, EngineEvent};
-use tokio::sync::mpsc;
-
-// The engine communicates exclusively through async channels.
-// EngineEvents flow out (streaming text, tool calls, approvals).
-// EngineCommands flow in (approval responses, cancellation).
-let (cmd_tx, mut cmd_rx) = mpsc::channel::<EngineCommand>(64);
-let (evt_tx, mut evt_rx) = mpsc::channel::<EngineEvent>(64);
-
-// Spawn the inference loop, then select over evt_rx for streaming
-// output and cmd_tx to send approval decisions back.
-// See koda-cli for a complete implementation.
-```
-
-See [DESIGN.md](https://github.com/lijunzh/koda/blob/main/DESIGN.md) for
-architectural decisions.
+- [User manual](https://lijunzh.github.io/koda/)
+- [API docs](https://docs.rs/koda-core)
+- [Design](https://github.com/lijunzh/koda/blob/main/DESIGN.md)
 
 ## License
 

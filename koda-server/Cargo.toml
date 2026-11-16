@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "The host of the Koda AI coding agent: the server end of its client protocol"
+readme = "README.md"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true

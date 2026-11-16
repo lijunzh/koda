@@ -1,26 +1,27 @@
-//! `koda-sandbox` — capability-aware sandbox layer for Koda.
+//! `koda-sandbox` — the kernel sandbox of Koda, the AI coding agent.
 //!
-//! Per the design in <https://github.com/lijunzh/koda/issues/934>: this
-//! crate owns *kernel-level* sandbox enforcement (Seatbelt on macOS, bwrap
-//! on Linux), workspace provisioning, and the egress proxy (Phase 3+).
+//! This crate owns *kernel-level* sandbox enforcement (Seatbelt on macOS,
+//! bubblewrap on Linux), workspace provisioning, and the egress proxy. Every
+//! [`SandboxPolicy`] field is enforced; the crate's README lists where. Design
+//! history: <https://github.com/lijunzh/koda/issues/934>.
 //!
-//! ## Phase 0 — what's here
+//! ## What's here
 //!
-//! - [`SandboxPolicy`] data types (issue §4.2 schema).
-//! - [`SandboxRuntime`] trait + per-platform impls.
-//! - [`SandboxRuntime::transform`] entry point: pure `(cmd, policy) → SandboxExecRequest`.
-//! - [`WorkspaceProvider`] trait + [`CwdProvider`] impl.
-//!
-//! Phase 0 is a *refactor* — the runtime ignores the policy fields and
-//! reproduces pre-#934 behavior byte-for-byte. Subsequent phases consume
-//! the policy fields incrementally.
+//! - [`SandboxPolicy`]: what a command may read, write and reach, and its
+//!   resource limits.
+//! - [`SandboxRuntime`] + per-platform impls; [`SandboxRuntime::transform`]
+//!   is the pure `(cmd, policy) → SandboxExecRequest` entry point.
+//! - [`WorkspaceProvider`] + [`CwdProvider`].
+//! - The egress proxy, the crash-isolated file-system worker, and Linux's
+//!   stage 2, which the `koda` binary runs itself.
 //!
 //! ## Dependency direction
 //!
 //! ```text
-//! koda-cli → koda-core → koda-sandbox
-//!                          │
-//!                          └─ no upward dependency
+//! koda-server → koda-core → koda-sandbox
+//! koda-cli ──────────────→ koda-sandbox   (only to run Linux's stage 2)
+//!                              │
+//!                              └─ no upward dependency
 //! ```
 //!
 //! `koda-sandbox` knows nothing about `SessionStore`, `Provider`,

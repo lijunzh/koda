@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "The MCP client of the Koda AI coding agent: connecting to MCP servers over stdio and HTTP and bridging their tools"
+readme = "README.md"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
