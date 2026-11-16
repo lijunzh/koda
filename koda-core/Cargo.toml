@@ -21,6 +21,8 @@ path = "src/lib.rs"
 [dependencies]
 # `@` mentions of images, read by the host.
 base64 = { workspace = true }
+# Read v2: scale and recompress a large image before it is sent.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 # Async runtime
 tokio = { workspace = true, features = ["full"] }
 

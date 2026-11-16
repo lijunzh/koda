@@ -1454,11 +1454,13 @@ impl Tool for BashTool {
                 output: so.summary,
                 success: so.success,
                 full_output: so.full_output,
+                images: Vec::new(),
             },
             Err(e) => ToolResult {
                 output: format!("Error: {e:#}"),
                 success: false,
                 full_output: None,
+                images: Vec::new(),
             },
         }
     }

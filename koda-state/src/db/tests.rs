@@ -2121,3 +2121,42 @@ async fn images_go_on_the_latest_user_message_and_reach_a_cached_context() {
         .collect();
     assert_eq!(with, [(Some("look".to_string()), images)]);
 }
+
+/// A tool result's images are stored on its message and reach a context
+/// cached before they were stored.
+#[tokio::test]
+async fn a_tool_results_images_are_stored_on_its_message() {
+    let (db, _tmp) = setup().await;
+    let session = db.create_session("default", _tmp.path()).await.unwrap();
+    db.insert_message(&session, &Role::User, Some("look"), None, None, None)
+        .await
+        .unwrap();
+    let call = r#"[{"id":"c1","function_name":"Read","arguments":"{}"}]"#;
+    insert_complete_assistant(&db, &session, None, Some(call)).await;
+    let result = db
+        .insert_message(
+            &session,
+            &Role::Tool,
+            Some("a.png: an image"),
+            None,
+            Some("c1"),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(
+        db.load_context(&session)
+            .await
+            .unwrap()
+            .iter()
+            .all(|m| m.images.is_none())
+    );
+
+    let images = r#"[{"media_type":"image/png","base64":"AAAA"}]"#;
+    db.set_message_images(&session, result, images)
+        .await
+        .unwrap();
+    let context = db.load_context(&session).await.unwrap();
+    let tool = context.iter().find(|m| m.id == result).unwrap();
+    assert_eq!(tool.images.as_deref(), Some(images));
+}

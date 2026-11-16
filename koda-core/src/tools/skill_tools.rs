@@ -178,6 +178,7 @@ impl Tool for ListSkillsTool {
             output: list_skills(ctx.skill_registry, args),
             success: true,
             full_output: None,
+            images: Vec::new(),
         }
     }
 }
@@ -204,6 +205,7 @@ impl Tool for ActivateSkillTool {
             output: activate_skill(ctx.skill_registry, args),
             success: true,
             full_output: None,
+            images: Vec::new(),
         }
     }
 }

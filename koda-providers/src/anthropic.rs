@@ -296,7 +296,7 @@ impl AnthropicMessage {
     }
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 enum AnthropicContent {
     Text(String),
@@ -317,7 +317,9 @@ enum ContentBlock {
     #[serde(rename = "tool_result")]
     ToolResult {
         tool_use_id: String,
-        content: String,
+        /// Text, or text then images: a tool result takes image blocks
+        /// (Read v2).
+        content: AnthropicContent,
     },
     #[serde(rename = "image")]
     Image { source: ImageSource },
@@ -1004,6 +1006,7 @@ impl LlmProvider for AnthropicProvider {
             context_window: detail.max_input_tokens.filter(|&n| n > 0),
             max_output_tokens: detail.max_tokens.filter(|&n| n > 0),
             vision: None,
+            tool_result_images: None,
         })
     }
 
@@ -1124,7 +1127,22 @@ impl AnthropicProvider {
             if msg.role == "tool" {
                 // Tool results need to be wrapped in a content block
                 let tool_use_id = msg.tool_call_id.clone().unwrap_or_default();
-                let content = msg.content.clone().unwrap_or_default();
+                let text = msg.content.clone().unwrap_or_default();
+                // Images a tool returned go inside its result, after the text.
+                let content = match msg.images.as_deref() {
+                    Some(images) if !images.is_empty() => {
+                        let mut blocks = vec![ContentBlock::Text { text }];
+                        blocks.extend(images.iter().map(|img| ContentBlock::Image {
+                            source: ImageSource {
+                                source_type: "base64".to_string(),
+                                media_type: img.media_type.clone(),
+                                data: img.base64.clone(),
+                            },
+                        }));
+                        AnthropicContent::Blocks(blocks)
+                    }
+                    _ => AnthropicContent::Text(text),
+                };
                 result.push(AnthropicMessage {
                     role: "user".to_string(),
                     content: AnthropicContent::Blocks(vec![ContentBlock::ToolResult {
@@ -1310,6 +1328,24 @@ mod tests {
         assert_eq!(sent[0]["content"], "done");
     }
 
+    /// A tool's images go inside its result, after the text (Read v2).
+    #[test]
+    fn a_tool_result_carries_its_images() {
+        let p = make_provider();
+        let mut result = ChatMessage::text("tool", "shot.png: an image, 40×30.");
+        result.tool_call_id = Some("tc_1".into());
+        result.images = Some(vec![crate::ImageData {
+            media_type: "image/png".into(),
+            base64: "AAAA".into(),
+        }]);
+        let sent = serde_json::to_value(p.convert_messages(&[result], None)).unwrap();
+        let block = &sent[0]["content"][0];
+        assert_eq!(block["type"], "tool_result");
+        assert_eq!(block["content"][0]["text"], "shot.png: an image, 40×30.");
+        assert_eq!(block["content"][1]["type"], "image");
+        assert_eq!(block["content"][1]["source"]["data"], "AAAA");
+    }
+
     #[test]
     fn test_convert_skips_system_messages() {
         let p = make_provider();
@@ -1347,7 +1383,9 @@ mod tests {
                         content,
                     } => {
                         assert_eq!(tool_use_id, "tc_123");
-                        assert_eq!(content, "file contents here");
+                        assert!(
+                            matches!(content, AnthropicContent::Text(t) if t == "file contents here")
+                        );
                     }
                     _ => panic!("Expected ToolResult block"),
                 }

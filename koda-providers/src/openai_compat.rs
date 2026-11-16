@@ -840,6 +840,8 @@ impl OpenAiCompatProvider {
             context_window: ctx,
             max_output_tokens: None,
             vision: lmstudio_entry(&body, model).map(lmstudio_vision),
+            // qwen-code: LM Studio drops or rejects images in a tool message.
+            tool_result_images: Some(false),
         })
     }
 
@@ -866,6 +868,9 @@ impl OpenAiCompatProvider {
             // True when the server was started with a vision projector
             // (`--mmproj`).
             vision: body["modalities"]["vision"].as_bool(),
+            // Its parser loads `image_url` parts from every role; checked
+            // with Qwen3.8-27B and Flash-Next (2026-11-15).
+            tool_result_images: Some(true),
         })
     }
 
@@ -903,6 +908,7 @@ impl OpenAiCompatProvider {
             vision: body["capabilities"]
                 .as_array()
                 .map(|caps| caps.iter().any(|c| c.as_str() == Some("vision"))),
+            tool_result_images: None,
         })
     }
 }
@@ -1026,6 +1032,32 @@ mod tests {
             "Expected string content, got: {content}"
         );
         assert_eq!(content.as_str().unwrap(), "hello");
+    }
+
+    /// A tool result with images is sent as parts, which llama.cpp's server
+    /// takes; for other servers Koda moves them out before this.
+    #[test]
+    fn a_tool_result_with_images_is_sent_as_parts() {
+        let mut result = ChatMessage::text("tool", "shot.png: an image.");
+        result.tool_call_id = Some("c1".into());
+        result.images = Some(vec![ImageData {
+            media_type: "image/png".into(),
+            base64: "AAAA".into(),
+        }]);
+        let request = OpenAiCompatProvider::build_request(
+            &[result],
+            &[],
+            "m",
+            None,
+            &default_settings(),
+            ReasoningField::default(),
+        );
+        let sent = serde_json::to_value(&request.messages[0]).unwrap();
+        assert_eq!(sent["role"], "tool");
+        assert_eq!(
+            sent["content"][1]["image_url"]["url"],
+            "data:image/png;base64,AAAA"
+        );
     }
 
     #[test]
@@ -1660,10 +1692,9 @@ mod tests {
                 }),
             );
             let (provider, ct) = spawn(props).await;
-            assert_eq!(
-                provider.model_capabilities("qwen").await.unwrap().vision,
-                Some(true)
-            );
+            let caps = provider.model_capabilities("qwen").await.unwrap();
+            assert_eq!(caps.vision, Some(true));
+            assert_eq!(caps.tool_result_images, Some(true), "llama.cpp takes them");
             ct.cancel();
 
             let (provider, ct) =

@@ -445,6 +445,7 @@ impl Tool for TodoWriteTool {
                 output: "TodoWrite requires an active session.".to_string(),
                 success: true,
                 full_output: None,
+                images: Vec::new(),
             };
         };
         match todo_write(db, sid, args).await {
@@ -463,12 +464,14 @@ impl Tool for TodoWriteTool {
                     output: outcome.message,
                     success: true,
                     full_output: None,
+                    images: Vec::new(),
                 }
             }
             Err(e) => ToolResult {
                 output: format!("Error: {e:#}"),
                 success: false,
                 full_output: None,
+                images: Vec::new(),
             },
         }
     }

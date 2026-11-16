@@ -203,6 +203,7 @@ impl Tool for RecallContextTool {
                 output: "RecallContext requires an active session.".to_string(),
                 success: true,
                 full_output: None,
+                images: Vec::new(),
             };
         };
         // recall_context returns a `String` (not Result) — always success.
@@ -210,6 +211,7 @@ impl Tool for RecallContextTool {
             output: recall_context(db, sid, args).await,
             success: true,
             full_output: None,
+            images: Vec::new(),
         }
     }
 }

@@ -64,6 +64,14 @@ tokens toward the context window, and compaction summarizes it away like
 any other early message. A request carries at most 100 images, Anthropic's
 limit; older ones beyond that are sent as a short note.
 
+**The model can read images too:** `Read` on a PNG, JPEG, GIF or WebP file
+returns the image itself, as Claude Code's Read does, scaled and recompressed
+like a pasted one; a model that doesn't take images gets told so instead. A
+tool's images go inside its result for Anthropic and for llama.cpp's
+`llama-server`, which accept them there; other servers (LM Studio, for one,
+rejects them) get them in a message right after the tool results, as pi and
+qwen-code send them.
+
 **Which models get images:** a local server says whether its model takes
 images, and Koda asks it when a session starts or the model changes, as it
 asks for the context window:

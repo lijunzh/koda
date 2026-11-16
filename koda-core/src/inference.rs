@@ -103,6 +103,16 @@ struct TurnState<'a> {
 }
 
 /// Result of collecting a streamed LLM response.
+/// A tool run during streaming: its call id, output, success, full output
+/// and images.
+type EagerResult = (
+    String,
+    String,
+    bool,
+    Option<String>,
+    Vec<crate::providers::ImageData>,
+);
+
 struct StreamResult {
     /// Accumulated text content from the response.
     text: String,
@@ -121,7 +131,7 @@ struct StreamResult {
     /// Contains `(tool_call_id, output, success, full_output)` for each
     /// read-only auto-approved tool that finished before the stream ended.
     /// These tools are skipped during normal dispatch.
-    eager_results: Vec<(String, String, bool, Option<String>)>,
+    eager_results: Vec<EagerResult>,
     /// Signed thinking blocks to send back on later requests.
     thinking_blocks: Vec<serde_json::Value>,
     /// Token usage statistics.
@@ -176,6 +186,10 @@ async fn assemble_context(turn: &TurnState<'_>) -> Result<(Vec<ChatMessage>, usi
     // Images live in the history, so every call of the turn and every
     // later turn sends them; cut them to what this model takes.
     crate::inference_helpers::fit_media(&mut messages, &turn.config.input_modalities());
+    // A server that won't take images inside a tool result gets them after.
+    if !turn.config.tool_result_images() {
+        crate::inference_helpers::lift_tool_images(&mut messages);
+    }
 
     let correction = turn.context_correction.load(Ordering::Relaxed);
     let context_used = estimate_tokens(&messages) + estimate_tool_defs(turn.tool_defs) + correction;
@@ -752,7 +766,7 @@ async fn collect_stream(
 ) -> StreamResult {
     let mut full_text = String::new();
     let mut tool_calls: Vec<ToolCall> = Vec::new();
-    let mut eager_results: Vec<(String, String, bool, Option<String>)> = Vec::new();
+    let mut eager_results: Vec<EagerResult> = Vec::new();
     let mut usage = TokenUsage::default();
     let mut first_token = true;
     let mut first_chunk_at = None;
@@ -870,7 +884,13 @@ async fn collect_stream(
                     let r = tools
                         .execute(&tc.function_name, &tc.arguments, None, None)
                         .await;
-                    eager_results.push((tc.id.clone(), r.output, r.success, r.full_output));
+                    eager_results.push((
+                        tc.id.clone(),
+                        r.output,
+                        r.success,
+                        r.full_output,
+                        r.images,
+                    ));
                 }
                 // Always add to tool_calls for persistence and normal flow
                 tool_calls.push(tc);
@@ -1963,7 +1983,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
         let eager_ids: std::collections::HashSet<String> = stream_result
             .eager_results
             .iter()
-            .map(|(id, _, _, _)| id.clone())
+            .map(|(id, ..)| id.clone())
             .collect();
 
         if !eager_ids.is_empty() {
@@ -1971,7 +1991,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
                 "{} tool(s) executed eagerly during streaming",
                 eager_ids.len()
             );
-            for (tc_id, result, success, full_output) in &stream_result.eager_results {
+            for (tc_id, result, success, full_output, images) in &stream_result.eager_results {
                 // Find the matching ToolCall for metadata
                 if let Some(tc) = tool_calls.iter().find(|tc| tc.id == *tc_id) {
                     sink.emit(EngineEvent::ToolCallStart {
@@ -1985,6 +2005,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
                         result,
                         *success,
                         full_output.as_deref(),
+                        images,
                         &turn_ctx,
                     )
                     .await?;
@@ -2013,8 +2034,15 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
                         args: parsed_args,
                         is_sub_agent: false,
                     });
-                    crate::tool_dispatch::record_tool_result(&tc, &err_msg, false, None, &turn_ctx)
-                        .await?;
+                    crate::tool_dispatch::record_tool_result(
+                        &tc,
+                        &err_msg,
+                        false,
+                        None,
+                        &[],
+                        &turn_ctx,
+                    )
+                    .await?;
                 } else {
                     allowed.push(tc);
                 }
@@ -2394,7 +2422,7 @@ mod tests {
 
         assert_eq!(result.tool_calls.len(), 1, "tool call should be recorded");
         assert_eq!(result.eager_results.len(), 1, "should have 1 eager result");
-        let (id, output, success, _) = &result.eager_results[0];
+        let (id, output, success, ..) = &result.eager_results[0];
         assert_eq!(id, "tc_eager");
         assert!(output.contains("file content"), "eager result: {output}");
         assert!(success);

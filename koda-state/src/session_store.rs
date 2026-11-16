@@ -469,6 +469,15 @@ pub trait SessionStore: Send + Sync {
     /// the prompt a turn was started with.
     async fn set_last_user_message_images(&self, session_id: &str, images: &str) -> Result<()>;
 
+    /// Store `images` (JSON) on message `message_id` of `session_id`: the
+    /// images a tool returned with its result.
+    async fn set_message_images(
+        &self,
+        session_id: &str,
+        message_id: i64,
+        images: &str,
+    ) -> Result<()>;
+
     // ── Token usage ──
 
     /// Token usage totals for a session.

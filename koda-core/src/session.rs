@@ -545,6 +545,12 @@ impl KodaSession {
         sink.emit(crate::engine::EngineEvent::TurnStart {
             turn_id: turn_id.clone(),
         });
+        // Read returns images only to a model that takes them.
+        self.agent.tools.set_takes_images(
+            config
+                .input_modalities()
+                .contains(&koda_config::InputModality::Image),
+        );
         let started = std::time::Instant::now();
         let meter = crate::engine::sink::TurnMeter::new(sink);
         let sink: &dyn EngineSink = &meter;
