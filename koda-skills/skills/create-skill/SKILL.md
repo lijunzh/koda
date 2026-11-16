@@ -14,8 +14,8 @@ that the user can immediately invoke via `ActivateSkill` or `/<name>`.
 
 ## Principles
 
-- **Read before writing.** Open `koda-core/skills/code-review/SKILL.md`
-  or `koda-core/skills/debug/SKILL.md` first to ground yourself in the
+- **Read before writing.** Open `koda-skills/skills/code-review/SKILL.md`
+  or `koda-skills/skills/debug/SKILL.md` first to ground yourself in the
   canonical structure before generating the file.
 - **Concise is key.** The skill body is loaded into context every time
   the skill is activated. Don't pad. Skip explanations koda already knows
@@ -149,6 +149,6 @@ Optionally add:
 
 ## Reference
 
-For a battle-tested example, read `koda-core/skills/code-review/SKILL.md`
-or `koda-core/skills/debug/SKILL.md`. They demonstrate: tight `when_to_use`
+For a battle-tested example, read `koda-skills/skills/code-review/SKILL.md`
+or `koda-skills/skills/debug/SKILL.md`. They demonstrate: tight `when_to_use`
 phrasing, scoped `allowed_tools`, and concise process sections.

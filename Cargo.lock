@@ -1954,8 +1954,10 @@ dependencies = [
  "http",
  "ignore",
  "koda-config",
+ "koda-memory",
  "koda-protocol",
  "koda-sandbox",
+ "koda-skills",
  "koda-state",
  "koda-test-utils",
  "parking_lot 0.13.0",
@@ -1978,6 +1980,16 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "koda-memory"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "koda-config",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]
@@ -2005,6 +2017,15 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "koda-skills"
+version = "0.7.0"
+dependencies = [
+ "koda-config",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]

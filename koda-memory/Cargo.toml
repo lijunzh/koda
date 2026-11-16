@@ -1,0 +1,20 @@
+[package]
+name = "koda-memory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Memory for the Koda AI coding agent: the instruction files people write (AGENTS.md, CLAUDE.md) and the notes Koda keeps"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords = ["ai", "coding-agent", "llm"]
+categories = ["development-tools"]
+
+[dependencies]
+koda-config = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

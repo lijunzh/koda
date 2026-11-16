@@ -97,6 +97,9 @@ http = "1"
 # Sandbox runtime — kernel-level FS/net/exec policies (#934)
 koda-config = { workspace = true }
 koda-protocol = { workspace = true }
+# Skills and memory, re-exported as `skills` and `memory`.
+koda-memory = { workspace = true }
+koda-skills = { workspace = true }
 koda-sandbox = { workspace = true }
 koda-state = { workspace = true }
 

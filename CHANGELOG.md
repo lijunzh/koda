@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 - **No more Intel Mac binary.** Releases build for Apple Silicon Macs and for Linux on x86_64 and ARM64. Apple's last Intel Macs shipped in 2023, and CI has no Intel Mac to test on. On an Intel Mac, `brew install koda` now says the formula needs ARM64; `cargo install koda-cli --locked` still builds Koda there.
 - **Koda builds with Rust 1.100.0,** its pinned toolchain and minimum version; `cargo install koda-cli` needs it or newer. The crates' homepage on crates.io is now the documentation site.
+- **Two new crates, `koda-skills` and `koda-memory`,** hold skill discovery (with the built-in skills) and memory (the instruction files and Koda's notes), split out of `koda-core` as Codex keeps its `skills` and `memories` crates. `koda-core` re-exports them as `skills` and `memory`. Their log lines now carry the targets `koda_skills` and `koda_memory`, which the default log file includes at `info`. Nothing else changes for users.
 - **The release workflow tests as CI does,** with `cargo nextest` and then the doc tests, instead of `cargo test`, which runs the test binaries one after another.
 
 ## [0.7.0] - 2026-11-15
