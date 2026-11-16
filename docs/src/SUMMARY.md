@@ -34,6 +34,8 @@
 - [Providers & model aliases](./providers.md)
 - [Local models](./local-models.md)
 - [Configuration precedence](./configuration.md)
+- [Sample config.toml](./config-sample.md)
+- [Environment variables](./environment.md)
 - [Custom agents](./agents.md)
 - [Skills](./skills.md)
 - [MCP servers](./mcp.md)
