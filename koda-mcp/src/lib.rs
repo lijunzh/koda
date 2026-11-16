@@ -1,5 +1,10 @@
 //! MCP client — connect to external MCP servers (#662).
 //!
+//! Split out of `koda-core` in 0.7.1, which re-exports this crate as
+//! `koda_core::mcp`. This crate follows koda-cli's version, and its Rust API
+//! makes no semver promise of its own: it is published for
+//! `cargo install koda-cli`, not as a library to build on.
+//!
 //! Koda can act as an MCP **client**, discovering and invoking tools exposed
 //! by third-party MCP servers (Playwright, databases, Slack, etc.).
 //!

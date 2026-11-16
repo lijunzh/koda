@@ -2,18 +2,13 @@
 //!
 //! Servers are config: `[mcp_servers.<name>]` in `~/.config/koda/config.toml`
 //! (`koda-config`), which the host reads. Earlier versions kept them in the
-//! database's `kv_store` under `mcp:<name>`; [`load_legacy`](crate::mcp::config::load_legacy) and
-//! [`delete_legacy`](crate::mcp::config::delete_legacy) read those rows once, to move them into the file.
+//! database's `kv_store` under `mcp:<name>`; `koda-client` reads those rows
+//! once, to move them into the file.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
-
-use koda_state::db::Database;
-
-/// Key prefix for MCP server configs in the kv_store.
-const MCP_KEY_PREFIX: &str = "mcp:";
 
 /// Default timeout (seconds) for MCP server startup.
 pub const DEFAULT_STARTUP_TIMEOUT_SEC: u64 = 30;
@@ -179,61 +174,6 @@ impl McpServerConfig {
         }
         true
     }
-}
-
-// ── Servers earlier versions stored in the database ───────────────────────
-
-/// The servers earlier versions stored in the database, to move them into
-/// the config file. A row that doesn't parse is skipped with a warning.
-pub async fn load_legacy(db: &Database) -> Result<HashMap<String, McpServerConfig>> {
-    let rows = db
-        .kv_list_prefix(MCP_KEY_PREFIX)
-        .await
-        .context("failed to load MCP configs from kv_store")?;
-
-    let mut configs = HashMap::new();
-    for (key, value) in rows {
-        let server_name = key.strip_prefix(MCP_KEY_PREFIX).unwrap_or(&key).to_string();
-        if server_name.is_empty() {
-            continue;
-        }
-        match serde_json::from_str::<McpServerConfig>(&value) {
-            Ok(config) => {
-                if value.contains("\"bearer_token\"") {
-                    tracing::warn!(
-                        server = %server_name,
-                        "this MCP server has a stored bearer token, which Koda no longer \
-                         reads; put the token in an environment variable and name it with \
-                         `bearer_token_env_var`"
-                    );
-                }
-                configs.insert(server_name, config);
-            }
-            Err(e) => {
-                tracing::warn!(
-                    server = %server_name,
-                    error = %e,
-                    "skipping MCP server with invalid config"
-                );
-            }
-        }
-    }
-    Ok(configs)
-}
-
-/// Delete every server row earlier versions stored, once they are in the
-/// config file.
-pub async fn delete_legacy(db: &Database) -> Result<()> {
-    let rows = db
-        .kv_list_prefix(MCP_KEY_PREFIX)
-        .await
-        .context("failed to list MCP configs in kv_store")?;
-    for (key, _) in rows {
-        db.kv_delete(&key)
-            .await
-            .context("failed to delete an MCP config from kv_store")?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]

@@ -3,8 +3,8 @@
 //! Handles tool name formatting (`server__tool`), parsing, and mapping
 //! MCP tool annotations to Koda's `ToolEffect` classification.
 
-use crate::providers::ToolDefinition;
-use crate::tools::ToolEffect;
+use koda_command::ToolEffect;
+use koda_providers::ToolDefinition;
 
 /// Separator between server name and tool name in qualified MCP tool names.
 ///

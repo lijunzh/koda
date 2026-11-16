@@ -17,7 +17,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use koda_core::mcp::{
+use koda_mcp::{
     client::{McpClient, McpClientStatus},
     config::{McpServerConfig, McpTransport},
 };

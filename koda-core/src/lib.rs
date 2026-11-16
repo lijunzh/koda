@@ -88,11 +88,11 @@ pub mod last_provider;
 pub use koda_state::log_db;
 /// Loop detection — catches runaway repeated tool calls.
 pub mod loop_guard;
-/// MCP client — connect to external MCP servers (#662).
-pub mod mcp;
 /// Shell command classification and path linting: `koda-command`'s, under
 /// their old paths.
 pub use koda_command::{bash_path_lint, bash_safety};
+/// The MCP client: `koda-mcp`, under its old path.
+pub use koda_mcp as mcp;
 /// Instruction files (`AGENTS.md`, `CLAUDE.md`) and Koda's own notes: the
 /// `koda-memory` crate, under its old path.
 pub use koda_memory as memory;
@@ -133,5 +133,6 @@ pub mod trust;
 /// Per-turn ambient context (`TurnContext`, `ToolExecutionContext`)
 /// — see #1265 item 4.
 pub mod turn_context;
-/// Marks content the agent reads but the user didn't write (web, MCP) as data.
-pub mod untrusted;
+/// Content the agent reads but the user didn't write: `koda-providers`'s,
+/// under its old path.
+pub use koda_providers::untrusted;

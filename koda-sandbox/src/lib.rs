@@ -59,6 +59,7 @@ pub mod seatbelt;
 pub mod seatbelt_cache;
 #[cfg(target_os = "linux")]
 pub mod stage2;
+pub mod url_guard;
 pub mod violations;
 pub mod worker;
 #[cfg(unix)]

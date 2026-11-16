@@ -68,6 +68,9 @@ pub mod model_effort;
 pub mod model_input;
 /// Static provider catalog: `ProviderType` + `ProviderMeta` lookup tables.
 pub mod provider_catalog;
+/// Content the agent reads but the user didn't write, marked as data for
+/// the model.
+pub mod untrusted;
 
 pub use provider_catalog::ProviderType;
 

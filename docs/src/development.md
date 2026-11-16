@@ -28,7 +28,6 @@ koda/
 │   │   ├── keystore.rs     # Secure API key storage (SQLite KV store, apikey: prefix)
 │   │   ├── last_provider.rs # The model choice earlier versions saved in the database, moved once into config.toml
 │   │   ├── loop_guard.rs   # Loop detection + iteration hard-cap
-│   │   ├── mcp/            # MCP client: config, manager, tool bridge
 │   │   ├── output_caps.rs  # Output cap scaling based on context window size
 │   │   ├── preview.rs      # Pre-confirmation diff previews for Edit/Write
 │   │   ├── prompt.rs       # System prompt construction
@@ -151,6 +150,7 @@ koda/
 │   │   └── provider_catalog.rs # Static metadata for every supported provider
 │   └── tests/              # Each provider's HTTP behaviour against a stub server
 ├── koda-command/           # Shell command classification (bash_safety.rs, ToolEffect) and path linting (bash_path_lint.rs)
+├── koda-mcp/               # MCP client: config, manager, tool bridge
 ├── koda-skills/            # Skill discovery and activation
 │   └── skills/             # Built-in skills (SKILL.md files)
 ├── koda-memory/            # Instruction files (AGENTS.md, CLAUDE.md) and Koda's notes → first user message
