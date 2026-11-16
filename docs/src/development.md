@@ -131,7 +131,8 @@ koda/
 │   │       └── status_bar.rs# Model, mode, context meter, elapsed time
 │   └── tests/              # CLI integration tests
 ├── koda-protocol/          # The client protocol: JSON-RPC messages and their types
-├── koda-client/            # The client API and Koda's host: sessions, config, MCP
+├── koda-client/            # The client API: Koda in-process, typed requests, the event queue
+├── koda-server/            # Koda's host: sessions, config, MCP, koda serve --stdio
 ├── koda-config/            # config.toml: reading, checking and editing it, keeping comments
 ├── koda-providers/         # Model providers (Anthropic, Gemini, OpenAI-compatible) and the model tables
 │   ├── src/
@@ -212,7 +213,7 @@ TUI design.
 ### Key types
 
 - **`KodaAgent`** — Shared resources (tools, system prompt). `Arc`-shareable.
-- **`KodaSession`** — Per-conversation state (DB, provider, settings). Has `run_turn()`. Koda's host (`koda-client`) owns one per open session and runs its turns, for the TUI and `koda exec` alike.
+- **`KodaSession`** — Per-conversation state (DB, provider, settings). Has `run_turn()`. Koda's host (`koda-server`) owns one per open session and runs its turns, for the TUI and `koda exec` alike.
 - **`EngineSink`** — Trait with single method: `fn emit(&self, event: EngineEvent)`. The host's sink turns events into protocol messages and, in process, hands them out as they are for the TUI's renderer.
 
 All providers implement the `LlmProvider` trait (`chat_stream` returning

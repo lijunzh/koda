@@ -68,7 +68,8 @@ protocol on stdin and stdout ([Koda as a server](https://lijunzh.github.io/koda/
 | [**koda-core**](koda-core/) | Engine library — tools, inference loop |
 | [**koda-providers**](koda-providers/) | Model providers (Anthropic, Gemini, OpenAI-compatible) and the model tables |
 | [**koda-protocol**](koda-protocol/) | The client protocol: JSON-RPC 2.0 messages and their types |
-| [**koda-client**](koda-client/) | The client API, and engine events projected onto the protocol |
+| [**koda-client**](koda-client/) | The client API: Koda in-process, typed requests and the event queue |
+| [**koda-server**](koda-server/) | Koda's host: sessions, config, MCP, and engine events projected onto the protocol; `koda serve` |
 | [**koda-config**](koda-config/) | The config file, `~/.config/koda/config.toml`: reading, checking and editing it |
 | [**koda-command**](koda-command/) | Shell command classification: what a command does, and the paths it touches |
 | [**koda-mcp**](koda-mcp/) | The MCP client: connecting to MCP servers over stdio and HTTP, and bridging their tools |
