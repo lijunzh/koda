@@ -38,6 +38,8 @@ ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_KEY }} koda exec "check types"
 
 ## The config file
 
+[Sample config.toml](./config-sample.md) has every key in one commented file to copy, and [Environment variables](./environment.md) lists what stays in the environment.
+
 `~/.config/koda/config.toml` holds the settings a new session starts with,
 as Codex keeps `~/.codex/config.toml`. `/model` (Enter, not `s`, which
 changes only the session), `/provider` and `koda mcp` write it, and you can

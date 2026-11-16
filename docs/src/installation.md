@@ -55,6 +55,11 @@ names one skips the picker: `--provider`, `--base-url` (Koda takes the
 provider from the address) or a model alias such as `--model claude-opus`.
 See [Providers & model aliases](./providers.md).
 
+To set Koda up by hand instead, export your provider's key (such as
+`ANTHROPIC_API_KEY`; [Environment variables](./environment.md) lists them),
+and copy what you need from the [sample config.toml](./config-sample.md)
+into `~/.config/koda/config.toml`.
+
 Then type a request, or follow the [Quickstart](./quickstart.md) through a
 first session. `/help` lists the commands and keys.
 
