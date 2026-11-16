@@ -403,6 +403,34 @@ pub struct TokenUsageBreakdown {
     pub reasoning_output_tokens: u64,
 }
 
+/// `session/name/set`: name a stored session, as Codex's `thread/name/set`
+/// does. The name replaces the title Koda takes from the first prompt, and
+/// a later prompt doesn't replace it. `session/name/updated` follows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionNameSetParams {
+    /// The session, by its full id.
+    pub session_id: String,
+    /// The new name: not empty, at most 100 characters.
+    pub name: String,
+}
+
+/// The answer to `session/name/set`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionNameSetResponse {}
+
+/// `session/name/updated`: a session was named. Codex's
+/// `thread/name/updated`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionNameUpdatedNotification {
+    /// The session.
+    pub session_id: String,
+    /// Its name now.
+    pub name: String,
+}
+
 /// `session/deleted`: a session was deleted. Codex's `thread/deleted`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]

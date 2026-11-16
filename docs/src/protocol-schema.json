@@ -2604,6 +2604,47 @@
       ],
       "type": "object"
     },
+    "SessionNameSetParams": {
+      "additionalProperties": false,
+      "description": "`session/name/set`: name a stored session, as Codex's `thread/name/set`\ndoes. The name replaces the title Koda takes from the first prompt, and\na later prompt doesn't replace it. `session/name/updated` follows.",
+      "properties": {
+        "name": {
+          "description": "The new name: not empty, at most 100 characters.",
+          "type": "string"
+        },
+        "sessionId": {
+          "description": "The session, by its full id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "name"
+      ],
+      "type": "object"
+    },
+    "SessionNameSetResponse": {
+      "description": "The answer to `session/name/set`.",
+      "type": "object"
+    },
+    "SessionNameUpdatedNotification": {
+      "description": "`session/name/updated`: a session was named. Codex's\n`thread/name/updated`.",
+      "properties": {
+        "name": {
+          "description": "Its name now.",
+          "type": "string"
+        },
+        "sessionId": {
+          "description": "The session.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "name"
+      ],
+      "type": "object"
+    },
     "SessionReadParams": {
       "additionalProperties": false,
       "description": "`session/read`: a stored session, without opening it. Codex's\n`thread/read`.",
@@ -4131,6 +4172,14 @@
         "$ref": "#/$defs/SessionMemoryReadResponse"
       }
     },
+    "session/name/set": {
+      "params": {
+        "$ref": "#/$defs/SessionNameSetParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionNameSetResponse"
+      }
+    },
     "session/read": {
       "params": {
         "$ref": "#/$defs/SessionReadParams"
@@ -4271,6 +4320,11 @@
     "session/deleted": {
       "params": {
         "$ref": "#/$defs/SessionDeletedNotification"
+      }
+    },
+    "session/name/updated": {
+      "params": {
+        "$ref": "#/$defs/SessionNameUpdatedNotification"
       }
     },
     "session/settings/updated": {

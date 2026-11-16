@@ -48,6 +48,9 @@ const SESSION_STOP: Duration = Duration::from_secs(4);
 /// How many sessions `session/list` gives without a limit.
 const DEFAULT_LIST_LIMIT: u32 = 50;
 
+/// The longest name `session/name/set` takes, in characters.
+const MAX_SESSION_NAME: usize = 100;
+
 /// A request's answer: the method's response as JSON, or an error.
 pub(crate) type Answer = Result<Value, ErrorObject>;
 
@@ -350,6 +353,10 @@ impl Host {
                 );
                 return;
             }
+            ClientRequest::SessionNameSet { params, .. } => {
+                let _ = reply.send(self.set_name(params).await.and_then(to_json));
+                return;
+            }
             ClientRequest::SessionUnsubscribe { params, .. } => {
                 let status = self.unsubscribe(&params.session_id).await;
                 let _ = reply.send(to_json(SessionUnsubscribeResponse { status }));
@@ -547,6 +554,67 @@ impl Host {
 
     /// Delete session `id`, closing it first if it is open, as Codex's
     /// `thread/delete` does, and say so with `session/deleted`.
+    /// `session/name/set`: store the name, and tell an open session its
+    /// first prompt no longer titles it.
+    async fn set_name(
+        &self,
+        params: koda_protocol::session::SessionNameSetParams,
+    ) -> Result<koda_protocol::session::SessionNameSetResponse, ErrorObject> {
+        use koda_state::session_store::SessionStore;
+        let name = params.name.trim().to_string();
+        if name.is_empty() {
+            return Err(invalid("a session's name can't be empty".to_string()));
+        }
+        if name.chars().count() > MAX_SESSION_NAME {
+            return Err(invalid(format!(
+                "a session's name is at most {MAX_SESSION_NAME} characters"
+            )));
+        }
+        let id = params.session_id;
+        let stored = self
+            .context
+            .db
+            .get_session(&id)
+            .await
+            .map_err(|e| internal(format!("couldn't read the session: {e:#}")))?;
+        if stored.is_none() {
+            return Err(invalid(format!("no session {id:?}")));
+        }
+        // An open session stores it on its own task, after what is queued.
+        let open = {
+            let sessions = self.sessions.lock().await;
+            sessions.get(&id).map(|session| {
+                let (done, stored) = oneshot::channel();
+                let sent = session.send(SessionCommand::Named {
+                    name: name.clone(),
+                    done,
+                });
+                (sent.is_ok(), stored)
+            })
+        };
+        let stored = match open {
+            Some((true, stored)) => stored
+                .await
+                .unwrap_or_else(|_| Err("the session stopped".to_string())),
+            _ => self
+                .context
+                .db
+                .set_session_title(&id, &name)
+                .await
+                .map_err(|e| format!("{e:#}")),
+        };
+        stored.map_err(|e| internal(format!("couldn't name the session: {e}")))?;
+        let _ = self.context.events.send(Outgoing::Notification(
+            ServerNotification::SessionNameUpdated(
+                koda_protocol::session::SessionNameUpdatedNotification {
+                    session_id: id,
+                    name,
+                },
+            ),
+        ));
+        Ok(koda_protocol::session::SessionNameSetResponse {})
+    }
+
     async fn delete_session(&self, id: String) -> Result<SessionDeleteResponse, ErrorObject> {
         use koda_state::session_store::SessionStore;
         let open = self.sessions.lock().await.remove(&id);

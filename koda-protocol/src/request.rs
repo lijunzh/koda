@@ -141,6 +141,11 @@ client_requests! {
         params: crate::session::SessionDeleteParams,
         response: crate::session::SessionDeleteResponse,
     },
+    /// Name a stored session; `session/name/updated` follows.
+    SessionNameSet => "session/name/set" {
+        params: crate::session::SessionNameSetParams,
+        response: crate::session::SessionNameSetResponse,
+    },
     /// Change what a session's next turns run with. A running turn keeps
     /// its own; `session/settings/updated` follows once applied.
     SessionSettingsUpdate => "session/settings/update" {

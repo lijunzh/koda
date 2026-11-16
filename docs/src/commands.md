@@ -110,6 +110,31 @@ On resume, Koda draws the session's earlier turns as they were drawn live,
 as Codex does, then a `session resumed` line, and a banner if the last turn
 was interrupted.
 
+## `/new` (also `/clear`)
+
+Starts a new session on the same model and mode, as Codex's `/new` and
+Claude Code's `/clear` do. The session you left stays stored, for
+`/resume`.
+
+## `/rename <name>`
+
+Names the session, as Codex's `/rename` does; `/resume` lists it by that
+name. Without one, the first 50 characters of your first prompt are its
+title, and a name you give is never replaced by it.
+
+## `/status`
+
+Shows what the session runs with, as Codex's `/status` does: its ID and
+name, the model, provider and endpoint, reasoning effort, mode, sandbox,
+how much of the context window is left, the project, the instruction files
+loaded, and Koda's version.
+
+## `/init`
+
+Asks the model to write an `AGENTS.md` for the project, a short guide for
+coding agents, as Codex's `/init` and Claude Code's do. If the project has an
+`AGENTS.md` or `CLAUDE.md` already, `/init` leaves it alone and says so.
+
 ## `/memory [add|global <text>]`
 
 ```text

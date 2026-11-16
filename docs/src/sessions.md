@@ -45,4 +45,7 @@ less: no reasoning, and no time on a sub-agent's summary.
 ## Session title
 
 In the TUI, the first 50 characters of your first message become the session's
-title, shown in `/resume`.
+title, shown in `/resume`. `/rename <name>` names it instead, as Codex's
+`/rename` does, and the first message no longer replaces a name you gave.
+Over the protocol, `session/name/set` does the same and
+`session/name/updated` follows.
