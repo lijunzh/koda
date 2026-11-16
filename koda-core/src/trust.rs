@@ -21,9 +21,9 @@
 //! Codex and Claude Code, and its model is told each Plan turn to plan with
 //! the user and to propose a plan, which the TUI offers to implement in
 //! Safe or Auto. From #1244 until 0.7.1 such a session couldn't enter Plan
-//! ([`coerce_for_top_level`], now unused): told nothing, models kept
+//! ([`coerce_for_top_level`](crate::trust::coerce_for_top_level), now unused): told nothing, models kept
 //! retrying the refused writes. The turn's note and
-//! [`PLAN_BLOCKED_MESSAGE`] now say not to. Sub-agents reach Plan via their
+//! [`PLAN_BLOCKED_MESSAGE`](crate::trust::PLAN_BLOCKED_MESSAGE) now say not to. Sub-agents reach Plan via their
 //! JSON `"trust": "plan"` declaration plus parent clamping.
 //!
 //! A headless run (`koda exec --mode plan "..."`) keeps Plan too. Nobody is there to approve anything, so a run that should only
