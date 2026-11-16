@@ -37,7 +37,7 @@
 //! (auto-approve vs prompt), not a security enforcement boundary. Kernel-level
 //! sandboxing is tracked separately in DESIGN.md.
 
-use crate::tools::ToolEffect;
+use crate::ToolEffect;
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -516,8 +516,8 @@ fn defines_recursive_function(unquoted: &str) -> bool {
 /// # Examples
 ///
 /// ```
-/// use koda_core::bash_safety::classify_bash_command;
-/// use koda_core::tools::ToolEffect;
+/// use koda_command::bash_safety::classify_bash_command;
+/// use koda_command::ToolEffect;
 ///
 /// assert_eq!(classify_bash_command("ls -la"), ToolEffect::ReadOnly);
 /// assert_eq!(classify_bash_command("git status"), ToolEffect::ReadOnly);
@@ -1286,7 +1286,7 @@ fn heredoc_delimiter(rest: &[(usize, char)]) -> Option<(String, bool, bool)> {
 /// # Examples
 ///
 /// ```
-/// use koda_core::bash_safety::split_command_segments;
+/// use koda_command::bash_safety::split_command_segments;
 ///
 /// assert_eq!(split_command_segments("ls | grep foo"), vec!["ls ", " grep foo"]);
 /// assert_eq!(split_command_segments("a && b || c"), vec!["a ", " b ", " c"]);
@@ -1372,7 +1372,7 @@ pub fn strip_quoted_strings(s: &str) -> String {
 /// # Examples
 ///
 /// ```
-/// use koda_core::bash_safety::strip_env_vars;
+/// use koda_command::bash_safety::strip_env_vars;
 ///
 /// assert_eq!(strip_env_vars("FOO=bar cargo build"), "cargo build");
 /// assert_eq!(strip_env_vars("ls -la"), "ls -la");

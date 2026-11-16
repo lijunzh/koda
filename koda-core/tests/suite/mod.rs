@@ -6,7 +6,6 @@
 //! runs every test in its own process.
 
 mod agent_memory_cache_test;
-mod bash_safety_test;
 mod builtin_agent_configs_test;
 mod builtin_proxy_e2e_test;
 // Needs the mock providers: --features test-support.

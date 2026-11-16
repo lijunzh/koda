@@ -1,0 +1,19 @@
+[package]
+name = "koda-command"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Shell command classification for the Koda AI coding agent: what a command does, and the paths it touches"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords = ["ai", "coding-agent", "shell", "bash", "safety"]
+categories = ["development-tools", "parser-implementations"]
+
+[dependencies]
+path-clean = "1"
+regex = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+shlex = { workspace = true }

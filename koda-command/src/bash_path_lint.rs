@@ -124,7 +124,7 @@ impl BashPathLint {
 ///
 /// ```
 /// use std::path::Path;
-/// use koda_core::bash_path_lint::lint_bash_paths;
+/// use koda_command::bash_path_lint::lint_bash_paths;
 ///
 /// let lint = lint_bash_paths("cat src/main.rs", Path::new("/project"));
 /// assert!(!lint.has_warnings());

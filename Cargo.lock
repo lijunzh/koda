@@ -1931,6 +1931,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "koda-command"
+version = "0.7.0"
+dependencies = [
+ "path-clean",
+ "regex",
+ "schemars",
+ "serde",
+ "shlex",
+]
+
+[[package]]
 name = "koda-config"
 version = "0.7.0"
 dependencies = [
@@ -1955,6 +1966,7 @@ dependencies = [
  "glob",
  "http",
  "ignore",
+ "koda-command",
  "koda-config",
  "koda-memory",
  "koda-protocol",
