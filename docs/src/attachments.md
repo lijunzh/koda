@@ -57,6 +57,41 @@ Supported formats: PNG, JPEG, GIF, WEBP. Images are base64-encoded and
 sent to the model with your message. `@screenshot.png` works too, read by the
 host as above.
 
+**An image stays in the conversation,** as in Claude Code: Koda stores it
+with your message, so the model still sees it after its first tool call, in
+later turns, and when you resume the session. Each image counts about 1,600
+tokens toward the context window, and compaction summarizes it away like
+any other early message. A request carries at most 100 images, Anthropic's
+limit; older ones beyond that are sent as a short note.
+
+**Which models get images:** a local server says whether its model takes
+images, and Koda asks it when a session starts or the model changes, as it
+asks for the context window:
+
+- **LM Studio:** a vision model (`"type": "vlm"`, or `vision` among its
+  capabilities).
+- **llama.cpp's `llama-server`:** started with a vision projector
+  (`--mmproj`), which `/props` reports as `"modalities": {"vision": true}`.
+- **Ollama:** a model that lists `vision` among its capabilities.
+
+Otherwise Koda's table decides:
+
+| Provider | Model | Takes |
+|---|---|---|
+| Anthropic | any | text, images, PDFs |
+| Gemini, OpenAI | any | text, images |
+| any other | a Claude or GPT model (as through OpenRouter) | text, images |
+| any other | anything else, local models included | text |
+
+A model that doesn't take images gets a note where each image was, and the
+stored image comes back if you switch to one that does. If a server doesn't
+say, or says wrong, set what the model takes in `config.toml`, which wins
+over both:
+
+```toml
+model_input_modalities = ["text", "image"]
+```
+
 ## Large pastes
 
 Pasting 200 characters or more into the input attaches it as a reference block

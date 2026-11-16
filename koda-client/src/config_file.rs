@@ -47,6 +47,16 @@ pub(crate) fn values(loaded: &Loaded) -> KodaConfigValues {
         model_thinking_budget: config.model_thinking_budget,
         model_post_turn_compact_threshold_percent: config.model_post_turn_compact_threshold_percent,
         file_mentions: config.file_mentions,
+        model_input_modalities: config.model_input_modalities.as_ref().map(|list| {
+            list.iter()
+                .map(|m| {
+                    serde_json::to_value(m)
+                        .ok()
+                        .and_then(|v| v.as_str().map(str::to_string))
+                        .unwrap_or_default()
+                })
+                .collect()
+        }),
         mode: config.mode.map(protocol_mode),
         agent: config.agent.clone(),
         model_providers: config
@@ -147,6 +157,9 @@ pub(crate) fn apply_settings(config: &mut KodaConfig, loaded: &Loaded) {
     }
     if let Some(on) = file.file_mentions {
         config.file_mentions = on;
+    }
+    if let Some(list) = &file.model_input_modalities {
+        config.input_modalities = Some(list.clone());
     }
     // Retries are capped as Codex caps them.
     let retries =
@@ -807,6 +820,36 @@ mod tests {
             Some("low")
         );
         assert_eq!(agent.context_override, Some(8_192));
+    }
+
+    /// `model_input_modalities` replaces Koda's table for the model: a local
+    /// model, text only by the table, takes images. `config/read` shows it,
+    /// and a value that isn't text, image or pdf is refused.
+    #[tokio::test]
+    async fn the_file_says_what_the_model_takes() {
+        use koda_config::InputModality;
+        let (_dir, _db, file) = scratch().await;
+        let mut config = KodaConfig::default_for_testing(ProviderType::LMStudio);
+        assert_eq!(config.input_modalities(), [InputModality::Text]);
+
+        std::fs::write(
+            file.path(),
+            "model_input_modalities = [\"text\", \"image\"]\n",
+        )
+        .unwrap();
+        let loaded = file.load().unwrap();
+        apply_settings(&mut config, &loaded);
+        assert_eq!(
+            config.input_modalities(),
+            [InputModality::Text, InputModality::Image]
+        );
+        assert_eq!(
+            values(&loaded).model_input_modalities,
+            Some(vec!["text".to_string(), "image".to_string()])
+        );
+
+        std::fs::write(file.path(), "model_input_modalities = [\"video\"]\n").unwrap();
+        assert!(file.load().is_err(), "an unknown modality loaded");
     }
 
     /// A value given for this run (`--effort` is `-c

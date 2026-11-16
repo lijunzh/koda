@@ -786,7 +786,14 @@ async fn shutdown_stops_a_turn_that_waits_on_the_client() {
 async fn mentions_are_read_by_the_host() {
     use koda_client::protocol::turn::Mention;
     let server = model(vec![text("Seen."), text("Paths.")]).await;
-    let mut koda = Koda::start(config(&server)).await;
+    // A local model the config says takes images: the table has local
+    // models as text only.
+    let mut takes_images = config(&server);
+    takes_images.input_modalities = Some(vec![
+        koda_config::InputModality::Text,
+        koda_config::InputModality::Image,
+    ]);
+    let mut koda = Koda::start(takes_images).await;
     std::fs::write(koda.project.join("notes.md"), "alpha\nbeta\n").unwrap();
     std::fs::create_dir(koda.project.join("src")).unwrap();
     std::fs::write(koda.project.join("src/lib.rs"), "").unwrap();

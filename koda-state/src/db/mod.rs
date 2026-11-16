@@ -192,6 +192,19 @@ impl Database {
                 .await?;
         }
 
+        // Images sent with a message (Read v2): JSON, `[{media_type,
+        // base64}]`, replayed on every model call and after a resume. Older
+        // rows have none; older Koda ignores the column.
+        let has_images: Option<(String,)> =
+            sqlx::query_as("SELECT name FROM pragma_table_info('messages') WHERE name = 'images'")
+                .fetch_optional(pool)
+                .await?;
+        if has_images.is_none() {
+            sqlx::query("ALTER TABLE messages ADD COLUMN images TEXT")
+                .execute(pool)
+                .await?;
+        }
+
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id);")
             .execute(pool)
             .await?;
@@ -318,7 +331,7 @@ impl Database {
         let rows: Vec<MessageRow> = sqlx::query_as(
             "SELECT id, session_id, role, content, full_content, tool_calls, tool_call_id,
                     prompt_tokens, completion_tokens,
-                    cache_read_tokens, cache_creation_tokens, thinking_tokens, thinking_content, thinking_model, thinking_blocks,
+                    cache_read_tokens, cache_creation_tokens, thinking_tokens, thinking_content, thinking_model, thinking_blocks, images,
                     created_at
              FROM messages
              WHERE session_id = ? AND id < ? AND compacted_at IS NULL
@@ -358,6 +371,7 @@ pub(crate) struct MessageRow {
     pub thinking_content: Option<String>,
     pub thinking_model: Option<String>,
     pub thinking_blocks: Option<String>,
+    pub images: Option<String>,
     pub created_at: Option<String>,
 }
 
@@ -419,6 +433,7 @@ impl From<MessageRow> for Message {
             thinking_content: r.thinking_content,
             thinking_model: r.thinking_model,
             thinking_blocks: r.thinking_blocks,
+            images: r.images,
             created_at: r.created_at,
         }
     }

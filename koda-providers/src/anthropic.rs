@@ -1003,6 +1003,7 @@ impl LlmProvider for AnthropicProvider {
         Ok(super::ModelCapabilities {
             context_window: detail.max_input_tokens.filter(|&n| n > 0),
             max_output_tokens: detail.max_tokens.filter(|&n| n > 0),
+            vision: None,
         })
     }
 

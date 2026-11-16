@@ -603,6 +603,7 @@ impl LlmProvider for GeminiProvider {
         Ok(ModelCapabilities {
             context_window: info.input_token_limit,
             max_output_tokens: info.output_token_limit,
+            vision: None,
         })
     }
 

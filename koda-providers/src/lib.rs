@@ -64,6 +64,8 @@ pub mod model_alias;
 pub mod model_context;
 /// Reasoning effort per model: the levels it takes and the default sent.
 pub mod model_effort;
+/// What each model takes as input besides text (images, PDFs).
+pub mod model_input;
 /// Static provider catalog: `ProviderType` + `ProviderMeta` lookup tables.
 pub mod provider_catalog;
 
@@ -222,6 +224,10 @@ pub struct ModelCapabilities {
     pub context_window: Option<usize>,
     /// Maximum output tokens the model supports.
     pub max_output_tokens: Option<usize>,
+    /// Whether the model takes images, when the server says: LM Studio's
+    /// model type, llama.cpp's `/props` modalities, Ollama's capabilities.
+    /// `None` when it doesn't say.
+    pub vision: Option<bool>,
 }
 
 /// Is this URL pointing to a local address?
