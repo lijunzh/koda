@@ -158,7 +158,7 @@ async fn test_provider_error_emits_error_event() {
         body: "Internal Server Error".into(),
     };
     let provider = MockProvider::new(vec![server_error]);
-    let sink = koda_core::engine::sink::TestSink::new();
+    let sink = koda_test_utils::TestSink::new();
     let (_, mut cmd_rx) = mpsc::channel::<EngineCommand>(1);
     let tool_defs = env.tool_defs();
 
@@ -274,7 +274,7 @@ async fn test_cancel_during_streaming() {
         entered: std::sync::Mutex::new(Some(entered_tx)),
     };
 
-    let sink = koda_core::engine::sink::TestSink::new();
+    let sink = koda_test_utils::TestSink::new();
     let (_, mut cmd_rx) = mpsc::channel::<EngineCommand>(1);
     let tool_defs = env.tool_defs();
     let cancel = CancellationToken::new();

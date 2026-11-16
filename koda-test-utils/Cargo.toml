@@ -2,7 +2,7 @@
 name = "koda-test-utils"
 version = "0.1.0"
 edition = "2024"
-description = "Test utilities for koda — mock providers, test sinks, and E2E harness"
+description = "Test utilities for koda: the mock provider, a scripted stub server, the test sink and the E2E harness"
 license = "MIT"
 publish = false
 
@@ -19,7 +19,10 @@ core = ["dep:koda-core", "dep:koda-state"]
 
 [dependencies]
 async-trait = { workspace = true }
-koda-core = { workspace = true, features = ["test-support"], optional = true }
+koda-core = { workspace = true, optional = true }
+# The mock provider is built on koda-providers' public API.
+koda-providers = { workspace = true }
+reqwest = { workspace = true }
 koda-state = { workspace = true, optional = true }
 serde = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }

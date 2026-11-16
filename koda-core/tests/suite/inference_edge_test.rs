@@ -4,7 +4,7 @@
 //! (111 tests) but were missing from Koda. Uses the existing MockProvider +
 //! Env harness with real in-memory SQLite — no new mock infrastructure needed.
 //!
-//! Run with: `cargo test -p koda-core --features test-support --test inference_edge_test`
+//! Run with: `cargo test -p koda-core --test inference_edge_test`
 
 use koda_core::{
     engine::{

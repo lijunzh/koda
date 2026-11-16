@@ -248,7 +248,7 @@ mod tests {
     /// through the real workspace battery.
     async fn fixtures() -> (TempDir, crate::config::KodaConfig, koda_state::db::Database) {
         let dir = TempDir::new().expect("tempdir");
-        let config = crate::config::KodaConfig::default_for_testing(ProviderType::Mock);
+        let config = crate::config::KodaConfig::default_for_testing(ProviderType::LMStudio);
         let db = koda_state::db::Database::open(&dir.path().join("turn_ctx.db"))
             .await
             .expect("open db");

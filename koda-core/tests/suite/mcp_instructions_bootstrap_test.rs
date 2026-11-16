@@ -12,13 +12,15 @@
 //! provider — not just what `build_system_prompt` returns in isolation —
 //! must contain the per-server guidance.
 //!
-//! Run with: `cargo test -p koda-core --features test-support --test mcp_instructions_bootstrap_test`
+//! Each server is a real MCP server over stdio, a small `sh` script, so
+//! the instructions arrive through `initialize` as they do in use.
+//!
+//! Run with: `cargo nextest run -p koda-core -E 'test(/^suite::mcp_instructions_bootstrap_test::/)'`
 
 use koda_core::{
     engine::EngineCommand,
     mcp::{
         McpManager,
-        client::{McpClient, McpClientStatus},
         config::{McpServerConfig, McpTransport},
     },
     session::{KodaSession, SessionCancel},
@@ -30,19 +32,34 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{RwLock, mpsc};
 
-/// Stub config for tests — transport details don't matter because we use
-/// `set_status_for_test` / `set_instructions_for_test` to bypass the real
-/// connection lifecycle.
-fn dummy_config() -> McpServerConfig {
+/// An MCP server over stdio that answers `initialize` with `instructions`
+/// (none when `None`) and lists no tools.
+fn stdio_server(instructions: Option<&str>) -> McpServerConfig {
+    const SERVER: &str = r#"
+while IFS= read -r line; do
+  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      if [ -n "$INSTRUCTIONS" ]; then extra=",\"instructions\":\"$INSTRUCTIONS\""; else extra=""; fi
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"test","version":"0.1.0"}%s}}\n' "$id" "$extra" ;;
+    *'"method":"tools/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[]}}\n' "$id" ;;
+  esac
+done
+"#;
+    let mut env = HashMap::new();
+    if let Some(text) = instructions {
+        env.insert("INSTRUCTIONS".to_string(), text.to_string());
+    }
     McpServerConfig {
         transport: McpTransport::Stdio {
-            command: "false".into(),
-            args: vec![],
-            env: HashMap::new(),
+            command: "sh".into(),
+            args: vec!["-c".into(), SERVER.into()],
+            env,
             cwd: None,
         },
-        startup_timeout_sec: 1,
-        tool_timeout_sec: 1,
+        startup_timeout_sec: 10,
+        tool_timeout_sec: 10,
         enabled_tools: None,
         disabled_tools: None,
         required: false,
@@ -132,6 +149,7 @@ fn system_prompt_in(call: &[ChatMessage]) -> String {
 ///
 /// Before #929 this would have failed because `agent.system_prompt` was
 /// built once with `&[]` and never refreshed.
+#[cfg(unix)]
 #[tokio::test]
 async fn mcp_instructions_reach_provider_in_live_turn() {
     let env = Env::new().await;
@@ -139,12 +157,13 @@ async fn mcp_instructions_reach_provider_in_live_turn() {
 
     // Build an MCP manager with one connected server that has instructions.
     let mut manager = McpManager::new();
-    let mut client = McpClient::new("playwright".into(), dummy_config());
-    client.set_status_for_test(McpClientStatus::Connected);
-    client.set_instructions_for_test(Some(
-        "Prefer locator-based queries over CSS selectors.".to_string(),
-    ));
-    manager.insert_client_for_test(client);
+    manager
+        .add_server(
+            "playwright".into(),
+            stdio_server(Some("Prefer locator-based queries over CSS selectors.")),
+        )
+        .await
+        .expect("the server connects");
 
     let (mut session, _cancel, recorded) =
         make_session_with_mcp(&env, vec![MockResponse::Text("ok".into())], manager).await;
@@ -211,17 +230,18 @@ async fn no_mcp_manager_means_no_mcp_block_in_prompt() {
 /// A connected server that returned no `instructions` (None or empty) must
 /// not produce an empty `## <server>` block — the renderer filters at the
 /// client level via `.filter(|s| !s.trim().is_empty())`.
+#[cfg(unix)]
 #[tokio::test]
 async fn connected_server_without_instructions_is_omitted() {
     let env = Env::new().await;
     env.insert_user_message("hello").await;
 
     let mut manager = McpManager::new();
-    let mut client = McpClient::new("silent".into(), dummy_config());
-    client.set_status_for_test(McpClientStatus::Connected);
-    // Explicitly None — server returned no `instructions` field.
-    client.set_instructions_for_test(None);
-    manager.insert_client_for_test(client);
+    // The server returns no `instructions` field.
+    manager
+        .add_server("silent".into(), stdio_server(None))
+        .await
+        .expect("the server connects");
 
     let (mut session, _cancel, recorded) =
         make_session_with_mcp(&env, vec![MockResponse::Text("ok".into())], manager).await;
@@ -249,6 +269,7 @@ async fn connected_server_without_instructions_is_omitted() {
 /// prompt is built must still surface in the next turn's prompt. This is
 /// the original #922 bug: previously `rebuild_system_prompt` had to be
 /// called manually and wasn't, so late-connecting servers were invisible.
+#[cfg(unix)]
 #[tokio::test]
 async fn server_connected_after_agent_built_still_appears_in_next_turn() {
     let env = Env::new().await;
@@ -280,15 +301,18 @@ async fn server_connected_after_agent_built_still_appears_in_next_turn() {
         assert!(!prompt.contains("# MCP Server Instructions"));
     }
 
-    // Now simulate `/mcp add` connecting a new server mid-session by
-    // mutating the manager that `agent.tools` already holds via Arc.
+    // Now a server connects mid-session, as `/mcp add` does, through the
+    // manager that `agent.tools` already holds via Arc.
     {
         let mgr_arc = session.agent.tools.mcp_manager().expect("manager attached");
         let mut guard = mgr_arc.write().await;
-        let mut client = McpClient::new("late".into(), dummy_config());
-        client.set_status_for_test(McpClientStatus::Connected);
-        client.set_instructions_for_test(Some("Late-connecting guidance.".to_string()));
-        guard.insert_client_for_test(client);
+        guard
+            .add_server(
+                "late".into(),
+                stdio_server(Some("Late-connecting guidance.")),
+            )
+            .await
+            .expect("the server connects");
     }
 
     // Queue a follow-up user message and run turn 2.

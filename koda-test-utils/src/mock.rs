@@ -1,19 +1,25 @@
-//! Mock LLM provider for testing.
+//! A mock LLM provider that returns scripted responses, so in-process tests
+//! can exercise the full inference loop without a real LLM. Responses are
+//! consumed in FIFO order.
 //!
-//! Returns scripted responses so tests can exercise the full inference loop
-//! without a real LLM. Responses are consumed in FIFO order.
+//! It lives here, in a crate that is never published or shipped, rather
+//! than in `koda-providers`: the `koda` binary can't select it, and it
+//! isn't public API on crates.io. It uses only `koda-providers`' public API.
+//! A test that runs the `koda` binary scripts a stub server instead
+//! ([`crate::network::FakeLlmServer::mount_script`]), in the same format
+//! ([`parse_script`]).
 
-use super::{
-    ChatMessage, LlmProvider, LlmResponse, ModelInfo, StreamChunk, TokenUsage, ToolCall,
-    ToolDefinition,
+use koda_providers::stream_collector::SseCollector;
+use koda_providers::{
+    ChatMessage, LlmProvider, LlmResponse, ModelInfo, ModelSettings, StreamChunk, TokenUsage,
+    ToolCall, ToolDefinition,
 };
-use crate::ModelSettings;
 
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 static MOCK_CALL_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -70,16 +76,38 @@ impl MockResponse {
     }
 }
 
-/// Returns the shared global Arc that all `from_env()` providers write to.
+/// A script of responses from its JSON form, an array:
+/// `[{"text":"hello"}, {"tool":"Read","args":{"path":"f.txt"}}, {"error":"boom"},
+/// {"status":503,"body":"…"}, {"rate_limit":true}, {"context_overflow":true}]`.
+/// Anything else is sent back as text.
 ///
-/// Tests call `MockProvider::take_env_calls()` (feature = "test-support") to
-/// inspect what messages the sub-agent provider received without needing a
-/// direct reference to the provider instance.
-fn global_env_calls() -> Arc<Mutex<Vec<Vec<ChatMessage>>>> {
-    static CALLS: OnceLock<Arc<Mutex<Vec<Vec<ChatMessage>>>>> = OnceLock::new();
-    CALLS
-        .get_or_init(|| Arc::new(Mutex::new(Vec::new())))
-        .clone()
+/// Panics if `json` is not a JSON array.
+pub fn parse_script(json: &str) -> Vec<MockResponse> {
+    let raw: Vec<serde_json::Value> =
+        serde_json::from_str(json).expect("a mock script must be a JSON array");
+    raw.into_iter()
+        .map(|v| {
+            if let Some(text) = v.get("text").and_then(|t| t.as_str()) {
+                MockResponse::Text(text.to_string())
+            } else if let Some(tool) = v.get("tool").and_then(|t| t.as_str()) {
+                let args = v.get("args").cloned().unwrap_or(serde_json::json!({}));
+                MockResponse::tool_call(tool, args)
+            } else if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
+                MockResponse::Error(err.to_string())
+            } else if let Some(status) = v.get("status").and_then(|s| s.as_u64()) {
+                MockResponse::Http {
+                    status: status as u16,
+                    body: v["body"].as_str().unwrap_or_default().to_string(),
+                }
+            } else if v.get("rate_limit").is_some() {
+                MockResponse::RateLimit
+            } else if v.get("context_overflow").is_some() {
+                MockResponse::ContextOverflow
+            } else {
+                MockResponse::Text(v.to_string())
+            }
+        })
+        .collect()
 }
 
 /// A mock LLM provider that returns scripted responses.
@@ -88,9 +116,7 @@ fn global_env_calls() -> Arc<Mutex<Vec<Vec<ChatMessage>>>> {
 /// the queue is exhausted.
 ///
 /// Every `chat()` / `chat_stream()` call records the received messages in
-/// `recorded_calls`. Providers created via `from_env()` additionally write to
-/// a shared global, letting tests inspect sub-agent calls without holding a
-/// direct reference to the provider.
+/// `recorded_calls`.
 pub struct MockProvider {
     responses: Mutex<Vec<MockResponse>>,
     /// Records every messages slice passed to `chat()` / `chat_stream()`.
@@ -109,61 +135,9 @@ impl MockProvider {
         }
     }
 
-    /// Create from `KODA_MOCK_RESPONSES` runtime env var (JSON array).
-    ///
-    /// Format: `[{"text":"hello"}, {"tool":"Read","args":{"path":"f.txt"}}, {"error":"boom"}]`
-    ///
-    /// **#1109 F1**: reads via [`koda_config::runtime_env::get`] (thread-safe
-    /// `RwLock<HashMap>` with fallback to `std::env::var`) instead of
-    /// `std::env::var` directly. This lets in-process tests inject the
-    /// script via [`koda_config::runtime_env::set`] — no `unsafe { set_var }`,
-    /// no Rust 2024 UB. Sub-process tests (e.g. `koda-cli/tests/suite/smoke_test`)
-    /// continue to work because `runtime_env::get` falls back to the real
-    /// process env when the runtime map has no entry.
-    pub fn from_env() -> Self {
-        let json =
-            koda_config::runtime_env::get("KODA_MOCK_RESPONSES").unwrap_or_else(|| "[]".into());
-        Self::from_json_str(&json)
-    }
-
-    /// Pure parser — build a provider from a JSON-array string. Extracted
-    /// so lib tests can exercise the parsing logic without touching the
-    /// global env (#1109 F1).
-    ///
-    /// Panics if `json` is not a valid JSON array. Callers feeding
-    /// untrusted input should `serde_json::from_str` themselves first.
+    /// A provider playing a script in [`parse_script`]'s JSON format.
     pub fn from_json_str(json: &str) -> Self {
-        let raw: Vec<serde_json::Value> =
-            serde_json::from_str(json).expect("KODA_MOCK_RESPONSES must be a JSON array");
-        let responses = raw
-            .into_iter()
-            .map(|v| {
-                if let Some(text) = v.get("text").and_then(|t| t.as_str()) {
-                    MockResponse::Text(text.to_string())
-                } else if let Some(tool) = v.get("tool").and_then(|t| t.as_str()) {
-                    let args = v.get("args").cloned().unwrap_or(serde_json::json!({}));
-                    MockResponse::tool_call(tool, args)
-                } else if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
-                    MockResponse::Error(err.to_string())
-                } else if let Some(status) = v.get("status").and_then(|s| s.as_u64()) {
-                    MockResponse::Http {
-                        status: status as u16,
-                        body: v["body"].as_str().unwrap_or_default().to_string(),
-                    }
-                } else if v.get("rate_limit").is_some() {
-                    MockResponse::RateLimit
-                } else if v.get("context_overflow").is_some() {
-                    MockResponse::ContextOverflow
-                } else {
-                    MockResponse::Text(v.to_string())
-                }
-            })
-            .collect();
-        Self {
-            responses: Mutex::new(responses),
-            recorded_calls: global_env_calls(),
-            recorded_max_tokens: Mutex::new(Vec::new()),
-        }
+        Self::new(parse_script(json))
     }
 
     fn next_response(&self) -> MockResponse {
@@ -190,23 +164,6 @@ impl MockProvider {
     /// the recorded messages from the outside afterward.
     pub fn recorded_calls_handle(&self) -> Arc<Mutex<Vec<Vec<ChatMessage>>>> {
         Arc::clone(&self.recorded_calls)
-    }
-
-    /// All messages received by any `from_env()` provider since the last
-    /// `clear_env_calls()`. Requires the `test-support` feature.
-    ///
-    /// Because `execute_sub_agent` creates providers internally via
-    /// `MockProvider::from_env()`, this is the only way for tests to inspect
-    /// what messages the sub-agent's provider actually received.
-    #[cfg(feature = "test-support")]
-    pub fn take_env_calls() -> Vec<Vec<ChatMessage>> {
-        std::mem::take(&mut *global_env_calls().lock().unwrap())
-    }
-
-    /// Clear the global `from_env()` call recorder.
-    #[cfg(feature = "test-support")]
-    pub fn clear_env_calls() {
-        global_env_calls().lock().unwrap().clear();
     }
 }
 
@@ -267,7 +224,7 @@ impl LlmProvider for MockProvider {
         messages: &[ChatMessage],
         _tools: &[ToolDefinition],
         _settings: &ModelSettings,
-    ) -> Result<super::stream_collector::SseCollector> {
+    ) -> Result<SseCollector> {
         self.recorded_calls.lock().unwrap().push(messages.to_vec());
         let response = self.next_response();
 
@@ -359,7 +316,7 @@ impl LlmProvider for MockProvider {
             }
         });
 
-        Ok(super::stream_collector::SseCollector { rx, handle })
+        Ok(SseCollector { rx, handle })
     }
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>> {
@@ -377,19 +334,19 @@ impl LlmProvider for MockProvider {
 /// The error the real HTTP path builds for this status and body.
 fn http_error(status: u16, body: &str) -> anyhow::Error {
     let headers = reqwest::header::HeaderMap::new();
-    super::error::ProviderError::from_response("LLM", status, &status.to_string(), &headers, body)
-        .into()
+    koda_providers::error::ProviderError::from_response(
+        "LLM",
+        status,
+        &status.to_string(),
+        &headers,
+        body,
+    )
+    .into()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // **#1109 F1**: previously this module had its own `ENV_MUTEX` to
-    // serialize tests that mutated `KODA_MOCK_RESPONSES` via
-    // `unsafe { std::env::set_var }`. Both are gone now —
-    // [`MockProvider::from_json_str`] is the pure parser; lib tests
-    // call it directly without touching any global.
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_text_response() {
@@ -400,7 +357,7 @@ mod tests {
                 &[],
                 &ModelSettings::defaults_for(
                     "mock",
-                    &crate::provider_catalog::ProviderType::LMStudio,
+                    &koda_providers::provider_catalog::ProviderType::LMStudio,
                 ),
             )
             .await
@@ -427,7 +384,7 @@ mod tests {
                 &[],
                 &ModelSettings::defaults_for(
                     "mock",
-                    &crate::provider_catalog::ProviderType::LMStudio,
+                    &koda_providers::provider_catalog::ProviderType::LMStudio,
                 ),
             )
             .await
@@ -450,7 +407,7 @@ mod tests {
                 &[],
                 &ModelSettings::defaults_for(
                     "mock",
-                    &crate::provider_catalog::ProviderType::LMStudio,
+                    &koda_providers::provider_catalog::ProviderType::LMStudio,
                 ),
             )
             .await;
@@ -458,7 +415,7 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("boom"));
     }
 
-    async fn collect_chunks(collector: crate::stream_collector::SseCollector) -> Vec<StreamChunk> {
+    async fn collect_chunks(collector: SseCollector) -> Vec<StreamChunk> {
         let mut rx = collector.rx;
         let mut chunks = Vec::new();
         while let Some(chunk) = rx.recv().await {
@@ -483,32 +440,13 @@ mod tests {
         }
     }
 
-    // ── from_env / from_json_str ───────────────────────────────
-    //
-    // **#1109 F1**: previously each test set `KODA_MOCK_RESPONSES` via
-    // `unsafe { std::env::set_var }` (UB in Rust 2024) and serialized
-    // access via a local `ENV_MUTEX`. Both went away once `from_env`
-    // delegated to a pure parser — the parser is what we actually want
-    // to test, the env-var read is a one-line wrapper.
+    // ── parse_script / from_json_str ───────────────────────────
 
     #[test]
     fn test_from_json_str_empty_array_gives_empty_provider() {
         let provider = MockProvider::from_json_str("[]");
         let next = provider.next_response();
         assert!(matches!(next, MockResponse::Text(t) if t.is_empty()));
-    }
-
-    #[test]
-    fn test_from_env_falls_back_to_empty_when_unset() {
-        // Smoke test for the env-reading wrapper. Uses a key that
-        // production reads (`KODA_MOCK_RESPONSES`) BUT relies on the
-        // runtime-env fallback to an unset process var, so we don't
-        // touch any global state. If a sibling test has already set
-        // the runtime entry, that's still fine — `from_env` just
-        // delegates to `from_json_str`, which we test directly above.
-        // This test exists to pin that the wrapper compiles and the
-        // parse-empty path is reachable.
-        let _ = MockProvider::from_env(); // must not panic
     }
 
     #[test]
@@ -567,8 +505,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_chat_text_response() {
-        let settings =
-            ModelSettings::defaults_for("mock", &crate::provider_catalog::ProviderType::LMStudio);
+        let settings = ModelSettings::defaults_for(
+            "mock",
+            &koda_providers::provider_catalog::ProviderType::LMStudio,
+        );
         let provider = MockProvider::new(vec![MockResponse::Text("hi there".into())]);
         let resp = provider.chat(&[], &[], &settings).await.unwrap();
         assert_eq!(resp.content.as_deref(), Some("hi there"));
@@ -577,8 +517,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_chat_empty_queue_returns_empty_text() {
-        let settings =
-            ModelSettings::defaults_for("mock", &crate::provider_catalog::ProviderType::LMStudio);
+        let settings = ModelSettings::defaults_for(
+            "mock",
+            &koda_providers::provider_catalog::ProviderType::LMStudio,
+        );
         let provider = MockProvider::new(vec![]);
         let resp = provider.chat(&[], &[], &settings).await.unwrap();
         assert_eq!(resp.content.as_deref(), Some(""));
@@ -586,8 +528,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_chat_rate_limit_is_error() {
-        let settings =
-            ModelSettings::defaults_for("mock", &crate::provider_catalog::ProviderType::LMStudio);
+        let settings = ModelSettings::defaults_for(
+            "mock",
+            &koda_providers::provider_catalog::ProviderType::LMStudio,
+        );
         let provider = MockProvider::new(vec![MockResponse::RateLimit]);
         let result = provider.chat(&[], &[], &settings).await;
         assert!(result.is_err());
@@ -603,8 +547,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_chat_tool_calls_response() {
-        let settings =
-            ModelSettings::defaults_for("mock", &crate::provider_catalog::ProviderType::LMStudio);
+        let settings = ModelSettings::defaults_for(
+            "mock",
+            &koda_providers::provider_catalog::ProviderType::LMStudio,
+        );
         let provider = MockProvider::new(vec![MockResponse::tool_call(
             "Bash",
             serde_json::json!({"command": "ls"}),
@@ -617,8 +563,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_chat_text_max_tokens_stop_reason() {
-        let settings =
-            ModelSettings::defaults_for("mock", &crate::provider_catalog::ProviderType::LMStudio);
+        let settings = ModelSettings::defaults_for(
+            "mock",
+            &koda_providers::provider_catalog::ProviderType::LMStudio,
+        );
         let provider =
             MockProvider::new(vec![MockResponse::TextMaxTokens("truncated text".into())]);
         let resp = provider.chat(&[], &[], &settings).await.unwrap();
@@ -628,8 +576,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_chat_context_overflow_is_error() {
-        let settings =
-            ModelSettings::defaults_for("mock", &crate::provider_catalog::ProviderType::LMStudio);
+        let settings = ModelSettings::defaults_for(
+            "mock",
+            &koda_providers::provider_catalog::ProviderType::LMStudio,
+        );
         let provider = MockProvider::new(vec![MockResponse::ContextOverflow]);
         let result = provider.chat(&[], &[], &settings).await;
         assert!(result.is_err());
@@ -641,8 +591,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_chat_network_error() {
-        let settings =
-            ModelSettings::defaults_for("mock", &crate::provider_catalog::ProviderType::LMStudio);
+        let settings = ModelSettings::defaults_for(
+            "mock",
+            &koda_providers::provider_catalog::ProviderType::LMStudio,
+        );
         let provider = MockProvider::new(vec![MockResponse::NetworkError {
             partial_text: "partial...".into(),
             error: "connection reset".into(),
@@ -655,8 +607,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_stream_text_max_tokens() {
-        let settings =
-            ModelSettings::defaults_for("mock", &crate::provider_catalog::ProviderType::LMStudio);
+        let settings = ModelSettings::defaults_for(
+            "mock",
+            &koda_providers::provider_catalog::ProviderType::LMStudio,
+        );
         let provider = MockProvider::new(vec![MockResponse::TextMaxTokens("hi there".into())]);
         let collector = provider.chat_stream(&[], &[], &settings).await.unwrap();
         let chunks = collect_chunks(collector).await;
@@ -669,8 +623,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_stream_tool_calls_eager() {
-        let settings =
-            ModelSettings::defaults_for("mock", &crate::provider_catalog::ProviderType::LMStudio);
+        let settings = ModelSettings::defaults_for(
+            "mock",
+            &koda_providers::provider_catalog::ProviderType::LMStudio,
+        );
         let provider = MockProvider::new(vec![MockResponse::ToolCallsEager(vec![ToolCall {
             id: "tc1".into(),
             function_name: "Read".into(),
@@ -690,8 +646,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_stream_network_error() {
-        let settings =
-            ModelSettings::defaults_for("mock", &crate::provider_catalog::ProviderType::LMStudio);
+        let settings = ModelSettings::defaults_for(
+            "mock",
+            &koda_providers::provider_catalog::ProviderType::LMStudio,
+        );
         let provider = MockProvider::new(vec![MockResponse::NetworkError {
             partial_text: "partial output".into(),
             error: "connection dropped".into(),

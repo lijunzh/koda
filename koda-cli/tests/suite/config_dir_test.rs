@@ -7,6 +7,7 @@
 //! `XDG_CONFIG_HOME` are different temp directories, and nothing may touch
 //! the one under `HOME`.
 
+use koda_test_utils::network::ScriptedServer;
 use std::path::Path;
 use std::process::Command;
 
@@ -14,15 +15,16 @@ fn koda_bin() -> String {
     env!("CARGO_BIN_EXE_koda").to_string()
 }
 
-/// Run headless koda on the mock provider with separate HOME and config dirs.
+/// Run headless koda against a scripted server, with separate HOME and
+/// config dirs.
 fn run(home: &Path, xdg: &Path, project: &Path, responses: &str) -> (String, bool) {
     let output = Command::new(koda_bin())
-        .args(["exec", "go", "--provider", "mock", "--mode", "auto"])
+        .args(["exec", "go", "--mode", "auto"])
         .arg("--project-root")
         .arg(project)
         .env("HOME", home)
         .env("XDG_CONFIG_HOME", xdg)
-        .env("KODA_MOCK_RESPONSES", responses)
+        .args(ScriptedServer::start(responses).koda_args())
         .output()
         .expect("failed to run koda");
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();

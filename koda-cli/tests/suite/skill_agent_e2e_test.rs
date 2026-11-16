@@ -1,7 +1,7 @@
 //! E2E tests for built-in skill injection and sub-agent delegation.
 //!
-//! These tests verify the full pipeline without a real LLM, using the
-//! MockProvider and scripted KODA_MOCK_RESPONSES.
+//! These tests verify the full pipeline without a real LLM, against a
+//! [`ScriptedServer`] playing scripted responses.
 //!
 //! ## What's tested
 //!
@@ -14,15 +14,15 @@
 //! - The `SubAgentStart` event (prints the agent name to stderr) is emitted.
 //! - `ListAgents` exposes the built-in agents.
 //!
-//! ## Mock provider behaviour
+//! ## The script
 //!
-//! Each `create_provider()` call returns a fresh `MockProvider::from_env()`,
-//! so sub-agents receive an independent copy of `KODA_MOCK_RESPONSES`.
-//! `explore` has `InvokeAgent` in its
-//! `disallowed_tools`, so if the mock tries to call it inside those agents
-//! the tool dispatch returns an error and the loop advances to the next
-//! scripted response.
+//! The parent and its sub-agents share one script: each model call, the
+//! parent's or a sub-agent's, takes the next response. `explore` has
+//! `InvokeAgent` in its `disallowed_tools`, so if the script calls it inside
+//! that agent the tool dispatch returns an error and the loop advances to the
+//! next scripted response.
 
+use koda_test_utils::network::ScriptedServer;
 use std::process::Command;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -34,10 +34,10 @@ fn koda_bin() -> String {
 fn run_mock(prompt: &str, responses: &str) -> (String, String, bool) {
     let tmp = tempfile::tempdir().unwrap();
     let output = Command::new(koda_bin())
-        .args(["exec", prompt, "--provider", "mock", "--project-root"])
+        .args(["exec", prompt, "--project-root"])
         .arg(tmp.path())
         .env("XDG_CONFIG_HOME", tmp.path())
-        .env("KODA_MOCK_RESPONSES", responses)
+        .args(ScriptedServer::start(responses).koda_args())
         .output()
         .expect("failed to run koda");
 

@@ -34,8 +34,6 @@ pub fn input_modalities(provider: ProviderType, model: &str) -> &'static [InputM
     match provider {
         ProviderType::Anthropic => TEXT_IMAGE_PDF,
         ProviderType::Gemini | ProviderType::OpenAI => TEXT_IMAGE,
-        #[cfg(any(test, feature = "test-support"))]
-        ProviderType::Mock => TEXT_IMAGE,
         _ if model.contains("claude") || model.contains("gpt-") => TEXT_IMAGE,
         _ => TEXT,
     }

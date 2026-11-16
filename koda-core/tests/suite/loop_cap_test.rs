@@ -4,8 +4,8 @@
 use koda_core::engine::{EngineCommand, EngineEvent};
 use koda_core::inference::{self, InferenceContext};
 use koda_core::loop_guard::LoopContinuation;
-use koda_core::providers::mock::{MockProvider, MockResponse};
 use koda_test_utils::{Env, TestSink};
+use koda_test_utils::{MockProvider, MockResponse};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;

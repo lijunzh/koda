@@ -74,10 +74,6 @@ pub mod untrusted;
 
 pub use provider_catalog::ProviderType;
 
-/// Mock provider for deterministic testing.
-#[cfg(any(test, feature = "test-support"))]
-pub mod mock;
-
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -597,8 +593,6 @@ pub fn create_provider(config: &ProviderSettings) -> Box<dyn LlmProvider + Send 
                 provider_http_client(config, READ_TIMEOUT_SECS),
             ))
         }
-        #[cfg(any(test, feature = "test-support"))]
-        ProviderType::Mock => Box::new(mock::MockProvider::from_env()),
         _ => {
             let url = &config.base_url;
             Box::new(if config.provider_type.requires_api_key() {
@@ -751,11 +745,6 @@ mod tests {
     #[test]
     fn create_provider_routes_gemini_to_gemini_provider() {
         assert_eq!(route(ProviderType::Gemini), "gemini");
-    }
-
-    #[test]
-    fn create_provider_routes_mock_to_mock_provider() {
-        assert_eq!(route(ProviderType::Mock), "mock");
     }
 
     /// All other provider types currently fall through to the

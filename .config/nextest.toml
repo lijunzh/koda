@@ -2,7 +2,7 @@
 # binaries at once; `cargo test` runs the binaries one after another. Codex
 # uses it too (`codex-rs/.config/nextest.toml`).
 #
-#   cargo nextest run --workspace --features koda-core/test-support
+#   cargo nextest run --workspace
 #
 # Doc tests aren't run by nextest: `cargo test --workspace --doc`.
 

@@ -29,10 +29,10 @@
 //! }
 //! ```
 
+use crate::{MockProvider, MockResponse};
 use anyhow::Result;
 use async_trait::async_trait;
 use koda_core::config::ModelSettings;
-use koda_core::providers::mock::{MockProvider, MockResponse};
 use koda_core::providers::{
     ChatMessage, LlmProvider, LlmResponse, ModelCapabilities, ModelInfo, StreamChunk,
     ToolDefinition,

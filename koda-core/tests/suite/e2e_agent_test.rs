@@ -1,13 +1,15 @@
 //! E2E tests: sub-agent invocation and caching.
 
-use koda_core::{engine::EngineEvent, runtime_env};
+use koda_core::engine::EngineEvent;
 use koda_state::session_store::SessionStore;
+use koda_test_utils::network::FakeLlmServer;
 use koda_test_utils::{ENV_MUTEX, Env, MockProvider, MockResponse};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_sub_agent_invocation_e2e() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::new().await;
+    let server = FakeLlmServer::spawn().await;
 
     let agents_dir = env.root.join(".koda/agents");
     std::fs::create_dir_all(&agents_dir).unwrap();
@@ -17,16 +19,16 @@ async fn test_sub_agent_invocation_e2e() {
             "name": "echo-agent",
             "system_prompt": "You are a simple echo agent. Repeat back the user's prompt verbatim.",
             "allowed_tools": [],
-            "provider": "mock",
-            "base_url": "http://localhost:0"
+            "provider": "lmstudio",
+            "model": "stub",
+            "base_url": server.url()
         })
         .to_string(),
     )
     .unwrap();
-    runtime_env::set(
-        "KODA_MOCK_RESPONSES",
-        r#"[{"text": "Echo: review the auth module"}]"#,
-    );
+    server
+        .mount_script_json(r#"[{"text": "Echo: review the auth module"}]"#)
+        .await;
 
     env.insert_user_message("delegate to echo-agent").await;
 
@@ -48,7 +50,6 @@ async fn test_sub_agent_invocation_e2e() {
     // on the parent's `InvokeAgent` call. No more polling on
     // `ChildTaskUpdate` terminal status, no more `collect_bg_events_after`
     // race window. The pre-#1163 assertion shape is back, simpler.
-    runtime_env::remove("KODA_MOCK_RESPONSES");
     assert!(
         events.iter().any(
             |e| matches!(e, EngineEvent::SubAgentStart { agent_name } if agent_name == "echo-agent")
@@ -137,7 +138,7 @@ async fn test_sub_agent_invocation_e2e() {
 ///   1. Issue a `ListSkills` tool call (no-arg, no-side-effect tool)
 ///   2. Reply with final text
 ///
-/// If the bug is present, the sub-agent will burn all `KODA_MOCK_RESPONSES`
+/// If the bug is present, the sub-agent will burn its whole script
 /// on repeated tool calls and never reach the text reply — OR the DB
 /// will end up with assistant rows where `completed_at IS NULL`.
 /// Either failure is asserted below.
@@ -145,6 +146,7 @@ async fn test_sub_agent_invocation_e2e() {
 async fn sub_agent_marks_assistant_messages_complete_so_loop_progresses() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::new().await;
+    let server = FakeLlmServer::spawn().await;
 
     let agents_dir = env.root.join(".koda/agents");
     std::fs::create_dir_all(&agents_dir).unwrap();
@@ -154,8 +156,9 @@ async fn sub_agent_marks_assistant_messages_complete_so_loop_progresses() {
             "name": "loop-test-agent",
             "system_prompt": "You are a test agent. Call ListSkills then reply done.",
             "allowed_tools": ["ListSkills"],
-            "provider": "mock",
-            "base_url": "http://localhost:0"
+            "provider": "lmstudio",
+            "model": "stub",
+            "base_url": server.url()
         })
         .to_string(),
     )
@@ -165,13 +168,14 @@ async fn sub_agent_marks_assistant_messages_complete_so_loop_progresses() {
     // the sub-agent would reload a context missing the assistant
     // tool-call turn and re-issue the same call — burning the
     // second response on another tool call instead of the text.
-    runtime_env::set(
-        "KODA_MOCK_RESPONSES",
-        r#"[
+    server
+        .mount_script_json(
+            r#"[
                 {"tool_calls": [{"id": "tc_1", "name": "ListSkills", "arguments": "{}"}]},
                 {"text": "sub-agent done"}
             ]"#,
-    );
+        )
+        .await;
 
     env.insert_user_message("delegate").await;
 
@@ -196,7 +200,6 @@ async fn sub_agent_marks_assistant_messages_complete_so_loop_progresses() {
     // to confirm the sub-agent's session exists so the DB checks
     // below have something to read.
     let _ = events; // events vec retained only for symmetry / debug.
-    runtime_env::remove("KODA_MOCK_RESPONSES");
 
     // Find the sub-agent's session. `list_sessions` returns newest-first,
     // so the loop-test-agent session is at the top (created after the
@@ -271,6 +274,7 @@ async fn sub_agent_marks_assistant_messages_complete_so_loop_progresses() {
 async fn sub_agent_empty_final_response_falls_back_to_recovered_text() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::new().await;
+    let server = FakeLlmServer::spawn().await;
 
     let agents_dir = env.root.join(".koda/agents");
     std::fs::create_dir_all(&agents_dir).unwrap();
@@ -280,8 +284,9 @@ async fn sub_agent_empty_final_response_falls_back_to_recovered_text() {
             "name": "recovery-agent",
             "system_prompt": "You are a test agent. Investigate then report findings.",
             "allowed_tools": ["ListSkills"],
-            "provider": "mock",
-            "base_url": "http://localhost:0"
+            "provider": "lmstudio",
+            "model": "stub",
+            "base_url": server.url()
         })
         .to_string(),
     )
@@ -312,12 +317,13 @@ async fn sub_agent_empty_final_response_falls_back_to_recovered_text() {
     //   - regression that drops the structured marker
     //   - regression that lets the dispatcher hang or panic on
     //     `LlmResponse { content: Some(""), tool_calls: vec![] }`
-    runtime_env::set(
-        "KODA_MOCK_RESPONSES",
-        r#"[
+    server
+        .mount_script_json(
+            r#"[
                 {"tool": "ListSkills", "args": {}}
             ]"#,
-    );
+        )
+        .await;
 
     env.insert_user_message("delegate to recovery-agent").await;
 
@@ -332,7 +338,6 @@ async fn sub_agent_empty_final_response_falls_back_to_recovered_text() {
         MockResponse::Text("parent done".into()),
     ]);
     let events = env.run_inference(&provider).await;
-    runtime_env::remove("KODA_MOCK_RESPONSES");
 
     let invoke_output = events
         .iter()
@@ -374,6 +379,7 @@ async fn sub_agent_empty_final_response_falls_back_to_recovered_text() {
 async fn test_sub_agent_cache_hit_skips_llm() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::new().await;
+    let server = FakeLlmServer::spawn().await;
 
     let agents_dir = env.root.join(".koda/agents");
     std::fs::create_dir_all(&agents_dir).unwrap();
@@ -383,13 +389,16 @@ async fn test_sub_agent_cache_hit_skips_llm() {
             "name": "echo-agent",
             "system_prompt": "You are a simple echo agent.",
             "allowed_tools": [],
-            "provider": "mock",
-            "base_url": "http://localhost:0"
+            "provider": "lmstudio",
+            "model": "stub",
+            "base_url": server.url()
         })
         .to_string(),
     )
     .unwrap();
-    runtime_env::set("KODA_MOCK_RESPONSES", r#"[{"text": "cached result"}]"#);
+    server
+        .mount_script_json(r#"[{"text": "cached result"}]"#)
+        .await;
     env.insert_user_message("call the agent twice").await;
 
     let provider = MockProvider::new(vec![
@@ -407,7 +416,6 @@ async fn test_sub_agent_cache_hit_skips_llm() {
         MockResponse::Text("Done with both calls.".into()),
     ]);
     let events = env.run_inference(&provider).await;
-    runtime_env::remove("KODA_MOCK_RESPONSES");
 
     let cache_hit = events
         .iter()
@@ -428,7 +436,7 @@ async fn test_sub_agent_cache_hit_skips_llm() {
 // ── skip_memory isolation (#769) ────────────────────────────────────────────
 
 /// Helper: creates `agents/<name>.json` under `env.root`.
-fn write_agent_config(env: &Env, name: &str, skip_memory: bool) {
+fn write_agent_config(env: &Env, server: &FakeLlmServer, name: &str, skip_memory: bool) {
     let agents_dir = env.root.join(".koda/agents");
     std::fs::create_dir_all(&agents_dir).unwrap();
     std::fs::write(
@@ -438,24 +446,25 @@ fn write_agent_config(env: &Env, name: &str, skip_memory: bool) {
             "system_prompt": "You are a lean test agent.",
             "skip_memory": skip_memory,
             "allowed_tools": [],
-            "provider": "mock",
-            "base_url": "http://localhost:0"
+            "provider": "lmstudio",
+            "model": "stub",
+            "base_url": server.url()
         })
         .to_string(),
     )
     .unwrap();
 }
 
-/// Runs one InvokeAgent call via the outer provider and returns the env-provider
-/// recorded calls (messages the sub-agent's MockProvider received).
+/// Runs one InvokeAgent call via the outer provider and returns the messages
+/// of each request the sub-agent sent to `server`.
 ///
 /// The sub-agent runs inside the parent's `InvokeAgent` call (#1366), so
 /// its calls are recorded by the time `run_inference` returns.
 async fn invoke_agent_and_take_calls(
     env: &Env,
+    server: &FakeLlmServer,
     agent_name: &str,
-) -> Vec<Vec<koda_core::providers::ChatMessage>> {
-    MockProvider::clear_env_calls();
+) -> Vec<Vec<serde_json::Value>> {
     env.insert_user_message(&format!("call {agent_name}")).await;
     let provider = MockProvider::new(vec![
         MockResponse::tool_call(
@@ -465,28 +474,27 @@ async fn invoke_agent_and_take_calls(
         MockResponse::Text("done".into()),
     ]);
     env.run_inference(&provider).await;
-    MockProvider::take_env_calls()
+    server.chat_messages().await
 }
 
-#[cfg(feature = "test-support")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn skip_memory_excludes_project_memory_from_sub_agent() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::new().await;
+    let server = FakeLlmServer::spawn().await;
 
     // Write a distinctive sentinel to the project memory file.
     std::fs::write(env.root.join("AGENTS.md"), "SENTINEL_XYZ").unwrap();
-    write_agent_config(&env, "lean-agent", /* skip_memory */ true);
-    runtime_env::set("KODA_MOCK_RESPONSES", r#"[{"text": "sub done"}]"#);
-    let calls = invoke_agent_and_take_calls(&env, "lean-agent").await;
-    runtime_env::remove("KODA_MOCK_RESPONSES");
+    write_agent_config(&env, &server, "lean-agent", /* skip_memory */ true);
+    server.mount_script_json(r#"[{"text": "sub done"}]"#).await;
+    let calls = invoke_agent_and_take_calls(&env, &server, "lean-agent").await;
 
     // Without this, the absence check below would pass on no calls at all.
     assert!(!calls.is_empty(), "the sub-agent never called its provider");
     let all_content: String = calls
         .iter()
         .flatten()
-        .filter_map(|m| m.content.as_deref())
+        .filter_map(|m| m["content"].as_str())
         .collect();
     assert!(
         !all_content.contains("SENTINEL_XYZ"),
@@ -494,18 +502,17 @@ async fn skip_memory_excludes_project_memory_from_sub_agent() {
     );
 }
 
-#[cfg(feature = "test-support")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn without_skip_memory_project_memory_reaches_sub_agent() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::new().await;
+    let server = FakeLlmServer::spawn().await;
 
     // Same sentinel — but this agent does NOT skip memory.
     std::fs::write(env.root.join("AGENTS.md"), "SENTINEL_XYZ").unwrap();
-    write_agent_config(&env, "full-agent", /* skip_memory */ false);
-    runtime_env::set("KODA_MOCK_RESPONSES", r#"[{"text": "sub done"}]"#);
-    let calls = invoke_agent_and_take_calls(&env, "full-agent").await;
-    runtime_env::remove("KODA_MOCK_RESPONSES");
+    write_agent_config(&env, &server, "full-agent", /* skip_memory */ false);
+    server.mount_script_json(r#"[{"text": "sub done"}]"#).await;
+    let calls = invoke_agent_and_take_calls(&env, &server, "full-agent").await;
 
     assert!(
         !calls.is_empty(),
@@ -514,7 +521,7 @@ async fn without_skip_memory_project_memory_reaches_sub_agent() {
     let all_content: String = calls
         .iter()
         .flatten()
-        .filter_map(|m| m.content.as_deref())
+        .filter_map(|m| m["content"].as_str())
         .collect();
     assert!(
         all_content.contains("SENTINEL_XYZ"),
@@ -534,22 +541,19 @@ async fn without_skip_memory_project_memory_reaches_sub_agent() {
 /// `InvokeAgent` fell through to a registry stub returning
 /// `"InvokeAgent is handled by the inference loop."` — and for the
 /// stack-overflow risk that allowing real recursion would have created.
-#[cfg(feature = "test-support")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sub_agent_invoke_agent_is_refused_with_clear_message() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::new().await;
+    let server = FakeLlmServer::spawn().await;
 
-    write_agent_config(&env, "would-recurse", /* skip_memory */ true);
+    write_agent_config(&env, &server, "would-recurse", /* skip_memory */ true);
 
     // Sub-agent's mock plays two responses in order: it first tries to
     // call `InvokeAgent` (which should be refused), then emits its
     // final text. The refusal must not abort the sub-agent.
     //
-    runtime_env::set(
-        "KODA_MOCK_RESPONSES",
-        r#"[{"tool": "InvokeAgent", "args": {"agent_name": "would-recurse", "prompt": "recurse"}}, {"text": "final after refusal"}]"#,
-    );
+    server.mount_script_json(r#"[{"tool": "InvokeAgent", "args": {"agent_name": "would-recurse", "prompt": "recurse"}}, {"text": "final after refusal"}]"#).await;
 
     env.insert_user_message("delegate").await;
     let provider = MockProvider::new(vec![
@@ -560,7 +564,6 @@ async fn sub_agent_invoke_agent_is_refused_with_clear_message() {
         MockResponse::Text("parent done".into()),
     ]);
     let _events = env.run_inference(&provider).await;
-    runtime_env::remove("KODA_MOCK_RESPONSES");
 
     // The sub-agent's final text reached the parent — i.e. the refusal
     // did not abort the sub-agent loop, and the parent received a
@@ -600,6 +603,7 @@ async fn sub_agent_invoke_agent_is_refused_with_clear_message() {
 async fn test_sub_agent_grace_turn_terminates_runaway_explorer() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::new().await;
+    let server = FakeLlmServer::spawn().await;
 
     let agents_dir = env.root.join(".koda/agents");
     std::fs::create_dir_all(&agents_dir).unwrap();
@@ -610,8 +614,9 @@ async fn test_sub_agent_grace_turn_terminates_runaway_explorer() {
             "system_prompt": "You are a test agent that loves Glob.",
             "allowed_tools": ["Glob"],
             "max_iterations": 3,
-            "provider": "mock",
-            "base_url": "http://localhost:0"
+            "provider": "lmstudio",
+            "model": "stub",
+            "base_url": server.url()
         })
         .to_string(),
     )
@@ -628,15 +633,12 @@ async fn test_sub_agent_grace_turn_terminates_runaway_explorer() {
     //             that response is becomes the sub-agent's final
     //             output (text — grace passes; tool calls — dropped
     //             with a marker).
-    runtime_env::set(
-        "KODA_MOCK_RESPONSES",
-        r#"[
+    server.mount_script_json(r#"[
             {"tool": "Glob", "args": {"pattern": "nope_a_*"}},
             {"tool": "Glob", "args": {"pattern": "nope_b_*"}},
             {"tool": "Glob", "args": {"pattern": "nope_c_*"}},
             {"text": "Partial findings: I searched for nope_* patterns and found nothing. My investigation was interrupted."}
-        ]"#,
-    );
+        ]"#).await;
 
     env.insert_user_message("delegate to spinner").await;
 
@@ -657,7 +659,6 @@ async fn test_sub_agent_grace_turn_terminates_runaway_explorer() {
     // back as `ToolCallResult.output` on the parent's `InvokeAgent`
     // call; its terminal `ChildTaskUpdate` carries only the start of it.
     // All assertions below pivot to the sync-path event shape.
-    runtime_env::remove("KODA_MOCK_RESPONSES");
 
     // The visible UX signal of a triggered grace turn: an `Info` line
     // with the "reached max turns" message. Forwarded as
@@ -727,6 +728,7 @@ async fn test_sub_agent_grace_turn_terminates_runaway_explorer() {
 async fn test_sub_agent_grace_turn_drops_tool_calls_when_model_defies() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::new().await;
+    let server = FakeLlmServer::spawn().await;
 
     let agents_dir = env.root.join(".koda/agents");
     std::fs::create_dir_all(&agents_dir).unwrap();
@@ -737,8 +739,9 @@ async fn test_sub_agent_grace_turn_drops_tool_calls_when_model_defies() {
             "system_prompt": "You ignore reminders and keep tooling.",
             "allowed_tools": ["Glob"],
             "max_iterations": 2,
-            "provider": "mock",
-            "base_url": "http://localhost:0"
+            "provider": "lmstudio",
+            "model": "stub",
+            "base_url": server.url()
         })
         .to_string(),
     )
@@ -748,14 +751,15 @@ async fn test_sub_agent_grace_turn_drops_tool_calls_when_model_defies() {
     // model still emits a tool call (the bug class we want to defend
     // against). Implementation must drop the iter-3 tool call and
     // synthesize a marker.
-    runtime_env::set(
-        "KODA_MOCK_RESPONSES",
-        r#"[
+    server
+        .mount_script_json(
+            r#"[
             {"tool": "Glob", "args": {"pattern": "nope_a_*"}},
             {"tool": "Glob", "args": {"pattern": "nope_b_*"}},
             {"tool": "Glob", "args": {"pattern": "nope_c_*"}}
         ]"#,
-    );
+        )
+        .await;
 
     env.insert_user_message("delegate to defiant").await;
 
@@ -774,7 +778,6 @@ async fn test_sub_agent_grace_turn_drops_tool_calls_when_model_defies() {
     // lives on `ToolCallResult.output`, and its `Glob` tool calls
     // are still forwarded as `ChildAgentActivity` by the FG path's
     // sink wrapper.
-    runtime_env::remove("KODA_MOCK_RESPONSES");
 
     // Marker present in the InvokeAgent tool result.
     let invoke_output = events
@@ -818,11 +821,11 @@ async fn test_sub_agent_grace_turn_drops_tool_calls_when_model_defies() {
 /// would let it replace the system prompt. The previous message is a tool
 /// result, so a neutral bridge keeps the roles valid without saying the turn
 /// was interrupted.
-#[cfg(feature = "test-support")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_sub_agent_grace_reminder_is_a_user_message() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::new().await;
+    let server = FakeLlmServer::spawn().await;
 
     let agents_dir = env.root.join(".koda/agents");
     std::fs::create_dir_all(&agents_dir).unwrap();
@@ -833,22 +836,23 @@ async fn test_sub_agent_grace_reminder_is_a_user_message() {
             "system_prompt": "You are the capped agent.",
             "allowed_tools": ["Glob"],
             "max_iterations": 1,
-            "provider": "mock",
-            "base_url": "http://localhost:0"
+            "provider": "lmstudio",
+            "model": "stub",
+            "base_url": server.url()
         })
         .to_string(),
     )
     .unwrap();
 
-    runtime_env::set(
-        "KODA_MOCK_RESPONSES",
-        r#"[
+    server
+        .mount_script_json(
+            r#"[
             {"tool": "Glob", "args": {"pattern": "nope_*"}},
             {"text": "Final summary."}
         ]"#,
-    );
-    let calls = invoke_agent_and_take_calls(&env, "capped").await;
-    runtime_env::remove("KODA_MOCK_RESPONSES");
+        )
+        .await;
+    let calls = invoke_agent_and_take_calls(&env, &server, "capped").await;
 
     assert_eq!(
         calls.len(),
@@ -857,27 +861,26 @@ async fn test_sub_agent_grace_reminder_is_a_user_message() {
     );
     let grace = &calls[1];
 
-    let system: Vec<_> = grace.iter().filter(|m| m.role == "system").collect();
+    let system: Vec<_> = grace.iter().filter(|m| m["role"] == "system").collect();
     assert_eq!(system.len(), 1, "only the system prompt: {grace:#?}");
-    assert_eq!(grace[0].role, "system");
+    assert_eq!(grace[0]["role"], "system");
     assert!(
-        grace[0]
-            .content
-            .as_deref()
+        grace[0]["content"]
+            .as_str()
             .unwrap()
             .contains("You are the capped agent."),
         "{grace:#?}"
     );
 
-    let roles: Vec<_> = grace.iter().map(|m| m.role.as_str()).collect();
+    let roles: Vec<_> = grace.iter().map(|m| m["role"].as_str().unwrap()).collect();
     assert_eq!(
         roles[roles.len() - 3..],
         ["tool", "assistant", "user"],
         "{grace:#?}"
     );
-    let bridge = grace[grace.len() - 2].content.as_deref().unwrap();
+    let bridge = grace[grace.len() - 2]["content"].as_str().unwrap();
     assert_eq!(bridge, "[Turn budget reached.]");
-    let reminder = grace.last().unwrap().content.as_deref().unwrap();
+    let reminder = grace.last().unwrap()["content"].as_str().unwrap();
     assert!(reminder.contains("ONE final chance"), "{reminder}");
 }
 
@@ -911,6 +914,7 @@ async fn sub_agent_preflight_bails_when_context_exceeds_window() {
     // Set the budget directly in the agent JSON so the gate has a knob
     // to trip on.
     let env = Env::new().await;
+    let server = FakeLlmServer::spawn().await;
 
     let agents_dir = env.root.join(".koda/agents");
     std::fs::create_dir_all(&agents_dir).unwrap();
@@ -925,8 +929,9 @@ async fn sub_agent_preflight_bails_when_context_exceeds_window() {
                               already large enough to blow a tiny \
                               context window many times over.",
             "allowed_tools": [],
-            "provider": "mock",
-            "base_url": "http://localhost:0",
+            "provider": "lmstudio",
+            "model": "stub",
+            "base_url": server.url(),
             // 50-token budget is small enough that the system prompt
             // alone busts it. Pre-flight tripwire fires first iteration.
             "max_context_tokens": 50
@@ -938,10 +943,9 @@ async fn sub_agent_preflight_bails_when_context_exceeds_window() {
     // If the gate fails to fire, this MockProvider would be hit and the
     // test would still pass for the wrong reason. Set a sentinel response
     // that, if observed in the final transcript, proves the bypass.
-    runtime_env::set(
-        "KODA_MOCK_RESPONSES",
-        r#"[{"text": "BYPASSED_PREFLIGHT_GATE"}]"#,
-    );
+    server
+        .mount_script_json(r#"[{"text": "BYPASSED_PREFLIGHT_GATE"}]"#)
+        .await;
     env.insert_user_message("delegate to the over-budget agent")
         .await;
 
@@ -964,7 +968,6 @@ async fn sub_agent_preflight_bails_when_context_exceeds_window() {
     // actionable error itself flows back as `ToolCallResult.output`
     // on the parent's `InvokeAgent` call — the dispatcher's `Err(e)`
     // arm formats it as `"Error invoking sub-agent: {chain}"`.
-    runtime_env::remove("KODA_MOCK_RESPONSES");
 
     // 1. The pre-flight Info event must surface so the overlay shows
     //    the failure reason. Pin substrings the dispatcher emits.
@@ -1022,6 +1025,7 @@ async fn sub_agent_preflight_bails_when_context_exceeds_window() {
 async fn sub_agent_preflight_passes_under_normal_budget() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::builder().max_context_tokens(200_000).build().await;
+    let server = FakeLlmServer::spawn().await;
 
     let agents_dir = env.root.join(".koda/agents");
     std::fs::create_dir_all(&agents_dir).unwrap();
@@ -1031,14 +1035,15 @@ async fn sub_agent_preflight_passes_under_normal_budget() {
             "name": "normal-agent",
             "system_prompt": "You are helpful.",
             "allowed_tools": [],
-            "provider": "mock",
-            "base_url": "http://localhost:0"
+            "provider": "lmstudio",
+            "model": "stub",
+            "base_url": server.url()
         })
         .to_string(),
     )
     .unwrap();
 
-    runtime_env::set("KODA_MOCK_RESPONSES", r#"[{"text": "ok"}]"#);
+    server.mount_script_json(r#"[{"text": "ok"}]"#).await;
     env.insert_user_message("delegate to normal-agent").await;
 
     let provider = MockProvider::new(vec![
@@ -1053,7 +1058,6 @@ async fn sub_agent_preflight_passes_under_normal_budget() {
         MockResponse::Text("done".into()),
     ]);
     let events = env.run_inference(&provider).await;
-    runtime_env::remove("KODA_MOCK_RESPONSES");
 
     let preflight_failed = events.iter().any(|e| {
         matches!(
@@ -1131,6 +1135,7 @@ async fn invoke_agent_without_agent_name_is_rejected_with_actionable_error() {
 async fn a_sub_agent_session_stores_its_own_context() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::new().await;
+    let server = FakeLlmServer::spawn().await;
     let agents_dir = env.root.join(".koda/agents");
     std::fs::create_dir_all(&agents_dir).unwrap();
     std::fs::write(
@@ -1138,15 +1143,16 @@ async fn a_sub_agent_session_stores_its_own_context() {
         serde_json::json!({
             "name": "reader",
             "system_prompt": "You read.",
-            "provider": "mock",
-            "base_url": "http://localhost:0",
+            "provider": "lmstudio",
+            "model": "stub",
+            "base_url": server.url(),
             "model": "sub-model",
             "trust": "plan"
         })
         .to_string(),
     )
     .unwrap();
-    runtime_env::set("KODA_MOCK_RESPONSES", r#"[{"text": "read it"}]"#);
+    server.mount_script_json(r#"[{"text": "read it"}]"#).await;
     env.insert_user_message("delegate to reader").await;
     let provider = MockProvider::new(vec![
         MockResponse::tool_call(
@@ -1156,7 +1162,6 @@ async fn a_sub_agent_session_stores_its_own_context() {
         MockResponse::Text("done".into()),
     ]);
     let events = env.run_inference(&provider).await;
-    runtime_env::remove("KODA_MOCK_RESPONSES");
     let call_id = events
         .iter()
         .find_map(|e| match e {

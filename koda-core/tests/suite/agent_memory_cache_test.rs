@@ -32,7 +32,7 @@ async fn rebuild_system_prompt_uses_cached_memory_not_disk() {
     )
     .expect("write memory");
 
-    let config = KodaConfig::default_for_testing(ProviderType::Mock);
+    let config = KodaConfig::default_for_testing(ProviderType::LMStudio);
     let mut agent = KodaAgent::new(&config, project_root, false)
         .await
         .expect("build agent");

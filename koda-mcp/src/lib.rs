@@ -40,6 +40,8 @@ pub mod config;
 
 /// Single MCP server client — wraps rmcp connection lifecycle.
 pub mod client;
+#[cfg(test)]
+mod compat_tests;
 
 /// Multi-server connection manager — parallel startup, tool discovery.
 pub mod manager;

@@ -134,9 +134,9 @@ jobs:
       # As CI tests: nextest runs tests from all binaries at once, where
       # cargo test runs the binaries one after another; it skips doc tests.
       - name: Test
-        run: cargo nextest run --workspace --features koda-core/test-support --profile ci
+        run: cargo nextest run --workspace --profile ci
       - name: Doc tests
-        run: cargo test --workspace --features koda-core/test-support --doc
+        run: cargo test --workspace --doc
 
   build:
     name: Build ${{ matrix.target }}

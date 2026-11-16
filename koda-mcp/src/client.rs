@@ -385,20 +385,20 @@ impl McpClient {
 
 impl McpClient {
     /// Force status to a specific value (test-only).
-    #[cfg(feature = "test-support")]
-    pub fn set_status_for_test(&mut self, status: McpClientStatus) {
+    #[cfg(test)]
+    pub(crate) fn set_status_for_test(&mut self, status: McpClientStatus) {
         self.status = status;
     }
 
     /// Force server instructions (test-only). Pass `None` to clear.
-    #[cfg(feature = "test-support")]
-    pub fn set_instructions_for_test(&mut self, instructions: Option<String>) {
+    #[cfg(test)]
+    pub(crate) fn set_instructions_for_test(&mut self, instructions: Option<String>) {
         self.instructions = instructions;
     }
 
     /// Force last error (test-only).
-    #[cfg(feature = "test-support")]
-    pub fn set_last_error_for_test(&mut self, err: Option<String>) {
+    #[cfg(test)]
+    pub(crate) fn set_last_error_for_test(&mut self, err: Option<String>) {
         self.last_error = err;
     }
 
@@ -407,8 +407,8 @@ impl McpClient {
     /// Lets manager-level tests exercise success-path code (annotation
     /// caching, `all_tool_definitions`, status summaries) without
     /// spawning a real MCP server subprocess.
-    #[cfg(feature = "test-support")]
-    pub fn set_tools_for_test(&mut self, tools: Vec<DiscoveredTool>) {
+    #[cfg(test)]
+    pub(crate) fn set_tools_for_test(&mut self, tools: Vec<DiscoveredTool>) {
         self.tools = tools;
     }
 
@@ -417,8 +417,8 @@ impl McpClient {
     /// Everything else matches [`connect`](Self::connect): the same
     /// transport, redirect policy and handshake, so tests can run them
     /// against servers on loopback.
-    #[cfg(feature = "test-support")]
-    pub async fn connect_http_without_ssrf_guard_for_test(&mut self) -> Result<()> {
+    #[cfg(test)]
+    pub(crate) async fn connect_http_without_ssrf_guard_for_test(&mut self) -> Result<()> {
         let McpTransport::Http {
             url,
             bearer_token_env_var,

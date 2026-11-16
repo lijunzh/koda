@@ -11,8 +11,8 @@ git clone https://github.com/lijunzh/koda.git
 cd koda
 cargo build
 cargo install --locked cargo-nextest
-cargo nextest run --workspace --features koda-core/test-support
-cargo test --workspace --features koda-core/test-support --doc
+cargo nextest run --workspace
+cargo test --workspace --doc
 ```
 
 CI runs tests with [cargo-nextest](https://nexte.st), which runs every test in

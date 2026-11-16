@@ -22,6 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- **The `test-support` Cargo feature is gone from `koda-core`, `koda-providers` and `koda-mcp`,** as Codex removed `codex-core`'s (#11405). The mock provider and the test sink moved to Koda's unpublished test crate, so the `koda` binary can no longer select a mock provider (`--provider mock`), nothing test-only is public on crates.io, and each crate builds once instead of in two shapes. Tests run with plain `cargo nextest run --workspace`. Nothing changes for users.
 - **Koda's host is a crate of its own, `koda-server`, as Codex keeps `app-server` apart from `app-server-client`.** It holds the sessions, the config file, MCP, the event projection and `koda serve --stdio`; `koda-client` keeps the in-process client and re-exports the host modules it exposed (`events`, `stdio`, `feedback`, `builtin_skills`), so its paths still work. The file log's default filter adds `koda_server`. Nothing changes for users.
 - **No more Intel Mac binary.** Releases build for Apple Silicon Macs and for Linux on x86_64 and ARM64. Apple's last Intel Macs shipped in 2023, and CI has no Intel Mac to test on. On an Intel Mac, `brew install koda` now says the formula needs ARM64; `cargo install koda-cli --locked` still builds Koda there.
 - **Koda builds with Rust 1.100.0,** its pinned toolchain and minimum version; `cargo install koda-cli` needs it or newer. The crates' homepage on crates.io is now the documentation site.

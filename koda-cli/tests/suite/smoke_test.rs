@@ -1,11 +1,12 @@
-//! Smoke tests: headless mode with MockProvider.
+//! Smoke tests: headless mode against a scripted stub server.
 //!
 //! These tests exercise the full binary pipeline without a real LLM.
-//! They run `koda exec "..." --provider mock`, as text or with `--json`,
-//! with scripted responses via KODA_MOCK_RESPONSES env var.
+//! They run `koda exec "..."`, as text or with `--json`, against a
+//! [`ScriptedServer`] playing scripted responses.
 //!
 //! CI-safe: no network, no API keys, no LLM required.
 
+use koda_test_utils::network::ScriptedServer;
 use std::process::Command;
 
 // ── Helpers ─────────────────────────────────────────────────
@@ -14,7 +15,7 @@ fn koda_bin() -> String {
     env!("CARGO_BIN_EXE_koda").to_string()
 }
 
-/// `koda exec --json` on the mock provider.
+/// `koda exec --json` against a scripted stub server.
 fn run_mock(prompt: &str, responses: &str) -> (String, String, bool) {
     run_mock_exec_as(&["--json"], prompt, responses, None)
 }
@@ -31,13 +32,14 @@ fn run_mock_exec_as(
     mode: Option<&str>,
 ) -> (String, String, bool) {
     let tmp = tempfile::tempdir().unwrap();
+    let server = ScriptedServer::start(responses);
     let mut cmd = Command::new(koda_bin());
     cmd.arg("exec")
         .args(flags)
-        .args([prompt, "--provider", "mock", "--project-root"])
+        .args([prompt, "--project-root"])
         .arg(tmp.path())
         .env("XDG_CONFIG_HOME", tmp.path())
-        .env("KODA_MOCK_RESPONSES", responses);
+        .args(server.koda_args());
     if let Some(m) = mode {
         cmd.args(["--mode", m]);
     }
@@ -59,7 +61,7 @@ fn extract_json(stdout: &str) -> serde_json::Value {
     assert_eq!(message["method"], "exec/summary", "{stdout}");
     message["params"].clone()
 }
-// ── Headless MockProvider tests ──────────────────────────────
+// ── Headless tests on a scripted server ──────────────────────────────
 
 #[test]
 fn mock_text_response_returns_json() {
@@ -128,9 +130,8 @@ fn mock_destructive_bash_rejected_in_safe_and_default_modes_in_headless() {
 }
 
 /// `koda exec`'s text names a sub-agent and shows its tool calls indented
-/// under its `InvokeAgent` call. The mock gives the sub-agent the same
-/// scripted replies: its `InvokeAgent` is refused (explore can't nest), then
-/// it reads and answers.
+/// under its `InvokeAgent` call. The parent and the sub-agent share the
+/// script: the parent delegates, then the sub-agent reads and answers.
 #[test]
 fn exec_text_shows_a_sub_agents_calls_under_its_call() {
     let tmp = tempfile::tempdir().unwrap();
@@ -141,16 +142,10 @@ fn exec_text_shows_a_sub_agents_calls_under_its_call() {
         {"text":"Found it."}
     ]"#;
     let output = Command::new(koda_bin())
-        .args([
-            "exec",
-            "ask a sub-agent",
-            "--provider",
-            "mock",
-            "--project-root",
-        ])
+        .args(["exec", "ask a sub-agent", "--project-root"])
         .arg(tmp.path())
         .env("XDG_CONFIG_HOME", tmp.path())
-        .env("KODA_MOCK_RESPONSES", responses)
+        .args(ScriptedServer::start(responses).koda_args())
         .output()
         .expect("Failed to run koda");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -196,17 +191,10 @@ fn mock_tool_use_read_file() {
     ]"#;
 
     let output = Command::new(koda_bin())
-        .args([
-            "exec",
-            "--json",
-            "read hello.txt",
-            "--provider",
-            "mock",
-            "--project-root",
-        ])
+        .args(["exec", "--json", "read hello.txt", "--project-root"])
         .arg(tmp.path())
         .env("XDG_CONFIG_HOME", tmp.path())
-        .env("KODA_MOCK_RESPONSES", responses)
+        .args(ScriptedServer::start(responses).koda_args())
         .output()
         .expect("Failed to run koda");
 
@@ -241,17 +229,10 @@ fn run_mock_compacted_session(final_response: &str) -> (serde_json::Value, Strin
     // counted, and still small enough to summarize.
     let prompt = format!("read both files {}", "padding ".repeat(4_700));
     let output = Command::new(koda_bin())
-        .args([
-            "exec",
-            "--json",
-            prompt.as_str(),
-            "--provider",
-            "mock",
-            "--project-root",
-        ])
+        .args(["exec", "--json", prompt.as_str(), "--project-root"])
         .arg(tmp.path())
         .env("XDG_CONFIG_HOME", tmp.path())
-        .env("KODA_MOCK_RESPONSES", responses.to_string())
+        .args(ScriptedServer::start(&responses.to_string()).koda_args())
         .args(["--max-context-tokens", "16000"])
         .output()
         .expect("Failed to run koda");
@@ -276,7 +257,7 @@ fn mock_compaction_hint_is_never_the_response() {
     assert_eq!(json["response"], "", "stderr: {stderr}");
 }
 
-/// `koda exec` on the mock provider: read hello.txt, then reply.
+/// `koda exec` against a scripted server: read hello.txt, then reply.
 fn run_mock_exec(flags: &[&str]) -> (String, String, bool) {
     let tmp = tempfile::tempdir().unwrap();
     std::fs::write(tmp.path().join("hello.txt"), "mock test content").unwrap();
@@ -287,10 +268,10 @@ fn run_mock_exec(flags: &[&str]) -> (String, String, bool) {
     let output = Command::new(koda_bin())
         .arg("exec")
         .args(flags)
-        .args(["read hello.txt", "--provider", "mock", "--project-root"])
+        .args(["read hello.txt", "--project-root"])
         .arg(tmp.path())
         .env("XDG_CONFIG_HOME", tmp.path())
-        .env("KODA_MOCK_RESPONSES", responses)
+        .args(ScriptedServer::start(responses).koda_args())
         .output()
         .expect("Failed to run koda");
     (
@@ -335,7 +316,7 @@ fn exec_json_prints_the_protocol_from_session_to_summary() {
         methods,
         [
             "session/started",
-            // The mock reports no context window, so Koda says what it assumed.
+            // The stub reports no context window, so Koda says what it assumed.
             "warning",
             "turn/started",
             "item/started userMessage",
@@ -354,7 +335,7 @@ fn exec_json_prints_the_protocol_from_session_to_summary() {
     );
     let started = &lines[0]["params"];
     assert_eq!(started["protocolVersion"], 2);
-    assert_eq!(started["session"]["provider"], "mock");
+    assert_eq!(started["session"]["provider"], "lm-studio");
     let prompt = &lines[4]["params"]["item"];
     assert_eq!(prompt["text"], "read hello.txt");
     let usage = &lines[5]["params"]["tokenUsage"];
@@ -419,10 +400,9 @@ fn removed_one_shot_forms_are_refused_with_their_replacement() {
         let tmp = tempfile::tempdir().unwrap();
         let output = Command::new(koda_bin())
             .args(args)
-            .args(["--provider", "mock", "--project-root"])
+            .args(["--project-root"])
             .arg(tmp.path())
             .env("XDG_CONFIG_HOME", tmp.path())
-            .env("KODA_MOCK_RESPONSES", r#"[{"text":"ran"}]"#)
             .output()
             .expect("Failed to run koda");
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -440,10 +420,9 @@ fn a_piped_prompt_without_exec_is_refused() {
     use std::io::Write as _;
     let tmp = tempfile::tempdir().unwrap();
     let mut child = Command::new(koda_bin())
-        .args(["--provider", "mock", "--project-root"])
+        .args(["--project-root"])
         .arg(tmp.path())
         .env("XDG_CONFIG_HOME", tmp.path())
-        .env("KODA_MOCK_RESPONSES", r#"[{"text":"ran"}]"#)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -496,17 +475,10 @@ fn mock_at_file_reference() {
     std::fs::write(tmp.path().join("data.txt"), "important data").unwrap();
 
     let output = Command::new(koda_bin())
-        .args([
-            "exec",
-            "--json",
-            "analyze @data.txt",
-            "--provider",
-            "mock",
-            "--project-root",
-        ])
+        .args(["exec", "--json", "analyze @data.txt", "--project-root"])
         .arg(tmp.path())
         .env("XDG_CONFIG_HOME", tmp.path())
-        .env("KODA_MOCK_RESPONSES", r#"[{"text":"analyzed"}]"#)
+        .args(ScriptedServer::start(r#"[{"text":"analyzed"}]"#).koda_args())
         .output()
         .expect("Failed to run koda");
 
@@ -546,17 +518,10 @@ fn mock_session_resume() {
 
     // Turn 1
     let output1 = Command::new(koda_bin())
-        .args([
-            "exec",
-            "--json",
-            "turn one",
-            "--provider",
-            "mock",
-            "--project-root",
-        ])
+        .args(["exec", "--json", "turn one", "--project-root"])
         .arg(tmp.path())
         .env("XDG_CONFIG_HOME", tmp.path())
-        .env("KODA_MOCK_RESPONSES", r#"[{"text":"first"}]"#)
+        .args(ScriptedServer::start(r#"[{"text":"first"}]"#).koda_args())
         .output()
         .expect("Turn 1 failed");
 
@@ -570,15 +535,13 @@ fn mock_session_resume() {
             "exec",
             "--json",
             "turn two",
-            "--provider",
-            "mock",
             "--session",
             session_id,
             "--project-root",
         ])
         .arg(tmp.path())
         .env("XDG_CONFIG_HOME", tmp.path())
-        .env("KODA_MOCK_RESPONSES", r#"[{"text":"second"}]"#)
+        .args(ScriptedServer::start(r#"[{"text":"second"}]"#).koda_args())
         .output()
         .expect("Turn 2 failed");
 
@@ -604,17 +567,10 @@ fn mock_session_resume_via_resume_flag() {
 
     // Turn 1: create session
     let output1 = Command::new(koda_bin())
-        .args([
-            "exec",
-            "--json",
-            "turn one",
-            "--provider",
-            "mock",
-            "--project-root",
-        ])
+        .args(["exec", "--json", "turn one", "--project-root"])
         .arg(tmp.path())
         .env("XDG_CONFIG_HOME", tmp.path())
-        .env("KODA_MOCK_RESPONSES", r#"[{"text":"first"}]"#)
+        .args(ScriptedServer::start(r#"[{"text":"first"}]"#).koda_args())
         .output()
         .expect("Turn 1 failed");
 
@@ -628,15 +584,13 @@ fn mock_session_resume_via_resume_flag() {
             "exec",
             "--json",
             "turn two",
-            "--provider",
-            "mock",
             "--resume",
             session_id,
             "--project-root",
         ])
         .arg(tmp.path())
         .env("XDG_CONFIG_HOME", tmp.path())
-        .env("KODA_MOCK_RESPONSES", r#"[{"text":"second via resume"}]"#)
+        .args(ScriptedServer::start(r#"[{"text":"second via resume"}]"#).koda_args())
         .output()
         .expect("Turn 2 with --resume failed");
 
@@ -662,17 +616,10 @@ fn mock_session_resume_via_short_s_flag() {
 
     // Turn 1
     let output1 = Command::new(koda_bin())
-        .args([
-            "exec",
-            "--json",
-            "turn one",
-            "--provider",
-            "mock",
-            "--project-root",
-        ])
+        .args(["exec", "--json", "turn one", "--project-root"])
         .arg(tmp.path())
         .env("XDG_CONFIG_HOME", tmp.path())
-        .env("KODA_MOCK_RESPONSES", r#"[{"text":"first"}]"#)
+        .args(ScriptedServer::start(r#"[{"text":"first"}]"#).koda_args())
         .output()
         .expect("Turn 1 failed");
 
@@ -686,15 +633,13 @@ fn mock_session_resume_via_short_s_flag() {
             "exec",
             "--json",
             "turn two",
-            "--provider",
-            "mock",
             "-s",
             session_id,
             "--project-root",
         ])
         .arg(tmp.path())
         .env("XDG_CONFIG_HOME", tmp.path())
-        .env("KODA_MOCK_RESPONSES", r#"[{"text":"second via -s"}]"#)
+        .args(ScriptedServer::start(r#"[{"text":"second via -s"}]"#).koda_args())
         .output()
         .expect("Turn 2 with -s failed");
 

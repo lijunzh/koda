@@ -77,9 +77,6 @@ pub enum ProviderType {
     Vllm,
     /// llama.cpp's `llama-server` (local, OpenAI-compatible).
     LlamaCpp,
-    /// Mock provider for testing (reads KODA_MOCK_RESPONSES env var).
-    #[cfg(any(test, feature = "test-support"))]
-    Mock,
 }
 
 impl ProviderType {
@@ -191,14 +188,6 @@ impl ProviderType {
                 env_key: "KODA_API_KEY",
                 api_key: false,
             },
-            #[cfg(any(test, feature = "test-support"))]
-            Self::Mock => ProviderMeta {
-                name: "mock",
-                url: "http://localhost:0",
-                model: "mock-model",
-                env_key: "KODA_API_KEY",
-                api_key: false,
-            },
         }
     }
 
@@ -237,8 +226,6 @@ impl ProviderType {
                 "fireworks" => Self::Fireworks,
                 "vllm" => Self::Vllm,
                 "llama-cpp" | "llamacpp" | "llama.cpp" => Self::LlamaCpp,
-                #[cfg(any(test, feature = "test-support"))]
-                "mock" => Self::Mock,
                 _ => Self::OpenAI,
             };
         }
@@ -318,8 +305,6 @@ impl ProviderType {
             Self::Fireworks => "Fireworks",
             Self::Vllm => "vLLM",
             Self::LlamaCpp => "llama.cpp",
-            #[cfg(any(test, feature = "test-support"))]
-            Self::Mock => "Mock",
         }
     }
 }

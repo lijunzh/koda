@@ -58,8 +58,8 @@ set -euo pipefail
 # memorability. Re-measure when raising; lowering needs an explicit
 # comment and a #1265 reference.
 #
-# Baseline measurements (2026-05-06, macOS, --features
-# koda-core/test-support, --skip pool::tests for sandbox):
+# Baseline measurements (2026-05-06, macOS, with the test-support feature
+# Koda had then, --skip pool::tests for sandbox):
 #
 #   tools/web_fetch.rs        81.27%   →  78%  (SSRF defense)
 #   tools/file_tools.rs       91.29%   →  88%  (TOCTOU/symlink defense)

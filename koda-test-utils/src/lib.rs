@@ -1,10 +1,13 @@
 //! Test utilities for koda — mock providers, test sinks, and E2E harness.
 //!
-//! This crate is intentionally **not published** and exists only to support
-//! `koda-core` integration tests and downstream test binaries. Its default
-//! `core` feature depends on `koda-core` with the `test-support` feature
-//! enabled, so all cfg-gated test APIs are available; without it, only the
-//! stub HTTP server ([`network`]) is left, for `koda-providers`' tests.
+//! This crate is intentionally **not published** and exists only for
+//! tests. What tests need lives here rather than behind a feature of the
+//! published crates, as Codex removed `codex-core`'s `test-support`
+//! feature (#11405): no crate builds twice, nothing test-only is public on
+//! crates.io, and the `koda` binary can't select a mock. The mock provider
+//! ([`mock`]) and the stub HTTP server ([`network`]) need only
+//! `koda-providers`; the default `core` feature adds what builds on
+//! koda-core.
 //!
 //! # Quick start
 //!
@@ -27,22 +30,24 @@ mod env;
 pub mod golden;
 #[cfg(feature = "core")]
 pub mod log;
+pub mod mock;
 pub mod network;
+#[cfg(feature = "core")]
+mod sink;
 
-// ── Re-exports from koda-core (test-support gated) ─────────────────────────
+// ── Re-exports ─────────────────────────────────────────────────────────────
 
 #[cfg(feature = "core")]
 pub use koda_core::config::{KodaConfig, ProviderType};
 #[cfg(feature = "core")]
 pub use koda_core::engine::EngineEvent;
 #[cfg(feature = "core")]
-pub use koda_core::engine::sink::TestSink;
-#[cfg(feature = "core")]
-pub use koda_core::providers::mock::{MockProvider, MockResponse};
-#[cfg(feature = "core")]
 pub use koda_core::providers::{ChatMessage, LlmProvider, ToolDefinition};
 #[cfg(feature = "core")]
 pub use koda_state::db::Role;
+pub use mock::{MockProvider, MockResponse};
+#[cfg(feature = "core")]
+pub use sink::TestSink;
 
 // ── This crate's own utilities ─────────────────────────────────────────────
 

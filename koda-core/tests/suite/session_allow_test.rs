@@ -2,14 +2,14 @@
 //! command or file, and only for local changes: destructive calls keep asking,
 //! and a new session starts with nothing allowed.
 
-use koda_core::engine::sink::TestSink;
 use koda_core::engine::{ApprovalDecision, EngineCommand, EngineEvent, EngineSink};
 use koda_core::providers::LlmProvider;
-use koda_core::providers::mock::{MockProvider, MockResponse};
 use koda_core::session::KodaSession;
 use koda_core::tools::{ToolCatalog, ToolRegistry};
 use koda_core::trust::TrustMode;
 use koda_test_utils::Env;
+use koda_test_utils::TestSink;
+use koda_test_utils::{MockProvider, MockResponse};
 use serde_json::json;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
