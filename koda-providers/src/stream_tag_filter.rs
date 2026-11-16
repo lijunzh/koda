@@ -27,7 +27,7 @@
 //!
 //! See issue #214 for the full tag taxonomy.
 
-use crate::providers::StreamChunk;
+use crate::StreamChunk;
 
 // ── Tag definitions ──────────────────────────────────────────
 

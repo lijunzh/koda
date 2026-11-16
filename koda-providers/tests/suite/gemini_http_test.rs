@@ -20,9 +20,9 @@
 //! is `:` for non-stream vs `m` for stream — the leading `:` in the regex
 //! disambiguates).
 
-use koda_core::config::{ModelSettings, ProviderType};
-use koda_core::providers::gemini::GeminiProvider;
-use koda_core::providers::{ChatMessage, LlmProvider, StreamChunk};
+use koda_providers::gemini::GeminiProvider;
+use koda_providers::{ChatMessage, LlmProvider, StreamChunk};
+use koda_providers::{ModelSettings, ProviderType};
 use koda_test_utils::network::FakeLlmServer;
 use serde_json::{Value, json};
 

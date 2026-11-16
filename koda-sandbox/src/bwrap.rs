@@ -53,7 +53,7 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
-/// Env-var override for the [`stage2_binary`] discovery (mirrors
+/// Env-var override for the [`stage2_command`] discovery (mirrors
 /// `KODA_FS_WORKER_BIN`). Used by the bwrap-runtime e2e tests.
 pub const STAGE2_BIN_ENV_KEY: &str = "KODA_SANDBOX_STAGE2_BIN";
 
@@ -110,10 +110,10 @@ pub fn build_command(
 /// exist; we bind-mount it into the sandbox so stage 2 can
 /// `connect()` to it.
 ///
-/// `stage2_bin` is the absolute path to the `koda-sandbox-stage2`
-/// helper binary (located via [`stage2_binary`]). The host filesystem
-/// is bind-mounted read-only into the sandbox, so the same path is
-/// reachable from inside.
+/// `stage2` starts stage 2 (located via [`stage2_command`]): Koda's own
+/// binary with its marker argument, or the standalone helper. The host
+/// filesystem is bind-mounted read-only into the sandbox, so the same
+/// path is reachable from inside.
 ///
 /// `loopback` names the background servers the command may reach, and for
 /// a background command the socket to serve its own namespace on
@@ -124,7 +124,7 @@ pub fn build_command_with_proxy(
     policy: &SandboxPolicy,
     proxy_port: u16,
     uds_path: &Path,
-    stage2_bin: &Path,
+    stage2: &Stage2Command,
     loopback: &crate::Loopback,
 ) -> Result<Command> {
     if !is_available() {
@@ -199,8 +199,10 @@ pub fn build_command_with_proxy(
     // Replace the usual `-- sh -c <cmd>` terminator with the stage 2
     // helper. Stage 2 sets up the in-netns bridge then execvp's
     // ["sh", "-c", command].
-    let stage2_str = stage2_bin.to_string_lossy().into_owned();
-    cmd.args(["--", &stage2_str, "sh", "-c", command])
+    cmd.arg("--")
+        .arg(&stage2.program)
+        .args(&stage2.args)
+        .args(["sh", "-c", command])
         .current_dir(project_root);
     Ok(cmd)
 }
@@ -314,33 +316,73 @@ fn apply_policy_overlay(cmd: &mut Command, policy: &SandboxPolicy) -> Result<()>
     Ok(())
 }
 
-/// Locate the `koda-sandbox-stage2` helper binary.
+/// How to start stage 2 inside the sandbox: a program, and the arguments
+/// that come before the user command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stage2Command {
+    /// The executable bwrap runs.
+    pub program: PathBuf,
+    /// Arguments before the user command: [`crate::stage2::STAGE2_ARG1`]
+    /// when the program is Koda's own binary, none for the helper binary.
+    pub args: Vec<&'static str>,
+}
+
+impl Stage2Command {
+    /// The standalone `koda-sandbox-stage2` binary at `path`.
+    pub fn binary(path: PathBuf) -> Self {
+        Self {
+            program: path,
+            args: Vec::new(),
+        }
+    }
+}
+
+/// Locate stage 2.
 ///
-/// Resolution order (mirrors [`crate::worker_client`]'s discovery,
-/// plus a deps-dir fallback for cargo-test invocations):
+/// Resolution order:
 ///
 /// 1. `KODA_SANDBOX_STAGE2_BIN` env var — explicit override (e2e tests).
 /// 2. `CARGO_BIN_EXE_koda-sandbox-stage2` — Cargo sets this for
 ///    integration tests *of this same crate*.
-/// 3. Sibling of the current executable (production install).
-/// 4. Cargo's profile directory (`target/debug/`), where it builds the
-///    helper, for a test binary Cargo runs from elsewhere: see
-///    `cargo_profile_dir`. This lets cross-crate integration tests
-///    (notably the `koda-core` e2e suite) find the helper without
-///    setting an env var.
-pub fn stage2_binary() -> Result<PathBuf> {
+/// 3. The running executable, when its `main` called
+///    [`crate::dispatch_helpers`]: Koda's own binary runs stage 2 when its
+///    first argument is [`crate::stage2::STAGE2_ARG1`], as Codex's binary
+///    runs its Linux sandbox helper (its `arg0` crate). This is how an
+///    installed Koda finds it, however it was installed: the release
+///    archives and `cargo install koda-cli` carry only `koda`.
+/// 4. The standalone helper binary, for a program that didn't call it
+///    (a test binary): see [`stage2_binary_from`].
+pub fn stage2_command() -> Result<Stage2Command> {
     // Read env once at the boundary; delegate the rest to the pure
     // resolver below. This keeps the env-binding surface tiny (and
     // testable independently of the discovery logic).
     let override_path = std::env::var(STAGE2_BIN_ENV_KEY)
         .ok()
         .or_else(|| std::env::var("CARGO_BIN_EXE_koda-sandbox-stage2").ok());
-    stage2_binary_from(override_path.as_deref().map(std::path::Path::new))
+    stage2_command_from(override_path.as_deref().map(Path::new), crate::helper_exe())
 }
 
-/// Pure-logic core of [`stage2_binary`]: given an optional explicit
-/// override path, return it if `Some`; otherwise fall back to the
-/// `current_exe`-sibling / cargo-deps-parent discovery chain.
+/// Pure-logic core of [`stage2_command`]: an explicit override first, then
+/// `helper_exe` (the executable that dispatches helpers, if any), then the
+/// standalone binary.
+pub fn stage2_command_from(
+    env_override: Option<&Path>,
+    helper_exe: Option<&Path>,
+) -> Result<Stage2Command> {
+    if env_override.is_none()
+        && let Some(exe) = helper_exe
+    {
+        return Ok(Stage2Command {
+            program: exe.to_path_buf(),
+            args: vec![crate::stage2::STAGE2_ARG1],
+        });
+    }
+    stage2_binary_from(env_override).map(Stage2Command::binary)
+}
+
+/// The standalone `koda-sandbox-stage2` binary: `env_override` if given,
+/// else next to the current executable or in Cargo's profile directory
+/// (see `cargo_profile_dir`).
 ///
 /// Extracted in #1109 F1 so tests can exercise the override branch
 /// without `unsafe { std::env::set_var }` (UB in Rust 2024 when other
@@ -635,6 +677,7 @@ mod tests {
         std::fs::write(&uds, b"placeholder").unwrap();
         let stage2 = dir.path().join("koda-sandbox-stage2");
         std::fs::write(&stage2, b"#!/bin/sh\n").unwrap();
+        let stage2 = Stage2Command::binary(stage2);
 
         let cmd = build_command_with_proxy(
             "echo hi",
@@ -681,9 +724,9 @@ mod tests {
             "--bind UDS must follow --unshare-net (got bind@{bind_idx} unshare@{unshare_idx})"
         );
 
-        // Terminator: -- <stage2_bin> sh -c "echo hi".
+        // Terminator: -- <stage 2 program> sh -c "echo hi".
         let dash_dash = args.iter().rposition(|a| a == "--").expect("-- missing");
-        assert_eq!(args[dash_dash + 1], stage2.to_string_lossy());
+        assert_eq!(args[dash_dash + 1], stage2.program.to_string_lossy());
         assert_eq!(args[dash_dash + 2], "sh");
         assert_eq!(args[dash_dash + 3], "-c");
         assert_eq!(args[dash_dash + 4], "echo hi");
@@ -702,6 +745,7 @@ mod tests {
         std::fs::write(&uds, b"placeholder").unwrap();
         let stage2 = dir.path().join("koda-sandbox-stage2");
         std::fs::write(&stage2, b"#!/bin/sh\n").unwrap();
+        let stage2 = Stage2Command::binary(stage2);
 
         let cmd = build_command_with_proxy(
             "true",
@@ -763,6 +807,30 @@ mod tests {
     fn stage2_binary_respects_env_override() {
         let p = stage2_binary_from(Some(std::path::Path::new("/tmp/fake-stage2"))).unwrap();
         assert_eq!(p, std::path::PathBuf::from("/tmp/fake-stage2"));
+    }
+
+    /// An installed Koda runs stage 2 from its own binary, marked by its
+    /// first argument; an explicit override still wins, and a program that
+    /// dispatches no helpers gets the standalone binary.
+    #[test]
+    fn stage2_runs_from_koda_s_own_binary_when_it_dispatches_helpers() {
+        let koda = Path::new("/opt/koda/bin/koda");
+        assert_eq!(
+            stage2_command_from(None, Some(koda)).unwrap(),
+            Stage2Command {
+                program: koda.to_path_buf(),
+                args: vec![crate::stage2::STAGE2_ARG1],
+            }
+        );
+        let fake = Path::new("/tmp/fake-stage2");
+        assert_eq!(
+            stage2_command_from(Some(fake), Some(koda)).unwrap(),
+            Stage2Command::binary(fake.to_path_buf())
+        );
+        assert_eq!(
+            stage2_command_from(Some(fake), None).unwrap(),
+            Stage2Command::binary(fake.to_path_buf())
+        );
     }
 
     /// A test binary finds the profile directory under both of Cargo's

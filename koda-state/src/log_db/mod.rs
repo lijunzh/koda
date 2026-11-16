@@ -192,7 +192,7 @@ pub struct LogQuery {
     pub from_ts: Option<i64>,
     /// Lines at or before this time, in Unix seconds.
     pub to_ts: Option<i64>,
-    /// Targets to keep, each a prefix, such as `koda_core::providers`.
+    /// Targets to keep, each a prefix, such as `koda_providers`.
     pub targets: Vec<String>,
     /// Sessions to keep.
     pub session_ids: Vec<String>,

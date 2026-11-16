@@ -187,7 +187,7 @@ async fn compaction_leaves_the_system_prompt_alone() {
             "-c",
             &format!("log_dir={}", tmp.path().join("file-log").display()),
         ])
-        .env("RUST_LOG", "koda_core=debug,koda_core::providers=trace")
+        .env("RUST_LOG", "koda_core=debug,koda_providers=trace")
         .env("GEMINI_API_KEY", "test-key")
         .kill_on_drop(true)
         .output();
@@ -214,6 +214,12 @@ async fn compaction_leaves_the_system_prompt_alone() {
     assert!(log.contains("Compaction reply:"), "{log}");
     assert!(log.contains("System prompt:"), "{log}");
     assert!(!log.contains("test-key"), "a key reached the log: {log}");
+    // Request bodies are the file's only: the database caps the providers'
+    // target below TRACE.
+    assert!(
+        !log.contains("request body"),
+        "a request body reached the log database: {log}"
+    );
     let file = std::fs::read_to_string(tmp.path().join("file-log/koda.log")).unwrap();
     assert!(file.contains("request body"), "{file}");
     assert!(

@@ -267,7 +267,7 @@ async fn read_timeout_aborts_silent_servers_quickly() {
     let mut config = koda_core::config::KodaConfig::default_for_testing(ProviderType::OpenAI);
     config.base_url = upstream.url();
     config.stream_idle_timeout_ms = Some(1_000);
-    let provider = koda_core::providers::create_provider(&config);
+    let provider = koda_core::providers::create_provider(&config.provider_settings());
 
     let started = std::time::Instant::now();
     let result = provider.chat(&[user_msg()], &[], &settings()).await;

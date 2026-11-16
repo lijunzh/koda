@@ -8,6 +8,7 @@ members = [
     "koda-client",
     "koda-config",
     "koda-state",
+    "koda-providers",
     "koda-skills",
     "koda-memory",
 ]
@@ -39,6 +40,7 @@ authors = ["Lijun Zhu"]
 koda-config = { path = "koda-config", version = "=0.7.0" }
 koda-protocol = { path = "koda-protocol", version = "=0.7.0" }
 koda-state = { path = "koda-state", version = "=0.7.0" }
+koda-providers = { path = "koda-providers", version = "=0.7.0" }
 koda-skills = { path = "koda-skills", version = "=0.7.0" }
 koda-memory = { path = "koda-memory", version = "=0.7.0" }
 koda-sandbox = { path = "koda-sandbox", version = "=0.7.0" }

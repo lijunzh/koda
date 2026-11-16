@@ -159,7 +159,7 @@ async fn drive_sse_stream<S, B, E>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::TokenUsage;
+    use crate::TokenUsage;
 
     /// Trivial parser that echoes each line as a TextDelta.
     struct EchoParser {
@@ -311,7 +311,7 @@ mod tests {
 
     // ── Anthropic parser fixture tests ────────────────────────────
 
-    use crate::providers::anthropic::AnthropicChunkParser;
+    use crate::anthropic::AnthropicChunkParser;
 
     /// The final delta as the API docs show it: output tokens only.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -455,7 +455,7 @@ data: {"type":"message_stop"}
 
     // ── Gemini parser fixture tests ──────────────────────────────
 
-    use crate::providers::gemini::GeminiChunkParser;
+    use crate::gemini::GeminiChunkParser;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_gemini_text_stream() {
@@ -511,7 +511,7 @@ data: {"candidates":[{"content":{"parts":[{"text":"Answer"}]},"finishReason":"ST
 
     // ── OpenAI parser fixture tests ─────────────────────────────
 
-    use crate::providers::openai_compat::OpenAiChunkParser;
+    use crate::openai_compat::OpenAiChunkParser;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_openai_text_stream() {

@@ -1753,7 +1753,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
                 None,
                 None,
                 None,
-                Some(&usage.stored()),
+                Some(&crate::inference_helpers::stored_usage(&usage)),
             )
             .await?;
             sink.emit(EngineEvent::Retry {
@@ -1788,7 +1788,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
                 content,
                 tool_calls_json.as_deref(),
                 None,
-                Some(&usage.stored()),
+                Some(&crate::inference_helpers::stored_usage(&usage)),
             )
             .await?;
 

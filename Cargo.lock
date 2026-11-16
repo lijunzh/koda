@@ -1881,6 +1881,7 @@ dependencies = [
  "koda-client",
  "koda-config",
  "koda-core",
+ "koda-sandbox",
  "koda-state",
  "koda-test-utils",
  "libc",
@@ -1956,6 +1957,7 @@ dependencies = [
  "koda-config",
  "koda-memory",
  "koda-protocol",
+ "koda-providers",
  "koda-sandbox",
  "koda-skills",
  "koda-state",
@@ -1999,6 +2001,27 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "koda-providers"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "futures-util",
+ "koda-config",
+ "koda-test-utils",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

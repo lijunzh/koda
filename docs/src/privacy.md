@@ -17,7 +17,7 @@ are collected or transmitted anywhere.
 - Version checks query crates.io only (no Koda-specific server)
 - With an Anthropic key, the Claude aliases ask Anthropic's Models API for the
   newest model ids
-- You can audit every byte sent to the model: `RUST_LOG=koda_core::providers=trace`
+- You can audit every byte sent to the model: `RUST_LOG=koda_providers=trace`
   logs each request body (see [Debugging a run](./debugging.md))
 
 ## Database location

@@ -649,7 +649,7 @@ struct StoredThinking {
 }
 
 /// The stored blocks as JSON, for the model that wrote them.
-pub(crate) fn stored_thinking(model: &str, blocks: Vec<serde_json::Value>) -> Result<String> {
+pub fn stored_thinking(model: &str, blocks: Vec<serde_json::Value>) -> Result<String> {
     let model = resolve_model(model)?.to_string();
     Ok(serde_json::to_string(&StoredThinking { model, blocks })?)
 }
@@ -851,7 +851,7 @@ impl LlmProvider for AnthropicProvider {
         &self,
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
-        settings: &crate::config::ModelSettings,
+        settings: &crate::ModelSettings,
     ) -> Result<LlmResponse> {
         let api_model = resolve_model(&settings.model)?;
         // Extract system prompt (Anthropic puts it at the top level)
@@ -1011,7 +1011,7 @@ impl LlmProvider for AnthropicProvider {
         &self,
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
-        settings: &crate::config::ModelSettings,
+        settings: &crate::ModelSettings,
     ) -> Result<super::stream_collector::SseCollector> {
         let api_model = resolve_model(&settings.model)?;
         let system = messages
@@ -1676,7 +1676,7 @@ mod tests {
 
     #[test]
     fn test_cached_messages_marks_only_the_last_block_of_several() {
-        let image = crate::providers::ImageData {
+        let image = crate::ImageData {
             media_type: "image/png".into(),
             base64: "AAAA".into(),
         };
@@ -2211,27 +2211,6 @@ mod tests {
                 .unwrap();
             assert_eq!(caps.context_window, None);
             assert_eq!(caps.max_output_tokens, None);
-            ct.cancel();
-        }
-
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-        async fn config_takes_the_window_and_output_cap_from_the_api() {
-            // 777K differs from every table value, so the source is unambiguous.
-            let detail = r#"{"type":"model","id":"claude-sonnet-5-5","max_input_tokens":777000,"max_tokens":128000}"#;
-            let (provider, _fixture, ct) = spawn((200, "{}"), (200, detail)).await;
-            let mut config = crate::config::KodaConfig::default_for_testing(
-                crate::config::ProviderType::Anthropic,
-            );
-            config.model = "claude-sonnet-5-5".to_string();
-            config.model_settings.model = config.model.clone();
-            config.model_settings.max_tokens = None;
-            config.recalculate_model_derived();
-            assert_eq!(config.max_context_tokens, 1_000_000, "table value first");
-
-            config.query_and_apply_capabilities(&provider).await;
-            assert_eq!(config.max_context_tokens, 777_000);
-            assert_eq!(config.model_settings.max_context_tokens, 777_000);
-            assert_eq!(config.model_settings.max_tokens, Some(128_000));
             ct.cancel();
         }
     }

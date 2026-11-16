@@ -1,7 +1,15 @@
-//! LLM provider abstraction layer.
+//! Model providers for Koda: the [`LlmProvider`] trait, the Anthropic,
+//! Gemini and OpenAI-compatible clients, and the tables Koda keeps about
+//! models (aliases, context windows, reasoning effort, the provider
+//! catalog).
 //!
-//! Defines a common `Provider` trait for all backends and re-exports
-//! the concrete implementations.
+//! Split out of `koda-core` in 0.7.1, which re-exports this crate as
+//! `koda_core::providers` and the tables under their old paths. Codex keeps
+//! the same layer in its own crates (`codex-api`, `model-provider-info`).
+//!
+//! This crate follows koda-cli's version, and its Rust API makes no semver
+//! promise of its own: it is published for `cargo install koda-cli`, not as
+//! a library to build on.
 //!
 //! ## Supported providers
 //!
@@ -50,6 +58,17 @@ pub mod stream_tag_filter;
 /// boilerplate that was duplicated 8x across the three providers.
 pub(crate) mod http;
 
+/// Hardcoded model aliases for stable, cross-provider model selection.
+pub mod model_alias;
+/// Hardcoded context-window lookup table (fallback when API doesn't report).
+pub mod model_context;
+/// Reasoning effort per model: the levels it takes and the default sent.
+pub mod model_effort;
+/// Static provider catalog: `ProviderType` + `ProviderMeta` lookup tables.
+pub mod provider_catalog;
+
+pub use provider_catalog::ProviderType;
+
 /// Mock provider for deterministic testing.
 #[cfg(any(test, feature = "test-support"))]
 pub mod mock;
@@ -88,19 +107,6 @@ pub struct TokenUsage {
     /// Why the model stopped: "end_turn", "max_tokens", "stop_sequence", etc.
     /// Empty string means unknown (provider didn't report it).
     pub stop_reason: String,
-}
-
-impl TokenUsage {
-    /// The counts a message row stores.
-    pub fn stored(&self) -> koda_state::session_store::MessageUsage {
-        koda_state::session_store::MessageUsage {
-            prompt_tokens: self.prompt_tokens,
-            completion_tokens: self.completion_tokens,
-            cache_read_tokens: self.cache_read_tokens,
-            cache_creation_tokens: self.cache_creation_tokens,
-            thinking_tokens: self.thinking_tokens,
-        }
-    }
 }
 
 /// The LLM's response: either text, tool calls, or both.
@@ -158,7 +164,7 @@ impl ChatMessage {
     /// # Examples
     ///
     /// ```
-    /// use koda_core::providers::ChatMessage;
+    /// use koda_providers::ChatMessage;
     ///
     /// let msg = ChatMessage::text("user", "Hello!");
     /// assert_eq!(msg.role, "user");
@@ -179,7 +185,7 @@ impl ChatMessage {
 }
 
 /// Log a request body exactly as sent, at trace level: it holds the whole
-/// conversation. `RUST_LOG=koda_core::providers=trace` turns it on.
+/// conversation. `RUST_LOG=koda_providers=trace` turns it on.
 pub(crate) fn trace_request(provider: &str, body: &impl Serialize) {
     tracing::trace!(
         provider,
@@ -337,10 +343,10 @@ fn client_builder(
         builder = builder.read_timeout(std::time::Duration::from_secs(read_timeout));
     }
 
-    let proxy_url = crate::runtime_env::get("HTTPS_PROXY")
-        .or_else(|| crate::runtime_env::get("HTTP_PROXY"))
-        .or_else(|| crate::runtime_env::get("https_proxy"))
-        .or_else(|| crate::runtime_env::get("http_proxy"));
+    let proxy_url = koda_config::runtime_env::get("HTTPS_PROXY")
+        .or_else(|| koda_config::runtime_env::get("HTTP_PROXY"))
+        .or_else(|| koda_config::runtime_env::get("https_proxy"))
+        .or_else(|| koda_config::runtime_env::get("http_proxy"));
 
     if let Some(ref url) = proxy_url
         && !url.is_empty()
@@ -352,8 +358,8 @@ fn client_builder(
 
                 // If URL doesn't contain creds, check env vars
                 if !url.contains('@') {
-                    let user = crate::runtime_env::get("PROXY_USER");
-                    let pass = crate::runtime_env::get("PROXY_PASS");
+                    let user = koda_config::runtime_env::get("PROXY_USER");
+                    let pass = koda_config::runtime_env::get("PROXY_PASS");
                     if let (Some(u), Some(p)) = (user, pass) {
                         proxy = proxy.basic_auth(&u, &p);
                         tracing::debug!("Using proxy with basic auth (credentials redacted)");
@@ -371,7 +377,7 @@ fn client_builder(
 
     // Accept self-signed certs only for localhost (LM Studio, Ollama, vLLM).
     // The env var is still required, but it's now scoped to local addresses.
-    let wants_skip_tls = crate::runtime_env::get("KODA_ACCEPT_INVALID_CERTS")
+    let wants_skip_tls = koda_config::runtime_env::get("KODA_ACCEPT_INVALID_CERTS")
         .map(|v| v == "1" || v == "true")
         .unwrap_or(false);
     let is_local = base_url.is_some_and(is_localhost_url);
@@ -447,7 +453,7 @@ pub trait LlmProvider: Send + Sync {
         &self,
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
-        settings: &crate::config::ModelSettings,
+        settings: &crate::ModelSettings,
     ) -> Result<LlmResponse>;
 
     /// Send a streaming chat completion request.
@@ -457,7 +463,7 @@ pub trait LlmProvider: Send + Sync {
         &self,
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
-        settings: &crate::config::ModelSettings,
+        settings: &crate::ModelSettings,
     ) -> Result<stream_collector::SseCollector>;
 
     /// List available models from the provider.
@@ -486,11 +492,56 @@ pub trait LlmProvider: Send + Sync {
 
 // ── Provider factory ──────────────────────────────────────────
 
-use crate::config::{KodaConfig, ProviderType};
+/// Model-specific settings that control LLM behavior.
+#[derive(Debug, Clone)]
+pub struct ModelSettings {
+    /// Model name / ID.
+    pub model: String,
+    /// Maximum output tokens (provider-specific default if None).
+    pub max_tokens: Option<u32>,
+    /// Sampling temperature.
+    pub temperature: Option<f64>,
+    /// Anthropic extended thinking budget (tokens).
+    pub thinking_budget: Option<u32>,
+    /// OpenAI reasoning effort: "low", "medium", or "high".
+    pub reasoning_effort: Option<String>,
+    /// Maximum context window size in tokens.
+    pub max_context_tokens: usize,
+}
+
+impl ModelSettings {
+    /// Build settings with no output limit set: the provider applies its
+    /// own (the Models API's for a Claude model, else 16,384) unless the
+    /// agent or the config sets one.
+    pub fn defaults_for(model: &str, _provider: &ProviderType) -> Self {
+        let max_context_tokens = crate::model_context::context_window_for_model(model);
+        Self {
+            model: model.to_string(),
+            max_tokens: None,
+            temperature: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            max_context_tokens,
+        }
+    }
+}
+
+/// What [`create_provider`] needs to reach a provider: which one, where,
+/// and how long a stream may stay silent.
+#[derive(Debug, Clone)]
+pub struct ProviderSettings {
+    /// Which provider.
+    pub provider_type: ProviderType,
+    /// Its API's base URL.
+    pub base_url: String,
+    /// The config file's `stream_idle_timeout_ms` for the provider: `0`
+    /// for no read timeout, `None` for the provider's default.
+    pub stream_idle_timeout_ms: Option<u64>,
+}
 
 /// The HTTP client a provider uses: the read timeout is the config file's
 /// `stream_idle_timeout_ms` for the provider, else `default_secs`.
-fn provider_http_client(config: &KodaConfig, default_secs: u64) -> reqwest::Client {
+fn provider_http_client(config: &ProviderSettings, default_secs: u64) -> reqwest::Client {
     let default_secs = match config.stream_idle_timeout_ms {
         Some(0) => 0,
         Some(ms) => ms.div_ceil(1000).max(1),
@@ -505,9 +556,9 @@ fn provider_http_client(config: &KodaConfig, default_secs: u64) -> reqwest::Clie
     .unwrap_or_else(|_| reqwest::Client::new())
 }
 
-/// Create an LLM provider from the given configuration.
-pub fn create_provider(config: &KodaConfig) -> Box<dyn LlmProvider + Send + Sync> {
-    let api_key = crate::runtime_env::get(config.provider_type.env_key_name());
+/// Create an LLM provider from the given settings.
+pub fn create_provider(config: &ProviderSettings) -> Box<dyn LlmProvider + Send + Sync> {
+    let api_key = koda_config::runtime_env::get(config.provider_type.env_key_name());
     match config.provider_type {
         ProviderType::Anthropic => {
             let key = api_key.unwrap_or_else(|| {
@@ -664,13 +715,17 @@ mod tests {
     // compiler doesn't catch it (Rust doesn't warn on `_` arms
     // catching new variants — by design — so we backstop with tests).
 
-    use crate::config::{KodaConfig, ProviderType};
+    use crate::{ProviderSettings, ProviderType};
 
-    /// Helper: build a config for `provider_type` and route through
+    /// Helper: build settings for `provider_type` and route through
     /// `create_provider`, returning the resulting `provider_name()`.
     fn route(provider_type: ProviderType) -> String {
-        let config = KodaConfig::default_for_testing(provider_type);
-        create_provider(&config).provider_name().to_string()
+        let settings = ProviderSettings {
+            base_url: provider_type.default_base_url().to_string(),
+            provider_type,
+            stream_idle_timeout_ms: None,
+        };
+        create_provider(&settings).provider_name().to_string()
     }
 
     #[test]

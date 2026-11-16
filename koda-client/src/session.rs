@@ -81,6 +81,9 @@ pub(crate) enum SessionCommand {
     /// Stop the turn, if one runs, and end the task. `done`, if given, is
     /// dropped once the task has ended.
     Shutdown { done: Option<oneshot::Sender<()>> },
+    /// Store the session's turns sent so far: `done` is dropped once they
+    /// are, so a read of the store that follows sees all of them.
+    FlushHistory { done: oneshot::Sender<()> },
 }
 
 impl SessionCommand {
@@ -94,7 +97,10 @@ impl SessionCommand {
             | Self::UpdateSettings { reply, .. } => {
                 let _ = reply.send(Err(error));
             }
-            Self::Respond { .. } | Self::ReloadMcp { .. } | Self::Shutdown { .. } => {}
+            Self::Respond { .. }
+            | Self::ReloadMcp { .. }
+            | Self::Shutdown { .. }
+            | Self::FlushHistory { .. } => {}
         }
     }
 }
@@ -214,7 +220,7 @@ pub(crate) async fn open(
 
     // Ask the provider for the model's window first. A guess is said once
     // the session has started.
-    let probe = koda_core::providers::create_provider(&config);
+    let probe = koda_core::providers::create_provider(&config.provider_settings());
     let source = config.query_and_apply_capabilities(probe.as_ref()).await;
     let notice = config.assumed_context_notice(source);
 
@@ -463,6 +469,10 @@ impl SessionTask {
                     self.reload_mcp_now().await;
                     drop(done);
                 }
+                SessionCommand::FlushHistory { done } => {
+                    self.sink.flush_history().await;
+                    drop(done);
+                }
                 SessionCommand::UpdateSettings { params, reply } => {
                     match self.update_settings(params).await {
                         Ok(()) => {
@@ -525,7 +535,7 @@ impl SessionTask {
         }
         let id = self.session.id.clone();
         if model_changed {
-            let probe = koda_core::providers::create_provider(&next);
+            let probe = koda_core::providers::create_provider(&next.provider_settings());
             next.query_and_apply_capabilities(probe.as_ref()).await;
             self.session
                 .db
@@ -840,6 +850,12 @@ impl SessionTask {
                             *reload_mcp = true;
                             drop(done);
                         }
+                        // The writer runs on a task of its own, so the turn
+                        // only pauses while its queued records are stored.
+                        Some(SessionCommand::FlushHistory { done }) => {
+                            sink.flush_history().await;
+                            drop(done);
+                        }
                         // Told to stop, or the host is gone: stop the turn and
                         // let it wind down. It bounds that itself.
                         Some(SessionCommand::Shutdown { done }) => {
@@ -982,6 +998,13 @@ impl HostSink {
         let mut state = self.lock();
         state.prompt = Some((prompt, client_message_ids, mentions));
         state.steers.clear();
+    }
+
+    /// Wait until the turns sent so far are stored.
+    async fn flush_history(&self) {
+        if let Some(history) = &self.history {
+            history.flush().await;
+        }
     }
 
     /// The window the server stated during the turn, if it did.

@@ -97,24 +97,19 @@ pub mod mcp;
 /// Instruction files (`AGENTS.md`, `CLAUDE.md`) and Koda's own notes: the
 /// `koda-memory` crate, under its old path.
 pub use koda_memory as memory;
-/// Hardcoded model aliases for stable, cross-provider model selection.
-pub mod model_alias;
-/// Hardcoded context-window lookup table (fallback when API doesn't report).
-pub mod model_context;
-/// Reasoning effort per model: the levels it takes and the default sent.
-pub mod model_effort;
 /// Context-scaled output caps for tool results.
 pub mod output_caps;
 /// Diff preview generation for file mutations.
 pub mod preview;
 /// System prompt construction.
 pub mod prompt;
-/// Static provider catalog: `ProviderType` + `ProviderMeta` lookup tables.
-pub mod provider_catalog;
-/// LLM provider abstraction — Anthropic, Gemini, OpenAI-compatible.
-pub mod providers;
 /// Thread-safe runtime environment — replaces `std::env::set_var`.
 pub use koda_config::runtime_env;
+/// LLM provider abstraction — Anthropic, Gemini, OpenAI-compatible: the
+/// `koda-providers` crate, under its old path.
+pub use koda_providers as providers;
+/// The model tables, from `koda-providers`, under their old paths.
+pub use koda_providers::{model_alias, model_context, model_effort, provider_catalog};
 /// Process sandboxing for the Bash tool (macOS seatbelt / Linux bwrap).
 pub mod sandbox;
 /// Session lifecycle — create, resume, list, delete.

@@ -97,6 +97,9 @@ http = "1"
 # Sandbox runtime — kernel-level FS/net/exec policies (#934)
 koda-config = { workspace = true }
 koda-protocol = { workspace = true }
+# Model providers and the model tables, re-exported as `providers`,
+# `model_alias`, `model_context`, `model_effort` and `provider_catalog`.
+koda-providers = { workspace = true }
 # Skills and memory, re-exported as `skills` and `memory`.
 koda-memory = { workspace = true }
 koda-skills = { workspace = true }
@@ -110,7 +113,7 @@ async-trait = { workspace = true }
 tokio-util = { workspace = true }
 
 [features]
-test-support = []
+test-support = ["koda-providers/test-support"]
 
 [dev-dependencies]
 # MCP HTTP integration test: rmcp server-side HTTP transport + axum
@@ -123,6 +126,8 @@ rmcp = { version = "3", features = [
 ] }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "tower-log"] }
 koda-test-utils = { path = "../koda-test-utils" }
+# The mock provider for koda-core's own unit tests.
+koda-providers = { workspace = true, features = ["test-support"] }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
 regex = { workspace = true }
