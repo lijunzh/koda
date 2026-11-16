@@ -14,6 +14,11 @@ on:
       - 'koda-sandbox/**'
       - '.github/workflows/coverage.yml'
       - 'scripts/check_per_file_coverage.sh'
+  # Nightly on main, off-peak: the one main run with macOS (see `coverage`).
+  # It saves the macOS cache; only a push opens or closes regression issues.
+  schedule:
+    - cron: '17 9 * * *'
+  workflow_dispatch:
 
 # A newer push to a PR cancels its running coverage. On main a running one
 # finishes, since it opens or closes the regression issue; one still queued
@@ -38,7 +43,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+      # macOS runs on PRs and the nightly run, not after each merge: GitHub's
+      # macOS arm64 runners are short of capacity, and a merge plus a tag
+      # once queued four Mac jobs at once, two of which GitHub cancelled
+      # unstarted after 15 minutes (0.7.2, 2026-11-16). The PR already tested
+      # the gated crates on macOS; the nightly run checks main there and
+      # saves the macOS cache that PRs restore.
+        os: ${{ github.event_name == 'push' && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "macos-latest"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
