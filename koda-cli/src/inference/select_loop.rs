@@ -161,11 +161,11 @@ impl TuiContext {
                 images,
                 mentions,
                 typed,
-                paste_blocks,
+                pastes,
                 pasted_images,
             }) => (
                 Some((message, images, mentions)),
-                Some((typed, paste_blocks, pasted_images)),
+                Some((typed, pastes, pasted_images)),
             ),
             TurnRequest::Compact => (None, None),
         };
@@ -237,9 +237,8 @@ impl TuiContext {
                     first.make_ascii_uppercase();
                 }
                 crate::tui_output::err_msg(&mut self.scroll_buffer, why);
-                if let Some((typed, paste_blocks, pasted_images)) = restore {
-                    self.textarea.set_text_clearing_elements(&typed);
-                    self.paste_blocks = paste_blocks;
+                if let Some((typed, pastes, pasted_images)) = restore {
+                    self.pastes.restore(&mut self.textarea, &typed, pastes);
                     // The markers come back as markers, with their images.
                     for (marker, _) in &pasted_images {
                         if let Some(at) = typed.find(marker.as_str()) {
@@ -385,9 +384,9 @@ impl TuiContext {
                         &mut self.textarea,
                         (&mut self.mode, &self.sandbox),
                         &mut self.completer,
-                        &mut self.history,
+                        (&mut self.history, &mut self.history_pastes),
                         &mut self.history_idx,
-                        &mut self.paste_blocks,
+                        &mut self.pastes,
                         (&self.input_history, &self.session.id),
                         &mut self.child_activity,
                     )

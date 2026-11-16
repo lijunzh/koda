@@ -57,7 +57,8 @@ pub(crate) struct TuiContext {
     pub pending_approval_id: Option<koda_client::protocol::rpc::RequestId>,
 
     // ── Control flow ──────────────────────────────────────────
-    pub paste_blocks: Vec<input::PasteBlock>,
+    /// Text pasted into the input box as `[Pasted text #N]` markers.
+    pub pastes: input::Pastes,
     /// Images pasted or dropped into the input box, each with its
     /// `[Image #N]` marker; sent with the prompt while the marker stays.
     pub pasted_images: Vec<(String, input::ImageData)>,
@@ -83,6 +84,8 @@ pub(crate) struct TuiContext {
     pub learned_context_window: Option<usize>,
     /// What was typed, oldest first, for Up and Down.
     pub history: Vec<String>,
+    /// The pastes behind each history entry's markers, by entry.
+    pub history_pastes: Vec<Vec<(String, String)>>,
     pub history_idx: Option<usize>,
     /// Where [`Self::history`] is kept: a file the TUI owns, as Codex's TUI
     /// keeps `history.jsonl`.
@@ -263,9 +266,10 @@ pub(crate) struct TurnInput {
     pub images: Vec<crate::input::ImageData>,
     /// The paths mentioned with `@`, which the host reads.
     pub mentions: Vec<String>,
-    /// What the user typed, and its paste blocks, for the input box.
+    /// What the user typed, and the pastes behind its markers, for the
+    /// input box.
     pub typed: String,
-    pub paste_blocks: Vec<crate::input::PasteBlock>,
+    pub pastes: Vec<(String, String)>,
     /// The pasted images and their markers, for the input box too.
     pub pasted_images: Vec<(String, crate::input::ImageData)>,
 }
@@ -314,6 +318,7 @@ impl TuiContext {
                 tracing::warn!("couldn't bring the input history over: {e}");
             }
         }
+        let history = input_history.load_entries();
 
         // Koda's host runs the session's turns and builds each session's
         // agent (its tools, MCP servers and prompt); the TUI is its client.
@@ -444,7 +449,7 @@ impl TuiContext {
             prompt_mode: PromptMode::Chat,
             provider_wizard: None,
             pending_approval_id: None,
-            paste_blocks: Vec::new(),
+            pastes: input::Pastes::default(),
             pasted_images: Vec::new(),
             image_count: 0,
             pending_command: None,
@@ -453,7 +458,8 @@ impl TuiContext {
             inference_start: None,
             context_left: 100,
             learned_context_window: None,
-            history: input_history.load(),
+            history: history.iter().map(|(text, _)| text.clone()).collect(),
+            history_pastes: history.into_iter().map(|(_, pastes)| pastes).collect(),
             input_history,
             history_idx: None,
             completer,
@@ -815,7 +821,7 @@ impl TuiContext {
 
     async fn prepare_inference_start(&mut self, input: &str) -> CommandOutcome {
         let mut processed = input::process_input(input);
-        processed.paste_blocks = std::mem::take(&mut self.paste_blocks);
+        let pastes = self.pastes.take();
         // Pasted images whose markers are still in the text, in their
         // order, then any image path typed in the text.
         let pasted_images = std::mem::take(&mut self.pasted_images);
@@ -844,9 +850,8 @@ impl TuiContext {
         }
         let mut user_message = processed.prompt.clone();
 
-        if let Some(pasted) = input::format_paste_blocks(&processed.paste_blocks) {
-            user_message = format!("{user_message}\n\n{pasted}");
-        }
+        // Each paste goes where its marker is.
+        user_message = input::expand_pastes(&user_message, &pastes);
 
         // The host saves the message and titles a new session from it; a
         // message it couldn't save comes back to the input box
@@ -856,7 +861,7 @@ impl TuiContext {
             images: processed.images,
             mentions: processed.mentions,
             typed: input.to_string(),
-            paste_blocks: std::mem::take(&mut processed.paste_blocks),
+            pastes,
             pasted_images,
         })
     }

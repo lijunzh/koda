@@ -53,9 +53,9 @@ pub(super) async fn handle_crossterm_event_inline(
     textarea: &mut crate::composer::textarea::TextArea,
     mode: (&mut TrustMode, &SandboxState),
     completer: &mut crate::completer::InputCompleter,
-    history: &mut Vec<String>,
+    history: (&mut Vec<String>, &mut Vec<input::PasteList>),
     history_idx: &mut Option<usize>,
-    paste_blocks: &mut Vec<input::PasteBlock>,
+    pastes: &mut input::Pastes,
     input_history: (&crate::input_history::InputHistory, &str),
     child_activity: &mut crate::child_activity::ChildActivityTracker,
 ) -> bool {
@@ -79,14 +79,10 @@ pub(super) async fn handle_crossterm_event_inline(
             }
         }
         Event::Paste(text) => {
-            let char_count = text.chars().count();
-            if char_count < input::PASTE_BLOCK_THRESHOLD {
-                textarea.insert_str(&text);
+            if input::is_large_paste(&text) {
+                pastes.insert(textarea, &text);
             } else {
-                paste_blocks.push(input::PasteBlock {
-                    content: text,
-                    char_count,
-                });
+                textarea.insert_str(&text);
             }
         }
         Event::Key(key) => {
@@ -103,6 +99,7 @@ pub(super) async fn handle_crossterm_event_inline(
                 completer,
                 history,
                 history_idx,
+                pastes,
                 input_history,
                 child_activity,
             )
@@ -127,8 +124,9 @@ async fn handle_inference_key_inline(
     textarea: &mut crate::composer::textarea::TextArea,
     mode: (&mut TrustMode, &SandboxState),
     completer: &mut crate::completer::InputCompleter,
-    history: &mut Vec<String>,
+    history: (&mut Vec<String>, &mut Vec<input::PasteList>),
     history_idx: &mut Option<usize>,
+    pastes: &mut input::Pastes,
     input_history: (&crate::input_history::InputHistory, &str),
     child_activity: &mut crate::child_activity::ChildActivityTracker,
 ) -> bool {
@@ -328,8 +326,11 @@ async fn handle_inference_key_inline(
                     return false;
                 }
                 textarea.set_text_clearing_elements("");
-                history.push(text.clone());
-                input_history.0.push(input_history.1, &text);
+                history.0.push(text.clone());
+                history.1.push(pastes.list.clone());
+                input_history
+                    .0
+                    .push_with_pastes(input_history.1, &text, &pastes.list);
                 *history_idx = None;
 
                 let preview = truncate_preview(&text, 80);
@@ -339,6 +340,8 @@ async fn handle_inference_key_inline(
                     Span::styled(preview, Style::default().fg(Color::DarkGray)),
                 ]));
 
+                // The model gets each paste where its marker is.
+                let text = input::expand_pastes(&text, &pastes.take());
                 let _ = cmd_tx.send(TurnCommand::Steer { text }).await;
             }
         }

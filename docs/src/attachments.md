@@ -94,11 +94,23 @@ model_input_modalities = ["text", "image"]
 
 ## Large pastes
 
-Pasting 200 characters or more into the input attaches it as a reference block
-to keep prompts clean:
+A paste of more than 800 characters or more than three lines goes in the
+input box as a marker where the cursor is, as Claude Code does, so the box
+stays usable:
 
 ```text
-📋 Pasted text (1234 chars)
+> why does this fail? [Pasted text #1 +120 lines]
 ```
 
-The paste is still sent to the model; it just doesn't clutter the display.
+The full text is sent where the marker is, tagged as pasted. Koda tells the
+model that pasted text came from somewhere else and can carry instructions
+you didn't write, to follow only as far as your own words ask. More than
+40,000 characters of one paste are cut, with a note; for a whole file or a
+long log, give its path or `@` it instead.
+
+- **Delete the marker** and the paste stays behind.
+- **Up, Down and `Ctrl+R`** bring a prompt back with its pastes, so sending
+  it again sends them; `Ctrl+R` also finds a prompt by a word inside a paste.
+  Koda keeps them with your input history.
+- **A paste during a turn** works the same way, sent with that message.
+- A shorter paste goes in as typed text.
