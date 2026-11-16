@@ -192,20 +192,19 @@ struct ConfigFlags {
     reasoning_effort: Option<String>,
 
     /// Trust mode: auto (the default, unless config.toml sets `mode`), safe,
-    /// or plan (`koda exec` only).
+    /// or plan.
     /// "auto" auto-approves mutating actions; the kernel sandbox
     /// contains them. Destructive ops (rm -rf, git reset --hard,
     /// git push --force) and outside-project writes still
     /// confirm. Auto requires the kernel sandbox; on unsandboxed
     /// platforms koda refuses to start with an actionable error
     /// (use --mode safe or install the platform sandbox backend).
-    /// "safe" confirms every mutation before executing — use this
-    /// in CI, locked-down workstations, or any context where you
-    /// want a human in every approval loop.
-    /// "plan" is read-only, for a `koda exec` run that should only
-    /// look: reads, searches, read-only commands and MCP tools marked
-    /// read-only run; everything else is refused, and the kernel
-    /// sandbox keeps the project read-only.
+    /// "safe" confirms every mutation before executing, for when you
+    /// want a person to approve each change.
+    /// "plan" only looks: reads, searches, read-only commands and MCP
+    /// tools marked read-only run; everything else is refused, and the
+    /// kernel sandbox keeps the project read-only. In the TUI, Koda then
+    /// proposes a plan and asks whether to carry it out.
     /// Sandbox with credential protection is always active.
     #[arg(long, value_parser = ["safe", "auto", "plan"])]
     mode: Option<String>,
@@ -479,7 +478,7 @@ const SERVER_REMOVED: &str = "`koda server` has been removed. Koda no longer spe
 so editors can't connect to it.
 Run `koda` in a terminal, `koda exec --json <prompt>` from a script, or
 `koda serve --stdio` to drive Koda from a program.
-See https://lijunzh.github.io/koda/acp.html";
+See https://lijunzh.github.io/koda/upgrading-0.7.html#acp-is-gone";
 
 pub(crate) async fn run() -> Result<()> {
     let mut cli = Cli::parse();

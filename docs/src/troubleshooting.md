@@ -11,8 +11,7 @@ koda-logs --target koda_cli::panic --since 1d
 ```
 
 Koda stores it before exiting, so it's there even though a release build
-stops at once. Before the log database, crashes went to
-`~/.config/koda/logs/panic.log`, which is no longer written.
+stops at once.
 
 ### Getting a useful backtrace
 
