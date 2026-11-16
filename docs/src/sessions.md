@@ -10,14 +10,24 @@ project root. Each session gets a UUID that you can use to resume it.
 # Resume by ID prefix from the TUI
 /resume a3f8bc
 
-# Resume from the command line, in the TUI or headless: a full ID, or the
-# start of one of this project's sessions
-koda -s a3f8bc12-1587-4c6d-a855-46183ca84fba
-koda exec -s a3f8bc "continue where we left off"
+# Resume from the command line, as `codex resume` does: pick from the list,
+# the most recent with --last, or a full ID or the start of one
+koda resume
+koda resume --last
+koda resume a3f8bc "continue where we left off"
+
+# The same without the TUI, as `codex exec resume`
+koda exec resume --last "continue where we left off"
+koda exec resume a3f8bc "continue where we left off"
+
+# The older flag still works: koda -s <ID>, koda exec -s <ID> "..."
 
 # Delete a session permanently
 /resume delete a3f8bc
 ```
+
+**`--last`** is the session with the latest activity in this project, as
+Codex sorts by update time; a session where nothing was sent doesn't count.
 
 ## What a resumed session shows
 
@@ -26,8 +36,8 @@ resumed thread: your prompts, the replies, tool calls folded as they were
 (`Ctrl+O` unfolds them), a sub-agent's `Done (N tool uses · Ns)`, what
 happened to a refused or blocked call, and how long each turn worked. A
 `session resumed` line follows them, and a banner when the last turn was
-interrupted; type `continue` to pick it up. `koda -s`, `/resume` and the
-sessions picker all show them.
+interrupted; type `continue` to pick it up. `koda resume`, `koda -s`,
+`/resume` and the sessions picker all show them.
 
 Sessions stored before 0.6.5 are rebuilt from their messages, so they show
 less: no reasoning, and no time on a sub-agent's summary.

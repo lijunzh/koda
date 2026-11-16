@@ -304,7 +304,7 @@ impl TuiContext {
     pub async fn new(
         project_root: PathBuf,
         named: settings::Named,
-        resume: Option<String>,
+        resume: Option<crate::session_id::Resume>,
         version_check: tokio::task::JoinHandle<Option<String>>,
         first_run: bool,
     ) -> Result<Self> {
@@ -343,8 +343,8 @@ impl TuiContext {
         }
         // A mistyped id (once, a llama-server pid) used to run a session
         // that didn't exist; now it stops the start.
-        let resume = match resume {
-            Some(typed) => Some(crate::session_id::resolve(&client, &typed).await?),
+        let resume = match &resume {
+            Some(resume) => Some(crate::session_id::resolve_target(&client, resume).await?),
             None => None,
         };
         let (session, earlier_turns, opened_mode) =

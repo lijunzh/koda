@@ -18,6 +18,7 @@
 | `--mode <MODE>` | Trust mode: without it the config file's `mode`, else `auto` (#1241); `safe`, or `plan` (`koda exec` only: read-only, everything else refused; see [Headless mode](./headless.md#read-only-runs)). Auto auto-approves mutating actions; the kernel sandbox contains them — destructive ops (`rm -rf`, `git reset --hard`, `git push --force`) and outside-project writes still confirm. Auto requires the kernel sandbox; on unsandboxed platforms koda refuses to start (use `--mode safe` or install the platform sandbox backend). Safe confirms every mutation. Kernel sandbox with credential protection is always active when available. |
 | `--mcp-config <FILE\|JSON>` | Add MCP servers for this run only, from a JSON file or inline JSON in the `{"mcpServers": {...}}` shape of Claude Code's `.mcp.json`. Repeatable. Nothing is saved; a bad value stops the start. See [MCP servers](mcp.md). |
 | `--project-root <DIR>` | Project root (defaults to cwd) |
+| `-i`, `--image <FILE>` | Attach an image to the first prompt, as Codex's `-i`: repeatable, or several separated by commas. See [Images](./attachments.md#images) |
 
 **Which command takes which flag,** as in Codex: `koda` and `koda exec`
 take them all. `koda serve` takes the config flags but not `--resume`,
@@ -40,6 +41,8 @@ needs a terminal.
 | Command | Description |
 |---------|-------------|
 | `koda exec [PROMPT]` | Run one prompt and exit, as `codex exec` does. `--json` prints the [client protocol](headless.md#the-client-protocol) on stdout, one JSON-RPC message per line; `--json-deltas` adds streaming text and command output; `-o FILE` writes the last reply to a file. `-` or no prompt reads stdin. Takes every flag above, after `exec` or before it |
+| `koda resume [SESSION] [PROMPT]` | Resume a saved session in the TUI, as `codex resume` does: by its ID or the start of one; `--last` for the one with the latest activity (then a single argument is the prompt); with neither, the session list opens. Takes `koda`'s flags. See [Sessions](./sessions.md) |
+| `koda exec resume [SESSION] [PROMPT]` | Run a prompt in a saved session, as `codex exec resume` does: by ID, or `--last`. Takes `koda exec`'s flags |
 | `koda serve --stdio` | Serve the [client protocol](serve.md) to one program on stdin and stdout, one JSON-RPC message per line, as `codex app-server` does: it starts sessions, runs turns and answers approvals. Runs until stdin closes or a signal stops it. Takes `-c` and the config flags, not `--resume`, `--model`, `--provider` or `--base-url`: the client names each session's model in `session/start` |
 | `koda mcp list\|get\|add\|remove` | Manage the MCP servers every session starts, as `codex mcp` does: `add <name> -- <command> [args]` (with `--env KEY=VALUE`) or `add <name> --url <url>` (with `--bearer-token-env-var VAR`); `list` and `get` take `--json`. Open TUI sessions take a change on `/mcp reconnect`. Takes only `--project-root` and `-c`. See [MCP servers](./mcp.md) |
 | `koda --version` | Print the version |

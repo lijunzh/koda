@@ -35,7 +35,8 @@ To send only the paths, for the model to read itself as Codex does, set
 
 ## Images
 
-Three ways to attach an image from your own machine, as in Claude Code:
+Four ways to attach an image from your own machine, as in Claude Code and
+Codex:
 
 - **Paste it:** copy an image (a screenshot, say) and press `Ctrl+V`, or
   `Alt+V` where the terminal takes `Ctrl+V` for itself. In iTerm2 `Cmd+V`
@@ -43,6 +44,10 @@ Three ways to attach an image from your own machine, as in Claude Code:
   edge if it is larger, the most Anthropic recommends.
 - **Drag it** onto the terminal: the file becomes a marker.
 - **Type its path:** `what does /Users/me/Desktop/screenshot.png show?`
+- **On the command line,** as Codex's `-i`: `koda -i shot.png "what's wrong
+  here?"`, `koda exec -i a.png,b.png "compare them"`. Repeatable, or
+  comma-separated. A path that isn't an image, or can't be read, stops the
+  start. In the TUI the images go with the prompt as `[Image #N]` markers.
 
 A pasted or dropped image shows in the input box as `[Image #1]`,
 `[Image #2]` and so on, where you put it, so you can refer to it: "compare

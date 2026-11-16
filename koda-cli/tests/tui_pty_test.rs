@@ -19,6 +19,15 @@ use std::time::{Duration, Instant};
 /// Text the composer shows when it is empty and the TUI is idle.
 const IDLE_HINT: &str = "Type a message";
 
+/// A 1x1 PNG, for the image tests.
+const RED_PNG: &[u8] = &[
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+    0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0xf0,
+    0x1f, 0x00, 0x05, 0x00, 0x01, 0xff, 0x89, 0x99, 0x3d, 0x1d, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+    0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+];
+
 /// The prompt while a turn runs. It is drawn until the turn loop is done,
 /// which can be after the turn's last words are on screen.
 const BUSY_PROMPT: &str = "\u{23f3}>";
@@ -1548,6 +1557,64 @@ async fn sessions_picker_resumes_an_earlier_session() {
     let sent = wait_for_model_call(&server, 2).await;
     assert!(sent.contains("alpha topic please"), "history lost: {sent}");
     assert!(sent.contains("continue it"), "{sent}");
+}
+
+/// `koda resume` with no session named opens the list, as `codex resume`
+/// does; `koda resume --last "…"` opens the most recent and sends the
+/// prompt in it.
+#[tokio::test(flavor = "multi_thread")]
+async fn koda_resume_opens_the_list_or_the_last_session() {
+    let server = scripted_model(vec![]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    tui.submit("delta topic please");
+    tui.wait_for_screen("All done.");
+    quit_and_read_session_id(&mut tui);
+
+    let mut tui = Tui::start_with_args(home.path(), &server.url(), &["resume"], "Sessions");
+    highlight(&mut tui, "delta topic");
+    tui.type_text("\r");
+    tui.wait_for_screen("Resumed session");
+    quit_and_read_session_id(&mut tui);
+
+    let tui = Tui::start_with_args(
+        home.path(),
+        &server.url(),
+        &["resume", "--last", "carry it on"],
+        "session resumed",
+    );
+    let sent = wait_for_model_call(&server, 2).await;
+    assert!(sent.contains("delta topic please"), "history lost: {sent}");
+    assert!(sent.contains("carry it on"), "{sent}");
+    tui.wait_for_screen("All done.");
+}
+
+/// `koda -i FILE "prompt"` sends the image with the prompt, as `codex -i`
+/// does, marked `[Image #1]` in the message.
+#[tokio::test(flavor = "multi_thread")]
+async fn image_flag_sends_the_image_with_the_first_prompt() {
+    let server = scripted_model(vec![]).await;
+    let home = home();
+    let image = home.path().join("red.png");
+    std::fs::write(&image, RED_PNG).unwrap();
+    let image = image.to_string_lossy().to_string();
+    let tui = Tui::start_with_args(
+        home.path(),
+        &server.url(),
+        &[
+            "-c",
+            r#"model_input_modalities=["text","image"]"#,
+            "-i",
+            &image,
+            "what colour",
+        ],
+        "stub-model",
+    );
+    tui.wait_for_screen("All done.");
+    let sent = wait_for_model_call(&server, 1).await;
+    assert!(sent.contains("data:image/png;base64,"), "no image: {sent}");
+    assert!(sent.contains("[Image #1] what colour"), "{sent}");
+    drop(tui);
 }
 
 /// `/resume <id>` resumes by id; `/resume delete <id>` removes a
