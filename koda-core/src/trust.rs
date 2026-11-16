@@ -896,7 +896,7 @@ mod tests {
     // - These tests pin the **named contract** — if a future refactor
     //   inlines `clamp` back into call sites, these tests still pass
     //   (clamp didn't break) but the structural lint test in
-    //   `koda-cli/tests/regression_test.rs` catches the call-site
+    //   `koda-cli/tests/suite/regression_test.rs` catches the call-site
     //   regression. Tests target different layers; both must hold.
     //
     // The naming (`fork_identity`, `named_clamps_down`,

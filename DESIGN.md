@@ -1036,7 +1036,7 @@ different set.
   must be the runtime `mode` parameter threaded through dispatch —
   never `parent_config.trust`, which is the *startup* value and is
   not updated by `/safe`/`/auto` toggles (#1022 B19). The structural
-  lint test in `koda-cli/tests/regression_test.rs` enforces this at
+  lint test in `koda-cli/tests/suite/regression_test.rs` enforces this at
   CI time.
 - **Sandbox never widens**. `compose_child_policy(parent_policy, child_trust,
   root)` calls `SandboxPolicy::compose()` (denies = union, allows = intersect,

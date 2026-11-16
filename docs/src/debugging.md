@@ -292,7 +292,7 @@ sent. It is the exact answer to what the model saw.
 
 API keys never reach the log, at any level.
 `compaction_leaves_the_system_prompt_alone` in
-`koda-cli/tests/gemini_stub_test.rs` runs at trace level and asserts it. Your
+`koda-cli/tests/suite/gemini_stub_test.rs` runs at trace level and asserts it. Your
 conversation does reach it at debug and trace, along with anything you pasted
 into it.
 
@@ -342,7 +342,7 @@ The stub-server tests run the real `koda` binary against
 `koda_test_utils::network::FakeLlmServer` and assert on its log with
 `koda_test_utils::log::log_line`. No key, no model, no GPU.
 
-| Test in `koda-cli/tests/` | Shows how to |
+| Test in `koda-cli/tests/suite/` | Shows how to |
 |---|---|
 | `gemini_stub_test.rs` | Drive the Gemini provider: a 503, a tool call, a failed reply, a compaction |
 | `anthropic_stream_failure_test.rs` | Fail an Anthropic stream after a tool call, and check nothing ran |
@@ -353,7 +353,7 @@ The stub-server tests run the real `koda` binary against
 | `headless_interrupt_test.rs` | Send SIGINT during a model call and read the stream |
 
 ```sh
-cargo test -p koda-cli --test gemini_stub_test
+cargo nextest run -p koda-cli -E 'test(/^suite::gemini_stub_test::/)'
 ```
 
 To turn a bug report into a failing test, read the report's `model call` lines
@@ -361,7 +361,7 @@ as a script: each is one response for the stub to play. Copy the closest test,
 replay those responses, and assert on the line that was wrong.
 
 ```rust
-//! koda-cli/tests/my_bug_test.rs
+//! koda-cli/tests/suite/my_bug_test.rs (and `mod my_bug_test;` in suite/mod.rs)
 use koda_test_utils::log::{log_line, read_log};
 use koda_test_utils::network::{FakeLlmServer, ResponseTemplate};
 use serde_json::{Value, json};

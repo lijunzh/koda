@@ -107,7 +107,7 @@ fn test_cli_help_snapshot() {
 
     assert!(output.status.success());
     let actual = String::from_utf8_lossy(&output.stdout).replace("\r\n", "\n");
-    let snapshot = include_str!("snapshots/help.snap").replace("\r\n", "\n");
+    let snapshot = include_str!("../snapshots/help.snap").replace("\r\n", "\n");
     assert_eq!(
         actual.trim(),
         snapshot.trim(),

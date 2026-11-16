@@ -49,12 +49,13 @@ cargo test --workspace --features koda-core/test-support --doc   # Doc tests (ne
 cargo nextest run -p koda-core --features test-support   # Engine tests only
 cargo nextest run -p koda-cli                            # CLI tests only
 cargo nextest run -p koda-core -E 'test(/^suite::perf_test::/)'  # One koda-core test file (they're modules of tests/all.rs)
+cargo nextest run -p koda-cli -E 'test(/^suite::tui_pty_test::/)'  # One koda-cli test file (also modules of tests/all.rs)
 cargo fmt --all                          # Format all crates
 cargo fmt --all --check                                                    # Check formatting (CI enforced)
 cargo clippy --workspace --all-targets --features koda-core/test-support -- -D warnings  # Lint (CI enforced)
 cargo check --workspace --all-targets                                       # Compile-check all targets, no features (CI enforced)
 cargo doc --workspace --no-deps                                             # Build docs
-KODA_TEST_LMSTUDIO=1 cargo test -p koda-cli --test smoke_test -- --ignored  # Live test, opt-in, never in CI
+KODA_TEST_LMSTUDIO=1 cargo test -p koda-cli --test all suite::smoke_test -- --ignored  # Live test, opt-in, never in CI
 ```
 
 The toolchain is pinned in `rust-toolchain.toml`; a bump also edits the
@@ -225,9 +226,10 @@ The `test-support` feature gates `MockProvider` and `TestSink`, so E2E tests nee
   `guarantee_matrix_test.rs` (trust mode × tool effect), `tool_wiring_test.rs`
   (every tool routable and approval-handled), `snapshot_test.rs` (Bash
   classifier verdicts and provider metadata). No test pins tool descriptions.
-- **koda-cli integration:** `tests/cli_test.rs`, `regression_test.rs`,
+- **koda-cli integration** (modules of `tests/all.rs`, in `tests/suite/`):
+  `cli_test.rs`, `regression_test.rs`,
   `skill_agent_e2e_test.rs`.
-- **koda-cli smoke:** `tests/smoke_test.rs`, headless with `MockProvider`; live
+- **koda-cli smoke:** `tests/suite/smoke_test.rs`, headless with `MockProvider`; live
   variants need `KODA_TEST_LMSTUDIO=1`.
 - **koda-cli stub server:** real headless runs against `FakeLlmServer`, in
   `no_summary_compaction_test.rs`, `gemini_stub_test.rs`,

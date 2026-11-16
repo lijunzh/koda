@@ -117,7 +117,7 @@ impl MockProvider {
     /// `RwLock<HashMap>` with fallback to `std::env::var`) instead of
     /// `std::env::var` directly. This lets in-process tests inject the
     /// script via [`koda_config::runtime_env::set`] — no `unsafe { set_var }`,
-    /// no Rust 2024 UB. Sub-process tests (e.g. `koda-cli/tests/smoke_test`)
+    /// no Rust 2024 UB. Sub-process tests (e.g. `koda-cli/tests/suite/smoke_test`)
     /// continue to work because `runtime_env::get` falls back to the real
     /// process env when the runtime map has no entry.
     pub fn from_env() -> Self {

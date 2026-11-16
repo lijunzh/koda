@@ -38,7 +38,7 @@ path = "junit.xml"
 max-threads = 4
 
 [[profile.default.overrides]]
-filter = 'binary(tui_pty_test)'
+filter = 'package(koda-cli) & binary(all) & test(/^suite::tui_pty_test::/)'
 test-group = "pty"
 
 # perf_test times hot paths against wall-clock bounds. Beside 7 other tests on

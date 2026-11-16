@@ -1,0 +1,25 @@
+// Every koda-cli integration test, one module per former test binary.
+
+mod anthropic_stream_failure_test;
+mod cli_test;
+mod config_dir_test;
+mod context_count_test;
+mod exec_protocol_test;
+mod gemini_stub_test;
+mod headless_interrupt_test;
+mod history_edit_log_test;
+mod log_database_test;
+mod mcp_cmd_test;
+mod mcp_config_flag_test;
+mod no_summary_compaction_test;
+mod openai_stream_failure_test;
+mod own_kill_test;
+mod plan_mode_headless_test;
+mod prompt_text_test;
+mod regression_test;
+mod sandbox_helper_test;
+mod serve_test;
+mod skill_agent_e2e_test;
+mod smoke_test;
+mod stop_reason_log_test;
+mod tui_pty_test;
