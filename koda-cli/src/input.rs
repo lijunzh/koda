@@ -251,6 +251,33 @@ fn drop_trailing_spaces(prompt: &mut String) {
     prompt.truncate(prompt.trim_end_matches([' ', '\t']).len());
 }
 
+/// The image a paste names when the paste is just one image file's path,
+/// as a terminal pastes a file dropped on it; `None` for anything else.
+pub(crate) fn dropped_image(pasted: &str) -> Option<ImageData> {
+    let token = pasted.trim();
+    let unescaped = unescape_path(strip_quotes(token));
+    if token.is_empty() || !looks_like_file_path(token) || !is_image_file(&unescaped) {
+        return None;
+    }
+    let resolved = resolve_bare_path(token)?;
+    if !resolved.is_file() {
+        return None;
+    }
+    try_load_image(&resolved, &resolved.display().to_string())
+}
+
+/// The images whose `[Image #N]` markers are still in `text`, in the order
+/// the markers appear. One deleted from the text is left out, as in Claude
+/// Code and Codex.
+pub(crate) fn images_by_marker(text: &str, pasted: &[(String, ImageData)]) -> Vec<ImageData> {
+    let mut found: Vec<(usize, &ImageData)> = pasted
+        .iter()
+        .filter_map(|(marker, image)| text.find(marker.as_str()).map(|at| (at, image)))
+        .collect();
+    found.sort_by_key(|(at, _)| *at);
+    found.into_iter().map(|(_, image)| image.clone()).collect()
+}
+
 /// Scan input for `@path` mentions and bare image paths (drag-and-drop):
 /// the mentions are collected for the host, the images loaded here.
 ///
@@ -390,6 +417,43 @@ pub fn format_paste_blocks(blocks: &[PasteBlock]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A file dropped on a terminal arrives as its path, escaped as the
+    /// terminal escapes it; anything but one image file's path isn't one.
+    #[test]
+    fn a_dropped_image_path_is_an_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let shot = dir.path().join("shot 1.png");
+        std::fs::write(&shot, b"\x89PNG\r\n\x1a\nrest").unwrap();
+        let escaped = shot.display().to_string().replace(' ', "\\ ");
+        let image = dropped_image(&format!("{escaped} ")).expect("not taken as an image");
+        assert_eq!(image.media_type, "image/png");
+
+        let notes = dir.path().join("notes.txt");
+        std::fs::write(&notes, "hi").unwrap();
+        assert!(dropped_image(&notes.display().to_string()).is_none());
+        assert!(dropped_image(&dir.path().join("gone.png").display().to_string()).is_none());
+        assert!(dropped_image(&format!("look at {escaped}")).is_none());
+        assert!(dropped_image("").is_none());
+    }
+
+    /// Images go in their markers' order, and one whose marker was deleted
+    /// stays behind.
+    #[test]
+    fn images_follow_their_markers() {
+        let image = |n: &str| ImageData {
+            media_type: "image/png".into(),
+            base64: n.into(),
+        };
+        let pasted = vec![
+            ("[Image #1]".to_string(), image("one")),
+            ("[Image #2]".to_string(), image("two")),
+            ("[Image #3]".to_string(), image("three")),
+        ];
+        let sent = images_by_marker("compare [Image #3] with [Image #1]", &pasted);
+        assert_eq!(sent, [image("three"), image("one")]);
+        assert!(images_by_marker("no images", &pasted).is_empty());
+    }
 
     /// The tokens alone, for the tests that only care where words split.
     fn tokenize_shell_aware(input: &str) -> Vec<String> {

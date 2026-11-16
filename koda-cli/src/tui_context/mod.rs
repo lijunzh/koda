@@ -58,6 +58,11 @@ pub(crate) struct TuiContext {
 
     // ── Control flow ──────────────────────────────────────────
     pub paste_blocks: Vec<input::PasteBlock>,
+    /// Images pasted or dropped into the input box, each with its
+    /// `[Image #N]` marker; sent with the prompt while the marker stays.
+    pub pasted_images: Vec<(String, input::ImageData)>,
+    /// Images attached this session, so each marker's number is new.
+    pub image_count: usize,
     pub pending_command: Option<String>,
     pub should_quit: bool,
     /// #1216: Ctrl+C-arm timestamp. When the user presses Ctrl+C at
@@ -261,6 +266,8 @@ pub(crate) struct TurnInput {
     /// What the user typed, and its paste blocks, for the input box.
     pub typed: String,
     pub paste_blocks: Vec<crate::input::PasteBlock>,
+    /// The pasted images and their markers, for the input box too.
+    pub pasted_images: Vec<(String, crate::input::ImageData)>,
 }
 
 /// What a turn on the host does.
@@ -438,6 +445,8 @@ impl TuiContext {
             provider_wizard: None,
             pending_approval_id: None,
             paste_blocks: Vec::new(),
+            pasted_images: Vec::new(),
+            image_count: 0,
             pending_command: None,
             should_quit: false,
             quit_armed_at: None,
@@ -807,6 +816,12 @@ impl TuiContext {
     async fn prepare_inference_start(&mut self, input: &str) -> CommandOutcome {
         let mut processed = input::process_input(input);
         processed.paste_blocks = std::mem::take(&mut self.paste_blocks);
+        // Pasted images whose markers are still in the text, in their
+        // order, then any image path typed in the text.
+        let pasted_images = std::mem::take(&mut self.pasted_images);
+        let mut images = input::images_by_marker(input, &pasted_images);
+        images.append(&mut processed.images);
+        processed.images = images;
 
         for (i, _img) in processed.images.iter().enumerate() {
             self.scroll_buffer.push(Line::from(vec![
@@ -842,6 +857,7 @@ impl TuiContext {
             mentions: processed.mentions,
             typed: input.to_string(),
             paste_blocks: std::mem::take(&mut processed.paste_blocks),
+            pasted_images,
         })
     }
 

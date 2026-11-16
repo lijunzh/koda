@@ -35,12 +35,23 @@ To send only the paths, for the model to read itself as Codex does, set
 
 ## Images
 
-Drag an image into the terminal, or paste its path, to attach it from your own
-machine:
+Three ways to attach an image from your own machine, as in Claude Code:
 
-```text
-> what does /Users/me/Desktop/screenshot.png show?
-```
+- **Paste it:** copy an image (a screenshot, say) and press `Ctrl+V`, or
+  `Alt+V` where the terminal takes `Ctrl+V` for itself. In iTerm2 `Cmd+V`
+  works too. Koda sends it as a PNG, scaled down to 1,568 pixels on its long
+  edge if it is larger, the most Anthropic recommends.
+- **Drag it** onto the terminal: the file becomes a marker.
+- **Type its path:** `what does /Users/me/Desktop/screenshot.png show?`
+
+A pasted or dropped image shows in the input box as `[Image #1]`,
+`[Image #2]` and so on, where you put it, so you can refer to it: "compare
+[Image #1] with [Image #2]". Delete a marker and its image stays behind.
+The marker stays in your message as typed.
+
+Over SSH, the clipboard and your files are on your own machine, not the one
+Koda runs on, so pasting and dragging don't reach Koda there; copy the image
+to that machine and give its path.
 
 Supported formats: PNG, JPEG, GIF, WEBP. Images are base64-encoded and
 sent to the model with your message. `@screenshot.png` works too, read by the
