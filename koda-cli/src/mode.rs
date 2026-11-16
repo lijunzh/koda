@@ -1,23 +1,31 @@
 //! The session's mode as the TUI keeps it: the protocol's [`TrustMode`],
 //! as the host reports it, and the host's sandbox from `state/read`. The
-//! host enforces the rules (Auto needs the sandbox, an interactive session
-//! runs in Safe rather than Plan); these checks only spare a round trip and
-//! say why, as Codex's TUI keeps its thread's policy as the server sent it.
+//! host enforces the rules (Auto needs the sandbox); these checks only
+//! spare a round trip and say why, as Codex's TUI keeps its thread's
+//! policy as the server sent it.
 
 use koda_client::protocol::state::{SandboxState, TrustMode};
 
-/// What Shift+Tab switches to: Safe and Auto in turn. Without the host's
-/// sandbox, Auto is refused and the error says what to do.
-pub(crate) fn next(mode: TrustMode, sandbox: &SandboxState) -> Result<TrustMode, String> {
-    allow(
-        match mode {
-            TrustMode::Safe => TrustMode::Auto,
-            TrustMode::Auto => TrustMode::Safe,
-            // Not a mode an interactive session runs in.
-            TrustMode::Plan => TrustMode::Safe,
-        },
-        sandbox,
-    )
+/// What Shift+Tab switches to: Safe, Auto and Plan in turn, as Claude
+/// Code's Shift+Tab reaches its plan mode. Without the host's sandbox,
+/// Auto is skipped, with a note saying why.
+pub(crate) fn next(mode: TrustMode, sandbox: &SandboxState) -> (TrustMode, Option<String>) {
+    match mode {
+        TrustMode::Safe if sandbox.available => (TrustMode::Auto, None),
+        TrustMode::Safe => {
+            let why = sandbox
+                .reason
+                .as_deref()
+                .map(|reason| format!(" ({reason})"))
+                .unwrap_or_default();
+            (
+                TrustMode::Plan,
+                Some(format!("Auto skipped: it needs the kernel sandbox{why}.")),
+            )
+        }
+        TrustMode::Auto => (TrustMode::Plan, None),
+        TrustMode::Plan => (TrustMode::Safe, None),
+    }
 }
 
 /// `mode`, unless it's Auto and the host has no sandbox.
@@ -79,17 +87,38 @@ mod tests {
     }
 
     #[test]
-    fn shift_tab_cycles_safe_and_auto() {
-        assert_eq!(next(TrustMode::Safe, &sandbox(true)), Ok(TrustMode::Auto));
-        assert_eq!(next(TrustMode::Auto, &sandbox(true)), Ok(TrustMode::Safe));
-        assert_eq!(next(TrustMode::Plan, &sandbox(true)), Ok(TrustMode::Safe));
+    fn shift_tab_cycles_safe_auto_and_plan() {
+        assert_eq!(
+            next(TrustMode::Safe, &sandbox(true)),
+            (TrustMode::Auto, None)
+        );
+        assert_eq!(
+            next(TrustMode::Auto, &sandbox(true)),
+            (TrustMode::Plan, None)
+        );
+        assert_eq!(
+            next(TrustMode::Plan, &sandbox(true)),
+            (TrustMode::Safe, None)
+        );
+    }
+
+    #[test]
+    fn without_the_sandbox_shift_tab_skips_auto_and_says_why() {
+        let (mode, note) = next(TrustMode::Safe, &sandbox(false));
+        assert_eq!(mode, TrustMode::Plan);
+        let note = note.unwrap();
+        assert!(note.contains("bwrap isn't installed"), "{note}");
+        assert_eq!(
+            next(TrustMode::Plan, &sandbox(false)),
+            (TrustMode::Safe, None)
+        );
     }
 
     #[test]
     fn auto_without_the_sandbox_says_what_to_do() {
-        let refused = next(TrustMode::Safe, &sandbox(false)).unwrap_err();
+        let refused = allow(TrustMode::Auto, &sandbox(false)).unwrap_err();
         assert!(refused.contains("bwrap isn't installed"), "{refused}");
         assert!(refused.contains("Install bubblewrap"), "{refused}");
-        assert_eq!(next(TrustMode::Auto, &sandbox(false)), Ok(TrustMode::Safe));
+        assert_eq!(allow(TrustMode::Plan, &sandbox(false)), Ok(TrustMode::Plan));
     }
 }

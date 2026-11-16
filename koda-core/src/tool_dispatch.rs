@@ -203,6 +203,7 @@ pub(crate) async fn execute_one_tool(
         tools,
         sink,
         sub_agent_cache,
+        mode,
         ..
     } = *tx.turn;
     let caller_spawner = tx.caller_spawner;
@@ -346,13 +347,16 @@ pub(crate) async fn execute_one_tool(
         } else {
             None
         };
+        // In the turn's mode: a session a person answers may be in Plan
+        // now though its tools were built for another.
         let r = tools
-            .execute_for(
+            .execute_in(
                 &tc.function_name,
                 &tc.arguments,
                 streaming,
                 caller_spawner,
                 sink.can_ask(),
+                mode,
             )
             .await;
         (r.output, r.success, r.full_output, r.images)

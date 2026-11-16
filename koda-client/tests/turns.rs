@@ -1252,8 +1252,9 @@ async fn sessions_are_listed_newest_first_with_their_first_prompt() {
 /// The host enforces the mode rules whichever client asks, as Codex's
 /// server owns a thread's sandbox policy: on a machine without a sandbox,
 /// Auto is refused with what to do about it, at `session/start` and at
-/// `session/settings/update`; a session a person answers runs in Safe
-/// rather than Plan, and says so; one nobody answers keeps Plan.
+/// `session/settings/update`. Plan is open to every session, as Codex's
+/// and Claude Code's plan modes are: one a person answers, and one nobody
+/// does.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_host_enforces_the_mode_rules() {
     use koda_client::protocol::session::{ApprovalPolicy, SessionSettingsUpdateParams};
@@ -1332,14 +1333,12 @@ async fn the_host_enforces_the_mode_rules() {
         refused.message.contains("Auto mode requires"),
         "{refused:?}"
     );
-    // Plan, for a session a person answers, is Safe, and a warning says so
-    // before the settings are reported.
+    // Plan, for a session a person answers, is Plan, with no warning.
     while client.try_next_event().is_some() {}
     client
         .request::<methods::SessionSettingsUpdate>(update(TrustMode::Plan))
         .await
         .unwrap();
-    let mut warned = false;
     let reported = loop {
         let next = tokio::time::timeout(Duration::from_secs(10), client.next_event()).await;
         match next
@@ -1347,7 +1346,7 @@ async fn the_host_enforces_the_mode_rules() {
             .expect("host stopped")
         {
             Outgoing::Notification(ServerNotification::Warning(w)) => {
-                warned |= w.message.contains("Plan mode is sub-agent-only");
+                panic!("warned: {}", w.message);
             }
             Outgoing::Notification(ServerNotification::SessionSettingsUpdated(n)) => {
                 break n.settings.mode;
@@ -1355,8 +1354,7 @@ async fn the_host_enforces_the_mode_rules() {
             _ => {}
         }
     };
-    assert!(warned, "no warning that Plan became Safe");
-    assert_eq!(reported, TrustMode::Safe);
+    assert_eq!(reported, TrustMode::Plan);
 
     // A session nobody answers keeps Plan: a run that may only read.
     let unattended = client

@@ -87,6 +87,26 @@ impl MarkdownRenderer {
             return Line::from(spans);
         }
 
+        // ── A proposed plan's tags, from a Plan turn ────────
+        // Drawn as a frame around the plan, as Codex's TUI sets a proposed
+        // plan apart, instead of as the raw tags.
+        match raw.trim() {
+            "<proposed_plan>" => {
+                return Line::from(vec![
+                    Span::raw(INDENT),
+                    Span::styled("─── Proposed plan ", HEADING_STYLE),
+                    Span::styled("─".repeat(42), HR_STYLE),
+                ]);
+            }
+            "</proposed_plan>" => {
+                return Line::from(vec![
+                    Span::raw(INDENT),
+                    Span::styled("─".repeat(60), HR_STYLE),
+                ]);
+            }
+            _ => {}
+        }
+
         // ── Horizontal rule ─────────────────────────────────
         if is_horizontal_rule(raw) {
             return Line::from(vec![
@@ -444,5 +464,24 @@ mod tests {
         let line = r.render_line("---");
         // HR should produce a styled line
         assert!(!line.spans.is_empty());
+    }
+
+    #[test]
+    fn a_proposed_plan_s_tags_are_drawn_as_its_frame() {
+        let mut md = MarkdownRenderer::new();
+        let text = |line: Line<'static>| {
+            line.spans
+                .iter()
+                .map(|s| s.content.to_string())
+                .collect::<String>()
+        };
+        let open = text(md.render_line("<proposed_plan>"));
+        assert!(open.contains("Proposed plan"), "{open}");
+        assert!(!open.contains('<'), "{open}");
+        let close = text(md.render_line("</proposed_plan>"));
+        assert!(!close.contains('<'), "{close}");
+        // Inside a code block, it's code.
+        md.render_line("```");
+        assert!(text(md.render_line("<proposed_plan>")).contains("<proposed_plan>"));
     }
 }

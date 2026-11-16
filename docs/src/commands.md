@@ -135,6 +135,14 @@ Asks the model to write an `AGENTS.md` for the project, a short guide for
 coding agents, as Codex's `/init` and Claude Code's do. If the project has an
 `AGENTS.md` or `CLAUDE.md` already, `/init` leaves it alone and says so.
 
+## `/plan [<prompt>]`
+
+Enters Plan mode, as Codex's `/plan` does; with a prompt, sends it too.
+The model explores, asks what it can't find out, and proposes a plan;
+Koda then asks whether to implement it in Safe or Auto, or to keep
+planning. Nothing changes in Plan. `Shift+Tab` leaves it. See
+[Planning before changing anything](./approval.md#planning-before-changing-anything).
+
 ## `/memory [add|global <text>]`
 
 ```text

@@ -354,14 +354,9 @@ async fn handle_resume_session(
                                 Span::styled(detail, DIM),
                             ]),
                         );
-                        // Its stored mode (#590). Plan isn't for a session
-                        // a person answers: the host opens it in Safe and
-                        // says so, and the TUI follows.
+                        // Its stored mode (#590).
                         if let Some(stored) = target.mode {
-                            *mode.0 = match stored {
-                                TrustMode::Plan => TrustMode::Safe,
-                                other => other,
-                            };
+                            *mode.0 = stored;
                         }
                         // Its earlier turns, as they were drawn live.
                         crate::tui_context::show_earlier_turns(
@@ -436,7 +431,7 @@ fn show_help(buffer: &mut ScrollBuffer) {
         ("↑ / ↓", "Cycle through input history"),
         ("Ctrl+R", "Reverse history search"),
         ("Tab", "Autocomplete @file path or /command"),
-        ("Shift+Tab", "Cycle approval mode (auto ↔ confirm)"),
+        ("Shift+Tab", "Cycle the mode: Safe, Auto, Plan"),
     ];
     for (key, desc) in input_keys {
         tui_output::emit_line(

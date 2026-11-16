@@ -9,6 +9,7 @@ pub mod dropdown;
 pub mod feedback_menu;
 pub mod file_menu;
 pub mod model_menu;
+pub mod plan_menu;
 pub mod provider_menu;
 pub mod session_menu;
 pub mod shortcuts_overlay;

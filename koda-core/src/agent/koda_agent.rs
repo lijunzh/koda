@@ -71,28 +71,51 @@ pub struct KodaAgent {
     pub interactive: bool,
 }
 
-/// Told to a session in Plan (a headless `--mode plan` run) so it knows
-/// before its first call that only reading will work, as Claude Code's
-/// plan mode tells its model.
+/// Told to a headless session in Plan (`koda exec --mode plan`) so it
+/// knows before its first call that only reading will work, as Claude
+/// Code's plan mode tells its model.
 const PLAN_MODE_NOTE: &str = "\n## Read-only session\n\n\
      This session is read-only (plan mode). You can read files, search, run commands that \
      only read, and use tools that only read. Anything that would change a file, run another \
      command or act somewhere else is refused. Don't try it: do what you can by reading, and \
      say in your answer what you would change or do.\n";
 
-/// The base system prompt, plus [`PLAN_MODE_NOTE`] in Plan.
+/// Opens [`PLAN_MODE_NOTE`] and [`PLAN_MODE_INTERACTIVE_NOTE`] alike.
+const PLAN_MODE_HEADING: &str = "\n## Read-only session";
+
+/// Told to a session a person answers while it is in Plan, as Codex's
+/// plan mode tells its model: explore, ask, then propose a plan in a
+/// `<proposed_plan>` block, which the TUI offers to implement.
+const PLAN_MODE_INTERACTIVE_NOTE: &str = "\n## Read-only session (plan mode)\n\n\
+     You are in plan mode until the user leaves it. Plan the work with the user; don't do it. \
+     You can read files, search, run commands that only read and use tools that only \
+     read. Anything that would change a file, run another command or act somewhere else is refused. Don't try \
+     it, even when asked to do the work: a request to do something is, here, a request to \
+     plan it.\n\n\
+     First explore: find out what you can from the project rather than asking. Then ask \
+     the user about what you can't find out, such as goals, preferences and tradeoffs, \
+     one or a few questions at a time, each one that changes the plan. When the plan \
+     leaves no decision to whoever implements it, present it once, wrapped in a \
+     `<proposed_plan>` block, each tag on a line of its own:\n\n\
+     <proposed_plan>\n\
+     the plan, in Markdown\n\
+     </proposed_plan>\n\n\
+     The plan has a title, a short summary, the changes by behaviour or part (naming files \
+     only where needed), how to test them, and the assumptions made. Keep it concise. Don't \
+     ask whether to go ahead: the user is offered to implement the plan or to keep \
+     planning. A revised plan is a complete new `<proposed_plan>` block, and there is at \
+     most one per answer.\n";
+
+/// The base system prompt. Plan's note is added per turn
+/// ([`KodaAgent::system_prompt_for_turn`]), as the mode can change between
+/// turns.
 fn system_prompt_for(
     config: &KodaConfig,
     env: &crate::prompt::EnvironmentInfo<'_>,
     interactive: bool,
     skills: &crate::skills::SkillRegistry,
 ) -> String {
-    let mut prompt =
-        crate::prompt::build_system_prompt(&config.system_prompt, env, interactive, skills);
-    if config.trust == crate::trust::TrustMode::Plan {
-        prompt.push_str(PLAN_MODE_NOTE);
-    }
-    prompt
+    crate::prompt::build_system_prompt(&config.system_prompt, env, interactive, skills)
 }
 
 impl KodaAgent {
@@ -170,6 +193,23 @@ impl KodaAgent {
         )
     }
 
+    /// The system prompt for a turn on `model` in `mode`: in Plan, with
+    /// the note saying what that means, as Codex tells its model when its
+    /// plan mode starts. A session a person answers is told to plan with
+    /// them and to propose the plan in a `<proposed_plan>` block; a
+    /// headless one only that it can't change anything.
+    pub fn system_prompt_for_turn(&self, model: &str, mode: crate::trust::TrustMode) -> String {
+        let mut prompt = self.system_prompt_for_model(model);
+        if mode == crate::trust::TrustMode::Plan && !prompt.contains(PLAN_MODE_HEADING) {
+            prompt.push_str(if self.interactive {
+                PLAN_MODE_INTERACTIVE_NOTE
+            } else {
+                PLAN_MODE_NOTE
+            });
+        }
+        prompt
+    }
+
     /// The tools a turn offers the model: the built-ins plus whatever the
     /// connected MCP servers expose right now, under the same allow/deny
     /// lists.
@@ -211,5 +251,32 @@ mod tests {
         assert!(switched.contains("- Model: new-model\n"), "{switched}");
         assert!(!switched.contains("old-model"), "{switched}");
         assert!(switched.contains("- Platform: macos"), "the rest stays");
+    }
+
+    #[test]
+    fn a_plan_turn_is_told_it_plans() {
+        use crate::trust::TrustMode;
+        let mut agent = agent("# Base\n", "m");
+        assert_eq!(
+            agent.system_prompt_for_turn("m", TrustMode::Safe),
+            "# Base\n"
+        );
+        assert_eq!(
+            agent.system_prompt_for_turn("m", TrustMode::Auto),
+            "# Base\n"
+        );
+        let headless = agent.system_prompt_for_turn("m", TrustMode::Plan);
+        assert!(headless.ends_with(PLAN_MODE_NOTE), "{headless}");
+        assert!(!headless.contains("<proposed_plan>"), "{headless}");
+
+        agent.interactive = true;
+        let answered = agent.system_prompt_for_turn("m", TrustMode::Plan);
+        assert!(answered.ends_with(PLAN_MODE_INTERACTIVE_NOTE), "{answered}");
+        assert!(answered.contains("\n<proposed_plan>\n"), "{answered}");
+        // Back in Safe, the next turn has no note.
+        assert_eq!(
+            agent.system_prompt_for_turn("m", TrustMode::Safe),
+            "# Base\n"
+        );
     }
 }

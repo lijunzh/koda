@@ -161,10 +161,7 @@ pub(crate) async fn open(
         run_checked,
     } = context;
     // The modes this session may run in, which the host enforces.
-    let rules = crate::settings::ModeRules {
-        answered: policy != ApprovalPolicy::Never,
-        sandbox,
-    };
+    let rules = crate::settings::ModeRules { sandbox };
 
     let resumed = resume.is_some();
     let loaded = crate::config_file::load(&context_file)?;
@@ -205,7 +202,7 @@ pub(crate) async fn open(
     }
     // The mode rules, before anything is created: Auto needs the sandbox,
     // and a session a person answers runs in Safe rather than Plan.
-    let (mode, mode_warning) = rules.allow(mode)?;
+    let mode = rules.allow(mode)?;
     // A new session takes the saved choice where the client named nothing,
     // as a Codex thread starts from `config.toml`'s defaults.
     let saved = crate::config_file::values(&loaded);
@@ -316,11 +313,7 @@ pub(crate) async fn open(
     let pinned_older = (config.provider_type == koda_core::config::ProviderType::Anthropic)
         .then(|| koda_core::model_alias::pinned_older_notice(&config.model))
         .flatten();
-    for message in notice
-        .into_iter()
-        .chain(mode_warning.map(str::to_string))
-        .chain(pinned_older)
-    {
+    for message in notice.into_iter().chain(pinned_older) {
         let _ = events.send(Outgoing::Notification(ServerNotification::Warning(
             WarningNotification {
                 session_id: Some(id.clone()),
@@ -567,14 +560,7 @@ impl SessionTask {
             self.session.update_provider(&next);
         }
         if let Some(asked) = params.mode {
-            let (mode, warning) = self.rules.allow(asked)?;
-            if let Some(message) = warning {
-                self.sink
-                    .notify(ServerNotification::Warning(WarningNotification {
-                        session_id: Some(id.clone()),
-                        message: message.to_string(),
-                    }));
-            }
+            let mode = self.rules.allow(asked)?;
             self.session.mode = mode;
             self.session
                 .db

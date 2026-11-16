@@ -249,25 +249,15 @@ impl TuiContext {
                 self.scroll_buffer.scroll_to_bottom();
             }
             (KeyCode::BackTab, _) => {
-                // Sandbox-aware cycle (#860 hard refusal). Auto requires the
-                // kernel sandbox; if unavailable, stay in the current mode
-                // and surface a one-line warning in the scroll buffer
-                // instead of silently flipping to a state that would bail
-                // at the next tool call.
-                match crate::mode::next(self.mode, &self.sandbox) {
-                    // The host applies the mode, records it with the
-                    // session and reports it back.
-                    Ok(mode) => {
-                        self.mode = mode;
-                        self.send_mode().await;
-                    }
-                    Err(msg) => {
-                        self.scroll_buffer.push(ratatui::text::Line::styled(
-                            format!("\u{26a0} {msg}"),
-                            ratatui::style::Style::default().fg(ratatui::style::Color::Yellow),
-                        ));
-                    }
+                // Safe, Auto and Plan in turn; Auto only with the kernel
+                // sandbox (#860). The host applies the mode, records it
+                // with the session and reports it back.
+                let (mode, note) = crate::mode::next(self.mode, &self.sandbox);
+                if let Some(note) = note {
+                    crate::tui_output::dim_msg(&mut self.scroll_buffer, note);
                 }
+                self.mode = mode;
+                self.send_mode().await;
             }
             (KeyCode::Tab, KeyModifiers::NONE) => {
                 let current = self.textarea.text().to_string();

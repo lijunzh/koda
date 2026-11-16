@@ -454,7 +454,21 @@ impl TuiContext {
                 .push(crate::tui_render::worked_for_line(ms));
         }
 
-        self.post_turn_cleanup(tracker.take_unsent_steers());
+        let unsent = tracker.take_unsent_steers();
+        // A Plan turn that ended with a plan: implement it, or keep
+        // planning, as Codex's TUI asks once the turn is done and nothing
+        // the user wrote waits to go.
+        let offer_plan = self.mode == koda_client::protocol::state::TrustMode::Plan
+            && tracker.proposed_plan()
+            && unsent.is_empty()
+            && !quit_requested
+            && tracker.completed().is_some_and(|turn| {
+                turn.status == koda_client::protocol::turn::TurnStatus::Completed
+            });
+        self.post_turn_cleanup(unsent);
+        if offer_plan {
+            self.offer_to_implement_plan();
+        }
         if quit_requested || host_stopped {
             self.should_quit = true;
         }

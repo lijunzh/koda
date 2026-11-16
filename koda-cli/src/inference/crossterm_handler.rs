@@ -374,23 +374,15 @@ async fn handle_inference_key_inline(
             scroll_buffer.set_full(full);
         }
         (KeyCode::BackTab, _) => {
-            // Sandbox-aware cycle (#860 hard refusal). Keep the user
-            // in the current mode and surface a visible warning if
-            // Auto isn't safe to enter on this system.
-            match crate::mode::next(*mode.0, mode.1) {
-                // The host applies it once this turn ends, as Codex's
-                // settings update does.
-                Ok(next) => {
-                    *mode.0 = next;
-                    stop.set_mode(next);
-                }
-                Err(msg) => {
-                    scroll_buffer.push(Line::styled(
-                        format!("\u{26a0} {msg}"),
-                        Style::default().fg(Color::Yellow),
-                    ));
-                }
+            // Safe, Auto and Plan in turn; Auto only with the kernel
+            // sandbox (#860). The host applies it once this turn ends, as
+            // Codex's settings update does.
+            let (next, note) = crate::mode::next(*mode.0, mode.1);
+            if let Some(note) = note {
+                crate::tui_output::dim_msg(scroll_buffer, note);
             }
+            *mode.0 = next;
+            stop.set_mode(next);
         }
         (KeyCode::Tab, KeyModifiers::NONE) => {
             let current = textarea.text().to_string();

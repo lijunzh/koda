@@ -24,10 +24,33 @@ confirmation prompt before each mutation. There are no separate
 | **Safe** | 🔒 SAFE (yellow) | "Confirm every side effect." Read tools auto-approve; everything that mutates state asks first. Use this in CI, locked-down workstations, or any context where you want a human in every approval loop. |
 | **Auto** | ⚡ **AUTO** (bold green) | "Trust the sandbox." Read and mutating ops auto-approve within the sandbox; destructive ops (`rm -rf`, `git reset --hard`, `git push --force`, `Delete`) still ask. Outside-project writes still ask. **Default since #1241** — the kernel sandbox + outside-project floor + destructive backstop combined provide a solid baseline without nag-by-default friction. Auto requires the kernel sandbox; on unsandboxed platforms koda refuses to start (#860 / #1259). |
 
-Plan is for sub-agents and for headless runs that should only look:
-`koda exec --mode plan "..."` (see [Headless mode](./headless.md#read-only-runs)).
-In the interactive app, `--mode` and `Shift+Tab` choose between Safe and
-Auto, and `--mode plan` is refused at start.
+`Shift+Tab` cycles Safe, Auto and Plan; without the kernel sandbox it
+skips Auto and says why. `--mode` and `mode` in `config.toml` choose the
+mode a session starts in, Plan included. Headless runs that should only
+look use `koda exec --mode plan "..."` (see
+[Headless mode](./headless.md#read-only-runs)).
+
+## Planning before changing anything
+
+Plan mode is for working out what to do with the model before it does
+anything, as in Codex and Claude Code. Enter it with `/plan`, or with
+`/plan <prompt>` to send a prompt at once, or with `Shift+Tab`.
+
+In Plan, the model is told to explore the project, ask you about what it
+can't find out, and then propose a plan in a `<proposed_plan>` block,
+which the TUI draws as a framed **Proposed plan**. Koda then asks
+**Implement this plan?**:
+
+- **Yes, implement it in Safe**: switches to Safe and sends
+  "Implement the plan." Each change asks first.
+- **Yes, implement it in Auto**: the same in Auto, offered when the
+  kernel sandbox is available.
+- **No, keep planning**: stays in Plan. Typing a reply does the same.
+
+Plan stays read-only throughout: the host refuses any call that would
+change something, and a `Bash` command runs with the project read-only in
+the kernel sandbox, so a command wrongly judged read-only still can't
+write there. A session left in Plan reopens in Plan.
 
 All three badges share the same icon + UPPERCASE + bold styling so
 the trust mode is unmissable in the status bar regardless of which

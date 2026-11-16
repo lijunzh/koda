@@ -13,18 +13,20 @@
 //!
 //! | Mode | Sandbox | Approval | Use case |
 //! |------|---------|----------|----------|
-//! | **Plan** | project, read-only | deny all non-read | Sub-agents, and headless runs that should only look (`koda exec --mode plan`) — see [`coerce_for_top_level()`](crate::trust::coerce_for_top_level) |
+//! | **Plan** | project, read-only | deny all non-read | Planning with the user before any change (`/plan`, Shift+Tab), sub-agents, and headless runs that should only look (`koda exec --mode plan`) |
 //! | **Safe** | project, read+write | confirm side effects | Opt-in via `--mode safe` (CI, locked-down workstations) |
 //! | **Auto** | project, read+write | auto-approve mutations; destructive still confirms | Autonomous coding |
 //!
-//! Plan is **sub-agent-only** for the top-level session (#1244): the
-//! `--mode plan` CLI flag, `/resume` of a Plan-persisted session, and
-//! the keyboard toggle all funnel through [`coerce_for_top_level()`](crate::trust::coerce_for_top_level)
-//! which coerces `Plan → Safe` with a warning. Sub-agents reach Plan
-//! via their JSON `"trust": "plan"` declaration plus parent clamping.
+//! A session a person answers enters Plan with `/plan` or Shift+Tab, as in
+//! Codex and Claude Code, and its model is told each Plan turn to plan with
+//! the user and to propose a plan, which the TUI offers to implement in
+//! Safe or Auto. From #1244 until 0.7.1 such a session couldn't enter Plan
+//! ([`coerce_for_top_level`](crate::trust::coerce_for_top_level), now unused): told nothing, models kept
+//! retrying the refused writes. The turn's note and
+//! [`PLAN_BLOCKED_MESSAGE`](crate::trust::PLAN_BLOCKED_MESSAGE) now say not to. Sub-agents reach Plan via their
+//! JSON `"trust": "plan"` declaration plus parent clamping.
 //!
-//! A headless run (`koda exec --mode plan "..."`) is the exception: it keeps
-//! Plan. Nobody is there to approve anything, so a run that should only
+//! A headless run (`koda exec --mode plan "..."`) keeps Plan too. Nobody is there to approve anything, so a run that should only
 //! look (a morning digest over mail, a review) wants every write refused,
 //! the way `codex exec` defaults to a read-only sandbox and Claude Code,
 //! Gemini CLI and Qwen Code take a plan mode with `-p`. Plan also makes the
@@ -155,6 +157,7 @@ pub use koda_protocol::item::PLAN_BLOCKED_MESSAGE;
 /// # Examples
 ///
 /// ```
+/// # #![allow(deprecated)]
 /// use koda_core::trust::{TrustMode, coerce_for_top_level};
 /// // Plan → Safe with a warning
 /// let (m, w) = coerce_for_top_level(TrustMode::Plan);
@@ -164,6 +167,10 @@ pub use koda_protocol::item::PLAN_BLOCKED_MESSAGE;
 /// assert_eq!(coerce_for_top_level(TrustMode::Safe), (TrustMode::Safe, None));
 /// assert_eq!(coerce_for_top_level(TrustMode::Auto), (TrustMode::Auto, None));
 /// ```
+#[deprecated(
+    since = "0.7.1",
+    note = "a session a person answers may run in Plan; Koda no longer calls this"
+)]
 pub fn coerce_for_top_level(candidate: TrustMode) -> (TrustMode, Option<&'static str>) {
     match candidate {
         TrustMode::Plan => (
@@ -425,11 +432,9 @@ pub fn set_trust(shared: &SharedTrustMode, mode: TrustMode) {
 
 /// Cycle to the next trust mode (Safe ↔ Auto) and return it.
 ///
-/// Plan is **not** part of the cycle for the top-level session
-/// (#1244) — see [`coerce_for_top_level`] for the rationale. The
-/// underlying [`TrustMode::next`] implements the same Safe↔Auto
-/// loop as a defensive no-op for the (impossible-by-construction)
-/// case where Plan reaches the top-level toggle.
+/// Plan is not part of this cycle; the TUI's Shift+Tab cycles Safe,
+/// Auto and Plan itself. The underlying [`TrustMode::next`] keeps Plan
+/// where it is.
 pub fn cycle_trust(shared: &SharedTrustMode) -> TrustMode {
     let current = read_trust(shared);
     let next = current.next();
@@ -1415,6 +1420,7 @@ mod tests {
     // is unaffected and continues to produce Plan freely.
 
     #[test]
+    #[allow(deprecated)]
     fn coerce_top_level_plan_falls_back_to_safe_with_warning() {
         // The whole point of the fix: Plan must NOT survive as a
         // top-level mode. Pin the coercion target (Safe — the most
@@ -1437,6 +1443,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn coerce_top_level_safe_passes_through_unchanged_no_warning() {
         // Negative regression: only Plan should ever produce a
         // warning. Safe — the existing default — must round-trip
@@ -1451,6 +1458,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn coerce_top_level_auto_passes_through_unchanged_no_warning() {
         // Same negative regression for Auto. After #1241 flips the
         // default to Auto, this test is the load-bearing assertion
@@ -1465,6 +1473,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn coerce_top_level_is_idempotent() {
         // Coercing the output of `coerce_for_top_level` again must
         // never produce a warning — the result of a coerce IS valid
