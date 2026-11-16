@@ -80,6 +80,8 @@ pub mod memory;
 pub mod mention;
 /// What Read returns for a Jupyter notebook.
 pub mod notebook;
+/// What Read returns for a PDF.
+pub mod pdf;
 /// On-demand conversation history retrieval (`RecallContext`).
 pub mod recall;
 /// Shell command execution tool (`Bash`).
@@ -262,6 +264,9 @@ pub struct ToolRegistry {
     /// Whether the session's model takes images, so Read returns an
     /// image as one (Read v2). Set per turn by the session.
     takes_images: std::sync::atomic::AtomicBool,
+    /// Whether the session's model takes PDFs, so Read returns a short PDF
+    /// whole (Read v2). Set per turn by the session.
+    takes_pdfs: std::sync::atomic::AtomicBool,
     /// Loopback port of the per-session SOCKS5 proxy (Phase 3d.1 of
     /// #934). When `Some`, [`crate::sandbox::build`] appends
     /// `ALL_PROXY=socks5h://127.0.0.1:port` (+ lowercase alias) so
@@ -323,6 +328,7 @@ impl ToolRegistry {
             trust,
             proxy_port: std::sync::RwLock::new(None),
             takes_images: std::sync::atomic::AtomicBool::new(false),
+            takes_pdfs: std::sync::atomic::AtomicBool::new(false),
             socks5_port: std::sync::RwLock::new(None),
         }
     }
@@ -415,6 +421,17 @@ impl ToolRegistry {
     /// Whether the model takes images, as last set.
     pub fn takes_images(&self) -> bool {
         self.takes_images.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Whether the model takes PDFs: Read then returns a short PDF whole.
+    pub fn set_takes_pdfs(&self, takes: bool) {
+        self.takes_pdfs
+            .store(takes, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether the model takes PDFs, as last set.
+    pub fn takes_pdfs(&self) -> bool {
+        self.takes_pdfs.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Attach (or detach) the per-session HTTP CONNECT proxy port.
@@ -645,6 +662,7 @@ impl ToolRegistry {
                 session,
                 skill_registry: &self.skill_registry,
                 takes_images: self.takes_images(),
+                takes_pdfs: self.takes_pdfs(),
             };
             let result = tool.execute(&ctx, &args).await;
             // Post-execution registry-level recording. Lives here
@@ -1503,6 +1521,83 @@ mod tests {
             "{}",
             result.output
         );
+    }
+
+    /// Read v2: a short PDF goes whole to a model that takes PDFs, as page
+    /// images to one that takes only images, and as its text to a text-only
+    /// one; a long one needs `pages`. Skips without poppler, which CI's
+    /// macOS runners lack.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn read_returns_a_pdf_as_the_model_takes_it() {
+        if !pdf::tests::has_poppler() {
+            eprintln!("poppler not installed; skipping");
+            return;
+        }
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("short.pdf"),
+            pdf::tests::sample_pdf(2, "short end"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("long.pdf"),
+            pdf::tests::sample_pdf(14, "the answer is 42"),
+        )
+        .unwrap();
+        let registry = ToolRegistry::new(dir.path().to_path_buf(), 100_000);
+        let read = |args: &'static str| registry.execute("Read", args, None, None);
+
+        // Text only.
+        let text = read(r#"{"file_path":"short.pdf"}"#).await;
+        assert!(text.success, "{}", text.output);
+        assert!(text.images.is_empty());
+        assert!(
+            text.output
+                .starts_with("short.pdf: pages 1-2 of 2 pages, as text."),
+            "{}",
+            text.output
+        );
+        assert!(
+            text.output.contains("--- page 2 ---") && text.output.contains("short end"),
+            "{}",
+            text.output
+        );
+
+        let long = read(r#"{"file_path":"long.pdf"}"#).await;
+        assert!(!long.success);
+        assert!(long.output.contains("a PDF of 14 pages"), "{}", long.output);
+        let page = read(r#"{"file_path":"long.pdf","pages":"14"}"#).await;
+        assert!(page.success, "{}", page.output);
+        assert!(page.output.contains("the answer is 42"), "{}", page.output);
+        let past = read(r#"{"file_path":"long.pdf","pages":"15-16"}"#).await;
+        assert!(past.output.contains("has 14 pages"), "{}", past.output);
+
+        // Images only: page images.
+        registry.set_takes_images(true);
+        let pages = read(r#"{"file_path":"long.pdf","pages":"13-14"}"#).await;
+        assert!(pages.success, "{}", pages.output);
+        assert_eq!(pages.images.len(), 2);
+        assert!(pages.images.iter().all(|i| i.media_type == "image/png"));
+        assert!(
+            pages
+                .output
+                .starts_with("long.pdf: pages 13-14 of 14 pages, as images"),
+            "{}",
+            pages.output
+        );
+        let short = read(r#"{"file_path":"short.pdf"}"#).await;
+        assert_eq!(short.images.len(), 2, "{}", short.output);
+
+        // PDFs: a short one whole; a range still as page images.
+        registry.set_takes_pdfs(true);
+        let whole = read(r#"{"file_path":"short.pdf"}"#).await;
+        assert!(whole.success, "{}", whole.output);
+        assert_eq!(whole.output, "short.pdf: a PDF, 2 pages.");
+        assert_eq!(whole.images.len(), 1);
+        assert_eq!(whole.images[0].media_type, crate::providers::PDF_MEDIA_TYPE);
+        let ranged = read(r#"{"file_path":"long.pdf","pages":"1-3"}"#).await;
+        assert_eq!(ranged.images.len(), 3, "{}", ranged.output);
+        assert!(ranged.images.iter().all(|i| i.media_type == "image/png"));
     }
 
     /// A registry over a temp dir holding `f.txt`, already fully read.

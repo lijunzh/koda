@@ -42,7 +42,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 For large files (>500 lines), use start_line and num_lines to read specific \
                 portions instead of the whole file. A Jupyter notebook (.ipynb) comes back \
                 as its cells with their outputs; give start_line or num_lines to read its \
-                JSON instead, as Edit matches it. ALWAYS read a file before editing it — \
+                JSON instead, as Edit matches it. A PDF of up to 10 pages comes back whole; \
+                read a longer one in ranges with pages, such as \"1-5\", at most 20 pages \
+                at a time. ALWAYS read a file before editing it — \
                 never guess at file contents."
                 .to_string(),
             parameters: json!({
@@ -59,6 +61,10 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "num_lines": {
                         "type": "integer",
                         "description": "How many lines to read (default: to the end of the file)"
+                    },
+                    "pages": {
+                        "type": "string",
+                        "description": "For a PDF: the page or range to read, such as \"3\" or \"1-5\" (at most 20 pages)"
                     }
                 },
                 "required": ["file_path"]
@@ -165,6 +171,10 @@ pub async fn read_file(
         ReadOutput::Notebook { path, notebook } => {
             Ok(rendered_notebook(&path, &notebook, false, max_bytes)?.text)
         }
+        ReadOutput::Pdf { path, .. } => anyhow::bail!(
+            "{path} is a PDF, which only the Read tool shows: give it the path, and pages \
+             for a long one. Or inspect it with Bash, such as `pdftotext {path} -`."
+        ),
         ReadOutput::Image { path, .. } => anyhow::bail!(
             "{path} is an image, which Read can't show here. Inspect it with Bash \
              instead, such as `file {path}`, or a tool that reads its format."
@@ -177,6 +187,13 @@ pub async fn read_file(
 pub enum ReadOutput {
     /// The numbered lines, as Read returns them.
     Text(String),
+    /// A PDF, as read.
+    Pdf {
+        /// The path as asked for.
+        path: String,
+        /// The file's bytes.
+        bytes: Vec<u8>,
+    },
     /// A Jupyter notebook read whole, to be shown as its cells.
     Notebook {
         /// The path as asked for.
@@ -259,6 +276,12 @@ pub async fn read_text_or_image(
         return Ok(ReadOutput::Image {
             path: path_str.to_string(),
             media_type,
+            bytes: raw_bytes,
+        });
+    }
+    if raw_bytes.starts_with(b"%PDF-") {
+        return Ok(ReadOutput::Pdf {
+            path: path_str.to_string(),
             bytes: raw_bytes,
         });
     }
@@ -956,6 +979,26 @@ impl Tool for ReadTool {
                         success: true,
                         full_output: None,
                         images: rendered.images,
+                    },
+                    Err(e) => crate::tools::wrap_result(Err(e)),
+                }
+            }
+            Ok(ReadOutput::Pdf { path, bytes }) => {
+                match super::pdf::read(
+                    &path,
+                    bytes,
+                    args["pages"].as_str(),
+                    ctx.takes_pdfs,
+                    ctx.takes_images,
+                    ctx.caps.tool_result_chars,
+                )
+                .await
+                {
+                    Ok((output, media)) => ToolResult {
+                        output,
+                        success: true,
+                        full_output: None,
+                        images: media,
                     },
                     Err(e) => crate::tools::wrap_result(Err(e)),
                 }

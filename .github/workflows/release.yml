@@ -109,14 +109,14 @@ jobs:
         with:
           toolchain: 1.100.0 # = rust-toolchain.toml (pin guarded in ci.yml)
       - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2.8.1
-      - name: Set up Linux sandbox (bubblewrap)
+      - name: Set up Linux sandbox (bubblewrap) and poppler (Read's PDF tests)
         if: runner.os == 'Linux'
         run: |
           # See ci.yml for the rationale on the retry loop — same Azure
           # mirror flake protection.
           for attempt in 1 2 3 4 5; do
-            if sudo apt-get install -y bubblewrap; then
-              echo "bubblewrap installed on attempt $attempt"
+            if sudo apt-get install -y bubblewrap poppler-utils; then
+              echo "bubblewrap and poppler-utils installed on attempt $attempt"
               break
             fi
             if [ "$attempt" -eq 5 ]; then

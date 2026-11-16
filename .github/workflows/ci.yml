@@ -181,7 +181,7 @@ jobs:
           # can only be read by that PR, and seven of them per PR pushed the
           # repo past GitHub's 10 GB limit, evicting main's (2026-11-15).
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Set up Linux sandbox (bubblewrap)
+      - name: Set up Linux sandbox (bubblewrap) and poppler (Read's PDF tests)
         if: runner.os == 'Linux'
         run: |
           # Hardened install: Azure Ubuntu mirrors (azure.archive.ubuntu.com)
@@ -191,8 +191,8 @@ jobs:
           # giving up. See https://github.com/lijunzh/koda/pull/1179 for the
           # failure mode that motivated this.
           for attempt in 1 2 3 4 5; do
-            if sudo apt-get install -y bubblewrap; then
-              echo "bubblewrap installed on attempt $attempt"
+            if sudo apt-get install -y bubblewrap poppler-utils; then
+              echo "bubblewrap and poppler-utils installed on attempt $attempt"
               break
             fi
             if [ "$attempt" -eq 5 ]; then

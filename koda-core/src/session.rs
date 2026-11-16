@@ -545,12 +545,14 @@ impl KodaSession {
         sink.emit(crate::engine::EngineEvent::TurnStart {
             turn_id: turn_id.clone(),
         });
-        // Read returns images only to a model that takes them.
-        self.agent.tools.set_takes_images(
-            config
-                .input_modalities()
-                .contains(&koda_config::InputModality::Image),
-        );
+        // Read returns images and PDFs only to a model that takes them.
+        let takes = config.input_modalities();
+        self.agent
+            .tools
+            .set_takes_images(takes.contains(&koda_config::InputModality::Image));
+        self.agent
+            .tools
+            .set_takes_pdfs(takes.contains(&koda_config::InputModality::Pdf));
         let started = std::time::Instant::now();
         let meter = crate::engine::sink::TurnMeter::new(sink);
         let sink: &dyn EngineSink = &meter;

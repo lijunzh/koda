@@ -50,6 +50,20 @@ pub const MAX_IMAGES_PER_REQUEST: usize = 100;
 /// doesn't support with a short note.
 pub const IMAGE_OMITTED: &str = "[An image was attached here; it isn't sent to this model.]";
 
+/// Tokens one PDF is counted as: the most a whole-PDF read sends, 10 pages
+/// at about 2,500 tokens each (Anthropic: 1,500 to 3,000 a page). The
+/// estimate errs high; Koda corrects it from the usage the API reports.
+pub const PDF_TOKENS: usize = 25_000;
+
+/// The most PDFs one request carries: 10 of at most 10 pages keep it within
+/// Anthropic's 100 pages per request. Older ones become [`PDF_OMITTED`].
+pub const MAX_PDFS_PER_REQUEST: usize = 10;
+
+/// What the model is sent in place of a PDF it can't take, or one beyond
+/// [`MAX_PDFS_PER_REQUEST`].
+pub const PDF_OMITTED: &str =
+    "[A PDF was attached here; it isn't sent to this model. Read it again to see its pages.]";
+
 /// The images stored with `msg`, if any.
 fn stored_images(msg: &koda_state::db::Message) -> Option<Vec<crate::providers::ImageData>> {
     let images: Vec<crate::providers::ImageData> = msg
@@ -92,30 +106,51 @@ pub fn lift_tool_images(messages: &mut Vec<ChatMessage>) {
     }
 }
 
-/// Cut the images in `messages` to what the model `takes`: all of them
-/// become [`IMAGE_OMITTED`] for a model that takes no images, and beyond
-/// [`MAX_IMAGES_PER_REQUEST`] the oldest do. The stored history keeps them,
-/// so a later model that takes images gets them back.
+/// Cut the media in `messages` to what the model `takes`: images become
+/// [`IMAGE_OMITTED`] for a model that takes no images, and PDFs
+/// [`PDF_OMITTED`] for one that takes no PDFs; beyond
+/// [`MAX_IMAGES_PER_REQUEST`] and [`MAX_PDFS_PER_REQUEST`] the oldest do.
+/// The stored history keeps them, so a later model that takes them gets
+/// them back.
 pub fn fit_media(messages: &mut [ChatMessage], takes: &[koda_config::InputModality]) {
-    let mut room = if takes.contains(&koda_config::InputModality::Image) {
+    use koda_config::InputModality;
+    let mut image_room = if takes.contains(&InputModality::Image) {
         MAX_IMAGES_PER_REQUEST
     } else {
         0
     };
+    let mut pdf_room = if takes.contains(&InputModality::Pdf) {
+        MAX_PDFS_PER_REQUEST
+    } else {
+        0
+    };
     for message in messages.iter_mut().rev() {
-        let Some(images) = message.images.as_mut() else {
+        let Some(media) = message.images.take() else {
             continue;
         };
-        let keep = images.len().min(room);
-        let dropped = images.len() - keep;
-        room -= keep;
-        // The newest images in a message are the ones kept.
-        images.drain(..dropped);
-        if images.is_empty() {
-            message.images = None;
+        // The newest media in a message are the ones kept.
+        let mut kept = Vec::with_capacity(media.len());
+        let mut notes = Vec::new();
+        for item in media.into_iter().rev() {
+            let (room, note) = if item.media_type == crate::providers::PDF_MEDIA_TYPE {
+                (&mut pdf_room, PDF_OMITTED)
+            } else {
+                (&mut image_room, IMAGE_OMITTED)
+            };
+            if *room > 0 {
+                *room -= 1;
+                kept.push(item);
+            } else {
+                notes.push(note);
+            }
         }
-        if dropped > 0 {
-            let notes = vec![IMAGE_OMITTED; dropped].join("\n");
+        kept.reverse();
+        notes.reverse();
+        if !kept.is_empty() {
+            message.images = Some(kept);
+        }
+        if !notes.is_empty() {
+            let notes = notes.join("\n");
             message.content = Some(match message.content.take() {
                 Some(text) if !text.is_empty() => format!("{text}\n\n{notes}"),
                 _ => notes,
@@ -155,10 +190,21 @@ pub fn estimate_tokens(messages: &[ChatMessage]) -> usize {
             // Anthropic and Gemini paths don't send it; counting it there
             // errs on the safe, over-estimating side.
             let reasoning_len = m.reasoning.as_deref().map_or(0, |r| r.len());
-            let images = m.images.as_ref().map_or(0, Vec::len);
+            let media: usize = m.images.as_ref().map_or(0, |media| {
+                media
+                    .iter()
+                    .map(|item| {
+                        if item.media_type == crate::providers::PDF_MEDIA_TYPE {
+                            PDF_TOKENS
+                        } else {
+                            IMAGE_TOKENS
+                        }
+                    })
+                    .sum()
+            });
             ((content_len + tc_len + reasoning_len) as f64 / CHARS_PER_TOKEN) as usize
                 + PER_MESSAGE_OVERHEAD
-                + images * IMAGE_TOKENS
+                + media
         })
         .sum()
 }
@@ -609,6 +655,70 @@ mod tests {
         let mut message = ChatMessage::text("user", text);
         message.images = Some(vec![image(); n]);
         message
+    }
+
+    fn pdf() -> crate::providers::ImageData {
+        crate::providers::ImageData {
+            media_type: crate::providers::PDF_MEDIA_TYPE.into(),
+            base64: "JVBERi0=".into(),
+        }
+    }
+
+    /// A model that takes images but not PDFs keeps the image and gets a
+    /// placeholder for the PDF; one that takes both keeps both; a PDF
+    /// counts as a PDF, not an image, toward the estimate.
+    #[test]
+    fn fit_media_cuts_pdfs_to_a_model_that_takes_them() {
+        use koda_config::InputModality::{Image, Pdf, Text};
+        let message = || {
+            let mut m = ChatMessage::text("tool", "doc.pdf: a PDF, 2 pages.");
+            m.images = Some(vec![image(), pdf()]);
+            m
+        };
+        let mut images_only = vec![message()];
+        fit_media(&mut images_only, &[Text, Image]);
+        let kept = images_only[0].images.as_ref().unwrap();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].media_type, "image/png");
+        assert!(
+            images_only[0]
+                .content
+                .as_deref()
+                .unwrap()
+                .contains(PDF_OMITTED)
+        );
+
+        let mut both = vec![message()];
+        fit_media(&mut both, &[Text, Image, Pdf]);
+        assert_eq!(both[0].images.as_ref().unwrap().len(), 2);
+        assert!(!both[0].content.as_deref().unwrap().contains("isn't sent"));
+
+        let plain = estimate_tokens(&[ChatMessage::text("tool", "doc.pdf: a PDF, 2 pages.")]);
+        assert_eq!(estimate_tokens(&both), plain + IMAGE_TOKENS + PDF_TOKENS);
+    }
+
+    /// Past the per-request limit, the oldest PDFs become placeholders.
+    #[test]
+    fn fit_media_keeps_the_newest_pdfs_within_the_limit() {
+        use koda_config::InputModality::{Pdf, Text};
+        let mut messages: Vec<ChatMessage> = (0..MAX_PDFS_PER_REQUEST + 2)
+            .map(|i| {
+                let mut m = ChatMessage::text("tool", &format!("read {i}"));
+                m.images = Some(vec![pdf()]);
+                m
+            })
+            .collect();
+        fit_media(&mut messages, &[Text, Pdf]);
+        let sent = messages.iter().filter(|m| m.images.is_some()).count();
+        assert_eq!(sent, MAX_PDFS_PER_REQUEST);
+        assert!(messages[0].images.is_none() && messages[1].images.is_none());
+        assert!(
+            messages[0]
+                .content
+                .as_deref()
+                .unwrap()
+                .contains(PDF_OMITTED)
+        );
     }
 
     /// A model that takes no images gets a placeholder for each, with the

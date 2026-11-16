@@ -75,14 +75,14 @@ jobs:
         continue-on-error: true
         with:
           tool: cargo-llvm-cov
-      - name: Set up Linux sandbox (bubblewrap)
+      - name: Set up Linux sandbox (bubblewrap) and poppler (Read's PDF tests)
         if: runner.os == 'Linux' && steps.install.outcome == 'success'
         run: |
           # See ci.yml for the rationale on the retry loop — same Azure
           # mirror flake protection.
           for attempt in 1 2 3 4 5; do
-            if sudo apt-get install -y bubblewrap; then
-              echo "bubblewrap installed on attempt $attempt"
+            if sudo apt-get install -y bubblewrap poppler-utils; then
+              echo "bubblewrap and poppler-utils installed on attempt $attempt"
               break
             fi
             if [ "$attempt" -eq 5 ]; then

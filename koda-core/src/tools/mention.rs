@@ -24,7 +24,8 @@ pub enum Mentioned {
     File(String),
     /// A directory: what List returns for it.
     Directory(String),
-    /// An image, sent to the model as one.
+    /// An image, sent to the model as one; or a PDF of at most 10 pages,
+    /// sent whole (to a model that doesn't take PDFs, as a note).
     Image(ImageData),
     /// Not read: a binary file, a path that doesn't exist or can't be read,
     /// or Koda's own secrets. Why, for the model.
@@ -63,6 +64,11 @@ impl ToolRegistry {
                 Err(e) => Mentioned::Unread(format!("{path} can't be read as an image: {e}")),
             };
         }
+        if let Ok(bytes) = self.fs.read(&resolved, None).await
+            && bytes.starts_with(b"%PDF-")
+        {
+            return self.mention_pdf(path, bytes).await;
+        }
         match file_tools::read_file(
             &self.project_root,
             &json!({"file_path": path}),
@@ -74,6 +80,29 @@ impl ToolRegistry {
         {
             Ok(text) => Mentioned::File(text),
             Err(e) => Mentioned::Unread(e.to_string()),
+        }
+    }
+}
+
+impl ToolRegistry {
+    /// A mentioned PDF: whole if it has at most 10 pages (or poppler can't
+    /// count them) and fits, as Read returns one; else the path, with how
+    /// to read it in ranges.
+    async fn mention_pdf(&self, path: &str, bytes: Vec<u8>) -> Mentioned {
+        use super::pdf::{MAX_WHOLE_PAGES, MAX_WHOLE_PDF_BYTES, page_count};
+        match page_count(&bytes).await {
+            Ok(Some(n)) if n > MAX_WHOLE_PAGES => Mentioned::Unread(format!(
+                "{path} is a PDF of {n} pages; read it in ranges with Read's pages, such as \
+                 \"1-10\"."
+            )),
+            Err(e) => Mentioned::Unread(format!("{path} can't be read as a PDF: {e}")),
+            Ok(_) if bytes.len() > MAX_WHOLE_PDF_BYTES => Mentioned::Unread(format!(
+                "{path} is a PDF too large to send whole; read it in ranges with Read's pages."
+            )),
+            Ok(_) => Mentioned::Image(ImageData {
+                media_type: crate::providers::PDF_MEDIA_TYPE.to_string(),
+                base64: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes),
+            }),
         }
     }
 }
@@ -133,6 +162,35 @@ mod tests {
             text.contains("<cell index=\"1\" type=\"code\">\nx = 1\n</cell>"),
             "{text}"
         );
+    }
+
+    /// A short PDF mentioned is sent whole; a long one gives the path and
+    /// how to read it in ranges.
+    #[tokio::test]
+    async fn a_short_pdf_is_sent_whole_and_a_long_one_by_path() {
+        if !crate::tools::pdf::tests::has_poppler() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("a.pdf"),
+            crate::tools::pdf::tests::sample_pdf(2, ""),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("b.pdf"),
+            crate::tools::pdf::tests::sample_pdf(12, ""),
+        )
+        .unwrap();
+        let registry = registry(dir.path());
+        let Mentioned::Image(pdf) = registry.read_mention("a.pdf").await else {
+            panic!("a short PDF wasn't sent whole");
+        };
+        assert_eq!(pdf.media_type, crate::providers::PDF_MEDIA_TYPE);
+        let Mentioned::Unread(why) = registry.read_mention("b.pdf").await else {
+            panic!("a long PDF was sent");
+        };
+        assert!(why.contains("12 pages") && why.contains("1-10"), "{why}");
     }
 
     #[tokio::test]
