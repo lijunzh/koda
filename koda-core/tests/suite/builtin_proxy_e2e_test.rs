@@ -77,7 +77,7 @@ async fn make_real_session(env: &Env) -> KodaSession {
 #[tokio::test]
 async fn session_new_auto_spawns_proxy() {
     let env = Env::builder()
-        .provider_type(ProviderType::Mock)
+        .provider_type(ProviderType::LMStudio)
         .build()
         .await;
     let session = make_real_session(&env).await;
@@ -106,7 +106,7 @@ async fn session_new_auto_spawns_proxy() {
 #[tokio::test]
 async fn bash_sees_proxy_env_pointing_at_session_proxy() {
     let env = Env::builder()
-        .provider_type(ProviderType::Mock)
+        .provider_type(ProviderType::LMStudio)
         .build()
         .await;
     let session = make_real_session(&env).await;
@@ -162,7 +162,7 @@ async fn bash_sees_proxy_env_pointing_at_session_proxy() {
 #[tokio::test]
 async fn session_proxy_accepts_tcp_connections() {
     let env = Env::builder()
-        .provider_type(ProviderType::Mock)
+        .provider_type(ProviderType::LMStudio)
         .build()
         .await;
     let session = make_real_session(&env).await;
@@ -182,11 +182,11 @@ async fn session_proxy_accepts_tcp_connections() {
 #[tokio::test]
 async fn distinct_sessions_get_distinct_proxies() {
     let env_a = Env::builder()
-        .provider_type(ProviderType::Mock)
+        .provider_type(ProviderType::LMStudio)
         .build()
         .await;
     let env_b = Env::builder()
-        .provider_type(ProviderType::Mock)
+        .provider_type(ProviderType::LMStudio)
         .build()
         .await;
     let sess_a = make_real_session(&env_a).await;
@@ -206,7 +206,7 @@ async fn distinct_sessions_get_distinct_proxies() {
 #[tokio::test]
 async fn dropping_session_releases_proxy_port() {
     let env = Env::builder()
-        .provider_type(ProviderType::Mock)
+        .provider_type(ProviderType::LMStudio)
         .build()
         .await;
     let port = {
@@ -255,7 +255,7 @@ async fn dropping_session_releases_proxy_port() {
 #[tokio::test]
 async fn macos_kernel_blocks_direct_tcp_to_non_proxy_port() {
     let env = Env::builder()
-        .provider_type(ProviderType::Mock)
+        .provider_type(ProviderType::LMStudio)
         .build()
         .await;
     let session = make_real_session(&env).await;
@@ -295,7 +295,7 @@ async fn macos_kernel_blocks_direct_tcp_to_non_proxy_port() {
 #[tokio::test]
 async fn macos_kernel_allows_tcp_to_proxy_port() {
     let env = Env::builder()
-        .provider_type(ProviderType::Mock)
+        .provider_type(ProviderType::LMStudio)
         .build()
         .await;
     let session = make_real_session(&env).await;
@@ -345,7 +345,7 @@ async fn linux_kernel_blocks_direct_tcp_to_non_proxy_port() {
     }
 
     let env = Env::builder()
-        .provider_type(ProviderType::Mock)
+        .provider_type(ProviderType::LMStudio)
         .build()
         .await;
     let session = make_real_session(&env).await;
@@ -406,7 +406,7 @@ async fn linux_kernel_allows_tcp_to_proxy_port() {
     }
 
     let env = Env::builder()
-        .provider_type(ProviderType::Mock)
+        .provider_type(ProviderType::LMStudio)
         .build()
         .await;
     let session = make_real_session(&env).await;
@@ -460,7 +460,7 @@ async fn linux_kernel_allows_tcp_to_proxy_port() {
 #[ignore = "needs curl; run with --ignored"]
 async fn curl_to_blocked_host_returns_403_via_proxy() {
     let env = Env::builder()
-        .provider_type(ProviderType::Mock)
+        .provider_type(ProviderType::LMStudio)
         .build()
         .await;
     let session = make_real_session(&env).await;
@@ -521,7 +521,7 @@ async fn a_later_command_reaches_only_koda_s_own_background_server() {
         return;
     }
     let env = Env::builder()
-        .provider_type(ProviderType::Mock)
+        .provider_type(ProviderType::LMStudio)
         .build()
         .await;
     let session = make_real_session(&env).await;

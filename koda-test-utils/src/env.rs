@@ -3,12 +3,13 @@
 //! Provides [`Env`] — an isolated test environment with temp dir, DB,
 //! session, config, and tool registry.
 
+use crate::{MockProvider, TestSink};
 use koda_core::{
     child_agent::ChildAgentRegistry,
     config::{KodaConfig, ProviderType},
-    engine::{EngineCommand, EngineEvent, sink::TestSink},
+    engine::{EngineCommand, EngineEvent},
     inference::{self, InferenceContext},
-    providers::{LlmProvider, mock::MockProvider},
+    providers::LlmProvider,
     tools::ToolRegistry,
     trust::TrustMode,
 };
@@ -19,7 +20,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 /// Mutex to serialize tests that share process-global env vars
-/// (KODA_MOCK_RESPONSES).  `#[tokio::test(flavor = "multi_thread", worker_threads = 2)]` runs tests concurrently
+/// (`runtime_env` values).  `#[tokio::test(flavor = "multi_thread", worker_threads = 2)]` runs tests concurrently
 /// within the same process, so unsynchronized set_var/remove_var
 /// on the same env var is a data race.
 pub static ENV_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -55,7 +56,7 @@ pub struct Env {
 /// ```rust,ignore
 /// let env = Env::builder()
 ///     .max_context_tokens(100_000)
-///     .provider_type(ProviderType::Mock)
+///     .provider_type(ProviderType::LMStudio)
 ///     .build()
 ///     .await;
 /// ```

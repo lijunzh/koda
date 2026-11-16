@@ -525,8 +525,8 @@ impl McpManager {
     // ── Test helpers ─────────────────────────────────────────────────────
 
     /// Insert a pre-built client directly (test-only).
-    #[cfg(feature = "test-support")]
-    pub fn insert_client_for_test(&mut self, client: McpClient) {
+    #[cfg(test)]
+    pub(crate) fn insert_client_for_test(&mut self, client: McpClient) {
         let name = client.name().to_string();
         for tool in client.tools() {
             self.annotations

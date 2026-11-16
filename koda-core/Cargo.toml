@@ -119,9 +119,6 @@ async-trait = { workspace = true }
 # Cancellation tokens
 tokio-util = { workspace = true }
 
-[features]
-test-support = ["koda-providers/test-support", "koda-mcp/test-support"]
-
 [dev-dependencies]
 # MCP HTTP integration test: rmcp server-side HTTP transport + axum
 rmcp = { version = "3", features = [
@@ -133,8 +130,6 @@ rmcp = { version = "3", features = [
 ] }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "tower-log"] }
 koda-test-utils = { path = "../koda-test-utils" }
-# The mock provider for koda-core's own unit tests.
-koda-providers = { workspace = true, features = ["test-support"] }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
 regex = { workspace = true }
@@ -142,8 +137,7 @@ ignore = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 
-# Integration tests are one binary, tests/all.rs; the modules that need the
-# mock providers are gated on test-support in tests/suite/mod.rs.
+# Integration tests are one binary, tests/all.rs.
 
 [[bench]]
 name = "assemble_context_bench"

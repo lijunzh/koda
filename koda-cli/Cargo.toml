@@ -123,7 +123,7 @@ harness = false
 
 [dev-dependencies]
 tempfile = { workspace = true }
-koda-core = { workspace = true, features = ["test-support"] }
+koda-core = { workspace = true }
 koda-test-utils = { path = "../koda-test-utils" }
 serde_json = { workspace = true }
 # tokio's `test-util` feature enables `#[tokio::test(start_paused = true)]` so

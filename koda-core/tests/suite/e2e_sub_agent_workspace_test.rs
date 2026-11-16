@@ -5,10 +5,11 @@
 //! matters here is that the work is still somewhere afterwards.
 //!
 //! Run with:
-//!   cargo test -p koda-core --features test-support \
+//!   cargo test -p koda-core \
 //!              --test e2e_sub_agent_workspace_test
 
-use koda_core::{engine::EngineEvent, runtime_env, trust::TrustMode};
+use koda_core::{engine::EngineEvent, trust::TrustMode};
+use koda_test_utils::network::FakeLlmServer;
 use koda_test_utils::{ENV_MUTEX, Env, MockProvider, MockResponse};
 use std::path::Path;
 use std::process::Command;
@@ -33,11 +34,16 @@ fn init_repo(dir: &Path) {
     git(dir, &["commit", "-qm", "init"]);
 }
 
-fn write_agent(env: &Env, isolation: Option<&str>) {
-    write_agent_denying(env, isolation, &[]);
+fn write_agent(env: &Env, server: &FakeLlmServer, isolation: Option<&str>) {
+    write_agent_denying(env, server, isolation, &[]);
 }
 
-fn write_agent_denying(env: &Env, isolation: Option<&str>, denied: &[&str]) {
+fn write_agent_denying(
+    env: &Env,
+    server: &FakeLlmServer,
+    isolation: Option<&str>,
+    denied: &[&str],
+) {
     let agents_dir = env.root.join(".koda/agents");
     std::fs::create_dir_all(&agents_dir).unwrap();
     let mut agent = serde_json::json!({
@@ -46,8 +52,9 @@ fn write_agent_denying(env: &Env, isolation: Option<&str>, denied: &[&str]) {
         "allowed_tools": [],
         "disallowed_tools": denied,
         "trust": "safe",
-        "provider": "mock",
-        "base_url": "http://localhost:0"
+        "provider": "lmstudio",
+        "model": "stub",
+        "base_url": server.url()
     });
     if let Some(isolation) = isolation {
         agent["isolation"] = isolation.into();
@@ -57,12 +64,12 @@ fn write_agent_denying(env: &Env, isolation: Option<&str>, denied: &[&str]) {
 
 /// Have the agent write [`WRITTEN`] and return what `InvokeAgent` told the
 /// parent model.
-async fn delegate_a_write(env: &Env) -> String {
+async fn delegate_a_write(env: &Env, server: &FakeLlmServer) -> String {
     let sub_responses = serde_json::json!([
         { "tool": "Write", "args": { "file_path": WRITTEN, "content": "from the sub-agent" } },
         { "text": "Done writing." }
     ]);
-    runtime_env::set("KODA_MOCK_RESPONSES", sub_responses.to_string());
+    server.mount_script_json(&sub_responses.to_string()).await;
     env.insert_user_message("delegate a write").await;
     let provider = MockProvider::new(vec![
         MockResponse::tool_call(
@@ -72,7 +79,6 @@ async fn delegate_a_write(env: &Env) -> String {
         MockResponse::Text("All done.".into()),
     ]);
     let events = env.run_inference(&provider).await;
-    runtime_env::remove("KODA_MOCK_RESPONSES");
     events
         .iter()
         .find_map(|e| match e {
@@ -91,15 +97,15 @@ fn branches(env: &Env) -> Vec<String> {
         .collect()
 }
 
-#[cfg(feature = "test-support")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn in_auto_the_edit_lands_in_the_project() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::builder().trust(TrustMode::Auto).build().await;
+    let server = FakeLlmServer::spawn().await;
     init_repo(&env.root);
-    write_agent(&env, None);
+    write_agent(&env, &server, None);
 
-    let told = delegate_a_write(&env).await;
+    let told = delegate_a_write(&env, &server).await;
 
     let content =
         std::fs::read_to_string(env.root.join(WRITTEN)).expect("the edit must reach the project");
@@ -108,15 +114,15 @@ async fn in_auto_the_edit_lands_in_the_project() {
     assert!(told.contains("Done writing."), "{told}");
 }
 
-#[cfg(feature = "test-support")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn in_safe_the_work_waits_on_a_branch_the_parent_hears_about() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::builder().trust(TrustMode::Safe).build().await;
+    let server = FakeLlmServer::spawn().await;
     init_repo(&env.root);
-    write_agent(&env, None);
+    write_agent(&env, &server, None);
 
-    let told = delegate_a_write(&env).await;
+    let told = delegate_a_write(&env, &server).await;
 
     assert!(
         !env.root.join(WRITTEN).exists(),
@@ -129,15 +135,15 @@ async fn in_safe_the_work_waits_on_a_branch_the_parent_hears_about() {
     assert!(told.contains(&branches[0]), "parent must hear: {told}");
 }
 
-#[cfg(feature = "test-support")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_agent_can_ask_for_a_worktree_in_auto() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::builder().trust(TrustMode::Auto).build().await;
+    let server = FakeLlmServer::spawn().await;
     init_repo(&env.root);
-    write_agent(&env, Some("worktree"));
+    write_agent(&env, &server, Some("worktree"));
 
-    let told = delegate_a_write(&env).await;
+    let told = delegate_a_write(&env, &server).await;
 
     assert!(!env.root.join(WRITTEN).exists());
     let branches = branches(&env);
@@ -145,67 +151,67 @@ async fn an_agent_can_ask_for_a_worktree_in_auto() {
     assert!(told.contains(&branches[0]), "parent must hear: {told}");
 }
 
-#[cfg(feature = "test-support")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn in_safe_outside_git_the_writer_does_not_start() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::builder().trust(TrustMode::Safe).build().await;
-    write_agent(&env, None);
+    let server = FakeLlmServer::spawn().await;
+    write_agent(&env, &server, None);
 
-    let told = delegate_a_write(&env).await;
+    let told = delegate_a_write(&env, &server).await;
 
     assert!(!env.root.join(WRITTEN).exists(), "Safe's promise broke");
     assert!(told.contains("not a git repository"), "{told}");
 }
 
-#[cfg(feature = "test-support")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_requested_worktree_outside_git_stops_the_agent_in_auto_too() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::builder().trust(TrustMode::Auto).build().await;
-    write_agent(&env, Some("worktree"));
+    let server = FakeLlmServer::spawn().await;
+    write_agent(&env, &server, Some("worktree"));
 
-    let told = delegate_a_write(&env).await;
+    let told = delegate_a_write(&env, &server).await;
 
     assert!(!env.root.join(WRITTEN).exists());
     assert!(told.contains("not a git repository"), "{told}");
 }
 
-#[cfg(feature = "test-support")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn in_auto_outside_git_the_edit_still_lands_in_the_project() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::builder().trust(TrustMode::Auto).build().await;
-    write_agent(&env, None);
+    let server = FakeLlmServer::spawn().await;
+    write_agent(&env, &server, None);
 
-    delegate_a_write(&env).await;
+    delegate_a_write(&env, &server).await;
 
     assert!(env.root.join(WRITTEN).exists());
 }
 
-#[cfg(feature = "test-support")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn one_denied_file_tool_does_not_hide_a_writer() {
     let _lock = ENV_MUTEX.lock().await;
     for (mode, isolation) in [(TrustMode::Safe, None), (TrustMode::Auto, Some("worktree"))] {
         let env = Env::builder().trust(mode).build().await;
+        let server = FakeLlmServer::spawn().await;
         init_repo(&env.root);
-        write_agent_denying(&env, isolation, &["Edit"]);
+        write_agent_denying(&env, &server, isolation, &["Edit"]);
 
-        let told = delegate_a_write(&env).await;
+        let told = delegate_a_write(&env, &server).await;
 
         assert!(!env.root.join(WRITTEN).exists(), "{mode:?}: {told}");
         assert_eq!(branches(&env).len(), 1, "{mode:?}: {told}");
     }
 }
 
-#[cfg(feature = "test-support")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_edit_only_agent_gets_a_worktree_in_safe() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::builder().trust(TrustMode::Safe).build().await;
+    let server = FakeLlmServer::spawn().await;
     init_repo(&env.root);
-    write_agent_denying(&env, None, &["Write"]);
+    write_agent_denying(&env, &server, None, &["Write"]);
     let sub_responses = serde_json::json!([
         // Edit needs a Read of the file first.
         { "tool": "Read", "args": { "file_path": "README.md" } },
@@ -215,7 +221,7 @@ async fn an_edit_only_agent_gets_a_worktree_in_safe() {
         },
         { "text": "Done editing." }
     ]);
-    runtime_env::set("KODA_MOCK_RESPONSES", sub_responses.to_string());
+    server.mount_script_json(&sub_responses.to_string()).await;
     env.insert_user_message("delegate an edit").await;
     let provider = MockProvider::new(vec![
         MockResponse::tool_call(
@@ -225,7 +231,6 @@ async fn an_edit_only_agent_gets_a_worktree_in_safe() {
         MockResponse::Text("All done.".into()),
     ]);
     env.run_inference(&provider).await;
-    runtime_env::remove("KODA_MOCK_RESPONSES");
 
     let readme = std::fs::read_to_string(env.root.join("README.md")).unwrap();
     assert_eq!(readme, "hello", "the project must stay as it was");

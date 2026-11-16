@@ -16,15 +16,16 @@
 //! confirmation while `rm -rf` is still rejected.
 //!
 //! Run with:
-//!   cargo test -p koda-core --features test-support \
+//!   cargo test -p koda-core \
 //!              --test e2e_sub_agent_trust_test
 
-use koda_core::{engine::EngineEvent, runtime_env, trust::TrustMode};
+use koda_core::{engine::EngineEvent, trust::TrustMode};
+use koda_test_utils::network::FakeLlmServer;
 use koda_test_utils::{ENV_MUTEX, Env, MockProvider, MockResponse};
 
 /// Helper: write a sub-agent JSON declaring `trust: "safe"`,
 /// matching the post-#1250 built-in `task` agent shape.
-fn write_safe_trust_sub_agent(env: &Env, name: &str) {
+fn write_safe_trust_sub_agent(env: &Env, server: &FakeLlmServer, name: &str) {
     let agents_dir = env.root.join(".koda/agents");
     std::fs::create_dir_all(&agents_dir).unwrap();
     std::fs::write(
@@ -34,15 +35,15 @@ fn write_safe_trust_sub_agent(env: &Env, name: &str) {
             "system_prompt": "You are a write-capable sub-agent for testing.",
             "allowed_tools": [],
             "trust": "safe",
-            "provider": "mock",
-            "base_url": "http://localhost:0"
+            "provider": "lmstudio",
+            "model": "stub",
+            "base_url": server.url()
         })
         .to_string(),
     )
     .unwrap();
 }
 
-#[cfg(feature = "test-support")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn safe_trust_sub_agent_can_write_files() {
     // **Bug fix pin for #1250 / #1249**: pre-fix this would auto-reject
@@ -55,10 +56,11 @@ async fn safe_trust_sub_agent_can_write_files() {
     // parent at Safe sends the write to a worktree, which needs a git repo:
     // `e2e_sub_agent_workspace_test.rs` covers that.
     let env = Env::builder().trust(TrustMode::Auto).build().await;
-    write_safe_trust_sub_agent(&env, "writer");
+    let server = FakeLlmServer::spawn().await;
+    write_safe_trust_sub_agent(&env, &server, "writer");
 
     // Sub-agent script: emit a Write tool call, then a final text reply.
-    // The sub-agent's MockProvider reads from KODA_MOCK_RESPONSES.
+    // The sub-agent's requests go to `server`, which plays this script.
     let target_path = env.root.join("sub_agent_wrote_this.txt");
     let target_str = target_path.to_string_lossy().to_string();
     let sub_responses = serde_json::json!([
@@ -68,7 +70,7 @@ async fn safe_trust_sub_agent_can_write_files() {
         },
         { "text": "Done writing." }
     ]);
-    runtime_env::set("KODA_MOCK_RESPONSES", sub_responses.to_string());
+    server.mount_script_json(&sub_responses.to_string()).await;
 
     env.insert_user_message("delegate a write to the writer agent")
         .await;
@@ -88,12 +90,11 @@ async fn safe_trust_sub_agent_can_write_files() {
     let events = env.run_inference(&provider).await;
     // **#1366 phase 1 (sync sub-agent dispatch)**: dispatch is
     // synchronous — by the time `run_inference` returns the sub-
-    // agent has already consumed `KODA_MOCK_RESPONSES`, dispatched
+    // agent has already played its script, dispatched
     // its Write tool call, and persisted its DB rows. The deflake
     // wait from #1321/#1323/#1327 is no longer needed because the
     // race window it guarded against (parent-loop termination vs
     // bg-agent completion) does not exist on the sync path.
-    runtime_env::remove("KODA_MOCK_RESPONSES");
 
     // Assertion 1: the file actually exists on disk. This is the
     // strongest possible proof that the Write was approved and
@@ -130,7 +131,6 @@ async fn safe_trust_sub_agent_can_write_files() {
     );
 }
 
-#[cfg(feature = "test-support")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn safe_trust_sub_agent_destructive_bash_is_still_blocked() {
     // Companion to the bug-fix test above: even though Safe-trust
@@ -148,7 +148,8 @@ async fn safe_trust_sub_agent_destructive_bash_is_still_blocked() {
     // refusal strings). Filesystem state is the unforgeable proof.
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::builder().trust(TrustMode::Safe).build().await;
-    write_safe_trust_sub_agent(&env, "destroyer");
+    let server = FakeLlmServer::spawn().await;
+    write_safe_trust_sub_agent(&env, &server, "destroyer");
 
     // Pre-create the file the sub-agent will try to delete.
     let target = env.root.join("do_not_delete.txt");
@@ -166,7 +167,7 @@ async fn safe_trust_sub_agent_destructive_bash_is_still_blocked() {
         },
         { "text": "Tried to delete." }
     ]);
-    runtime_env::set("KODA_MOCK_RESPONSES", sub_responses.to_string());
+    server.mount_script_json(&sub_responses.to_string()).await;
 
     env.insert_user_message("delegate a destructive op to the destroyer agent")
         .await;
@@ -189,7 +190,6 @@ async fn safe_trust_sub_agent_destructive_bash_is_still_blocked() {
     // agent has already finished its loop, so any destructive op
     // (or its block) is already on disk. The pre-#1366 deflake
     // wait is no longer needed.
-    runtime_env::remove("KODA_MOCK_RESPONSES");
 
     // The destructive op MUST have been blocked. Filesystem state
     // is the unforgeable proof: if the matrix had auto-approved,

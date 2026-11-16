@@ -25,8 +25,8 @@ env:
 # exactly what broke without grepping the log:
 #
 #   fmt     → formatting
-#   clippy  → lints + compile WITH test-support features (full lint surface)
-#   check   → compile sanity WITHOUT features (what crates.io users see)
+#   clippy  → lints + compile, every target
+#   check   → compile sanity, every target (what crates.io users see)
 #   test    → behaviour, matrix on (ubuntu, macos)
 #   doc     → doc compile + intra-doc links + -Dwarnings
 #   audit   → dependency advisories (on PRs, only when deps change)
@@ -37,12 +37,10 @@ env:
 # Each has a timeout well above its usual time: a hung job would otherwise
 # hold a runner for GitHub's six-hour default.
 #
-# Why both `clippy` and `check`? They run with different feature sets:
-#   - clippy enables `koda-core/test-support` (covers the full code surface)
-#   - check uses no features (validates the crates.io shape)
-# This works only because koda-core has zero `#[cfg(not(feature = "..."))]`
-# code today. If that changes, clippy will stop covering the no-features
-# path and you'll want a second clippy run with --no-default-features.
+# `clippy` and `check` once ran with different feature sets; since the
+# `test-support` feature went (test code lives in koda-test-utils, as Codex
+# removed codex-core's in #11405), both build the one shape crates.io users
+# get. `check` stays as a fast compile gate and a required check name.
 
 jobs:
   fmt:
@@ -122,7 +120,7 @@ jobs:
           # can only be read by that PR, and seven of them per PR pushed the
           # repo past GitHub's 10 GB limit, evicting main's (2026-11-15).
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo clippy --workspace --all-targets --features koda-core/test-support -- -D warnings
+      - run: cargo clippy --workspace --all-targets -- -D warnings
 
   check:
     name: Check (no features)
@@ -142,8 +140,8 @@ jobs:
           # can only be read by that PR, and seven of them per PR pushed the
           # repo past GitHub's 10 GB limit, evicting main's (2026-11-15).
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      # Catches cfg-gated items invisible behind feature flags. This is the
-      # crates.io consumer build — koda-core ships without test-support.
+      # The crates.io consumer build. There are no test features to leave
+      # out any more; this is the plain workspace build.
       - run: cargo check --workspace --all-targets
 
   test:
@@ -204,10 +202,10 @@ jobs:
         # nextest runs every test in its own process and tests from all
         # binaries at once (.config/nextest.toml). The ci profile writes
         # target/nextest/ci/junit.xml, which the guards below read.
-        run: cargo nextest run --workspace --features koda-core/test-support --profile ci
+        run: cargo nextest run --workspace --profile ci
       - name: Doc tests
         # nextest doesn't run doc tests.
-        run: cargo test --workspace --features koda-core/test-support --doc
+        run: cargo test --workspace --doc
       # #1104: regression guard — fail CI if the bwrap SEC-002 / TOCTOU
       # tests didn't actually run. Without this, a future cfg-gate or
       # test-binary split could silently exclude them and we'd only

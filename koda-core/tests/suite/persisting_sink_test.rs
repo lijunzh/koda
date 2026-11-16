@@ -54,10 +54,11 @@
 //! deliberately don't duplicate it here.
 
 use koda_core::engine::EngineEvent;
-use koda_core::engine::sink::{EngineSink, PersistingSink, TestSink};
+use koda_core::engine::sink::{EngineSink, PersistingSink};
 use koda_core::tools::ToolEffect;
 use koda_state::db::Database;
 use koda_state::session_store::{SessionStore, session_event_kind as sek};
+use koda_test_utils::TestSink;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 

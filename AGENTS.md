@@ -44,15 +44,15 @@ write there.
 ```bash
 cargo build                              # Debug build (all crates)
 cargo build --release -p koda-cli        # Release build (CLI only)
-cargo nextest run --workspace --features koda-core/test-support  # Run all tests, as CI does (cargo install --locked cargo-nextest)
-cargo test --workspace --features koda-core/test-support --doc   # Doc tests (nextest skips them; CI runs both)
-cargo nextest run -p koda-core --features test-support   # Engine tests only
+cargo nextest run --workspace  # Run all tests, as CI does (cargo install --locked cargo-nextest)
+cargo test --workspace --doc   # Doc tests (nextest skips them; CI runs both)
+cargo nextest run -p koda-core   # Engine tests only
 cargo nextest run -p koda-cli                            # CLI tests only
 cargo nextest run -p koda-core -E 'test(/^suite::perf_test::/)'  # One koda-core test file (they're modules of tests/all.rs)
 cargo nextest run -p koda-cli -E 'test(/^suite::tui_pty_test::/)'  # One koda-cli test file (also modules of tests/all.rs)
 cargo fmt --all                          # Format all crates
 cargo fmt --all --check                                                    # Check formatting (CI enforced)
-cargo clippy --workspace --all-targets --features koda-core/test-support -- -D warnings  # Lint (CI enforced)
+cargo clippy --workspace --all-targets -- -D warnings  # Lint (CI enforced)
 cargo check --workspace --all-targets                                       # Compile-check all targets, no features (CI enforced)
 cargo doc --workspace --no-deps                                             # Build docs
 KODA_TEST_LMSTUDIO=1 cargo test -p koda-cli --test all suite::smoke_test -- --ignored  # Live test, opt-in, never in CI
@@ -217,7 +217,14 @@ The heredoc is single-quoted (`<<'EOF'`) so nothing inside it is expanded.
 
 ## Tests
 
-The `test-support` feature gates `MockProvider` and `TestSink`, so E2E tests need it.
+Test code lives in `koda-test-utils` (unpublished), not behind a feature of
+the published crates: `MockProvider`, `TestSink` (one file, also compiled by
+koda-core's own unit tests) and the stub server, whose `mount_script` plays
+the mock's scripts over HTTP for tests that run the `koda` binary or a
+sub-agent. One script answers requests in arrival order; agents that call the
+model at once (parallel or background sub-agents) each need their own,
+`mount_script_for` keyed on how their system prompt begins. The `koda` binary
+can't select a mock provider.
 
 - **Unit:** co-located in `src/` modules in both crates.
 - **koda-core E2E** (mock provider): `tests/suite/e2e_*.rs` and `tests/suite/cancel_test.rs`,
@@ -229,7 +236,7 @@ The `test-support` feature gates `MockProvider` and `TestSink`, so E2E tests nee
 - **koda-cli integration** (modules of `tests/all.rs`, in `tests/suite/`):
   `cli_test.rs`, `regression_test.rs`,
   `skill_agent_e2e_test.rs`.
-- **koda-cli smoke:** `tests/suite/smoke_test.rs`, headless with `MockProvider`; live
+- **koda-cli smoke:** `tests/suite/smoke_test.rs`, headless against a `ScriptedServer`; live
   variants need `KODA_TEST_LMSTUDIO=1`.
 - **koda-cli stub server:** real headless runs against `FakeLlmServer`, in
   `no_summary_compaction_test.rs`, `gemini_stub_test.rs`,

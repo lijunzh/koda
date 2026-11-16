@@ -4,14 +4,14 @@
 //! a call name it.
 
 use koda_core::engine::event::ToolOutcome;
-use koda_core::engine::sink::TestSink;
 use koda_core::engine::{ApprovalDecision, EngineCommand, EngineEvent, EngineSink};
 use koda_core::providers::LlmProvider;
-use koda_core::providers::mock::{MockProvider, MockResponse};
 use koda_core::session::KodaSession;
 use koda_core::tools::{ToolCatalog, ToolRegistry};
 use koda_core::trust::TrustMode;
 use koda_test_utils::Env;
+use koda_test_utils::TestSink;
+use koda_test_utils::{MockProvider, MockResponse};
 use serde_json::json;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -182,13 +182,12 @@ async fn a_call_plan_mode_blocks_ends_declined_and_the_block_names_it() {
     assert_eq!(blocked, Some(write_id));
 }
 
-#[cfg(feature = "test-support")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_sub_agent_s_calls_end_too() {
-    use koda_core::runtime_env;
     use koda_test_utils::ENV_MUTEX;
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::builder().trust(TrustMode::Auto).build().await;
+    let server = koda_test_utils::network::FakeLlmServer::spawn().await;
     let agents = env.root.join(".koda/agents");
     std::fs::create_dir_all(&agents).unwrap();
     std::fs::write(
@@ -198,8 +197,9 @@ async fn a_sub_agent_s_calls_end_too() {
             "system_prompt": "You help.",
             "allowed_tools": [],
             "trust": "safe",
-            "provider": "mock",
-            "base_url": "http://localhost:0"
+            "provider": "lmstudio",
+            "model": "stub",
+            "base_url": server.url()
         })
         .to_string(),
     )
@@ -209,15 +209,16 @@ async fn a_sub_agent_s_calls_end_too() {
 
     // The sub-agent reads a file, then tries a destructive command, which a
     // sub-agent never runs.
-    runtime_env::set(
-        "KODA_MOCK_RESPONSES",
-        json!([
-            { "tool": "Read", "args": { "file_path": notes } },
-            { "tool": "Bash", "args": { "command": "rm -rf build" } },
-            { "text": "Read it." }
-        ])
-        .to_string(),
-    );
+    server
+        .mount_script_json(
+            &json!([
+                { "tool": "Read", "args": { "file_path": notes } },
+                { "tool": "Bash", "args": { "command": "rm -rf build" } },
+                { "text": "Read it." }
+            ])
+            .to_string(),
+        )
+        .await;
     env.insert_user_message("ask the helper").await;
     let provider = MockProvider::new(vec![
         MockResponse::tool_call(
@@ -227,7 +228,6 @@ async fn a_sub_agent_s_calls_end_too() {
         MockResponse::Text("done".into()),
     ]);
     let events = env.run_inference(&provider).await;
-    runtime_env::remove("KODA_MOCK_RESPONSES");
 
     let (_, outcome, output) = ended_once(&events, "Read");
     assert_eq!(outcome, ToolOutcome::Success, "{output}");

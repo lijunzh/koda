@@ -11,10 +11,6 @@ authors.workspace = true
 keywords = ["ai", "coding-agent", "llm", "anthropic", "openai"]
 categories = ["api-bindings", "development-tools"]
 
-[features]
-# The mock provider (`ProviderType::Mock`) for other crates' tests.
-test-support = []
-
 [dependencies]
 anyhow = { workspace = true }
 async-trait = { workspace = true }

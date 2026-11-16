@@ -1,7 +1,7 @@
 //! Session lifecycle tests: TurnStart/TurnEnd events, cancellation, and DB persistence.
 //!
-//! Uses MockProvider + TestSink (requires the `test-support` feature).
-//! Run with: `cargo test -p koda-core --features koda-core/test-support`
+//! Uses MockProvider + TestSink from koda-test-utils.
+//! Run with: `cargo test -p koda-core`
 
 use anyhow::Result;
 use async_trait::async_trait;

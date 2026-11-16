@@ -2,16 +2,16 @@
 //! or comes back to the client. It is never dropped, and it never waits
 //! silently for the user's next prompt.
 
-use koda_core::engine::sink::TestSink;
 use koda_core::engine::{ApprovalDecision, EngineCommand, EngineEvent, EngineSink};
 use koda_core::loop_guard::LoopContinuation;
-use koda_core::providers::mock::{MockProvider, MockResponse};
 use koda_core::providers::{ChatMessage, LlmProvider};
 use koda_core::session::KodaSession;
 use koda_core::tools::{ToolCatalog, ToolRegistry};
 use koda_core::trust::TrustMode;
 use koda_state::session_store::SessionStore;
 use koda_test_utils::Env;
+use koda_test_utils::TestSink;
+use koda_test_utils::{MockProvider, MockResponse};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};

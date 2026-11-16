@@ -142,7 +142,6 @@ koda/
 │   │   ├── gemini.rs       # Google Gemini (context caching, key-in-URL)
 │   │   ├── http.rs         # Provider-neutral HTTP helpers
 │   │   ├── openai_compat.rs # OpenAI-compatible (GPT, DeepSeek, local models)
-│   │   ├── mock.rs         # Mock provider for tests (feature test-support)
 │   │   ├── stream_collector.rs # ChunkParser trait + shared SSE stream collector
 │   │   ├── stream_tag_filter.rs # Strip XML tool tags from streaming text
 │   │   ├── model_alias.rs  # Curated model aliases (e.g. "sonnet" → exact model ID)
@@ -233,8 +232,18 @@ work, not for `rm -rf` (#1251).
 
 ## Test tiers in detail
 
-The test-support feature gates `MockProvider` and `TestSink`, which are excluded
-from production builds to keep `koda-core`'s public API clean.
+Test code lives in `koda-test-utils`, which is never published: the mock
+provider (`MockProvider`), the test sink (`TestSink`, one file that koda-core's
+own unit tests compile too) and the stub HTTP server. No published crate has a
+test feature, so nothing test-only is public on crates.io or in the `koda`
+binary, and each crate builds once. A test that runs the `koda` binary, or a
+sub-agent the engine builds from its config, scripts the stub server
+(`mount_script`, or `ScriptedServer` in a synchronous test) in the mock's
+format instead. One script answers requests in the order they arrive, so
+agents that call the model at the same time, such as two sub-agents from one
+batch of tool calls, each get their own with `mount_script_for`, keyed on how
+the agent's system prompt begins (every agent's prompt lists the others, so
+matching anywhere in it isn't enough).
 
 **koda-core unit tests** are co-located in `src/` modules, no feature flag:
 context tracking, loop detection, config defaults, bash safety, etc.
@@ -245,8 +254,7 @@ and link once instead of 40 times. nextest still runs each test in its own
 process. A test's name starts with its file, `suite::session_test::…`; run one
 file with `cargo nextest run -p koda-core -E 'test(/^suite::session_test::/)'`.
 
-**koda-core E2E tests** (mock provider, CI) require the `test-support` feature,
-and their modules are gated on it in `tests/suite/mod.rs`:
+**koda-core E2E tests** (mock provider, CI):
 
 - `tests/suite/e2e_test.rs` — core pipeline: text streaming, tool calls, errors, history, cancel
 - `tests/suite/e2e_tools_test.rs` — tool coverage: Glob, Grep, Edit, AST verification
@@ -282,7 +290,7 @@ files under `tests/suite/`; run one file with
 - `tests/suite/regression_test.rs` — REPL dispatch, input processing
 - `tests/suite/skill_agent_e2e_test.rs` — skill activation + agent switching E2E
 
-**koda-cli smoke tests** (MockProvider, CI-safe): `tests/suite/smoke_test.rs` covers
+**koda-cli smoke tests** (a scripted stub server, CI-safe): `tests/suite/smoke_test.rs` covers
 headless mode: text responses, tool use, session resume, `--resume` flag. The
 live variants are gated by `KODA_TEST_LMSTUDIO=1` and never run in CI.
 
@@ -329,7 +337,7 @@ working in. Keep the build directory on the machine's own disk (faster, and
 Linux builds don't mix with macOS ones):
 
 ```bash
-orb -m ubuntu bash -lc 'CARGO_TARGET_DIR=$HOME/target/koda cargo nextest run --workspace --features koda-core/test-support'
+orb -m ubuntu bash -lc 'CARGO_TARGET_DIR=$HOME/target/koda cargo nextest run --workspace'
 ```
 
 Pass `-j 4` when local model evals are running, so the build doesn't push their
@@ -425,9 +433,9 @@ names what broke, and a seventh gathers them. Wall-clock is set by the slowest
 | Job | Check name(s) | Runs |
 |---|---|---|
 | `fmt` | `Format` | `cargo fmt --check`, plus text guards: tokio test flavor (#1109), toolchain pin, the TUI's core boundary (`koda-cli`'s `koda_core` uses may only shrink) |
-| `clippy` | `Clippy` | `cargo clippy --workspace --all-targets --features koda-core/test-support -- -D warnings` |
-| `check` | `Check (no features)` | `cargo check --workspace --all-targets` (the crates.io shape, no test-support) |
-| `test` | `Test (ubuntu-latest)`, `Test (macos-latest)` | `cargo nextest run --workspace --features koda-core/test-support --profile ci`, the doc tests with `cargo test --doc`, then asserts from nextest's JUnit report that the security-boundary tests ran |
+| `clippy` | `Clippy` | `cargo clippy --workspace --all-targets -- -D warnings` |
+| `check` | `Check (no features)` | `cargo check --workspace --all-targets` (the crates.io shape) |
+| `test` | `Test (ubuntu-latest)`, `Test (macos-latest)` | `cargo nextest run --workspace --profile ci`, the doc tests with `cargo test --doc`, then asserts from nextest's JUnit report that the security-boundary tests ran |
 | `doc` | `Docs` | `cargo doc --workspace --no-deps` with `RUSTDOCFLAGS=-Dwarnings` |
 | `audit` | `Security Audit` | `cargo audit --deny unsound --deny yanked`, gated on dependency changes (below) |
 | `required` | `CI required` | Succeeds only if every job above succeeded |

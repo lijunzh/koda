@@ -97,7 +97,6 @@ jobs:
           # between reset_compact_failures() and the assertion.
           cargo llvm-cov \
             --lib -p koda-core \
-            --features koda-core/test-support \
             --fail-under-lines 80 \
             --lcov --output-path lcov-core.info \
             -- --test-threads=1

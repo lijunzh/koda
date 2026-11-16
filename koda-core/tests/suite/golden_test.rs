@@ -3,7 +3,7 @@
 //! Demonstrates replaying recorded LLM conversations from JSON fixtures.
 //! To record new golden files, wrap a real provider with `RecordingProvider`.
 //!
-//! Run: `cargo test -p koda-core --features test-support --test golden_test`
+//! Run: `cargo test -p koda-core --test golden_test`
 
 use koda_core::engine::EngineEvent;
 use koda_test_utils::{Env, golden};

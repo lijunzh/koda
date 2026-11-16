@@ -826,7 +826,6 @@ mod tests {
             ProviderType::Gemini,
             ProviderType::Groq,
             ProviderType::Grok,
-            ProviderType::Mock,
         ];
         for p in providers {
             assert!(!p.default_base_url().is_empty());
@@ -1362,7 +1361,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn query_and_apply_reports_the_override_and_skips_the_notice() {
-        use crate::providers::mock::MockProvider;
+        use koda_test_utils::MockProvider;
         let mut config = KodaConfig::default_for_testing(ProviderType::LlamaCpp)
             .with_context_override(Some(65_536));
         let provider = MockProvider::new(vec![]);
@@ -1518,7 +1517,6 @@ mod tests {
             ("llama.cpp", ProviderType::LlamaCpp),
             ("LLAMA-CPP", ProviderType::LlamaCpp),
             ("groq", ProviderType::Groq),
-            ("mock", ProviderType::Mock),
         ];
         for (name, expected) in cases {
             assert_eq!(
@@ -1536,7 +1534,6 @@ mod tests {
         // Local providers don't require an API key
         assert!(!ProviderType::LMStudio.requires_api_key());
         assert!(!ProviderType::Ollama.requires_api_key());
-        assert!(!ProviderType::Mock.requires_api_key());
         assert!(!ProviderType::Vllm.requires_api_key());
         assert!(!ProviderType::LlamaCpp.requires_api_key());
     }

@@ -11,10 +11,6 @@ authors.workspace = true
 keywords = ["ai", "coding-agent", "mcp", "model-context-protocol"]
 categories = ["development-tools"]
 
-[features]
-# Test helpers other crates' tests use.
-test-support = []
-
 [dependencies]
 anyhow = { workspace = true }
 http = "1"
@@ -47,7 +43,3 @@ tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
 tokio-util = { workspace = true }
 
-[[test]]
-name = "compat"
-# Uses the manager's test helpers.
-required-features = ["test-support"]

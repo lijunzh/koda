@@ -3,7 +3,7 @@
 //! Tests path safety, symlink protection, dangerous command handling,
 //! approval flow, and file encoding edge cases.
 //!
-//! Run with: `cargo test -p koda-core --features test-support --test e2e_safety_test`
+//! Run with: `cargo test -p koda-core --test e2e_safety_test`
 
 use koda_core::engine::EngineEvent;
 use koda_state::session_store::SessionStore;
