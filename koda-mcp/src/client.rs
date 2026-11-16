@@ -17,8 +17,8 @@ use tokio::process::Command;
 
 use super::config::{McpServerConfig, McpTransport};
 use super::tool_bridge::McpToolAnnotations;
-use crate::providers::ToolDefinition;
-use crate::tools::web_fetch::is_safe_url;
+use koda_providers::ToolDefinition;
+use koda_sandbox::url_guard::is_safe_url;
 
 /// Connection status of a single MCP server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

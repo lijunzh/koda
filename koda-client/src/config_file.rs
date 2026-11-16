@@ -436,12 +436,10 @@ pub(crate) async fn migrate(db: &Database, file: &ConfigFile) {
             tracing::warn!("couldn't read the saved model choice: {e:#}");
             None
         });
-    let servers = koda_core::mcp::config::load_legacy(db)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!("couldn't read the stored MCP servers: {e:#}");
-            Default::default()
-        });
+    let servers = load_legacy(db).await.unwrap_or_else(|e| {
+        tracing::warn!("couldn't read the stored MCP servers: {e:#}");
+        Default::default()
+    });
     if choice.is_none() && servers.is_empty() {
         return;
     }
@@ -493,7 +491,7 @@ pub(crate) async fn migrate(db: &Database, file: &ConfigFile) {
         tracing::warn!("couldn't delete the moved model choice: {e:#}");
     }
     if !servers.is_empty()
-        && let Err(e) = koda_core::mcp::config::delete_legacy(db).await
+        && let Err(e) = delete_legacy(db).await
     {
         tracing::warn!("couldn't delete the moved MCP servers: {e:#}");
     }
@@ -521,6 +519,70 @@ pub(crate) fn servers(loaded: &Loaded) -> BTreeMap<String, McpServerConfigValue>
             }
         })
         .collect()
+}
+
+// The rows were moved here from `koda-mcp` when it was split out: only this
+// migration reads them, and the MCP crate needs no database.
+use anyhow::Context as _;
+use koda_core::mcp::config::McpServerConfig;
+use std::collections::HashMap;
+
+// ── MCP servers earlier versions stored in the database ───────────────────
+
+/// Key prefix for MCP server configs in the kv_store.
+const MCP_KEY_PREFIX: &str = "mcp:";
+
+/// The servers earlier versions stored in the database, to move them into
+/// the config file. A row that doesn't parse is skipped with a warning.
+async fn load_legacy(db: &Database) -> anyhow::Result<HashMap<String, McpServerConfig>> {
+    let rows = db
+        .kv_list_prefix(MCP_KEY_PREFIX)
+        .await
+        .context("failed to load MCP configs from kv_store")?;
+
+    let mut configs = HashMap::new();
+    for (key, value) in rows {
+        let server_name = key.strip_prefix(MCP_KEY_PREFIX).unwrap_or(&key).to_string();
+        if server_name.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<McpServerConfig>(&value) {
+            Ok(config) => {
+                if value.contains("\"bearer_token\"") {
+                    tracing::warn!(
+                        server = %server_name,
+                        "this MCP server has a stored bearer token, which Koda no longer \
+                         reads; put the token in an environment variable and name it with \
+                         `bearer_token_env_var`"
+                    );
+                }
+                configs.insert(server_name, config);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    server = %server_name,
+                    error = %e,
+                    "skipping MCP server with invalid config"
+                );
+            }
+        }
+    }
+    Ok(configs)
+}
+
+/// Delete every server row earlier versions stored, once they are in the
+/// config file.
+async fn delete_legacy(db: &Database) -> anyhow::Result<()> {
+    let rows = db
+        .kv_list_prefix(MCP_KEY_PREFIX)
+        .await
+        .context("failed to list MCP configs in kv_store")?;
+    for (key, _) in rows {
+        db.kv_delete(&key)
+            .await
+            .context("failed to delete an MCP config from kv_store")?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

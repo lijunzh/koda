@@ -12,6 +12,7 @@ members = [
     "koda-skills",
     "koda-memory",
     "koda-command",
+    "koda-mcp",
 ]
 resolver = "3"
 default-members = ["koda-cli"]
@@ -45,6 +46,7 @@ koda-providers = { path = "koda-providers", version = "=0.7.0" }
 koda-skills = { path = "koda-skills", version = "=0.7.0" }
 koda-memory = { path = "koda-memory", version = "=0.7.0" }
 koda-command = { path = "koda-command", version = "=0.7.0" }
+koda-mcp = { path = "koda-mcp", version = "=0.7.0" }
 koda-sandbox = { path = "koda-sandbox", version = "=0.7.0" }
 koda-core = { path = "koda-core", version = "=0.7.0" }
 koda-client = { path = "koda-client", version = "=0.7.0" }

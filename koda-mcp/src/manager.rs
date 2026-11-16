@@ -14,8 +14,8 @@ use tokio::sync::watch;
 use super::client::{McpClient, McpClientStatus};
 use super::config::McpServerConfig;
 use super::tool_bridge::{McpToolAnnotations, parse_mcp_tool_name};
-use crate::providers::ToolDefinition;
-use crate::tools::ToolEffect;
+use koda_command::ToolEffect;
+use koda_providers::ToolDefinition;
 
 /// A session's MCP manager, shared by its turns and the host that reports on
 /// it.
@@ -353,7 +353,8 @@ impl McpManager {
 
         // Convert CallToolResult content to a string, marked as data: an
         // MCP server's text, error text included, isn't the user's.
-        let output = crate::untrusted::wrap(qualified_name, &call_tool_result_to_string(&result));
+        let output =
+            koda_providers::untrusted::wrap(qualified_name, &call_tool_result_to_string(&result));
 
         // Check for error flag.
         if result.is_error.unwrap_or(false) {

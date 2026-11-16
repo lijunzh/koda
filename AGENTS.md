@@ -86,6 +86,7 @@ re-exports as `providers`, `model_alias`, `model_context`, `model_effort` and
 `koda-skills` and `koda-memory` (skills, and the instruction files and Koda's
 notes, re-exported by `koda-core` as `skills` and `memory`), `koda-command`
 (shell command classification and path linting, with `ToolEffect`),
+`koda-mcp` (the MCP client, re-exported as `mcp`),
 `koda-state` (Koda's stored state: the `SessionStore` trait and its SQLite
 `Database`, how its SQLite files are opened, and the diagnostic log database,
 as Codex keeps its storage outside `codex-core`), `koda-test-utils`.
@@ -119,7 +120,8 @@ In `koda-core/src/`:
   `model_effort.rs`); `keystore.rs` stays in `koda-core`
 - **Storage:** `koda-state/src/` (`session_store.rs`, `db/`, `sqlite.rs`,
   `log_db/`), apart from the engine
-- **Protocol and config:** `engine/`, `mcp/`, `config.rs`
+- **Protocol and config:** `engine/`, `config.rs`; the MCP client is its own
+  crate, `koda-mcp`
 - **File history:** there is none, and no `/undo`. Git and the shell are how
   changes come back.
 

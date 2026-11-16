@@ -44,10 +44,6 @@ mod inference_edge_test;
 mod inference_recovery_test;
 mod inference_retry_test;
 mod loop_cap_test;
-// Needs the mock providers: --features test-support.
-#[cfg(feature = "test-support")]
-mod mcp_compat_test;
-mod mcp_http_transport_test;
 mod mcp_instructions_bootstrap_test;
 mod new_tools_test;
 mod perf_test;

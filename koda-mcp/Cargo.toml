@@ -1,0 +1,53 @@
+[package]
+name = "koda-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "The MCP client of the Koda AI coding agent: connecting to MCP servers over stdio and HTTP and bridging their tools"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords = ["ai", "coding-agent", "mcp", "model-context-protocol"]
+categories = ["development-tools"]
+
+[features]
+# Test helpers other crates' tests use.
+test-support = []
+
+[dependencies]
+anyhow = { workspace = true }
+http = "1"
+koda-command = { workspace = true }
+koda-providers = { workspace = true }
+koda-sandbox = { workspace = true }
+reqwest = { workspace = true }
+rmcp = { version = "3", default-features = false, features = [
+    "client",
+    "base64",
+    "transport-child-process",
+    "transport-streamable-http-client-reqwest",
+] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# The HTTP transport tests: rmcp's server side behind axum.
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "tower-log"] }
+rmcp = { version = "3", features = [
+    "server",
+    "macros",
+    "transport-streamable-http-server",
+    "transport-streamable-http-server-session",
+    "server-side-http",
+] }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["full", "test-util"] }
+tokio-util = { workspace = true }
+
+[[test]]
+name = "compat"
+# Uses the manager's test helpers.
+required-features = ["test-support"]

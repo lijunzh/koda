@@ -71,6 +71,7 @@ protocol on stdin and stdout ([Koda as a server](https://lijunzh.github.io/koda/
 | [**koda-client**](koda-client/) | The client API, and engine events projected onto the protocol |
 | [**koda-config**](koda-config/) | The config file, `~/.config/koda/config.toml`: reading, checking and editing it |
 | [**koda-command**](koda-command/) | Shell command classification: what a command does, and the paths it touches |
+| [**koda-mcp**](koda-mcp/) | The MCP client: connecting to MCP servers over stdio and HTTP, and bridging their tools |
 | [**koda-skills**](koda-skills/) | Skills: `SKILL.md` files from the project, your config folder and the built-in set |
 | [**koda-memory**](koda-memory/) | Memory: the instruction files people write (`AGENTS.md`, `CLAUDE.md`) and the notes Koda keeps |
 | [**koda-state**](koda-state/) | Stored state — sessions (the `SessionStore` trait and its SQLite `Database`), Koda's SQLite files and the diagnostic log database |

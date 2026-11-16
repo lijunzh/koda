@@ -103,6 +103,8 @@ koda-providers = { workspace = true }
 # Shell command classification, re-exported as `bash_safety`,
 # `bash_path_lint` and `tools::ToolEffect`.
 koda-command = { workspace = true }
+# The MCP client, re-exported as `mcp`.
+koda-mcp = { workspace = true }
 # Skills and memory, re-exported as `skills` and `memory`.
 koda-memory = { workspace = true }
 koda-skills = { workspace = true }
@@ -116,7 +118,7 @@ async-trait = { workspace = true }
 tokio-util = { workspace = true }
 
 [features]
-test-support = ["koda-providers/test-support"]
+test-support = ["koda-providers/test-support", "koda-mcp/test-support"]
 
 [dev-dependencies]
 # MCP HTTP integration test: rmcp server-side HTTP transport + axum

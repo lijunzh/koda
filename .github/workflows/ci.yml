@@ -266,9 +266,10 @@ jobs:
             "tools::web_fetch::tests::test_max_redirect_hops_enforced"
             "tools::web_fetch::tests::test_relative_redirect_resolves_against_current_url"
             "tools::web_fetch::tests::test_scheme_relative_redirect_revalidated"
-            "tools::web_fetch::tests::test_is_safe_url_blocks_metadata"
-            "tools::web_fetch::tests::test_is_safe_url_blocks_private_ips"
-            "tools::web_fetch::tests::test_is_safe_ip_blocks_private"
+            # The private-address guard moved to koda-sandbox (`url_guard`).
+            "url_guard::tests::test_is_safe_url_blocks_metadata"
+            "url_guard::tests::test_is_safe_url_blocks_private_ips"
+            "url_guard::tests::test_is_safe_ip_blocks_private"
             # ── file_tools symlink / TOCTOU confinement (#1283) ──────────
             "tools::file_tools::tests::write_file_refuses_symlink_escaping_project_root"
             "tools::file_tools::tests::write_file_refuses_symlinked_parent_dir_escaping_project_root"
@@ -276,7 +277,8 @@ jobs:
             # (The Delete tool's symlink test left with the tool, #1564: an
             # `rm` runs in Bash, confined by the sandbox tests below.)
             # ── MCP transport SSRF ─────────────────────────────────────
-            "suite::mcp_http_transport_test::mcp_client_connect_rejects_loopback_ssrf"
+            # koda-mcp's own test binary (`koda-mcp/tests/http_transport.rs`).
+            "mcp_client_connect_rejects_loopback_ssrf"
             # ── sandbox path confinement (worker / fs / workspace) ────────
             "worker::tests::write_outside_root_is_denied"
             "worker::tests::symlink_escape_is_denied"

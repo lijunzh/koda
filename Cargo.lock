@@ -1968,6 +1968,7 @@ dependencies = [
  "ignore",
  "koda-command",
  "koda-config",
+ "koda-mcp",
  "koda-memory",
  "koda-protocol",
  "koda-providers",
@@ -1995,6 +1996,26 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "koda-mcp"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "http",
+ "koda-command",
+ "koda-providers",
+ "koda-sandbox",
+ "reqwest",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]
@@ -2053,6 +2074,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

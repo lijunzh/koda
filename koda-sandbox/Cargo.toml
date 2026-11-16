@@ -13,6 +13,8 @@ keywords = ["sandbox", "security", "filesystem", "unix", "ai"]
 categories = ["os", "filesystem", "concurrency"]
 
 [dependencies]
+# Parsing a URL to check where it points (url_guard).
+url = "2"
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 # File globbing for `LocalFileSystem::glob`. Same version as koda-core.
