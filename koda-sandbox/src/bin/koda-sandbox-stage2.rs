@@ -5,7 +5,13 @@
 //! See `koda_sandbox::stage2` (Linux-only module) for the architecture
 //! diagram and the full lifecycle. This file is just the binary shim.
 //!
-//! ## Why a separate binary, not a flag on the main `koda` binary
+//! Installed Koda doesn't use this binary: `koda` runs stage 2 itself
+//! when its first argument is `koda_sandbox::stage2::STAGE2_ARG1` (see
+//! `koda_sandbox::dispatch_helpers`), as Codex's binary runs its sandbox
+//! helpers, because the release archives and `cargo install` carry only
+//! `koda`. This binary stays for test binaries, which aren't `koda`.
+//!
+//! ## Why it was first a separate binary
 //!
 //! - **Tiny binary.** Stage 2 doesn't link tokio, the LLM client, the
 //!   TUI, MCP, etc. — just std + libc. Faster startup, smaller
@@ -22,19 +28,7 @@
 fn main() {
     // Read argv as raw OsStrings — the user command may contain bytes
     // that aren't valid UTF-8 (e.g. filenames in unusual encodings).
-    let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
-
-    if let Err(e) = koda_sandbox::stage2::run(argv) {
-        // Stage 2 setup failed before reaching execvp. Emit the error
-        // to stderr so it shows up in the user's tool output — then
-        // exit with a distinctive code so callers can tell setup
-        // failure apart from user-command failure.
-        eprintln!("koda-sandbox-stage2: {e:#}");
-        std::process::exit(koda_sandbox::stage2::STAGE2_SETUP_FAILED_EXIT);
-    }
-    // `koda_sandbox::stage2::run` only returns on Err — success path
-    // ends in `execvp`, which replaces this process.
-    unreachable!("stage2::run returned Ok without exec")
+    koda_sandbox::stage2::main(std::env::args_os().collect());
 }
 
 #[cfg(not(target_os = "linux"))]

@@ -331,6 +331,41 @@ impl SandboxRuntime for BwrapRuntime {
     }
 }
 
+/// The executable that runs the sandbox's helpers, once its `main` has
+/// called [`dispatch_helpers`].
+static HELPER_EXE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// Run the sandbox helper this process was started as, or else record the
+/// running executable as the one that runs helpers. A binary that runs
+/// Koda's sandbox calls it first in `main`, before any thread starts, as
+/// Codex's binaries call its `arg0_dispatch`.
+///
+/// On Linux, a first argument of [`stage2::STAGE2_ARG1`] runs stage 2
+/// (the in-sandbox network setup) and never returns. Otherwise the sandbox
+/// starts stage 2 from this executable rather than from a separate
+/// `koda-sandbox-stage2` binary, which an install may not have: the
+/// release archives and `cargo install koda-cli` carry only `koda`.
+/// Without stage 2 a sandboxed command falls back to proxy variables only.
+pub fn dispatch_helpers() {
+    #[cfg(target_os = "linux")]
+    {
+        let mut args = std::env::args_os();
+        let program = args.next().unwrap_or_default();
+        if args.next().is_some_and(|arg| arg == stage2::STAGE2_ARG1) {
+            stage2::main(std::iter::once(program).chain(args).collect());
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = HELPER_EXE.set(exe);
+    }
+}
+
+/// The executable recorded by [`dispatch_helpers`], if `main` called it.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn helper_exe() -> Option<&'static std::path::Path> {
+    HELPER_EXE.get().map(std::path::PathBuf::as_path)
+}
+
 /// Try to build a kernel-enforced (Phase 3c.1) bwrap command.
 ///
 /// Returns:
@@ -357,7 +392,7 @@ fn try_build_kernel_enforced(
         // have warned). Fall back silently — no second warning.
         return Ok(None);
     }
-    let stage2 = bwrap::stage2_binary().context("locate koda-sandbox-stage2")?;
+    let stage2 = bwrap::stage2_command().context("locate koda-sandbox-stage2")?;
     let cmd = bwrap::build_command_with_proxy(
         req.command,
         req.project_root,

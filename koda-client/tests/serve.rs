@@ -284,10 +284,14 @@ impl Wire {
     }
 }
 
+/// The turn in the `turn/completed` among `lines`: not always the last
+/// line, since a request's answer travels apart from the turn's messages.
 fn turn_completed(lines: &[Value]) -> &Value {
-    let last = lines.last().unwrap();
-    assert_eq!(last["method"], "turn/completed", "{last}");
-    &last["params"]["turn"]
+    let done = lines
+        .iter()
+        .find(|l| l["method"] == "turn/completed")
+        .unwrap_or_else(|| panic!("no turn/completed in {lines:?}"));
+    &done["params"]["turn"]
 }
 
 fn count(lines: &[Value], method: &str) -> usize {

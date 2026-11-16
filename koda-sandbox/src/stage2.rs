@@ -67,6 +67,28 @@ use std::path::PathBuf;
 /// failed" from "user command failed/not found".
 pub const STAGE2_SETUP_FAILED_EXIT: i32 = 88;
 
+/// The first argument that makes Koda's own binary run stage 2 (see
+/// [`crate::dispatch_helpers`]), as Codex's binary runs its sandbox helpers
+/// by argument. Long and prefixed, so it can't be a real command line.
+pub const STAGE2_ARG1: &str = "--koda-sandbox-stage2";
+
+/// Run stage 2 for `argv` (a program name, then the user command) and
+/// exit: a setup failure exits with [`STAGE2_SETUP_FAILED_EXIT`], and
+/// success replaces the process with the user command.
+pub fn main(argv: Vec<OsString>) -> ! {
+    if let Err(e) = run(argv) {
+        // Stage 2 setup failed before reaching execvp. Emit the error
+        // to stderr so it shows up in the user's tool output — then
+        // exit with a distinctive code so callers can tell setup
+        // failure apart from user-command failure.
+        eprintln!("koda-sandbox-stage2: {e:#}");
+        std::process::exit(STAGE2_SETUP_FAILED_EXIT);
+    }
+    // `run` only returns on Err — success ends in `execvp`, which
+    // replaces this process.
+    unreachable!("stage2::run returned Ok without exec")
+}
+
 /// Stage 2 entry point. Called from `bin/koda-sandbox-stage2.rs`.
 ///
 /// `argv` is the full argument vector the helper was invoked with;
