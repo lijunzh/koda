@@ -323,11 +323,11 @@ fn apply_policy_overlay(cmd: &mut Command, policy: &SandboxPolicy) -> Result<()>
 /// 2. `CARGO_BIN_EXE_koda-sandbox-stage2` — Cargo sets this for
 ///    integration tests *of this same crate*.
 /// 3. Sibling of the current executable (production install).
-/// 4. Parent's sibling — cargo runs test exes from `target/debug/deps/`
-///    while built binaries live one level up at `target/debug/`. This
-///    branch lets cross-crate integration tests (notably the
-///    `koda-core` e2e suite) find the helper without setting an env
-///    var.
+/// 4. Cargo's profile directory (`target/debug/`), where it builds the
+///    helper, for a test binary Cargo runs from elsewhere: see
+///    [`cargo_profile_dir`]. This lets cross-crate integration tests
+///    (notably the `koda-core` e2e suite) find the helper without
+///    setting an env var.
 pub fn stage2_binary() -> Result<PathBuf> {
     // Read env once at the boundary; delegate the rest to the pure
     // resolver below. This keeps the env-binding surface tiny (and
@@ -359,10 +359,8 @@ pub fn stage2_binary_from(env_override: Option<&std::path::Path>) -> Result<Path
         return Ok(sibling);
     }
 
-    // Cargo-test fallback: target/debug/deps/<test-bin> →
-    // target/debug/koda-sandbox-stage2.
-    if let Some(parent) = exe.parent().and_then(|p| p.parent()) {
-        let cargo_built = parent.join("koda-sandbox-stage2");
+    if let Some(profile) = cargo_profile_dir(&exe) {
+        let cargo_built = profile.join("koda-sandbox-stage2");
         if cargo_built.exists() {
             return Ok(cargo_built);
         }
@@ -372,6 +370,24 @@ pub fn stage2_binary_from(env_override: Option<&std::path::Path>) -> Result<Path
         "koda-sandbox-stage2 not found next to {}; set {STAGE2_BIN_ENV_KEY} to override",
         sibling.display()
     )
+}
+
+/// The Cargo profile directory (`target/debug/`) a test binary at `exe`
+/// was built under, where Cargo also builds the workspace's binaries.
+/// Cargo up to 1.99 runs test binaries from `target/debug/deps/`; Cargo
+/// 1.100 from `target/debug/build/<package>/<hash>/out/`. `None` for any
+/// other place, such as an installed `koda`, so the lookup never looks
+/// beyond those two layouts.
+fn cargo_profile_dir(exe: &std::path::Path) -> Option<std::path::PathBuf> {
+    let parent = exe.parent()?;
+    let named = |dir: &std::path::Path, name: &str| dir.file_name().is_some_and(|n| n == name);
+    if named(parent, "deps") {
+        return parent.parent().map(std::path::Path::to_path_buf);
+    }
+    let build = parent.ancestors().nth(3)?;
+    (named(parent, "out") && named(build, "build"))
+        .then(|| build.parent().map(std::path::Path::to_path_buf))
+        .flatten()
 }
 
 /// Probe whether the bwrap backend is functional. Cached.
@@ -747,6 +763,27 @@ mod tests {
     fn stage2_binary_respects_env_override() {
         let p = stage2_binary_from(Some(std::path::Path::new("/tmp/fake-stage2"))).unwrap();
         assert_eq!(p, std::path::PathBuf::from("/tmp/fake-stage2"));
+    }
+
+    /// A test binary finds the profile directory under both of Cargo's
+    /// layouts; an installed binary finds none, so the lookup stays next
+    /// to it.
+    #[test]
+    fn cargo_profile_dir_knows_both_test_layouts_and_nothing_else() {
+        use std::path::{Path, PathBuf};
+        let dir = |exe: &str| cargo_profile_dir(Path::new(exe));
+        assert_eq!(
+            dir("/r/target/debug/deps/all-0a1b"),
+            Some(PathBuf::from("/r/target/debug"))
+        );
+        assert_eq!(
+            dir("/r/target/debug/build/koda-core/0a1b/out/all-0a1b"),
+            Some(PathBuf::from("/r/target/debug"))
+        );
+        assert_eq!(dir("/opt/homebrew/bin/koda"), None);
+        assert_eq!(dir("/usr/local/bin/koda"), None);
+        assert_eq!(dir("/r/target/debug/koda"), None);
+        assert_eq!(dir("/x/out/koda"), None);
     }
 
     // ── Gap 1 of #1072: apply_git_config_deny ──────────────
