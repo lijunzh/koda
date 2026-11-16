@@ -12,6 +12,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **Koda builds with Rust 1.100.0,** its pinned toolchain and minimum version; `cargo install koda-cli` needs it or newer. The crates' homepage on crates.io is now the documentation site.
 - **The release workflow tests as CI does,** with `cargo nextest` and then the doc tests, instead of `cargo test`, which runs the test binaries one after another.
 
+### Fixed
+
+- **`session/turns/list` includes everything a client has already been sent.** The session stores its turns on a task of its own, and the list read the store without waiting for it, so a turn that had just started could be missing, even after its approval request had arrived.
+
 ## [0.7.0] - 2026-11-15
 
 ### Added
