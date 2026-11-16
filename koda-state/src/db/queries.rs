@@ -633,6 +633,24 @@ impl SessionStore for Database {
     /// Persist the images sent with a message. A user row is complete when
     /// it is inserted, so a cached context may already hold it: drop the
     /// session's cache.
+    async fn set_message_images(
+        &self,
+        session_id: &str,
+        message_id: i64,
+        images: &str,
+    ) -> Result<()> {
+        sqlx::query("UPDATE messages SET images = ? WHERE id = ? AND session_id = ?")
+            .bind(images)
+            .bind(message_id)
+            .bind(session_id)
+            .execute(&self.pool)
+            .await?;
+        // A tool row is complete when inserted, so a cached context may
+        // already hold it.
+        self.context_cache.invalidate(session_id);
+        Ok(())
+    }
+
     async fn set_last_user_message_images(&self, session_id: &str, images: &str) -> Result<()> {
         sqlx::query(
             "UPDATE messages SET images = ? WHERE id = (

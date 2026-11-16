@@ -231,6 +231,12 @@ pub struct ModelCapabilities {
     /// model type, llama.cpp's `/props` modalities, Ollama's capabilities.
     /// `None` when it doesn't say.
     pub vision: Option<bool>,
+    /// Whether the server takes images inside a tool result, which the
+    /// OpenAI chat format leaves to text: llama.cpp's server does (its
+    /// parser loads images from every role), LM Studio doesn't. `None` when
+    /// unknown; Koda then sends a tool's images in a user message after the
+    /// results, as pi and qwen-code do.
+    pub tool_result_images: Option<bool>,
 }
 
 /// Is this URL pointing to a local address?

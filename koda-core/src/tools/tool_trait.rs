@@ -158,6 +158,9 @@ pub struct ToolExecCtx<'a> {
     /// — no need to add separate accessors per tool.
     pub caps: &'a crate::output_caps::OutputCaps,
 
+    /// Whether the model takes images: Read returns an image file as one.
+    pub takes_images: bool,
+
     /// Optional engine sink + call-id pair for tools that stream
     /// progress events to the UI (e.g. `Bash` shell output,
     /// `TodoWrite` todo updates). `None` means "no streaming
@@ -439,6 +442,7 @@ impl<'a> ToolExecCtx<'a> {
             read_cache,
             fs,
             caps,
+            takes_images: false,
             sink: None,
             caller_spawner: None,
             can_ask: true,
@@ -493,6 +497,7 @@ mod tests {
                 output: args.to_string(),
                 success: true,
                 full_output: None,
+                images: Vec::new(),
             }
         }
     }
@@ -524,6 +529,7 @@ mod tests {
                 output: "mutated".to_string(),
                 success: true,
                 full_output: None,
+                images: Vec::new(),
             }
         }
     }
@@ -549,6 +555,7 @@ mod tests {
                 output: String::new(),
                 success: true,
                 full_output: None,
+                images: Vec::new(),
             }
         }
     }
@@ -584,6 +591,7 @@ mod tests {
             socks5_port: None,
             session: None,
             skill_registry: skills,
+            takes_images: false,
         }
     }
 

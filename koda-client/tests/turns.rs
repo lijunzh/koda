@@ -798,7 +798,7 @@ async fn mentions_are_read_by_the_host() {
     std::fs::create_dir(koda.project.join("src")).unwrap();
     std::fs::write(koda.project.join("src/lib.rs"), "").unwrap();
     std::fs::write(koda.project.join("blob.bin"), b"ab\0cd").unwrap();
-    std::fs::write(koda.project.join("shot.png"), b"\x89PNG\r\n\x1a\nrest").unwrap();
+    std::fs::write(koda.project.join("shot.png"), b"\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90\x77\x53\xde\x00\x00\x00\x0c\x49\x44\x41\x54\x78\x9c\x63\xb8\x23\x22\x02\x00\x02\xd4\x01\x05\x59\x70\xd3\xc2\x00\x00\x00\x00\x49\x45\x4e\x44\xae\x42\x60\x82").unwrap();
     let typed = "look at @notes.md @src @blob.bin @shot.png";
     let mention = |path: &str| Mention { path: path.into() };
     koda.client

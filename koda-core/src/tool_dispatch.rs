@@ -54,6 +54,7 @@ pub(crate) async fn record_tool_result(
     result: &str,
     success: bool,
     full_output: Option<&str>,
+    images: &[crate::providers::ImageData],
     ctx: &TurnContext<'_>,
 ) -> Result<()> {
     let TurnContext {
@@ -79,15 +80,17 @@ pub(crate) async fn record_tool_result(
             .await?;
     } else {
         let stored = truncate_for_history(result, max_result_chars);
-        db.insert_message(
-            session_id,
-            &Role::Tool,
-            Some(&stored),
-            None,
-            Some(&tc.id),
-            None,
-        )
-        .await?;
+        let message_id = db
+            .insert_message(
+                session_id,
+                &Role::Tool,
+                Some(&stored),
+                None,
+                Some(&tc.id),
+                None,
+            )
+            .await?;
+        store_tool_images(db, session_id, message_id, images).await?;
     }
     // (#1077 Phase B) `crate::progress::track_progress` was here. It
     // scraped tool outputs to maintain a parallel "engine sees what
@@ -98,6 +101,21 @@ pub(crate) async fn record_tool_result(
     // transitions via `EngineEvent::TodoUpdate`. See
     // `DESIGN.md § Progress Tracking`.
     Ok(())
+}
+
+/// Store the images a tool returned on its result's message, so every later
+/// call sends them, as a prompt's images are (Read v2).
+pub(crate) async fn store_tool_images(
+    db: &(impl koda_state::session_store::SessionStore + ?Sized),
+    session_id: &str,
+    message_id: i64,
+    images: &[crate::providers::ImageData],
+) -> Result<()> {
+    if images.is_empty() {
+        return Ok(());
+    }
+    db.set_message_images(session_id, message_id, &serde_json::to_string(images)?)
+        .await
 }
 
 /// Truncate a tool result for storage in conversation history.
@@ -173,7 +191,13 @@ pub(crate) fn has_file_conflict(tool_calls: &[ToolCall]) -> bool {
 pub(crate) async fn execute_one_tool(
     tc: &ToolCall,
     tx: ToolExecutionContext<'_>,
-) -> (String, String, bool, Option<String>) {
+) -> (
+    String,
+    String,
+    bool,
+    Option<String>,
+    Vec<crate::providers::ImageData>,
+) {
     let TurnContext {
         session_id,
         tools,
@@ -183,7 +207,7 @@ pub(crate) async fn execute_one_tool(
     } = *tx.turn;
     let caller_spawner = tx.caller_spawner;
     let _session_id = session_id; // mirror the existing `_session_id` arg name
-    let (result, success, full_output) = if tc.function_name == "InvokeAgent" {
+    let (result, success, full_output, images) = if tc.function_name == "InvokeAgent" {
         // Sub-agents inherit the parent's approval mode.
         //
         // Runtime invariant: the sub-agent dispatch loop short-circuits
@@ -228,7 +252,7 @@ pub(crate) async fn execute_one_tool(
             Some(&tc.id),
         );
         match Box::pin(fut).await {
-            Ok(output) => (output, true, None),
+            Ok(output) => (output, true, None, Vec::new()),
             // **#1232 §4**: format with `{:#}` (anyhow's "alternate" Display)
             // so the entire context chain lands in the tool result string.
             // Pre-fix this used `{e}`, which only shows the topmost message
@@ -241,7 +265,12 @@ pub(crate) async fn execute_one_tool(
             // `"Failed to call LLM API: error sending request: connection
             // refused"` and the model can self-correct (retry, switch
             // model, ask the user to check the network, ...).
-            Err(e) => (format!("Error invoking sub-agent: {e:#}"), false, None),
+            Err(e) => (
+                format!("Error invoking sub-agent: {e:#}"),
+                false,
+                None,
+                Vec::new(),
+            ),
         }
     } else if tc.function_name == "SpawnAgent" {
         // #1325 Phase 5a: SpawnAgent — codex v2 compatible peer-spawn.
@@ -263,6 +292,7 @@ pub(crate) async fn execute_one_tool(
                     format!("SpawnAgent: argument JSON is malformed: {e}"),
                     false,
                     None,
+                    Vec::new(),
                 );
             }
         };
@@ -293,8 +323,13 @@ pub(crate) async fn execute_one_tool(
             Some(&remapped_tc.id),
         );
         match Box::pin(fut).await {
-            Ok(output) => (output, true, None),
-            Err(e) => (format!("Error spawning agent: {e:#}"), false, None),
+            Ok(output) => (output, true, None, Vec::new()),
+            Err(e) => (
+                format!("Error spawning agent: {e:#}"),
+                false,
+                None,
+                Vec::new(),
+            ),
         }
     } else {
         // Invalidate sub-agent cache on file mutations.
@@ -320,10 +355,10 @@ pub(crate) async fn execute_one_tool(
                 sink.can_ask(),
             )
             .await;
-        (r.output, r.success, r.full_output)
+        (r.output, r.success, r.full_output, r.images)
     };
 
-    (tc.id.clone(), result, success, full_output)
+    (tc.id.clone(), result, success, full_output, images)
 }
 
 /// Pre-flight validate a tool call, then execute it.
@@ -337,7 +372,13 @@ pub(crate) async fn execute_one_tool(
 async fn validate_then_execute_one_tool(
     tc: &ToolCall,
     tx: ToolExecutionContext<'_>,
-) -> (String, String, bool, Option<String>) {
+) -> (
+    String,
+    String,
+    bool,
+    Option<String>,
+    Vec<crate::providers::ImageData>,
+) {
     let TurnContext {
         project_root,
         tools,
@@ -359,6 +400,7 @@ async fn validate_then_execute_one_tool(
             format!("Validation error: {error}"),
             false,
             None,
+            Vec::new(),
         );
     }
 
@@ -393,7 +435,7 @@ pub(crate) async fn execute_tools_parallel(
     };
 
     // Emit banner + result together so each tool's output is visually grouped
-    for (i, (tc_id, result, success, full_output)) in results.into_iter().enumerate() {
+    for (i, (tc_id, result, success, full_output, images)) in results.into_iter().enumerate() {
         ctx.sink.emit(EngineEvent::ToolCallStart {
             id: tc_id.clone(),
             name: tool_calls[i].function_name.clone(),
@@ -405,6 +447,7 @@ pub(crate) async fn execute_tools_parallel(
             &result,
             success,
             full_output.as_deref(),
+            &images,
             ctx,
         )
         .await?;
@@ -453,14 +496,22 @@ pub(crate) async fn execute_tools_split_batch(
             return record_stopped_calls(tool_calls, ctx).await;
         };
 
-        for (j, (tc_id, result, success, full_output)) in results.into_iter().enumerate() {
+        for (j, (tc_id, result, success, full_output, images)) in results.into_iter().enumerate() {
             ctx.sink.emit(EngineEvent::ToolCallStart {
                 id: tc_id.clone(),
                 name: parallel[j].function_name.clone(),
                 args: serde_json::from_str(&parallel[j].arguments).unwrap_or_default(),
                 is_sub_agent: false,
             });
-            record_tool_result(parallel[j], &result, success, full_output.as_deref(), ctx).await?;
+            record_tool_result(
+                parallel[j],
+                &result,
+                success,
+                full_output.as_deref(),
+                &images,
+                ctx,
+            )
+            .await?;
         }
     } else {
         // 0–1 parallelizable tools — just run sequentially
@@ -583,7 +634,7 @@ pub(crate) async fn execute_tools_sequential(
                 Some(_) => "User did not provide an answer.".into(),
                 None => return record_stopped_after_start(&tool_calls[i..], ctx).await,
             };
-            record_tool_result(tc, &result, true, None, ctx).await?;
+            record_tool_result(tc, &result, true, None, &[], ctx).await?;
             continue;
         }
 
@@ -597,7 +648,15 @@ pub(crate) async fn execute_tools_sequential(
         )
         .await
         {
-            record_tool_result(tc, &format!("Validation error: {error}"), false, None, ctx).await?;
+            record_tool_result(
+                tc,
+                &format!("Validation error: {error}"),
+                false,
+                None,
+                &[],
+                ctx,
+            )
+            .await?;
             continue;
         }
 
@@ -631,7 +690,7 @@ pub(crate) async fn execute_tools_sequential(
                 tx.caller_spawner,
             )
         {
-            record_tool_result(tc, &hint, false, None, ctx).await?;
+            record_tool_result(tc, &hint, false, None, &[], ctx).await?;
             continue;
         }
 
@@ -727,7 +786,7 @@ pub(crate) async fn execute_tools_sequential(
             }
         }
 
-        let (_, result, success, full_output) = if stops_on_cancel(&tc.function_name) {
+        let (_, result, success, full_output, images) = if stops_on_cancel(&tc.function_name) {
             tokio::select! {
                 biased;
                 () = cancel.cancelled() => {
@@ -738,7 +797,7 @@ pub(crate) async fn execute_tools_sequential(
         } else {
             execute_one_tool(tc, tx).await
         };
-        record_tool_result(tc, &result, success, full_output.as_deref(), ctx).await?;
+        record_tool_result(tc, &result, success, full_output.as_deref(), &images, ctx).await?;
     }
     Ok(())
 }

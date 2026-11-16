@@ -57,11 +57,11 @@ impl ToolRegistry {
         if let Ok(bytes) = self.fs.read(&resolved, None).await
             && let Some(media_type) = file_tools::image_media_type(&bytes)
         {
-            use base64::Engine;
-            return Mentioned::Image(ImageData {
-                media_type: media_type.to_string(),
-                base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
-            });
+            // Scaled and recompressed to the model's limits, as Read does.
+            return match super::media::prepare_image(bytes, media_type) {
+                Ok(prepared) => Mentioned::Image(prepared.image),
+                Err(e) => Mentioned::Unread(format!("{path} can't be read as an image: {e}")),
+            };
         }
         match file_tools::read_file(
             &self.project_root,
@@ -131,7 +131,7 @@ mod tests {
     #[tokio::test]
     async fn an_image_is_sent_as_one() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("shot.dat"), b"\x89PNG\r\n\x1a\nrest").unwrap();
+        std::fs::write(dir.path().join("shot.dat"), b"\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90\x77\x53\xde\x00\x00\x00\x0c\x49\x44\x41\x54\x78\x9c\x63\xb8\x23\x22\x02\x00\x02\xd4\x01\x05\x59\x70\xd3\xc2\x00\x00\x00\x00\x49\x45\x4e\x44\xae\x42\x60\x82").unwrap();
         let Mentioned::Image(image) = registry(dir.path()).read_mention("shot.dat").await else {
             panic!("not read as an image");
         };

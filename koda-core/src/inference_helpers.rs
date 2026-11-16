@@ -59,6 +59,39 @@ fn stored_images(msg: &koda_state::db::Message) -> Option<Vec<crate::providers::
     (!images.is_empty()).then_some(images)
 }
 
+/// The text of the user message that carries tool results' images to a
+/// server that won't take them inside the results, as pi and qwen-code
+/// send them.
+pub const TOOL_IMAGES_FOLLOW: &str = "The images from the tool results above:";
+
+/// Move the images out of each run of tool results into one user message
+/// after it, for a server that takes images only from the user (the OpenAI
+/// chat format leaves a tool result to text). Each result keeps its text.
+pub fn lift_tool_images(messages: &mut Vec<ChatMessage>) {
+    let mut i = 0;
+    while i < messages.len() {
+        if messages[i].role != "tool" {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < messages.len() && messages[i].role == "tool" {
+            i += 1;
+        }
+        let images: Vec<_> = messages[start..i]
+            .iter_mut()
+            .filter_map(|m| m.images.take())
+            .flatten()
+            .collect();
+        if !images.is_empty() {
+            let mut follow = ChatMessage::text("user", TOOL_IMAGES_FOLLOW);
+            follow.images = Some(images);
+            messages.insert(i, follow);
+            i += 1;
+        }
+    }
+}
+
 /// Cut the images in `messages` to what the model `takes`: all of them
 /// become [`IMAGE_OMITTED`] for a model that takes no images, and beyond
 /// [`MAX_IMAGES_PER_REQUEST`] the oldest do. The stored history keeps them,
@@ -609,6 +642,27 @@ mod tests {
         assert_eq!(messages[0].images.as_ref().unwrap().len(), 1);
         let old = messages[0].content.as_deref().unwrap();
         assert_eq!(old.matches(IMAGE_OMITTED).count(), 2, "{old}");
+    }
+
+    /// A run of tool results gives its images to one user message after it;
+    /// each result keeps its text.
+    #[test]
+    fn tool_images_move_after_the_results() {
+        let mut first = with_images("a.png: an image.", 1);
+        first.role = "tool".into();
+        let second = ChatMessage::text("tool", "notes.txt: text");
+        let mut messages = vec![ChatMessage::text("user", "look"), first, second];
+        lift_tool_images(&mut messages);
+        assert_eq!(messages.len(), 4);
+        assert!(messages[1].images.is_none());
+        assert_eq!(messages[1].content.as_deref(), Some("a.png: an image."));
+        assert_eq!(messages[3].role, "user");
+        assert_eq!(messages[3].content.as_deref(), Some(TOOL_IMAGES_FOLLOW));
+        assert_eq!(messages[3].images.as_ref().map(Vec::len), Some(1));
+
+        let mut plain = vec![ChatMessage::text("tool", "no images")];
+        lift_tool_images(&mut plain);
+        assert_eq!(plain.len(), 1);
     }
 
     /// Images count toward the window, so compaction sees them.

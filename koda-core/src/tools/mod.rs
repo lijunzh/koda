@@ -72,6 +72,8 @@ pub mod fuzzy;
 pub mod glob_tool;
 /// Recursive text search tool (`Grep`).
 pub mod grep;
+/// Images sent from files: scaled and recompressed to the model's limits.
+pub mod media;
 /// Project memory read/write tools (`MemoryRead`, `MemoryWrite`).
 pub mod memory;
 /// `@` mentions, read under the Read tool's rules.
@@ -142,7 +144,12 @@ pub type LastBashCache = Arc<std::sync::Mutex<Option<(String, std::time::Instant
 /// ```
 /// use koda_core::tools::ToolResult;
 ///
-/// let ok = ToolResult { output: "done".into(), success: true, full_output: None };
+/// let ok = ToolResult {
+///     output: "done".into(),
+///     success: true,
+///     full_output: None,
+///     images: Vec::new(),
+/// };
 /// assert!(ok.success);
 /// ```
 #[derive(Debug, Clone)]
@@ -162,6 +169,9 @@ pub struct ToolResult {
     /// `RecallContext` can search this to retrieve details the model didn't
     /// see in its context window.
     pub full_output: Option<String>,
+    /// Images the tool returns, such as Read's for an image file: sent to
+    /// the model with the result where the model takes images.
+    pub images: Vec<crate::providers::ImageData>,
 }
 
 /// Convert a `Result<String>` (the legacy free-function return shape)
@@ -183,14 +193,20 @@ pub fn wrap_result(r: anyhow::Result<String>) -> ToolResult {
             output,
             success: true,
             full_output: None,
+            images: Vec::new(),
         },
         Err(e) => ToolResult {
             output: format!("Error: {e:#}"),
             success: false,
             full_output: None,
+            images: Vec::new(),
         },
     }
 }
+
+/// What Read's description adds for a model that takes images.
+pub const READ_IMAGES_NOTE: &str = " An image file (PNG, JPEG, GIF, WebP) comes back as an \
+    image you can see, scaled down if it is large.";
 
 /// The tool registry: maps tool names to their definitions and handlers.
 pub struct ToolRegistry {
@@ -241,6 +257,9 @@ pub struct ToolRegistry {
     /// `None` (default) preserves the pre-3b unfiltered behavior —
     /// session code opts in by calling [`Self::set_proxy_port`].
     proxy_port: std::sync::RwLock<Option<u16>>,
+    /// Whether the session's model takes images, so Read returns an
+    /// image as one (Read v2). Set per turn by the session.
+    takes_images: std::sync::atomic::AtomicBool,
     /// Loopback port of the per-session SOCKS5 proxy (Phase 3d.1 of
     /// #934). When `Some`, [`crate::sandbox::build`] appends
     /// `ALL_PROXY=socks5h://127.0.0.1:port` (+ lowercase alias) so
@@ -301,6 +320,7 @@ impl ToolRegistry {
             sandbox_policy,
             trust,
             proxy_port: std::sync::RwLock::new(None),
+            takes_images: std::sync::atomic::AtomicBool::new(false),
             socks5_port: std::sync::RwLock::new(None),
         }
     }
@@ -383,6 +403,18 @@ impl ToolRegistry {
         self.catalog.mcp_manager()
     }
 
+    /// Whether the model takes images: Read then returns an image file as
+    /// one, and its description says so.
+    pub fn set_takes_images(&self, takes: bool) {
+        self.takes_images
+            .store(takes, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether the model takes images, as last set.
+    pub fn takes_images(&self) -> bool {
+        self.takes_images.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Attach (or detach) the per-session HTTP CONNECT proxy port.
     ///
     /// Called from [`crate::session::KodaSession::new`] after spawning
@@ -463,7 +495,16 @@ impl ToolRegistry {
     ///
     /// Delegates to [`ToolCatalog::get_definitions`] (#1265 item 5 PR-1).
     pub fn get_definitions(&self, allowed: &[String], denied: &[String]) -> Vec<ToolDefinition> {
-        self.catalog.get_definitions(allowed, denied)
+        let mut defs = self.catalog.get_definitions(allowed, denied);
+        // Read mentions images only to a model that takes them, as Codex
+        // offers `view_image` only to one; it changes only with the model,
+        // so the prompt cache holds.
+        if self.takes_images()
+            && let Some(read) = defs.iter_mut().find(|d| d.name == "Read")
+        {
+            read.description.push_str(READ_IMAGES_NOTE);
+        }
+        defs
     }
 
     /// The connected MCP servers' tool definitions; see
@@ -516,6 +557,7 @@ impl ToolRegistry {
                     output: format!("Invalid JSON arguments: {e}"),
                     success: false,
                     full_output: None,
+                    images: Vec::new(),
                 };
             }
         };
@@ -572,6 +614,7 @@ impl ToolRegistry {
                 socks5_port,
                 session,
                 skill_registry: &self.skill_registry,
+                takes_images: self.takes_images(),
             };
             let result = tool.execute(&ctx, &args).await;
             // Post-execution registry-level recording. Lives here
@@ -645,6 +688,7 @@ impl ToolRegistry {
                         output,
                         success: true,
                         full_output: None,
+                        images: Vec::new(),
                     },
                     Err(e) => ToolResult {
                         // #1232 §4: `{:#}` walks the anyhow context
@@ -652,6 +696,7 @@ impl ToolRegistry {
                         output: format!("Error: {e:#}"),
                         success: false,
                         full_output: None,
+                        images: Vec::new(),
                     },
                 };
             }
@@ -662,6 +707,7 @@ impl ToolRegistry {
                 ),
                 success: false,
                 full_output: None,
+                images: Vec::new(),
             };
         }
 
@@ -680,6 +726,7 @@ impl ToolRegistry {
             output: format!("Error: {warning}"),
             success: false,
             full_output: None,
+            images: Vec::new(),
         }
     }
 }
@@ -1290,6 +1337,48 @@ mod tests {
     ) -> Option<String> {
         let args: Value = serde_json::from_str(&edit_json(file, old, new)).unwrap();
         validate::validate_with_registry(registry, "Edit", &args, &registry.project_root).await
+    }
+
+    /// Read v2: an image file comes back as an image for a model that takes
+    /// images, scaled to the limit, and Read's description says so; for a
+    /// model that doesn't, Read refuses and says why.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn read_returns_an_image_to_a_model_that_takes_images() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let shot = image::RgbImage::from_pixel(2000, 1000, image::Rgb([220, 20, 20]));
+        shot.save(dir.path().join("shot.png")).unwrap();
+        let registry = ToolRegistry::new(dir.path().to_path_buf(), 100_000);
+        let read = || registry.execute("Read", r#"{"file_path":"shot.png"}"#, None, None);
+        let note = |registry: &ToolRegistry| {
+            registry
+                .get_definitions(&[], &[])
+                .into_iter()
+                .find(|d| d.name == "Read")
+                .unwrap()
+                .description
+                .contains(READ_IMAGES_NOTE)
+        };
+
+        let refused = read().await;
+        assert!(!refused.success);
+        assert!(
+            refused.output.contains("doesn't take images"),
+            "{}",
+            refused.output
+        );
+        assert!(refused.images.is_empty());
+        assert!(!note(&registry));
+
+        registry.set_takes_images(true);
+        let seen = read().await;
+        assert!(seen.success, "{}", seen.output);
+        assert_eq!(
+            seen.output,
+            "shot.png: an image, 1568×784, scaled from 2000×1000."
+        );
+        assert_eq!(seen.images.len(), 1);
+        assert_eq!(seen.images[0].media_type, "image/png");
+        assert!(note(&registry));
     }
 
     /// A registry over a temp dir holding `f.txt`, already fully read.

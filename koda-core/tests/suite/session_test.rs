@@ -741,3 +741,83 @@ async fn an_image_stays_in_the_conversation() {
     let calls = calls.lock().unwrap();
     assert_eq!(images_in(calls.last().unwrap()), 1);
 }
+
+/// Read v2: an image file the model reads reaches it. A server that takes
+/// images inside a tool result gets it there; any other gets it in a user
+/// message right after the results. Stored with the result, it reaches the
+/// next turn too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_read_image_reaches_the_model_inside_or_after_the_result() {
+    use koda_config::InputModality;
+    use koda_core::inference_helpers::TOOL_IMAGES_FOLLOW;
+    for inside in [false, true] {
+        let mut env = Env::new().await;
+        env.config.input_modalities = Some(vec![InputModality::Text, InputModality::Image]);
+        env.config.max_context_tokens = 200_000;
+        env.config.model_settings.max_context_tokens = 200_000;
+        if inside {
+            env.config.reported_tool_images = Some((env.config.model.clone(), true));
+        }
+        let shot = env.root.join("shot.png");
+        image_bytes(&shot);
+        let provider = MockProvider::new(vec![
+            MockResponse::tool_call("Read", serde_json::json!({"file_path": "shot.png"})),
+            MockResponse::Text("Red.".into()),
+            MockResponse::Text("Still red.".into()),
+        ]);
+        let calls = provider.recorded_calls_handle();
+        let (mut session, _cancel) = make_session(&env, Box::new(provider)).await;
+        for prompt in ["What color is shot.png?", "And now?"] {
+            env.insert_user_message(prompt).await;
+            let sink = TestSink::new();
+            let (_, mut cmd_rx) = mpsc::channel::<EngineCommand>(1);
+            session
+                .run_turn(&env.config, None, &sink, &mut cmd_rx, None)
+                .await
+                .unwrap();
+        }
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 3, "the read, its answer, the next turn");
+        for call in &calls[1..] {
+            let tool = call
+                .iter()
+                .find(|m| m.role == "tool")
+                .expect("no tool result");
+            assert!(
+                tool.content
+                    .as_deref()
+                    .unwrap_or_default()
+                    .starts_with("shot.png: an image, 1×1"),
+                "{tool:?}"
+            );
+            let after = call
+                .iter()
+                .find(|m| m.content.as_deref() == Some(TOOL_IMAGES_FOLLOW));
+            if inside {
+                assert_eq!(
+                    tool.images.as_ref().map(Vec::len),
+                    Some(1),
+                    "inside={inside}"
+                );
+                assert!(after.is_none());
+            } else {
+                assert!(tool.images.is_none());
+                assert_eq!(
+                    after.and_then(|m| m.images.as_ref()).map(Vec::len),
+                    Some(1),
+                    "inside={inside}"
+                );
+            }
+        }
+    }
+}
+
+/// A small real PNG at `path`.
+fn image_bytes(path: &std::path::Path) {
+    // 1×1, red.
+    std::fs::write(
+        path,
+        b"\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90\x77\x53\xde\x00\x00\x00\x0c\x49\x44\x41\x54\x78\x9c\x63\xb8\x23\x22\x02\x00\x02\xd4\x01\x05\x59\x70\xd3\xc2\x00\x00\x00\x00\x49\x45\x4e\x44\xae\x42\x60\x82",
+    )
+    .unwrap();
+}

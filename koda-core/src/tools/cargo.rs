@@ -1231,11 +1231,13 @@ impl Tool for CargoTool {
                 output: o.summary,
                 success: o.success,
                 full_output: o.full_output,
+                images: Vec::new(),
             },
             Err(e) => ToolResult {
                 output: format!("Error: {e:#}"),
                 success: false,
                 full_output: None,
+                images: Vec::new(),
             },
         }
     }

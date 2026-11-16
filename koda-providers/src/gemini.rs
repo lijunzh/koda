@@ -604,6 +604,7 @@ impl LlmProvider for GeminiProvider {
             context_window: info.input_token_limit,
             max_output_tokens: info.output_token_limit,
             vision: None,
+            tool_result_images: None,
         })
     }
 

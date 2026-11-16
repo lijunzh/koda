@@ -158,6 +158,40 @@ pub async fn read_file(
     fs: &dyn FileSystem,
     max_bytes: usize,
 ) -> Result<String> {
+    match read_text_or_image(project_root, args, cache, fs, max_bytes).await? {
+        ReadOutput::Text(text) => Ok(text),
+        ReadOutput::Image { path, .. } => anyhow::bail!(
+            "{path} is an image, which Read can't show here. Inspect it with Bash \
+             instead, such as `file {path}`, or a tool that reads its format."
+        ),
+    }
+}
+
+/// What a read gives: a file's text, or an image file's bytes.
+#[derive(Debug)]
+pub enum ReadOutput {
+    /// The numbered lines, as Read returns them.
+    Text(String),
+    /// An image file (PNG, JPEG, GIF, WebP), as read.
+    Image {
+        /// The path as asked for.
+        path: String,
+        /// Its media type, by its signature.
+        media_type: &'static str,
+        /// The file's bytes.
+        bytes: Vec<u8>,
+    },
+}
+
+/// [`read_file`], with an image file given back as its bytes rather than
+/// refused, for a model that takes images (Read v2).
+pub async fn read_text_or_image(
+    project_root: &Path,
+    args: &Value,
+    cache: &super::FileReadCache,
+    fs: &dyn FileSystem,
+    max_bytes: usize,
+) -> Result<ReadOutput> {
     let path_str = args["file_path"]
         .as_str()
         .or_else(|| args["path"].as_str())
@@ -178,6 +212,15 @@ pub async fn read_file(
 
     let mtime = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
     let size = metadata.len();
+    // An image too large to send is refused before it is read, as Claude
+    // Code's Read refuses one over 128 MB.
+    if size > super::media::MAX_IMAGE_FILE_BYTES && has_image_extension(path_str) {
+        anyhow::bail!(
+            "{path_str} is too large to read as an image ({} MB). Resize it or \
+             export a smaller copy, such as with ImageMagick via Bash, then read that.",
+            size / (1024 * 1024)
+        );
+    }
 
     let cache_key = format!("{}:{:?}:{:?}", resolved.display(), start_line, num_lines);
 
@@ -191,6 +234,13 @@ pub async fn read_file(
         .read(&resolved, None)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", resolved.display(), e))?;
+    if let Some(media_type) = image_media_type(&raw_bytes) {
+        return Ok(ReadOutput::Image {
+            path: path_str.to_string(),
+            media_type,
+            bytes: raw_bytes,
+        });
+    }
     // Decoded as text, a binary file is noise that costs tokens; Claude
     // Code's Read refuses one too.
     if let Some(kind) = binary_kind(&raw_bytes) {
@@ -214,7 +264,7 @@ pub async fn read_file(
         cache_guard.insert(cache_key, (size, mtime, content_sha256));
     }
 
-    Ok(output)
+    Ok(ReadOutput::Text(output))
 }
 
 /// What a file is when it isn't text: by its signature (an image, a PDF, an
@@ -243,6 +293,14 @@ pub fn binary_kind(bytes: &[u8]) -> Option<&'static str> {
     bytes[..bytes.len().min(8192)]
         .contains(&0)
         .then_some("a binary file")
+}
+
+/// Whether `path` names an image by its extension.
+fn has_image_extension(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    [".png", ".jpg", ".jpeg", ".gif", ".webp"]
+        .iter()
+        .any(|ext| lower.ends_with(ext))
 }
 
 /// An image's media type, by its signature: the formats every provider
@@ -836,7 +894,7 @@ impl Tool for ReadTool {
         ToolEffect::ReadOnly
     }
     async fn execute(&self, ctx: &ToolExecCtx<'_>, args: &Value) -> ToolResult {
-        let r = read_file(
+        let r = read_text_or_image(
             ctx.project_root,
             args,
             ctx.read_cache,
@@ -844,7 +902,40 @@ impl Tool for ReadTool {
             ctx.caps.tool_result_chars,
         )
         .await;
-        crate::tools::wrap_result(r)
+        match r {
+            Ok(ReadOutput::Image {
+                path,
+                media_type,
+                bytes,
+            }) => read_image(&path, media_type, bytes, ctx.takes_images),
+            Ok(ReadOutput::Text(text)) => crate::tools::wrap_result(Ok(text)),
+            Err(e) => crate::tools::wrap_result(Err(e)),
+        }
+    }
+}
+
+/// Read's result for an image file: the image itself where the model takes
+/// images, as Claude Code's Read returns "visual content that Claude can
+/// see", scaled and recompressed to the model's limits; else a refusal that
+/// says why.
+fn read_image(path: &str, media_type: &str, bytes: Vec<u8>, takes_images: bool) -> ToolResult {
+    if !takes_images {
+        return crate::tools::wrap_result(Err(anyhow::anyhow!(
+            "{path} is an image, and this model doesn't take images. Inspect it with \
+             Bash instead, such as `file {path}`, or ask the user to switch to a model \
+             that does."
+        )));
+    }
+    match super::media::prepare_image(bytes, media_type) {
+        Ok(prepared) => ToolResult {
+            output: format!("{path}: an image, {}.", prepared.description),
+            success: true,
+            full_output: None,
+            images: vec![prepared.image],
+        },
+        Err(e) => crate::tools::wrap_result(Err(anyhow::anyhow!(
+            "{path} looks like an image but can't be read as one: {e}"
+        ))),
     }
 }
 

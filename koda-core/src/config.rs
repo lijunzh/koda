@@ -256,6 +256,9 @@ pub struct KodaConfig {
     /// config file's list and Koda's table. Kept with the model's name so a
     /// switch never uses another model's answer.
     pub reported_vision: Option<(String, bool)>,
+    /// Whether the server said it takes images inside a tool result, and
+    /// for which model (see [`Self::tool_result_images`]).
+    pub reported_tool_images: Option<(String, bool)>,
     /// Skip injecting project/global memory into the system prompt.
     /// Set by `skip_memory: true` in agent JSON. Default: `false`.
     pub skip_memory: bool,
@@ -426,6 +429,7 @@ impl KodaConfig {
             file_mentions: true,
             input_modalities: None,
             reported_vision: None,
+            reported_tool_images: None,
             skip_memory: agent.skip_memory,
             trust: declared_trust,
             stream_idle_timeout_ms: None,
@@ -569,6 +573,16 @@ impl KodaConfig {
         }
     }
 
+    /// Whether a tool's images go inside its result: Anthropic's API takes
+    /// them there, and so does a server that said so (llama.cpp). Elsewhere
+    /// they follow the results in a user message, which every server takes.
+    pub fn tool_result_images(&self) -> bool {
+        if self.provider_type == ProviderType::Anthropic {
+            return true;
+        }
+        matches!(&self.reported_tool_images, Some((model, true)) if *model == self.model)
+    }
+
     /// What `create_provider` needs from this config.
     pub fn provider_settings(&self) -> koda_providers::ProviderSettings {
         koda_providers::ProviderSettings {
@@ -591,6 +605,9 @@ impl KodaConfig {
         let capabilities = provider.model_capabilities(&self.model).await;
         if let Ok(caps) = &capabilities {
             self.reported_vision = caps.vision.map(|vision| (self.model.clone(), vision));
+            self.reported_tool_images = caps
+                .tool_result_images
+                .map(|takes| (self.model.clone(), takes));
         }
         match capabilities {
             Ok(caps) if caps.context_window.is_some() || caps.max_output_tokens.is_some() => {
@@ -708,6 +725,7 @@ impl KodaConfig {
             file_mentions: true,
             input_modalities: None,
             reported_vision: None,
+            reported_tool_images: None,
             skip_memory: false,
             trust: crate::trust::TrustMode::Auto,
             stream_idle_timeout_ms: None,
@@ -1228,6 +1246,7 @@ mod tests {
             context_window: Some(window),
             max_output_tokens: None,
             vision: None,
+            tool_result_images: None,
         }
     }
 
@@ -1254,6 +1273,20 @@ mod tests {
         config.model = "qwen3-vl".into();
         config.input_modalities = Some(vec![Text]);
         assert_eq!(config.input_modalities(), [Text], "the config wins");
+    }
+
+    /// A tool's images go inside its result for Anthropic and for a server
+    /// that said so for this model; everywhere else, after the results.
+    #[test]
+    fn tool_result_images_follow_the_provider_and_the_server() {
+        assert!(KodaConfig::default_for_testing(ProviderType::Anthropic).tool_result_images());
+        let mut local = KodaConfig::default_for_testing(ProviderType::LlamaCpp);
+        local.model = "flashnext".into();
+        assert!(!local.tool_result_images());
+        local.reported_tool_images = Some(("flashnext".into(), true));
+        assert!(local.tool_result_images());
+        local.model = "other".into();
+        assert!(!local.tool_result_images(), "another model's answer");
     }
 
     #[test]

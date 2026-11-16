@@ -706,6 +706,11 @@ fn run_sub_agent<'a>(
             // sub-agent's own invocation id — a sub-agent only sees
             // bg work *it* spawned. The earlier blanket denylist that
             // hid these tools from sub-agents has been removed.
+            tools.set_takes_images(
+                sub_config
+                    .input_modalities()
+                    .contains(&koda_config::InputModality::Image),
+            );
             tools.get_definitions(&sub_config.allowed_tools, &denied)
         };
         let env = crate::prompt::EnvironmentInfo {
@@ -872,6 +877,9 @@ fn run_sub_agent<'a>(
                     memory_context.as_deref(),
                 );
                 crate::inference_helpers::fit_media(&mut messages, &sub_config.input_modalities());
+                if !sub_config.tool_result_images() {
+                    crate::inference_helpers::lift_tool_images(&mut messages);
+                }
 
                 sink.emit(EngineEvent::SpinnerStart {
                     message: format!("  \u{1f9a5} {agent_name} thinking..."),
@@ -1165,6 +1173,8 @@ fn run_sub_agent<'a>(
                     )
                     .await;
 
+                    // Images the tool returns (Read's for an image file).
+                    let mut images = Vec::new();
                     let (output, outcome) = if let Some(error) = validation_error {
                         (format!("Validation error: {error}"), ToolOutcome::Error)
                     } else {
@@ -1226,7 +1236,7 @@ fn run_sub_agent<'a>(
                                 //     loop." with success=false.
                                 //   - Bash output streams through the parent
                                 //     sink (free visibility win).
-                                tool_output(tc, sub_tx, &cancel).await
+                                tool_output(tc, sub_tx, &cancel, &mut images).await
                             }
                             ToolApproval::Blocked => {
                                 let detail =
@@ -1281,7 +1291,7 @@ fn run_sub_agent<'a>(
                                     Some(
                                         ApprovalDecision::Approve
                                         | ApprovalDecision::ApproveForSession,
-                                    ) => tool_output(tc, sub_tx, &cancel).await,
+                                    ) => tool_output(tc, sub_tx, &cancel, &mut images).await,
                                     Some(ApprovalDecision::Reject) => (
                                         "[rejected by user]".to_string(),
                                         ToolOutcome::Declined,
@@ -1336,15 +1346,18 @@ fn run_sub_agent<'a>(
                         output: output.clone(),
                         outcome,
                     });
-                    db.insert_message(
-                        &sub_session,
-                        &Role::Tool,
-                        Some(&output),
-                        None,
-                        Some(&tc.id),
-                        None,
-                    )
-                    .await?;
+                    let message_id = db
+                        .insert_message(
+                            &sub_session,
+                            &Role::Tool,
+                            Some(&output),
+                            None,
+                            Some(&tc.id),
+                            None,
+                        )
+                        .await?;
+                    crate::tool_dispatch::store_tool_images(&*db, &sub_session, message_id, &images)
+                        .await?;
                 }
             }
             // #1110 + #1135: unreachable in practice. The `for iter in 1u32..`
@@ -1470,9 +1483,13 @@ async fn tool_output(
     tc: &crate::providers::ToolCall,
     tx: crate::turn_context::ToolExecutionContext<'_>,
     cancel: &CancellationToken,
+    images: &mut Vec<crate::providers::ImageData>,
 ) -> (String, ToolOutcome) {
     match unless_cancelled(cancel, execute_one_tool(tc, tx)).await {
-        Some((_id, result, success, _full)) => (result, success.into()),
+        Some((_id, result, success, _full, returned)) => {
+            *images = returned;
+            (result, success.into())
+        }
         None => ("[cancelled]".to_string(), ToolOutcome::Cancelled),
     }
 }

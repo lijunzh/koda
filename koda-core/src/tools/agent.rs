@@ -392,6 +392,7 @@ impl Tool for ListAgentsTool {
             output,
             success: true,
             full_output: None,
+            images: Vec::new(),
         }
     }
 }
@@ -423,6 +424,7 @@ impl Tool for InvokeAgentTool {
             output: "InvokeAgent is handled by the inference loop.".to_string(),
             success: false,
             full_output: None,
+            images: Vec::new(),
         }
     }
 }
