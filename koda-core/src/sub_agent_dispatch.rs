@@ -706,11 +706,9 @@ fn run_sub_agent<'a>(
             // sub-agent's own invocation id — a sub-agent only sees
             // bg work *it* spawned. The earlier blanket denylist that
             // hid these tools from sub-agents has been removed.
-            tools.set_takes_images(
-                sub_config
-                    .input_modalities()
-                    .contains(&koda_config::InputModality::Image),
-            );
+            let takes = sub_config.input_modalities();
+            tools.set_takes_images(takes.contains(&koda_config::InputModality::Image));
+            tools.set_takes_pdfs(takes.contains(&koda_config::InputModality::Pdf));
             tools.get_definitions(&sub_config.allowed_tools, &denied)
         };
         let env = crate::prompt::EnvironmentInfo {

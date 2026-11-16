@@ -23,7 +23,9 @@ after your text, as Claude Code does:
 - **A directory** gives its listing, as the `List` tool does, not its files.
 - **An image** (PNG, JPEG, GIF, WebP) is sent as an image, for models that
   take them.
-- **A binary file** (a PDF, an archive, a program) isn't read: the model gets
+- **A PDF** of up to 10 pages is sent whole, for models that take PDFs; a
+  longer one sends its path ([PDFs](#pdfs)).
+- **A binary file** (an archive, a program) isn't read: the model gets
   the path and a note saying what it is, and can inspect it with Bash.
 - **A path that doesn't exist** comes back with that, so the model knows.
 
@@ -121,6 +123,35 @@ than one tool result holds, are an error that suggests reading part of the
 notebook with `jq`, and a notebook file over 100 MB is refused. To see the
 JSON itself, as `Edit` matches it, give `Read` a `start_line` or
 `num_lines`.
+
+## PDFs
+
+`Read` on a PDF returns it in the richest form the model takes, as Claude
+Code's Read does, with qwen-code's text fallback for text-only models:
+
+| Model | A PDF of up to 10 pages | With `pages` ("3", "1-5"; at most 20) |
+|---|---|---|
+| Takes PDFs (Claude) | the PDF itself | the pages as images |
+| Takes images but not PDFs (a vision model on `llama-server`) | its pages as images | the pages as images |
+| Text only | its pages' text | the pages' text |
+
+A longer PDF read without `pages` gets its page count and a request to read
+it in ranges. Page images are drawn at most 1,568 pixels on the long edge;
+text comes under a `--- page N ---` line per page. A scan with no text
+layer can't be read by a text-only model.
+
+**PDFs need poppler,** as Claude Code's page reads do: Koda runs its
+`pdfinfo`, `pdftoppm` and `pdftotext`. Install it with `brew install
+poppler` on macOS or `apt-get install poppler-utils` on Debian and Ubuntu.
+Without it, a PDF still reaches a model that takes PDFs whole, and anything
+else says how to install it.
+
+**A PDF stays in the conversation** like an image, counted as 25,000 tokens
+(10 pages at about 2,500) until the API reports the real figure. A model
+that doesn't take PDFs gets a note in its place, and a request carries at
+most 10 PDFs, which keeps it within Anthropic's 100 pages. An `@` mention of
+a PDF of up to 10 pages sends it whole; a longer one sends its path, with
+how to read it in ranges.
 
 ## Large pastes
 

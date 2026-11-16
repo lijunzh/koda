@@ -123,10 +123,15 @@ pub struct LlmResponse {
     pub usage: TokenUsage,
 }
 
-/// Base64-encoded image data for multi-modal messages.
+/// The media type of a PDF in an [`ImageData`], which then carries a
+/// document rather than an image (Read v2).
+pub const PDF_MEDIA_TYPE: &str = "application/pdf";
+
+/// Base64-encoded media for multi-modal messages: an image, or a PDF when
+/// `media_type` is [`PDF_MEDIA_TYPE`], for a model that takes PDFs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageData {
-    /// MIME type (e.g. "image/png", "image/jpeg").
+    /// MIME type (e.g. "image/png", "image/jpeg", "application/pdf").
     pub media_type: String,
     /// Base64-encoded image bytes.
     pub base64: String,

@@ -323,6 +323,9 @@ enum ContentBlock {
     },
     #[serde(rename = "image")]
     Image { source: ImageSource },
+    /// A PDF, which Anthropic reads as text and page images (Read v2).
+    #[serde(rename = "document")]
+    Document { source: ImageSource },
     /// The model's reasoning. Its text is empty by default and the signature
     /// carries it, so replay both as they came, in the same turn.
     #[serde(rename = "thinking")]
@@ -341,6 +344,21 @@ enum ContentBlock {
     /// response.
     #[serde(other, skip_serializing)]
     Unsupported,
+}
+
+/// A message's media as its block: a PDF as a `document`, anything else
+/// as an `image`.
+fn media_block(media: &crate::ImageData) -> ContentBlock {
+    let source = ImageSource {
+        source_type: "base64".to_string(),
+        media_type: media.media_type.clone(),
+        data: media.base64.clone(),
+    };
+    if media.media_type == crate::PDF_MEDIA_TYPE {
+        ContentBlock::Document { source }
+    } else {
+        ContentBlock::Image { source }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -1132,13 +1150,7 @@ impl AnthropicProvider {
                 let content = match msg.images.as_deref() {
                     Some(images) if !images.is_empty() => {
                         let mut blocks = vec![ContentBlock::Text { text }];
-                        blocks.extend(images.iter().map(|img| ContentBlock::Image {
-                            source: ImageSource {
-                                source_type: "base64".to_string(),
-                                media_type: img.media_type.clone(),
-                                data: img.base64.clone(),
-                            },
-                        }));
+                        blocks.extend(images.iter().map(media_block));
                         AnthropicContent::Blocks(blocks)
                     }
                     _ => AnthropicContent::Text(text),
@@ -1208,13 +1220,7 @@ impl AnthropicProvider {
                 let mut blocks = Vec::new();
                 // Images first (Anthropic recommends images before text)
                 for img in images {
-                    blocks.push(ContentBlock::Image {
-                        source: ImageSource {
-                            source_type: "base64".to_string(),
-                            media_type: img.media_type.clone(),
-                            data: img.base64.clone(),
-                        },
-                    });
+                    blocks.push(media_block(img));
                 }
                 // Then text
                 if let Some(text) = &msg.content
@@ -1344,6 +1350,25 @@ mod tests {
         assert_eq!(block["content"][0]["text"], "shot.png: an image, 40×30.");
         assert_eq!(block["content"][1]["type"], "image");
         assert_eq!(block["content"][1]["source"]["data"], "AAAA");
+    }
+
+    /// A PDF a tool returned goes inside its result as a `document` block,
+    /// as qwen-code sends one (Read v2).
+    #[test]
+    fn a_tool_result_carries_its_pdf_as_a_document() {
+        let p = make_provider();
+        let mut result = ChatMessage::text("tool", "doc.pdf: a PDF, 2 pages.");
+        result.tool_call_id = Some("tc_1".into());
+        result.images = Some(vec![crate::ImageData {
+            media_type: crate::PDF_MEDIA_TYPE.into(),
+            base64: "JVBERi0=".into(),
+        }]);
+        let sent = serde_json::to_value(p.convert_messages(&[result], None)).unwrap();
+        let block = &sent[0]["content"][0]["content"][1];
+        assert_eq!(block["type"], "document");
+        assert_eq!(block["source"]["type"], "base64");
+        assert_eq!(block["source"]["media_type"], "application/pdf");
+        assert_eq!(block["source"]["data"], "JVBERi0=");
     }
 
     #[test]

@@ -161,6 +161,9 @@ pub struct ToolExecCtx<'a> {
     /// Whether the model takes images: Read returns an image file as one.
     pub takes_images: bool,
 
+    /// Whether the model takes PDFs: Read returns a short PDF whole.
+    pub takes_pdfs: bool,
+
     /// Optional engine sink + call-id pair for tools that stream
     /// progress events to the UI (e.g. `Bash` shell output,
     /// `TodoWrite` todo updates). `None` means "no streaming
@@ -443,6 +446,7 @@ impl<'a> ToolExecCtx<'a> {
             fs,
             caps,
             takes_images: false,
+            takes_pdfs: false,
             sink: None,
             caller_spawner: None,
             can_ask: true,
@@ -592,6 +596,7 @@ mod tests {
             session: None,
             skill_registry: skills,
             takes_images: false,
+            takes_pdfs: false,
         }
     }
 

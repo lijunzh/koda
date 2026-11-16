@@ -7,7 +7,7 @@ prompt. See [Trust modes](./approval.md) for the canonical matrix.
 
 | Tool | Effect | Description |
 |------|--------|-------------|
-| `Read` | Read-only | Read a file (with optional line range). An image (PNG, JPEG, GIF, WebP) comes back as an image the model sees, if the model takes images ([which do](./attachments.md#images)), scaled to 1,568 pixels on its long edge if larger; an image file over 128 MB is refused. A Jupyter notebook (`.ipynb`) comes back as its cells with their outputs, output images as images where the model takes them ([details](./attachments.md#notebooks)); with `start_line` or `num_lines`, as its JSON. Another binary file (a PDF, an archive) is refused with what it is |
+| `Read` | Read-only | Read a file (with optional line range). An image (PNG, JPEG, GIF, WebP) comes back as an image the model sees, if the model takes images ([which do](./attachments.md#images)), scaled to 1,568 pixels on its long edge if larger; an image file over 128 MB is refused. A Jupyter notebook (`.ipynb`) comes back as its cells with their outputs, output images as images where the model takes them ([details](./attachments.md#notebooks)); with `start_line` or `num_lines`, as its JSON. A PDF comes back as the model takes it: whole (up to 10 pages), as page images, or as its text; a longer one is read with `pages` ("1-5", at most 20) ([details](./attachments.md#pdfs)). Another binary file (an archive, a program) is refused with what it is |
 | `Write` | Mutating | Create or overwrite a file |
 | `Edit` | Mutating | Targeted text replacement within a file |
 | `Bash` | Varies | Run a shell command in the sandbox; with `outside_sandbox` and a `reason`, run one command outside it once you approve |
