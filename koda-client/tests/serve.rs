@@ -215,6 +215,20 @@ impl Wire {
         }
     }
 
+    /// Lines up to and including both the answer to request `id` and the
+    /// first `method` message, whichever order they come in.
+    async fn until_both(&mut self, id: i64, method: &str) -> Vec<Value> {
+        let (mut answered, mut seen_method) = (false, false);
+        let mut seen = Vec::new();
+        while !(answered && seen_method) {
+            let line = self.next().await.expect("Koda's stdout ended");
+            answered |= line["id"] == id && line.get("method").is_none();
+            seen_method |= line["method"] == method;
+            seen.push(line);
+        }
+        seen
+    }
+
     /// Lines up to and including the first `method` notification or request.
     async fn until_method(&mut self, method: &str) -> Vec<Value> {
         self.until(|l| l["method"] == method).await
@@ -317,13 +331,21 @@ async fn an_interrupt_at_an_approval_settles_the_turn_once() {
     let id = wire.approval().await;
 
     let session = wire.session.clone();
-    wire.call(
-        "turn/interrupt",
-        json!({"sessionId": session, "turnId": turn}),
-    )
-    .await
-    .unwrap();
-    let mut lines = wire.until_method("turn/completed").await;
+    let interrupt = wire
+        .send_request(
+            "turn/interrupt",
+            json!({"sessionId": session, "turnId": turn}),
+        )
+        .await;
+    // The answer comes once the turn has stopped, but on its own channel,
+    // so it may arrive before or after the turn's last messages: keep them
+    // all.
+    let mut lines = wire.until_both(interrupt, "turn/completed").await;
+    let answer = lines
+        .iter()
+        .find(|l| l["id"] == interrupt && l.get("method").is_none())
+        .unwrap();
+    assert!(answer.get("error").is_none(), "{answer}");
     assert_eq!(turn_completed(&lines)["status"], "interrupted");
     let resolved: Vec<_> = lines
         .iter()
