@@ -41,7 +41,7 @@ use koda_state::session_store::SessionStore;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::events::{EventProjector, Outgoing};
-use crate::host::{Answer, protocol_mode, to_json};
+use crate::host::{Answer, to_json};
 use koda_core::mcp::manager::SharedMcpManager;
 
 /// Open server requests, by id: the session each belongs to. Shared by the
@@ -280,7 +280,7 @@ pub(crate) async fn open(
         model: Some(config.model.clone()),
         provider: Some(config.provider_type.meta().name.to_string()),
         context_window: Some(config.max_context_tokens as u64),
-        mode: Some(protocol_mode(mode)),
+        mode: Some(mode),
         tools: Some(
             session
                 .agent
@@ -550,7 +550,7 @@ impl SessionTask {
             self.session.update_provider(&next);
         }
         if let Some(asked) = params.mode {
-            let (mode, warning) = self.rules.allow(crate::settings::mode_of(asked))?;
+            let (mode, warning) = self.rules.allow(asked)?;
             if let Some(message) = warning {
                 self.sink
                     .notify(ServerNotification::Warning(WarningNotification {
@@ -831,7 +831,7 @@ impl SessionTask {
                             )
                             .and_then(|_| match params.mode {
                                 Some(mode) => rules
-                                    .allow(crate::settings::mode_of(mode))
+                                    .allow(mode)
                                     .map(|_| ()),
                                 None => Ok(()),
                             });
@@ -943,8 +943,7 @@ pub(crate) fn describe(stored: &koda_state::session_store::SessionInfo) -> Sessi
         mode: stored
             .mode
             .as_deref()
-            .and_then(koda_core::trust::TrustMode::parse)
-            .map(protocol_mode),
+            .and_then(koda_core::trust::TrustMode::parse),
         tools: None,
         instruction_sources: None,
         turns: Vec::new(),
