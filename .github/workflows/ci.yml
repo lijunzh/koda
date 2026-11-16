@@ -5,6 +5,10 @@ on:
     branches: [main]    # Catch post-merge config drift on protected branch
   pull_request:
     branches: [main]
+  schedule:
+    # Nightly on main, off-peak: the one main run with macOS (see `test`).
+    - cron: '17 9 * * *'
+  workflow_dispatch:
   workflow_call:        # Called by other workflows
 
 permissions:
@@ -27,7 +31,7 @@ env:
 #   fmt     → formatting
 #   clippy  → lints + compile, every target
 #   check   → compile sanity, every target (what crates.io users see)
-#   test    → behaviour, matrix on (ubuntu, macos)
+#   test    → behaviour, on ubuntu; also macos on PRs and nightly
 #   doc     → doc compile + intra-doc links + -Dwarnings
 #   audit   → dependency advisories (on PRs, only when deps change)
 #
@@ -156,7 +160,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+      # macOS runs on PRs and the nightly run, not after each merge: GitHub's
+      # macOS arm64 runners are short of capacity, and a merge plus a tag
+      # once queued four Mac jobs at once, two of which GitHub cancelled
+      # unstarted after 15 minutes (0.7.2, 2026-11-16). The PR already tested
+      # the merged code on macOS; the nightly run checks main there and
+      # saves the macOS cache that PRs restore.
+        os: ${{ github.event_name == 'push' && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "macos-latest"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

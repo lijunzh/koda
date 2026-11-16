@@ -402,10 +402,10 @@ Seven workflows live in `.github/workflows/`:
 
 | Workflow | Trigger | Purpose |
 |---|---|---|
-| `ci.yml` | PRs to `main`, push to `main` | Gate PRs: format, lint, compile, test, doc, dependency audit |
+| `ci.yml` | PRs to `main`, push to `main`, nightly (09:17 UTC) + manual | Gate PRs: format, lint, compile, test, doc, dependency audit |
 | `audit.yml` | Weekly (Mon 13:00 UTC) + manual | `cargo audit` of `main`; manages the `security-audit` issue |
-| `coverage.yml` | Push to `main`; PRs touching `koda-core/` or `koda-sandbox/` | Coverage thresholds, with auto issue creation on `main` |
-| `release.yml` | Tag `v*` | Version verify, cross-platform test + build, publish, Homebrew |
+| `coverage.yml` | Push to `main`; PRs touching `koda-core/` or `koda-sandbox/`; nightly (09:17 UTC) + manual | Coverage thresholds, with auto issue creation on `main` |
+| `release.yml` | Tag `v*` | Version verify, Linux test, cross-platform build, publish, Homebrew |
 | `docs.yml` | Push to `main` (docs/ changes) | Build + deploy mdBook to GitHub Pages |
 | `codeql.yml` | Push to `main`, weekly (Mon 14:00 UTC) + manual | CodeQL code scanning of Rust and the workflows; not on PRs |
 | `auto-merge-dependabot.yml` | Dependabot PRs | Enables squash auto-merge; merges once required checks pass |
@@ -435,7 +435,7 @@ names what broke, and a seventh gathers them. Wall-clock is set by the slowest
 | `fmt` | `Format` | `cargo fmt --check`, plus text guards: tokio test flavor (#1109), toolchain pin, the TUI's core boundary (`koda-cli`'s `koda_core` uses may only shrink) |
 | `clippy` | `Clippy` | `cargo clippy --workspace --all-targets -- -D warnings` |
 | `check` | `Check (no features)` | `cargo check --workspace --all-targets` (the crates.io shape) |
-| `test` | `Test (ubuntu-latest)`, `Test (macos-latest)` | `cargo nextest run --workspace --profile ci`, the doc tests with `cargo test --doc`, then asserts from nextest's JUnit report that the security-boundary tests ran |
+| `test` | `Test (ubuntu-latest)`; `Test (macos-latest)` on PRs and nightly | `cargo nextest run --workspace --profile ci`, the doc tests with `cargo test --doc`, then asserts from nextest's JUnit report that the security-boundary tests ran |
 | `doc` | `Docs` | `cargo doc --workspace --no-deps` with `RUSTDOCFLAGS=-Dwarnings` |
 | `audit` | `Security Audit` | `cargo audit --deny unsound --deny yanked`, gated on dependency changes (below) |
 | `required` | `CI required` | Succeeds only if every job above succeeded |
@@ -454,6 +454,14 @@ to `ci.yml`**. Skip work inside a job instead, as `audit` does.
 
 **Runner hygiene, in every workflow:**
 
+- **macOS runners, only where needed:** GitHub's macOS arm64 runners are
+  short of capacity; Mac jobs have waited 5 to 15 minutes for one, and GitHub
+  cancels a job no runner takes in about 15 (0.7.2's Mac build, 2026-11-16).
+  `ci.yml` and `coverage.yml` run macOS on PRs and in the nightly run on
+  `main`, not on each push to `main`: the PR already ran it, and the nightly
+  run checks `main` on macOS and saves the macOS cache PRs restore.
+  `release.yml` tests on Linux and builds the Mac binary. A Mac job GitHub
+  cancels unstarted can be re-run with `gh run rerun <id> --failed`.
 - **Caches:** `Swatinem/rust-cache` saves only on `main`
   (`save-if: github.ref == 'refs/heads/main'`); PRs restore `main`'s cache. A
   PR's own cache can be read only by that PR, and saving seven per PR pushed

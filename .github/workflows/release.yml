@@ -86,18 +86,21 @@ jobs:
           fi
           echo "✅ RUSTSEC-2026-0097 suppression valid: no LogTracer/tracing_log in workspace src"
 
-  # Cross-platform tests before shipping binaries.
-  # Depends on verify-version + audit: no point burning 30+ min of cross-platform
-  # tests when the tag is wrong or has known vulnerabilities.
+  # Tests before shipping binaries, on Linux. macOS tests ran on the release
+  # PR, and the Mac binary is still built (`build`): GitHub's macOS arm64
+  # runners are short of capacity, and a Mac test here once waited 10 minutes
+  # for a runner while GitHub cancelled the Mac build (0.7.2, 2026-11-16).
+  # Depends on verify-version + audit: no point burning test time when the
+  # tag is wrong or has known vulnerabilities.
   test:
     name: Test (${{ matrix.os }})
     needs: [verify-version, audit]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
-      fail-fast: true   # release needs all platforms green — no point continuing if one fails
+      fail-fast: true
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
