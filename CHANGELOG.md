@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **`Read` shows a Jupyter notebook as its cells, as in Claude Code.** A notebook (`.ipynb`) read whole comes back as each cell's type, ID and source with its outputs (printed text, results and tracebacks, without colour codes), instead of its JSON. Output images, such as plots, come back as images for a model that takes images, and as a one-line note otherwise. An `@` mention of a notebook sends the same. Cells over 256 KB, or more than one result holds, are refused with a `jq` command to read part of the notebook, and a file over 100 MB is refused. `start_line` or `num_lines` still returns the JSON, which `Edit` matches. Read v2 step 3, part 1 (PDFs follow).
+
 ## [0.7.2] - 2026-11-16
 
 ### Fixed

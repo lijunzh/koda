@@ -117,6 +117,24 @@ mod tests {
         assert_eq!(text, "     1\tone\n     2\ttwo");
     }
 
+    /// A notebook mentioned reads as Read shows it: its cells, not its JSON.
+    #[tokio::test]
+    async fn a_notebook_reads_as_its_cells() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("nb.ipynb"),
+            r#"{"nbformat": 4, "cells": [{"cell_type": "code", "source": ["x = 1"], "outputs": []}]}"#,
+        )
+        .unwrap();
+        let Mentioned::File(text) = registry(dir.path()).read_mention("nb.ipynb").await else {
+            panic!("not read as a file");
+        };
+        assert!(
+            text.contains("<cell index=\"1\" type=\"code\">\nx = 1\n</cell>"),
+            "{text}"
+        );
+    }
+
     #[tokio::test]
     async fn a_directory_gives_a_listing() {
         let dir = tempfile::tempdir().unwrap();
