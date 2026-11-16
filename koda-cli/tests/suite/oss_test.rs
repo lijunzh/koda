@@ -18,8 +18,8 @@ const SLUG: &str = "LiquidAI_LFM3-1.7B-GGUF_Q4_K_M";
 
 const STAND_IN: &str = r#"#!/usr/bin/env python3
 # A stand-in llama-server for Koda's --oss tests.
-import json, os, sys
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json, os, socketserver, sys
+from http.server import BaseHTTPRequestHandler
 
 port = int(sys.argv[sys.argv.index("--port") + 1])
 with open(os.environ["STAND_IN_STARTS"], "a") as f:
@@ -63,7 +63,13 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(json.dumps({"choices": [{"index": 0, "message": {"role": "assistant", "content": text},
                                                 "finish_reason": "stop"}]}))
 
-ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+# socketserver's TCPServer, not http.server's: HTTPServer looks up the host's
+# name (socket.getfqdn), a reverse DNS lookup that has stalled for 30 s on
+# CI's macOS runners.
+class Server(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    daemon_threads = True
+
+Server(("127.0.0.1", port), Handler).serve_forever()
 "#;
 
 struct Setup {
