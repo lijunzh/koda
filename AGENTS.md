@@ -221,7 +221,10 @@ Test code lives in `koda-test-utils` (unpublished), not behind a feature of
 the published crates: `MockProvider`, `TestSink` (one file, also compiled by
 koda-core's own unit tests) and the stub server, whose `mount_script` plays
 the mock's scripts over HTTP for tests that run the `koda` binary or a
-sub-agent. The `koda` binary can't select a mock provider.
+sub-agent. One script answers requests in arrival order; agents that call the
+model at once (parallel or background sub-agents) each need their own,
+`mount_script_for` keyed on how their system prompt begins. The `koda` binary
+can't select a mock provider.
 
 - **Unit:** co-located in `src/` modules in both crates.
 - **koda-core E2E** (mock provider): `tests/suite/e2e_*.rs` and `tests/suite/cancel_test.rs`,

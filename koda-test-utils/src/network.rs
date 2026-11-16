@@ -164,21 +164,50 @@ impl FakeLlmServer {
     /// An `Error` is a 400 with its message, so Koda doesn't retry it;
     /// a `NetworkError` sends its text and ends the stream without
     /// finishing it.
+    ///
+    /// **One script, one caller at a time.** Requests take responses in
+    /// the order they arrive. Agents that call the model at once, such as
+    /// two sub-agents from one batch of tool calls or a background one,
+    /// would take each other's: give each its own with
+    /// [`Self::mount_script_for`].
     pub async fn mount_script(&self, script: Vec<MockResponse>) {
-        let script = Arc::new(Mutex::new(VecDeque::from(script)));
-        self.mount_fn("POST", r".*/chat/completions$", move |request| {
-            let stream = serde_json::from_slice::<Value>(&request.body)
-                .is_ok_and(|body| body["stream"] == true);
-            let next = script.lock().unwrap().pop_front();
-            openai_reply(next.unwrap_or(MockResponse::Text(String::new())), stream)
-        })
-        .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/chat/completions$"))
+            .respond_with(script_responder(script))
+            .mount(&self.server)
+            .await;
     }
 
     /// [`Self::mount_script`] with the script in [`parse_script`]'s JSON
     /// form, `[{"text":"hi"}, {"tool":"Read","args":{…}}]`.
     pub async fn mount_script_json(&self, json: &str) {
         self.mount_script(parse_script(json)).await;
+    }
+
+    /// A script of its own for the agent whose system prompt begins with
+    /// `marker`: its requests take only these responses, in order,
+    /// whatever other agents ask at the same time. It wins over
+    /// [`Self::mount_script`], which answers everyone else.
+    ///
+    /// An agent's system prompt starts with its own `system_prompt` text,
+    /// so use the start of that. Matching anywhere in the prompt wouldn't
+    /// do: every agent's prompt lists the other agents with their
+    /// descriptions, which default to their `system_prompt`.
+    pub async fn mount_script_for(&self, marker: &str, script: Vec<MockResponse>) {
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/chat/completions$"))
+            .and(SystemPromptStartsWith(marker.to_string()))
+            .respond_with(script_responder(script))
+            // Before the shared script's mock, which is at the default 5.
+            .with_priority(1)
+            .mount(&self.server)
+            .await;
+    }
+
+    /// [`Self::mount_script_for`] with the script in [`parse_script`]'s
+    /// JSON form.
+    pub async fn mount_script_json_for(&self, marker: &str, json: &str) {
+        self.mount_script_for(marker, parse_script(json)).await;
     }
 
     /// The `messages` of each chat request received, in order.
@@ -295,6 +324,47 @@ impl FakeLlmServer {
     pub async fn mount_chat_delayed(&self, delay: Duration, body: Value) {
         self.mount_delayed("POST", r".*/chat/completions$", delay, body)
             .await
+    }
+}
+
+/// Answers each request with the next response of `script`, streamed or
+/// not as the request asks, and an empty reply once it is spent.
+fn script_responder(script: Vec<MockResponse>) -> impl wiremock::Respond {
+    let script = Arc::new(Mutex::new(VecDeque::from(script)));
+    move |request: &Request| {
+        let stream =
+            serde_json::from_slice::<Value>(&request.body).is_ok_and(|body| body["stream"] == true);
+        let next = script.lock().unwrap().pop_front();
+        openai_reply(next.unwrap_or(MockResponse::Text(String::new())), stream)
+    }
+}
+
+/// Matches a chat request whose system message begins with the text.
+struct SystemPromptStartsWith(String);
+
+impl wiremock::Match for SystemPromptStartsWith {
+    fn matches(&self, request: &Request) -> bool {
+        let Ok(body) = serde_json::from_slice::<Value>(&request.body) else {
+            return false;
+        };
+        body["messages"].as_array().is_some_and(|messages| {
+            messages.iter().any(|m| {
+                m["role"] == "system" && system_text(&m["content"]).starts_with(self.0.as_str())
+            })
+        })
+    }
+}
+
+/// A message's text: a string, or the text parts of a content array.
+fn system_text(content: &Value) -> String {
+    match content {
+        Value::String(text) => text.clone(),
+        Value::Array(parts) => parts
+            .iter()
+            .filter_map(|p| p["text"].as_str())
+            .collect::<Vec<_>>()
+            .join(""),
+        _ => String::new(),
     }
 }
 
@@ -426,6 +496,14 @@ impl ScriptedServer {
         }
     }
 
+    /// A script of its own for the agent whose system prompt begins with
+    /// `marker`, as [`FakeLlmServer::mount_script_for`].
+    pub fn script_for(&self, marker: &str, script: &str) {
+        let server = self.server.as_ref().expect("running");
+        self.runtime
+            .block_on(server.mount_script_json_for(marker, script));
+    }
+
     /// The flags that send `koda`'s model calls here.
     pub fn koda_args(&self) -> [String; 6] {
         [
@@ -449,5 +527,70 @@ impl Drop for ScriptedServer {
     fn drop(&mut self) {
         let _inside = self.runtime.enter();
         self.server.take();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One request as an agent with this system prompt sends it, unstreamed;
+    /// the reply's text.
+    async fn ask(url: &str, system: &str) -> String {
+        let body = json!({"model": "stub", "stream": false, "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": "go"}
+        ]});
+        let reply: Value = reqwest::Client::new()
+            .post(format!("{url}/v1/chat/completions"))
+            .json(&body)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        reply["choices"][0]["message"]["content"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// Two agents calling at the same time each get their own script, in
+    /// order; a request no script names takes the shared one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn each_agent_gets_its_own_script_whatever_the_timing() {
+        let server = FakeLlmServer::spawn().await;
+        server.mount_script_json(r#"[{"text": "shared"}]"#).await;
+        server
+            .mount_script_json_for(
+                "You are ALPHA",
+                r#"[{"text": "a1"}, {"text": "a2"}, {"text": "a3"}]"#,
+            )
+            .await;
+        server
+            .mount_script_json_for(
+                "You are BETA",
+                r#"[{"text": "b1"}, {"text": "b2"}, {"text": "b3"}]"#,
+            )
+            .await;
+        let url = server.url();
+        let agent = |name: &'static str| {
+            let url = url.clone();
+            tokio::spawn(async move {
+                let mut got = Vec::new();
+                for _ in 0..3 {
+                    // Each prompt also names the other agent, as Koda's do.
+                    let system = format!("You are {name}.\n\nAgents: ALPHA, BETA.");
+                    got.push(ask(&url, &system).await);
+                }
+                got
+            })
+        };
+        let (alpha, beta) = (agent("ALPHA"), agent("BETA"));
+        let other = ask(&url, "You are the parent.").await;
+        assert_eq!(alpha.await.unwrap(), ["a1", "a2", "a3"]);
+        assert_eq!(beta.await.unwrap(), ["b1", "b2", "b3"]);
+        assert_eq!(other, "shared");
     }
 }

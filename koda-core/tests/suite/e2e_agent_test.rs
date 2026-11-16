@@ -1197,3 +1197,83 @@ async fn a_sub_agent_session_stores_its_own_context() {
     assert_eq!(context.trust_mode, "plan");
     assert!(context.system_prompt_sha256.is_some());
 }
+
+/// Two sub-agents from one batch of tool calls run at the same time, and
+/// each plays its own script on the shared stub server: neither takes the
+/// other's replies, whatever the timing. Each agent's system prompt lists
+/// both agents, so the scripts are keyed on how the prompt begins.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn parallel_sub_agents_each_play_their_own_script() {
+    let _lock = ENV_MUTEX.lock().await;
+    let env = Env::builder()
+        .trust(koda_core::trust::TrustMode::Auto)
+        .build()
+        .await;
+    let server = FakeLlmServer::spawn().await;
+    let agents_dir = env.root.join(".koda/agents");
+    std::fs::create_dir_all(&agents_dir).unwrap();
+    for (name, marker) in [("alpha", "ALPHA-AGENT"), ("beta", "BETA-AGENT")] {
+        std::fs::write(
+            agents_dir.join(format!("{name}.json")),
+            serde_json::json!({
+                "name": name,
+                "system_prompt": format!("You are {marker}."),
+                "allowed_tools": ["ListSkills"],
+                "provider": "lmstudio",
+                "model": "stub",
+                "base_url": server.url()
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+    server
+        .mount_script_json_for(
+            "You are ALPHA-AGENT.",
+            r#"[{"tool": "ListSkills", "args": {}}, {"text": "alpha finished"}]"#,
+        )
+        .await;
+    server
+        .mount_script_json_for(
+            "You are BETA-AGENT.",
+            r#"[{"tool": "ListSkills", "args": {}}, {"text": "beta finished"}]"#,
+        )
+        .await;
+
+    env.insert_user_message("ask both agents").await;
+    let call = |id: &str, agent: &str| koda_core::providers::ToolCall {
+        id: id.to_string(),
+        function_name: "InvokeAgent".to_string(),
+        arguments: serde_json::json!({"agent_name": agent, "prompt": "go"}).to_string(),
+        thought_signature: None,
+    };
+    let provider = MockProvider::new(vec![
+        MockResponse::ToolCalls(vec![call("call_alpha", "alpha"), call("call_beta", "beta")]),
+        MockResponse::Text("both done".into()),
+    ]);
+    let events = env.run_inference(&provider).await;
+
+    let output_of = |id: &str| {
+        events
+            .iter()
+            .find_map(|e| match e {
+                EngineEvent::ToolCallResult {
+                    id: call, output, ..
+                } if call == id => Some(output.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no result for {id}: {events:#?}"))
+    };
+    let alpha = output_of("call_alpha");
+    let beta = output_of("call_beta");
+    assert!(
+        alpha.contains("alpha finished") && !alpha.contains("beta"),
+        "{alpha}"
+    );
+    assert!(
+        beta.contains("beta finished") && !beta.contains("alpha"),
+        "{beta}"
+    );
+    // Both scripts ran in full: a tool call and a reply each.
+    assert_eq!(server.chat_messages().await.len(), 4);
+}

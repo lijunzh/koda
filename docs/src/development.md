@@ -239,7 +239,11 @@ test feature, so nothing test-only is public on crates.io or in the `koda`
 binary, and each crate builds once. A test that runs the `koda` binary, or a
 sub-agent the engine builds from its config, scripts the stub server
 (`mount_script`, or `ScriptedServer` in a synchronous test) in the mock's
-format instead.
+format instead. One script answers requests in the order they arrive, so
+agents that call the model at the same time, such as two sub-agents from one
+batch of tool calls, each get their own with `mount_script_for`, keyed on how
+the agent's system prompt begins (every agent's prompt lists the others, so
+matching anywhere in it isn't enough).
 
 **koda-core unit tests** are co-located in `src/` modules, no feature flag:
 context tracking, loop detection, config defaults, bash safety, etc.
