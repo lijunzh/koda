@@ -325,7 +325,7 @@ fn apply_policy_overlay(cmd: &mut Command, policy: &SandboxPolicy) -> Result<()>
 /// 3. Sibling of the current executable (production install).
 /// 4. Cargo's profile directory (`target/debug/`), where it builds the
 ///    helper, for a test binary Cargo runs from elsewhere: see
-///    [`cargo_profile_dir`]. This lets cross-crate integration tests
+///    `cargo_profile_dir`. This lets cross-crate integration tests
 ///    (notably the `koda-core` e2e suite) find the helper without
 ///    setting an env var.
 pub fn stage2_binary() -> Result<PathBuf> {
