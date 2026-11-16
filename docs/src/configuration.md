@@ -66,9 +66,9 @@ Every key, in Codex's names where Codex has one:
 | `model_provider`, `model` | The provider and model a new session starts with |
 | `model_reasoning_effort` | The reasoning effort, as `--effort` gives it |
 | `model_context_window` | The context window to assume, in tokens, as `--max-context-tokens` pins it |
-| `model_max_output_tokens` | The most tokens a reply may use, as `--max-tokens` gives it |
-| `model_temperature` | The sampling temperature (0.0–2.0), as `--temperature` gives it |
-| `model_thinking_budget` | A thinking budget in tokens, for Gemini models, as `--thinking-budget` gives it |
+| `model_max_output_tokens` | The most tokens a reply may use, as the deprecated `--max-tokens` gives it |
+| `model_temperature` | The sampling temperature (0.0–2.0), as the deprecated `--temperature` gives it |
+| `model_thinking_budget` | A thinking budget in tokens, for Gemini models, as the deprecated `--thinking-budget` gives it |
 | `agent` | The agent sessions run, as `--agent` names it: a built-in, or a JSON file in `agents/` (default: `default`) |
 | `model_post_turn_compact_threshold_percent` | Compact after a turn's final reply once this share of the window is used (1–100; 0 turns it off) |
 | `file_mentions` | `false` sends an `@` mention's path only, for the model to read, as Codex does; on by default, sending its contents as Claude Code does (see [File & image attachments](./attachments.md#mentioning-files)) |
