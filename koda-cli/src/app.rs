@@ -128,6 +128,18 @@ struct SessionFlags {
     /// LLM provider (openai, anthropic, lmstudio, llama-cpp, gemini, groq, grok, ollama)
     #[arg(long)]
     provider: Option<String>,
+
+    /// Run on a local open-weight model, as Codex's `--oss` does. Koda
+    /// starts llama.cpp's llama-server with the model (Qwen3.8-Flash-Next
+    /// on a 128 GB Mac, else LFM3-1.7B, a 1 GB quick try), and stops it
+    /// when Koda exits. `oss_model` in config.toml picks another
+    #[arg(long)]
+    oss: bool,
+
+    /// The local provider for --oss: llama-cpp (the default, started and
+    /// stopped by Koda), lm-studio or ollama (connected to)
+    #[arg(long = "local-provider", value_name = "PROVIDER", requires = "oss")]
+    local_provider: Option<String>,
 }
 
 impl SessionFlags {
@@ -138,6 +150,8 @@ impl SessionFlags {
         inherit(&mut self.base_url, &root.base_url);
         inherit(&mut self.model, &root.model);
         inherit(&mut self.provider, &root.provider);
+        self.oss |= root.oss;
+        inherit(&mut self.local_provider, &root.local_provider);
     }
 
     /// The flags given, by name.
@@ -147,6 +161,8 @@ impl SessionFlags {
             ("--base-url", self.base_url.is_some()),
             ("--model", self.model.is_some()),
             ("--provider", self.provider.is_some()),
+            ("--oss", self.oss),
+            ("--local-provider", self.local_provider.is_some()),
         ]
         .into_iter()
         .filter_map(|(name, given)| given.then_some(name))
@@ -606,6 +622,42 @@ pub(crate) async fn run() -> Result<()> {
         overrides.extend(koda_config::mcp_config_overrides(arg).map_err(anyhow::Error::msg)?);
     }
     overrides.extend(flag_overrides(&flags));
+
+    // `--oss`: pick the local provider and model now, so the model's effort
+    // joins this run's config values before they're fixed.
+    let oss_plan = if session.oss {
+        if session.provider.is_some() || session.base_url.is_some() {
+            eprintln!(
+                "error: --oss picks the provider and its address; leave out --provider \
+                 and --base-url (use --local-provider to choose llama-cpp, lm-studio or \
+                 ollama)"
+            );
+            std::process::exit(2);
+        }
+        let config = koda_config::ConfigFile::in_dir(&koda_config::config_dir()?)
+            .with_overrides(overrides.clone())
+            .load()
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+            .config;
+        let plan = crate::oss::plan(
+            session.local_provider.as_deref(),
+            config.oss_provider.as_deref(),
+            session.model.as_deref(),
+            config.oss_model.as_deref(),
+            crate::oss::memory_bytes(),
+        )?;
+        if let Some(effort) = plan.model.as_ref().and_then(|m| m.effort)
+            && config.model_reasoning_effort.is_none()
+        {
+            overrides.push(
+                koda_config::parse_override(&format!("model_reasoning_effort={effort}"))
+                    .map_err(anyhow::Error::msg)?,
+            );
+        }
+        Some(plan)
+    } else {
+        None
+    };
     crate::user_config::set_overrides(overrides);
     for notice in flags.deprecations() {
         eprintln!("warning: {notice}");
@@ -692,6 +744,26 @@ pub(crate) async fn run() -> Result<()> {
         }
     }
 
+    // `--oss`: start the model's server on llama.cpp (or join the one
+    // running) before the session opens, and point the session at it. It
+    // is stopped when Koda exits, unless another `koda --oss` still uses it.
+    let mut oss_server: Option<crate::oss::Server> = None;
+    if let Some(plan) = &oss_plan {
+        if let Some(model) = &plan.model {
+            for line in crate::oss::start_notice(model, crate::oss::memory_bytes()) {
+                eprintln!("{line}");
+            }
+            let server = crate::oss::Server::start(model, &config_dir).await?;
+            session.base_url = Some(server.base_url());
+            // The llama-cpp provider sends `KODA_API_KEY` to the server.
+            koda_config::runtime_env::set("KODA_API_KEY", server.api_key());
+            // The server serves one model; Koda reads its id from it.
+            session.model = None;
+            oss_server = Some(server);
+        }
+        session.provider = Some(plan.provider.provider_id().to_string());
+    }
+
     // The model choice goes to `session/start`, as Codex's TUI passes its
     // model to `thread/start`; the host resolves an alias (`claude-haiku`
     // picks Anthropic) and fills in the rest from the saved choice.
@@ -715,6 +787,10 @@ pub(crate) async fn run() -> Result<()> {
         // An unknown id stops the run before its turn (`session_id`). A new
         // session is the host's to create.
         let exit_code = headless::run_headless(project_root, resume, run).await?;
+        // `exit` below runs no destructors, so leave the --oss server here.
+        if let Some(server) = oss_server.take() {
+            server.release();
+        }
         // `exit` runs no destructors: store the queued lines first, the last
         // of which say how the run ended, and write out the file's.
         crate::logging::flush().await;

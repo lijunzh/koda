@@ -49,6 +49,12 @@ Options:
       --provider <PROVIDER>
           LLM provider (openai, anthropic, lmstudio, llama-cpp, gemini, groq, grok, ollama)
 
+      --oss
+          Run on a local open-weight model, as Codex's `--oss` does. Koda starts llama.cpp's llama-server with the model (Qwen3.8-Flash-Next on a 128 GB Mac, else LFM3-1.7B, a 1 GB quick try), and stops it when Koda exits. `oss_model` in config.toml picks another
+
+      --local-provider <PROVIDER>
+          The local provider for --oss: llama-cpp (the default, started and stopped by Koda), lm-studio or ollama (connected to)
+
   -a, --agent <AGENT>
           Agent to use: a built-in, or a JSON file in .koda/agents/ or ~/.config/koda/agents/ (default: config.toml's `agent`, else `default`)
 

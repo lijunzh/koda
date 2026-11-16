@@ -829,6 +829,9 @@ fn install_signal_handler_with(restore: fn()) {
             // restore + exit once, so we take the first.
             if let Some(sig) = signals.forever().next() {
                 restore();
+                // A `koda --oss` server is left before the exit below, which
+                // runs no destructors (it would otherwise keep running).
+                crate::oss::leave_active();
                 // Exit with the conventional 128 + signal number so that
                 // shell scripts can detect signal-induced termination.
                 // We deliberately do NOT re-raise the signal with default

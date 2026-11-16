@@ -38,6 +38,8 @@ pub(crate) mod md_render;
 pub(crate) mod mode;
 pub(crate) mod mouse_select;
 pub(crate) mod onboarding;
+/// `--oss`: a local model on llama.cpp, started and stopped with Koda.
+pub(crate) mod oss;
 pub(crate) mod panic_log;
 pub(crate) mod protocol_text;
 pub(crate) mod providers;

@@ -13,7 +13,8 @@ koda
 ```
 
 The first time, Koda opens its provider picker. Choose a provider and paste
-its API key, or give a local server's address (see [Local
+its API key, or give a local server's address. Or skip the key altogether:
+`koda --oss` runs on a local model it starts for you (see [Local
 models](./local-models.md)). Koda keeps the key in its database on your
 machine; you won't be asked again.
 

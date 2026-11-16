@@ -59,6 +59,18 @@ unknown key in `-c` stops the run instead.
 # model_reasoning_effort.
 # model_thinking_budget = 8192
 
+# ── Local model (koda --oss) ───────────────────────────────────────────
+
+# The local provider --oss uses: llama-cpp (Koda starts and stops its
+# server), lm-studio or ollama (Koda connects to the one running).
+# Unset: llama-cpp.
+# oss_provider = "llama-cpp"
+
+# The model --oss runs on llama.cpp: a Hugging Face <repo>:<quant>, or the
+# path of a .gguf file. Unset: Qwen3.8-Flash-Next on a 128 GB Mac, else the
+# 1 GB LFM3-1.7B quick try.
+# oss_model = "ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M"
+
 # ── Sessions ───────────────────────────────────────────────────────────
 
 # The trust mode a new session starts in: auto, safe or plan.

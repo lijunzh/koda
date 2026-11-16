@@ -13,6 +13,7 @@ mod mcp_cmd_test;
 mod mcp_config_flag_test;
 mod no_summary_compaction_test;
 mod openai_stream_failure_test;
+mod oss_test;
 mod own_kill_test;
 mod plan_mode_headless_test;
 mod prompt_text_test;
