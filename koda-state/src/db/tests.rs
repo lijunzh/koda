@@ -400,6 +400,7 @@ fn test_prune_mismatched_tool_calls_unit() {
             thinking_content: None,
             thinking_model: None,
             thinking_blocks: None,
+            images: None,
             created_at: None,
         }
     }
@@ -476,6 +477,7 @@ fn msg_with_id(id: i64, role: &str, content: Option<&str>, tool_call_id: Option<
         thinking_content: None,
         thinking_model: None,
         thinking_blocks: None,
+        images: None,
         created_at: None,
     }
 }
@@ -961,6 +963,7 @@ fn test_prune_null_content_drops_ghost_assistant() {
             thinking_content: None,
             thinking_model: None,
             thinking_blocks: None,
+            images: None,
             created_at: None,
         }
     }
@@ -1019,6 +1022,7 @@ fn test_prune_whitespace_only_drops_blank_assistant() {
             thinking_content: None,
             thinking_model: None,
             thinking_blocks: None,
+            images: None,
             created_at: None,
         }
     }
@@ -2081,4 +2085,39 @@ async fn test_open_drops_the_owned_files_table() {
     .await
     .unwrap();
     assert!(tables.is_empty(), "owned_files should be dropped");
+}
+
+/// A prompt's images are stored on the latest user message and come back
+/// with the context, even when that context was cached before they were
+/// stored (a user row is complete when inserted).
+#[tokio::test]
+async fn images_go_on_the_latest_user_message_and_reach_a_cached_context() {
+    let (db, _tmp) = setup().await;
+    let session = db.create_session("default", _tmp.path()).await.unwrap();
+    db.insert_message(&session, &Role::User, Some("first"), None, None, None)
+        .await
+        .unwrap();
+    insert_complete_assistant(&db, &session, Some("ok"), None).await;
+    db.insert_message(&session, &Role::User, Some("look"), None, None, None)
+        .await
+        .unwrap();
+    // Cached now, before the images are stored.
+    assert!(
+        db.load_context(&session)
+            .await
+            .unwrap()
+            .iter()
+            .all(|m| m.images.is_none())
+    );
+
+    let images = r#"[{"media_type":"image/png","base64":"AAAA"}]"#;
+    db.set_last_user_message_images(&session, images)
+        .await
+        .unwrap();
+    let context = db.load_context(&session).await.unwrap();
+    let with: Vec<_> = context
+        .iter()
+        .filter_map(|m| m.images.as_deref().map(|i| (m.content.clone(), i)))
+        .collect();
+    assert_eq!(with, [(Some("look".to_string()), images)]);
 }

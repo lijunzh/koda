@@ -871,6 +871,7 @@ fn run_sub_agent<'a>(
                     &mut messages,
                     memory_context.as_deref(),
                 );
+                crate::inference_helpers::fit_media(&mut messages, &sub_config.input_modalities());
 
                 sink.emit(EngineEvent::SpinnerStart {
                     message: format!("  \u{1f9a5} {agent_name} thinking..."),
