@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.7.6] - 2026-11-17
+
 ### Added
 
 - **The model can type into a program that waits for input, as Codex's `write_stdin` does.** `Bash` with `tty: true` starts a command in the background with a terminal of its own and returns its PID and first second of output; `WriteStdin` types into it (`\n` sends a line, `\u0003` is Ctrl+C) and returns what it printed since the last read, plain text, waiting as Codex waits: 250 ms after typing, 5 s with nothing to type, less if the program exits. A REPL, a debugger, or a tool that asks to confirm now works where it used to see a closed stdin. Typing is a change (Safe asks, Plan refuses, Auto doesn't ask); reading never asks. The sandbox opens that command's own terminal and `/dev/tty` to it, and no other terminal; `tty` can't be combined with `outside_sandbox`.
