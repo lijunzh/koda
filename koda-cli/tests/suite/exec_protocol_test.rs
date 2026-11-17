@@ -1088,3 +1088,89 @@ async fn a_retired_variable_is_named_and_ignored() {
     );
     assert!(stderr.contains("KODA_MODE is no longer read"), "{stderr}");
 }
+
+// ── --worktree ───────────────────────────────────────────────────────────
+
+/// `koda exec --worktree` runs in a new managed worktree, as Codex's flag
+/// does: a detached checkout of the project's HEAD under Koda's config
+/// folder, outside the repository, recorded with the session that ran in
+/// it, and kept afterwards.
+#[tokio::test]
+async fn worktree_runs_the_session_in_a_new_checkout_outside_the_repository() {
+    let server = stub(vec![text("Done.")], no_other_calls).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("proj");
+    std::fs::create_dir(&repo).unwrap();
+    let git = |args: &[&str]| {
+        let ok = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git {args:?}");
+    };
+    git(&["init", "-q", "-b", "main"]);
+    std::fs::write(repo.join("README.md"), "hi\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "first"]);
+    let config = tmp.path().join("config");
+
+    let mut command = command(&server, &repo);
+    command.env("XDG_CONFIG_HOME", &config).arg("--worktree");
+    let run = finish(command).await;
+    let stderr = String::from_utf8_lossy(&run.output.stderr);
+    assert!(run.output.status.success(), "{stderr}");
+    assert!(stderr.contains("Working in a new worktree"), "{stderr}");
+    assert!(stderr.contains("The worktree stays at"), "{stderr}");
+
+    // One checkout, under <config>/koda/worktrees/<bucket>/proj.
+    let root = config.join("koda/worktrees");
+    let buckets: Vec<_> = std::fs::read_dir(&root)
+        .unwrap()
+        .flatten()
+        .filter(|entry| entry.path().is_dir())
+        .collect();
+    assert_eq!(buckets.len(), 1, "{buckets:?}");
+    let checkout = buckets[0].path().join("proj");
+    assert_eq!(
+        std::fs::read_to_string(checkout.join("README.md")).unwrap(),
+        "hi\n"
+    );
+    // The session that ran there is recorded with it.
+    let started = run
+        .lines
+        .iter()
+        .find(|line| line["method"] == "session/started")
+        .expect("no session/started");
+    let id = started["params"]["session"]["id"].as_str().unwrap();
+    assert_eq!(
+        koda_git::worktree::owner(&checkout).unwrap().as_deref(),
+        Some(id)
+    );
+    assert_eq!(
+        started["params"]["session"]["cwd"]
+            .as_str()
+            .map(std::path::Path::new),
+        Some(checkout.canonicalize().unwrap().as_path())
+    );
+}
+
+#[tokio::test]
+async fn worktree_refuses_to_resume() {
+    let server = stub(vec![], no_other_calls).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tokio::process::Command::new(koda_bin())
+        .args(["exec", "resume", "--last", "--worktree", "hi"])
+        .args(["--base-url", &server.url()])
+        .arg("--project-root")
+        .arg(tmp.path())
+        .env("XDG_CONFIG_HOME", tmp.path())
+        .output()
+        .await
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("can't resume or fork"), "{stderr}");
+}

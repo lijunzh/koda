@@ -141,6 +141,13 @@ struct SessionFlags {
     /// stopped by Koda), lm-studio or ollama (connected to)
     #[arg(long = "local-provider", value_name = "PROVIDER", requires = "oss")]
     local_provider: Option<String>,
+
+    /// Run the session in a new managed Git worktree, as Codex's
+    /// `--worktree` does: a detached checkout of the project's HEAD under
+    /// Koda's config folder (worktrees/), outside the repository. Kept when
+    /// Koda exits; remove it with `git worktree remove <path>`.
+    #[arg(long)]
+    worktree: bool,
 }
 
 impl SessionFlags {
@@ -153,6 +160,7 @@ impl SessionFlags {
         inherit(&mut self.provider, &root.provider);
         self.oss |= root.oss;
         inherit(&mut self.local_provider, &root.local_provider);
+        self.worktree |= root.worktree;
     }
 
     /// The flags given, by name.
@@ -164,6 +172,7 @@ impl SessionFlags {
             ("--provider", self.provider.is_some()),
             ("--oss", self.oss),
             ("--local-provider", self.local_provider.is_some()),
+            ("--worktree", self.worktree),
         ]
         .into_iter()
         .filter_map(|(name, given)| given.then_some(name))
@@ -694,6 +703,33 @@ pub(crate) async fn run() -> Result<()> {
         .map(|dir| crate::logging::resolve_log_dir(dir, &config_dir));
     let _logging = crate::logging::init(&config_dir, log_dir).await?;
 
+    // `--worktree`: a new session in a new checkout, as Codex's flag is
+    // for new sessions only.
+    let worktree = if session.worktree {
+        if resume.is_some() || fork || pick_session {
+            eprintln!(
+                "error: --worktree starts a new session in a new worktree (koda --worktree, \
+                 koda exec --worktree); it can't resume or fork one"
+            );
+            std::process::exit(2);
+        }
+        let checkout = koda_git::worktree::create(&config_dir.join("worktrees"), &project_root)
+            .map_err(|e| anyhow::anyhow!("--worktree: {e}"))?;
+        eprintln!(
+            "Working in a new worktree: {} (a detached checkout of {} at {})",
+            checkout.cwd.display(),
+            checkout.source_root.display(),
+            &checkout.head_sha[..checkout.head_sha.len().min(10)]
+        );
+        Some(WorktreeSession::new(checkout))
+    } else {
+        None
+    };
+    let project_root = match &worktree {
+        Some(worktree) => worktree.checkout.cwd.clone(),
+        None => project_root,
+    };
+
     tracing::info!("Koda starting. Project root: {:?}", project_root);
 
     // `koda mcp`: the stored servers, through a host, then exit.
@@ -780,7 +816,11 @@ pub(crate) async fn run() -> Result<()> {
         };
         // An unknown id stops the run before its turn (`session_id`). A new
         // session is the host's to create.
-        let exit_code = headless::run_headless(project_root, resume, run).await?;
+        let on_session = worktree.as_ref().map(WorktreeSession::binder);
+        let exit_code = headless::run_headless(project_root, resume, run, on_session).await?;
+        if let Some(worktree) = &worktree {
+            worktree.kept_notice();
+        }
         // `exit` below runs no destructors, so leave the --oss server here.
         if let Some(server) = oss_server.take() {
             server.release();
@@ -815,7 +855,7 @@ pub(crate) async fn run() -> Result<()> {
     }
 
     // Run the main event loop
-    tui_app::run(
+    let ran = tui_app::run(
         project_root,
         named,
         koda_tui::tui_app::Start {
@@ -824,11 +864,53 @@ pub(crate) async fn run() -> Result<()> {
             images: tui_images,
             pick_session,
             fork,
+            on_session: worktree.as_ref().map(WorktreeSession::binder),
         },
         version_check,
         first_run,
     )
-    .await
+    .await;
+    if let Some(worktree) = &worktree {
+        worktree.kept_notice();
+    }
+    ran
+}
+
+/// A `--worktree` session's checkout, and what Koda says about it.
+struct WorktreeSession {
+    checkout: koda_git::worktree::ManagedWorktree,
+}
+
+impl WorktreeSession {
+    fn new(checkout: koda_git::worktree::ManagedWorktree) -> Self {
+        Self { checkout }
+    }
+
+    /// Record the session that opens in the checkout, as Codex binds its
+    /// thread to the worktree.
+    fn binder(&self) -> koda_tui::tui_app::SessionHook {
+        let root = self.checkout.root.clone();
+        Box::new(move |session_id| {
+            if let Err(e) = koda_git::worktree::bind_session(&root, session_id) {
+                tracing::warn!(
+                    "Couldn't record session {session_id} for {}: {e}",
+                    root.display()
+                );
+            }
+        })
+    }
+
+    /// Where the checkout stays, and how to remove it. Koda doesn't remove
+    /// it, as Codex's CLI doesn't: the work in it is the user's.
+    fn kept_notice(&self) {
+        eprintln!(
+            "The worktree stays at {}. To remove it once you're done with it: \
+             git -C {} worktree remove {}",
+            self.checkout.root.display(),
+            self.checkout.source_root.display(),
+            self.checkout.root.display()
+        );
+    }
 }
 
 /// Why `koda serve` can't run as asked: the transport left out, or a flag

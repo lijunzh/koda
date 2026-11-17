@@ -25,6 +25,8 @@
 //!
 //! The settings are Codex's (`codex-rs/worktree/src/git.rs`).
 
+pub mod worktree;
+
 use std::collections::BTreeSet;
 use std::io;
 use std::path::Path;

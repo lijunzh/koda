@@ -83,9 +83,15 @@ fn main() {
     );
     println!();
 
+    // Worktrees outside the project, as Koda keeps them.
+    let worktrees = tempfile::tempdir().expect("worktrees folder");
     let worktree_round = runtime.block_on(run_round(
         "GitWorktreeProvider",
-        Arc::new(GitWorktreeProvider::new(&project_root, "bench-agent")),
+        Arc::new(GitWorktreeProvider::new(
+            &project_root,
+            worktrees.path().join("worktrees"),
+            "bench-agent",
+        )),
         &project_root,
     ));
 
