@@ -96,12 +96,15 @@ fn test_cli_headless_piped_stdin_empty() {
 /// Snapshot test — `koda --help` must match the committed snapshot.
 ///
 /// Fails when any CLI flag is added, removed, renamed, or its description
-/// edited. To update: run `cargo run -p koda-cli -- --help > \
-/// koda-cli/tests/snapshots/help.snap`, then edit `docs/src/cli-reference.md`.
+/// edited. To update: run `COLUMNS=100 cargo run -p koda-cli --bin koda --
+/// --help > koda-cli/tests/snapshots/help.snap`, then edit
+/// `docs/src/cli-reference.md`. Help wraps to the terminal, at most 100
+/// columns, so the snapshot is taken at 100.
 #[test]
 fn test_cli_help_snapshot() {
     let output = Command::new(koda_bin())
         .arg("--help")
+        .env("COLUMNS", "100")
         .output()
         .expect("Failed to run koda --help");
 
@@ -113,7 +116,7 @@ fn test_cli_help_snapshot() {
         snapshot.trim(),
         concat!(
             "\n\nkoda --help output changed — update snapshot + docs:\n",
-            "  cargo run -p koda-cli -- --help ",
+            "  COLUMNS=100 cargo run -p koda-cli --bin koda -- --help ",
             "> koda-cli/tests/snapshots/help.snap\n",
             "  # then edit docs/src/cli-reference.md\n"
         )
@@ -251,5 +254,59 @@ fn an_unknown_provider_stops_the_run_with_the_list() {
     assert!(
         stderr.contains("anthropic") && stderr.contains("lm-studio"),
         "{stderr}"
+    );
+}
+
+/// Every help page reads as a reference on its own: no line wider than 100
+/// columns on a wide terminal, and no comparisons with other tools.
+#[test]
+fn help_pages_fit_100_columns_and_stand_alone() {
+    for args in [
+        vec![],
+        vec!["exec"],
+        vec!["exec", "resume"],
+        vec!["exec", "fork"],
+        vec!["resume"],
+        vec!["fork"],
+        vec!["serve"],
+        vec!["mcp"],
+        vec!["mcp", "add"],
+    ] {
+        for flag in ["-h", "--help"] {
+            let output = Command::new(koda_bin())
+                .args(&args)
+                .arg(flag)
+                .env("COLUMNS", "200")
+                .output()
+                .expect("Failed to run koda");
+            assert!(output.status.success(), "koda {args:?} {flag}");
+            let text = String::from_utf8_lossy(&output.stdout);
+            for line in text.lines() {
+                assert!(
+                    line.chars().count() <= 100,
+                    "koda {args:?} {flag}: a line over 100 columns: {line}"
+                );
+            }
+            let lower = text.to_lowercase();
+            for other in ["codex", "claude code", "claude's"] {
+                assert!(
+                    !lower.contains(other),
+                    "koda {args:?} {flag} mentions {other:?}:\n{text}"
+                );
+            }
+        }
+    }
+}
+
+/// `-m` is `--model` and `-C` is `--cd`, which `--project-root` still names.
+#[test]
+fn short_flags_for_the_model_and_the_directory() {
+    let help = Command::new(koda_bin()).arg("-h").output().unwrap();
+    let help = String::from_utf8_lossy(&help.stdout);
+    assert!(help.contains("-m, --model"), "{help}");
+    assert!(help.contains("-C, --cd <DIR>"), "{help}");
+    assert!(
+        help.contains("--project-root"),
+        "the old name is listed: {help}"
     );
 }

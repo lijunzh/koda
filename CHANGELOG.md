@@ -29,6 +29,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- **`koda --help` is rewritten as a reference.** A two-line opening instead of a page of setup notes, one sentence per command and flag (the detail is in `--help`, not `-h`), options in the order they're used, five examples, and a link to the docs. Help wraps to the terminal, at most 100 columns. The same for every subcommand, and for the [CLI reference](docs/src/cli-reference.md) page. `koda serve`'s description now says what it does by default: run the background server.
+- **`-m` is short for `--model`, and `-C`/`--cd` names the directory to work in;** `--project-root` still works.
+
 - **A tool call with no result gets one, `aborted`, as Codex gives it.** A session forked while a tool ran, or one whose host stopped mid-turn, no longer sends the provider a call it would refuse for lacking a result.
 
 - **A fork belongs to the project it opens in.** A copy made with `koda fork` (or `session/fork`) from another folder was listed under the original's project, though it ran where Koda started; it is now listed where it runs, as a Codex fork takes the cwd it starts in. `/fork` inside a session is unchanged.

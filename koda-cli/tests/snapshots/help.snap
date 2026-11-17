@@ -1,96 +1,120 @@
-Koda runs in two modes:
+Koda, an AI coding agent for your terminal.
 
-  INTERACTIVE   Run `koda` (no arguments) to open the full TUI.
-                Type your question and press Enter.
-                Type /help inside for keybindings and all commands.
+Run `koda` to start an interactive session, or `koda exec` to run one prompt and exit.
 
-  EXEC          `koda exec` runs one prompt without the TUI and exits.
-                For scripts, pipes and CI pipelines.
-                  koda exec "explain this codebase"
-                  git diff | koda exec
-                  koda exec --json "fix the failing tests"
-
-Configuration precedence (highest wins):
-  1. CLI flags     --model, --provider, --base-url, --mode, ...
-  2. -c key=value  a config.toml key, for this run only
-  3. Config file   ~/.config/koda/config.toml, which /model and
-                   /provider write and you can edit
-  4. Built-in defaults
-
-API keys (ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, …)
-follow the same order. Keys saved with /key are loaded from the
-local keystore at startup and injected as env vars — shell env
-vars always win over stored keys.
-
-Usage: koda [OPTIONS] [PROMPT] [COMMAND]
+Usage: koda [OPTIONS] [PROMPT]
+       koda [OPTIONS] <COMMAND> [ARGS]
 
 Commands:
-  exec    Run one prompt without the TUI, then exit
-  resume  Resume a saved session in the TUI, as `codex resume` does: by its id (or the start of one), the most recent with --last, or pick one from a list
-  fork    Fork a saved session and open the copy in the TUI, as `codex fork` does: by its id (or the start of one), the most recent with --last, or pick one from a list. The original stays as it was. With --worktree (and an id), the copy opens in a new worktree
-  serve   Serve the client protocol on stdin and stdout, for a GUI, an editor or a script
-  mcp     Manage the MCP servers every session starts: list, get, add, remove
+  exec    Run one prompt without an interactive session, then exit
+  resume  Resume a saved session (pick from a list, or --last for the most recent)
+  fork    Copy a saved session and continue in the copy (pick from a list, or --last)
+  mcp     Manage the MCP servers every session starts
+  serve   Run the background server that interactive sessions use
   help    Print this message or the help of the given subcommand(s)
 
 Arguments:
   [PROMPT]
-          Open the TUI and send this prompt, as `codex "prompt"` does. A one-shot run is `koda exec "prompt"`
+          Prompt to start the interactive session with
 
 Options:
-  -s, --resume <SESSION>
-          Session ID to resume (omit to start a new session)
-
-      --base-url <BASE_URL>
-          LLM provider base URL override
-
-      --model <MODEL>
-          Model name override
+  -m, --model <MODEL>
+          Model to use: an id, or an alias such as `claude-opus`
 
       --provider <PROVIDER>
-          LLM provider (openai, anthropic, lmstudio, llama-cpp, gemini, groq, grok, ollama)
+          Provider: anthropic, openai, gemini, groq, grok, ollama, lm-studio or llama-cpp
+
+      --base-url <URL>
+          Provider endpoint, for a local server or a gateway
 
       --oss
-          Run on a local open-weight model, as Codex's `--oss` does. Koda starts llama.cpp's llama-server with the model (Qwen3.8-Flash-Next on a 128 GB Mac, else LFM3-1.7B, a 1 GB quick try), and stops it when Koda exits. `oss_model` in config.toml picks another
+          Run on a local model that Koda starts with llama.cpp.
+          
+          The model is Qwen3.8-Flash-Next on a Mac with 128 GB of memory, and LFM3-1.7B (a 1 GB
+          download, for a quick try) elsewhere; set `oss_model` in config.toml to choose another.
+          Koda stops the model server when it exits.
 
       --local-provider <PROVIDER>
-          The local provider for --oss: llama-cpp (the default, started and stopped by Koda), lm-studio or ollama (connected to)
-
-      --worktree
-          Run the session in a new managed Git worktree, as Codex's `--worktree` does: a detached checkout of the project's HEAD under Koda's config folder (worktrees/), outside the repository. Kept when Koda exits; remove it with `git worktree remove <path>`. With `koda fork <id>`, the fork opens in a checkout of the repository the session worked in
-
-      --no-daemon
-          Run the TUI's host in this process, not on the shared server (koda serve), as Codex's --no-daemon does
-
-      --remote <ADDR>
-          Use the shared server at this address (unix://PATH) instead of Koda's own; it isn't started or replaced
-
-  -a, --agent <AGENT>
-          Agent to use: a built-in, or a JSON file in .koda/agents/ or ~/.config/koda/agents/ (default: config.toml's `agent`, else `default`)
-
-      --project-root <PROJECT_ROOT>
-          Project root directory (defaults to current directory)
-
-      --max-context-tokens <TOKENS>
-          Context window in tokens, for servers that don't report theirs. Beats the agent config, the server's answer and the model table
+          Local provider for --oss: llama-cpp (the default; Koda starts it), lm-studio or ollama.
+          
+          lm-studio and ollama must already be running.
 
       --reasoning-effort <LEVEL>
-          Reasoning effort. Claude: low, medium, high, xhigh or max; by default the level Claude Code uses for the model. OpenAI-compatible servers: passed through as `reasoning_effort`
+          How much the model reasons: low, medium, high, xhigh or max.
+          
+          Claude models take these levels, and each has its own default. For an OpenAI-compatible
+          server the value is sent as `reasoning_effort`.
           
           [alias: --effort]
 
       --mode <MODE>
-          Trust mode: auto (the default, unless config.toml sets `mode`), safe, or plan. "auto" auto-approves mutating actions; the kernel sandbox contains them. Destructive ops (rm -rf, git reset --hard, git push --force) and outside-project writes still confirm. Auto requires the kernel sandbox; on unsandboxed platforms koda refuses to start with an actionable error (use --mode safe or install the platform sandbox backend). "safe" confirms every mutation before executing, for when you want a person to approve each change. "plan" only looks: reads, searches, read-only commands and MCP tools marked read-only run; everything else is refused, and the kernel sandbox keeps the project read-only. In the TUI, Koda then proposes a plan and asks whether to carry it out. Sandbox with credential protection is always active
+          What Koda may do without asking: auto (the default), safe or plan.
           
-          [possible values: safe, auto, plan]
-
-      --mcp-config <FILE|JSON>
-          Add MCP servers for this run only, from a JSON file or inline JSON in the `{"mcpServers": {...}}` shape of Claude Code's `.mcp.json`. Repeatable; later servers win a name clash, and all of them win over servers stored with `koda mcp add`. Nothing is saved
+          auto: changes run without asking, inside the sandbox. Destructive commands (such as rm -rf
+          or git push --force) and writes outside the project still ask. Auto needs the sandbox;
+          where there is none, use safe.
+          
+          safe: every change asks first.
+          
+          plan: read only. Koda looks around, proposes a plan, and asks before carrying it out.
+          
+          config.toml's `mode` sets the default.
+          
+          [possible values: auto, safe, plan]
 
   -i, --image <FILE>
-          Images to attach to the first prompt, as Codex's `-i` does: a path, or several separated by commas. Repeatable
+          Attach images to the first prompt (repeatable, or comma-separated)
+
+  -C, --cd <DIR>
+          Directory to work in (default: the current directory)
+          
+          [alias: --project-root]
+
+      --worktree
+          Work in a new Git worktree of the project.
+          
+          The worktree is a detached checkout of HEAD, outside the repository, under
+          ~/.config/koda/worktrees/. It stays after Koda exits; remove it with `git worktree remove
+          <path>`. With `koda fork <id>`, the copy opens in a new worktree of the repository that
+          session worked in.
 
   -c, --config <KEY=VALUE>
-          Override a config.toml value for this run: `-c key=value`, with a dotted key (`-c model_providers.lm-studio.base_url=http://...`). The value is read as TOML, else taken as text, as Codex's `-c` is, and replaces what is at that key. Repeatable; never saved. Flags such as --reasoning-effort are `-c` values too, and win over these
+          Set a config.toml value for this run.
+          
+          Use a dotted key for a nested value, for example `-c
+          model_providers.lm-studio.base_url=http://localhost:1234/v1`. The value is read as TOML,
+          or as plain text if it isn't valid TOML. Repeatable; nothing is saved. A flag that sets
+          the same value, such as --model, wins.
+
+      --mcp-config <FILE|JSON>
+          Add MCP servers for this run only, from a JSON file or inline JSON.
+          
+          Use the `{"mcpServers": {...}}` format of `.mcp.json` files. Repeatable; a later server
+          wins a name clash, and these win over servers added with `koda mcp add`. Nothing is saved.
+
+  -a, --agent <AGENT>
+          Agent to run: a built-in one, or a JSON file in .koda/agents/ or ~/.config/koda/agents/.
+          
+          The default is config.toml's `agent`, else `default`.
+
+      --max-context-tokens <TOKENS>
+          Context window size in tokens, for a server that doesn't report one.
+          
+          Overrides the agent file, the server's report and Koda's model table.
+
+  -s, --resume <SESSION>
+          Resume a saved session by id (as `koda resume <id>` does)
+
+      --no-daemon
+          Run in this process instead of on the background server.
+          
+          By default an interactive session runs on `koda serve`, which Koda starts when needed, so
+          a session goes on after its window closes.
+
+      --remote <ADDR>
+          Connect to a background server at this address (unix://PATH).
+          
+          Koda doesn't start or replace a server given this way.
 
   -h, --help
           Print help (see a summary with '-h')
@@ -99,12 +123,10 @@ Options:
           Print version
 
 Examples:
-  koda                                     # interactive TUI (type /help inside)
-  koda "fix the failing test"              # the TUI, starting with that prompt
-  koda -s abc123                           # resume a saved session
-  koda exec "explain this codebase"       # one-shot question, then exit
-  koda exec - < prompt.txt                 # read the prompt from stdin
-  git diff | koda exec                     # pipe a diff as the prompt
-  koda exec --json "fix the failing tests" # the client protocol on stdout
-  koda exec --model o3 "refactor"         # one-shot with a specific model
-  koda exec -s abc123 "continue"          # continue a saved session
+  koda                               Start an interactive session
+  koda "fix the failing test"        Start one with a first prompt
+  koda resume --last                 Continue the most recent session
+  koda exec "explain this codebase"  Run one prompt and print the reply
+  git diff | koda exec               Read the prompt from stdin
+
+Documentation: https://lijunzh.github.io/koda/
