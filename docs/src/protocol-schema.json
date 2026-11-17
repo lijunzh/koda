@@ -2294,6 +2294,38 @@
       ],
       "type": "object"
     },
+    "ServeStopParams": {
+      "additionalProperties": false,
+      "description": "`serve/stop`: stop the shared server, as `claude daemon stop` stops\nClaude Code's supervisor. Only `koda serve` takes it; a host in the\nclient's process refuses it.",
+      "properties": {
+        "ifIdle": {
+          "default": false,
+          "description": "Stop only if nothing would be lost: no open session and no other\nclient. A TUI that finds a server of another version asks this way.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "ServeStopResponse": {
+      "description": "The answer to `serve/stop`, sent before the server stops.",
+      "properties": {
+        "reason": {
+          "description": "Why it isn't, when it isn't.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stopped": {
+          "description": "Whether it is stopping.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "stopped"
+      ],
+      "type": "object"
+    },
     "ServerInfo": {
       "description": "Koda's name and version.",
       "properties": {
@@ -4216,6 +4248,14 @@
       },
       "result": {
         "$ref": "#/$defs/ModelProviderListResponse"
+      }
+    },
+    "serve/stop": {
+      "params": {
+        "$ref": "#/$defs/ServeStopParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ServeStopResponse"
       }
     },
     "session/backgroundTerminals/clean": {

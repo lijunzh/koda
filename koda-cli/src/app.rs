@@ -417,6 +417,16 @@ struct ServeArgs {
     #[arg(long, value_name = "URL")]
     listen: Option<String>,
 
+    /// Stop the shared server at the socket (`--listen` names another), as
+    /// `claude daemon stop` does. Its open sessions close; they stay stored.
+    #[arg(long, conflicts_with = "stdio")]
+    stop: bool,
+
+    /// Stop once idle (no client, no work) this many seconds. The TUI
+    /// starts its server this way.
+    #[arg(long, hide = true, value_name = "SECS", conflicts_with = "stdio")]
+    idle_exit_secs: Option<u64>,
+
     #[command(flatten)]
     flags: ConfigFlags,
 }
@@ -849,11 +859,17 @@ pub(crate) async fn run() -> Result<()> {
             )
             .await
             .map_err(|e| e.to_string()),
+            Listen::Unix(socket) if serve.stop => stop_server(&socket).await,
             Listen::Unix(socket) => {
                 eprintln!("Koda is listening at {}", socket.display());
-                koda_client::socket::serve(args, socket, stop_signal())
-                    .await
-                    .map_err(|e| e.to_string())
+                koda_client::socket::serve(
+                    args,
+                    socket,
+                    serve.idle_exit_secs.map(std::time::Duration::from_secs),
+                    stop_signal(),
+                )
+                .await
+                .map_err(|e| e.to_string())
             }
         };
         crate::logging::flush().await;
@@ -1117,6 +1133,42 @@ fn mcp_refusal(session: &SessionFlags, flags: &ConfigFlags, prompt: bool) -> Opt
              Only --project-root and -c apply."
         )
     })
+}
+
+/// `koda serve --stop`: ask the server at `socket` to stop, and wait until
+/// it has.
+async fn stop_server(socket: &Path) -> Result<(), String> {
+    let client = koda_client::InProcessClient::connect(
+        socket,
+        koda_client::protocol::initialize::ClientInfo {
+            name: "koda-serve-stop".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+        },
+    )
+    .await
+    .map_err(|_| format!("no koda serve is listening at {}", socket.display()))?;
+    let answer = client
+        .request::<koda_client::protocol::methods::ServeStop>(
+            koda_client::protocol::serve::ServeStopParams { if_idle: false },
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    client.shutdown().await;
+    if !answer.stopped {
+        return Err(answer.reason.unwrap_or_else(|| "it didn't stop".into()));
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while socket.exists() {
+        if std::time::Instant::now() > deadline {
+            return Err(format!(
+                "koda serve at {} is still stopping",
+                socket.display()
+            ));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    eprintln!("Stopped koda serve at {}", socket.display());
+    Ok(())
 }
 
 /// Ctrl-C or, on Unix, SIGTERM: what stops `koda serve`.

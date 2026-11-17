@@ -332,6 +332,16 @@ impl Host {
                 let _ = reply.send(self.list_sessions(params).await.and_then(to_json));
                 return;
             }
+            // The shared server answers this itself; a host in the
+            // client's process has no server to stop.
+            ClientRequest::ServeStop { .. } => {
+                let _ = reply.send(Err(invalid(
+                    "serve/stop is for the shared server (koda serve); this host runs in the \
+                     client's process"
+                        .to_string(),
+                )));
+                return;
+            }
             ClientRequest::FeedbackSave { params, .. } => {
                 let saved = crate::feedback::save(&self.context.db, params).await;
                 let _ = reply.send(saved.and_then(to_json));

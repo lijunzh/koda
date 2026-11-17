@@ -345,3 +345,60 @@ fn serve_refuses_an_unknown_listen_and_a_sessions_flags() {
     // Nothing was created for a refused start.
     assert!(!root.path().join("koda").exists());
 }
+
+/// `koda serve --stop` stops the shared server, as `claude daemon stop`
+/// does, and says so when none is running; one started with an idle exit,
+/// as the TUI starts it, stops on its own.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn serve_stop_and_the_idle_exit() {
+    let root = tempfile::tempdir().unwrap();
+    let koda = |args: &[&str]| {
+        let mut command = tokio::process::Command::new(koda_bin());
+        command
+            .arg("serve")
+            .args(args)
+            .arg("--project-root")
+            .arg(root.path())
+            .env("XDG_CONFIG_HOME", root.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        command
+    };
+    let socket = root.path().join("koda/serve/koda.sock");
+    let wait_for_socket = || async {
+        let deadline = std::time::Instant::now() + WAIT;
+        while tokio::net::UnixStream::connect(&socket).await.is_err() {
+            assert!(std::time::Instant::now() < deadline, "no socket");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    };
+
+    let mut server = koda(&[]).spawn().unwrap();
+    wait_for_socket().await;
+    let stopped = koda(&["--stop"]).output().await.unwrap();
+    let said = String::from_utf8_lossy(&stopped.stderr);
+    assert!(stopped.status.success(), "{said}");
+    assert!(said.contains("Stopped koda serve"), "{said}");
+    let status = tokio::time::timeout(Duration::from_secs(15), server.wait())
+        .await
+        .expect("the server didn't exit")
+        .unwrap();
+    assert!(status.success(), "{status:?}");
+    assert!(!socket.exists());
+
+    let none = koda(&["--stop"]).output().await.unwrap();
+    assert_eq!(none.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&none.stderr).contains("no koda serve is listening"));
+
+    let mut idle = koda(&["--idle-exit-secs", "1"]).spawn().unwrap();
+    wait_for_socket().await;
+    let status = tokio::time::timeout(Duration::from_secs(15), idle.wait())
+        .await
+        .expect("an idle server didn't exit")
+        .unwrap();
+    assert!(status.success(), "{status:?}");
+    assert!(!socket.exists());
+}

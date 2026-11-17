@@ -107,6 +107,12 @@ client_requests! {
         params: crate::initialize::InitializeParams,
         response: crate::initialize::InitializeResponse,
     },
+    /// Stop the shared server (`koda serve`); `ifIdle` only when no session
+    /// is open and no other client is connected. Answered before it stops.
+    ServeStop => "serve/stop" {
+        params: crate::serve::ServeStopParams,
+        response: crate::serve::ServeStopResponse,
+    },
     /// What a new session starts with: model, provider, context window,
     /// mode and sandbox.
     StateRead => "state/read" {

@@ -156,8 +156,11 @@ and `nc -U ~/.config/koda/serve/koda.sock` is enough to try it.)
   only you can change; a connection from another user is refused, and a lock
   keeps a second `koda serve` from taking the socket over. A socket left by a
   crashed server is replaced.
-- **It runs until** Ctrl+C or `SIGTERM`, then stops every session and removes
-  the socket.
+- **It runs until** Ctrl+C, `SIGTERM` or `koda serve --stop`, then stops
+  every session and removes the socket. Its sessions stay stored, and open
+  again as they were. Over the protocol, `serve/stop` does the same; with
+  `ifIdle` it stops only if no session is in use (a client, a running turn or a
+  request waiting) and no other client is connected.
 
 ## Not yet
 

@@ -38,6 +38,7 @@ pub mod memory;
 pub mod model;
 mod request;
 pub mod rpc;
+pub mod serve;
 pub mod server;
 pub mod session;
 pub mod skills;
