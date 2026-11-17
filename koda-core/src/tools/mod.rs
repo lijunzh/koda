@@ -90,6 +90,8 @@ pub mod shell;
 pub mod skill_tools;
 /// Sub-agent spawn tool — codex v2 peer-style (`SpawnAgent`). (#1325 Phase 5a)
 pub mod spawn_agent;
+/// A background command's terminal, which `WriteStdin` types into.
+pub mod terminal;
 /// Session-scoped task list tool (`TodoWrite`).
 pub mod todo;
 /// Pre-flight validation for tool calls (runs before approval).
@@ -98,6 +100,8 @@ pub mod validate;
 pub mod web_fetch;
 /// Web search tool (`WebSearch`).
 pub mod web_search;
+/// Typing into a background command's terminal (`WriteStdin`).
+pub mod write_stdin;
 
 use anyhow::Result;
 use koda_sandbox::fs::{FileSystem, LocalFileSystem};
@@ -1862,6 +1866,7 @@ pub fn describe_action(tool_name: &str, args: &serde_json::Value) -> String {
             }
         }
         "Cargo" => cargo::describe(args),
+        "WriteStdin" => write_stdin::describe(args),
         "Write" => {
             let path = args
                 .get("path")

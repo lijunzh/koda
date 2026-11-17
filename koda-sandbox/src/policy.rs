@@ -108,6 +108,15 @@ pub struct FsPolicy {
     /// [`SandboxPolicy::compose`].
     #[serde(default = "default_mandatory_deny_search_depth")]
     pub mandatory_deny_search_depth: u8,
+
+    /// The terminal Koda opened for this one command (`Bash` with `tty`):
+    /// the command may read, write and control it, and `/dev/tty`, which is
+    /// that terminal for it. Only this device: other terminals, the user's
+    /// own among them, stay closed. Codex opens every terminal device; Koda
+    /// runs ordinary commands in the user's terminal session, so it doesn't.
+    /// Set per command, never from config.
+    #[serde(skip)]
+    pub terminal: Option<std::path::PathBuf>,
 }
 
 /// Default depth for [`FsPolicy::mandatory_deny_search_depth`].
@@ -129,6 +138,7 @@ impl Default for FsPolicy {
             deny_write_within_allow: Vec::new(),
             allow_git_config: false,
             mandatory_deny_search_depth: default_mandatory_deny_search_depth(),
+            terminal: None,
         }
     }
 }
@@ -317,6 +327,8 @@ impl SandboxPolicy {
                     .fs
                     .mandatory_deny_search_depth
                     .max(child.fs.mandatory_deny_search_depth),
+                // A command's own terminal, not something to inherit.
+                terminal: None,
             },
             net: NetPolicy {
                 allowed_domains: parent.net.allowed_domains.clone(),

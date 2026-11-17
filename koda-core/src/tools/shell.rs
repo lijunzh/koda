@@ -36,10 +36,12 @@
 use crate::engine::{EngineEvent, EngineSink};
 use crate::providers::ToolDefinition;
 use crate::tools::bg_process::BgRegistry;
+use crate::tools::terminal::Terminal;
 use anyhow::Result;
 use koda_sandbox::process_group::{self, ProcessGroup};
 use serde_json::{Value, json};
 use std::path::Path;
+use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 /// Claude Code's defaults: two minutes, and at most ten for a foreground command.
@@ -111,6 +113,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
             — returns immediately with the PID and a log file holding the output{bg_localhost}. \
             Run a command whose result you need, such as tests, in the foreground \
             with a longer timeout instead. \
+            Set tty=true for a program that waits for typed input (a REPL, a debugger, \
+            a confirmation prompt): it runs in the background with a terminal, and \
+            WriteStdin types into it. \
             Commands run in a sandbox: they write only inside the project, /tmp and \
             cache folders, can't read ~/.ssh or other credential folders, and reach \
             the network only through a proxy that allows GitHub and the main package \
@@ -143,6 +148,13 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "description": "Run in background and return immediately with PID (default: false). \
                         Use for dev servers, file watchers, and other long-running processes. \
                         Its stdout and stderr go to a log file named in the result."
+                },
+                "tty": {
+                    "type": "boolean",
+                    "description": "Run in the background with a terminal, for a program that waits \
+                        for typed input: a REPL, a debugger, a prompt that asks to confirm (default: \
+                        false). Implies background=true. Returns the PID and the first second of \
+                        output; type into it and read what follows with WriteStdin."
                 },
                 "outside_sandbox": {
                     "type": "boolean",
@@ -202,8 +214,17 @@ pub async fn run_shell_command(
     let command = args["command"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Missing 'command' argument"))?;
-    let background = args["background"].as_bool().unwrap_or(false);
+    let tty = args["tty"].as_bool().unwrap_or(false);
+    let background = tty || args["background"].as_bool().unwrap_or(false);
     let outside_sandbox = wants_outside_sandbox(args);
+    if tty && outside_sandbox {
+        // Typing into it would run anything outside the sandbox, on an
+        // approval given for one command.
+        anyhow::bail!(
+            "tty and outside_sandbox can't be used together: a terminal outside the \
+             sandbox would let typed input do what the approval didn't cover"
+        );
+    }
 
     tracing::info!(
         "Running shell command (background={background}, outside_sandbox={outside_sandbox}): [{} chars]",
@@ -211,9 +232,10 @@ pub async fn run_shell_command(
     );
 
     if background {
-        let mut msg = spawn_background(
+        let (mut msg, terminal) = spawn_background(
             project_root,
             command,
+            tty,
             bg,
             trust,
             policy,
@@ -237,6 +259,11 @@ pub async fn run_shell_command(
                 "\nThe timeout was ignored: a background command runs until it \
                  exits, is killed, or the session ends.",
             );
+        }
+        if let Some((pid, terminal)) = terminal {
+            let output = terminal.read(FIRST_OUTPUT_WAIT).await;
+            let status = settled_status(bg, pid, output.closed).await;
+            msg.push_str(&terminal_report(&output, status));
         }
         return Ok(ShellOutput {
             summary: msg,
@@ -676,6 +703,9 @@ fn command_for(
     }
 }
 
+/// A background command's PID and terminal, when it was started with `tty`.
+type StartedTerminal = (u32, Arc<Terminal>);
+
 /// Spawn a command in the background and register it.
 ///
 /// Returns immediately with PID, log file and instructions. Sync because
@@ -684,12 +714,13 @@ fn command_for(
 fn spawn_background(
     project_root: &Path,
     command: &str,
+    tty: bool,
     bg: &BgRegistry,
     trust: &crate::trust::TrustMode,
     policy: &koda_sandbox::SandboxPolicy,
     egress: Egress,
     caller_spawner: Option<u32>,
-) -> Result<String> {
+) -> Result<(String, Option<StartedTerminal>)> {
     // Spawn via sandbox wrapper (enforced for all trust modes).
     // No stdin, so the process doesn't block on terminal I/O; stdout and
     // stderr share one append-mode log, in the order they were written.
@@ -703,16 +734,45 @@ fn spawn_background(
     let stderr_log = log
         .try_clone()
         .map_err(|e| anyhow::anyhow!("Failed to share {}: {e}", log_path.display()))?;
-    let mut cmd = command_for(command, project_root, trust, policy, egress)?;
-    cmd.stdin(std::process::Stdio::null())
-        .stdout(log)
-        .stderr(stderr_log);
-    // Its own group, so the registry can find the ports its children listen
-    // on and stop them with it (`npm run dev` and the server it starts).
-    process_group::isolate(&mut cmd);
+    // With a terminal, the command reads and writes it, and Koda's end of it
+    // goes to the log; it also leads its own group, as `isolate` makes it.
+    // The sandbox opens that one terminal to it.
+    let pty = if tty {
+        let opened = koda_sandbox::pty::open()
+            .and_then(|pty| koda_sandbox::pty::device_path(&pty.terminal).map(|path| (pty, path)))
+            .map_err(|e| anyhow::anyhow!("Failed to open a terminal: {e}"))?;
+        Some(opened)
+    } else {
+        None
+    };
+    let mut cmd = match &pty {
+        Some((_, device)) => {
+            let mut own = policy.clone();
+            own.fs.terminal = Some(device.clone());
+            command_for(command, project_root, trust, &own, egress)?
+        }
+        None => command_for(command, project_root, trust, policy, egress)?,
+    };
+    let controller = if let Some((pty, _)) = pty {
+        drop(stderr_log);
+        koda_sandbox::pty::attach(&mut cmd, &pty.terminal)
+            .map_err(|e| anyhow::anyhow!("Failed to open a terminal: {e}"))?;
+        Some((pty.controller, log))
+    } else {
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(log)
+            .stderr(stderr_log);
+        // Its own group, so the registry can find the ports its children
+        // listen on and stop them with it (`npm run dev` and its server).
+        process_group::isolate(&mut cmd);
+        None
+    };
     let child = cmd
         .spawn()
         .map_err(|e| anyhow::anyhow!("Failed to spawn background command: {e}"))?;
+    // The command has its copies of the terminal; ours must close, or the
+    // terminal never reports that the command is done.
+    drop(cmd);
 
     let pid = child
         .id()
@@ -722,17 +782,98 @@ fn spawn_background(
     if let Some(socket) = serve {
         bg.set_loopback_socket(pid, socket);
     }
-
     let log = log_path.display();
-    Ok(format!(
-        "Background process started.\n  PID:     {pid}\n  Command: {command}\n  \
+    if let Some((controller, log_file)) = controller {
+        let terminal = Arc::new(
+            Terminal::start(controller, log_file)
+                .map_err(|e| anyhow::anyhow!("Failed to read the terminal: {e}"))?,
+        );
+        bg.set_terminal(pid, Arc::clone(&terminal));
+        return Ok((
+            format!(
+                "Background process started with a terminal.\n  PID:     {pid}\n  \
+                 Command: {command}\n  Output:  {log} (everything it printed)\n\
+                 Type into it with WriteStdin{{pid: {pid}, chars: \"...\"}}: end a line with \
+                 \"\\n\", and \"\\u0003\" is Ctrl+C. WriteStdin with no chars waits for more \
+                 output.\nTo stop:  Bash{{command: \"kill {pid}\"}}\n\
+                 Note: process will be stopped automatically when the session ends."
+            ),
+            Some((pid, terminal)),
+        ));
+    }
+    Ok((
+        format!(
+            "Background process started.\n  PID:     {pid}\n  Command: {command}\n  \
          Output:  {log} (stdout and stderr; read it with Read, or Bash{{command: \"tail -50 {log}\"}})\n\
          Still running?  Bash{{command: \"kill -0 {pid}\"}}\n\
          To stop:  Bash{{command: \"kill {pid}\"}}\n\
          Send either on its own, not chained with other commands, and Koda \
          checks or stops the process itself.\n\
          Note: process will be stopped automatically when the session ends."
+        ),
+        None,
     ))
+}
+
+/// How long a `tty` start waits for the command's first output, so the
+/// model sees a REPL's prompt without a second call. Codex's `exec_command`
+/// waits up to 10 s; Koda's background start returns at once, so a second
+/// is enough for a prompt, and `WriteStdin` waits longer when asked.
+const FIRST_OUTPUT_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The status of `pid` after a read. A command that closed its terminal has
+/// exited, but the reaper may not have seen it yet: give it a moment, so the
+/// exit code can be reported.
+pub(crate) async fn settled_status(
+    bg: &BgRegistry,
+    pid: u32,
+    closed: bool,
+) -> Option<crate::tools::bg_process::BgProcessStatus> {
+    use crate::tools::bg_process::BgProcessStatus;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(500);
+    loop {
+        let status = bg.status(pid);
+        if !closed
+            || status != Some(BgProcessStatus::Running)
+            || tokio::time::Instant::now() >= deadline
+        {
+            return status;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+/// What a terminal printed, for the model: plain text, cut to the shell
+/// output budget around a marker, then whether the process is still running.
+pub(crate) fn terminal_report(
+    output: &crate::tools::terminal::Output,
+    status: Option<crate::tools::bg_process::BgProcessStatus>,
+) -> String {
+    use crate::tools::bg_process::BgProcessStatus;
+    let text = crate::tools::terminal::plain_text(&output.bytes);
+    let lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let mut out = String::from("\n\n");
+    if output.dropped > 0 {
+        out.push_str(&format!(
+            "[{} earlier bytes dropped; the log has them]\n",
+            output.dropped
+        ));
+    }
+    if lines.iter().all(|line| line.trim().is_empty()) {
+        out.push_str("(no new output)");
+    } else {
+        out.push_str("Output:\n");
+        out.push_str(&head_and_tail(&lines, SUMMARY_MAX_BYTES));
+    }
+    out.push_str(match status {
+        Some(BgProcessStatus::Running) if !output.closed => "\n\n[still running]",
+        Some(BgProcessStatus::Killed) => "\n\n[stopped]",
+        Some(BgProcessStatus::Exited { code: Some(code) }) => {
+            return out + &format!("\n\n[exited with code {code}]");
+        }
+        _ => "\n\n[exited]",
+    });
+    out
 }
 
 /// A command that does nothing but signal processes: `kill PID…`, with an

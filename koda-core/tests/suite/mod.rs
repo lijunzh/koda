@@ -27,6 +27,7 @@ mod inference_context_test;
 mod inference_edge_test;
 mod inference_recovery_test;
 mod inference_retry_test;
+mod interactive_process_test;
 mod loop_cap_test;
 mod mcp_instructions_bootstrap_test;
 mod new_tools_test;

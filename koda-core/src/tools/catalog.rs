@@ -61,7 +61,7 @@ use std::sync::{Arc, RwLock};
 
 use super::{
     DynTool, Tool, ToolEffect, agent, ask_user, boxed, cargo, file_tools, glob_tool, grep, memory,
-    recall, shell, skill_tools, spawn_agent, todo, web_fetch, web_search,
+    recall, shell, skill_tools, spawn_agent, todo, web_fetch, web_search, write_stdin,
 };
 
 /// The read-only metadata side of [`crate::tools::ToolRegistry`].
@@ -213,6 +213,7 @@ impl ToolCatalog {
             // PR-6: shell.
             boxed(shell::BashTool),
             boxed(cargo::CargoTool),
+            boxed(write_stdin::WriteStdinTool),
             // PR-7: misc cohort.
             boxed(web_fetch::WebFetchTool),
             boxed(web_search::WebSearchTool),
