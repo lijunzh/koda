@@ -527,6 +527,11 @@ pub struct ModelSettings {
     /// against one ([`model_effort::takes_task_budget`]). Only the main
     /// loop's calls carry it.
     pub task_budget: Option<TaskBudget>,
+    /// Tools the model may find through tool search rather than see up
+    /// front: a turn's MCP tools, which a provider defers only on a model
+    /// that has the search ([`model_effort::takes_tool_search`]), as Codex
+    /// defers them. Only the main loop's calls carry them.
+    pub deferred_tools: Vec<String>,
 }
 
 /// The Claude API's task budget (`output_config.task_budget`, beta
@@ -555,6 +560,7 @@ impl ModelSettings {
             reasoning_effort: None,
             max_context_tokens,
             task_budget: None,
+            deferred_tools: Vec::new(),
         }
     }
 }

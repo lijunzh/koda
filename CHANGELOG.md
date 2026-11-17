@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **A Claude model finds MCP tools on demand, as Codex's models do.** On a Claude model with the API's tool search (Haiku, Sonnet and Opus 4.5 and later, every Claude 5 model), MCP tools are deferred behind it: the model sees Koda's tools and the search, loads an MCP tool when a task needs it, and the system prompt names the servers it can search. Other models, local ones included, get every tool up front. `omit_tools_from = ["deferred"]` on a server sends its tools up front anyway.
+- **An MCP tool's input schema over 5,000 bytes is shrunk, as Codex shrinks it:** its inner descriptions, then `$defs`, then deep nesting, then `anyOf`/`oneOf`/`allOf`, each only while still too big; the top-level arguments stay. `tool_input_schema_max_bytes` on a server changes the limit.
 - **`/side` (also `/btw`) opens a side conversation, as Codex's `/side` does.** A fork of the session with Codex's side instructions: the history is for reference only, nothing changes unless asked, no sub-agents. It works while a turn runs: the turn goes on, and an approval or question it asks waits. `Ctrl+C` on an empty prompt returns: the side conversation is deleted, the main session is drawn again, and a turn still running there is followed to its end.
 - **`developer_instructions` adds text to the end of the system prompt, as Codex's setting does,** in `config.toml` or per session with `session/start`'s `config`.
 

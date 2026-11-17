@@ -1329,6 +1329,7 @@ mod tests {
             reasoning_effort: None,
             max_context_tokens: 32_000,
             task_budget: None,
+            deferred_tools: Vec::new(),
         };
         let body = p.build_request_body(&[], None, &[], Some(&settings));
         let thinking_config = &body["generationConfig"]["thinkingConfig"];
@@ -1346,6 +1347,7 @@ mod tests {
             reasoning_effort: None,
             max_context_tokens: 32_000,
             task_budget: None,
+            deferred_tools: Vec::new(),
         };
         let body = p.build_request_body(&[], None, &[], Some(&settings));
         assert!(body["generationConfig"]["thinkingConfig"].is_null());

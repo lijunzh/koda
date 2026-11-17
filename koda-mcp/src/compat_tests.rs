@@ -214,6 +214,8 @@ fn http_config(url: String) -> McpServerConfig {
         enabled_tools: None,
         disabled_tools: None,
         required: false,
+        tool_input_schema_max_bytes: None,
+        omit_tools_from: None,
     }
 }
 
@@ -341,6 +343,8 @@ async fn legacy_stdio_server_2024_11_05() {
         enabled_tools: None,
         disabled_tools: None,
         required: false,
+        tool_input_schema_max_bytes: None,
+        omit_tools_from: None,
     };
     let mut client = McpClient::new("legacy".into(), config);
     client
@@ -376,6 +380,8 @@ async fn mcp_results_reach_the_model_marked_as_external_content() {
         enabled_tools: None,
         disabled_tools: None,
         required: false,
+        tool_input_schema_max_bytes: None,
+        omit_tools_from: None,
     };
     let mut client = McpClient::new("legacy".into(), config);
     client.connect().await.expect("stdio server should connect");

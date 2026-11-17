@@ -40,6 +40,7 @@ async fn only_the_matching_decision_resumes_the_turn() {
         provider: provider.as_ref(),
         tools: &env.tools,
         tool_defs: &tool_defs,
+        deferred_tools: &[],
         pending_images: None,
         mode: env.trust,
         sink: sink.as_ref(),

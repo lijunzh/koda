@@ -145,6 +145,30 @@ pub fn takes_task_budget(model: &str) -> bool {
     TASK_BUDGET_MODELS.contains(&id)
 }
 
+/// Whether `model` (an API id, a snapshot or an alias) takes the Claude
+/// API's tool search tool, so its MCP tools can be deferred: Claude Haiku,
+/// Sonnet and Opus 4.5 and later, and every Claude 5 model.
+pub fn takes_tool_search(model: &str) -> bool {
+    let resolved = crate::model_alias::resolve(model).map(|r| r.model_id);
+    let id = resolved.as_deref().unwrap_or(model);
+    let Some(rest) = id.strip_prefix("claude-") else {
+        return false;
+    };
+    let mut parts = rest.split('-');
+    let family = parts.next().unwrap_or_default();
+    let major: u32 = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+    let minor: u32 = parts
+        .next()
+        .filter(|p| p.len() < 3)
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(0);
+    match family {
+        "fable" | "mythos" => true,
+        "opus" | "sonnet" | "haiku" => (major, minor) >= (4, 5),
+        _ => false,
+    }
+}
+
 /// The level to send to `model`, given the one chosen for the session, if
 /// any. `None` when the model isn't in the table: send nothing.
 ///
@@ -293,6 +317,31 @@ mod tests {
         assert!(!takes_task_budget("claude-sonnet-5"));
         assert!(!takes_task_budget("claude-opus-4-6"));
         assert!(!takes_task_budget("qwen3.8-flash-next"));
+    }
+
+    #[test]
+    fn tool_search_goes_to_claude_4_5_and_later() {
+        for model in [
+            "claude-haiku-5-5",
+            "claude-sonnet-5",
+            "claude-opus-5-5",
+            "claude-opus-4-6",
+            "claude-haiku-4-5-20251001",
+            "claude-sonnet-4-5-20250929",
+            "claude-fable-5-2",
+            "claude-haiku",
+        ] {
+            assert!(takes_tool_search(model), "{model}");
+        }
+        for model in [
+            "claude-opus-4-1",
+            "claude-sonnet-4-20250514",
+            "claude-3-7-sonnet",
+            "qwen3.8-flash-next",
+            "gpt-5",
+        ] {
+            assert!(!takes_tool_search(model), "{model}");
+        }
     }
 
     #[test]

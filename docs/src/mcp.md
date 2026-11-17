@@ -106,6 +106,30 @@ these fields yet; a client sets them with `config/batchWrite` at
 `enabled_tools` is an allowlist; `disabled_tools` is a denylist. If both are
 set, `enabled_tools` wins.
 
+## Large tool lists
+
+Every tool a server offers reaches the model, which costs context on every
+turn. Koda keeps that in check as Codex does:
+
+- **A Claude model finds MCP tools on demand.** On Claude Haiku, Sonnet and
+  Opus 4.5 and later, and every Claude 5 model, MCP tools go behind the Claude
+  API's [tool search](https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool):
+  the model sees Koda's own tools and a search tool, and loads an MCP tool's
+  definition when a task needs it. The system prompt names the servers whose
+  tools it can search for. Any other model, local ones included, gets every
+  tool up front, as Codex's models without tool search do.
+- **A large input schema is shrunk.** Past 5,000 bytes, Codex's limit, a
+  tool's input schema loses, in order and only while it's still too big: its
+  inner descriptions, its `$defs`, objects nested three levels or deeper, and
+  `anyOf` / `oneOf` / `allOf`. Its top-level arguments always stay.
+
+Two per-server settings, Codex's:
+
+| Setting | Default | What it does |
+|---------|---------|--------------|
+| `omit_tools_from` | none | `["deferred"]` sends this server's tools up front even to a model with tool search, for a few tools the model needs often |
+| `tool_input_schema_max_bytes` | 5000 | The size, in bytes of compact JSON, past which a tool's input schema is shrunk |
+
 ## Transport reference
 
 | Transport | How it works | When to use |

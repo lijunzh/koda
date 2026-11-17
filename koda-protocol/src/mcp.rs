@@ -57,6 +57,14 @@ pub struct McpServerConfigValue {
     /// These tools are never offered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disabled_tools: Option<Vec<String>>,
+    /// The size, in bytes of compact JSON, past which a tool's input schema
+    /// is shrunk, as Codex's `tool_input_schema_max_bytes` (default 5,000).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_input_schema_max_bytes: Option<usize>,
+    /// Where the server's tools are left out, as Codex's `omit_tools_from`:
+    /// `["deferred"]` sends them up front even to a model with tool search.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub omit_tools_from: Option<Vec<String>>,
 }
 
 /// `mcpServerStatus/list`.

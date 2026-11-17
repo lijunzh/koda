@@ -124,6 +124,7 @@ async fn test_cancel_during_chat_stream_returns_immediately() {
         provider: &provider,
         tools: &tools,
         tool_defs: &tool_defs,
+        deferred_tools: &[],
         pending_images: None,
         mode: koda_core::trust::TrustMode::Auto,
         sink: &sink,

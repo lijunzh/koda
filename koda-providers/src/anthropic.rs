@@ -163,6 +163,39 @@ impl AnthropicProvider {
             .collect()
     }
 
+    /// [`Self::build_cached_tools`] with the Claude API's tool search: the
+    /// search tool first, then the tools sent up front, the last of them the
+    /// cache breakpoint, then `deferred` with `defer_loading`, which the API
+    /// keeps out of the prompt until a search finds them (and which can't
+    /// carry `cache_control`).
+    fn build_searchable_tools(
+        tools: &[ToolDefinition],
+        deferred: &[String],
+    ) -> Vec<serde_json::Value> {
+        let definition = |t: &ToolDefinition| {
+            serde_json::json!({
+                "name": t.name,
+                "description": t.description,
+                "input_schema": t.parameters,
+            })
+        };
+        let (later, now): (Vec<_>, Vec<_>) = tools.iter().partition(|t| deferred.contains(&t.name));
+        let mut out = vec![serde_json::json!({
+            "type": TOOL_SEARCH_TYPE,
+            "name": TOOL_SEARCH_NAME,
+        })];
+        out.extend(now.into_iter().map(definition));
+        if let Some(last) = out.last_mut() {
+            last["cache_control"] = serde_json::json!({ "type": "ephemeral" });
+        }
+        out.extend(later.into_iter().map(|t| {
+            let mut tool = definition(t);
+            tool["defer_loading"] = serde_json::json!(true);
+            tool
+        }));
+        out
+    }
+
     /// Serialize the converted messages with a cache breakpoint on the last
     /// content block of the last message.
     ///
@@ -341,6 +374,22 @@ enum ContentBlock {
     RedactedThinking {
         #[serde(default)]
         data: String,
+    },
+    /// The model's call to the tool search tool, which the API runs. Sent
+    /// back as it came, never answered with a `tool_result`.
+    #[serde(rename = "server_tool_use")]
+    ServerToolUse {
+        id: String,
+        name: String,
+        #[serde(default)]
+        input: serde_json::Value,
+    },
+    /// What the search found: `tool_reference`s the API expands into the
+    /// deferred tools' definitions. Sent back as it came.
+    #[serde(rename = "tool_search_tool_result")]
+    ToolSearchToolResult {
+        tool_use_id: String,
+        content: serde_json::Value,
     },
     /// A block Koda doesn't read. One of these must not fail the whole
     /// response.
@@ -597,6 +646,11 @@ struct StreamMessageInfo {
     usage: Option<AnthropicUsage>,
 }
 
+/// The Claude API's tool search, BM25 over names and descriptions, as
+/// Codex's `tool_search` ranks its deferred tools with BM25.
+const TOOL_SEARCH_TYPE: &str = "tool_search_tool_bm25_20251119";
+const TOOL_SEARCH_NAME: &str = "tool_search_tool_bm25";
+
 // ── ChunkParser implementation ──────────────────────────────────
 
 use super::stream_collector::ChunkParser;
@@ -613,6 +667,9 @@ pub(crate) struct AnthropicChunkParser {
     thinking_indices: std::collections::HashSet<usize>,
     /// Thinking blocks still streaming, by index.
     open_thinking: std::collections::HashMap<usize, serde_json::Value>,
+    /// Tool search blocks still streaming, by index, with the search's
+    /// input JSON so far. Stored with the thinking blocks and replayed.
+    open_search: std::collections::HashMap<usize, (serde_json::Value, String)>,
     /// `message_stop` arrived. Without it the stream was cut, however
     /// cleanly the connection closed.
     finished: bool,
@@ -628,6 +685,7 @@ impl AnthropicChunkParser {
             usage: TokenUsage::default(),
             thinking_indices: std::collections::HashSet::new(),
             open_thinking: std::collections::HashMap::new(),
+            open_search: std::collections::HashMap::new(),
             finished: false,
             diagnostics: None,
         }
@@ -650,9 +708,19 @@ fn stream_error_message(raw: &serde_json::Value) -> String {
     )
 }
 
-fn thinking_of(msg: &ChatMessage, replay_for: Option<&str>) -> Vec<ContentBlock> {
+fn thinking_of(msg: &ChatMessage, replay_for: Option<&str>, search: bool) -> Vec<ContentBlock> {
     replay_for.map_or_else(Vec::new, |_| {
-        replayable_thinking(msg.thinking_blocks.as_deref())
+        let mut blocks = replayable_thinking(msg.thinking_blocks.as_deref());
+        // A search goes back only with the search tool in the request.
+        if !search {
+            blocks.retain(|block| {
+                !matches!(
+                    block,
+                    ContentBlock::ServerToolUse { .. } | ContentBlock::ToolSearchToolResult { .. }
+                )
+            });
+        }
+        blocks
     })
 }
 
@@ -716,6 +784,18 @@ impl ChunkParser for AnthropicChunkParser {
                 self.thinking_indices.insert(idx as usize);
                 self.open_thinking.insert(idx as usize, cb.clone());
             }
+            // Tool search: the call and its result go back as they came.
+            if raw.get("type").and_then(|t| t.as_str()) == Some("content_block_start")
+                && let Some(idx) = raw.get("index").and_then(|i| i.as_u64())
+                && let Some(cb) = raw.get("content_block")
+                && matches!(
+                    cb.get("type").and_then(|t| t.as_str()),
+                    Some("server_tool_use" | "tool_search_tool_result")
+                )
+            {
+                self.open_search
+                    .insert(idx as usize, (cb.clone(), String::new()));
+            }
             if let Some(changes) = dropped_thinking(&raw) {
                 tracing::warn!("Thinking blocks the API dropped: {changes}");
             }
@@ -777,10 +857,12 @@ impl ChunkParser for AnthropicChunkParser {
                         chunks.push(StreamChunk::TextDelta(text));
                     }
                     // Tool use input JSON delta
-                    if let Some(partial) = delta.partial_json
-                        && idx < self.tool_calls.len()
-                    {
-                        self.tool_calls[idx].2.push_str(&partial);
+                    if let Some(partial) = delta.partial_json {
+                        if let Some((_, input)) = self.open_search.get_mut(&idx) {
+                            input.push_str(&partial);
+                        } else if idx < self.tool_calls.len() {
+                            self.tool_calls[idx].2.push_str(&partial);
+                        }
                     }
                 }
             }
@@ -811,6 +893,17 @@ impl ChunkParser for AnthropicChunkParser {
                 if event.event_type == "content_block_stop"
                     && let Some(block) = event.index.and_then(|i| self.open_thinking.remove(&i))
                 {
+                    chunks.push(StreamChunk::ThinkingBlock(block));
+                }
+                if event.event_type == "content_block_stop"
+                    && let Some((mut block, input)) =
+                        event.index.and_then(|i| self.open_search.remove(&i))
+                {
+                    if !input.is_empty()
+                        && let Ok(input) = serde_json::from_str::<serde_json::Value>(&input)
+                    {
+                        block["input"] = input;
+                    }
                     chunks.push(StreamChunk::ThinkingBlock(block));
                 }
                 // content_block_stop — emit ToolCallReady for completed tool calls
@@ -1044,7 +1137,13 @@ impl LlmProvider for AnthropicProvider {
             .and_then(|m| m.content.as_ref())
             .map(|text| Self::build_cached_system(text));
 
-        let converted = self.convert_messages(messages, Some(api_model));
+        // MCP tools a model with tool search finds on demand, as Codex
+        // defers them: everything else is sent up front.
+        let search = crate::model_effort::takes_tool_search(api_model)
+            && tools
+                .iter()
+                .any(|tool| settings.deferred_tools.contains(&tool.name));
+        let converted = self.convert_messages_with(messages, Some(api_model), search);
         let system_text = messages
             .iter()
             .find(|m| m.role == "system")
@@ -1054,7 +1153,11 @@ impl LlmProvider for AnthropicProvider {
             .unzip();
         let replays_thinking = converted.iter().any(AnthropicMessage::has_thinking);
         let api_messages = Self::build_cached_messages(&converted)?;
-        let api_tools = Self::build_cached_tools(tools);
+        let api_tools = if search {
+            Self::build_searchable_tools(tools, &settings.deferred_tools)
+        } else {
+            Self::build_cached_tools(tools)
+        };
 
         let max_tokens = settings.max_tokens.unwrap_or(16384);
 
@@ -1151,6 +1254,17 @@ impl AnthropicProvider {
         messages: &[ChatMessage],
         replay_for: Option<&str>,
     ) -> Vec<AnthropicMessage> {
+        self.convert_messages_with(messages, replay_for, false)
+    }
+
+    /// [`Self::convert_messages`], with `search` when the request carries
+    /// the tool search tool, so earlier searches go back too.
+    fn convert_messages_with(
+        &self,
+        messages: &[ChatMessage],
+        replay_for: Option<&str>,
+        search: bool,
+    ) -> Vec<AnthropicMessage> {
         let mut result = Vec::new();
 
         for msg in messages {
@@ -1186,7 +1300,7 @@ impl AnthropicProvider {
                 && let Some(tcs) = &msg.tool_calls
             {
                 // Assistant message with tool calls
-                let mut blocks = thinking_of(msg, replay_for);
+                let mut blocks = thinking_of(msg, replay_for, search);
                 if let Some(text) = &msg.content
                     && !text.is_empty()
                 {
@@ -1214,7 +1328,7 @@ impl AnthropicProvider {
             }
 
             if msg.role == "assistant" {
-                let mut blocks = thinking_of(msg, replay_for);
+                let mut blocks = thinking_of(msg, replay_for, search);
                 if !blocks.is_empty() {
                     if let Some(text) = &msg.content
                         && !text.is_empty()

@@ -286,6 +286,7 @@ impl Env {
             provider,
             tools: &self.tools,
             tool_defs: &tool_defs,
+            deferred_tools: &[],
             pending_images: None,
             mode: self.trust,
             sink: sink.as_ref(),

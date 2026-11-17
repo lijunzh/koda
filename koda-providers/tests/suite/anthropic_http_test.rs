@@ -588,3 +588,106 @@ async fn chat_sends_the_catalog_effort() {
     let body: Value = serde_json::from_slice(&reqs[0].body).unwrap();
     assert_eq!(body["output_config"]["effort"], "medium");
 }
+
+/// MCP tools go behind the Claude API's tool search on a model that has it,
+/// as Codex defers them: the search tool first, the up-front tools with the
+/// cache breakpoint, the deferred ones with `defer_loading` and no cache
+/// marker. A search the model ran comes back on the next request as it came.
+/// A model without tool search gets every tool up front.
+#[tokio::test]
+async fn chat_stream_defers_mcp_tools_behind_tool_search() {
+    let server = FakeLlmServer::spawn().await;
+    server
+        .mount_sse(
+            "POST",
+            r".*/v1/messages$",
+            &[
+                r#"{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_1","name":"tool_search_tool_bm25"}}"#,
+                r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"weather\"}"}}"#,
+                r#"{"type":"content_block_stop","index":0}"#,
+                r#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_1","content":{"type":"tool_search_tool_search_result","tool_references":[{"type":"tool_reference","tool_name":"mcp__w__forecast"}]}}}"#,
+                r#"{"type":"content_block_stop","index":1}"#,
+                r#"{"type":"message_stop"}"#,
+            ],
+        )
+        .await;
+    let provider = AnthropicProvider::new("k".into(), Some(&server.url()));
+    let tool = |name: &str| koda_providers::ToolDefinition {
+        name: name.into(),
+        description: format!("{name} does a thing"),
+        parameters: json!({"type": "object", "properties": {}}),
+    };
+    let tools = [tool("Read"), tool("Bash"), tool("mcp__w__forecast")];
+    let mut settings = ModelSettings::defaults_for("claude-haiku-5-5", &ProviderType::Anthropic);
+    settings.deferred_tools = vec!["mcp__w__forecast".into()];
+
+    let mut collector = provider
+        .chat_stream(&[user_msg("weather?")], &tools, &settings)
+        .await
+        .unwrap();
+    let mut blocks = Vec::new();
+    while let Some(chunk) = collector.rx.recv().await {
+        if let StreamChunk::ThinkingBlock(block) = chunk {
+            blocks.push(block);
+        }
+    }
+    let first: Value = serde_json::from_slice(&server.received_requests().await[0].body).unwrap();
+    let sent = first["tools"].as_array().unwrap();
+    assert_eq!(sent[0]["type"], "tool_search_tool_bm25_20251119", "{first}");
+    assert_eq!(sent[0]["name"], "tool_search_tool_bm25");
+    let names: Vec<_> = sent[1..]
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["Read", "Bash", "mcp__w__forecast"]);
+    assert_eq!(sent[2]["cache_control"]["type"], "ephemeral", "{first}");
+    assert_eq!(sent[3]["defer_loading"], true);
+    assert!(sent[3].get("cache_control").is_none(), "{first}");
+    assert_eq!(
+        first.to_string().matches("cache_control").count(),
+        first["messages"]
+            .to_string()
+            .matches("cache_control")
+            .count()
+            + 1,
+        "one breakpoint in the tools: {first}"
+    );
+
+    // The search was kept, input included, and goes back next time.
+    assert_eq!(blocks.len(), 2, "{blocks:?}");
+    assert_eq!(blocks[0]["input"], json!({"query": "weather"}));
+    let stored =
+        koda_providers::anthropic::stored_thinking("claude-haiku-5-5", blocks.clone()).unwrap();
+    let mut reply = ChatMessage::text("assistant", "Found it.");
+    reply.thinking_blocks = Some(stored.clone());
+    let history = [
+        user_msg("weather?"),
+        reply.clone(),
+        user_msg("and tomorrow?"),
+    ];
+    let mut collector = provider
+        .chat_stream(&history, &tools, &settings)
+        .await
+        .unwrap();
+    while collector.rx.recv().await.is_some() {}
+    let second: Value = serde_json::from_slice(&server.received_requests().await[1].body).unwrap();
+    let assistant = &second["messages"][1]["content"];
+    assert_eq!(assistant[0]["type"], "server_tool_use", "{second}");
+    assert_eq!(assistant[0]["input"], json!({"query": "weather"}));
+    assert_eq!(assistant[1]["type"], "tool_search_tool_result", "{second}");
+
+    // No tool search on this model: everything up front, and no search
+    // replayed, since its tool isn't in the request.
+    let older = ModelSettings {
+        deferred_tools: settings.deferred_tools.clone(),
+        ..ModelSettings::defaults_for("claude-opus-4-1", &ProviderType::Anthropic)
+    };
+    let mut collector = provider
+        .chat_stream(&history, &tools, &older)
+        .await
+        .unwrap();
+    while collector.rx.recv().await.is_some() {}
+    let third: Value = serde_json::from_slice(&server.received_requests().await[2].body).unwrap();
+    assert!(!third.to_string().contains("tool_search"), "{third}");
+    assert!(!third.to_string().contains("defer_loading"), "{third}");
+}
