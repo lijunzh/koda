@@ -95,9 +95,16 @@ question, Koda tells you, as Codex does, while the terminal isn't focused:
 Koda knows the terminal isn't focused from the focus reports the terminal
 sends when you switch away and back. Until the first one arrives it counts the
 terminal as focused, so a terminal that never reports focus never notifies;
-set `notification_condition = "always"` there. To check yours, run
-`printf '\e[?1004h'; cat -v`, switch to another window and back: `^[[O` and
-`^[[I` mean it reports focus. Press `Ctrl+C` to end it.
+set `notification_condition = "always"` there. To check yours, run this,
+switch to another window and back, then press `Ctrl+D`; `^[[O` and `^[[I`
+mean it reports focus:
+
+```sh
+printf '\e[?1004h'; command cat -v; printf '\e[?1004l'
+```
+
+(`command` skips a `cat` alias such as `bat`; the last `printf` turns the
+reports off again.)
 
 **Inside tmux,** add `set -g focus-events on` to `~/.tmux.conf` so tmux
 passes focus reports on. The bell needs nothing more; a desktop notification
