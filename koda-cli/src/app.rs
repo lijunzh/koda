@@ -150,6 +150,16 @@ struct SessionFlags {
     /// session worked in.
     #[arg(long)]
     worktree: bool,
+
+    /// Run the TUI's host in this process, not on the shared server (koda
+    /// serve), as Codex's --no-daemon does
+    #[arg(long, conflicts_with = "remote")]
+    no_daemon: bool,
+
+    /// Use the shared server at this address (unix://PATH) instead of
+    /// Koda's own; it isn't started or replaced
+    #[arg(long, value_name = "ADDR")]
+    remote: Option<String>,
 }
 
 impl SessionFlags {
@@ -163,6 +173,8 @@ impl SessionFlags {
         self.oss |= root.oss;
         inherit(&mut self.local_provider, &root.local_provider);
         self.worktree |= root.worktree;
+        self.no_daemon |= root.no_daemon;
+        inherit(&mut self.remote, &root.remote);
     }
 
     /// The flags given, by name.
@@ -175,6 +187,8 @@ impl SessionFlags {
             ("--oss", self.oss),
             ("--local-provider", self.local_provider.is_some()),
             ("--worktree", self.worktree),
+            ("--no-daemon", self.no_daemon),
+            ("--remote", self.remote.is_some()),
         ]
         .into_iter()
         .filter_map(|(name, given)| given.then_some(name))
@@ -703,6 +717,20 @@ pub(crate) async fn run() -> Result<()> {
             None
         }
     };
+    // `koda exec` keeps its host in its own process, as Codex's does.
+    if headless_run.is_some() && (session.no_daemon || session.remote.is_some()) {
+        eprintln!(
+            "error: koda exec runs its host in its own process; --no-daemon and --remote \
+             are for the TUI"
+        );
+        std::process::exit(2);
+    }
+    if let Some(remote) = &session.remote
+        && remote.strip_prefix("unix://").is_none_or(str::is_empty)
+    {
+        eprintln!("error: --remote {remote}: expected unix://PATH");
+        std::process::exit(2);
+    }
     // Read before anything starts, so a bad path stops the run first.
     let tui_images = koda_tui::input::load_images(&tui_images)?;
 
@@ -749,6 +777,9 @@ pub(crate) async fn run() -> Result<()> {
     } else {
         None
     };
+    // A run with `-c` values (or flags that are ones) keeps its host in this
+    // process, as Codex's TUI does: the shared server's config is its own.
+    let run_overrides = !overrides.is_empty();
     koda_tui::user_config::set_overrides(overrides);
     for notice in flags.deprecations() {
         eprintln!("warning: {notice}");
@@ -973,6 +1004,7 @@ pub(crate) async fn run() -> Result<()> {
     }
 
     // Run the main event loop
+    let backend = tui_backend(&session, run_overrides, &config_dir)?;
     let ran = tui_app::run(
         project_root,
         named,
@@ -983,6 +1015,7 @@ pub(crate) async fn run() -> Result<()> {
             pick_session,
             fork,
             on_session: worktree.as_ref().map(WorktreeSession::binder),
+            backend,
         },
         version_check,
         first_run,
@@ -1135,11 +1168,46 @@ fn mcp_refusal(session: &SessionFlags, flags: &ConfigFlags, prompt: bool) -> Opt
     })
 }
 
+/// Where the TUI's host is, as Codex's TUI picks: Koda's shared server by
+/// default; one named with `--remote`; or this process with `--no-daemon`,
+/// for `--oss` (its model server and key live in this process) and for a
+/// run with `-c` values (the shared server's config is its own).
+fn tui_backend(
+    session: &SessionFlags,
+    run_overrides: bool,
+    home: &Path,
+) -> anyhow::Result<koda_tui::backend::Backend> {
+    use koda_tui::backend::Backend;
+    if let Some(remote) = &session.remote {
+        let Some(path) = remote.strip_prefix("unix://").filter(|p| !p.is_empty()) else {
+            anyhow::bail!("--remote {remote}: expected unix://PATH");
+        };
+        if session.oss || run_overrides {
+            anyhow::bail!(
+                "--remote uses that server's config; leave out --oss, -c and the flags \
+                 that set config"
+            );
+        }
+        return Ok(Backend::Shared {
+            socket: PathBuf::from(path),
+            start: false,
+        });
+    }
+    if session.no_daemon || session.oss || run_overrides || cfg!(not(unix)) {
+        return Ok(Backend::InProcess);
+    }
+    Ok(Backend::Shared {
+        socket: koda_client::socket::default_socket_path(home),
+        start: true,
+    })
+}
+
 /// `koda serve --stop`: ask the server at `socket` to stop, and wait until
 /// it has.
 async fn stop_server(socket: &Path) -> Result<(), String> {
     let client = koda_client::InProcessClient::connect(
         socket,
+        std::env::current_dir().unwrap_or_default(),
         koda_client::protocol::initialize::ClientInfo {
             name: "koda-serve-stop".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),

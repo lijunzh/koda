@@ -187,7 +187,9 @@ pub(crate) async fn open_host_session(
             model_provider: named.provider.clone(),
             base_url: named.base_url.clone(),
             model: named.model.clone(),
-            // The host's folder and the run's config, in this process.
+            // This client's folder: on the shared server, the server's own
+            // is another's. The run's `-c` values keep a run in-process.
+            cwd: Some(client.project_root().display().to_string()),
             ..Default::default()
         })
         .await
@@ -223,7 +225,9 @@ pub(crate) async fn fork_host_session(
             model_provider: named.provider.clone(),
             base_url: named.base_url.clone(),
             model: named.model.clone(),
-            // The host's folder and the run's config, in this process.
+            // This client's folder: on the shared server, the server's own
+            // is another's. The run's `-c` values keep a run in-process.
+            cwd: Some(client.project_root().display().to_string()),
             ..Default::default()
         })
         .await
@@ -351,6 +355,7 @@ impl TuiContext {
         fork: bool,
         version_check: tokio::task::JoinHandle<Option<String>>,
         first_run: bool,
+        backend: crate::backend::Backend,
     ) -> Result<Self> {
         // Input history is the TUI's own file. The first time, what Koda kept
         // in its database before comes over.
@@ -365,18 +370,10 @@ impl TuiContext {
         let history = input_history.load_entries();
 
         // Koda's host runs the session's turns and builds each session's
-        // agent (its tools, MCP servers and prompt); the TUI is its client.
-        let mut client = koda_client::InProcessClient::start(koda_client::StartArgs {
-            config_file: crate::user_config::file()?,
-            home,
-            project_root: project_root.clone(),
-            client_info: koda_client::protocol::initialize::ClientInfo {
-                name: "koda-tui".to_string(),
-                version: env!("CARGO_PKG_VERSION").to_string(),
-            },
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("couldn't start Koda's host: {e}"))?;
+        // agent (its tools, MCP servers and prompt); the TUI is its client,
+        // on the shared server or in this process.
+        let (mut client, backend_note) =
+            crate::backend::client(&backend, &project_root, &home).await?;
         // `named` is what the flags gave, and nothing else: the host fills
         // in the rest from the saved choice for a new session, or a resumed
         // one's own. A provider goes by its id.
@@ -420,6 +417,9 @@ impl TuiContext {
             crate::startup::collect_startup_lines(&session_settings, &providers);
         for warning in host_warnings {
             startup_lines.push(crate::startup::warning_line(warning));
+        }
+        if let Some(note) = backend_note {
+            startup_lines.push(crate::startup::warning_line(note));
         }
         startup_lines.extend(crate::startup::home_dir_warning_lines(&project_root));
         if let Some(warning) = crate::legacy_clones::tidy_home() {

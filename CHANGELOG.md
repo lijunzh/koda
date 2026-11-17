@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **The TUI works on the shared server, as Codex's TUI works on its daemon.** `koda` connects to `koda serve`'s socket and starts it in the background when none answers; that server stops after ten minutes with no client and no work. A session outlives the TUI that opened it, so the next TUI resumes it there, and an approval it was waiting for is still waiting. A server of another version is replaced when nothing is in use, as Claude Code's supervisor restarts onto a new version; a busy one is left alone and the run uses its own process, saying so. `--no-daemon` keeps the host in the TUI's process, as `--oss` and any `-c` value (or flag that sets one) do, as in Codex; `--remote unix://PATH` uses another server. `koda exec` is unchanged.
+
 - **`koda serve --stop` stops the shared server, as `claude daemon stop` does,** and over the protocol `serve/stop` does too; with `ifIdle`, only when no session is in use and no other client is connected. A server started with the hidden `--idle-exit-secs` stops on its own once it has had no client and no work that long, as the TUI will start it.
 
 - **`session/start` and `session/fork` take the session's folder (`cwd`) and its own config values (`config`), as Codex's `thread/start` does,** so one shared server serves every project. `cwd` is an absolute path to an existing folder; `config` maps dotted keys to values, as `-c` sets them, for that session only. An unknown key or a folder that isn't one is refused.

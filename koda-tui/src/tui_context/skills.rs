@@ -13,11 +13,14 @@ use crate::tui_output::{self, BOLD, CYAN, DIM};
 /// `/skills`, or `/skills <query>`.
 pub(crate) async fn show_skills(
     requests: &RequestHandle,
+    project_root: &std::path::Path,
     query: Option<&str>,
     buffer: &mut ScrollBuffer,
 ) {
     let listed = match requests
-        .request::<methods::SkillsList>(SkillsListParams::default())
+        .request::<methods::SkillsList>(SkillsListParams {
+            cwds: vec![project_root.display().to_string()],
+        })
         .await
     {
         Ok(listed) => listed,

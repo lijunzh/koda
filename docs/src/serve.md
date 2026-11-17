@@ -162,8 +162,26 @@ and `nc -U ~/.config/koda/serve/koda.sock` is enough to try it.)
   `ifIdle` it stops only if no session is in use (a client, a running turn or a
   request waiting) and no other client is connected.
 
-## Not yet
+## The TUI on the shared server
 
-- **The TUI on the shared server.** Next, the TUI starts `koda serve` when
-  none is running and works through it, as Codex's TUI does; `--no-daemon`
-  keeps it in its own process, and `koda --remote` attaches elsewhere.
+`koda` works on the shared server, as Codex's TUI works on its daemon: it
+connects to `~/.config/koda/serve/koda.sock`, and when nothing answers it
+starts `koda serve` in the background, which stops once it has had no client
+and no work for ten minutes. Your sessions run there, so a TUI you close
+leaves the session for the next one: `koda resume` picks it up, and an approval
+it was waiting for is still there.
+
+- **Its own process instead** with `--no-daemon`, and for runs the shared
+  server can't serve as asked, as Codex's TUI does: `--oss` (its model server
+  and key live in that process) and any `-c` value or flag that sets one
+  (`--mode`, `--reasoning-effort`, `--agent`, …), since the server reads its
+  own config. `koda exec` always runs in its own process.
+- **Another server:** `koda --remote unix://PATH` uses the server at that
+  socket; it isn't started or replaced.
+- **After an update,** a server of another version is replaced if nothing is
+  in use, as Claude Code's supervisor restarts onto a new version; if it's
+  busy, this run uses its own process and says so. `koda serve --stop` stops
+  it.
+- **API keys:** the server has the environment of the shell that started it.
+  A key saved with `/key` works for every TUI; one only in a shell's
+  environment reaches the server only if that shell started it.
