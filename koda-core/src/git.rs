@@ -4,6 +4,7 @@
 //! the system prompt. This gives the model awareness of:
 //!
 //! - **Current branch** — so it knows where it's working
+//! - **Default branch** — what work usually merges into
 //! - **Staged changes** — diff stat showing what's ready to commit
 //! - **Unstaged changes** — diff stat showing what's modified but not staged
 //! - **Recent commits** — last N commit subjects for historical context
@@ -59,7 +60,7 @@ impl GitSnapshot {
 /// Compact git context for injection into the system prompt.
 ///
 /// Returns `None` if not in a git repo. Includes:
-/// - Current branch name
+/// - Current branch name, and the default branch
 /// - Staged diff stat (truncated)
 /// - Unstaged diff stat (truncated)
 /// - Last N commit subjects
@@ -70,9 +71,18 @@ pub fn git_context(project_root: &Path) -> Option<String> {
         &["rev-parse", "--abbrev-ref", "HEAD"],
     )?;
 
+    let branch = branch.trim();
     let mut parts = vec![format!(
         "[Git snapshot from session start; run git for current state: branch={branch}"
     )];
+
+    // The branch work usually merges into, as Claude Code's snapshot names
+    // it and Codex finds it: a remote's HEAD, else a local main or master.
+    if let Some(default) = koda_git::default_branch(project_root) {
+        parts.push(format!(
+            "default branch (usually the base for pull requests)={default}"
+        ));
+    }
 
     // Staged changes (stat only — token-efficient)
     if let Some(staged) = git_cmd(
@@ -207,6 +217,28 @@ mod tests {
             "the live context must have moved for this test to mean anything"
         );
         assert_eq!(snapshot.line(root), before);
+    }
+
+    #[test]
+    fn the_context_names_the_default_branch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .current_dir(root)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "start"]);
+        git(&["checkout", "-q", "-b", "feature"]);
+        let ctx = git_context(root).unwrap();
+        assert!(ctx.contains("branch=feature,"), "{ctx}");
+        assert!(ctx.contains("for pull requests)=main"), "{ctx}");
     }
 
     #[test]

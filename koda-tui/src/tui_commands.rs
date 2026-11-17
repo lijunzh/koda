@@ -214,6 +214,17 @@ fn get_git_diff() -> String {
         }
         diff.push_str(&staged);
     }
+    // New files, each as a diff that adds it, as Codex's `/diff` shows them.
+    // The cap below bounds how much of them goes in.
+    let here = std::path::Path::new(".");
+    for file in koda_git::untracked_files(here) {
+        if diff.len() > MAX_DIFF_CHARS {
+            break;
+        }
+        if let Some(added) = koda_git::untracked_diff(here, &file) {
+            diff.push_str(&added);
+        }
+    }
 
     if diff.len() > MAX_DIFF_CHARS {
         let mut end = MAX_DIFF_CHARS;
