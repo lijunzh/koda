@@ -9,14 +9,14 @@ use koda_client::protocol::model::{ModelProviderListParams, ModelProviderSummary
 
 /// The host's providers, in its order.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct Providers {
+pub struct Providers {
     list: Vec<ModelProviderSummary>,
 }
 
 impl Providers {
     /// Ask the host. An empty list when it can't answer: the menus then
     /// show nothing rather than guess.
-    pub(crate) async fn fetch(client: &koda_client::InProcessClient) -> Self {
+    pub async fn fetch(client: &koda_client::InProcessClient) -> Self {
         let list = client
             .request::<methods::ModelProviderList>(ModelProviderListParams {})
             .await
@@ -46,7 +46,7 @@ impl Providers {
     /// [`Self::find`] matches, since `session/start` takes ids only, as
     /// Codex's `thread/start` does. A name the list doesn't have goes as
     /// typed: the host refuses one it doesn't know, with its ids.
-    pub(crate) fn id_for(&self, typed: &str) -> String {
+    pub fn id_for(&self, typed: &str) -> String {
         self.find(typed)
             .map_or_else(|| typed.to_string(), |p| p.id.clone())
     }

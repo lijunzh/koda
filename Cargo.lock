@@ -1901,43 +1901,25 @@ dependencies = [
 name = "koda-cli"
 version = "0.7.4"
 dependencies = [
- "ansi-to-tui",
  "anyhow",
- "arboard",
- "base64 0.23.1",
  "clap",
- "crossterm",
- "diffy",
- "futures-util",
- "image",
  "koda-client",
  "koda-config",
  "koda-core",
+ "koda-oss",
  "koda-sandbox",
  "koda-state",
  "koda-test-utils",
+ "koda-tui",
  "libc",
  "pretty_assertions",
- "ratatui",
- "regex",
- "reqwest",
- "serde",
  "serde_json",
  "serial_test",
- "shlex",
- "signal-hook 0.4.6",
- "syntect",
  "tempfile",
- "textwrap",
- "time",
  "tokio",
- "tokio-util",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
- "two-face",
- "unicode-segmentation",
- "unicode-width",
  "vt100",
  "zip",
 ]
@@ -2059,6 +2041,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "koda-oss"
+version = "0.7.4"
+dependencies = [
+ "anyhow",
+ "libc",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "koda-protocol"
 version = "0.7.4"
 dependencies = [
@@ -2168,6 +2164,44 @@ dependencies = [
  "tokio",
  "tokio-util",
  "wiremock",
+]
+
+[[package]]
+name = "koda-tui"
+version = "0.7.4"
+dependencies = [
+ "ansi-to-tui",
+ "anyhow",
+ "arboard",
+ "base64 0.23.1",
+ "crossterm",
+ "diffy",
+ "futures-util",
+ "image",
+ "koda-client",
+ "koda-config",
+ "koda-state",
+ "libc",
+ "pretty_assertions",
+ "ratatui",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "shlex",
+ "signal-hook 0.4.6",
+ "syntect",
+ "tempfile",
+ "textwrap",
+ "time",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "two-face",
+ "unicode-segmentation",
+ "unicode-width",
+ "zip",
 ]
 
 [[package]]

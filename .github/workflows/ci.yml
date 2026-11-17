@@ -70,9 +70,10 @@ jobs:
       # everything-in-Rust workspace free of one-off Python scripts).
       - name: Check tokio test flavor (#1109 F2)
         run: scripts/check_tokio_test_flavor.sh
-      # koda-cli reaches core only through the client protocol, as Codex's
-      # CI keeps codex-core out of its TUI: koda-core isn't one of its
-      # dependencies, and no koda_core path is in its sources. Pure text scan.
+      # koda-cli and koda-tui reach core only through the client protocol, as
+      # Codex's CI keeps codex-core out of its TUI: koda-core isn't one of
+      # their dependencies, and no koda_core path is in their sources. Pure
+      # text scan.
       - name: Check the TUI's core boundary
         run: scripts/check_tui_core_boundary.sh
       # crates.io rejects a bad keyword only at upload, after the crates

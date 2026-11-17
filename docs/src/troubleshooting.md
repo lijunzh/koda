@@ -66,7 +66,7 @@ level; the default is every Koda crate at `info`. Common debug recipes:
 
 ```sh
 # A log file at ~/.config/koda/logs/koda.log, with prompts and summaries
-RUST_LOG=koda_core=debug,koda_cli=info koda -c log_dir=logs
+RUST_LOG=koda_core=debug,koda_cli=info,koda_tui=info koda -c log_dir=logs
 
 # A log file with warnings only
 RUST_LOG=warn koda -c log_dir=logs

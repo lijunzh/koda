@@ -269,10 +269,10 @@ of the log file, which `log_dir` turns on. Its default is every Koda crate at
 
 ```sh
 # Prompts and summaries, as text
-RUST_LOG=koda_core=debug,koda_cli=info koda exec -c log_dir=logs "…"
+RUST_LOG=koda_core=debug,koda_cli=info,koda_tui=info koda exec -c log_dir=logs "…"
 
 # Those, plus every request body (the file only)
-RUST_LOG=koda_core=debug,koda_cli=info,koda_providers=trace koda exec -c log_dir=logs "…"
+RUST_LOG=koda_core=debug,koda_cli=info,koda_tui=info,koda_providers=trace koda exec -c log_dir=logs "…"
 ```
 
 `koda_core=debug` adds these lines, whose text runs on over the following lines

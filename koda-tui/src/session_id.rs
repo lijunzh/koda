@@ -15,16 +15,13 @@ const PAGE: u32 = 100;
 /// Which earlier session to open: one named by id (or the start of one),
 /// or the most recent, as `codex resume --last` picks it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Resume {
+pub enum Resume {
     Id(String),
     Last,
 }
 
 /// The full id `resume` names.
-pub(crate) async fn resolve_target(
-    client: &InProcessClient,
-    resume: &Resume,
-) -> anyhow::Result<String> {
+pub async fn resolve_target(client: &InProcessClient, resume: &Resume) -> anyhow::Result<String> {
     match resume {
         Resume::Id(typed) => resolve(client, typed).await,
         Resume::Last => last(all_sessions(client).await?)

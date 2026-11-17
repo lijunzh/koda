@@ -211,4 +211,4 @@ start.
 - Sandbox-unavailable Auto refusal: `koda_core::trust::require_sandbox_for_auto`
   + setup hints from `koda_core::sandbox::setup_hint`
 - Per-agent loader & deprecation warning: `koda_core::config::KodaConfig::load`
-- Status-bar badge rendering: `koda_cli::widgets::status_bar`
+- Status-bar badge rendering: `koda_tui::widgets::status_bar`

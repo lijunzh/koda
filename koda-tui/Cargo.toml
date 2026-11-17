@@ -1,0 +1,118 @@
+[package]
+name = "koda-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "The terminal interface of the Koda AI coding agent: the fullscreen TUI the koda command opens"
+readme = "README.md"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords = ["ai", "coding-agent", "tui", "terminal", "ratatui"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+# Koda's host and the client protocol: the TUI reaches the engine only
+# through these, never `koda-core` (scripts/check_tui_core_boundary.sh).
+koda-client = { workspace = true }
+# The config file, and the log database (flushed when the TUI panics).
+koda-config = { workspace = true }
+koda-state = { workspace = true }
+reqwest = { workspace = true }
+shlex = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true, features = ["full"] }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# TUI / Terminal
+crossterm = { version = "0.29", features = ["event-stream"] }
+
+# Syntax highlighting
+syntect = { version = "5", default-features = false, features = ["default-syntaxes", "default-themes", "parsing", "html", "regex-fancy"] }
+two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"] }
+
+# Diffs: the unified text a tool call's `changes` carry, read as Codex reads it
+diffy = "0.5"
+
+# TUI (inline viewport: input + status bar)
+ratatui = { version = "0.30", default-features = false, features = ["crossterm", "scrolling-regions"] }
+# Held below 0.2.3, which counts the halfwidth sound marks (U+FF9E, U+FF9F)
+# as one cell. ratatui-core 0.1.2 and the composer already add one for each,
+# so both would count them twice and Ratatui would drop text like "ｶﾞ".
+# Lift this once a Ratatui release counts them through unicode-width alone.
+unicode-width = ">=0.2, <0.2.3"
+
+# Composer port (#1116, #1178): textarea + paste_burst lifted from
+# codex-rs (Apache 2.0). textwrap is used by the ported textarea for
+# soft-wrapping; unicode-segmentation handles grapheme-boundary cursor
+# motion. unicode-segmentation is already transitive (1.13.x); declared
+# direct because we now use it ourselves and transitive contracts are
+# fragile.
+textwrap = "0.16"
+unicode-segmentation = "1.13"
+
+# Terminal-cleanup hardening (#1176): signal handlers + atexit hook so that
+# SIGTERM / SIGINT / SIGHUP / process::exit() restore raw mode + alt-screen +
+# mouse-capture before the process dies. Both are already present transitively
+# (via crossterm → signal-hook-mio); declared explicitly here because we use
+# them directly and transitive contracts are fragile.
+signal-hook = "0.4"
+libc = { workspace = true }
+
+# Clipboard (for Ctrl+Y copy)
+arboard = "3"
+# Encode a pasted clipboard image as PNG, scaled down (arboard already
+# brings this crate).
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# Debug bundle: zip packaging for /debug-bundle slash command (RFC #1167).
+# Chosen over tar.gz for random-access reads (LLM debugging workflows poke
+# at one file at a time; zip's central directory makes that O(file) instead
+# of O(bundle)) and broader cross-platform UX (Windows Explorer browses zips
+# natively). `default-features = false` + `deflate` keeps the dep minimal
+# (no aes-crypto, bzip2, zstd, lzma).
+zip = { version = "9", default-features = false, features = ["deflate"] }
+
+# ANSI escape code parsing for tool output
+ansi-to-tui = "8"
+
+# Regex — used to highlight Grep match substrings (mirrors koda-core's
+# Grep tool, so the same pattern compiles in both places).
+regex = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+
+# Date/time — already a transitive dep via ratatui; declared directly so
+# callers aren't silently depending on an undeclared transitive.
+time = { workspace = true }
+
+# Base64 encoding (for image input)
+base64 = { workspace = true }
+futures-util = { workspace = true }
+
+[[bench]]
+name = "render_bench"
+harness = false
+
+[dev-dependencies]
+tempfile = { workspace = true }
+serde_json = { workspace = true }
+tracing-subscriber = { workspace = true }
+# tokio's `test-util` feature enables `#[tokio::test(start_paused = true)]` so
+# frame_requester tests can manipulate the clock deterministically without
+# relying on real wall-clock sleeps. Not in `full`, so we opt in here.
+tokio = { workspace = true, features = ["full", "test-util"] }
+# serial_test: forces tests that mutate global state (e.g. the panic hook in
+# the regression test for #1124) to run sequentially.
+serial_test = "4"
+# Better assert_eq! diff output for ported codex tests (#1178).
+pretty_assertions = "1"

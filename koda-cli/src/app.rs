@@ -4,6 +4,7 @@
 //! the binary calls into.
 
 use crate::*;
+use koda_tui::tui_app;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -379,8 +380,8 @@ struct WhichSession {
 impl WhichSession {
     /// The session to open, and the prompt. With `--last`, a lone
     /// argument is the prompt, as `codex resume --last "…"` reads it.
-    fn resolve(mut self) -> Result<(Option<crate::session_id::Resume>, Option<String>)> {
-        use crate::session_id::Resume;
+    fn resolve(mut self) -> Result<(Option<koda_tui::session_id::Resume>, Option<String>)> {
+        use koda_tui::session_id::Resume;
         if self.last {
             if self.prompt.is_some() {
                 anyhow::bail!("give a session id or --last, not both");
@@ -551,7 +552,7 @@ pub(crate) async fn run() -> Result<()> {
                 args.flags.inherit(&flags);
                 session = std::mem::take(&mut args.session);
                 flags = std::mem::take(&mut args.flags);
-                resume = session.resume.take().map(crate::session_id::Resume::Id);
+                resume = session.resume.take().map(koda_tui::session_id::Resume::Id);
                 let mut output = args.output;
                 if output.images.is_empty() {
                     output.images = root_images;
@@ -607,13 +608,13 @@ pub(crate) async fn run() -> Result<()> {
                 eprintln!("{ONE_SHOT_REMOVED}");
                 std::process::exit(2);
             }
-            resume = session.resume.take().map(crate::session_id::Resume::Id);
+            resume = session.resume.take().map(koda_tui::session_id::Resume::Id);
             tui_images = root_images;
             None
         }
     };
     // Read before anything starts, so a bad path stops the run first.
-    let tui_images = crate::input::load_images(&tui_images)?;
+    let tui_images = koda_tui::input::load_images(&tui_images)?;
 
     // Every flag but the model choice is a config value for this run, as
     // Codex's flags are: after `-c`, so a flag wins over a `-c` value.
@@ -639,12 +640,12 @@ pub(crate) async fn run() -> Result<()> {
             .load()
             .map_err(|e| anyhow::anyhow!("{e}"))?
             .config;
-        let plan = crate::oss::plan(
+        let plan = koda_oss::plan(
             session.local_provider.as_deref(),
             config.oss_provider.as_deref(),
             session.model.as_deref(),
             config.oss_model.as_deref(),
-            crate::oss::unified_memory(),
+            koda_oss::unified_memory(),
         )?;
         if let Some(effort) = plan.model.as_ref().and_then(|m| m.effort)
             && config.model_reasoning_effort.is_none()
@@ -658,7 +659,7 @@ pub(crate) async fn run() -> Result<()> {
     } else {
         None
     };
-    crate::user_config::set_overrides(overrides);
+    koda_tui::user_config::set_overrides(overrides);
     for notice in flags.deprecations() {
         eprintln!("warning: {notice}");
     }
@@ -679,7 +680,7 @@ pub(crate) async fn run() -> Result<()> {
     // The config file, with this run's `-c` values and flags: a broken file
     // or an unknown `-c` key stops the start here, before any terminal
     // setup.
-    let user_config = crate::user_config::file()?
+    let user_config = koda_tui::user_config::file()?
         .load()
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -703,12 +704,12 @@ pub(crate) async fn run() -> Result<()> {
     // `koda serve --stdio`: stdout is the protocol, so warnings go to
     // stderr, as `koda exec --json`'s do.
     if serving {
-        for warning in crate::retired_env::warnings() {
+        for warning in koda_tui::retired_env::warnings() {
             eprintln!("warning: {warning}");
         }
         let served = koda_client::stdio::serve(
             koda_client::stdio::ServeArgs {
-                config_file: crate::user_config::file()?,
+                config_file: koda_tui::user_config::file()?,
                 project_root,
                 home: config_dir,
             },
@@ -733,18 +734,21 @@ pub(crate) async fn run() -> Result<()> {
     // `--oss`: start the model's server on llama.cpp (or join the one
     // running) before the session opens, and point the session at it. It
     // is stopped when Koda exits, unless another `koda --oss` still uses it.
-    let mut oss_server: Option<crate::oss::Server> = None;
+    let mut oss_server: Option<koda_oss::Server> = None;
     if let Some((plan, check_gpu)) = &oss_plan {
         if let Some(model) = &plan.model {
-            for line in crate::oss::start_notice(model, crate::oss::unified_memory()) {
+            for line in koda_oss::start_notice(model, koda_oss::unified_memory()) {
                 eprintln!("{line}");
             }
-            let server = crate::oss::Server::start(model, &config_dir, *check_gpu).await?;
+            let server = koda_oss::Server::start(model, &config_dir, *check_gpu).await?;
             session.base_url = Some(server.base_url());
             // The llama-cpp provider sends `KODA_API_KEY` to the server.
             koda_config::runtime_env::set("KODA_API_KEY", server.api_key());
             // The server serves one model; Koda reads its id from it.
             session.model = None;
+            // A signal ends the TUI with an exit that runs no destructors;
+            // the server is left first.
+            koda_tui::set_signal_exit_hook(koda_oss::leave_active);
             oss_server = Some(server);
         }
         session.provider = Some(plan.provider.provider_id().to_string());
@@ -753,7 +757,7 @@ pub(crate) async fn run() -> Result<()> {
     // The model choice goes to `session/start`, as Codex's TUI passes its
     // model to `thread/start`; the host resolves an alias (`claude-haiku`
     // picks Anthropic) and fills in the rest from the saved choice.
-    let named = tui_context::settings::Named {
+    let named = tui_app::Named {
         provider: session.provider.take(),
         base_url: session.base_url.take(),
         model: session.model.take(),
@@ -762,7 +766,7 @@ pub(crate) async fn run() -> Result<()> {
     // Headless mode: skip onboarding, banner, version check
     if let Some(mut run) = headless_run {
         // Stderr, so `--json` stdout stays the protocol.
-        for warning in crate::retired_env::warnings() {
+        for warning in koda_tui::retired_env::warnings() {
             eprintln!("warning: {warning}");
         }
         run.named = headless::Named {
@@ -785,7 +789,7 @@ pub(crate) async fn run() -> Result<()> {
     }
 
     // Interactive mode: full REPL experience
-    let version_check = crate::updates::spawn_version_check();
+    let version_check = koda_tui::updates::spawn_version_check();
 
     // Onboarding asks which provider to use, so a start that already chose
     // one skips it, as Codex shows only the screens its resolved setup still
@@ -810,7 +814,7 @@ pub(crate) async fn run() -> Result<()> {
     tui_app::run(
         project_root,
         named,
-        crate::tui_app::Start {
+        koda_tui::tui_app::Start {
             resume,
             prompt: tui_prompt,
             images: tui_images,
@@ -953,7 +957,7 @@ fn exec_run(
     }
     Ok(headless::Run {
         prompt,
-        images: crate::input::load_images(&output.images)?,
+        images: koda_tui::input::load_images(&output.images)?,
         output: if json {
             headless::Output::Events {
                 deltas: json_deltas,
@@ -1066,7 +1070,7 @@ mod tests {
             panic!("not a fork");
         };
         let (which, prompt) = r.which.resolve().unwrap();
-        assert!(matches!(which, Some(crate::session_id::Resume::Last)));
+        assert!(matches!(which, Some(koda_tui::session_id::Resume::Last)));
         assert_eq!(prompt.as_deref(), Some("go on"));
 
         let cli = Cli::try_parse_from(["koda", "fork", "abc", "--model", "m"]).unwrap();
@@ -1078,7 +1082,7 @@ mod tests {
 
     #[test]
     fn resume_reads_an_id_or_last_then_a_prompt() {
-        use crate::session_id::Resume;
+        use koda_tui::session_id::Resume;
         let which = |args: &[&str]| -> (Option<Resume>, Option<String>) {
             match Cli::try_parse_from(args).unwrap().command {
                 Some(Command::Resume(r)) => r.which.resolve().unwrap(),

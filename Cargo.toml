@@ -2,6 +2,8 @@
 members = [
     "koda-core",
     "koda-cli",
+    "koda-tui",
+    "koda-oss",
     "koda-test-utils",
     "koda-sandbox",
     "koda-protocol",
@@ -52,6 +54,8 @@ koda-sandbox = { path = "koda-sandbox", version = "=0.7.4" }
 koda-core = { path = "koda-core", version = "=0.7.4" }
 koda-server = { path = "koda-server", version = "=0.7.4" }
 koda-client = { path = "koda-client", version = "=0.7.4" }
+koda-tui = { path = "koda-tui", version = "=0.7.4" }
+koda-oss = { path = "koda-oss", version = "=0.7.4" }
 base64 = "0.23"
 anyhow = "1"
 async-trait = "0.1"

@@ -11,12 +11,12 @@ use koda_config::{ConfigFile, Override};
 static OVERRIDES: OnceLock<Vec<Override>> = OnceLock::new();
 
 /// Keep this run's `-c` values. Called once, at startup.
-pub(crate) fn set_overrides(overrides: Vec<Override>) {
+pub fn set_overrides(overrides: Vec<Override>) {
     let _ = OVERRIDES.set(overrides);
 }
 
 /// The config file with this run's `-c` values over it.
-pub(crate) fn file() -> anyhow::Result<ConfigFile> {
+pub fn file() -> anyhow::Result<ConfigFile> {
     Ok(ConfigFile::in_dir(&koda_config::config_dir()?)
         .with_overrides(OVERRIDES.get().cloned().unwrap_or_default()))
 }

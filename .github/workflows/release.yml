@@ -76,11 +76,11 @@ jobs:
         run: cargo audit --deny unsound --deny yanked
       - name: Verify RUSTSEC-2026-0097 suppression
         # The RUSTSEC-2026-0097 suppression in .cargo/audit.toml is valid only
-        # as long as koda-cli does not use LogTracer or tracing_log (which would
+        # as long as koda-cli and koda-tui do not use LogTracer or tracing_log (which would
         # bridge the log crate into tracing and flip our exposure). Fail the
         # release if that assumption is ever violated. See #1050.
         run: |
-          if grep -rn 'LogTracer\|tracing_log' koda-cli/src/ koda-core/src/ koda-state/src/ koda-sandbox/src/; then
+          if grep -rn 'LogTracer\|tracing_log' koda-cli/src/ koda-tui/src/ koda-oss/src/ koda-core/src/ koda-state/src/ koda-sandbox/src/; then
             echo "::error::RUSTSEC-2026-0097 suppression invalid: LogTracer/tracing_log found in workspace src. Remove the usage or drop the suppression in .cargo/audit.toml."
             exit 1
           fi
