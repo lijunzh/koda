@@ -1,6 +1,6 @@
-//! `koda serve --stdio` as a process: a client on its stdin and stdout
-//! runs a turn against a scripted model, and the process ends when stdin
-//! closes or a signal stops it. The transport's scenarios are in
+//! `koda serve` as a process: a client on its stdin and stdout (`--stdio`)
+//! or on its socket runs a turn against a scripted model, and the process
+//! ends when stdin closes or a signal stops it. The transport's scenarios are in
 //! `koda-client/tests/serve.rs`.
 
 use std::process::Stdio;
@@ -178,8 +178,137 @@ async fn sigterm_ends_the_process_with_stdin_open() {
     assert!(status.success(), "{status:?}");
 }
 
+/// `koda serve` alone is the shared server on Koda's socket: a client
+/// connects, runs a turn, and SIGTERM stops the server and removes the
+/// socket. `--listen unix://PATH` puts it elsewhere.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn serve_listens_on_a_socket_until_sigterm() {
+    use tokio::net::UnixStream;
+    let server = FakeLlmServer::spawn().await;
+    server
+        .mount_fn("POST", r".*/chat/completions$", |_| {
+            reply("Over the socket.")
+        })
+        .await;
+    let root = tempfile::tempdir().unwrap();
+    let spawn = |extra: &[&str]| {
+        tokio::process::Command::new(koda_bin())
+            .arg("serve")
+            .args(extra)
+            .arg("--project-root")
+            .arg(root.path())
+            .env("XDG_CONFIG_HOME", root.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap()
+    };
+    let wait_for = |socket: std::path::PathBuf| async move {
+        let deadline = std::time::Instant::now() + WAIT;
+        loop {
+            if let Ok(stream) = UnixStream::connect(&socket).await {
+                return stream;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no socket at {socket:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    };
+    let stop = |child: &tokio::process::Child| {
+        let pid = child.id().unwrap().to_string();
+        assert!(
+            std::process::Command::new("kill")
+                .args(["-TERM", &pid])
+                .status()
+                .unwrap()
+                .success()
+        );
+    };
+
+    let socket = root.path().join("koda/serve/koda.sock");
+    let mut koda = spawn(&[]);
+    let stream = wait_for(socket.clone()).await;
+    let (output, mut input) = stream.into_split();
+    let mut lines = BufReader::new(output).lines();
+    for (id, method, params) in [
+        (
+            1,
+            "initialize",
+            json!({"clientInfo": {"name": "socket", "version": "0"}}),
+        ),
+        (
+            2,
+            "session/start",
+            json!({"modelProvider": "lm-studio", "baseUrl": server.url(), "model": "stub"}),
+        ),
+    ] {
+        let line = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+        input
+            .write_all(format!("{line}\n").as_bytes())
+            .await
+            .unwrap();
+    }
+    async fn read(
+        lines: &mut tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+    ) -> Value {
+        let line = tokio::time::timeout(WAIT, lines.next_line())
+            .await
+            .expect("koda serve wrote nothing in time")
+            .unwrap()
+            .expect("the socket closed");
+        serde_json::from_str::<Value>(&line).unwrap()
+    }
+    let session = loop {
+        let line = read(&mut lines).await;
+        if line["id"] == 2 {
+            break line["result"]["session"]["id"]
+                .as_str()
+                .unwrap()
+                .to_string();
+        }
+    };
+    let line = json!({"jsonrpc": "2.0", "id": 3, "method": "turn/start",
+        "params": {"sessionId": session, "input": "Say something"}});
+    input
+        .write_all(format!("{line}\n").as_bytes())
+        .await
+        .unwrap();
+    let completed = loop {
+        let line = read(&mut lines).await;
+        if line["method"] == "turn/completed" {
+            break line;
+        }
+    };
+    assert_eq!(completed["params"]["turn"]["status"], "completed");
+
+    stop(&koda);
+    let status = tokio::time::timeout(Duration::from_secs(15), koda.wait())
+        .await
+        .expect("koda serve didn't exit")
+        .unwrap();
+    assert!(status.success(), "{status:?}");
+    assert!(!socket.exists(), "the socket is removed");
+
+    // Elsewhere, with --listen.
+    let other = root.path().join("elsewhere/k.sock");
+    let url = format!("unix://{}", other.display());
+    let mut koda = spawn(&["--listen", &url]);
+    drop(wait_for(other.clone()).await);
+    stop(&koda);
+    let status = tokio::time::timeout(Duration::from_secs(15), koda.wait())
+        .await
+        .expect("koda serve didn't exit")
+        .unwrap();
+    assert!(status.success(), "{status:?}");
+}
+
 #[test]
-fn serve_needs_stdio_and_refuses_a_sessions_flags() {
+fn serve_refuses_an_unknown_listen_and_a_sessions_flags() {
     let root = tempfile::tempdir().unwrap();
     let run = |args: &[&str]| {
         std::process::Command::new(koda_bin())
@@ -189,9 +318,9 @@ fn serve_needs_stdio_and_refuses_a_sessions_flags() {
             .output()
             .unwrap()
     };
-    let out = run(&["serve"]);
+    let out = run(&["serve", "--listen", "tcp://127.0.0.1:9"]);
     assert_eq!(out.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("--stdio"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("unix://"));
     for flag in [
         &["--model", "x"][..],
         &["--provider", "lm-studio"],

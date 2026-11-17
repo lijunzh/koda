@@ -29,6 +29,8 @@ mod memory;
 mod session;
 mod settings;
 mod skills;
+#[cfg(unix)]
+pub mod socket;
 pub mod stdio;
 
 use koda_state::db::Database;

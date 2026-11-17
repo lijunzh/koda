@@ -269,7 +269,7 @@ async fn take_line(
 }
 
 /// One line as a message, or the error line to answer it with.
-fn parse(line: &[u8]) -> Result<Message, String> {
+pub(crate) fn parse(line: &[u8]) -> Result<Message, String> {
     let fail = |id: Option<RequestId>, code, message: String| {
         error_line(id, ErrorObject::new(code, message)).unwrap_or_default()
     };
@@ -301,20 +301,20 @@ fn parse(line: &[u8]) -> Result<Message, String> {
     })
 }
 
-fn error_line(id: Option<RequestId>, error: ErrorObject) -> serde_json::Result<String> {
+pub(crate) fn error_line(id: Option<RequestId>, error: ErrorObject) -> serde_json::Result<String> {
     serde_json::to_string(&ErrorResponse::new(id, error))
 }
 
 /// Lines waiting for the client, oldest first.
 #[derive(Default)]
-struct Outbox {
+pub(crate) struct Outbox {
     queue: Mutex<VecDeque<String>>,
     /// Something was queued, or the outbox closed.
     ready: Notify,
     /// Nothing more will be queued.
     closed: AtomicBool,
     /// Stdout broke: stop reading.
-    broken: Notify,
+    pub(crate) broken: Notify,
 }
 
 impl Outbox {
@@ -323,12 +323,12 @@ impl Outbox {
     }
 
     /// Queue a line; never dropped.
-    fn push(&self, line: String) {
+    pub(crate) fn push(&self, line: String) {
         self.lock().push_back(line);
         self.ready.notify_one();
     }
 
-    fn close(&self) {
+    pub(crate) fn close(&self) {
         self.closed.store(true, Ordering::Release);
         self.ready.notify_one();
     }
@@ -349,7 +349,7 @@ impl Outbox {
 
 /// Write queued lines to `output` until the outbox closes or `output`
 /// breaks.
-async fn write_lines<W: AsyncWrite + Unpin>(outbox: Arc<Outbox>, mut output: W) {
+pub(crate) async fn write_lines<W: AsyncWrite + Unpin>(outbox: Arc<Outbox>, mut output: W) {
     while let Some(mut line) = outbox.next().await {
         line.push('\n');
         let written = async {
@@ -357,7 +357,7 @@ async fn write_lines<W: AsyncWrite + Unpin>(outbox: Arc<Outbox>, mut output: W) 
             output.flush().await
         };
         if let Err(e) = written.await {
-            tracing::warn!("koda serve: writing stdout failed: {e}");
+            tracing::warn!("koda serve: writing to the client failed: {e}");
             outbox.broken.notify_one();
             return;
         }
