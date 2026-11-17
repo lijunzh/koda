@@ -2506,6 +2506,21 @@
             "null"
           ]
         },
+        "config": {
+          "additionalProperties": true,
+          "description": "Config values for the copy only, as `session/start` takes them.",
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "cwd": {
+          "description": "The folder the copy works in, as `session/start` takes it; the copy\nbelongs to it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "model": {
           "description": "The model: an id or an alias, as `session/start` takes it.",
           "type": [
@@ -2863,6 +2878,21 @@
         },
         "baseUrl": {
           "description": "The provider's endpoint, for a local server or a gateway. Without\none, the provider's default, or a resumed session's own. Given\nwithout `modelProvider` for a new session, it names the provider\ntoo, by its host or local port, as `koda --base-url` does.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "config": {
+          "additionalProperties": true,
+          "description": "Config values for this session only, over the config file and the\nhost's own, as `-c key=value` gives them and as Codex's\n`thread/start` takes a `config` map: dotted keys, JSON values.",
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "cwd": {
+          "description": "The folder the session works in, as Codex's `thread/start` takes a\n`cwd`: an absolute path to an existing folder. Without one, the\nhost's. One shared server serves every project this way.",
           "type": [
             "string",
             "null"

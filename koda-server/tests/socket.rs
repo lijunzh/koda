@@ -584,3 +584,95 @@ async fn an_approval_nobody_answers_is_refused_after_the_wait() {
     );
     koda.stop().await;
 }
+
+/// A reply that reads `path`.
+fn read_file(id: &str, path: &str) -> ResponseTemplate {
+    let args = json!({"file_path": path});
+    let chunks = [
+        json!({"choices": [{"delta": {"tool_calls": [{
+            "index": 0,
+            "id": id,
+            "type": "function",
+            "function": {"name": "Read", "arguments": args.to_string()},
+        }]}}]}),
+        json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+        json!({"choices": [], "usage": {"prompt_tokens": 100, "completion_tokens": 10}}),
+    ];
+    let mut body: String = chunks.iter().map(|c| format!("data: {c}\n\n")).collect();
+    body.push_str("data: [DONE]\n\n");
+    ResponseTemplate::new(200)
+        .insert_header("content-type", "text/event-stream")
+        .set_body_string(body)
+}
+
+/// One server for every project: `session/start` takes the session's
+/// folder (`cwd`) and its own config values (`config`), as Codex's
+/// `thread/start` does, and `session/fork` takes them for the copy.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_works_in_its_own_folder_with_its_own_config() {
+    let server = model(vec![read_file("r1", "notes.txt"), text("Read it.")]).await;
+    let koda = Server::start(config(&server), Duration::from_secs(60)).await;
+    let folders = tempfile::tempdir().unwrap();
+    let (alpha, beta) = (folders.path().join("alpha"), folders.path().join("beta"));
+    for (folder, text) in [(&alpha, "from alpha"), (&beta, "from beta")] {
+        std::fs::create_dir(folder).unwrap();
+        std::fs::write(folder.join("notes.txt"), text).unwrap();
+    }
+    let alpha = alpha.canonicalize().unwrap();
+    let beta = beta.canonicalize().unwrap();
+
+    let mut client = Client::ready(&koda).await;
+    let started = client
+        .request(
+            "session/start",
+            json!({"cwd": beta.display().to_string(), "config": {"mode": "plan"}}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(started["session"]["cwd"], beta.display().to_string());
+    assert_eq!(started["session"]["mode"], "plan", "its own config");
+    let session = started["session"]["id"].as_str().unwrap().to_string();
+    client
+        .request(
+            "turn/start",
+            json!({"sessionId": session, "input": "read the notes"}),
+        )
+        .await
+        .unwrap();
+    let heard = client.until_method("turn/completed").await;
+    let read = heard
+        .iter()
+        .find(|l| l["method"] == "item/completed" && l["params"]["item"]["id"] == "r1")
+        .unwrap_or_else(|| panic!("no Read: {heard:?}"));
+    assert!(read.to_string().contains("from beta"), "{read}");
+
+    // A fork opens where it's told, and belongs there.
+    let forked = client
+        .request(
+            "session/fork",
+            json!({"sessionId": session, "cwd": alpha.display().to_string()}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(forked["session"]["cwd"], alpha.display().to_string());
+
+    // A folder that isn't one, and config Koda doesn't take, are refused.
+    for (params, says) in [
+        (json!({"cwd": "relative/path"}), "absolute"),
+        (
+            json!({"cwd": "/no/such/folder/anywhere"}),
+            "/no/such/folder",
+        ),
+        (json!({"config": {"no_such_key": 1}}), "no_such_key"),
+        (json!({"config": {"mode": null}}), "mode"),
+    ] {
+        let refused = client.request("session/start", params.clone()).await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|e| e.to_string().contains(says)),
+            "{params}: {refused:?}"
+        );
+    }
+    koda.stop().await;
+}

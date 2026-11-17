@@ -321,6 +321,21 @@ pub struct Override {
 }
 
 impl Override {
+    /// `key_path` set to a JSON value, as a client sends one in
+    /// `session/start`'s `config`, as Codex's `thread/start` takes them.
+    /// `null` has no TOML value and is refused.
+    pub fn from_json(key_path: &str, value: &JsonValue) -> Result<Self, String> {
+        if key_path.is_empty() || key_path.split('.').any(str::is_empty) {
+            return Err(format!("{key_path:?} isn't a config key path"));
+        }
+        let value = toml::Value::try_from(value)
+            .map_err(|e| format!("{key_path}: {value} isn't a config value: {e}"))?;
+        Ok(Self {
+            key_path: key_path.to_string(),
+            value,
+        })
+    }
+
     /// `key_path` set to `value`, as a flag such as `--effort` sets one.
     pub fn new(key_path: impl Into<String>, value: impl Into<toml::Value>) -> Self {
         Self {
@@ -535,6 +550,13 @@ impl ConfigFile {
     /// write only the file.
     pub fn with_overrides(mut self, overrides: Vec<Override>) -> Self {
         self.overrides = overrides;
+        self
+    }
+
+    /// These overrides with `more` after them, so `more` wins a clash: a
+    /// session's own values over the run's.
+    pub fn with_more_overrides(mut self, more: Vec<Override>) -> Self {
+        self.overrides.extend(more);
         self
     }
 

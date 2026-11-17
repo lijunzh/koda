@@ -48,6 +48,14 @@ request that is already closed, or that Koda never sent, changes nothing.
 `--provider`, `--base-url` or `--resume`. `-c` and the other config flags set
 what new sessions start from, as for `koda`.
 
+`session/start` also takes the session's folder and its own config, as
+Codex's `thread/start` does: `cwd`, an absolute path to an existing folder
+(the server's own when left out), and `config`, a map of dotted keys to
+values, as `-c` sets them for that session only (`{"mode": "plan"}`). A key
+Koda doesn't know, or a folder that isn't one, is refused. So one shared
+server serves every project. `session/fork` takes both for the copy, which
+belongs to its `cwd`.
+
 ## Mentioned files
 
 `turn/start` takes `mentions: [{"path": "src/lib.rs"}]` beside `input`, for the
@@ -156,5 +164,3 @@ and `nc -U ~/.config/koda/serve/koda.sock` is enough to try it.)
 - **The TUI on the shared server.** Next, the TUI starts `koda serve` when
   none is running and works through it, as Codex's TUI does; `--no-daemon`
   keeps it in its own process, and `koda --remote` attaches elsewhere.
-- **One project per server.** Sessions work in the folder `koda serve` started
-  in (`--project-root`).

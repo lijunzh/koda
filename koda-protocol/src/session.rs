@@ -97,6 +97,16 @@ pub struct SessionStartParams {
     /// resumed session's own choice, an alias resolved again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// The folder the session works in, as Codex's `thread/start` takes a
+    /// `cwd`: an absolute path to an existing folder. Without one, the
+    /// host's. One shared server serves every project this way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Config values for this session only, over the config file and the
+    /// host's own, as `-c key=value` gives them and as Codex's
+    /// `thread/start` takes a `config` map: dotted keys, JSON values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<std::collections::BTreeMap<String, serde_json::Value>>,
 }
 
 /// `session/settings/update`: what the session's next turns run with, as
@@ -427,6 +437,13 @@ pub struct SessionForkParams {
     /// The model: an id or an alias, as `session/start` takes it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// The folder the copy works in, as `session/start` takes it; the copy
+    /// belongs to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Config values for the copy only, as `session/start` takes them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<std::collections::BTreeMap<String, serde_json::Value>>,
 }
 
 /// The answer to `session/fork`: the fork, opened, with its turns, as
