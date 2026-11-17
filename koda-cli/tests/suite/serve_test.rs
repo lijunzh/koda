@@ -431,3 +431,177 @@ fn the_tuis_server_flags_are_refused_where_they_dont_apply() {
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("unix://PATH"));
 }
+
+/// `koda serve` killed in the middle of a turn (a crash, `kill -9`, the Mac
+/// losing power): the next server opens the session from what was stored,
+/// says how the cut-off turn ended, and runs the next turn.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_killed_mid_turn_leaves_the_session_to_go_on() {
+    use tokio::net::UnixStream;
+    let server = FakeLlmServer::spawn().await;
+    // The first turn's call never answers in time; any other (the second
+    // turn's, a capability probe) answers at once.
+    let first_turn = |body: &[u8]| {
+        let body = String::from_utf8_lossy(body);
+        body.contains("First question") && !body.contains("Second question")
+    };
+    server
+        .mount_fn("POST", r".*/chat/completions$", move |request| {
+            if first_turn(&request.body) {
+                reply("Too late.").set_delay(Duration::from_secs(300))
+            } else {
+                reply("Back again.")
+            }
+        })
+        .await;
+    let root = tempfile::tempdir().unwrap();
+    let socket = root.path().join("koda/serve/koda.sock");
+    let spawn = || {
+        tokio::process::Command::new(koda_bin())
+            .arg("serve")
+            .arg("--project-root")
+            .arg(root.path())
+            .env("XDG_CONFIG_HOME", root.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap()
+    };
+    struct Conn {
+        lines: tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+        input: tokio::net::unix::OwnedWriteHalf,
+        next: i64,
+    }
+    impl Conn {
+        async fn open(socket: &std::path::Path) -> Self {
+            let deadline = std::time::Instant::now() + WAIT;
+            let stream = loop {
+                if let Ok(stream) = UnixStream::connect(socket).await {
+                    break stream;
+                }
+                assert!(std::time::Instant::now() < deadline, "no socket");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            };
+            let (output, input) = stream.into_split();
+            let mut conn = Self {
+                lines: BufReader::new(output).lines(),
+                input,
+                next: 1,
+            };
+            conn.request(
+                "initialize",
+                json!({"clientInfo": {"name": "kill-test", "version": "0"}}),
+            )
+            .await;
+            conn
+        }
+        async fn send(&mut self, method: &str, params: Value) -> i64 {
+            let id = self.next;
+            self.next += 1;
+            let line = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+            self.input
+                .write_all(format!("{line}\n").as_bytes())
+                .await
+                .unwrap();
+            id
+        }
+        async fn read(&mut self) -> Value {
+            let line = tokio::time::timeout(WAIT, self.lines.next_line())
+                .await
+                .expect("koda serve wrote nothing in time")
+                .unwrap()
+                .expect("the socket closed");
+            serde_json::from_str(&line).unwrap()
+        }
+        async fn request(&mut self, method: &str, params: Value) -> Value {
+            let id = self.send(method, params).await;
+            loop {
+                let line = self.read().await;
+                if line["id"] == id && line.get("method").is_none() {
+                    assert!(line.get("error").is_none(), "{method}: {line}");
+                    return line["result"].clone();
+                }
+            }
+        }
+        async fn until(&mut self, method: &str) -> Value {
+            loop {
+                let line = self.read().await;
+                if line["method"] == method {
+                    return line;
+                }
+            }
+        }
+    }
+
+    let mut koda = spawn();
+    let mut conn = Conn::open(&socket).await;
+    let started = conn
+        .request(
+            "session/start",
+            json!({"modelProvider": "lm-studio", "baseUrl": server.url(), "model": "stub"}),
+        )
+        .await;
+    let session = started["session"]["id"].as_str().unwrap().to_string();
+    conn.request(
+        "turn/start",
+        json!({"sessionId": session, "input": "First question"}),
+    )
+    .await;
+    conn.until("turn/started").await;
+    // Wait for the first turn's model call to be under way, then kill the
+    // server.
+    let deadline = std::time::Instant::now() + WAIT;
+    while !server
+        .received_requests()
+        .await
+        .iter()
+        .any(|r| r.url.path().ends_with("/chat/completions") && first_turn(&r.body))
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the model was never called"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    koda.start_kill().unwrap();
+    koda.wait().await.unwrap();
+    drop(conn);
+
+    // A new server takes over the socket the dead one left behind.
+    let _koda = spawn();
+    let mut conn = Conn::open(&socket).await;
+    let opened = conn
+        .request("session/start", json!({"sessionId": session}))
+        .await;
+    assert_eq!(opened["session"]["id"], session.as_str(), "{opened}");
+    conn.request(
+        "turn/start",
+        json!({"sessionId": session, "input": "Second question"}),
+    )
+    .await;
+    let completed = conn.until("turn/completed").await;
+    assert_eq!(
+        completed["params"]["turn"]["status"], "completed",
+        "{completed}"
+    );
+    // The cut-off turn reads as interrupted, as Codex marks a turn its
+    // server didn't finish; its question stays in the conversation.
+    let turns = conn
+        .request("session/turns/list", json!({"sessionId": session}))
+        .await;
+    let statuses: Vec<&str> = turns["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|turn| turn["status"].as_str().unwrap())
+        .collect();
+    assert_eq!(statuses, ["completed", "interrupted"], "{turns}");
+    let sent = server.chat_messages().await;
+    let last = Value::from(sent.last().unwrap().clone()).to_string();
+    assert!(
+        last.contains("First question") && last.contains("Second question"),
+        "{last}"
+    );
+}

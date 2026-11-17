@@ -95,9 +95,14 @@ running. Cursors are opaque, and one whose turn is gone is refused.
 | Parameters that don't fit | `-32602` |
 | A request about a session that isn't open, or a turn that isn't running | an error that says so; nothing else is affected |
 | A notification | nothing: Koda defines none from the client |
+| A message over 64 MiB | `-32600`, with `"id": null`, and the connection ends |
 
 Codex drops a line it can't parse, with no answer. Koda answers it, as JSON-RPC
 says to, since it keeps `"jsonrpc"` so that standard libraries can be used.
+
+64 MiB is the limit Codex's WebSocket transport has (tungstenite's default): a
+pasted image in base64 fits, and a client that never sends a newline can't make
+Koda read without end.
 
 ## When the client reads slowly
 
@@ -105,6 +110,11 @@ Messages wait in a queue until the client reads them, in order; none is
 dropped, and Koda's turns don't wait for the client. Codex's stdio does the
 same. The queue grows only while the client lags, so read stdout promptly, on
 its own thread or task if your program blocks elsewhere.
+
+On the shared server's socket (below), a client is let go instead once 4,096
+messages wait for it, as Codex lets a socket client go when its queue fills:
+what waited is dropped and the connection closes. Its sessions go on; attaching
+again reads them and resends any request still waiting.
 
 ## Ending
 
@@ -156,6 +166,12 @@ and `nc -U ~/.config/koda/serve/koda.sock` is enough to try it.)
   only you can change; a connection from another user is refused, and a lock
   keeps a second `koda serve` from taking the socket over. A socket left by a
   crashed server is replaced.
+- **A client that stops reading is let go** once 4,096 messages wait for it
+  (a TUI suspended with Ctrl+Z, a client that hangs), as Codex does, so one
+  stuck client can't make the server hold everything.
+- **After a crash,** the next server opens a session from what was stored. A
+  turn that was running when the server died reads as `interrupted`, and its
+  question stays in the conversation.
 - **It runs until** Ctrl+C, `SIGTERM` or `koda serve --stop`, then stops
   every session and removes the socket. Its sessions stay stored, and open
   again as they were. Over the protocol, `serve/stop` does the same; with
