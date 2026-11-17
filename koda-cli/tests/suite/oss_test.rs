@@ -114,6 +114,8 @@ fn spawn(setup: &Setup, delay: &str) -> std::process::Child {
     Command::new(koda_bin())
         .args(["exec", "--oss", "say hello"])
         .args(["-c", &format!("oss_model={MODEL}")])
+        // The tests run stand-ins side by side, which the busy check counts.
+        .args(["-c", "oss_check_gpu=false"])
         .arg("--project-root")
         .arg(&setup.project)
         .env("XDG_CONFIG_HOME", &setup.home)

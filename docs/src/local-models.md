@@ -20,10 +20,15 @@ answers, runs your session on it, and stops it when Koda exits. `koda exec
 
 **Which model,** by your machine's memory:
 
-| Memory | Model | Download | What it's for |
+| Machine | Model | Download | What it's for |
 |---|---|---|---|
-| 128 GB or more | **Qwen3.8-Flash-Next** (`unsloth/Qwen3.8-Flash-Next-GGUF:UD-Q4_K_XL`), 262K context, images, at `xhigh` effort | about 105 GB | Real work: 30 of 31 tasks in Koda's evals |
-| Anything less | **LFM3-1.7B** (`LiquidAI/LFM3-1.7B-GGUF:Q4_K_M`), 64K context | about 1.1 GB | A quick try: it reads, runs and edits, but is too small for real coding, and Koda says so |
+| A Mac with 128 GB or more | **Qwen3.8-Flash-Next** (`unsloth/Qwen3.8-Flash-Next-GGUF:UD-Q4_K_XL`), 262K context, images, at `xhigh` effort | about 105 GB | Real work: 30 of 31 tasks in Koda's evals |
+| Anything else, Linux included | **LFM3-1.7B** (`LiquidAI/LFM3-1.7B-GGUF:Q4_K_M`), 64K context | about 1.1 GB | A quick try: it reads, runs and edits, but is too small for real coding, and Koda says so |
+
+Only a Mac gets the big model by default: its GPU shares the machine's
+memory, so 128 GB holds Flash-Next. On Linux the GPU's own memory decides
+what fits, and a model in system RAM would run on the CPU far too slowly,
+so `--oss` starts the quick try there; name a model sized for your GPU.
 
 To run another model, name it in `~/.config/koda/config.toml` (or with `-c`
 for one run) as a Hugging Face `<repo>:<quant>`, or as the path of a `.gguf`
@@ -38,6 +43,13 @@ oss_model = "ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M"   # ~22 GB; 79 of 93 in K
 it waits. A model LM Studio has already downloaded (in `~/.lmstudio/models/`)
 is used where it is, with the vision projector beside it, instead of being
 downloaded again.
+
+**A busy GPU stops the start (macOS):** before loading a model, Koda checks
+that no other model server is running (llama-server, oMLX), that LM Studio
+has no model loaded, and that the GPU isn't already busy, as two big models
+side by side can run the Mac out of memory. It says what it found; stop that
+and try again, or set `oss_check_gpu = false` to start anyway. Joining a
+running `koda --oss` server skips the check.
 
 **One server, shared:** a second `koda --oss` on the same model joins the
 running server instead of loading another copy, and the last Koda to exit

@@ -644,7 +644,7 @@ pub(crate) async fn run() -> Result<()> {
             config.oss_provider.as_deref(),
             session.model.as_deref(),
             config.oss_model.as_deref(),
-            crate::oss::memory_bytes(),
+            crate::oss::unified_memory(),
         )?;
         if let Some(effort) = plan.model.as_ref().and_then(|m| m.effort)
             && config.model_reasoning_effort.is_none()
@@ -654,7 +654,7 @@ pub(crate) async fn run() -> Result<()> {
                     .map_err(anyhow::Error::msg)?,
             );
         }
-        Some(plan)
+        Some((plan, config.oss_check_gpu.unwrap_or(true)))
     } else {
         None
     };
@@ -734,12 +734,12 @@ pub(crate) async fn run() -> Result<()> {
     // running) before the session opens, and point the session at it. It
     // is stopped when Koda exits, unless another `koda --oss` still uses it.
     let mut oss_server: Option<crate::oss::Server> = None;
-    if let Some(plan) = &oss_plan {
+    if let Some((plan, check_gpu)) = &oss_plan {
         if let Some(model) = &plan.model {
-            for line in crate::oss::start_notice(model, crate::oss::memory_bytes()) {
+            for line in crate::oss::start_notice(model, crate::oss::unified_memory()) {
                 eprintln!("{line}");
             }
-            let server = crate::oss::Server::start(model, &config_dir).await?;
+            let server = crate::oss::Server::start(model, &config_dir, *check_gpu).await?;
             session.base_url = Some(server.base_url());
             // The llama-cpp provider sends `KODA_API_KEY` to the server.
             koda_config::runtime_env::set("KODA_API_KEY", server.api_key());
