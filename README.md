@@ -34,10 +34,14 @@ koda "why do the auth tests fail?"     # the TUI, starting with a prompt
 koda exec "fix the failing test"       # one prompt without the TUI, for scripts and CI
 git diff | koda exec "review this"     # piped input
 koda resume --last                     # pick up this project's latest session
+koda --oss                             # a local model, no API key (needs llama.cpp)
 ```
 
 On first run Koda opens its provider picker: choose a provider and give it an
-API key, or point it at a local server. Inside the TUI, `/help` lists the
+API key, or point it at a local server. Or try it free with `brew install
+llama.cpp` and `koda --oss`: Koda starts a local model for the session and
+stops it when you quit (Qwen3.8-Flash-Next on a 128 GB Mac, else a 1 GB quick
+try). See [Local models](https://lijunzh.github.io/koda/local-models.html). Inside the TUI, `/help` lists the
 commands and keys.
 
 ## What it does
@@ -52,6 +56,7 @@ commands and keys.
   are blocked, and the network goes through Koda's proxy.
 - **15 providers:** Anthropic, OpenAI, Gemini, OpenRouter, Groq, xAI, DeepSeek,
   Mistral, and local servers (LM Studio, Ollama, llama.cpp, vLLM) among them.
+  `koda --oss` runs a local model with nothing to set up.
 - **Your project's instructions:** `AGENTS.md`, or `CLAUDE.md` if there is
   none; [skills](https://lijunzh.github.io/koda/skills.html), [custom
   agents](https://lijunzh.github.io/koda/agents.html) and [MCP
