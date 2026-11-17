@@ -115,7 +115,13 @@ impl Tui {
         command
             .args(model.map(|m| ["--model", m]).into_iter().flatten())
             .args(["--max-context-tokens", "64000"])
-            .args(["--mode", "safe"])
+            // Safe unless the test picks a mode (clap refuses `--mode` twice).
+            .args(
+                (!flags.contains(&"--mode"))
+                    .then_some(["--mode", "safe"])
+                    .into_iter()
+                    .flatten(),
+            )
             .args(flags)
             .arg("--project-root")
             .arg(home)
@@ -2695,4 +2701,19 @@ async fn koda_fork_opens_a_copy_of_the_last_or_the_picked_session() {
     highlight(&mut tui, "Fork of delta");
     tui.type_text("\r");
     tui.wait_for_screen("Forked into \"Fork of Fork of delta");
+}
+
+/// `koda --mode plan` opens the TUI in Plan, as `/plan` and `Shift+Tab`
+/// reach it: a leftover check from 0.7.0, when Plan was for `koda exec`
+/// only, refused it at startup.
+#[tokio::test(flavor = "multi_thread")]
+async fn mode_plan_opens_the_tui_in_plan() {
+    let server = scripted_model(vec![proposed_plan()]).await;
+    let home = home();
+    let mut tui = Tui::start_with_args(home.path(), &server.url(), &["--mode", "plan"], IDLE_HINT);
+    tui.wait_for_screen("PLAN");
+    tui.submit("add a greeting");
+    tui.wait_for_screen("Implement this plan?");
+    let screen = tui.screen();
+    assert!(screen.contains("Proposed plan"), "{screen}");
 }

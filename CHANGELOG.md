@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **`koda --mode plan` opens the TUI in Plan.** It was refused at startup ("--mode plan is for one-shot runs") by a check left from 0.7.0, though 0.7.1 made Plan work in the TUI through `/plan` and `Shift+Tab` and the docs say `--mode plan` does too. `-c mode=plan` and `mode = "plan"` in `config.toml` open in Plan as well.
 - **A local server started with an API key reports its context window and vision.** Koda sent the key with chat requests but not with its capability checks (llama.cpp's `/props`, LM Studio's model list, Ollama's `/api/show`), so a `llama-server --api-key` was taken to have a 32K window and no image support.
 
 ## [0.7.3] - 2026-11-16

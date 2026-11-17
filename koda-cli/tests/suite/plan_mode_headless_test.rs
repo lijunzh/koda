@@ -143,32 +143,3 @@ async fn plan_runs_reads_and_refuses_the_rest() {
         "expected three refusals: {after}"
     );
 }
-
-#[tokio::test(flavor = "multi_thread")]
-async fn plan_is_refused_for_an_interactive_session() {
-    let tmp = tempfile::tempdir().unwrap();
-    let output = tokio::process::Command::new(koda_bin())
-        .args([
-            "--mode",
-            "plan",
-            "--provider",
-            "lmstudio",
-            "--model",
-            "stub",
-        ])
-        .args(["--base-url", "http://127.0.0.1:9"])
-        .arg("--project-root")
-        .arg(tmp.path())
-        .env("XDG_CONFIG_HOME", tmp.path())
-        .stdin(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .output()
-        .await
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("--mode plan is for one-shot runs"),
-        "stderr: {stderr}"
-    );
-}
