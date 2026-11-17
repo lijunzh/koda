@@ -79,7 +79,8 @@ and `EngineCommand` (input); approval flows through async channels.
 Workspace: `koda-core` (library, pure engine, zero terminal deps), `koda-cli`
 (binary `koda`: the command line, `koda exec`, `koda serve` and `koda mcp`, as
 Codex's `codex-cli`), `koda-tui` (the ratatui TUI, as Codex's `codex-tui`),
-`koda-oss` (`--oss`: `llama-server` started, shared and stopped with Koda), `koda-sandbox` (kernel sandbox runtime),
+`koda-oss` (`--oss`: `llama-server` started, shared and stopped with Koda),
+`koda-git` (one hardened way to run `git`, as Codex's `codex-git-utils`), `koda-sandbox` (kernel sandbox runtime),
 `koda-protocol` (the client protocol's messages and schema), `koda-client`
 (the client API: the in-process client, as Codex's `app-server-client`),
 `koda-server` (the host and its session tasks, engine events projected onto
@@ -172,6 +173,11 @@ separate "strict mode", "yolo mode" or per-tool toggles.
 ## Conventions
 
 - Error handling: `anyhow::Result<T>` with `.context()`
+- Git that Koda runs itself (not the model's, which goes through Bash and the
+  sandbox) goes through `koda_git::command` or `tokio_command`, never
+  `Command::new("git")`: a repository's config can name programs git runs
+  (hooks, fsmonitor, filters, external diff, textconv). Diffs add
+  `koda_git::DIFF_ARGS`. Tests may set up repos with plain `git`.
 - All I/O is async (`tokio`)
 - Tool names: PascalCase; module names: snake_case
 - `koda-core` has zero terminal deps (no crossterm, no ratatui)

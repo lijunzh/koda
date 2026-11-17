@@ -191,18 +191,21 @@ pub async fn handle_slash_command(
 fn get_git_diff() -> String {
     const MAX_DIFF_CHARS: usize = 30_000;
 
-    let run = |args: &[&str]| {
-        std::process::Command::new("git")
+    // Hardened by `koda_git`: the repository's config can't make it run a
+    // program (an external diff, a textconv, a filter, the fsmonitor).
+    let run = |operation: koda_git::Operation, args: &[&str]| {
+        koda_git::command(std::path::Path::new("."), operation)
+            .ok()?
             .args(args)
+            .args(koda_git::DIFF_ARGS)
             .output()
             .ok()
             .filter(|o| o.status.success())
             .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-            .unwrap_or_default()
     };
 
-    let unstaged = run(&["diff"]);
-    let staged = run(&["diff", "--cached"]);
+    let unstaged = run(koda_git::Operation::WorkingTree, &["diff"]).unwrap_or_default();
+    let staged = run(koda_git::Operation::Metadata, &["diff", "--cached"]).unwrap_or_default();
 
     let mut diff = unstaged;
     if !staged.is_empty() {

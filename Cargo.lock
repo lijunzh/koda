@@ -1980,6 +1980,7 @@ dependencies = [
  "image",
  "koda-command",
  "koda-config",
+ "koda-git",
  "koda-mcp",
  "koda-memory",
  "koda-protocol",
@@ -2008,6 +2009,14 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "koda-git"
+version = "0.7.4"
+dependencies = [
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -2092,6 +2101,7 @@ dependencies = [
  "async-trait",
  "glob",
  "ignore",
+ "koda-git",
  "libc",
  "regex",
  "serde",
@@ -2180,6 +2190,7 @@ dependencies = [
  "image",
  "koda-client",
  "koda-config",
+ "koda-git",
  "koda-state",
  "libc",
  "pretty_assertions",

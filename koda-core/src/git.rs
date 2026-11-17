@@ -25,8 +25,9 @@
 //! Diff stats are truncated at 2KB to avoid bloating the system prompt.
 
 use std::path::Path;
-use std::process::Command;
 use std::sync::OnceLock;
+
+use koda_git::{DIFF_ARGS, Operation};
 
 // ── Context injection (#263) ────────────────────────────────────
 
@@ -63,23 +64,33 @@ impl GitSnapshot {
 /// - Unstaged diff stat (truncated)
 /// - Last N commit subjects
 pub fn git_context(project_root: &Path) -> Option<String> {
-    let branch = git_cmd(project_root, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    let branch = git_cmd(
+        project_root,
+        Operation::Metadata,
+        &["rev-parse", "--abbrev-ref", "HEAD"],
+    )?;
 
     let mut parts = vec![format!(
         "[Git snapshot from session start; run git for current state: branch={branch}"
     )];
 
     // Staged changes (stat only — token-efficient)
-    if let Some(staged) = git_cmd(project_root, &["diff", "--cached", "--stat"])
-        && !staged.trim().is_empty()
+    if let Some(staged) = git_cmd(
+        project_root,
+        Operation::Metadata,
+        &["diff", "--cached", "--stat", DIFF_ARGS[0], DIFF_ARGS[1]],
+    ) && !staged.trim().is_empty()
     {
         let truncated = truncate_str(&staged, MAX_DIFF_STAT_CHARS);
         parts.push(format!("staged:\n{truncated}"));
     }
 
     // Unstaged changes (stat only)
-    if let Some(unstaged) = git_cmd(project_root, &["diff", "--stat"])
-        && !unstaged.trim().is_empty()
+    if let Some(unstaged) = git_cmd(
+        project_root,
+        Operation::WorkingTree,
+        &["diff", "--stat", DIFF_ARGS[0], DIFF_ARGS[1]],
+    ) && !unstaged.trim().is_empty()
     {
         let truncated = truncate_str(&unstaged, MAX_DIFF_STAT_CHARS);
         parts.push(format!("unstaged:\n{truncated}"));
@@ -88,6 +99,7 @@ pub fn git_context(project_root: &Path) -> Option<String> {
     // Untracked file count
     if let Some(untracked) = git_cmd(
         project_root,
+        Operation::WorkingTree,
         &["ls-files", "--others", "--exclude-standard"],
     ) {
         let count = untracked.lines().count();
@@ -99,6 +111,7 @@ pub fn git_context(project_root: &Path) -> Option<String> {
     // Recent commits
     if let Some(log) = git_cmd(
         project_root,
+        Operation::Metadata,
         &[
             "log",
             "--oneline",
@@ -116,11 +129,13 @@ pub fn git_context(project_root: &Path) -> Option<String> {
 
 // ── Helpers ─────────────────────────────────────────────────────
 
-/// Run a git command and return stdout if successful.
-fn git_cmd(cwd: &Path, args: &[&str]) -> Option<String> {
-    Command::new("git")
+/// Run a git command and return stdout if successful. It runs outside the
+/// sandbox on a project Koda didn't vet, so through [`koda_git`]: the
+/// repository's config can't make it run a program.
+fn git_cmd(cwd: &Path, operation: Operation, args: &[&str]) -> Option<String> {
+    koda_git::command(cwd, operation)
+        .ok()?
         .args(args)
-        .current_dir(cwd)
         .output()
         .ok()
         .filter(|o| o.status.success())
@@ -168,7 +183,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         let git = |args: &[&str]| {
-            let ok = Command::new("git")
+            let ok = std::process::Command::new("git")
                 .args(["-c", "user.name=t", "-c", "user.email=t@t"])
                 .args(args)
                 .current_dir(root)

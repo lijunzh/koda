@@ -15,8 +15,9 @@
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use koda_git::Operation;
 use std::path::{Path, PathBuf};
-use tokio::process::Command;
+use std::process::Output;
 
 /// `out` if git ran and reported success, else why not.
 fn succeeded(
@@ -37,20 +38,21 @@ fn succeeded(
     Err(format!("{step}: {}", said.trim()))
 }
 
-/// A `git` command in `dir`, killed if its call is dropped. A half-made worktree
-/// isn't cleaned up.
+/// Run `git` in `dir` with `args`, killed if its call is dropped. A half-made
+/// worktree isn't cleaned up.
 ///
 /// These run outside the sandbox on a tree the sub-agent wrote, so nothing it
-/// wrote may decide what they execute. A relative `core.hooksPath` finds hooks
-/// inside the worktree, and `--no-verify` only skips some hooks. Turning hooks
-/// off means a project's own hooks, `post-checkout` included, don't run here.
-fn git(dir: &Path) -> Command {
-    let mut cmd = Command::new("git");
-    cmd.args(["-c", "core.hooksPath=/dev/null"])
-        .args(["-c", "core.fsmonitor=false"])
-        .current_dir(dir)
-        .kill_on_drop(true);
-    cmd
+/// wrote may decide what they execute: [`koda_git`] turns off hooks (a
+/// relative `core.hooksPath` finds hooks inside the worktree, and
+/// `--no-verify` only skips some), the fsmonitor and, for working-tree
+/// commands, filter drivers. A project's own hooks, `post-checkout`
+/// included, don't run here.
+async fn git(dir: &Path, operation: Operation, args: &[&str]) -> std::io::Result<Output> {
+    koda_git::tokio_command(dir, operation)
+        .await?
+        .args(args)
+        .output()
+        .await
 }
 
 // ── Trait ────────────────────────────────────────────────────────────────────
@@ -189,10 +191,12 @@ impl GitWorktreeProvider {
 
     /// `true` when git is reachable and the project is inside a git repo.
     async fn is_git_repo(&self) -> bool {
-        let Ok(out) = git(&self.project_root)
-            .args(["rev-parse", "--is-inside-work-tree"])
-            .output()
-            .await
+        let Ok(out) = git(
+            &self.project_root,
+            Operation::Metadata,
+            &["rev-parse", "--is-inside-work-tree"],
+        )
+        .await
         else {
             return false;
         };
@@ -232,18 +236,20 @@ impl WorkspaceProvider for GitWorktreeProvider {
         std::fs::create_dir_all(wt_path.parent().unwrap_or(&self.project_root))
             .context("Failed to create .koda/worktrees/ directory")?;
 
-        let out = git(&self.project_root)
-            .args([
+        let out = git(
+            &self.project_root,
+            Operation::WorkingTree,
+            &[
                 "worktree",
                 "add",
                 "-b",
                 &branch,
                 &wt_path.to_string_lossy(),
                 "HEAD",
-            ])
-            .output()
-            .await
-            .context("Failed to spawn git worktree add")?;
+            ],
+        )
+        .await
+        .context("Failed to spawn git worktree add")?;
 
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
@@ -307,10 +313,12 @@ impl WorkspaceProvider for GitWorktreeProvider {
 
         // Nothing of its own — remove worktree and ephemeral branch.
         self.remove_worktree(path).await;
-        let _ = git(&self.project_root)
-            .args(["branch", "-D", &branch])
-            .output()
-            .await;
+        let _ = git(
+            &self.project_root,
+            Operation::Metadata,
+            &["branch", "-D", &branch],
+        )
+        .await;
 
         tracing::info!("Removed clean worktree for slot {slot_id}");
         Ok(None)
@@ -320,17 +328,19 @@ impl WorkspaceProvider for GitWorktreeProvider {
 impl GitWorktreeProvider {
     /// Whether the worktree holds anything to save.
     async fn has_changes(&self, path: &Path) -> std::result::Result<bool, String> {
-        let status = git(path).args(["status", "--short"]).output().await;
+        let status = git(path, Operation::WorkingTree, &["status", "--short"]).await;
         let status = succeeded("git status", status)?;
         Ok(!String::from_utf8_lossy(&status.stdout).trim().is_empty())
     }
 
     /// Whether `branch` holds commits the project's `HEAD` doesn't.
     async fn has_new_commits(&self, branch: &str) -> std::result::Result<bool, String> {
-        let commits = git(&self.project_root)
-            .args(["rev-list", "--max-count=1", &format!("HEAD..{branch}")])
-            .output()
-            .await;
+        let commits = git(
+            &self.project_root,
+            Operation::Metadata,
+            &["rev-list", "--max-count=1", &format!("HEAD..{branch}")],
+        )
+        .await;
         let commits = succeeded("git rev-list", commits)?;
         Ok(!commits.stdout.is_empty())
     }
@@ -339,10 +349,15 @@ impl GitWorktreeProvider {
     /// point, so the project's signing doesn't get a say, and [`git`] has already
     /// turned off its hooks.
     async fn save_changes(&self, path: &Path) -> std::result::Result<(), String> {
-        succeeded("git add", git(path).args(["add", "-A"]).output().await)?;
+        succeeded(
+            "git add",
+            git(path, Operation::WorkingTree, &["add", "-A"]).await,
+        )?;
         let commit_msg = format!("koda: sub-agent '{}' changes", self.agent_name);
-        let committed = git(path)
-            .args([
+        let committed = git(
+            path,
+            Operation::WorkingTree,
+            &[
                 "-c",
                 "user.name=koda",
                 "-c",
@@ -352,9 +367,9 @@ impl GitWorktreeProvider {
                 "commit",
                 "-m",
                 &commit_msg,
-            ])
-            .output()
-            .await;
+            ],
+        )
+        .await;
         succeeded("git commit", committed).map(|_| ())
     }
 
@@ -371,10 +386,12 @@ impl GitWorktreeProvider {
 
     /// Best-effort `git worktree remove --force` with rm-rf fallback.
     async fn remove_worktree(&self, path: &Path) {
-        let out = git(&self.project_root)
-            .args(["worktree", "remove", "--force", &path.to_string_lossy()])
-            .output()
-            .await;
+        let out = git(
+            &self.project_root,
+            Operation::WorkingTree,
+            &["worktree", "remove", "--force", &path.to_string_lossy()],
+        )
+        .await;
 
         match out {
             Ok(o) if o.status.success() => {}
@@ -396,6 +413,7 @@ impl GitWorktreeProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::process::Command;
 
     // ── CwdProvider ──────────────────────────────────────────────────────────
 
@@ -549,7 +567,7 @@ mod tests {
                 "x",
             ][..],
         ] {
-            let out = git(&wt).args(args).output().await.unwrap();
+            let out = git(&wt, Operation::WorkingTree, args).await.unwrap();
             assert!(out.status.success(), "{out:?}");
         }
 
@@ -559,11 +577,13 @@ mod tests {
         let hint = hint.expect("committed work must be reported");
         assert!(hint.contains(&branch), "{hint}");
         assert!(!wt.exists(), "the branch holds the work now");
-        let shown = git(tmp.path())
-            .args(["show", &format!("{branch}:done.txt")])
-            .output()
-            .await
-            .unwrap();
+        let shown = git(
+            tmp.path(),
+            Operation::Metadata,
+            &["show", &format!("{branch}:done.txt")],
+        )
+        .await
+        .unwrap();
         assert_eq!(String::from_utf8_lossy(&shown.stdout), "done");
     }
 
@@ -576,11 +596,13 @@ mod tests {
         let wt = p.provision("slot-idle").await.unwrap();
         assert!(p.release("slot-idle", &wt).await.unwrap().is_none());
 
-        let branches = git(tmp.path())
-            .args(["branch", "--list", &p.branch_name("slot-idle")])
-            .output()
-            .await
-            .unwrap();
+        let branches = git(
+            tmp.path(),
+            Operation::Metadata,
+            &["branch", "--list", &p.branch_name("slot-idle")],
+        )
+        .await
+        .unwrap();
         assert!(branches.stdout.is_empty(), "{branches:?}");
     }
 
