@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-11-16
+
 ### Added
 
 - **`koda --oss` runs Koda on a local model with nothing to set up, as Codex's `--oss` does.** Koda starts llama.cpp's `llama-server` (`brew install llama.cpp`) with the model, waits until it answers, runs the session on it, and stops it when Koda exits. The model goes by memory: Qwen3.8-Flash-Next on a Mac with 128 GB, whose GPU shares that memory (about 105 GB, at `xhigh` effort; 30 of 31 tasks in Koda's evals), else, Linux included, LFM3-1.7B, a 1 GB quick try that shows Koda working but is too small for real coding. On macOS Koda won't load a model while the GPU is busy (another model server, a model loaded in LM Studio, or the GPU in use) unless `oss_check_gpu = false`. `oss_model` in `config.toml` names another (a Hugging Face `<repo>:<quant>` or a `.gguf` path). llama.cpp downloads the model once into the Hugging Face cache; a copy LM Studio already has is used where it is. A second `koda --oss` on the same model shares the server, and the last to exit stops it; each server listens on localhost with an API key only Koda knows. `--local-provider lm-studio` or `ollama` (or `oss_provider`) connects to those instead. `koda`, `koda exec`, `koda resume` and `koda fork` take `--oss`.
