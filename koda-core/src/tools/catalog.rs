@@ -61,7 +61,7 @@ use std::sync::{Arc, RwLock};
 
 use super::{
     DynTool, Tool, ToolEffect, agent, ask_user, boxed, cargo, file_tools, glob_tool, grep, memory,
-    recall, shell, skill_tools, spawn_agent, todo, web_fetch, web_search,
+    recall, shell, skill_tools, spawn_agent, todo, web_fetch, web_search, write_stdin,
 };
 
 /// The read-only metadata side of [`crate::tools::ToolRegistry`].
@@ -192,6 +192,9 @@ impl ToolCatalog {
         // that with `definition()` instead of `definitions()`.
         let recall_def = recall::definition();
         definitions.insert(recall_def.name.clone(), recall_def);
+        // Typing into a background command's terminal.
+        let write_stdin_def = write_stdin::WriteStdinTool.definition();
+        definitions.insert(write_stdin_def.name.clone(), write_stdin_def);
 
         // Tools migrated onto the `Tool` trait. PR-4 introduces the
         // file-ops cohort. Subsequent PRs (5..8) register the search,
@@ -213,6 +216,7 @@ impl ToolCatalog {
             // PR-6: shell.
             boxed(shell::BashTool),
             boxed(cargo::CargoTool),
+            boxed(write_stdin::WriteStdinTool),
             // PR-7: misc cohort.
             boxed(web_fetch::WebFetchTool),
             boxed(web_search::WebSearchTool),
@@ -498,6 +502,20 @@ mod tests {
             assert!(
                 names.contains(&expected.to_string()),
                 "missing built-in tool {expected:?} (got {names:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn every_tool_that_runs_is_offered_to_the_model() {
+        // The two maps are filled separately: a tool in `tools` but not in
+        // `definitions` runs when called but is never offered, as
+        // WriteStdin first was.
+        let catalog = ToolCatalog::new();
+        for name in catalog.tools.keys() {
+            assert!(
+                catalog.definitions.contains_key(*name),
+                "{name} runs but has no definition sent to the model"
             );
         }
     }

@@ -605,6 +605,7 @@ pub(crate) fn policy_overlay_rules(policy: &SandboxPolicy) -> Result<String> {
         && fs.allow_read_within_deny.is_empty()
         && fs.allow_write.is_empty()
         && fs.deny_write_within_allow.is_empty()
+        && fs.terminal.is_none()
     {
         return Ok(String::new());
     }
@@ -632,12 +633,42 @@ pub(crate) fn policy_overlay_rules(policy: &SandboxPolicy) -> Result<String> {
         validate_seatbelt_path(&s)?;
         rules.push_str(&format!("(deny file-write* (subpath \"{s}\"))\n"));
     }
+    if let Some(terminal) = &fs.terminal {
+        rules.push_str(&terminal_rules(&terminal.to_string_lossy())?);
+    }
     Ok(rules)
+}
+
+/// The command's own terminal (`device`, a `/dev/ttys…` path) and
+/// `/dev/tty`, which is that terminal for a command that leads its session:
+/// reads, writes and ioctls (terminal settings, window size), as Codex's
+/// profile allows them for every terminal device.
+fn terminal_rules(device: &str) -> Result<String> {
+    validate_seatbelt_path(device)?;
+    Ok(format!(
+        "; \u{2500}\u{2500} the command's own terminal \u{2500}\u{2500}\n\
+         (allow file-read* file-write* file-ioctl (literal \"{device}\"))\n\
+         (allow file-read* file-write* file-ioctl (literal \"/dev/tty\"))\n"
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_terminal_opens_just_that_device_and_dev_tty() {
+        let mut policy = SandboxPolicy::strict_default();
+        policy.fs.terminal = Some("/dev/ttys042".into());
+        let overlay = policy_overlay_rules(&policy).unwrap();
+        assert!(overlay.contains("(literal \"/dev/ttys042\")"));
+        assert!(overlay.contains("(literal \"/dev/tty\")"));
+        assert!(!overlay.contains("regex"), "no other terminal: {overlay}");
+        assert_eq!(
+            policy_overlay_rules(&SandboxPolicy::strict_default()).unwrap(),
+            ""
+        );
+    }
 
     // ── Profile structure: deny rules present ──────────────────────────────
 

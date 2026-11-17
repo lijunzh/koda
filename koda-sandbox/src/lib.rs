@@ -53,6 +53,7 @@ pub mod policy_check;
 pub mod pool;
 pub mod process_group;
 pub mod proxy;
+pub mod pty;
 pub mod rlimits;
 #[cfg(target_os = "macos")]
 pub mod seatbelt;

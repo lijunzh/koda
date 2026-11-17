@@ -163,6 +163,10 @@ impl ToolCallSummary {
             "WebFetch" => ToolCallKind::WebFetch {
                 url: first_string(args, &["url"]).unwrap_or_default(),
             },
+            // `4242 ← y\n`: the PID and what's typed, controls visible.
+            "WriteStdin" => ToolCallKind::Generic {
+                value: Some(write_stdin_summary(args)),
+            },
             _ => ToolCallKind::Generic {
                 value: first_string_in_object(args),
             },
@@ -187,6 +191,27 @@ fn first_string(args: &Value, keys: &[&str]) -> Option<String> {
 /// specialized shape for. Object-iteration order is `serde_json`'s
 /// insertion-preserving order, which means the first key the tool's
 /// schema declares wins — usually the most informative one.
+/// A `WriteStdin` call as `PID ← typed`, with newlines and control keys
+/// shown (`\n`, `^C`), or `PID (waiting)` for a poll.
+fn write_stdin_summary(args: &Value) -> String {
+    let pid = args.get("pid").and_then(Value::as_u64).unwrap_or(0);
+    let typed = args.get("chars").and_then(Value::as_str).unwrap_or("");
+    if typed.is_empty() {
+        return format!("{pid} (waiting)");
+    }
+    let shown: String = typed
+        .chars()
+        .map(|c| match c {
+            '\n' => "\\n".to_string(),
+            '\r' => "\\r".to_string(),
+            '\t' => "\\t".to_string(),
+            c if (c as u32) < 0x20 => format!("^{}", char::from(b'@' + c as u8)),
+            c => c.to_string(),
+        })
+        .collect();
+    format!("{pid} \u{2190} {shown}")
+}
+
 fn first_string_in_object(args: &Value) -> Option<String> {
     args.as_object()?
         .iter()
@@ -224,7 +249,16 @@ fn cargo_command(args: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::cargo_command;
+    use super::{cargo_command, write_stdin_summary};
+
+    #[test]
+    fn a_write_stdin_call_reads_as_pid_and_keys() {
+        assert_eq!(
+            write_stdin_summary(&json!({"pid": 42, "chars": "y\n\u{3}"})),
+            "42 \u{2190} y\\n^C"
+        );
+        assert_eq!(write_stdin_summary(&json!({"pid": 42})), "42 (waiting)");
+    }
 
     #[test]
     fn a_cargo_call_reads_as_its_command() {

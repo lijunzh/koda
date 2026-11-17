@@ -43,8 +43,9 @@
 //! the spawning thread, the reaper, and the cleanup path all touch it.
 
 use crate::child_agent::CancelOutcome;
+use crate::tools::terminal::Terminal;
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::process::Child;
 
@@ -144,6 +145,9 @@ struct BgEntry {
     /// The socket the command's sandbox serves its network namespace on, so
     /// later commands can reach its servers (bwrap only).
     loopback_socket: Option<std::path::PathBuf>,
+    /// The command's terminal, when it was started with `tty`: what
+    /// `WriteStdin` types into.
+    terminal: Option<Arc<Terminal>>,
 }
 
 /// Registry of running background processes, scoped to one session.
@@ -175,6 +179,7 @@ impl BgRegistry {
                 spawner,
                 members: Vec::new(),
                 loopback_socket: None,
+                terminal: None,
             },
         );
         pid
@@ -196,6 +201,7 @@ impl BgRegistry {
                 spawner,
                 members: Vec::new(),
                 loopback_socket: None,
+                terminal: None,
             },
         );
         group
@@ -461,7 +467,51 @@ fn kill_command(group: u32, child: Option<&mut Child>) -> std::io::Result<()> {
     }
 }
 
+/// Why [`BgRegistry::terminal_as_caller`] found no terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalLookup {
+    /// No background process has this PID.
+    NotFound,
+    /// Another agent started it (Model E).
+    Forbidden,
+    /// It was started without `tty`, so it has no terminal to type into.
+    NoTerminal,
+}
+
 impl BgRegistry {
+    /// Record `pid`'s terminal, for `WriteStdin`.
+    pub fn set_terminal(&self, pid: u32, terminal: Arc<Terminal>) {
+        if let Some(entry) = self.inner.lock().unwrap().get_mut(&pid) {
+            entry.terminal = Some(terminal);
+        }
+    }
+
+    /// The terminal of background process `pid`, if the caller started it
+    /// with one. Same Model E rule as [`Self::kill_as_caller`]. An exited
+    /// process keeps its terminal, so its last output can still be read.
+    pub fn terminal_as_caller(
+        &self,
+        pid: u32,
+        caller_spawner: Option<u32>,
+    ) -> Result<Arc<Terminal>, TerminalLookup> {
+        let guard = self.inner.lock().unwrap();
+        let entry = guard.get(&pid).ok_or(TerminalLookup::NotFound)?;
+        if entry.spawner != caller_spawner {
+            return Err(TerminalLookup::Forbidden);
+        }
+        entry.terminal.clone().ok_or(TerminalLookup::NoTerminal)
+    }
+
+    /// The status of background process `pid`, freshly reaped.
+    pub fn status(&self, pid: u32) -> Option<BgProcessStatus> {
+        self.reap();
+        self.inner
+            .lock()
+            .unwrap()
+            .get(&pid)
+            .map(|entry| entry.status)
+    }
+
     /// Record the socket `pid`'s sandbox serves its network namespace on.
     pub fn set_loopback_socket(&self, pid: u32, socket: std::path::PathBuf) {
         if let Some(entry) = self.inner.lock().unwrap().get_mut(&pid) {

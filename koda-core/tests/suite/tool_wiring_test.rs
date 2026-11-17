@@ -144,6 +144,9 @@ fn test_classify_tool_covers_all_tools_explicitly() {
         // LocalMutation / Destructive. Strictly more conservative
         // than the pre-#1265 `LocalMutation` name-only default.
         ("Bash", ToolEffect::Destructive),
+        // WriteStdin with no args types nothing: only a read. Typing
+        // (`chars` non-empty) is a LocalMutation, per call.
+        ("WriteStdin", ToolEffect::ReadOnly),
     ]
     .into_iter()
     .collect();

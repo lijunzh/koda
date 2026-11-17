@@ -240,6 +240,7 @@ mod naming_convention {
         "WebFetch",
         "WebSearch",
         "Write",
+        "WriteStdin",
     ];
 
     #[test]
@@ -285,7 +286,8 @@ mod naming_convention {
         //   sub-agents are synchronous and only `/root` could be addressed.
         // - Delete removed (21 → 20): files are deleted with `rm` in Bash,
         //   as in the peers.
-        assert_eq!(BUILTIN_TOOLS.len(), 20);
+        // - WriteStdin, typing into a background command (20 → 21).
+        assert_eq!(BUILTIN_TOOLS.len(), 21);
     }
 
     /// Ensure BUILTIN_TOOLS stays in sync with the actual registry.
