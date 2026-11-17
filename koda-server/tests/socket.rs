@@ -676,3 +676,89 @@ async fn a_session_works_in_its_own_folder_with_its_own_config() {
     }
     koda.stop().await;
 }
+
+/// The client end: [`koda_server::socket::connect`] gives what a host in
+/// the process gives, so a client runs a turn over the socket, answers an
+/// approval, and hangs up leaving the session on the server.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_runs_a_turn_over_the_socket() {
+    use koda_server::events::Outgoing;
+    use koda_server::protocol::{ServerNotification, ServerRequest, methods};
+    let server = model(vec![write_file("w1", "a.txt"), text("Written.")]).await;
+    let koda = Server::start(safe(&server), Duration::from_secs(60)).await;
+    let mut connected = koda_server::socket::connect(&koda.socket).await.unwrap();
+    let handle = connected.requests.clone();
+    let info = handle
+        .request::<methods::Initialize>(koda_server::protocol::initialize::InitializeParams {
+            client_info: koda_server::protocol::initialize::ClientInfo {
+                name: "socket-client".into(),
+                version: "0".into(),
+            },
+        })
+        .await
+        .unwrap();
+    assert_eq!(info.server_info.name, "koda");
+    let started = handle
+        .request::<methods::SessionStart>(Default::default())
+        .await
+        .unwrap();
+    let session = started.session.id.clone();
+    handle
+        .request::<methods::TurnStart>(koda_server::protocol::turn::TurnStartParams {
+            session_id: session.clone(),
+            input: "write it".into(),
+            images: Vec::new(),
+            mentions: Vec::new(),
+            client_message_id: None,
+            mode: None,
+        })
+        .await
+        .unwrap();
+    let mut completed = None;
+    while completed.is_none() {
+        let event = tokio::time::timeout(WAIT, connected.events.recv())
+            .await
+            .expect("no event in time")
+            .expect("the connection closed");
+        match event {
+            Outgoing::Request(request @ ServerRequest::ToolCallApproval { .. }) => {
+                handle
+                    .respond(
+                        request.id().clone(),
+                        Ok(json!({"decision": {"type": "approve"}})),
+                    )
+                    .await
+                    .unwrap();
+            }
+            Outgoing::Notification(ServerNotification::TurnCompleted(done)) => {
+                completed = Some(done.turn);
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(
+        completed.unwrap().status,
+        koda_server::protocol::turn::TurnStatus::Completed
+    );
+    let project = koda
+        .socket
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("project");
+    assert_eq!(
+        std::fs::read_to_string(project.join("a.txt")).unwrap(),
+        "hi"
+    );
+
+    // Hanging up leaves the session on the server: another client attaches.
+    handle.shutdown(connected.host).await;
+    let mut other = Client::ready(&koda).await;
+    let attached = other
+        .request("session/start", json!({"sessionId": session}))
+        .await
+        .unwrap();
+    assert_eq!(attached["session"]["id"], session.as_str());
+    koda.stop().await;
+}

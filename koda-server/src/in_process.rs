@@ -211,6 +211,8 @@ pub enum RequestError {
     Config(koda_config::ConfigError),
     /// Koda's database couldn't be opened: the host didn't start.
     Database(String),
+    /// The shared server couldn't be reached (`koda serve`'s socket).
+    Connect(String),
     /// The agent the config names (`agent`, `--agent`) couldn't be
     /// loaded: the host didn't start.
     Agent(String),
@@ -229,6 +231,7 @@ impl fmt::Display for RequestError {
             }
             Self::Config(error) => error.fmt(f),
             Self::Database(error) => write!(f, "couldn't open Koda's database: {error}"),
+            Self::Connect(error) => write!(f, "couldn't reach koda serve: {error}"),
             Self::Agent(error) => error.fmt(f),
         }
     }
@@ -241,7 +244,7 @@ impl std::error::Error for RequestError {
             Self::Server { error, .. } => Some(error),
             Self::Encode { source, .. } | Self::Decode { source, .. } => Some(source),
             Self::Config(error) => Some(error),
-            Self::Database(_) | Self::Agent(_) => None,
+            Self::Database(_) | Self::Agent(_) | Self::Connect(_) => None,
         }
     }
 }

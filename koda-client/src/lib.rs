@@ -153,6 +153,34 @@ impl InProcessClient {
     }
 
     /// What the server said in `initialize`.
+    /// Connect to the shared server (`koda serve`) at `socket` and
+    /// initialize, instead of starting a host in this process: the same
+    /// client, its requests and events going over the socket. [`Self::shutdown`]
+    /// only hangs up; the sessions stay on the server.
+    #[cfg(unix)]
+    pub async fn connect(
+        socket: &std::path::Path,
+        client_info: ClientInfo,
+    ) -> Result<Self, RequestError> {
+        let connected = koda_server::socket::connect(socket).await?;
+        let mut client = Self {
+            requests: connected.requests,
+            host: connected.host,
+            events: connected.events,
+            server: InitializeResponse {
+                server_info: koda_protocol::initialize::ServerInfo {
+                    name: String::new(),
+                    version: String::new(),
+                },
+                protocol_version: 0,
+            },
+        };
+        client.server = client
+            .request::<methods::Initialize>(InitializeParams { client_info })
+            .await?;
+        Ok(client)
+    }
+
     pub fn server(&self) -> &InitializeResponse {
         &self.server
     }
