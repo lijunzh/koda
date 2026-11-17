@@ -27,7 +27,7 @@ Usage: koda [OPTIONS] [PROMPT] [COMMAND]
 Commands:
   exec    Run one prompt without the TUI, then exit
   resume  Resume a saved session in the TUI, as `codex resume` does: by its id (or the start of one), the most recent with --last, or pick one from a list
-  fork    Fork a saved session and open the copy in the TUI, as `codex fork` does: by its id (or the start of one), the most recent with --last, or pick one from a list. The original stays as it was
+  fork    Fork a saved session and open the copy in the TUI, as `codex fork` does: by its id (or the start of one), the most recent with --last, or pick one from a list. The original stays as it was. With --worktree (and an id), the copy opens in a new worktree
   serve   Serve the client protocol on stdin and stdout, for a GUI, an editor or a script
   mcp     Manage the MCP servers every session starts: list, get, add, remove
   help    Print this message or the help of the given subcommand(s)
@@ -56,7 +56,7 @@ Options:
           The local provider for --oss: llama-cpp (the default, started and stopped by Koda), lm-studio or ollama (connected to)
 
       --worktree
-          Run the session in a new managed Git worktree, as Codex's `--worktree` does: a detached checkout of the project's HEAD under Koda's config folder (worktrees/), outside the repository. Kept when Koda exits; remove it with `git worktree remove <path>`
+          Run the session in a new managed Git worktree, as Codex's `--worktree` does: a detached checkout of the project's HEAD under Koda's config folder (worktrees/), outside the repository. Kept when Koda exits; remove it with `git worktree remove <path>`. With `koda fork <id>`, the fork opens in a checkout of the repository the session worked in
 
   -a, --agent <AGENT>
           Agent to use: a built-in, or a JSON file in .koda/agents/ or ~/.config/koda/agents/ (default: config.toml's `agent`, else `default`)

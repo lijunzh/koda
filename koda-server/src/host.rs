@@ -559,7 +559,8 @@ impl Host {
     /// `session/fork`: copy the stored session into a new one named "Fork
     /// of" its name, then open the copy as `session/start` resumes one, as
     /// Codex's `thread/fork` does. An open source first stores what it has
-    /// sent, so the copy has everything its client has been told.
+    /// sent, so the copy has everything its client has been told. The copy
+    /// belongs to this host's project, where it opens.
     async fn fork_session(
         &self,
         params: koda_protocol::session::SessionForkParams,
@@ -586,7 +587,7 @@ impl Host {
         let id = self
             .context
             .db
-            .fork_session(&source.id, &name)
+            .fork_session(&source.id, &name, &self.context.project_root)
             .await
             .map_err(|e| internal(format!("couldn't fork the session: {e:#}")))?;
         let started = self

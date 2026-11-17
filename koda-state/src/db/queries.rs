@@ -459,16 +459,18 @@ impl SessionStore for Database {
         Ok(id)
     }
 
-    async fn fork_session(&self, source: &str, title: &str) -> Result<String> {
+    async fn fork_session(&self, source: &str, title: &str, project_root: &Path) -> Result<String> {
         let id = uuid::Uuid::new_v4().to_string();
+        let root = project_root.to_string_lossy().to_string();
         let mut tx = self.pool.begin().await?;
         let copied = sqlx::query(
             "INSERT INTO sessions \
                (id, agent_name, project_root, last_accessed_at, title, mode, provider, base_url, model) \
-             SELECT ?, agent_name, project_root, datetime('now'), ?, mode, provider, base_url, model \
+             SELECT ?, agent_name, ?, datetime('now'), ?, mode, provider, base_url, model \
              FROM sessions WHERE id = ?",
         )
         .bind(&id)
+        .bind(&root)
         .bind(title)
         .bind(source)
         .execute(&mut *tx)

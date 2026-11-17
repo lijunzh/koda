@@ -76,7 +76,7 @@ pub(crate) async fn all_sessions(client: &InProcessClient) -> anyhow::Result<Vec
 
 /// A session id: a UUID, as Koda makes them, which Codex also passes
 /// through without a lookup.
-fn is_full_id(id: &str) -> bool {
+pub fn is_full_id(id: &str) -> bool {
     id.len() == 36
         && id.char_indices().all(|(i, c)| match i {
             8 | 13 | 18 | 23 => c == '-',
@@ -85,7 +85,7 @@ fn is_full_id(id: &str) -> bool {
 }
 
 /// The one id among `ids` that `typed` is, or starts.
-fn pick<'a>(typed: &str, ids: impl Iterator<Item = &'a str>) -> anyhow::Result<&'a str> {
+pub fn pick<'a>(typed: &str, ids: impl Iterator<Item = &'a str>) -> anyhow::Result<&'a str> {
     let matches: Vec<&str> = ids.filter(|id| id.starts_with(typed)).collect();
     if let Some(exact) = matches.iter().find(|id| **id == typed) {
         return Ok(exact);

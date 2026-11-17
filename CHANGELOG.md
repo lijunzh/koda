@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **`koda exec fork <id> [prompt]` runs a prompt in a copy of a session without the TUI, as `codex exec fork` does.** The id may be the start of one; the copy keeps the history and the session's model unless flags name another, and the original stays as it was. Without a prompt it only forks and prints the copy's id (`session/started` with `--json`), for a script to continue with `koda exec resume`. With `--worktree`, the copy runs in a new worktree, as below.
+- **`koda fork <id> --worktree` and `koda exec fork <id> --worktree` open a copy of a session in a new managed worktree, as Codex's `fork --worktree` does.** The checkout is of the repository the session worked in, wherever the command runs (`--project-root` names another), and the copy has the whole history. The session must be named: `--last` and the list are refused with `--worktree`, as Codex refuses them.
+
+### Changed
+
+- **A fork belongs to the project it opens in.** A copy made with `koda fork` (or `session/fork`) from another folder was listed under the original's project, though it ran where Koda started; it is now listed where it runs, as a Codex fork takes the cwd it starts in. `/fork` inside a session is unchanged.
+
+### Fixed
+
+- **Worktrees of one repository made at the same time no longer fail now and then.** Two `koda --worktree` runs started together (or two `koda exec fork --worktree`) could stop with git's "failed to read .git/worktrees/<name>/commondir", about 3 times in 200 when 4 ran at once: every worktree of a repository has its name, and git's adds trip over each other's half-written entries. Koda now adds them one at a time, under a lock in its worktrees folder. Codex has the same race.
+
 ## [0.7.5] - 2026-11-16
 
 ### Added

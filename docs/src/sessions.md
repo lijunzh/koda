@@ -26,6 +26,9 @@ koda fork
 koda fork --last "try it the other way"
 koda fork a3f8bc
 
+# The same without the TUI, as `codex exec fork`: by ID; no prompt only forks
+koda exec fork a3f8bc "try it the other way"
+
 # The older flag still works: koda -s <ID>, koda exec -s <ID> "..."
 
 # Delete a session permanently
@@ -85,6 +88,20 @@ checkout and from other sessions':
   refuses while the worktree holds changes; don't add `--force` unless you
   mean to lose them.
 
-`--worktree` starts new sessions only; `koda resume` and `koda fork` refuse
-it.
+To carry a conversation into a worktree, fork it there, as
+`codex fork <id> --worktree` does:
+
+```sh
+koda fork a3f8bc --worktree "now build it"
+koda exec fork a3f8bc --worktree "now build it"   # without the TUI
+```
+
+The copy opens in a new worktree of the repository the session worked in,
+wherever you run the command (`--project-root` names another), with the whole
+history; it belongs to the worktree, so `koda resume` there lists it, and the
+original stays in your checkout. The worktree has your project's `HEAD`, so
+uncommitted edits the earlier turns made aren't in it, though the history
+mentions them: commit first to bring them along. The session needs naming:
+`--last` and the list don't go with `--worktree`. `koda resume` refuses
+`--worktree`; fork the session instead.
 

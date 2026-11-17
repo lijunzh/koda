@@ -2200,10 +2200,28 @@ async fn fork_session_copies_everything_a_session_holds() {
         .await
         .unwrap();
 
-    let fork = db.fork_session(&src, "Fork of look").await.unwrap();
+    let fork = db
+        .fork_session(
+            &src,
+            "Fork of look",
+            std::path::Path::new("/elsewhere/checkout"),
+        )
+        .await
+        .unwrap();
     assert_ne!(fork, src);
     let info = db.get_session(&fork).await.unwrap().unwrap();
     assert_eq!(info.title.as_deref(), Some("Fork of look"));
+    // The copy belongs to where it opens; the source keeps its project.
+    assert_eq!(info.project_root.as_deref(), Some("/elsewhere/checkout"));
+    assert_ne!(
+        db.get_session(&src)
+            .await
+            .unwrap()
+            .unwrap()
+            .project_root
+            .as_deref(),
+        Some("/elsewhere/checkout")
+    );
     assert_eq!(info.mode.as_deref(), Some("plan"));
     assert_eq!(info.model.as_deref(), Some("claude-opus"));
     let copied = db.load_all_messages(&fork).await.unwrap();
@@ -2228,5 +2246,9 @@ async fn fork_session_copies_everything_a_session_holds() {
     );
     assert_eq!(db.load_all_messages(&src).await.unwrap().len(), 2);
 
-    assert!(db.fork_session("missing", "x").await.is_err());
+    assert!(
+        db.fork_session("missing", "x", std::path::Path::new("/p"))
+            .await
+            .is_err()
+    );
 }
