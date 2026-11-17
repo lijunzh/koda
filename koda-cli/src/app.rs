@@ -1120,25 +1120,34 @@ fn mcp_refusal(session: &SessionFlags, flags: &ConfigFlags, prompt: bool) -> Opt
 }
 
 /// Ctrl-C or, on Unix, SIGTERM: what stops `koda serve`.
-async fn stop_signal() {
+fn stop_signal() -> impl std::future::Future<Output = ()> + Send {
+    // The handlers go in now, not when the future is first polled: a signal
+    // that comes once the socket is up but before the server waits would
+    // otherwise kill the process.
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
-        match signal(SignalKind::terminate()) {
-            Ok(mut term) => {
-                tokio::select! {
-                    _ = tokio::signal::ctrl_c() => {}
-                    _ = term.recv() => {}
+        let term = signal(SignalKind::terminate()).ok();
+        let interrupt = signal(SignalKind::interrupt()).ok();
+        async move {
+            match (term, interrupt) {
+                (Some(mut term), Some(mut interrupt)) => {
+                    tokio::select! {
+                        _ = interrupt.recv() => {}
+                        _ = term.recv() => {}
+                    }
                 }
-            }
-            Err(_) => {
-                let _ = tokio::signal::ctrl_c().await;
+                _ => {
+                    let _ = tokio::signal::ctrl_c().await;
+                }
             }
         }
     }
     #[cfg(not(unix))]
     {
-        let _ = tokio::signal::ctrl_c().await;
+        async {
+            let _ = tokio::signal::ctrl_c().await;
+        }
     }
 }
 
