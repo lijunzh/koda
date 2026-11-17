@@ -437,14 +437,17 @@ fn the_tuis_server_flags_are_refused_where_they_dont_apply() {
 /// says how the cut-off turn ended, and runs the next turn.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_server_killed_mid_turn_leaves_the_session_to_go_on() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::net::UnixStream;
     let server = FakeLlmServer::spawn().await;
-    let calls = AtomicUsize::new(0);
+    // The first turn's call never answers in time; any other (the second
+    // turn's, a capability probe) answers at once.
+    let first_turn = |body: &[u8]| {
+        let body = String::from_utf8_lossy(body);
+        body.contains("First question") && !body.contains("Second question")
+    };
     server
-        .mount_fn("POST", r".*/chat/completions$", move |_| {
-            if calls.fetch_add(1, Ordering::SeqCst) == 0 {
-                // The first turn's call never answers in time.
+        .mount_fn("POST", r".*/chat/completions$", move |request| {
+            if first_turn(&request.body) {
                 reply("Too late.").set_delay(Duration::from_secs(300))
             } else {
                 reply("Back again.")
@@ -547,13 +550,14 @@ async fn a_server_killed_mid_turn_leaves_the_session_to_go_on() {
     )
     .await;
     conn.until("turn/started").await;
-    // Wait for the model call to be under way, then kill the server.
+    // Wait for the first turn's model call to be under way, then kill the
+    // server.
     let deadline = std::time::Instant::now() + WAIT;
-    while server
+    while !server
         .received_requests()
         .await
         .iter()
-        .all(|r| !r.url.path().ends_with("/chat/completions"))
+        .any(|r| r.url.path().ends_with("/chat/completions") && first_turn(&r.body))
     {
         assert!(
             std::time::Instant::now() < deadline,
