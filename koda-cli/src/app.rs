@@ -10,49 +10,31 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 
-const LONG_ABOUT: &str = "Koda runs in two modes:
+const ABOUT: &str = "Koda, an AI coding agent for your terminal.
 
-  INTERACTIVE   Run `koda` (no arguments) to open the full TUI.
-                Type your question and press Enter.
-                Type /help inside for keybindings and all commands.
+Run `koda` to start an interactive session, or `koda exec` to run one prompt and exit.";
 
-  EXEC          `koda exec` runs one prompt without the TUI and exits.
-                For scripts, pipes and CI pipelines.
-                  koda exec \"explain this codebase\"
-                  git diff | koda exec
-                  koda exec --json \"fix the failing tests\"
-
-Configuration precedence (highest wins):
-  1. CLI flags     --model, --provider, --base-url, --mode, ...
-  2. -c key=value  a config.toml key, for this run only
-  3. Config file   ~/.config/koda/config.toml, which /model and
-                   /provider write and you can edit
-  4. Built-in defaults
-
-API keys (ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, …)
-follow the same order. Keys saved with /key are loaded from the
-local keystore at startup and injected as env vars — shell env
-vars always win over stored keys.";
+const USAGE: &str = "koda [OPTIONS] [PROMPT]
+       koda [OPTIONS] <COMMAND> [ARGS]";
 
 const AFTER_HELP: &str = "Examples:
-  koda                                     # interactive TUI (type /help inside)
-  koda \"fix the failing test\"              # the TUI, starting with that prompt
-  koda -s abc123                           # resume a saved session
-  koda exec \"explain this codebase\"       # one-shot question, then exit
-  koda exec - < prompt.txt                 # read the prompt from stdin
-  git diff | koda exec                     # pipe a diff as the prompt
-  koda exec --json \"fix the failing tests\" # the client protocol on stdout
-  koda exec --model o3 \"refactor\"         # one-shot with a specific model
-  koda exec -s abc123 \"continue\"          # continue a saved session";
+  koda                               Start an interactive session
+  koda \"fix the failing test\"        Start one with a first prompt
+  koda resume --last                 Continue the most recent session
+  koda exec \"explain this codebase\"  Run one prompt and print the reply
+  git diff | koda exec               Read the prompt from stdin
 
-/// Koda 🐻 - A high-performance AI coding agent built in Rust
+Documentation: https://lijunzh.github.io/koda/";
+
+/// The command line: `koda`, its subcommands, and their flags.
 #[derive(Parser, Debug)]
 #[command(
     name = "koda",
     version,
-    about,
-    long_about = LONG_ABOUT,
+    about = ABOUT,
+    override_usage = USAGE,
     after_help = AFTER_HELP,
+    max_term_width = 100,
 )]
 struct Cli {
     #[command(subcommand)]
@@ -68,8 +50,7 @@ struct Cli {
     )]
     prompt: Option<String>,
 
-    /// Open the TUI and send this prompt, as `codex "prompt"` does. A
-    /// one-shot run is `koda exec "prompt"`.
+    /// Prompt to start the interactive session with.
     #[arg(value_name = "PROMPT")]
     positional_prompt: Option<String>,
 
@@ -83,17 +64,19 @@ struct Cli {
     #[command(flatten)]
     flags: ConfigFlags,
 
-    /// Images to attach to the first prompt, as Codex's `-i` does: a path,
-    /// or several separated by commas. Repeatable.
-    #[arg(short = 'i', long = "image", value_name = "FILE", value_delimiter = ',', action = clap::ArgAction::Append)]
+    /// Attach images to the first prompt (repeatable, or comma-separated).
+    #[arg(short = 'i', long = "image", value_name = "FILE", value_delimiter = ',', action = clap::ArgAction::Append, display_order = 8)]
     images: Vec<PathBuf>,
 
-    /// Override a config.toml value for this run: `-c key=value`, with a
-    /// dotted key (`-c model_providers.lm-studio.base_url=http://...`).
-    /// The value is read as TOML, else taken as text, as Codex's `-c` is,
-    /// and replaces what is at that key. Repeatable; never saved. Flags
-    /// such as --reasoning-effort are `-c` values too, and win over these.
+    /// Set a config.toml value for this run.
+    ///
+    /// Use a dotted key for a nested value, for example
+    /// `-c model_providers.lm-studio.base_url=http://localhost:1234/v1`. The
+    /// value is read as TOML, or as plain text if it isn't valid TOML.
+    /// Repeatable; nothing is saved. A flag that sets the same value, such as
+    /// --model, wins.
     #[arg(
+        display_order = 11,
         short = 'c',
         long = "config",
         value_name = "KEY=VALUE",
@@ -106,11 +89,12 @@ struct Cli {
 
 /// The flags that pick a session: which one, and its model. `koda` and
 /// `koda exec` take them; `koda serve`'s client sends them in
-/// `session/start`, as Codex's do.
+/// `session/start` instead.
 #[derive(clap::Args, Debug, Default, Clone)]
 struct SessionFlags {
-    /// Session ID to resume (omit to start a new session)
+    /// Resume a saved session by id (as `koda resume <id>` does).
     #[arg(
+        display_order = 15,
         short = 's',
         long = "resume",
         alias = "session",
@@ -118,53 +102,64 @@ struct SessionFlags {
     )]
     resume: Option<String>,
 
-    /// LLM provider base URL override
-    #[arg(long)]
+    /// Provider endpoint, for a local server or a gateway.
+    #[arg(long, value_name = "URL", display_order = 3)]
     base_url: Option<String>,
 
-    /// Model name override
-    #[arg(long)]
+    /// Model to use: an id, or an alias such as `claude-opus`.
+    #[arg(short = 'm', long, display_order = 1)]
     model: Option<String>,
 
-    /// LLM provider (openai, anthropic, lmstudio, llama-cpp, gemini, groq, grok, ollama)
-    #[arg(long)]
+    /// Provider: anthropic, openai, gemini, groq, grok, ollama, lm-studio or llama-cpp.
+    #[arg(long, display_order = 2)]
     provider: Option<String>,
 
-    /// Run on a local open-weight model, as Codex's `--oss` does. Koda
-    /// starts llama.cpp's llama-server with the model (Qwen3.8-Flash-Next
-    /// on a 128 GB Mac, else LFM3-1.7B, a 1 GB quick try), and stops it
-    /// when Koda exits. `oss_model` in config.toml picks another
-    #[arg(long)]
+    /// Run on a local model that Koda starts with llama.cpp.
+    ///
+    /// The model is Qwen3.8-Flash-Next on a Mac with 128 GB of memory, and
+    /// LFM3-1.7B (a 1 GB download, for a quick try) elsewhere; set
+    /// `oss_model` in config.toml to choose another. Koda stops the model
+    /// server when it exits.
+    #[arg(long, display_order = 4)]
     oss: bool,
 
-    /// The local provider for --oss: llama-cpp (the default, started and
-    /// stopped by Koda), lm-studio or ollama (connected to)
-    #[arg(long = "local-provider", value_name = "PROVIDER", requires = "oss")]
+    /// Local provider for --oss: llama-cpp (the default; Koda starts it), lm-studio or ollama.
+    ///
+    /// lm-studio and ollama must already be running.
+    #[arg(
+        long = "local-provider",
+        value_name = "PROVIDER",
+        requires = "oss",
+        display_order = 5
+    )]
     local_provider: Option<String>,
 
-    /// Run the session in a new managed Git worktree, as Codex's
-    /// `--worktree` does: a detached checkout of the project's HEAD under
-    /// Koda's config folder (worktrees/), outside the repository. Kept when
-    /// Koda exits; remove it with `git worktree remove <path>`. With
-    /// `koda fork <id>`, the fork opens in a checkout of the repository the
-    /// session worked in.
-    #[arg(long)]
+    /// Work in a new Git worktree of the project.
+    ///
+    /// The worktree is a detached checkout of HEAD, outside the repository,
+    /// under ~/.config/koda/worktrees/. It stays after Koda exits; remove it
+    /// with `git worktree remove <path>`. With `koda fork <id>`, the copy
+    /// opens in a new worktree of the repository that session worked in.
+    #[arg(long, display_order = 10)]
     worktree: bool,
 
-    /// Run the TUI's host in this process, not on the shared server (koda
-    /// serve), as Codex's --no-daemon does
-    #[arg(long, conflicts_with = "remote")]
+    /// Run in this process instead of on the background server.
+    ///
+    /// By default an interactive session runs on `koda serve`, which Koda
+    /// starts when needed, so a session goes on after its window closes.
+    #[arg(long, conflicts_with = "remote", display_order = 16)]
     no_daemon: bool,
 
-    /// Use the shared server at this address (unix://PATH) instead of
-    /// Koda's own; it isn't started or replaced
-    #[arg(long, value_name = "ADDR")]
+    /// Connect to a background server at this address (unix://PATH).
+    ///
+    /// Koda doesn't start or replace a server given this way.
+    #[arg(long, value_name = "ADDR", display_order = 17)]
     remote: Option<String>,
 }
 
 impl SessionFlags {
     /// Take what `koda` was given before the subcommand where the
-    /// subcommand wasn't, as Codex's `exec` inherits its root options.
+    /// subcommand wasn't: `koda --model x exec` is `koda exec --model x`.
     fn inherit(&mut self, root: &Self) {
         inherit(&mut self.resume, &root.resume);
         inherit(&mut self.base_url, &root.base_url);
@@ -200,23 +195,35 @@ impl SessionFlags {
 /// `koda serve` take them.
 #[derive(clap::Args, Debug, Default, Clone)]
 struct ConfigFlags {
-    /// Agent to use: a built-in, or a JSON file in .koda/agents/ or
-    /// ~/.config/koda/agents/ (default: config.toml's `agent`, else
-    /// `default`)
-    #[arg(short, long)]
+    /// Agent to run: a built-in one, or a JSON file in .koda/agents/ or ~/.config/koda/agents/.
+    ///
+    /// The default is config.toml's `agent`, else `default`.
+    #[arg(short, long, display_order = 13)]
     agent: Option<String>,
 
-    /// Project root directory (defaults to current directory)
-    #[arg(long)]
+    /// Directory to work in (default: the current directory).
+    #[arg(
+        short = 'C',
+        long = "cd",
+        visible_alias = "project-root",
+        value_name = "DIR",
+        display_order = 9
+    )]
     project_root: Option<PathBuf>,
 
     /// Deprecated, to go in 0.8: `-c model_max_output_tokens=N`.
     #[arg(long, hide = true)]
     max_tokens: Option<u32>,
 
-    /// Context window in tokens, for servers that don't report theirs.
-    /// Beats the agent config, the server's answer and the model table.
-    #[arg(long, value_name = "TOKENS", value_parser = parse_context_window)]
+    /// Context window size in tokens, for a server that doesn't report one.
+    ///
+    /// Overrides the agent file, the server's report and Koda's model table.
+    #[arg(
+        long,
+        value_name = "TOKENS",
+        value_parser = parse_context_window,
+        display_order = 14
+    )]
     max_context_tokens: Option<u64>,
 
     /// Deprecated, to go in 0.8: `-c model_temperature=X`.
@@ -227,35 +234,45 @@ struct ConfigFlags {
     #[arg(long, hide = true)]
     thinking_budget: Option<u32>,
 
-    /// Reasoning effort. Claude: low, medium, high, xhigh or max; by default
-    /// the level Claude Code uses for the model. OpenAI-compatible servers:
-    /// passed through as `reasoning_effort`.
-    #[arg(long, visible_alias = "effort", value_name = "LEVEL")]
+    /// How much the model reasons: low, medium, high, xhigh or max.
+    ///
+    /// Claude models take these levels, and each has its own default. For an
+    /// OpenAI-compatible server the value is sent as `reasoning_effort`.
+    #[arg(
+        long,
+        visible_alias = "effort",
+        value_name = "LEVEL",
+        display_order = 6
+    )]
     reasoning_effort: Option<String>,
 
-    /// Trust mode: auto (the default, unless config.toml sets `mode`), safe,
-    /// or plan.
-    /// "auto" auto-approves mutating actions; the kernel sandbox
-    /// contains them. Destructive ops (rm -rf, git reset --hard,
-    /// git push --force) and outside-project writes still
-    /// confirm. Auto requires the kernel sandbox; on unsandboxed
-    /// platforms koda refuses to start with an actionable error
-    /// (use --mode safe or install the platform sandbox backend).
-    /// "safe" confirms every mutation before executing, for when you
-    /// want a person to approve each change.
-    /// "plan" only looks: reads, searches, read-only commands and MCP
-    /// tools marked read-only run; everything else is refused, and the
-    /// kernel sandbox keeps the project read-only. In the TUI, Koda then
-    /// proposes a plan and asks whether to carry it out.
-    /// Sandbox with credential protection is always active.
-    #[arg(long, value_parser = ["safe", "auto", "plan"])]
+    /// What Koda may do without asking: auto (the default), safe or plan.
+    ///
+    /// auto: changes run without asking, inside the sandbox. Destructive
+    /// commands (such as rm -rf or git push --force) and writes outside the
+    /// project still ask. Auto needs the sandbox; where there is none, use
+    /// safe.
+    ///
+    /// safe: every change asks first.
+    ///
+    /// plan: read only. Koda looks around, proposes a plan, and asks before
+    /// carrying it out.
+    ///
+    /// config.toml's `mode` sets the default.
+    #[arg(long, value_parser = ["auto", "safe", "plan"], display_order = 7)]
     mode: Option<String>,
 
-    /// Add MCP servers for this run only, from a JSON file or inline JSON
-    /// in the `{"mcpServers": {...}}` shape of Claude Code's `.mcp.json`.
-    /// Repeatable; later servers win a name clash, and all of them win over
-    /// servers stored with `koda mcp add`. Nothing is saved.
-    #[arg(long, value_name = "FILE|JSON", action = clap::ArgAction::Append)]
+    /// Add MCP servers for this run only, from a JSON file or inline JSON.
+    ///
+    /// Use the `{"mcpServers": {...}}` format of `.mcp.json` files.
+    /// Repeatable; a later server wins a name clash, and these win over
+    /// servers added with `koda mcp add`. Nothing is saved.
+    #[arg(
+        long,
+        value_name = "FILE|JSON",
+        action = clap::ArgAction::Append,
+        display_order = 12
+    )]
     mcp_config: Vec<String>,
 }
 
@@ -327,38 +344,39 @@ fn inherit<T: Clone>(mine: &mut Option<T>, root: &Option<T>) {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Run one prompt without the TUI, then exit.
+    /// Run one prompt without an interactive session, then exit.
     ///
-    /// Koda answers its own requests: it approves what --mode allows,
-    /// refuses destructive actions and anything outside the sandbox, and
-    /// answers a question with nothing. The reply goes to stdout, progress
-    /// to stderr. With --json, stdout carries the client protocol's
-    /// notifications instead, one JSON-RPC message per line.
+    /// The reply goes to stdout and progress to stderr. Koda answers its own
+    /// approval requests: it allows what --mode allows, refuses destructive
+    /// commands and anything outside the sandbox, and leaves a question
+    /// unanswered. With --json, stdout carries one JSON-RPC message per line
+    /// instead of the reply.
     Exec(Box<ExecArgs>),
-    /// Resume a saved session in the TUI, as `codex resume` does: by its
-    /// id (or the start of one), the most recent with --last, or pick one
-    /// from a list.
+    /// Resume a saved session (pick from a list, or --last for the most recent).
+    ///
+    /// Give a session's id, or its first characters. A prompt after the id is
+    /// sent once the session opens.
     Resume(ResumeArgs),
-    /// Fork a saved session and open the copy in the TUI, as `codex fork`
-    /// does: by its id (or the start of one), the most recent with --last,
-    /// or pick one from a list. The original stays as it was. With
-    /// --worktree (and an id), the copy opens in a new worktree.
+    /// Copy a saved session and continue in the copy (pick from a list, or --last).
+    ///
+    /// The original session is left unchanged. With --worktree and an id, the
+    /// copy opens in a new Git worktree.
     Fork(ResumeArgs),
-    /// Serve the client protocol on stdin and stdout, for a GUI, an editor
-    /// or a script.
+    /// Manage the MCP servers every session starts.
     ///
-    /// One JSON-RPC message per line, as `codex app-server` does: the
-    /// client drives sessions with requests and answers Koda's approvals.
-    /// Runs until stdin closes or a signal stops it.
-    ///
-    /// The client picks each session's model in `session/start`, so
-    /// --model, --provider, --base-url and --resume aren't taken here; -c
-    /// and the config flags are.
-    Serve(ServeArgs),
-    /// Manage the MCP servers every session starts: list, get, add, remove.
-    ///
-    /// Open TUI sessions take a change on `/mcp reconnect`.
+    /// Sessions already open pick up a change after `/mcp reconnect`.
     Mcp(crate::mcp_cmd::McpCli),
+    /// Run the background server that interactive sessions use.
+    ///
+    /// By default it listens on a Unix socket, ~/.config/koda/serve/koda.sock,
+    /// and serves several clients at once; `koda` starts it when needed. With
+    /// --stdio it serves one client on stdin and stdout. Either way the
+    /// client speaks JSON-RPC, one message per line.
+    ///
+    /// The client chooses each session's model, so --model, --provider,
+    /// --base-url and --resume aren't accepted here; -c and the other config
+    /// flags are.
+    Serve(ServeArgs),
     // Without this, `server` would be read as a prompt and sent to the model.
     /// Removed: Koda no longer has a server mode
     #[command(hide = true)]
@@ -380,32 +398,32 @@ struct ResumeArgs {
     #[command(flatten)]
     flags: ConfigFlags,
 
-    /// Images to attach to the prompt, as for `koda`.
-    #[arg(short = 'i', long = "image", value_name = "FILE", value_delimiter = ',', action = clap::ArgAction::Append)]
+    /// Attach images to the prompt (repeatable, or comma-separated).
+    #[arg(short = 'i', long = "image", value_name = "FILE", value_delimiter = ',', action = clap::ArgAction::Append, display_order = 8)]
     images: Vec<PathBuf>,
 }
 
 /// The session `koda resume` and `koda exec resume` open, and the prompt.
 #[derive(clap::Args, Debug, Default)]
 struct WhichSession {
-    /// The session's id, or the start of one. Without it (or --last), the
-    /// TUI opens a list to pick from.
+    /// Session id, or its first characters. Without one (or --last), pick from a list.
     #[arg(value_name = "SESSION")]
     id: Option<String>,
 
-    /// The most recent session in this project. With --last, a single
-    /// argument is the prompt, as in Codex.
+    /// The most recent session in this project.
+    ///
+    /// With --last, a single argument is the prompt.
     #[arg(long)]
     last: bool,
 
-    /// A prompt to send once the session opens.
+    /// Prompt to send once the session opens.
     #[arg(value_name = "PROMPT")]
     prompt: Option<String>,
 }
 
 impl WhichSession {
     /// The session to open, and the prompt. With `--last`, a lone
-    /// argument is the prompt, as `codex resume --last "…"` reads it.
+    /// argument is the prompt: `koda resume --last "…"`.
     fn resolve(mut self) -> Result<(Option<koda_tui::session_id::Resume>, Option<String>)> {
         use koda_tui::session_id::Resume;
         if self.last {
@@ -425,14 +443,16 @@ struct ServeArgs {
     #[arg(long, conflicts_with = "listen")]
     stdio: bool,
 
-    /// Where to listen, as `codex app-server --listen` takes it: `unix://`
-    /// for Koda's socket (~/.config/koda/serve/koda.sock, the default),
-    /// `unix://PATH` for another, or `stdio://` (as --stdio).
+    /// Where to listen: unix:// (the default socket), unix://PATH, or stdio://.
+    ///
+    /// The default socket is ~/.config/koda/serve/koda.sock. stdio:// is the
+    /// same as --stdio.
     #[arg(long, value_name = "URL")]
     listen: Option<String>,
 
-    /// Stop the shared server at the socket (`--listen` names another), as
-    /// `claude daemon stop` does. Its open sessions close; they stay stored.
+    /// Stop the background server at the default socket, or the one --listen names.
+    ///
+    /// Its open sessions close; they stay saved.
     #[arg(long, conflicts_with = "stdio")]
     stop: bool,
 
@@ -459,18 +479,18 @@ struct ExecArgs {
     #[command(flatten)]
     flags: ConfigFlags,
 
-    /// The prompt. "-" or none reads it from stdin.
+    /// Prompt to run; `-` or none reads it from stdin.
     #[arg(value_name = "PROMPT")]
     prompt: Option<String>,
 
-    /// Print the client protocol's notifications on stdout, one JSON-RPC
-    /// message per line: the session, the turn and its items, requests and
-    /// how Koda answered them, and `exec/summary` last.
+    /// Print one JSON-RPC message per line on stdout instead of the reply.
+    ///
+    /// The messages are the session, the turn and its items, the requests
+    /// Koda answered and how, and `exec/summary` last.
     #[arg(long)]
     json: bool,
 
-    /// With --json, also print streaming deltas: reply and reasoning text
-    /// as it arrives, and command output line by line.
+    /// With --json, also print text and command output as it streams.
     #[arg(long, requires = "json")]
     json_deltas: bool,
 
@@ -481,13 +501,13 @@ struct ExecArgs {
 /// `koda exec`'s subcommands.
 #[derive(Subcommand, Debug)]
 enum ExecCommand {
-    /// Run a prompt in a saved session, as `codex exec resume` does: by its
-    /// id (or the start of one), or the most recent with --last.
+    /// Run a prompt in a saved session (by id, or --last for the most recent).
     Resume(ExecResumeArgs),
-    /// Fork a saved session by its id (or the start of one) and run the
-    /// prompt in the copy, as `codex exec fork` does. Without a prompt,
-    /// only fork it, and print the copy's id. With --worktree, the copy
-    /// runs in a new worktree of the repository the session worked in.
+    /// Copy a saved session and run a prompt in the copy.
+    ///
+    /// Without a prompt, only copy it and print the copy's id. With
+    /// --worktree, the copy runs in a new worktree of the repository the
+    /// session worked in.
     Fork(ExecForkArgs),
 }
 
@@ -495,12 +515,11 @@ enum ExecCommand {
 /// resume`'s flags.
 #[derive(clap::Args, Debug)]
 struct ExecForkArgs {
-    /// The session to fork: its id, or the start of one.
+    /// Session id, or its first characters.
     #[arg(value_name = "SESSION_ID")]
     session_id: String,
 
-    /// The prompt to run in the copy. "-" reads it from stdin; none only
-    /// forks.
+    /// Prompt to run in the copy; `-` reads it from stdin, and none only copies.
     #[arg(value_name = "PROMPT")]
     prompt: Option<String>,
 
@@ -510,12 +529,11 @@ struct ExecForkArgs {
     #[command(flatten)]
     flags: ConfigFlags,
 
-    /// Print the client protocol's notifications on stdout, as `koda exec
-    /// --json` does.
+    /// Print one JSON-RPC message per line on stdout instead of the reply.
     #[arg(long)]
     json: bool,
 
-    /// With --json, also print streaming deltas.
+    /// With --json, also print text and command output as it streams.
     #[arg(long, requires = "json")]
     json_deltas: bool,
 
@@ -535,12 +553,11 @@ struct ExecResumeArgs {
     #[command(flatten)]
     flags: ConfigFlags,
 
-    /// Print the client protocol's notifications on stdout, as `koda exec
-    /// --json` does.
+    /// Print one JSON-RPC message per line on stdout instead of the reply.
     #[arg(long)]
     json: bool,
 
-    /// With --json, also print streaming deltas.
+    /// With --json, also print text and command output as it streams.
     #[arg(long, requires = "json")]
     json_deltas: bool,
 
@@ -555,9 +572,8 @@ struct ExecOutput {
     #[arg(short = 'o', long = "output-last-message", value_name = "FILE")]
     output_last_message: Option<PathBuf>,
 
-    /// Images to attach to the prompt, as `codex exec -i` does: a path, or
-    /// several separated by commas. Repeatable.
-    #[arg(short = 'i', long = "image", value_name = "FILE", value_delimiter = ',', action = clap::ArgAction::Append)]
+    /// Attach images to the prompt (repeatable, or comma-separated).
+    #[arg(short = 'i', long = "image", value_name = "FILE", value_delimiter = ',', action = clap::ArgAction::Append, display_order = 8)]
     images: Vec<PathBuf>,
 }
 
@@ -1055,7 +1071,7 @@ async fn fork_source(
         .unwrap_or_else(|| project_root.to_path_buf());
     anyhow::ensure!(
         root.is_dir(),
-        "session {id} worked in {}, which is gone; give --project-root to fork it into a \
+        "session {id} worked in {}, which is gone; give -C (--cd) to fork it into a \
          worktree of another checkout",
         root.display()
     );
@@ -1163,7 +1179,7 @@ fn mcp_refusal(session: &SessionFlags, flags: &ConfigFlags, prompt: bool) -> Opt
     given.first().map(|flag| {
         format!(
             "koda mcp doesn't take {flag}; it manages the stored servers. \
-             Only --project-root and -c apply."
+             Only -C (--cd) and -c apply."
         )
     })
 }
