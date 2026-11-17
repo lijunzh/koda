@@ -121,6 +121,12 @@ pub struct ConfigToml {
     /// read, as Codex does. On when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_mentions: Option<bool>,
+    /// Whether the model adds Koda's attribution to the commits and pull
+    /// requests it makes (`Co-authored-by: Koda <…>`, and a line in the pull
+    /// request), as Codex adds its own when `commit_attribution_enabled` is
+    /// on. On when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_attribution: Option<bool>,
     /// What the model takes besides text, replacing Koda's table for it:
     /// for a local vision model, say, `["text", "image"]`. Codex keeps the
     /// same on each model as `input_modalities`.

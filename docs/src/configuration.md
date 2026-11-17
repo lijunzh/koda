@@ -74,6 +74,7 @@ Every key, in Codex's names where Codex has one:
 | `agent` | The agent sessions run, as `--agent` names it: a built-in, or a JSON file in `.koda/agents/` or `~/.config/koda/agents/` (default: `default`) |
 | `model_post_turn_compact_threshold_percent` | Compact after a turn's final reply once this share of the window is used (1–100; 0 turns it off) |
 | `file_mentions` | `false` sends an `@` mention's path only, for the model to read, as Codex does; on by default, sending its contents as Claude Code does (see [File & image attachments](./attachments.md#mentioning-files)) |
+| `commit_attribution` | `false` stops the model adding Koda's attribution to the commits and pull requests it makes. On by default, as Codex's: commit messages end with `Co-authored-by: Koda <noreply@lijunzhu.info>`, and pull requests carry `Generated with [Koda](https://github.com/lijunzh/koda).` |
 | `model_input_modalities` | What the model takes besides text, over what a local server reports and Koda's table: `["text", "image"]` for a vision model the server doesn't report; `pdf` is the third value (see [File & image attachments](./attachments.md#images)) |
 | `mode` | The [trust mode](./approval.md) a new session starts in: `auto`, `safe` or `plan` |
 | `oss_provider` | The local provider `--oss` uses: `llama-cpp` (default; Koda starts and stops it), `lm-studio` or `ollama` ([Local models](./local-models.md#one-command-koda---oss)) |

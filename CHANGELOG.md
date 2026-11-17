@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **The model adds Koda's attribution to the commits and pull requests it makes, as Codex adds its own.** In a git repository, the prompt carries Codex's attribution instructions with Koda's trailer and line: commit messages end with `Co-authored-by: Koda <noreply@lijunzhu.info>`, pull request bodies include `Generated with [Koda](https://github.com/lijunzh/koda).`, once each, without rewriting existing commits for it. `commit_attribution = false` in `config.toml` turns it off, and the prompt then says not to add it.
+
 - **The TUI notifies you when a turn ends, a tool call waits for approval or the model asks a question, as Codex's TUI does.** A desktop notification in Ghostty, iTerm2, Kitty, Warp and WezTerm (the start of the reply, the command waiting, or the question), the bell elsewhere, only while the terminal isn't focused, which Koda learns from the terminal's focus reports. Codex's three `[tui]` keys set it: `notifications` (`true`, `false`, or a list of `agent-turn-complete`, `approval-requested`, `user-input-requested`), `notification_method` (`auto`, `osc9`, `osc777`, `bel`) and `notification_condition` (`unfocused`, `always`). Inside tmux, a desktop notification is wrapped so tmux passes it on with `allow-passthrough on`; focus reports need `focus-events on`.
 
 ### Security

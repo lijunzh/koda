@@ -95,6 +95,11 @@ unknown key in `-c` stops the run instead.
 # itself, as Codex does. Unset: true, the file's contents are sent.
 # file_mentions = false
 
+# Have the model end its commit messages with
+# `Co-authored-by: Koda <noreply@lijunzhu.info>` and add a "Generated with
+# Koda" line to its pull requests, as Codex does. Unset: true.
+# commit_attribution = false
+
 # Also write the log to <log_dir>/koda.log, at RUST_LOG's level. "~/" is
 # your home folder; a relative path is under ~/.config/koda/.
 # Unset: only the log database (see the Debugging chapter).

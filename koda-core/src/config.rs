@@ -247,6 +247,9 @@ pub struct KodaConfig {
     /// Whether a mentioned file is sent with its contents (`file_mentions`,
     /// on by default, as in Claude Code) or only its path, as in Codex.
     pub file_mentions: bool,
+    /// Whether the model adds Koda's attribution to its commits and pull
+    /// requests (`commit_attribution`, on by default), as Codex does.
+    pub commit_attribution: bool,
     /// What the model takes besides text, from the config file's
     /// `model_input_modalities`; `None` for Koda's table
     /// ([`Self::input_modalities`]).
@@ -427,6 +430,7 @@ impl KodaConfig {
             stream_max_retries: crate::inference_helpers::DEFAULT_STREAM_MAX_RETRIES,
             post_turn_compact_percent: 0,
             file_mentions: true,
+            commit_attribution: true,
             input_modalities: None,
             reported_vision: None,
             reported_tool_images: None,
@@ -723,6 +727,7 @@ impl KodaConfig {
             stream_max_retries: crate::inference_helpers::DEFAULT_STREAM_MAX_RETRIES,
             post_turn_compact_percent: 0,
             file_mentions: true,
+            commit_attribution: true,
             input_modalities: None,
             reported_vision: None,
             reported_tool_images: None,
