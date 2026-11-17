@@ -8,7 +8,7 @@ use koda_tui::tui_app;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const LONG_ABOUT: &str = "Koda runs in two modes:
 
@@ -407,10 +407,15 @@ impl WhichSession {
 /// `koda serve`'s own flags.
 #[derive(clap::Args, Debug)]
 struct ServeArgs {
-    /// Serve on stdin and stdout, the one transport so far. Required, so
-    /// that `koda serve` alone stays free for the shared server.
-    #[arg(long)]
+    /// Serve one client on stdin and stdout.
+    #[arg(long, conflicts_with = "listen")]
     stdio: bool,
+
+    /// Where to listen, as `codex app-server --listen` takes it: `unix://`
+    /// for Koda's socket (~/.config/koda/serve/koda.sock, the default),
+    /// `unix://PATH` for another, or `stdio://` (as --stdio).
+    #[arg(long, value_name = "URL")]
+    listen: Option<String>,
 
     #[command(flatten)]
     flags: ConfigFlags,
@@ -559,7 +564,7 @@ pub(crate) async fn run() -> Result<()> {
     // flag given before `exec` carries over to it, and one given before a
     // subcommand that can't use it is refused rather than ignored.
     let mut mcp_cli = None;
-    let mut serving = false;
+    let mut serving: Option<ServeArgs> = None;
     let mut session = std::mem::take(&mut cli.session);
     let mut flags = std::mem::take(&mut cli.flags);
     let root_images = std::mem::take(&mut cli.images);
@@ -667,7 +672,7 @@ pub(crate) async fn run() -> Result<()> {
             }
             args.flags.inherit(&flags);
             flags = std::mem::take(&mut args.flags);
-            serving = true;
+            serving = Some(args);
             None
         }
         Some(Command::Mcp(mcp)) => {
@@ -823,23 +828,34 @@ pub(crate) async fn run() -> Result<()> {
         return mcp.run(project_root).await;
     }
 
-    // `koda serve --stdio`: stdout is the protocol, so warnings go to
-    // stderr, as `koda exec --json`'s do.
-    if serving {
+    // `koda serve`: on stdio, stdout is the protocol, so warnings go to
+    // stderr, as `koda exec --json`'s do; on a socket, clients come and go
+    // until a signal stops it.
+    if let Some(serve) = serving {
         for warning in koda_tui::retired_env::warnings() {
             eprintln!("warning: {warning}");
         }
-        let served = koda_client::stdio::serve(
-            koda_client::stdio::ServeArgs {
-                config_file: koda_tui::user_config::file()?,
-                project_root,
-                home: config_dir,
-            },
-            tokio::io::stdin(),
-            tokio::io::stdout(),
-            stop_signal(),
-        )
-        .await;
+        let args = koda_client::stdio::ServeArgs {
+            config_file: koda_tui::user_config::file()?,
+            project_root,
+            home: config_dir.clone(),
+        };
+        let served = match listen_at(&serve, &config_dir).map_err(anyhow::Error::msg)? {
+            Listen::Stdio => koda_client::stdio::serve(
+                args,
+                tokio::io::stdin(),
+                tokio::io::stdout(),
+                stop_signal(),
+            )
+            .await
+            .map_err(|e| e.to_string()),
+            Listen::Unix(socket) => {
+                eprintln!("Koda is listening at {}", socket.display());
+                koda_client::socket::serve(args, socket, stop_signal())
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+        };
         crate::logging::flush().await;
         drop(_logging);
         // `exit`, since a client may hold stdin open after a signal, and
@@ -1034,14 +1050,46 @@ impl WorktreeSession {
     }
 }
 
-/// Why `koda serve` can't run as asked: the transport left out, or a flag
+/// Where `koda serve` listens.
+#[derive(Debug, PartialEq, Eq)]
+enum Listen {
+    /// One client on stdin and stdout.
+    Stdio,
+    /// The shared server, at this socket.
+    Unix(PathBuf),
+}
+
+/// What `--stdio` and `--listen` ask for; Koda's socket in `home` when
+/// neither says.
+fn listen_at(args: &ServeArgs, home: &Path) -> Result<Listen, String> {
+    if args.stdio {
+        return Ok(Listen::Stdio);
+    }
+    match args.listen.as_deref() {
+        None | Some("unix://") => Ok(Listen::Unix(home.join("serve").join("koda.sock"))),
+        Some("stdio://") | Some("stdio") => Ok(Listen::Stdio),
+        Some(url) => match url.strip_prefix("unix://") {
+            Some(path) => {
+                let path = PathBuf::from(path);
+                Ok(Listen::Unix(if path.is_absolute() {
+                    path
+                } else {
+                    std::env::current_dir().unwrap_or_default().join(path)
+                }))
+            }
+            None => Err(format!(
+                "koda serve --listen {url}: expected `unix://`, `unix://PATH` or `stdio://`"
+            )),
+        },
+    }
+}
+
+/// Why `koda serve` can't run as asked: an unknown `--listen`, or a flag
 /// that names a session's model or prompt, which the client sends in
 /// `session/start` and `turn/start`.
 fn serve_refusal(args: &ServeArgs, session: &SessionFlags, prompt: bool) -> Option<String> {
-    if !args.stdio {
-        return Some(
-            "koda serve needs --stdio, the one transport so far: koda serve --stdio".into(),
-        );
+    if let Err(error) = listen_at(args, Path::new("")) {
+        return Some(error);
     }
     let mut given = session.given();
     if prompt {
@@ -1072,25 +1120,34 @@ fn mcp_refusal(session: &SessionFlags, flags: &ConfigFlags, prompt: bool) -> Opt
 }
 
 /// Ctrl-C or, on Unix, SIGTERM: what stops `koda serve`.
-async fn stop_signal() {
+fn stop_signal() -> impl std::future::Future<Output = ()> + Send {
+    // The handlers go in now, not when the future is first polled: a signal
+    // that comes once the socket is up but before the server waits would
+    // otherwise kill the process.
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
-        match signal(SignalKind::terminate()) {
-            Ok(mut term) => {
-                tokio::select! {
-                    _ = tokio::signal::ctrl_c() => {}
-                    _ = term.recv() => {}
+        let term = signal(SignalKind::terminate()).ok();
+        let interrupt = signal(SignalKind::interrupt()).ok();
+        async move {
+            match (term, interrupt) {
+                (Some(mut term), Some(mut interrupt)) => {
+                    tokio::select! {
+                        _ = interrupt.recv() => {}
+                        _ = term.recv() => {}
+                    }
                 }
-            }
-            Err(_) => {
-                let _ = tokio::signal::ctrl_c().await;
+                _ => {
+                    let _ = tokio::signal::ctrl_c().await;
+                }
             }
         }
     }
     #[cfg(not(unix))]
     {
-        let _ = tokio::signal::ctrl_c().await;
+        async {
+            let _ = tokio::signal::ctrl_c().await;
+        }
     }
 }
 

@@ -2116,6 +2116,7 @@ dependencies = [
  "koda-protocol",
  "koda-state",
  "koda-test-utils",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",

@@ -43,6 +43,8 @@ use tokio::task::JoinHandle;
 pub use koda_config::ConfigFile;
 pub use koda_protocol as protocol;
 pub use koda_server::in_process::{RequestError, RequestHandle};
+#[cfg(unix)]
+pub use koda_server::socket;
 pub use koda_server::{builtin_skills, earlier_input_history, events, feedback, stdio};
 
 use events::Outgoing;

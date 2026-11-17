@@ -1,7 +1,8 @@
 # Koda as a server
 
 `koda serve --stdio` serves Koda's [client protocol](headless.md#the-client-protocol)
-to one program on its stdin and stdout, as `codex app-server` does. A GUI, an
+to one program on its stdin and stdout, as `codex app-server` does; `koda serve`
+alone serves [several clients on a socket](#the-shared-server). A GUI, an
 editor or a script starts sessions, runs turns, steers and stops them, and
 answers Koda's approvals and questions. The TUI and `koda exec` speak the same
 protocol to a host in their own process.
@@ -105,7 +106,45 @@ Koda stops when stdin closes, when stdout breaks, or on Ctrl+C or `SIGTERM`
 `serverRequest/resolved`; what is queued is written while the pipe takes it;
 and the process exits 0.
 
+## The shared server
+
+`koda serve` with no transport flag is the shared server: one Koda that
+several clients use at once, on a Unix socket, as
+`codex app-server --listen unix://` serves them.
+
+```bash
+koda serve                                   # ~/.config/koda/serve/koda.sock
+koda serve --listen unix:///tmp/koda/k.sock  # somewhere else
+```
+
+Each connection speaks what `--stdio` speaks, one JSON-RPC line each way,
+`initialize` first. (Codex frames its socket as WebSocket; Koda's clients are
+local programs, so one framing for both transports keeps their code the same,
+and `nc -U ~/.config/koda/serve/koda.sock` is enough to try it.)
+
+- **Each client hears its own sessions.** A connection is subscribed to the
+  sessions it starts or forks; a session's notifications and requests go to
+  its subscribers, and a message that belongs to no session goes to every
+  connection.
+- **A session outlives its client.** A connection that closes, or sends
+  `session/unsubscribe`, leaves its sessions open, and a running turn goes on.
+  A session with no client and no running turn for a minute is closed, as
+  Codex unloads an idle thread.
+- **Answers** come back on the connection that asked. Koda takes an answer to
+  one of its own requests (an approval, a question) from any connection; the
+  first one counts.
+- **Private to you.** The socket is readable by its owner only, in a folder
+  only you can change; a connection from another user is refused, and a lock
+  keeps a second `koda serve` from taking the socket over. A socket left by a
+  crashed server is replaced.
+- **It runs until** Ctrl+C or `SIGTERM`, then stops every session and removes
+  the socket.
+
 ## Not yet
 
-- **One client per process.** A shared server that several clients attach to,
-  on a Unix socket, comes later.
+- **An approval waits for a client.** Today it goes to the session's
+  connected clients only; resending it to a client that attaches later, and a
+  time limit when nobody answers, come next. So does `koda --remote`, which
+  attaches the TUI to a session on the shared server.
+- **One project per server.** Sessions work in the folder `koda serve` started
+  in (`--project-root`).
