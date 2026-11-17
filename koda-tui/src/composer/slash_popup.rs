@@ -100,6 +100,11 @@ pub const SLASH_COMMANDS: &[(&str, &str, Option<&str>)] = &[
         "Resume or delete a session (picker, an id, delete <id>)",
         None,
     ),
+    (
+        "/side",
+        "Ask a side question in a fork while the main session goes on (also /btw)",
+        None,
+    ),
     ("/skills", "List available skills (search with query)", None),
     ("/status", "Show the session, model, mode and context", None),
     ("/stop", "Stop all background processes (also /clean)", None),

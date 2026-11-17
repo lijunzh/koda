@@ -3028,3 +3028,95 @@ async fn a_server_of_another_version_is_replaced_or_left_alone() {
     tui.type_text("/exit\r");
     assert!(tui.exits());
 }
+
+/// `/side` asks in a fork with Codex's side instructions and boundary, and
+/// Ctrl+C returns: the main session goes on without the side question, and
+/// the side conversation is gone.
+#[tokio::test(flavor = "multi_thread")]
+async fn side_asks_in_a_fork_and_ctrl_c_returns() {
+    let server = scripted_model(vec![]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    tui.submit_and_finish("pick a colour", "All done.");
+
+    run_command(&mut tui, "/side which colour was it");
+    tui.wait_for_screen("side conversation");
+    let sent = wait_for_model_call(&server, 2).await;
+    assert!(sent.contains("You are in a side conversation"), "{sent}");
+    assert!(sent.contains("side_conversation_boundary"), "{sent}");
+    assert!(sent.contains("pick a colour"), "history lost: {sent}");
+    assert!(sent.contains("which colour was it"), "{sent}");
+    tui.wait_for_screen_without(BUSY_PROMPT);
+    tui.wait_for_screen("Ask a side question");
+
+    tui.type_text(CTRL_C);
+    tui.wait_for_screen("Back in the main session");
+    tui.submit_and_finish("carry on", "All done.");
+    let sent = wait_for_model_call(&server, 3).await;
+    assert!(sent.contains("pick a colour"), "{sent}");
+    assert!(sent.contains("carry on"), "{sent}");
+    assert!(
+        !sent.contains("which colour was it"),
+        "the side leaked: {sent}"
+    );
+    assert!(!sent.contains("side conversation"), "{sent}");
+
+    let main = quit_and_read_session_id(&mut tui);
+    assert!(
+        stored_messages(home.path(), &main)
+            .await
+            .contains("carry on")
+    );
+    use koda_state::session_store::SessionStore;
+    let project = std::fs::canonicalize(home.path()).unwrap();
+    let db = koda_state::db::Database::init(&home.path().join(".config/koda"))
+        .await
+        .unwrap();
+    assert_eq!(
+        db.list_sessions(10, &project).await.unwrap().len(),
+        1,
+        "the side conversation was kept"
+    );
+}
+
+/// `/side` typed while a turn runs leaves the turn running, as Codex's
+/// `/side` does, here on the shared server: the side question is answered
+/// meanwhile, and on the way back the TUI follows the main turn to its end.
+#[tokio::test(flavor = "multi_thread")]
+async fn side_mid_turn_leaves_the_turn_running() {
+    let server = FakeLlmServer::spawn().await;
+    server
+        .mount_fn("POST", r".*/chat/completions$", |request| {
+            let body = String::from_utf8_lossy(&request.body);
+            if body.contains("side_conversation_boundary") {
+                text_reply("Side answer.")
+            } else if body.contains("slow task") {
+                text_reply("Main finished.").set_delay(Duration::from_secs(8))
+            } else {
+                final_text()
+            }
+        })
+        .await;
+    let home = home();
+    let _stop = StopServer(home.path());
+    let mut tui = Tui::start_shared(home.path(), &server.url(), &[], IDLE_HINT);
+    tui.submit("slow task");
+    wait_for_model_call(&server, 1).await;
+    tui.wait_for_screen(BUSY_PROMPT);
+
+    run_command(&mut tui, "/side quick question");
+    tui.wait_for_screen("side conversation");
+    tui.wait_for_screen("Side answer.");
+    tui.wait_for_screen_without(BUSY_PROMPT);
+    assert!(
+        !tui.screen().contains("Main finished."),
+        "the main turn showed in the side conversation"
+    );
+
+    tui.type_text(CTRL_C);
+    tui.wait_for_screen("Back in the main session");
+    tui.wait_for_screen("Main finished.");
+    tui.wait_for_screen_without(BUSY_PROMPT);
+    tui.type_text("/exit\r");
+    assert!(tui.exits());
+}

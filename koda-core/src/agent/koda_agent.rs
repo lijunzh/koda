@@ -115,7 +115,14 @@ fn system_prompt_for(
     interactive: bool,
     skills: &crate::skills::SkillRegistry,
 ) -> String {
-    crate::prompt::build_system_prompt(&config.system_prompt, env, interactive, skills)
+    let mut prompt =
+        crate::prompt::build_system_prompt(&config.system_prompt, env, interactive, skills);
+    if let Some(text) = &config.developer_instructions {
+        prompt.push_str("\n\n## Developer instructions\n\n");
+        prompt.push_str(text);
+        prompt.push('\n');
+    }
+    prompt
 }
 
 impl KodaAgent {

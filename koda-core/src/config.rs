@@ -250,6 +250,9 @@ pub struct KodaConfig {
     /// Whether the model adds Koda's attribution to its commits and pull
     /// requests (`commit_attribution`, on by default), as Codex does.
     pub commit_attribution: bool,
+    /// Instructions added to the end of the system prompt
+    /// (`developer_instructions`), as Codex's developer instructions.
+    pub developer_instructions: Option<String>,
     /// Tokens one turn may spend (`turn_token_budget`); `None` for no
     /// limit. See [`crate::budget`].
     pub turn_token_budget: Option<u64>,
@@ -434,6 +437,7 @@ impl KodaConfig {
             post_turn_compact_percent: 0,
             file_mentions: true,
             commit_attribution: true,
+            developer_instructions: None,
             turn_token_budget: None,
             input_modalities: None,
             reported_vision: None,
@@ -732,6 +736,7 @@ impl KodaConfig {
             post_turn_compact_percent: 0,
             file_mentions: true,
             commit_attribution: true,
+            developer_instructions: None,
             turn_token_budget: None,
             input_modalities: None,
             reported_vision: None,

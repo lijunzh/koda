@@ -86,7 +86,10 @@ impl TuiContext {
                         crate::tui_output::warn_msg(&mut self.scroll_buffer, w.message);
                     }
                 }
-                Ok(Some(_)) => {}
+                // A main session's, while in a side conversation, is kept.
+                Ok(Some(other)) => {
+                    self.note_main_session(&other);
+                }
                 Ok(None) => anyhow::bail!("Koda's host stopped"),
                 Err(_) => anyhow::bail!("Koda's host didn't report the session's settings"),
             }

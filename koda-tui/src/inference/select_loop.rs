@@ -155,7 +155,12 @@ impl TuiContext {
         cmd_rx: &mut mpsc::Receiver<TurnCommand>,
     ) -> anyhow::Result<()> {
         // The prompt, and what goes back to the input box if it can't start.
+        let mut watch = None;
         let (prompt, restore) = match request {
+            TurnRequest::Watch { turn_id, waiting } => {
+                watch = Some((turn_id, waiting));
+                (None, None)
+            }
             TurnRequest::Prompt(TurnInput {
                 message,
                 images,
@@ -178,11 +183,19 @@ impl TuiContext {
         // The session a command switched to. What it runs with, the model and
         // the mode, is the host's: `/model`, `/provider` and Shift+Tab change
         // it with `session/settings/update` (`tui_context::settings`).
+        let watched = watch.as_ref().map(|(turn_id, _)| turn_id.clone());
         let started = async {
+            // A turn already running is followed, not started.
+            if let Some(turn_id) = watched {
+                return anyhow::Ok(turn_id);
+            }
             self.sync_host_session().await?;
             // Messages from before this turn (session notices, resolved
-            // requests) are no business of it.
-            while self.client.try_next_event().is_some() {}
+            // requests) are no business of it; a main session's, while in a
+            // side conversation, are kept for the return.
+            while let Some(message) = self.client.try_next_event() {
+                self.note_main_session(&message);
+            }
             let Some((message, images, mentions)) = prompt else {
                 self.client
                     .request::<methods::SessionCompactStart>(SessionCompactStartParams {
@@ -204,11 +217,12 @@ impl TuiContext {
                     }
                 }
             };
+            let input = self.side_boundary(message);
             let response = self
                 .client
                 .request::<methods::TurnStart>(TurnStartParams {
                     session_id: self.session.id.clone(),
-                    input: message,
+                    input,
                     images: images
                         .into_iter()
                         .map(|image| ImageInput {
@@ -261,6 +275,12 @@ impl TuiContext {
         self.tui_state = TuiState::Inferring;
         self.inference_start = Some(std::time::Instant::now());
         self.renderer.start_turn();
+        // What a followed turn asked and sent while the TUI was away.
+        if let Some((_, waiting)) = watch {
+            for message in waiting {
+                self.absorb_host_message(message, &mut tracker);
+            }
+        }
 
         // Ctrl+D asked to quit: the turn was told to stop, and Koda exits
         // once it has.
@@ -281,148 +301,157 @@ impl TuiContext {
         // frame scheduler caps that at ~120 FPS.
         self.frame_requester.schedule_frame();
 
-        let host_stopped = loop {
-            prefer_input = !prefer_input;
+        let host_stopped = tracker.completed().is_none()
+            && loop {
+                prefer_input = !prefer_input;
 
-            // Maximum number of host messages to drain in one iteration.
-            // The original drain loop was unbounded, which under sustained
-            // event pressure (sub-agent fan-out, fast streaming) let the
-            // event arm monopolise the executor — terminal events queued
-            // up in the OS buffer until the crossterm parser mis-framed
-            // partial mouse-report sequences as individual key events,
-            // and Ctrl+C took seconds to propagate (#1137).
-            const MAX_DRAIN: usize = 64;
+                // Maximum number of host messages to drain in one iteration.
+                // The original drain loop was unbounded, which under sustained
+                // event pressure (sub-agent fan-out, fast streaming) let the
+                // event arm monopolise the executor — terminal events queued
+                // up in the OS buffer until the crossterm parser mis-framed
+                // partial mouse-report sequences as individual key events,
+                // and Ctrl+C took seconds to propagate (#1137).
+                const MAX_DRAIN: usize = 64;
 
-            // The Draw arm is *always* polled first within each iteration.
-            // It only fires when the frame scheduler has emitted a
-            // notification (rate-limited to ~120 FPS), so it cannot
-            // starve the other arms in practice.
-            let select_result = if prefer_input {
-                tokio::select! {
-                    biased;
+                // The Draw arm is *always* polled first within each iteration.
+                // It only fires when the frame scheduler has emitted a
+                // notification (rate-limited to ~120 FPS), so it cannot
+                // starve the other arms in practice.
+                let select_result = if prefer_input {
+                    tokio::select! {
+                        biased;
 
-                    Some(()) = self.draw_rx.recv() => SelectArm::Draw,
-                    Some(Ok(ev)) = self.crossterm_events.next() => SelectArm::Crossterm(ev),
-                    Some(command) = cmd_rx.recv() => SelectArm::Command(command),
-                    message = self.client.next_event() => SelectArm::Host(message.map(Box::new)),
-                }
-            } else {
-                tokio::select! {
-                    biased;
+                        Some(()) = self.draw_rx.recv() => SelectArm::Draw,
+                        Some(Ok(ev)) = self.crossterm_events.next() => SelectArm::Crossterm(ev),
+                        Some(command) = cmd_rx.recv() => SelectArm::Command(command),
+                        message = self.client.next_event() => SelectArm::Host(message.map(Box::new)),
+                    }
+                } else {
+                    tokio::select! {
+                        biased;
 
-                    Some(()) = self.draw_rx.recv() => SelectArm::Draw,
-                    message = self.client.next_event() => SelectArm::Host(message.map(Box::new)),
-                    Some(Ok(ev)) = self.crossterm_events.next() => SelectArm::Crossterm(ev),
-                    Some(command) = cmd_rx.recv() => SelectArm::Command(command),
-                }
-            };
+                        Some(()) = self.draw_rx.recv() => SelectArm::Draw,
+                        message = self.client.next_event() => SelectArm::Host(message.map(Box::new)),
+                        Some(Ok(ev)) = self.crossterm_events.next() => SelectArm::Crossterm(ev),
+                        Some(command) = cmd_rx.recv() => SelectArm::Command(command),
+                    }
+                };
 
-            match select_result {
-                SelectArm::Draw => {
-                    tracing::debug!(
-                        target: "koda_cli::diag::child_activity",
-                        stage = "inference_draw_arm",
-                        "SelectArm::Draw -> terminal.draw()"
-                    );
-                    let (term_w, _) = crossterm::terminal::size()
-                        .map(|(c, r)| (c as usize, r as usize))
-                        .unwrap_or((80, 24));
-                    let hist_viewport = (self.history_area_height as usize).max(1);
-                    self.scroll_buffer.clamp_offset(term_w, hist_viewport);
-
-                    let mode = self.mode;
-                    let ctx = self.context_left;
-                    let mcp_info = self.mcp.status_bar();
-                    // #1210: the overlay above the status bar shows what
-                    // the sub-agents and background processes do now. The
-                    // turn may start a process: the host is asked about
-                    // once a second.
-                    self.refresh_background(true).await;
-                    let (child_activity_rows, child_activity_total) =
-                        self.child_activity.build_rows();
-                    let child_activity_hint = self.child_activity.hint();
-                    let _ = self.terminal.draw(|f| {
-                        draw_viewport(
-                            f,
-                            &self.textarea,
-                            &self.settings.model,
-                            mode,
-                            self.sandbox.available,
-                            ctx,
-                            self.tui_state,
-                            &self.prompt_mode,
-                            self.inference_start
-                                .map(|s| s.elapsed().as_secs())
-                                .unwrap_or(0),
-                            &self.menu,
-                            &self.scroll_buffer,
-                            self.mouse_selection.as_ref(),
-                            mcp_info,
-                            &self.project_root,
-                            &child_activity_rows,
-                            child_activity_total,
-                            child_activity_hint,
+                match select_result {
+                    SelectArm::Draw => {
+                        tracing::debug!(
+                            target: "koda_cli::diag::child_activity",
+                            stage = "inference_draw_arm",
+                            "SelectArm::Draw -> terminal.draw()"
                         );
-                    });
-                    // #1354: while any sub-agent or background process runs,
-                    // draw again in a second so the overlay's ages tick.
-                    if child_activity_total > 0 {
-                        self.frame_requester
-                            .schedule_frame_in(std::time::Duration::from_secs(1));
+                        let (term_w, _) = crossterm::terminal::size()
+                            .map(|(c, r)| (c as usize, r as usize))
+                            .unwrap_or((80, 24));
+                        let hist_viewport = (self.history_area_height as usize).max(1);
+                        self.scroll_buffer.clamp_offset(term_w, hist_viewport);
+
+                        let mode = self.mode;
+                        let ctx = self.context_left;
+                        let mcp_info = self.mcp.status_bar();
+                        // #1210: the overlay above the status bar shows what
+                        // the sub-agents and background processes do now. The
+                        // turn may start a process: the host is asked about
+                        // once a second.
+                        self.refresh_background(true).await;
+                        let (child_activity_rows, child_activity_total) =
+                            self.child_activity.build_rows();
+                        let child_activity_hint = self.child_activity.hint();
+                        let _ = self.terminal.draw(|f| {
+                            draw_viewport(
+                                f,
+                                &self.textarea,
+                                &self.settings.model,
+                                mode,
+                                self.sandbox.available,
+                                ctx,
+                                self.tui_state,
+                                &self.prompt_mode,
+                                self.inference_start
+                                    .map(|s| s.elapsed().as_secs())
+                                    .unwrap_or(0),
+                                &self.menu,
+                                &self.scroll_buffer,
+                                self.mouse_selection.as_ref(),
+                                mcp_info,
+                                &self.project_root,
+                                &child_activity_rows,
+                                child_activity_total,
+                                child_activity_hint,
+                                self.side.is_some(),
+                            );
+                        });
+                        // #1354: while any sub-agent or background process runs,
+                        // draw again in a second so the overlay's ages tick.
+                        if child_activity_total > 0 {
+                            self.frame_requester
+                                .schedule_frame_in(std::time::Duration::from_secs(1));
+                        }
+                    }
+                    SelectArm::Crossterm(ev) => {
+                        quit_requested |= super::crossterm_handler::handle_crossterm_event_inline(
+                            ev,
+                            &stop,
+                            cmd_tx,
+                            &mut self.scroll_buffer,
+                            self.history_area_height as usize,
+                            &mut self.menu,
+                            &mut self.prompt_mode,
+                            &mut self.pending_approval_id,
+                            &mut self.textarea,
+                            (&mut self.mode, &self.sandbox),
+                            &mut self.completer,
+                            (&mut self.history, &mut self.history_pastes),
+                            &mut self.history_idx,
+                            &mut self.pastes,
+                            (&self.input_history, &self.session.id),
+                            &mut self.child_activity,
+                        )
+                        .await;
+                        self.frame_requester.schedule_frame();
+                    }
+                    SelectArm::Command(TurnCommand::Side { question }) => {
+                        // The turn goes on without the TUI, which opens a side
+                        // conversation and follows the turn again on the way
+                        // back.
+                        self.side_from_turn = Some((question, tracker.turn_id().to_string()));
+                        break false;
+                    }
+                    SelectArm::Command(command) => {
+                        self.send_turn_command(command, &mut tracker).await;
+                    }
+                    SelectArm::Host(None) => break true,
+                    SelectArm::Host(Some(message)) => {
+                        self.absorb_host_message(*message, &mut tracker);
+                        // Bounded drain — at most MAX_DRAIN more messages per
+                        // iteration so we yield back to the select for input.
+                        // The drain still amortises N messages into 1 redraw,
+                        // but cannot monopolise the executor anymore.
+                        let _ = drain_bounded(
+                            || {
+                                // Nothing of the turn comes after its end.
+                                if tracker.completed().is_some() {
+                                    return None;
+                                }
+                                let message = self.client.try_next_event()?;
+                                self.absorb_host_message(message, &mut tracker);
+                                Some(())
+                            },
+                            MAX_DRAIN,
+                            |()| {},
+                        );
+                        self.frame_requester.schedule_frame();
                     }
                 }
-                SelectArm::Crossterm(ev) => {
-                    quit_requested |= super::crossterm_handler::handle_crossterm_event_inline(
-                        ev,
-                        &stop,
-                        cmd_tx,
-                        &mut self.scroll_buffer,
-                        self.history_area_height as usize,
-                        &mut self.menu,
-                        &mut self.prompt_mode,
-                        &mut self.pending_approval_id,
-                        &mut self.textarea,
-                        (&mut self.mode, &self.sandbox),
-                        &mut self.completer,
-                        (&mut self.history, &mut self.history_pastes),
-                        &mut self.history_idx,
-                        &mut self.pastes,
-                        (&self.input_history, &self.session.id),
-                        &mut self.child_activity,
-                    )
-                    .await;
-                    self.frame_requester.schedule_frame();
+                if tracker.completed().is_some() {
+                    break false;
                 }
-                SelectArm::Command(command) => {
-                    self.send_turn_command(command, &mut tracker).await;
-                }
-                SelectArm::Host(None) => break true,
-                SelectArm::Host(Some(message)) => {
-                    self.absorb_host_message(*message, &mut tracker);
-                    // Bounded drain — at most MAX_DRAIN more messages per
-                    // iteration so we yield back to the select for input.
-                    // The drain still amortises N messages into 1 redraw,
-                    // but cannot monopolise the executor anymore.
-                    let _ = drain_bounded(
-                        || {
-                            // Nothing of the turn comes after its end.
-                            if tracker.completed().is_some() {
-                                return None;
-                            }
-                            let message = self.client.try_next_event()?;
-                            self.absorb_host_message(message, &mut tracker);
-                            Some(())
-                        },
-                        MAX_DRAIN,
-                        |()| {},
-                    );
-                    self.frame_requester.schedule_frame();
-                }
-            }
-            if tracker.completed().is_some() {
-                break false;
-            }
-        };
+            };
 
         // Its sub-agents ended with it; what it left running in the
         // background stays listed.
@@ -504,6 +533,9 @@ impl TuiContext {
     /// Take note of one of the host's messages, then show it: a request as
     /// its dialog, a notification of this turn's through the renderer.
     fn absorb_host_message(&mut self, message: Outgoing, tracker: &mut TurnTracker) {
+        if self.note_main_session(&message) {
+            return;
+        }
         self.mcp.observe(&self.session.id, &message);
         tracker.observe_message(&message);
         let notification = match &message {
@@ -607,6 +639,8 @@ impl TuiContext {
                 return;
             }
             TurnCommand::Steer { text } => text,
+            // The loop takes it before it gets here.
+            TurnCommand::Side { .. } => return,
         };
         // Kept until the model receives it. If the turn has just ended the
         // host refuses it, and it comes back to the input box with the rest.
