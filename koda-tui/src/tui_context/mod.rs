@@ -12,6 +12,7 @@ mod mcp;
 mod memory;
 mod menus;
 mod plan;
+mod review;
 mod session_cmds;
 pub(crate) mod settings;
 mod side;
@@ -133,6 +134,10 @@ pub(crate) struct TuiContext {
     pub(crate) side_from_turn: Option<(String, String)>,
     /// Ctrl+C on an empty prompt in a side conversation: go back.
     pub(crate) leave_side_requested: bool,
+    /// A finished review's results, for the main session's next prompt.
+    pub(crate) pending_review: Option<String>,
+    /// How the last turn ended, and its final reply.
+    pub(crate) last_turn: Option<(koda_client::protocol::turn::TurnStatus, Option<String>)>,
     /// The session's mode, as the host reports it.
     pub mode: TrustMode,
     /// The host's sandbox, from `state/read`: whether Auto is possible.
@@ -537,6 +542,8 @@ impl TuiContext {
             side: None,
             side_from_turn: None,
             leave_side_requested: false,
+            pending_review: None,
+            last_turn: None,
             session,
             client,
             mode: initial_mode,
@@ -724,6 +731,8 @@ impl TuiContext {
                     CommandOutcome::StartInference(input) => {
                         self.run_inference_turn(TurnRequest::Prompt(input), cmd_tx, cmd_rx)
                             .await?;
+                        // A review's turn: back to the main session.
+                        self.finish_review().await;
                         continue;
                     }
                     CommandOutcome::Compact => {
@@ -839,6 +848,13 @@ impl TuiContext {
         if input.trim() == "/fork" {
             self.fork_session().await;
             return CommandOutcome::Handled;
+        }
+        if let Some(arg) = input
+            .trim()
+            .strip_prefix("/review")
+            .filter(|rest| rest.is_empty() || rest.starts_with(' '))
+        {
+            return self.enter_review(arg).await;
         }
         if let Some(question) = ["/side", "/btw"].iter().find_map(|command| {
             input

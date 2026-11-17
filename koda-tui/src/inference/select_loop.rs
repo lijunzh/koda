@@ -217,6 +217,7 @@ impl TuiContext {
                     }
                 }
             };
+            let message = self.with_review_results(message);
             let input = self.side_boundary(message);
             let response = self
                 .client
@@ -509,6 +510,9 @@ impl TuiContext {
             }
         }
 
+        self.last_turn = tracker
+            .completed()
+            .map(|turn| (turn.status, tracker.last_reply().map(str::to_string)));
         let unsent = tracker.take_unsent_steers();
         // A Plan turn that ended with a plan: implement it, or keep
         // planning, as Codex's TUI asks once the turn is done and nothing

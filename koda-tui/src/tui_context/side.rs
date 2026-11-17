@@ -76,6 +76,32 @@ pub(crate) struct SideState {
     returning: bool,
     /// What the main session sent on the way back, oldest first.
     held: Vec<Outgoing>,
+    /// A review (`/review`) rather than a side conversation: what it
+    /// reviews, as the banner and results name it.
+    pub(crate) review: Option<String>,
+}
+
+impl SideState {
+    /// Away from `main`, which has `main_turn` running if any.
+    pub(crate) fn new(main: TuiSession, main_turn: Option<String>, review: Option<String>) -> Self {
+        Self {
+            main,
+            main_turn,
+            waiting: Vec::new(),
+            boundary_sent: false,
+            returning: false,
+            held: Vec::new(),
+            review,
+        }
+    }
+}
+
+/// What the TUI says on returning to the main session.
+fn back_message(review: &Option<String>) -> String {
+    match review {
+        Some(_) => "Back in the main session.".to_string(),
+        None => "Back in the main session; the side conversation is gone.".to_string(),
+    }
 }
 
 /// The session a host message belongs to, if it names one.
@@ -142,14 +168,7 @@ impl TuiContext {
             },
         );
         self.host_session = forked.id.clone();
-        self.side = Some(SideState {
-            main,
-            main_turn,
-            waiting: Vec::new(),
-            boundary_sent: false,
-            returning: false,
-            held: Vec::new(),
-        });
+        self.side = Some(SideState::new(main, main_turn, None));
         if let Some(mode) = forked.mode {
             self.mode = mode;
         }
@@ -177,7 +196,7 @@ impl TuiContext {
     /// Ahead of the side conversation's first question, Codex's boundary.
     pub(crate) fn side_boundary(&mut self, message: String) -> String {
         match self.side.as_mut() {
-            Some(side) if !side.boundary_sent => {
+            Some(side) if side.review.is_none() && !side.boundary_sent => {
                 side.boundary_sent = true;
                 format!("{SIDE_BOUNDARY}\n\n{message}")
             }
@@ -266,10 +285,7 @@ impl TuiContext {
                 let mut messages: Vec<Outgoing> =
                     side.waiting.into_iter().map(Outgoing::Request).collect();
                 messages.extend(side.held);
-                tui_output::dim_msg(
-                    &mut self.scroll_buffer,
-                    "Back in the main session; the side conversation is gone.".to_string(),
-                );
+                tui_output::dim_msg(&mut self.scroll_buffer, back_message(&side.review));
                 Some((turn, messages))
             }
             None => {
@@ -277,10 +293,7 @@ impl TuiContext {
                 if !side.held.is_empty() {
                     self.redraw_main().await;
                 }
-                tui_output::dim_msg(
-                    &mut self.scroll_buffer,
-                    "Back in the main session; the side conversation is gone.".to_string(),
-                );
+                tui_output::dim_msg(&mut self.scroll_buffer, back_message(&side.review));
                 None
             }
         }
