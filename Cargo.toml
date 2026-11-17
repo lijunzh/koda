@@ -4,6 +4,7 @@ members = [
     "koda-cli",
     "koda-tui",
     "koda-oss",
+    "koda-git",
     "koda-test-utils",
     "koda-sandbox",
     "koda-protocol",
@@ -56,6 +57,7 @@ koda-server = { path = "koda-server", version = "=0.7.4" }
 koda-client = { path = "koda-client", version = "=0.7.4" }
 koda-tui = { path = "koda-tui", version = "=0.7.4" }
 koda-oss = { path = "koda-oss", version = "=0.7.4" }
+koda-git = { path = "koda-git", version = "=0.7.4" }
 base64 = "0.23"
 anyhow = "1"
 async-trait = "0.1"

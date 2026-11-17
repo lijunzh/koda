@@ -19,6 +19,8 @@ koda-client = { workspace = true }
 # The config file, and the log database (flushed when the TUI panics).
 koda-config = { workspace = true }
 koda-state = { workspace = true }
+# `/diff` runs git, hardened.
+koda-git = { workspace = true }
 reqwest = { workspace = true }
 shlex = { workspace = true }
 

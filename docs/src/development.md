@@ -137,6 +137,7 @@ koda/
 │   └── tests/              # CLI integration tests
 │   └── benches/            # Render benchmark
 ├── koda-oss/               # koda --oss: llama-server started, shared and stopped with Koda
+├── koda-git/               # One hardened way to run git: no hooks, fsmonitor, filters, external diff or textconv
 ├── koda-protocol/          # The client protocol: JSON-RPC messages and their types
 ├── koda-client/            # The client API: Koda in-process, typed requests, the event queue
 ├── koda-server/            # Koda's host: sessions, config, MCP, koda serve --stdio

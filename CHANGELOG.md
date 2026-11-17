@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Security
+
+- **The git commands Koda runs itself no longer run programs a repository's config names.** The git context at session start, sub-agent worktrees (making, committing, removing) and `/diff` run outside the sandbox, and a repository's `.git/config` or attributes can make git run a program: a hook, an fsmonitor, a clean or smudge filter, an external diff, a textconv. Only worktrees turned hooks and the fsmonitor off. All of them now go through one hardened runner, the new `koda-git` crate, with Codex's settings: hooks and the fsmonitor off, filter drivers off for working-tree commands, attribute files from config ignored, `safe.bareRepository=explicit`, inherited `GIT_DIR`-style variables removed, no prompts, and `--no-ext-diff --no-textconv` on diffs. The model's own `git` commands are unchanged: they go through the Bash tool and the sandbox. A sub-agent's worktree now has Git LFS pointer files, as Claude Code's do. And Koda no longer makes or removes a sub-agent's worktree through a symlink: a repository that committed `.koda` (or `.koda/worktrees`) as one would have had the worktree, and the sub-agent's write access, outside the project, and the removal's `rm -rf` fallback pointed there. Claude Code refuses the same.
+
 ### Changed
 
 - **The TUI is its own crate, `koda-tui`, and `--oss` is `koda-oss`, as Codex keeps `codex-tui` apart from `codex-cli`.** `koda-cli` stays the `koda` command (arguments, `koda exec`, `koda serve`, `koda mcp`), so `cargo install koda-cli` is unchanged; it now depends on the two new published crates. Nothing a user sees changes, except that the TUI's log lines are now filed under `koda_tui` rather than `koda_cli` (`RUST_LOG=koda_tui=debug`; a crash is still `koda_cli::panic`).

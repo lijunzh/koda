@@ -17,10 +17,17 @@ use tui_output::{BOLD, DIM};
 
 // ── Diff (native TUI) ───────────────────────────────
 
+/// `git` in the TUI's directory, hardened by [`koda_git`]: the repository's
+/// config can't make `/diff` run a program.
+fn git(operation: koda_git::Operation, args: &[&str]) -> std::io::Result<std::process::Output> {
+    koda_git::command(std::path::Path::new("."), operation)?
+        .args(args)
+        .args(koda_git::DIFF_ARGS)
+        .output()
+}
+
 pub(crate) fn handle_diff(buffer: &mut ScrollBuffer) {
-    let output = std::process::Command::new("git")
-        .args(["diff", "--stat"])
-        .output();
+    let output = git(koda_git::Operation::WorkingTree, &["diff", "--stat"]);
 
     let diff_stat = match output {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
@@ -37,18 +44,19 @@ pub(crate) fn handle_diff(buffer: &mut ScrollBuffer) {
 
     let has_unstaged = !diff_stat.trim().is_empty();
     let staged_stat = if !has_unstaged {
-        std::process::Command::new("git")
-            .args(["diff", "--cached", "--stat"])
-            .output()
-            .ok()
-            .and_then(|o| {
-                if o.status.success() {
-                    let s = String::from_utf8_lossy(&o.stdout).to_string();
-                    if s.trim().is_empty() { None } else { Some(s) }
-                } else {
-                    None
-                }
-            })
+        git(
+            koda_git::Operation::Metadata,
+            &["diff", "--cached", "--stat"],
+        )
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                let s = String::from_utf8_lossy(&o.stdout).to_string();
+                if s.trim().is_empty() { None } else { Some(s) }
+            } else {
+                None
+            }
+        })
     } else {
         None
     };

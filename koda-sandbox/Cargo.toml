@@ -13,6 +13,8 @@ keywords = ["sandbox", "security", "filesystem", "unix", "ai"]
 categories = ["os", "filesystem", "concurrency"]
 
 [dependencies]
+# Sub-agent worktrees run git outside the sandbox, hardened.
+koda-git = { workspace = true }
 # Parsing a URL to check where it points (url_guard).
 url = "2"
 anyhow = { workspace = true }

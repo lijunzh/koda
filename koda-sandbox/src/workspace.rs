@@ -15,8 +15,9 @@
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use koda_git::Operation;
 use std::path::{Path, PathBuf};
-use tokio::process::Command;
+use std::process::Output;
 
 /// `out` if git ran and reported success, else why not.
 fn succeeded(
@@ -37,20 +38,21 @@ fn succeeded(
     Err(format!("{step}: {}", said.trim()))
 }
 
-/// A `git` command in `dir`, killed if its call is dropped. A half-made worktree
-/// isn't cleaned up.
+/// Run `git` in `dir` with `args`, killed if its call is dropped. A half-made
+/// worktree isn't cleaned up.
 ///
 /// These run outside the sandbox on a tree the sub-agent wrote, so nothing it
-/// wrote may decide what they execute. A relative `core.hooksPath` finds hooks
-/// inside the worktree, and `--no-verify` only skips some hooks. Turning hooks
-/// off means a project's own hooks, `post-checkout` included, don't run here.
-fn git(dir: &Path) -> Command {
-    let mut cmd = Command::new("git");
-    cmd.args(["-c", "core.hooksPath=/dev/null"])
-        .args(["-c", "core.fsmonitor=false"])
-        .current_dir(dir)
-        .kill_on_drop(true);
-    cmd
+/// wrote may decide what they execute: [`koda_git`] turns off hooks (a
+/// relative `core.hooksPath` finds hooks inside the worktree, and
+/// `--no-verify` only skips some), the fsmonitor and, for working-tree
+/// commands, filter drivers. A project's own hooks, `post-checkout`
+/// included, don't run here.
+async fn git(dir: &Path, operation: Operation, args: &[&str]) -> std::io::Result<Output> {
+    koda_git::tokio_command(dir, operation)
+        .await?
+        .args(args)
+        .output()
+        .await
 }
 
 // ── Trait ────────────────────────────────────────────────────────────────────
@@ -189,10 +191,12 @@ impl GitWorktreeProvider {
 
     /// `true` when git is reachable and the project is inside a git repo.
     async fn is_git_repo(&self) -> bool {
-        let Ok(out) = git(&self.project_root)
-            .args(["rev-parse", "--is-inside-work-tree"])
-            .output()
-            .await
+        let Ok(out) = git(
+            &self.project_root,
+            Operation::Metadata,
+            &["rev-parse", "--is-inside-work-tree"],
+        )
+        .await
         else {
             return false;
         };
@@ -205,6 +209,35 @@ impl GitWorktreeProvider {
             .join(".koda")
             .join("worktrees")
             .join(slot_id)
+    }
+
+    /// Refuse a worktree `path` reached through a symlink: `.koda`,
+    /// `.koda/worktrees` or the worktree's own folder. A repository can
+    /// commit `.koda` as a symlink, and following it would put the worktree,
+    /// and the sub-agent's write access with it, outside the project, and
+    /// point the removal's `rm -rf` fallback there too. Claude Code refuses
+    /// the same for `.claude/worktrees`.
+    fn refuse_symlinks(&self, path: &Path) -> Result<()> {
+        let relative = path
+            .strip_prefix(&self.project_root)
+            .context("worktree path outside the project")?;
+        let mut current = self.project_root.clone();
+        for component in relative.components() {
+            current.push(component);
+            match std::fs::symlink_metadata(&current) {
+                Ok(meta) if meta.file_type().is_symlink() => anyhow::bail!(
+                    "{} is a symlink; Koda won't make or remove a sub-agent's worktree through it",
+                    current.display()
+                ),
+                Ok(_) => {}
+                // Not made yet: nothing below it exists either.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+                Err(e) => {
+                    return Err(e).with_context(|| format!("can't inspect {}", current.display()));
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -222,6 +255,7 @@ impl WorkspaceProvider for GitWorktreeProvider {
 
         let wt_path = self.worktree_path(slot_id);
         let branch = self.branch_name(slot_id);
+        self.refuse_symlinks(&wt_path)?;
 
         // Reuse on resume (idempotent).
         if wt_path.exists() {
@@ -232,18 +266,20 @@ impl WorkspaceProvider for GitWorktreeProvider {
         std::fs::create_dir_all(wt_path.parent().unwrap_or(&self.project_root))
             .context("Failed to create .koda/worktrees/ directory")?;
 
-        let out = git(&self.project_root)
-            .args([
+        let out = git(
+            &self.project_root,
+            Operation::WorkingTree,
+            &[
                 "worktree",
                 "add",
                 "-b",
                 &branch,
                 &wt_path.to_string_lossy(),
                 "HEAD",
-            ])
-            .output()
-            .await
-            .context("Failed to spawn git worktree add")?;
+            ],
+        )
+        .await
+        .context("Failed to spawn git worktree add")?;
 
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
@@ -307,10 +343,12 @@ impl WorkspaceProvider for GitWorktreeProvider {
 
         // Nothing of its own — remove worktree and ephemeral branch.
         self.remove_worktree(path).await;
-        let _ = git(&self.project_root)
-            .args(["branch", "-D", &branch])
-            .output()
-            .await;
+        let _ = git(
+            &self.project_root,
+            Operation::Metadata,
+            &["branch", "-D", &branch],
+        )
+        .await;
 
         tracing::info!("Removed clean worktree for slot {slot_id}");
         Ok(None)
@@ -320,17 +358,19 @@ impl WorkspaceProvider for GitWorktreeProvider {
 impl GitWorktreeProvider {
     /// Whether the worktree holds anything to save.
     async fn has_changes(&self, path: &Path) -> std::result::Result<bool, String> {
-        let status = git(path).args(["status", "--short"]).output().await;
+        let status = git(path, Operation::WorkingTree, &["status", "--short"]).await;
         let status = succeeded("git status", status)?;
         Ok(!String::from_utf8_lossy(&status.stdout).trim().is_empty())
     }
 
     /// Whether `branch` holds commits the project's `HEAD` doesn't.
     async fn has_new_commits(&self, branch: &str) -> std::result::Result<bool, String> {
-        let commits = git(&self.project_root)
-            .args(["rev-list", "--max-count=1", &format!("HEAD..{branch}")])
-            .output()
-            .await;
+        let commits = git(
+            &self.project_root,
+            Operation::Metadata,
+            &["rev-list", "--max-count=1", &format!("HEAD..{branch}")],
+        )
+        .await;
         let commits = succeeded("git rev-list", commits)?;
         Ok(!commits.stdout.is_empty())
     }
@@ -339,10 +379,15 @@ impl GitWorktreeProvider {
     /// point, so the project's signing doesn't get a say, and [`git`] has already
     /// turned off its hooks.
     async fn save_changes(&self, path: &Path) -> std::result::Result<(), String> {
-        succeeded("git add", git(path).args(["add", "-A"]).output().await)?;
+        succeeded(
+            "git add",
+            git(path, Operation::WorkingTree, &["add", "-A"]).await,
+        )?;
         let commit_msg = format!("koda: sub-agent '{}' changes", self.agent_name);
-        let committed = git(path)
-            .args([
+        let committed = git(
+            path,
+            Operation::WorkingTree,
+            &[
                 "-c",
                 "user.name=koda",
                 "-c",
@@ -352,9 +397,9 @@ impl GitWorktreeProvider {
                 "commit",
                 "-m",
                 &commit_msg,
-            ])
-            .output()
-            .await;
+            ],
+        )
+        .await;
         succeeded("git commit", committed).map(|_| ())
     }
 
@@ -369,12 +414,19 @@ impl GitWorktreeProvider {
         )
     }
 
-    /// Best-effort `git worktree remove --force` with rm-rf fallback.
+    /// Best-effort `git worktree remove --force` with rm-rf fallback. Neither
+    /// runs through a symlink: see [`Self::refuse_symlinks`].
     async fn remove_worktree(&self, path: &Path) {
-        let out = git(&self.project_root)
-            .args(["worktree", "remove", "--force", &path.to_string_lossy()])
-            .output()
-            .await;
+        if let Err(e) = self.refuse_symlinks(path) {
+            tracing::warn!("Not removing worktree: {e:#}");
+            return;
+        }
+        let out = git(
+            &self.project_root,
+            Operation::WorkingTree,
+            &["worktree", "remove", "--force", &path.to_string_lossy()],
+        )
+        .await;
 
         match out {
             Ok(o) if o.status.success() => {}
@@ -396,6 +448,7 @@ impl GitWorktreeProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::process::Command;
 
     // ── CwdProvider ──────────────────────────────────────────────────────────
 
@@ -504,6 +557,39 @@ mod tests {
         );
     }
 
+    /// A repository that commits `.koda` (or `.koda/worktrees`) as a symlink
+    /// doesn't get a worktree outside the project, and a removal doesn't
+    /// delete through it.
+    #[tokio::test]
+    async fn provision_refuses_a_symlinked_koda_folder() {
+        for link in [".koda", ".koda/worktrees"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let project = tmp.path().join("project");
+            let elsewhere = tmp.path().join("elsewhere");
+            std::fs::create_dir_all(&project).unwrap();
+            std::fs::create_dir_all(&elsewhere).unwrap();
+            init_repo(&project).await;
+            let link_path = project.join(link);
+            std::fs::create_dir_all(link_path.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(&elsewhere, &link_path).unwrap();
+
+            let p = GitWorktreeProvider::new(&project, "agent");
+            let err = p.provision("slot-link").await.unwrap_err();
+            assert!(
+                format!("{err:#}").contains("is a symlink"),
+                "{link}: {err:#}"
+            );
+            assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0, "{link}");
+
+            // A folder left there by hand isn't removed through the link.
+            let target = p.worktree_path("slot-link");
+            std::fs::create_dir_all(&target).unwrap();
+            std::fs::write(target.join("keep.txt"), "x").unwrap();
+            p.remove_worktree(&target).await;
+            assert!(target.join("keep.txt").exists(), "{link}");
+        }
+    }
+
     #[tokio::test]
     async fn provision_reuses_existing_worktree() {
         let tmp = tempfile::tempdir().unwrap();
@@ -549,7 +635,7 @@ mod tests {
                 "x",
             ][..],
         ] {
-            let out = git(&wt).args(args).output().await.unwrap();
+            let out = git(&wt, Operation::WorkingTree, args).await.unwrap();
             assert!(out.status.success(), "{out:?}");
         }
 
@@ -559,11 +645,13 @@ mod tests {
         let hint = hint.expect("committed work must be reported");
         assert!(hint.contains(&branch), "{hint}");
         assert!(!wt.exists(), "the branch holds the work now");
-        let shown = git(tmp.path())
-            .args(["show", &format!("{branch}:done.txt")])
-            .output()
-            .await
-            .unwrap();
+        let shown = git(
+            tmp.path(),
+            Operation::Metadata,
+            &["show", &format!("{branch}:done.txt")],
+        )
+        .await
+        .unwrap();
         assert_eq!(String::from_utf8_lossy(&shown.stdout), "done");
     }
 
@@ -576,11 +664,13 @@ mod tests {
         let wt = p.provision("slot-idle").await.unwrap();
         assert!(p.release("slot-idle", &wt).await.unwrap().is_none());
 
-        let branches = git(tmp.path())
-            .args(["branch", "--list", &p.branch_name("slot-idle")])
-            .output()
-            .await
-            .unwrap();
+        let branches = git(
+            tmp.path(),
+            Operation::Metadata,
+            &["branch", "--list", &p.branch_name("slot-idle")],
+        )
+        .await
+        .unwrap();
         assert!(branches.stdout.is_empty(), "{branches:?}");
     }
 

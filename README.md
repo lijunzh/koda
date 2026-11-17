@@ -95,6 +95,7 @@ their APIs aren't stable before 1.0.
 | [koda-cli](https://crates.io/crates/koda-cli) | The `koda` program: the command line, `koda exec` and `koda serve` |
 | [koda-tui](https://crates.io/crates/koda-tui) | The TUI that `koda` opens |
 | [koda-oss](https://crates.io/crates/koda-oss) | `koda --oss`: a local model on llama.cpp, started and stopped with Koda |
+| [koda-git](https://crates.io/crates/koda-git) | One hardened way to run `git`, so a repository's own config can't run programs |
 | [koda-client](https://crates.io/crates/koda-client) | The client API: Koda in-process, typed requests and the event queue. Start here to embed Koda |
 | [koda-protocol](https://crates.io/crates/koda-protocol) | The client protocol: JSON-RPC 2.0 messages and their types |
 | [koda-server](https://crates.io/crates/koda-server) | Koda's host: sessions, settings and MCP, behind the protocol |

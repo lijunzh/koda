@@ -19,6 +19,8 @@ name = "koda_core"
 path = "src/lib.rs"
 
 [dependencies]
+# The git context at session start runs git outside the sandbox, hardened.
+koda-git = { workspace = true }
 # `@` mentions of images, read by the host.
 base64 = { workspace = true }
 # Read v2: scale and recompress a large image before it is sent.
