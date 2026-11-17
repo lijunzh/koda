@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **`koda fork <id> --worktree` opens a copy of a session in a new managed worktree, as `codex fork <id> --worktree` does.** The checkout is of the repository the session worked in, wherever the command runs (`--project-root` names another), and the copy has the whole history. The session must be named: `--last` and the list are refused with `--worktree`, as Codex refuses them.
+
+### Changed
+
+- **A fork belongs to the project it opens in.** A copy made with `koda fork` (or `session/fork`) from another folder was listed under the original's project, though it ran where Koda started; it is now listed where it runs, as a Codex fork takes the cwd it starts in. `/fork` inside a session is unchanged.
+
 ## [0.7.5] - 2026-11-16
 
 ### Added

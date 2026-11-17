@@ -1172,5 +1172,31 @@ async fn worktree_refuses_to_resume() {
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("can't resume or fork"), "{stderr}");
+    assert!(stderr.contains("can't resume a session"), "{stderr}");
+    assert!(stderr.contains("koda fork <id> --worktree"), "{stderr}");
+}
+
+/// `koda fork --worktree` needs the session named, as `codex fork
+/// --worktree` refuses `--last` and the picker.
+#[tokio::test]
+async fn fork_worktree_needs_a_session_id() {
+    let server = stub(vec![], no_other_calls).await;
+    let tmp = tempfile::tempdir().unwrap();
+    for args in [
+        vec!["fork", "--last", "--worktree"],
+        vec!["fork", "--worktree"],
+    ] {
+        let output = tokio::process::Command::new(koda_bin())
+            .args(&args)
+            .args(["--base-url", &server.url()])
+            .arg("--project-root")
+            .arg(tmp.path())
+            .env("XDG_CONFIG_HOME", tmp.path())
+            .output()
+            .await
+            .unwrap();
+        assert!(!output.status.success(), "{args:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("needs a session id"), "{args:?}: {stderr}");
+    }
 }

@@ -145,7 +145,9 @@ struct SessionFlags {
     /// Run the session in a new managed Git worktree, as Codex's
     /// `--worktree` does: a detached checkout of the project's HEAD under
     /// Koda's config folder (worktrees/), outside the repository. Kept when
-    /// Koda exits; remove it with `git worktree remove <path>`.
+    /// Koda exits; remove it with `git worktree remove <path>`. With
+    /// `koda fork <id>`, the fork opens in a checkout of the repository the
+    /// session worked in.
     #[arg(long)]
     worktree: bool,
 }
@@ -325,7 +327,8 @@ enum Command {
     Resume(ResumeArgs),
     /// Fork a saved session and open the copy in the TUI, as `codex fork`
     /// does: by its id (or the start of one), the most recent with --last,
-    /// or pick one from a list. The original stays as it was.
+    /// or pick one from a list. The original stays as it was. With
+    /// --worktree (and an id), the copy opens in a new worktree.
     Fork(ResumeArgs),
     /// Serve the client protocol on stdin and stdout, for a GUI, an editor
     /// or a script.
@@ -674,6 +677,7 @@ pub(crate) async fn run() -> Result<()> {
     }
 
     // Resolve project root
+    let project_root_given = flags.project_root.is_some();
     let project_root = flags
         .project_root
         .take()
@@ -703,17 +707,36 @@ pub(crate) async fn run() -> Result<()> {
         .map(|dir| crate::logging::resolve_log_dir(dir, &config_dir));
     let _logging = crate::logging::init(&config_dir, log_dir).await?;
 
-    // `--worktree`: a new session in a new checkout, as Codex's flag is
-    // for new sessions only.
+    // `--worktree`: a new session, or a fork of one (`koda fork <id>
+    // --worktree`), in a new checkout, as Codex's flag is for new sessions
+    // and explicit forks only.
     let worktree = if session.worktree {
-        if resume.is_some() || fork || pick_session {
+        if (resume.is_some() || pick_session) && !fork {
             eprintln!(
-                "error: --worktree starts a new session in a new worktree (koda --worktree, \
-                 koda exec --worktree); it can't resume or fork one"
+                "error: --worktree can't resume a session; to carry one into a new worktree, \
+                 fork it: koda fork <id> --worktree"
             );
             std::process::exit(2);
         }
-        let checkout = koda_git::worktree::create(&config_dir.join("worktrees"), &project_root)
+        // A fork's checkout is of the repository the session worked in,
+        // as Codex takes a forked thread's cwd, unless --project-root
+        // names another.
+        let source = if fork {
+            let Some(koda_tui::session_id::Resume::Id(typed)) = &resume else {
+                eprintln!("error: koda fork --worktree needs a session id");
+                std::process::exit(2);
+            };
+            let (id, root) = fork_source(&config_dir, typed, &project_root).await?;
+            resume = Some(koda_tui::session_id::Resume::Id(id));
+            if project_root_given {
+                project_root.clone()
+            } else {
+                root
+            }
+        } else {
+            project_root.clone()
+        };
+        let checkout = koda_git::worktree::create(&config_dir.join("worktrees"), &source)
             .map_err(|e| anyhow::anyhow!("--worktree: {e}"))?;
         eprintln!(
             "Working in a new worktree: {} (a detached checkout of {} at {})",
@@ -874,6 +897,41 @@ pub(crate) async fn run() -> Result<()> {
         worktree.kept_notice();
     }
     ran
+}
+
+/// The session `typed` names for `koda fork <id> --worktree`, by its full
+/// id, and the folder it worked in, read from the session database before
+/// the checkout is made. A shorter id is matched against `project_root`'s
+/// sessions, as `koda fork` matches one; a full id may be any project's.
+async fn fork_source(
+    config_dir: &std::path::Path,
+    typed: &str,
+    project_root: &std::path::Path,
+) -> anyhow::Result<(String, std::path::PathBuf)> {
+    use koda_state::session_store::SessionStore;
+    let db = koda_state::db::Database::init(config_dir).await?;
+    let typed = typed.trim();
+    let id = if koda_tui::session_id::is_full_id(typed) {
+        typed.to_string()
+    } else {
+        let sessions = db.list_sessions(i64::MAX, project_root).await?;
+        koda_tui::session_id::pick(typed, sessions.iter().map(|s| s.id.as_str()))?.to_string()
+    };
+    let stored = db
+        .get_session(&id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("no session '{typed}'. Run `koda resume` to pick one."))?;
+    let root = stored
+        .project_root
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| project_root.to_path_buf());
+    anyhow::ensure!(
+        root.is_dir(),
+        "session {id} worked in {}, which is gone; give --project-root to fork it into a \
+         worktree of another checkout",
+        root.display()
+    );
+    Ok((id, root))
 }
 
 /// A `--worktree` session's checkout, and what Koda says about it.

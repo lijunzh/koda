@@ -350,9 +350,11 @@ pub trait SessionStore: Send + Sync {
     /// Copy `source` into a new session named `title`, and return its id:
     /// the session's provider, model and mode, its messages (token counts
     /// included), turn records, metadata and events, as Codex's
-    /// `thread/fork` copies a thread's rollout. One transaction; `source`
-    /// is left as it was.
-    async fn fork_session(&self, source: &str, title: &str) -> Result<String>;
+    /// `thread/fork` copies a thread's rollout. The copy belongs to
+    /// `project_root`, where it opens, as a Codex fork takes the cwd it
+    /// starts in (`koda fork --worktree` opens it in a new checkout). One
+    /// transaction; `source` is left as it was.
+    async fn fork_session(&self, source: &str, title: &str, project_root: &Path) -> Result<String>;
     /// Delete a session by ID. Returns `true` if it existed.
     async fn delete_session(&self, session_id: &str) -> Result<bool>;
     /// Set the auto-generated title for a session.

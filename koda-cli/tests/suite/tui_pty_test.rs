@@ -2793,3 +2793,86 @@ async fn worktree_opens_the_tui_in_a_new_checkout() {
     assert!(tui.exits());
     tui.wait_for_output("The worktree stays at");
 }
+
+/// `koda fork <id> --worktree` opens a copy of the session in a new managed
+/// worktree of the repository it worked in, as `codex fork <id>
+/// --worktree` does: the copy keeps the history, belongs to the checkout,
+/// and is recorded in it; the original stays where it was.
+#[tokio::test(flavor = "multi_thread")]
+async fn fork_worktree_opens_the_copy_in_a_new_checkout() {
+    let server = scripted_model(vec![]).await;
+    let home = home();
+    for args in [
+        vec!["init", "-q", "-b", "main"],
+        vec![
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "first",
+        ],
+    ] {
+        let ok = std::process::Command::new("git")
+            .args(&args)
+            .current_dir(home.path())
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git {args:?}");
+    }
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    tui.submit("delta topic please");
+    tui.wait_for_screen("All done.");
+    let source = quit_and_read_session_id(&mut tui);
+
+    // The start of the id, as `koda fork` takes one.
+    let mut tui = Tui::start_with_args(
+        home.path(),
+        &server.url(),
+        &["fork", &source[..8], "--worktree", "carry it on"],
+        "session resumed",
+    );
+    let sent = wait_for_model_call(&server, 2).await;
+    assert!(sent.contains("delta topic please"), "history lost: {sent}");
+    assert!(sent.contains("carry it on"), "{sent}");
+    tui.wait_for_screen("All done.");
+    let fork = quit_and_read_session_id(&mut tui);
+    assert_ne!(fork, source);
+    tui.wait_for_output("The worktree stays at");
+
+    let checkout = std::fs::read_dir(home.path().join(".config/koda/worktrees"))
+        .unwrap()
+        .flatten()
+        .find(|entry| entry.path().is_dir())
+        .expect("no worktree")
+        .path()
+        .join(home.path().file_name().unwrap());
+    assert_eq!(
+        koda_git::worktree::owner(&checkout).unwrap().as_deref(),
+        Some(fork.as_str())
+    );
+    use koda_state::session_store::SessionStore;
+    let db = koda_state::db::Database::init(&home.path().join(".config/koda"))
+        .await
+        .unwrap();
+    let project_of = |info: Option<koda_state::session_store::SessionInfo>| {
+        std::fs::canonicalize(info.unwrap().project_root.unwrap()).unwrap()
+    };
+    assert_eq!(
+        project_of(db.get_session(&fork).await.unwrap()),
+        std::fs::canonicalize(&checkout).unwrap()
+    );
+    assert_eq!(
+        project_of(db.get_session(&source).await.unwrap()),
+        std::fs::canonicalize(home.path()).unwrap()
+    );
+    assert!(
+        !stored_messages(home.path(), &source)
+            .await
+            .contains("carry it on")
+    );
+}
