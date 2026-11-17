@@ -70,7 +70,7 @@ impl TurnBudget {
     }
 
     /// `true` once, the first time this is asked at or past
-    /// [`WRAP_UP_PERCENT`] of the budget.
+    /// 90% of the budget.
     pub fn take_wrap_up(&self) -> bool {
         self.spent().saturating_mul(100) >= self.limit.saturating_mul(WRAP_UP_PERCENT)
             && !self.wrap_up_told.swap(true, Ordering::Relaxed)
