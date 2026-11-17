@@ -15,7 +15,7 @@
 //! See #209 for the refactoring plan.
 
 use crate::tui_context::TuiContext;
-use crate::tui_context::settings::Named;
+pub use crate::tui_context::settings::Named;
 
 use anyhow::Result;
 use ratatui::{

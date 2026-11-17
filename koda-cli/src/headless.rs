@@ -20,8 +20,6 @@
 //!   the answer Koda took, and `exec/summary` last. Deltas only with
 //!   `--json-deltas`.
 
-use crate::input;
-use crate::protocol_text::{self, Tone};
 use koda_client::events::Outgoing;
 use koda_client::protocol::initialize::ClientInfo;
 use koda_client::protocol::item::{
@@ -34,6 +32,8 @@ use koda_client::protocol::turn::{
 };
 use koda_client::protocol::{ServerNotification, ServerRequest, methods};
 use koda_client::{InProcessClient, StartArgs};
+use koda_tui::input;
+use koda_tui::protocol_text::{self, Tone};
 
 use anyhow::{Context, Result};
 use std::collections::{BTreeMap, HashSet};
@@ -84,7 +84,7 @@ pub struct Named {
 /// success).
 pub async fn run_headless(
     project_root: PathBuf,
-    resume: Option<crate::session_id::Resume>,
+    resume: Option<koda_tui::session_id::Resume>,
     run: Run,
 ) -> Result<i32> {
     // `@path` mentions go to the host, which reads them; dragged-in images
@@ -108,7 +108,7 @@ pub async fn run_headless(
         .collect();
 
     let mut client = InProcessClient::start(StartArgs {
-        config_file: crate::user_config::file()?,
+        config_file: koda_tui::user_config::file()?,
         home: koda_config::config_dir()?,
         project_root,
         client_info: ClientInfo {
@@ -120,14 +120,14 @@ pub async fn run_headless(
     let mut view = View::new(run.output);
     // A mistyped id (once, a llama-server pid) stops here, before the turn.
     let resume = match &resume {
-        Some(resume) => Some(crate::session_id::resolve_target(&client, resume).await?),
+        Some(resume) => Some(koda_tui::session_id::resolve_target(&client, resume).await?),
         None => None,
     };
 
     // A provider goes by its id; `--provider` takes its name too.
     let provider = match run.named.provider.as_deref() {
         Some(typed) => Some(
-            crate::providers::Providers::fetch(&client)
+            koda_tui::providers::Providers::fetch(&client)
                 .await
                 .id_for(typed),
         ),
@@ -677,7 +677,7 @@ fn notice((tone, text): (Tone, String)) {
 
 /// A tool's output, its middle cut when it is long.
 fn print_output(output: &str) {
-    use crate::truncate::{Truncated, truncate_for_display};
+    use koda_tui::truncate::{Truncated, truncate_for_display};
     match truncate_for_display(output) {
         Truncated::Full(_) => {
             for line in output.lines() {
@@ -695,7 +695,7 @@ fn print_output(output: &str) {
             }
             eprintln!(
                 "\x1b[2m{}\x1b[0m",
-                crate::truncate::separator(hidden, total)
+                koda_tui::truncate::separator(hidden, total)
             );
             for line in &tail {
                 eprintln!("  \u{2502} {line}");

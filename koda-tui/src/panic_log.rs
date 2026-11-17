@@ -23,7 +23,7 @@ pub(crate) fn record_panic(info: &PanicHookInfo<'_>) {
         "{}",
         panic_breadcrumb(info)
     );
-    crate::logging::flush_for_panic();
+    koda_state::log_db::flush_blocking(std::time::Duration::from_secs(2));
 }
 
 /// The backtrace, or why there isn't one: it is captured only with

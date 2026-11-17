@@ -71,20 +71,27 @@ koda/
 │   │       ├── web_fetch.rs# WebFetch (URL content retrieval)
 │   │       └── web_search.rs # WebSearch (DuckDuckGo)
 │   └── tests/              # Engine integration tests
-├── koda-cli/               # CLI binary
+├── koda-cli/               # The `koda` command: arguments, dispatch, koda exec, koda serve, koda mcp
 │   ├── src/
-│   │   ├── main.rs         # CLI entry point (clap)
+│   │   ├── main.rs         # Entry point: the sandbox helpers, then the runtime
 │   │   ├── bin/koda_logs.rs # `koda-logs`: read the log database, with filters and --follow
 │   │   ├── lib.rs          # Crate root
-│   │   ├── tui_app.rs      # Main TUI event loop (ratatui Viewport::Fullscreen)
-│   │   ├── app.rs          # App struct: aggregated TUI state + lifecycle
+│   │   ├── app.rs          # Arguments (clap) and dispatch to the TUI, exec, serve and mcp
+│   │   ├── headless.rs     # `koda exec`: one prompt, no TUI
+│   │   ├── mcp_cmd.rs      # `koda mcp`: add, list and remove MCP servers
+│   │   ├── logging.rs      # Where tracing goes: the log database, and the log file if log_dir is set
+│   │   └── onboarding.rs   # First run: is there a config yet
+│   └── tests/              # Integration tests: the koda binary, its TUI in a pty, koda exec
+├── koda-tui/               # The TUI, as Codex's codex-tui
+│   ├── src/
+│   │   ├── lib.rs          # Crate root; the signal-exit hook koda-cli sets for --oss
+│   │   ├── tui_app.rs      # Entry (`run`) and main event loop (ratatui Viewport::Fullscreen)
 │   │   ├── child_activity.rs # Live tracker for background-work activity
 │   │   ├── clipboard.rs    # Clipboard abstraction
 │   │   ├── composer/       # Input box: textarea, paste bursts, history, slash popup (SLASH_COMMANDS)
 │   │   ├── frame_requester.rs # Frame draw scheduling
 │   │   ├── hyperlink.rs    # OSC 8 hyperlink post-render pass
 │   │   ├── inference/      # Inference turn lifecycle: inner event loop + post-turn cleanup
-│   │   ├── logging.rs      # Where tracing goes: the log database, and the log file if log_dir is set
 │   │   ├── panic_log.rs    # A panic logged as an error, with its backtrace, and stored at once
 │   │   ├── theme.rs        # Semantic color tokens
 │   │   ├── tui_context/    # TUI shared mutable state (split into submodules)
@@ -113,9 +120,7 @@ koda/
 │   │   ├── startup.rs      # Startup banner rendering
 │   │   ├── input.rs        # @file reference processing + image loading
 │   │   ├── input_history.rs # ↑ / ↓ history, kept in history.jsonl as Codex's TUI keeps it
-│   │   ├── headless.rs     # Single-prompt headless mode
 │   │   ├── sink.rs         # UiEvent: the engine events the TUI renders
-│   │   ├── onboarding.rs   # First-run wizard (provider + API key setup)
 │   │   ├── tool_history.rs # Tool output history for /expand
 │   │   ├── util.rs         # Shared utilities
 │   │   ├── wrap_util.rs    # Visual line-width utilities
@@ -130,6 +135,8 @@ koda/
 │   │       ├── shortcuts_overlay.rs # Keybinding reference overlay
 │   │       └── status_bar.rs# Model, mode, context meter, elapsed time
 │   └── tests/              # CLI integration tests
+│   └── benches/            # Render benchmark
+├── koda-oss/               # koda --oss: llama-server started, shared and stopped with Koda
 ├── koda-protocol/          # The client protocol: JSON-RPC messages and their types
 ├── koda-client/            # The client API: Koda in-process, typed requests, the event queue
 ├── koda-server/            # Koda's host: sessions, config, MCP, koda serve --stdio
@@ -279,7 +286,7 @@ file with `cargo nextest run -p koda-core -E 'test(/^suite::session_test::/)'`.
   commands, and every provider's metadata. No test pins tool descriptions.
 - `tests/suite/token_audit.rs` — token estimation accuracy checks
 
-**koda-cli unit tests** are co-located in `src/`: markdown rendering, REPL
+**koda-tui unit tests** are co-located in `src/`: markdown rendering, input
 parsing, highlighting.
 
 **koda-cli integration tests** are one binary too, `tests/all.rs` with the
@@ -432,7 +439,7 @@ names what broke, and a seventh gathers them. Wall-clock is set by the slowest
 
 | Job | Check name(s) | Runs |
 |---|---|---|
-| `fmt` | `Format` | `cargo fmt --check`, plus text guards: tokio test flavor (#1109), toolchain pin, the TUI's core boundary (`koda-cli`'s `koda_core` uses may only shrink) |
+| `fmt` | `Format` | `cargo fmt --check`, plus text guards: tokio test flavor (#1109), toolchain pin, the TUI's core boundary (no `koda_core` in `koda-cli` or `koda-tui`) |
 | `clippy` | `Clippy` | `cargo clippy --workspace --all-targets -- -D warnings` |
 | `check` | `Check (no features)` | `cargo check --workspace --all-targets` (the crates.io shape) |
 | `test` | `Test (ubuntu-latest)`; `Test (macos-latest)` on PRs and nightly | `cargo nextest run --workspace --profile ci`, the doc tests with `cargo test --doc`, then asserts from nextest's JUnit report that the security-boundary tests ran |

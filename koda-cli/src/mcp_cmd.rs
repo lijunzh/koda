@@ -126,7 +126,7 @@ impl McpCli {
     /// Run the subcommand against a host.
     pub(crate) async fn run(self, project_root: PathBuf) -> Result<()> {
         let client = InProcessClient::start(StartArgs {
-            config_file: crate::user_config::file()?,
+            config_file: koda_tui::user_config::file()?,
             home: koda_config::config_dir()?,
             project_root,
             client_info: ClientInfo {

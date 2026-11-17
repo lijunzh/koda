@@ -258,7 +258,7 @@ impl TuiContext {
 /// to `thread/start`. A provider by its id or a name for it, a model by
 /// alias or id; the host resolves them.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct Named {
+pub struct Named {
     pub provider: Option<String>,
     pub base_url: Option<String>,
     pub model: Option<String>,

@@ -121,7 +121,7 @@ mod event_loop_structure {
     /// guard against accidental removal during refactors.
     #[test]
     fn draw_called_before_idle_select_in_event_loop() {
-        let source = include_str!("../../src/tui_context/mod.rs");
+        let source = include_str!("../../../koda-tui/src/tui_context/mod.rs");
 
         // Locate run_event_loop
         let fn_start = source
@@ -160,8 +160,8 @@ mod event_loop_structure {
     /// schedule the next tick when there's non-terminal bg work.
     #[test]
     fn both_draw_paths_self_perpetuate_when_bg_work_exists() {
-        let idle_src = include_str!("../../src/tui_context/mod.rs");
-        let inference_src = include_str!("../../src/inference/select_loop.rs");
+        let idle_src = include_str!("../../../koda-tui/src/tui_context/mod.rs");
+        let inference_src = include_str!("../../../koda-tui/src/inference/select_loop.rs");
 
         for (label, src) in [("idle", idle_src), ("inference", inference_src)] {
             assert!(
@@ -291,7 +291,7 @@ mod hardcoded_trust_mode_at_session_creation {
 
     #[test]
     fn tui_context_path_does_not_hardcode_auto() {
-        assert_no_hardcoded_auto_in_session_new("koda-cli/src/tui_context/mod.rs");
+        assert_no_hardcoded_auto_in_session_new("koda-tui/src/tui_context/mod.rs");
     }
 }
 

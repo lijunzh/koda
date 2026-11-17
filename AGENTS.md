@@ -47,7 +47,8 @@ cargo build --release -p koda-cli        # Release build (CLI only)
 cargo nextest run --workspace  # Run all tests, as CI does (cargo install --locked cargo-nextest)
 cargo test --workspace --doc   # Doc tests (nextest skips them; CI runs both)
 cargo nextest run -p koda-core   # Engine tests only
-cargo nextest run -p koda-cli                            # CLI tests only
+cargo nextest run -p koda-cli                            # CLI tests only (the pty and exec tests)
+cargo nextest run -p koda-tui                            # TUI unit tests
 cargo nextest run -p koda-core -E 'test(/^suite::perf_test::/)'  # One koda-core test file (they're modules of tests/all.rs)
 cargo nextest run -p koda-cli -E 'test(/^suite::tui_pty_test::/)'  # One koda-cli test file (also modules of tests/all.rs)
 cargo fmt --all                          # Format all crates
@@ -76,7 +77,9 @@ phases, no tiers — the model drives execution directly.
 and `EngineCommand` (input); approval flows through async channels.
 
 Workspace: `koda-core` (library, pure engine, zero terminal deps), `koda-cli`
-(binary `koda`, ratatui TUI), `koda-sandbox` (kernel sandbox runtime),
+(binary `koda`: the command line, `koda exec`, `koda serve` and `koda mcp`, as
+Codex's `codex-cli`), `koda-tui` (the ratatui TUI, as Codex's `codex-tui`),
+`koda-oss` (`--oss`: `llama-server` started, shared and stopped with Koda), `koda-sandbox` (kernel sandbox runtime),
 `koda-protocol` (the client protocol's messages and schema), `koda-client`
 (the client API: the in-process client, as Codex's `app-server-client`),
 `koda-server` (the host and its session tasks, engine events projected onto
@@ -93,11 +96,11 @@ notes, re-exported by `koda-core` as `skills` and `memory`), `koda-command`
 `Database`, how its SQLite files are opened, and the diagnostic log database,
 as Codex keeps its storage outside `codex-core`), `koda-test-utils`.
 
-**The client boundary:** `koda-cli` (the TUI and `koda exec`) reaches the
-engine only through the client protocol, so other TUIs and GUIs can too, as
+**The client boundary:** `koda-tui` and `koda-cli` (with `koda exec`) reach
+the engine only through the client protocol, so other TUIs and GUIs can too, as
 Codex's CI keeps `codex-core` out of its TUI. Shared crates (`koda-protocol`,
-`koda-config`, `koda-state`) are fine; `koda-core` is not a `koda-cli`
-dependency, and `scripts/check_tui_core_boundary.sh` (run in CI) keeps it
+`koda-config`, `koda-state`) are fine; `koda-core` is not a dependency of
+either, and `scripts/check_tui_core_boundary.sh` (run in CI) keeps it
 out: add a protocol request or a shared crate instead. Only `koda-cli`'s
 integration tests may use core, to set up state.
 
@@ -127,13 +130,19 @@ In `koda-core/src/`:
 - **File history:** there is none, and no `/undo`. Git and the shell are how
   changes come back.
 
+In `koda-tui/src/`:
+- **TUI:** `tui_app.rs` (entry: `run`), `tui_context/`, `inference/`,
+  `tui_commands.rs` (slash commands), `tui_render.rs`, `tui_viewport.rs`,
+  `scroll_buffer.rs`, `composer/` (input box, `SLASH_COMMANDS`), `widgets/`
+- **Shared with `koda exec`** (public): `input.rs`, `protocol_text.rs`,
+  `providers.rs`, `session_id.rs`, `truncate.rs`, `user_config.rs`,
+  `retired_env.rs`, `updates.rs`
+
 In `koda-cli/src/`:
-- **TUI:** `tui_app.rs`, `app.rs`, `tui_context/`, `inference/`, `tui_commands.rs`
-  (slash commands), `tui_render.rs`, `tui_viewport.rs`, `scroll_buffer.rs`,
-  `composer/` (input box, `SLASH_COMMANDS`), `widgets/`
-- **Other frontends:** `headless.rs`
-- **Startup:** `main.rs`, `onboarding.rs` (the built-in skills are in
-  `koda-server/src/builtin_skills.rs`)
+- **Command line:** `main.rs`, `app.rs` (arguments and dispatch), `onboarding.rs`
+  (the built-in skills are in `koda-server/src/builtin_skills.rs`)
+- **Other frontends:** `headless.rs` (`koda exec`), `mcp_cmd.rs` (`koda mcp`)
+- **Logging:** `logging.rs`; `--oss` is `koda-oss/src/lib.rs`
 
 ### Approval
 
@@ -166,7 +175,7 @@ separate "strict mode", "yolo mode" or per-tool toggles.
 - All I/O is async (`tokio`)
 - Tool names: PascalCase; module names: snake_case
 - `koda-core` has zero terminal deps (no crossterm, no ratatui)
-- Single rendering path in koda-cli: `EngineEvent` → `tui_render.rs` →
+- Single rendering path in koda-tui: `EngineEvent` → `tui_render.rs` →
   `ScrollBuffer` → `draw_viewport()`. No `insert_before()`, no dual-path rendering.
 - Engine → client: `EngineSink::emit(EngineEvent)`
 - Client → engine: `mpsc::Receiver<EngineCommand>`

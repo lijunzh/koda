@@ -71,7 +71,7 @@ fn warnings_for<'a>(vars: impl IntoIterator<Item = (&'a str, &'a str)>) -> Vec<S
 }
 
 /// Warnings for the retired variables set in this process's environment.
-pub(crate) fn warnings() -> Vec<String> {
+pub fn warnings() -> Vec<String> {
     let vars: Vec<(String, String)> = std::env::vars().collect();
     warnings_for(vars.iter().map(|(k, v)| (k.as_str(), v.as_str())))
 }

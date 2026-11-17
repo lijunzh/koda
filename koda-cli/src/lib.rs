@@ -1,6 +1,8 @@
 //! # koda-cli
 //!
-//! Internal library crate for the `koda` binary.
+//! Internal library crate for the `koda` binary: the command line, `koda
+//! exec`, `koda mcp` and logging. The TUI is `koda-tui`, and `--oss` is
+//! `koda-oss`.
 //!
 //! **User-facing documentation lives at <https://lijunzh.github.io/koda/>**
 //!
@@ -16,56 +18,11 @@ compile_error!(
      https://learn.microsoft.com/windows/wsl"
 );
 
-pub(crate) mod ansi_parse;
 pub(crate) mod app;
-pub(crate) mod child_activity;
-pub(crate) mod clipboard;
-pub(crate) mod clipboard_image;
-pub(crate) mod completer;
-pub(crate) mod composer;
-pub(crate) mod diff_render;
-pub(crate) mod frame_requester;
 pub(crate) mod headless;
-pub(crate) mod highlight;
-pub(crate) mod hyperlink;
-pub(crate) mod inference;
-pub(crate) mod input;
-pub(crate) mod input_history;
-pub(crate) mod legacy_clones;
 pub(crate) mod logging;
 pub(crate) mod mcp_cmd;
-pub(crate) mod md_render;
-pub(crate) mod mode;
-pub(crate) mod mouse_select;
 pub(crate) mod onboarding;
-/// `--oss`: a local model on llama.cpp, started and stopped with Koda.
-pub(crate) mod oss;
-pub(crate) mod panic_log;
-pub(crate) mod protocol_text;
-pub(crate) mod providers;
-pub(crate) mod retired_env;
-pub(crate) mod scroll_buffer;
-pub(crate) mod session_id;
-pub(crate) mod startup;
-pub(crate) mod theme;
-pub(crate) mod tool_header;
-pub(crate) mod tool_history;
-pub(crate) mod tool_output_lines;
-pub(crate) mod tool_summary;
-pub(crate) mod truncate;
-pub(crate) mod tui_app;
-pub(crate) mod tui_commands;
-pub(crate) mod tui_context;
-pub(crate) mod tui_output;
-pub(crate) mod tui_render;
-pub(crate) mod tui_types;
-pub(crate) mod tui_viewport;
-pub(crate) mod tui_wizards;
-pub(crate) mod updates;
-pub(crate) mod user_config;
-pub(crate) mod util;
-pub(crate) mod widgets;
-pub(crate) mod wrap_util;
 
 /// Binary entry point. The only public symbol the `koda` binary needs.
 pub async fn run() -> anyhow::Result<()> {

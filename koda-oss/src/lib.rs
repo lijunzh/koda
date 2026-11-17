@@ -30,7 +30,7 @@ use anyhow::{Context, Result, bail};
 
 /// A model `--oss` can run on llama.cpp.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct OssModel {
+pub struct OssModel {
     /// The Hugging Face `<repo>:<quant>` llama.cpp downloads (`-hf`).
     pub spec: String,
     /// A short name, for messages and the server's model id.
@@ -47,7 +47,7 @@ pub(crate) struct OssModel {
 
 /// The model for a 128 GB Mac: the one Koda's local evals use (30 of 31
 /// tasks), run as Koda's author runs it daily.
-pub(crate) fn full_model() -> OssModel {
+pub fn full_model() -> OssModel {
     OssModel {
         spec: "unsloth/Qwen3.8-Flash-Next-GGUF:UD-Q4_K_XL".into(),
         name: "Qwen3.8-Flash-Next".into(),
@@ -60,7 +60,7 @@ pub(crate) fn full_model() -> OssModel {
 
 /// The quick try for any other machine: 1 GB, quick to download, and
 /// enough to show Koda reading, running and editing.
-pub(crate) fn quick_model() -> OssModel {
+pub fn quick_model() -> OssModel {
     OssModel {
         spec: "LiquidAI/LFM3-1.7B-GGUF:Q4_K_M".into(),
         name: "LFM3-1.7B".into(),
@@ -73,11 +73,11 @@ pub(crate) fn quick_model() -> OssModel {
 
 /// Memory at or above which Koda runs [`full_model`]. A 128 GB Mac reports
 /// exactly 128 GiB; the margin covers machines that report a little less.
-pub(crate) const FULL_MODEL_MEMORY: u64 = 120 * 1024 * 1024 * 1024;
+pub const FULL_MODEL_MEMORY: u64 = 120 * 1024 * 1024 * 1024;
 
 /// The local provider `--oss` uses, as Codex's `--local-provider`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LocalProvider {
+pub enum LocalProvider {
     /// llama.cpp's `llama-server`, which Koda starts and stops.
     LlamaCpp,
     /// LM Studio, a service Koda connects to.
@@ -88,7 +88,7 @@ pub(crate) enum LocalProvider {
 
 impl LocalProvider {
     /// From `--local-provider` or `oss_provider`.
-    pub(crate) fn parse(name: &str) -> Result<Self> {
+    pub fn parse(name: &str) -> Result<Self> {
         match name.trim().to_ascii_lowercase().as_str() {
             "llama-cpp" | "llamacpp" | "llama.cpp" => Ok(Self::LlamaCpp),
             "lm-studio" | "lmstudio" => Ok(Self::LmStudio),
@@ -101,7 +101,7 @@ impl LocalProvider {
     }
 
     /// The provider id the session uses.
-    pub(crate) fn provider_id(self) -> &'static str {
+    pub fn provider_id(self) -> &'static str {
         match self {
             Self::LlamaCpp => "llama-cpp",
             Self::LmStudio => "lm-studio",
@@ -112,7 +112,7 @@ impl LocalProvider {
 
 /// What `--oss` will do, decided before anything starts.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Plan {
+pub struct Plan {
     pub provider: LocalProvider,
     /// The model to start, for llama.cpp.
     pub model: Option<OssModel>,
@@ -124,7 +124,7 @@ pub(crate) struct Plan {
 /// GPU shares, which only a Mac has ([`unified_memory`]). Elsewhere a big
 /// model in system RAM would run on the CPU, far too slowly, so the
 /// default is the quick try.
-pub(crate) fn plan(
+pub fn plan(
     local_provider: Option<&str>,
     oss_provider: Option<&str>,
     model_flag: Option<&str>,
@@ -178,7 +178,7 @@ pub(crate) fn plan(
 }
 
 /// The machine's memory in bytes, when Koda can read it.
-pub(crate) fn memory_bytes() -> Option<u64> {
+pub fn memory_bytes() -> Option<u64> {
     #[cfg(target_os = "macos")]
     {
         let out = std::process::Command::new("sysctl")
@@ -206,7 +206,7 @@ pub(crate) fn memory_bytes() -> Option<u64> {
 
 /// The memory the GPU shares with the CPU, in bytes: a Mac's whole memory.
 /// `None` elsewhere, where the GPU's own memory decides what fits.
-pub(crate) fn unified_memory() -> Option<u64> {
+pub fn unified_memory() -> Option<u64> {
     if cfg!(target_os = "macos") {
         memory_bytes()
     } else {
@@ -216,7 +216,7 @@ pub(crate) fn unified_memory() -> Option<u64> {
 
 /// What to tell the person before the server starts. `unified_memory` is
 /// [`unified_memory`]'s answer: `None` off a Mac.
-pub(crate) fn start_notice(model: &OssModel, unified_memory: Option<u64>) -> Vec<String> {
+pub fn start_notice(model: &OssModel, unified_memory: Option<u64>) -> Vec<String> {
     let mut lines = Vec::new();
     if model.quick {
         let gb = unified_memory.map(|m| m / (1024 * 1024 * 1024));
@@ -267,7 +267,7 @@ fn gguf_name(file: &Path) -> String {
 /// A model already on disk: its file (the first shard of a split one) and
 /// the vision projector beside it, if there is one.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct LocalFile {
+pub struct LocalFile {
     pub model: PathBuf,
     pub projector: Option<PathBuf>,
 }
@@ -276,7 +276,7 @@ pub(crate) struct LocalFile {
 /// file (`~/` is the home folder), or a Hugging Face model LM Studio has
 /// already downloaded to `~/.lmstudio/models/<org>/<repo>/`, so a model on
 /// disk isn't downloaded a second time.
-pub(crate) fn local_file(model: &OssModel, home: Option<&Path>) -> Option<LocalFile> {
+pub fn local_file(model: &OssModel, home: Option<&Path>) -> Option<LocalFile> {
     let spec = model.spec.as_str();
     if spec.ends_with(".gguf") {
         let file = match (spec.strip_prefix("~/"), home) {
@@ -328,7 +328,7 @@ fn projector_beside(file: &Path) -> Option<PathBuf> {
 
 /// The `llama-server` arguments for `model` on `port`: the file on disk
 /// when there is one, else `-hf`, which downloads and caches it.
-pub(crate) fn server_args(model: &OssModel, local: Option<&LocalFile>, port: u16) -> Vec<String> {
+pub fn server_args(model: &OssModel, local: Option<&LocalFile>, port: u16) -> Vec<String> {
     let mut args: Vec<String> = match local {
         Some(local) => {
             let mut args = vec!["-m".into(), local.model.display().to_string()];
@@ -391,7 +391,7 @@ fn is_llama_server(pid: u32) -> bool {
 /// running (`llama-server`, oMLX), LM Studio has a model loaded, or the GPU
 /// is busy (over 15% on average across 3 seconds, by `ioreg`). macOS only;
 /// elsewhere `None`.
-pub(crate) fn gpu_busy() -> Option<String> {
+pub fn gpu_busy() -> Option<String> {
     if !cfg!(target_os = "macos") {
         return None;
     }
@@ -493,7 +493,7 @@ fn write_state(path: &Path, state: &State) -> Result<()> {
 /// A `llama-server` this Koda uses: started by it, or shared with another
 /// `koda --oss` on the same model. [`Server::release`] (or dropping it)
 /// stops the server once no Koda uses it.
-pub(crate) struct Server {
+pub struct Server {
     port: u16,
     key: String,
     dir: PathBuf,
@@ -509,7 +509,7 @@ static ACTIVE: std::sync::Mutex<Option<(PathBuf, String)>> = std::sync::Mutex::n
 /// Leave the server this Koda uses, if any: its client file goes, and the
 /// server stops if no other Koda uses it. Safe to call from any exit path,
 /// any number of times; the TUI's signal handler calls it before exiting.
-pub(crate) fn leave_active() {
+pub fn leave_active() {
     let mut active = ACTIVE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((dir, slug)) = active.take() {
         leave(&dir, &slug);
@@ -518,13 +518,13 @@ pub(crate) fn leave_active() {
 
 impl Server {
     /// The server's OpenAI-compatible address.
-    pub(crate) fn base_url(&self) -> String {
+    pub fn base_url(&self) -> String {
         format!("http://127.0.0.1:{}/v1", self.port)
     }
 
     /// The server's API key, which Koda's llama-cpp provider sends as
     /// `KODA_API_KEY`.
-    pub(crate) fn api_key(&self) -> &str {
+    pub fn api_key(&self) -> &str {
         &self.key
     }
 
@@ -532,7 +532,7 @@ impl Server {
     /// answers. `home` is Koda's config directory.
     /// `check_gpu` refuses to start a new server while the GPU is busy
     /// ([`gpu_busy`]); joining a running one skips it.
-    pub(crate) async fn start(model: &OssModel, home: &Path, check_gpu: bool) -> Result<Self> {
+    pub async fn start(model: &OssModel, home: &Path, check_gpu: bool) -> Result<Self> {
         let binary = find_llama_server()?;
         let local = local_file(model, std::env::var_os("HOME").as_deref().map(Path::new));
         let dir = home.join("oss");
@@ -681,7 +681,7 @@ impl Server {
     }
 
     /// Leave the server: stop it if no other Koda uses it.
-    pub(crate) fn release(mut self) {
+    pub fn release(mut self) {
         self.leave();
     }
 

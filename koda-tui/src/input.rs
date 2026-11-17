@@ -197,7 +197,7 @@ fn looks_like_file_path(token: &str) -> bool {
 /// The images `--image` names, read in order: a path that isn't an image
 /// file, or can't be read, stops the start, as Codex's
 /// `--image` does.
-pub(crate) fn load_images(paths: &[PathBuf]) -> anyhow::Result<Vec<ImageData>> {
+pub fn load_images(paths: &[PathBuf]) -> anyhow::Result<Vec<ImageData>> {
     paths
         .iter()
         .map(|path| {

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- **The TUI is its own crate, `koda-tui`, and `--oss` is `koda-oss`, as Codex keeps `codex-tui` apart from `codex-cli`.** `koda-cli` stays the `koda` command (arguments, `koda exec`, `koda serve`, `koda mcp`), so `cargo install koda-cli` is unchanged; it now depends on the two new published crates. Nothing a user sees changes, except that the TUI's log lines are now filed under `koda_tui` rather than `koda_cli` (`RUST_LOG=koda_tui=debug`; a crash is still `koda_cli::panic`).
+
 ## [0.7.4] - 2026-11-16
 
 ### Added
