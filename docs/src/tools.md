@@ -10,7 +10,8 @@ prompt. See [Trust modes](./approval.md) for the canonical matrix.
 | `Read` | Read-only | Read a file (with optional line range). An image (PNG, JPEG, GIF, WebP) comes back as an image the model sees, if the model takes images ([which do](./attachments.md#images)), scaled to 1,568 pixels on its long edge if larger; an image file over 128 MB is refused. A Jupyter notebook (`.ipynb`) comes back as its cells with their outputs, output images as images where the model takes them ([details](./attachments.md#notebooks)); with `start_line` or `num_lines`, as its JSON. A PDF comes back as the model takes it: whole (up to 10 pages), as page images, or as its text; a longer one is read with `pages` ("1-5", at most 20) ([details](./attachments.md#pdfs)). Another binary file (an archive, a program) is refused with what it is |
 | `Write` | Mutating | Create or overwrite a file |
 | `Edit` | Mutating | Targeted text replacement within a file |
-| `Bash` | Varies | Run a shell command in the sandbox; with `outside_sandbox` and a `reason`, run one command outside it once you approve |
+| `Bash` | Varies | Run a shell command in the sandbox; with `outside_sandbox` and a `reason`, run one command outside it once you approve. With `background`, it runs on and its output goes to a log; with `tty`, it runs in the background with a terminal of its own, for a program that waits for typed input |
+| `WriteStdin` | Mutating (Read-only with no `chars`) | Type into a command started with `tty` and read what it printed since the last read: answer a prompt, drive a REPL or a debugger, send Ctrl+C (`\u0003`). With no `chars`, it only waits for output. See [Typing into a command](#typing-into-a-command) |
 | `Cargo` | Mutating | `cargo check`, `clippy`, `test` or `build` from the project root, with one line per compiler diagnostic and, for `test`, the failing tests with panic locations |
 | `Grep` | Read-only | Search file contents with a regex: matching files (the default), matching lines with optional context, or counts; filter by glob or file type; results in pages |
 | `Glob` | Read-only | List files matching a glob pattern |
@@ -27,6 +28,34 @@ prompt. See [Trust modes](./approval.md) for the canonical matrix.
 | `ListAgents` | Read-only | List the available sub-agents (`detail=true` adds their system prompts) |
 | `List` | Read-only | List directory contents |
 | `AskUser` | Interactive | Ask the user a clarifying question |
+
+### Typing into a command
+
+Some programs wait for someone to type: a REPL (`python3`, `node`), a
+debugger, or a tool that asks you to confirm before it changes anything.
+For those the model starts the command with `Bash` and `tty: true`. It runs
+in the background with a terminal of its own, so the program behaves as it
+would in yours, and the result has its PID and its first second of output,
+such as a prompt.
+
+The model then types with `WriteStdin`, using that PID, and gets back what
+the program printed:
+
+- **After typing,** it waits 250 ms by default for the reply, up to 30
+  seconds when asked. **With nothing to type,** it waits 5 seconds by
+  default, up to 5 minutes. The wait ends early when the program exits.
+- **The output is plain text:** colours and cursor movements are removed.
+  The full output, as the program wrote it, is also in the log the start
+  names. Up to 1 MiB of output not yet read is kept.
+- **Approval:** typing counts as a change, so Safe mode asks before each
+  input and Plan mode refuses it; Auto types without asking, since the
+  program runs in the sandbox. Reading never asks.
+- **The sandbox** opens to the program its own terminal and nothing else:
+  it can't reach your terminal or any other.
+- **Not with `outside_sandbox`:** an approval covers one command, not
+  whatever is typed into it afterwards, so the two can't be combined.
+- **Stopping it:** `kill PID`, `/stop`, Ctrl+C typed with `WriteStdin`, or
+  the end of the session, as for any background command.
 
 ### External content
 

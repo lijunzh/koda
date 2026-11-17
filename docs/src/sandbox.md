@@ -77,6 +77,16 @@ kernel sandbox is unavailable. In-project symlinks (e.g. `examples/latest -> v3/
 only links whose canonical target escapes every allowed root are
 rejected.
 
+### Terminals
+
+A command started with `tty: true` ([Typing into a
+command](tools.md#typing-into-a-command)) gets a terminal Koda opens for it
+before entering the sandbox. The sandbox lets that command read, write and
+configure that one terminal, and `/dev/tty`, which for it is the same
+terminal. No other command gets either, and no command can open any other
+terminal device, yours included. On macOS this is two rules added to that
+command's profile; on Linux, bwrap's own `/dev` already holds nothing else.
+
 ### Credential protection
 
 Credential directories and files are **write-protected** — sandboxed

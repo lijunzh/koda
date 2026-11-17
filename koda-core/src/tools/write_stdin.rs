@@ -60,8 +60,9 @@ impl Tool for WriteStdinTool {
             description: "Type into a background command started with Bash{tty: true}, \
                 and return what it printed since the last read. End a line with \"\\n\" \
                 to send it; \"\\u0003\" is Ctrl+C and \"\\u0004\" is Ctrl+D. With no chars, \
-                types nothing and waits for more output. The result ends with whether the \
-                command is still running."
+                types nothing and waits for more output; for something slow, ask for a longer \
+                yield_time_ms rather than polling again and again. The result ends with \
+                whether the command is still running."
                 .to_string(),
             parameters: json!({
                 "type": "object",
