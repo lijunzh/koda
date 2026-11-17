@@ -139,6 +139,11 @@ pub struct ConfigToml {
     /// Koda picks by the machine's memory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oss_model: Option<String>,
+    /// Whether `--oss` refuses to start a model while the GPU is busy
+    /// (another model server, a model loaded in LM Studio, or the GPU in
+    /// use). On when unset; macOS only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oss_check_gpu: Option<bool>,
     /// Settings per provider, by provider id.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub model_providers: BTreeMap<String, ModelProviderToml>,

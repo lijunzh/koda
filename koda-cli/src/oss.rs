@@ -120,13 +120,16 @@ pub(crate) struct Plan {
 
 /// Decide the provider and model: `--local-provider`, else `oss_provider`,
 /// else llama.cpp; for llama.cpp, `--model <repo>:<quant>`, else
-/// `oss_model`, else the model for this much `memory`.
+/// `oss_model`, else the model for this much `unified_memory`: memory the
+/// GPU shares, which only a Mac has ([`unified_memory`]). Elsewhere a big
+/// model in system RAM would run on the CPU, far too slowly, so the
+/// default is the quick try.
 pub(crate) fn plan(
     local_provider: Option<&str>,
     oss_provider: Option<&str>,
     model_flag: Option<&str>,
     oss_model: Option<&str>,
-    memory: Option<u64>,
+    unified_memory: Option<u64>,
 ) -> Result<Plan> {
     let provider = match local_provider.or(oss_provider) {
         Some(name) => LocalProvider::parse(name)?,
@@ -165,7 +168,7 @@ pub(crate) fn plan(
                 }
             }
         }
-        None if memory.is_some_and(|m| m >= FULL_MODEL_MEMORY) => full_model(),
+        None if unified_memory.is_some_and(|m| m >= FULL_MODEL_MEMORY) => full_model(),
         None => quick_model(),
     };
     Ok(Plan {
@@ -201,11 +204,22 @@ pub(crate) fn memory_bytes() -> Option<u64> {
     }
 }
 
-/// What to tell the person before the server starts.
-pub(crate) fn start_notice(model: &OssModel, memory: Option<u64>) -> Vec<String> {
+/// The memory the GPU shares with the CPU, in bytes: a Mac's whole memory.
+/// `None` elsewhere, where the GPU's own memory decides what fits.
+pub(crate) fn unified_memory() -> Option<u64> {
+    if cfg!(target_os = "macos") {
+        memory_bytes()
+    } else {
+        None
+    }
+}
+
+/// What to tell the person before the server starts. `unified_memory` is
+/// [`unified_memory`]'s answer: `None` off a Mac.
+pub(crate) fn start_notice(model: &OssModel, unified_memory: Option<u64>) -> Vec<String> {
     let mut lines = Vec::new();
     if model.quick {
-        let gb = memory.map(|m| m / (1024 * 1024 * 1024));
+        let gb = unified_memory.map(|m| m / (1024 * 1024 * 1024));
         lines.push(format!(
             "--oss: running {}, a {} GB quick try: it shows Koda reading, running and \
              editing, but is too small for real coding.{}",
@@ -217,7 +231,11 @@ pub(crate) fn start_notice(model: &OssModel, memory: Option<u64>) -> Vec<String>
                      Qwen3.8-Flash-Next. Set oss_model in config.toml to pick another \
                      model (see the Local models page)."
                 ),
-                _ => " Set oss_model in config.toml to pick another model.".to_string(),
+                Some(_) => " Set oss_model in config.toml to pick another model.".to_string(),
+                None => " Koda picks a larger model only on a Mac, whose GPU shares its \
+                     memory; here, set oss_model in config.toml to a model sized for your \
+                     GPU (see the Local models page)."
+                    .to_string(),
             }
         ));
     }
@@ -368,6 +386,60 @@ fn is_llama_server(pid: u32) -> bool {
         .unwrap_or(false)
 }
 
+/// Why the GPU isn't free for another model, if it isn't, as koda-evals'
+/// `gpu-check` asks before every local run: another model server is
+/// running (`llama-server`, oMLX), LM Studio has a model loaded, or the GPU
+/// is busy (over 15% on average across 3 seconds, by `ioreg`). macOS only;
+/// elsewhere `None`.
+pub(crate) fn gpu_busy() -> Option<String> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let output = |program: &str, args: &[&str]| {
+        std::process::Command::new(program)
+            .args(args)
+            .output()
+            .ok()
+            .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    if let Some(found) = output("pgrep", &["-fl", "llama-server|omlx serve|omlx-server"])
+        && let Some(line) = found.lines().find(|l| !l.trim().is_empty())
+    {
+        let pid = line.split_whitespace().next().unwrap_or("?");
+        return Some(format!("another model server is running (pid {pid})"));
+    }
+    if let Some(loaded) = output("lms", &["ps", "--json"])
+        && lms_has_loaded(&loaded)
+    {
+        return Some("a model is loaded in LM Studio (lms ps)".into());
+    }
+    let mut samples = Vec::new();
+    for i in 0..3 {
+        if i > 0 {
+            std::thread::sleep(Duration::from_secs(1));
+        }
+        let text = output("ioreg", &["-r", "-d", "1", "-c", "IOAccelerator"]).unwrap_or_default();
+        samples.push(gpu_utilization(&text).unwrap_or(0));
+    }
+    let mean = samples.iter().sum::<u32>() / samples.len() as u32;
+    (mean >= 15).then(|| format!("it is {mean}% busy"))
+}
+
+/// The GPU's utilization from `ioreg`'s `"Device Utilization %"=N`.
+fn gpu_utilization(ioreg: &str) -> Option<u32> {
+    let rest = ioreg.split("\"Device Utilization %\"=").nth(1)?;
+    rest.split(|c: char| !c.is_ascii_digit())
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// Whether `lms ps --json` lists a loaded model.
+fn lms_has_loaded(json: &str) -> bool {
+    let compact: String = json.chars().filter(|c| !c.is_whitespace()).collect();
+    !compact.is_empty() && compact != "[]"
+}
+
 /// `llama-server` on `PATH`, or how to install it.
 fn find_llama_server() -> Result<PathBuf> {
     let path = std::env::var_os("PATH").unwrap_or_default();
@@ -458,7 +530,9 @@ impl Server {
 
     /// Start `model`'s server, or join the one running, and wait until it
     /// answers. `home` is Koda's config directory.
-    pub(crate) async fn start(model: &OssModel, home: &Path) -> Result<Self> {
+    /// `check_gpu` refuses to start a new server while the GPU is busy
+    /// ([`gpu_busy`]); joining a running one skips it.
+    pub(crate) async fn start(model: &OssModel, home: &Path, check_gpu: bool) -> Result<Self> {
         let binary = find_llama_server()?;
         let local = local_file(model, std::env::var_os("HOME").as_deref().map(Path::new));
         let dir = home.join("oss");
@@ -477,6 +551,14 @@ impl Server {
             let (port, key, started) = match running {
                 Some(state) => (state.port, state.key, false),
                 None => {
+                    if check_gpu && let Some(reason) = gpu_busy() {
+                        bail!(
+                            "--oss: the GPU is busy: {reason}. Loading {} beside it could \
+                             run out of memory. Stop it and try again, or set \
+                             oss_check_gpu = false in config.toml to start anyway.",
+                            model.name
+                        );
+                    }
                     let port = free_port()?;
                     let key = random_key()?;
                     std::fs::create_dir_all(home.join("logs"))?;
@@ -869,6 +951,22 @@ mod tests {
             local_file(&model, Some(home.path())).unwrap().model,
             local.model
         );
+    }
+
+    #[test]
+    fn the_busy_check_reads_ioreg_and_lms() {
+        let ioreg = r#"| "PerformanceStatistics" = {"Tiler Utilization %"=3,"Device Utilization %"=42,"Renderer Utilization %"=40}"#;
+        assert_eq!(gpu_utilization(ioreg), Some(42));
+        assert_eq!(gpu_utilization("no GPU here"), None);
+        assert!(!lms_has_loaded(""));
+        assert!(!lms_has_loaded("[ ]\n"));
+        assert!(lms_has_loaded(r#"[{"identifier":"qwen3.8-27b"}]"#));
+    }
+
+    #[test]
+    fn off_a_mac_the_quick_try_says_to_name_a_model() {
+        let notice = start_notice(&quick_model(), None).join(" ");
+        assert!(notice.contains("only on a Mac"), "{notice}");
     }
 
     #[test]

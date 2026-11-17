@@ -67,9 +67,13 @@ unknown key in `-c` stops the run instead.
 # oss_provider = "llama-cpp"
 
 # The model --oss runs on llama.cpp: a Hugging Face <repo>:<quant>, or the
-# path of a .gguf file. Unset: Qwen3.8-Flash-Next on a 128 GB Mac, else the
-# 1 GB LFM3-1.7B quick try.
+# path of a .gguf file. Unset: Qwen3.8-Flash-Next on a Mac with 128 GB,
+# else (Linux included) the 1 GB LFM3-1.7B quick try.
 # oss_model = "ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M"
+
+# macOS: refuse to start a model while the GPU is busy (another model
+# server, a model loaded in LM Studio, or the GPU in use). Unset: true.
+# oss_check_gpu = false
 
 # ── Sessions ───────────────────────────────────────────────────────────
 
