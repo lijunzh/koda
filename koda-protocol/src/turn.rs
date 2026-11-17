@@ -47,6 +47,19 @@ pub enum TurnStatus {
 pub struct TurnError {
     /// One sentence for a person.
     pub message: String,
+    /// What kind of failure, for a client to act on, when Koda knows one,
+    /// as Codex's turn errors carry `codexErrorInfo`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<TurnErrorCode>,
+}
+
+/// What kind of failure a [`TurnError`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum TurnErrorCode {
+    /// The turn spent its token budget (`turn_token_budget`) and stopped
+    /// before its next model call. What it did so far stays in the session.
+    TokenBudgetSpent,
 }
 
 /// Tokens and model calls.

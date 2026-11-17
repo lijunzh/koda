@@ -1008,6 +1008,158 @@ async fn exec_fork_worktree_runs_the_copy_in_a_checkout_of_the_sessions_reposito
     );
 }
 
+// ── turn_token_budget ────────────────────────────────────────────────────
+
+/// A streamed reply that calls one tool, reporting `prompt` input tokens.
+fn costly_tool_call(id: &str, name: &str, args: Value, prompt: u32) -> ResponseTemplate {
+    sse(&[
+        json!({"choices": [{"delta": {"tool_calls": [{
+            "index": 0,
+            "id": id,
+            "type": "function",
+            "function": {"name": name, "arguments": args.to_string()},
+        }]}}]}),
+        json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+        usage(prompt, 10),
+    ])
+}
+
+/// `koda exec` with `-c turn_token_budget=20000`.
+fn budgeted(server: &FakeLlmServer, root: &Path) -> tokio::process::Command {
+    let mut command = command(server, root);
+    command.args(["-c", "turn_token_budget=20000"]);
+    command
+}
+
+/// The chat calls the server got, streamed or not.
+async fn chat_bodies(server: &FakeLlmServer) -> Vec<String> {
+    server
+        .received_requests()
+        .await
+        .iter()
+        .filter(|r| r.url.path().ends_with("/chat/completions"))
+        .map(|r| String::from_utf8_lossy(&r.body).to_string())
+        .collect()
+}
+
+/// At 90% of `turn_token_budget` the model is told to wrap up, as Codex
+/// tells a goal at its budget; once the budget is spent the turn makes no
+/// further call, as Claude Code's `--max-budget-usd` stops a run. The call
+/// that spent it completes, and its tool runs. The turn fails with a code
+/// a client can read, and `koda exec` exits 1.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_wraps_up_near_its_token_budget_and_stops_at_it() {
+    let script = vec![
+        costly_tool_call("read-1", "Read", json!({"file_path": "a.txt"}), 18_000),
+        costly_tool_call("read-2", "Read", json!({"file_path": "a.txt"}), 3_000),
+    ];
+    let server = stub(script, no_other_calls).await;
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("a.txt"), "a").unwrap();
+    let run = finish(budgeted(&server, tmp.path())).await;
+
+    let calls = chat_bodies(&server).await;
+    assert_eq!(calls.len(), 2, "no call after the budget: {}", run.stdout);
+    assert!(!calls[0].contains("Wrap up now"), "{}", calls[0]);
+    assert!(
+        calls[1].contains("Wrap up now"),
+        "told at 90%: {}",
+        calls[1]
+    );
+    // The call that spent the budget still had its tool run.
+    assert_eq!(run.call("read-2")["item"]["status"], "completed");
+
+    let turn = run.turn();
+    assert_eq!(turn["status"], "failed", "{turn}");
+    assert_eq!(turn["error"]["code"], "tokenBudgetSpent", "{turn}");
+    let message = turn["error"]["message"].as_str().unwrap();
+    assert!(message.contains("of 20000 tokens"), "{message}");
+    // Said once: the failed turn's line, no warning before it.
+    assert!(
+        !run.of("warning")
+            .iter()
+            .any(|w| w["params"]["message"].to_string().contains("budget")),
+        "{}",
+        run.stdout
+    );
+    assert_eq!(run.summary()["success"], false);
+    assert_eq!(run.output.status.code(), Some(1));
+}
+
+/// Once the budget is spent no sub-agent starts, as Claude Code refuses
+/// one at `--max-budget-usd`.
+#[tokio::test(flavor = "multi_thread")]
+async fn no_sub_agent_starts_once_the_budget_is_spent() {
+    let script = vec![costly_tool_call(
+        "agent-1",
+        "InvokeAgent",
+        json!({"agent_name": "explore", "prompt": "find alpha"}),
+        25_000,
+    )];
+    let server = stub(script, no_other_calls).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let run = finish(budgeted(&server, tmp.path())).await;
+
+    let output = run.call("agent-1")["item"].to_string();
+    assert!(output.contains("Budget limit reached"), "{output}");
+    assert_eq!(
+        chat_bodies(&server).await.len(),
+        1,
+        "the child never called"
+    );
+    assert_eq!(run.turn()["error"]["code"], "tokenBudgetSpent");
+}
+
+/// A running sub-agent stops at its next call once the turn's budget is
+/// spent, and returns what it has.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_running_sub_agent_stops_when_the_budget_is_spent() {
+    let script = vec![tool_call(
+        "agent-1",
+        "InvokeAgent",
+        json!({"agent_name": "explore", "prompt": "find alpha"}),
+    )];
+    // The child's first call spends the budget on its own.
+    let server = stub(script, |_| {
+        ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{"message": {"role": "assistant", "content": "looking", "tool_calls": [{
+                "id": "read-alpha",
+                "type": "function",
+                "function": {"name": "Read", "arguments": json!({"file_path": "alpha.txt"}).to_string()},
+            }]}, "finish_reason": "tool_calls"}],
+            "usage": {"prompt_tokens": 25_000, "completion_tokens": 3},
+        }))
+    })
+    .await;
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("alpha.txt"), "a").unwrap();
+    let run = finish(budgeted(&server, tmp.path())).await;
+
+    // One parent call and one child call: neither called again.
+    assert_eq!(chat_bodies(&server).await.len(), 2, "{}", run.stdout);
+    let output = run.call("agent-1")["item"].to_string();
+    assert!(
+        output.contains("token budget (turn_token_budget) is spent"),
+        "{output}"
+    );
+    assert_eq!(run.turn()["error"]["code"], "tokenBudgetSpent");
+}
+
+/// A budget under the Claude API's smallest task budget stops the run
+/// before it starts.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_token_budget_under_twenty_thousand_is_refused() {
+    let server = stub(vec![], no_other_calls).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut command = command(&server, tmp.path());
+    command.args(["-c", "turn_token_budget=1000"]);
+    let output = command.output().await.unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("at least 20000"), "{stderr}");
+    assert!(chat_bodies(&server).await.is_empty());
+}
+
 /// `koda exec -i` sends the image with the prompt, as `codex exec -i` does.
 #[tokio::test(flavor = "multi_thread")]
 async fn exec_image_goes_with_the_prompt() {

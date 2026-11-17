@@ -772,6 +772,12 @@ pub enum TurnEndReason {
         /// The error message.
         message: String,
     },
+    /// The turn spent its token budget (`turn_token_budget`) and stopped
+    /// before its next model call.
+    BudgetSpent {
+        /// What the user is told.
+        message: String,
+    },
 }
 
 // ── Client → Engine ──────────────────────────────────────────────────────

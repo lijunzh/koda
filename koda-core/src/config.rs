@@ -250,6 +250,9 @@ pub struct KodaConfig {
     /// Whether the model adds Koda's attribution to its commits and pull
     /// requests (`commit_attribution`, on by default), as Codex does.
     pub commit_attribution: bool,
+    /// Tokens one turn may spend (`turn_token_budget`); `None` for no
+    /// limit. See [`crate::budget`].
+    pub turn_token_budget: Option<u64>,
     /// What the model takes besides text, from the config file's
     /// `model_input_modalities`; `None` for Koda's table
     /// ([`Self::input_modalities`]).
@@ -431,6 +434,7 @@ impl KodaConfig {
             post_turn_compact_percent: 0,
             file_mentions: true,
             commit_attribution: true,
+            turn_token_budget: None,
             input_modalities: None,
             reported_vision: None,
             reported_tool_images: None,
@@ -728,6 +732,7 @@ impl KodaConfig {
             post_turn_compact_percent: 0,
             file_mentions: true,
             commit_attribution: true,
+            turn_token_budget: None,
             input_modalities: None,
             reported_vision: None,
             reported_tool_images: None,

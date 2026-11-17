@@ -511,6 +511,54 @@ async fn chat_stream_sends_the_catalog_effort() {
     assert!(body.get("output_config").is_none(), "{body}");
 }
 
+/// The turn's task budget goes in `output_config` with its beta header, to
+/// a model that takes one, next to the effort; one that doesn't gets none.
+#[tokio::test]
+async fn chat_stream_sends_a_task_budget_to_a_model_that_takes_one() {
+    let server = FakeLlmServer::spawn().await;
+    server
+        .mount_sse("POST", r".*/v1/messages$", &[r#"{"type":"message_stop"}"#])
+        .await;
+    let provider = AnthropicProvider::new("k".into(), Some(&server.url()));
+    let budget = koda_providers::TaskBudget {
+        total: 64_000,
+        remaining: Some(40_000),
+    };
+    for model in ["claude-haiku-5-5", "claude-sonnet-5"] {
+        let mut settings = ModelSettings::defaults_for(model, &ProviderType::Anthropic);
+        settings.task_budget = Some(budget);
+        let mut collector = provider
+            .chat_stream(&[user_msg("hi")], &[], &settings)
+            .await
+            .unwrap();
+        while collector.rx.recv().await.is_some() {}
+    }
+    let reqs = server.received_requests().await;
+    let beta = |i: usize| {
+        reqs[i]
+            .headers
+            .get("anthropic-beta")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string()
+    };
+    let haiku: Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    assert_eq!(
+        haiku["output_config"]["task_budget"],
+        json!({"type": "tokens", "total": 64000, "remaining": 40000})
+    );
+    assert_eq!(haiku["output_config"]["effort"], "medium");
+    assert!(beta(0).contains("task-budgets-2026-03-13"), "{}", beta(0));
+    // Sonnet 5 doesn't take one.
+    let sonnet: Value = serde_json::from_slice(&reqs[1].body).unwrap();
+    assert!(
+        sonnet["output_config"].get("task_budget").is_none(),
+        "{sonnet}"
+    );
+    assert!(!beta(1).contains("task-budgets"), "{}", beta(1));
+}
+
 /// Claude models take effort and refuse a token budget with a 400, so a
 /// budget (an agent file's, or one meant for Gemini) is never sent to them.
 #[tokio::test]

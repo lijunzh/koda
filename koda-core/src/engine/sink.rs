@@ -34,6 +34,12 @@ pub trait EngineSink: Send + Sync {
         true
     }
 
+    /// The running turn's token budget, when `turn_token_budget` set one.
+    /// [`TurnMeter`] holds it; a sink that wraps another must forward this.
+    fn turn_budget(&self) -> Option<&crate::budget::TurnBudget> {
+        None
+    }
+
     /// [`Self::emit_child`] when a parent is known, otherwise [`Self::emit`].
     fn emit_from(&self, parent_id: Option<&str>, event: EngineEvent) {
         match parent_id {
@@ -330,6 +336,10 @@ impl EngineSink for FgForwardingSink<'_> {
         self.inner.can_ask()
     }
 
+    fn turn_budget(&self) -> Option<&crate::budget::TurnBudget> {
+        self.inner.turn_budget()
+    }
+
     fn emit(&self, event: EngineEvent) {
         // Same fan-out shape as `ForwardingChildSink::emit` — keep
         // the two arms in sync. Diverged behavior here would mean
@@ -384,14 +394,22 @@ impl EngineSink for FgForwardingSink<'_> {
 pub struct TurnMeter<'a> {
     inner: &'a dyn EngineSink,
     usage: std::sync::Mutex<super::event::UsageTotals>,
+    budget: Option<crate::budget::TurnBudget>,
 }
 
 impl<'a> TurnMeter<'a> {
     /// Wrap the turn's sink, starting from zero.
     pub fn new(inner: &'a dyn EngineSink) -> Self {
+        Self::with_budget(inner, None)
+    }
+
+    /// Wrap the turn's sink with the turn's token budget, if it has one,
+    /// which every call it counts is charged to.
+    pub fn with_budget(inner: &'a dyn EngineSink, budget: Option<u64>) -> Self {
         Self {
             inner,
             usage: Default::default(),
+            budget: budget.map(crate::budget::TurnBudget::new),
         }
     }
 
@@ -410,6 +428,19 @@ impl<'a> TurnMeter<'a> {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .add(usage);
+            if let Some(budget) = &self.budget {
+                budget.charge(usage);
+            }
+        }
+        if let (
+            Some(budget),
+            EngineEvent::Compaction {
+                status: super::event::CompactionStatus::Completed { .. },
+                ..
+            },
+        ) = (&self.budget, event)
+        {
+            budget.compacted();
         }
     }
 }
@@ -417,6 +448,10 @@ impl<'a> TurnMeter<'a> {
 impl EngineSink for TurnMeter<'_> {
     fn can_ask(&self) -> bool {
         self.inner.can_ask()
+    }
+
+    fn turn_budget(&self) -> Option<&crate::budget::TurnBudget> {
+        self.budget.as_ref()
     }
 
     fn emit(&self, event: EngineEvent) {
@@ -648,6 +683,10 @@ pub(crate) fn classify_for_persist(
 impl EngineSink for PersistingSink<'_> {
     fn can_ask(&self) -> bool {
         self.inner.can_ask()
+    }
+
+    fn turn_budget(&self) -> Option<&crate::budget::TurnBudget> {
+        self.inner.turn_budget()
     }
 
     fn emit(&self, event: EngineEvent) {

@@ -127,6 +127,18 @@ pub struct ConfigToml {
     /// on. On when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit_attribution: Option<bool>,
+    /// Tokens one turn may spend, sub-agents and compaction included,
+    /// counted as Codex counts a goal's: input not read from the cache, plus
+    /// output. Near it the model is told to wrap up; at it the turn stops
+    /// before its next model call, as Claude Code's `--max-budget-usd`
+    /// stops a run. At least 20,000, the Claude API's smallest task budget.
+    /// No limit when unset.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "turn_token_budget"
+    )]
+    pub turn_token_budget: Option<u64>,
     /// What the model takes besides text, replacing Koda's table for it:
     /// for a local vision model, say, `["text", "image"]`. Codex keeps the
     /// same on each model as `input_modalities`.
@@ -856,6 +868,24 @@ fn to_value(value: &JsonValue) -> Option<toml_edit::Value> {
             inline.into()
         }
     })
+}
+
+/// The smallest `turn_token_budget`: the Claude API refuses a task budget
+/// under 20,000 tokens, and one that small stops a turn before it starts.
+pub const MIN_TURN_TOKEN_BUDGET: u64 = 20_000;
+
+/// Read `turn_token_budget`, refusing one under [`MIN_TURN_TOKEN_BUDGET`].
+fn turn_token_budget<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let tokens = u64::deserialize(deserializer)?;
+    if tokens < MIN_TURN_TOKEN_BUDGET {
+        return Err(serde::de::Error::custom(format!(
+            "turn_token_budget is {tokens}; it must be at least {MIN_TURN_TOKEN_BUDGET} tokens"
+        )));
+    }
+    Ok(Some(tokens))
 }
 
 #[cfg(test)]
