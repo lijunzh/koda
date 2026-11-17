@@ -1115,6 +1115,7 @@ async fn the_first_run_greets_and_still_answers() {
     let home = tempfile::tempdir().unwrap();
     // Nothing chooses the provider: the first run asks which one.
     let mut tui = Tui::start_unchosen(home.path(), &server.url(), "Welcome to Koda");
+    tui.wait_for_screen("koda --oss");
     tui.wait_for_screen("Choose your LLM provider");
     tui.type_text(ESC);
     tui.wait_for_screen_without("Choose your LLM provider");
@@ -2745,4 +2746,50 @@ async fn notifications_go_out_only_while_the_terminal_is_unfocused() {
     tui.submit_and_finish("second prompt", "All done.");
     let after = String::from_utf8_lossy(&tui.output.lock().unwrap()[start..]).to_string();
     assert!(!after.contains(OSC9), "notified while focused: {after:?}");
+}
+
+/// `koda --worktree` opens the TUI in a new managed worktree, records the
+/// session in it, and says on exit where it stays.
+#[tokio::test(flavor = "multi_thread")]
+async fn worktree_opens_the_tui_in_a_new_checkout() {
+    let server = scripted_model(vec![]).await;
+    let home = home();
+    for args in [
+        vec!["init", "-q", "-b", "main"],
+        vec![
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "first",
+        ],
+    ] {
+        let ok = std::process::Command::new("git")
+            .args(&args)
+            .current_dir(home.path())
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git {args:?}");
+    }
+    let mut tui = Tui::start_with_args(home.path(), &server.url(), &["--worktree"], IDLE_HINT);
+    let root = home.path().join(".config/koda/worktrees");
+    let checkout = std::fs::read_dir(&root)
+        .unwrap()
+        .flatten()
+        .find(|entry| entry.path().is_dir())
+        .expect("no worktree")
+        .path()
+        .join(home.path().file_name().unwrap());
+    assert!(
+        koda_git::worktree::owner(&checkout).unwrap().is_some(),
+        "no session recorded"
+    );
+    tui.type_text("/exit\r");
+    assert!(tui.exits());
+    tui.wait_for_output("The worktree stays at");
 }

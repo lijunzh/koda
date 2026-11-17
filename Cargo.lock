@@ -1906,6 +1906,7 @@ dependencies = [
  "koda-client",
  "koda-config",
  "koda-core",
+ "koda-git",
  "koda-oss",
  "koda-sandbox",
  "koda-state",
@@ -2015,6 +2016,7 @@ dependencies = [
 name = "koda-git"
 version = "0.7.4"
 dependencies = [
+ "serde_json",
  "tempfile",
  "tokio",
 ]

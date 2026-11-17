@@ -66,3 +66,25 @@ title, shown in `/resume`. `/rename <name>` names it instead, as Codex's
 `/rename` does; a name you gave stays.
 Over the protocol, `session/name/set` does the same and
 `session/name/updated` follows.
+
+## A session in its own worktree
+
+`koda --worktree` (or `koda exec --worktree "…"`) starts the session in a new
+Git worktree, as Codex's `--worktree` does, so its edits stay apart from your
+checkout and from other sessions':
+
+- **Where:** `~/.config/koda/worktrees/<id>/<project>`, outside the
+  repository. Koda prints the path when it starts.
+- **What:** your project's `HEAD`, detached: Koda makes no branch. Uncommitted
+  changes and untracked files stay in your checkout. Commit or branch in the
+  worktree as you would anywhere: `git switch -c my-change`.
+- **Whose:** the session that ran there is recorded in the worktree's git
+  metadata.
+- **Afterwards:** Koda keeps the worktree and prints how to remove it once
+  you're done: `git worktree remove <path>`, run from your repository. Git
+  refuses while the worktree holds changes; don't add `--force` unless you
+  mean to lose them.
+
+`--worktree` starts new sessions only; `koda resume` and `koda fork` refuse
+it.
+

@@ -86,6 +86,7 @@ pub async fn run_headless(
     project_root: PathBuf,
     resume: Option<koda_tui::session_id::Resume>,
     run: Run,
+    on_session: Option<koda_tui::tui_app::SessionHook>,
 ) -> Result<i32> {
     // `@path` mentions go to the host, which reads them; dragged-in images
     // are loaded here.
@@ -145,6 +146,9 @@ pub async fn run_headless(
         })
         .await?;
     let session_id = opened.session.id;
+    if let Some(on_session) = on_session {
+        on_session(&session_id);
+    }
     // An open session always says what it runs.
     let model = opened.session.model.unwrap_or_default();
     let provider = opened.session.provider.unwrap_or_default();

@@ -55,6 +55,9 @@ Options:
       --local-provider <PROVIDER>
           The local provider for --oss: llama-cpp (the default, started and stopped by Koda), lm-studio or ollama (connected to)
 
+      --worktree
+          Run the session in a new managed Git worktree, as Codex's `--worktree` does: a detached checkout of the project's HEAD under Koda's config folder (worktrees/), outside the repository. Kept when Koda exits; remove it with `git worktree remove <path>`
+
   -a, --agent <AGENT>
           Agent to use: a built-in, or a JSON file in .koda/agents/ or ~/.config/koda/agents/ (default: config.toml's `agent`, else `default`)
 
