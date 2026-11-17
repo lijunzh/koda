@@ -40,7 +40,7 @@ koda-config = { workspace = true }
 koda-state = { workspace = true }
 
 # CLI
-clap = { version = "4", features = ["derive", "env"] }
+clap = { version = "4", features = ["derive", "env", "wrap_help"] }
 
 # Async runtime
 tokio = { workspace = true, features = ["full"] }

@@ -105,6 +105,10 @@ pub struct KodaConfigValues {
     /// which follows its line, or an id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// The model `/review` runs on, as Codex's `review_model`; the
+    /// session's own when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_model: Option<String>,
     /// The provider's id, such as `anthropic`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_provider: Option<String>,

@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 - **A Claude model finds MCP tools on demand, as Codex's models do.** On a Claude model with the API's tool search (Haiku, Sonnet and Opus 4.5 and later, every Claude 5 model), MCP tools are deferred behind it: the model sees Koda's tools and the search, loads an MCP tool when a task needs it, and the system prompt names the servers it can search. Other models, local ones included, get every tool up front. `omit_tools_from = ["deferred"]` on a server sends its tools up front anyway.
 - **An MCP tool's input schema over 5,000 bytes is shrunk, as Codex shrinks it:** its inner descriptions, then `$defs`, then deep nesting, then `anyOf`/`oneOf`/`allOf`, each only while still too big; the top-level arguments stay. `tool_input_schema_max_bytes` on a server changes the limit.
+- **`/review` reviews code changes, as Codex's `/review` does,** with Codex's rubric, in a session of its own: the uncommitted changes, `/review <branch>` against a branch from the merge base, `/review <commit>`, or instructions. The findings are listed (P0 to P3, with a verdict) back in your session, and your next message there carries them, so "fix the P1" works. `review_model` picks the model it runs on; `config/read` reports it.
 - **`/side` (also `/btw`) opens a side conversation, as Codex's `/side` does.** A fork of the session with Codex's side instructions: the history is for reference only, nothing changes unless asked, no sub-agents. It works while a turn runs: the turn goes on, and an approval or question it asks waits. `Ctrl+C` on an empty prompt returns: the side conversation is deleted, the main session is drawn again, and a turn still running there is followed to its end.
 - **`developer_instructions` adds text to the end of the system prompt, as Codex's setting does,** in `config.toml` or per session with `session/start`'s `config`.
 
@@ -29,6 +30,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **`koda fork <id> --worktree` and `koda exec fork <id> --worktree` open a copy of a session in a new managed worktree, as Codex's `fork --worktree` does.** The checkout is of the repository the session worked in, wherever the command runs (`--project-root` names another), and the copy has the whole history. The session must be named: `--last` and the list are refused with `--worktree`, as Codex refuses them.
 
 ### Changed
+
+- **`koda --help` is rewritten as a reference.** A two-line opening instead of a page of setup notes, one sentence per command and flag (the detail is in `--help`, not `-h`), options in the order they're used, five examples, and a link to the docs. Help wraps to the terminal, at most 100 columns. The same for every subcommand, and for the [CLI reference](docs/src/cli-reference.md) page. `koda serve`'s description now says what it does by default: run the background server.
+- **`-m` is short for `--model`, and `-C`/`--cd` names the directory to work in;** `--project-root` still works.
 
 - **A tool call with no result gets one, `aborted`, as Codex gives it.** A session forked while a tool ran, or one whose host stopped mid-turn, no longer sends the provider a call it would refuse for lacking a result.
 

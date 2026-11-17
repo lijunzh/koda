@@ -3120,3 +3120,75 @@ async fn side_mid_turn_leaves_the_turn_running() {
     tui.type_text("/exit\r");
     assert!(tui.exits());
 }
+
+/// `/review` runs Codex's rubric in a session of its own, lists the
+/// findings back in the main session, and the next prompt there carries
+/// them, as Codex's review hands its results to the thread.
+#[tokio::test(flavor = "multi_thread")]
+async fn review_lists_findings_and_the_next_prompt_carries_them() {
+    let findings = json!({
+        "findings": [{
+            "title": "[P1] Off by one in the loop",
+            "body": "The loop skips the last item.",
+            "confidence_score": 0.9,
+            "priority": 1,
+            "code_location": {
+                "absolute_file_path": "/tmp/x/src/lib.rs",
+                "line_range": {"start": 3, "end": 4}
+            }
+        }],
+        "overall_correctness": "patch is incorrect",
+        "overall_explanation": "It drops data.",
+        "overall_confidence_score": 0.8
+    })
+    .to_string();
+    let server = FakeLlmServer::spawn().await;
+    server
+        .mount_fn("POST", r".*/chat/completions$", move |request| {
+            let body = String::from_utf8_lossy(&request.body);
+            if body.contains("Review guidelines") {
+                text_reply(&findings)
+            } else {
+                final_text()
+            }
+        })
+        .await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    tui.submit_and_finish("make a change", "All done.");
+
+    run_command(&mut tui, "/review");
+    let sent = wait_for_model_call(&server, 2).await;
+    assert!(sent.contains("Review the current code changes"), "{sent}");
+    assert!(
+        !sent.contains("make a change"),
+        "the review saw the session: {sent}"
+    );
+    tui.wait_for_screen("Review of current changes");
+    tui.wait_for_screen("[P1] Off by one in the loop");
+    tui.wait_for_screen("Verdict: patch is incorrect");
+
+    tui.submit_and_finish("fix the P1", "All done.");
+    let sent = wait_for_model_call(&server, 3).await;
+    assert!(sent.contains("<user_action>"), "{sent}");
+    assert!(sent.contains("Off by one in the loop"), "{sent}");
+    assert!(sent.contains("make a change"), "{sent}");
+    assert!(!sent.contains("Review guidelines"), "{sent}");
+
+    let main = quit_and_read_session_id(&mut tui);
+    assert!(
+        stored_messages(home.path(), &main)
+            .await
+            .contains("fix the P1")
+    );
+    use koda_state::session_store::SessionStore;
+    let project = std::fs::canonicalize(home.path()).unwrap();
+    let db = koda_state::db::Database::init(&home.path().join(".config/koda"))
+        .await
+        .unwrap();
+    assert_eq!(
+        db.list_sessions(10, &project).await.unwrap().len(),
+        1,
+        "the review session was kept"
+    );
+}
