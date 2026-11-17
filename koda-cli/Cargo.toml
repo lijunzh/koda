@@ -30,6 +30,8 @@ koda-client = { workspace = true }
 koda-tui = { workspace = true }
 # `--oss`: a local model on llama.cpp, started and stopped with Koda.
 koda-oss = { workspace = true }
+# `--worktree`: a managed worktree, as Codex makes one.
+koda-git = { workspace = true }
 # Only for `dispatch_helpers` in `main`: `koda` also runs the Linux
 # sandbox's stage 2, as Codex's binary runs its sandbox helpers.
 koda-sandbox = { workspace = true }

@@ -276,10 +276,13 @@ clean and smudge filters, an external diff or a textconv, as in Codex and
 Claude Code. One result: a worktree has Git LFS pointer files rather than
 the files themselves; run `git lfs pull` in it if a sub-agent needs them.
 
-Worktrees live in `.koda/worktrees/` in the project. If `.koda` or
-`.koda/worktrees` is a symlink, as a repository could commit it, Koda
-refuses to make the worktree rather than put it, and the sub-agent's write
-access, wherever the link points.
+Worktrees live outside the project, in Koda's config folder:
+`~/.config/koda/worktrees/agents/<project>/<slot>`, as Codex keeps its
+worktrees outside the repository. So nothing a repository commits (a
+symlinked folder, say) decides where a worktree, and the sub-agent's write
+access, goes; Koda also refuses a worktree path that resolves outside that
+folder. A worktree git won't remove stays where it is, named in the log:
+Koda removes worktrees only through `git worktree remove`.
 
 Outside a git repository there are no worktrees. A sub-agent that needs one
 doesn't start, and the main agent is told why, so it can do the work itself:

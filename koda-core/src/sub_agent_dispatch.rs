@@ -563,7 +563,16 @@ fn run_sub_agent<'a>(
         // explicit annotation, which makes the whole `execute_sub_agent`
         // future `!Send` and unspawnable.
         let workspace: Box<dyn WorkspaceProvider + Send + Sync> = if needs_isolation {
-            Box::new(GitWorktreeProvider::new(project_root, agent_name))
+            // Koda's worktrees folder, outside the project, as Codex keeps
+            // its worktrees; a missing config folder fails provisioning.
+            let worktrees_root = koda_config::config_dir()
+                .map(|dir| dir.join("worktrees"))
+                .unwrap_or_default();
+            Box::new(GitWorktreeProvider::new(
+                project_root,
+                worktrees_root,
+                agent_name,
+            ))
         } else {
             Box::new(CwdProvider::new(project_root))
         };

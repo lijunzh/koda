@@ -109,7 +109,11 @@ impl WorkspaceProvider for CwdProvider {
 /// Isolated workspace via `git worktree add`.
 ///
 /// Each slot gets its own branch (`koda/wt/<agent>-<short-id>`) and a
-/// matching worktree directory at `.koda/worktrees/<slot_id>`.
+/// matching worktree directory at `<worktrees root>/agents/<repository
+/// name>/<slot_id>`, the root being Koda's `worktrees` folder in its config
+/// directory. Outside the repository, as Codex keeps its worktrees, so
+/// nothing a repository commits (a symlinked `.koda`, say) decides where a
+/// worktree, and the sub-agent's write access, goes.
 ///
 /// ## Release behaviour
 ///
@@ -141,16 +145,23 @@ impl WorkspaceProvider for CwdProvider {
 #[derive(Debug, Clone)]
 pub struct GitWorktreeProvider {
     project_root: PathBuf,
+    worktrees_root: PathBuf,
     agent_name: String,
 }
 
 impl GitWorktreeProvider {
-    /// Create a provider that will issue worktrees under `project_root`.
+    /// Create a provider that will issue worktrees of `project_root` under
+    /// `worktrees_root`, an absolute folder outside the project.
     ///
     /// `agent_name` is used for the human-readable branch prefix.
-    pub fn new(project_root: impl Into<PathBuf>, agent_name: impl Into<String>) -> Self {
+    pub fn new(
+        project_root: impl Into<PathBuf>,
+        worktrees_root: impl Into<PathBuf>,
+        agent_name: impl Into<String>,
+    ) -> Self {
         Self {
             project_root: project_root.into(),
+            worktrees_root: worktrees_root.into(),
             agent_name: agent_name.into(),
         }
     }
@@ -205,38 +216,43 @@ impl GitWorktreeProvider {
 
     /// Path of the worktree directory for a given slot.
     fn worktree_path(&self, slot_id: &str) -> PathBuf {
-        self.project_root
-            .join(".koda")
-            .join("worktrees")
+        let repository = self
+            .project_root
+            .file_name()
+            .map(|name| name.to_os_string())
+            .unwrap_or_else(|| "project".into());
+        self.worktrees_root
+            .join("agents")
+            .join(repository)
             .join(slot_id)
     }
 
-    /// Refuse a worktree `path` reached through a symlink: `.koda`,
-    /// `.koda/worktrees` or the worktree's own folder. A repository can
-    /// commit `.koda` as a symlink, and following it would put the worktree,
-    /// and the sub-agent's write access with it, outside the project, and
-    /// point the removal's `rm -rf` fallback there too. Claude Code refuses
-    /// the same for `.claude/worktrees`.
-    fn refuse_symlinks(&self, path: &Path) -> Result<()> {
-        let relative = path
-            .strip_prefix(&self.project_root)
-            .context("worktree path outside the project")?;
-        let mut current = self.project_root.clone();
-        for component in relative.components() {
-            current.push(component);
-            match std::fs::symlink_metadata(&current) {
-                Ok(meta) if meta.file_type().is_symlink() => anyhow::bail!(
-                    "{} is a symlink; Koda won't make or remove a sub-agent's worktree through it",
-                    current.display()
-                ),
-                Ok(_) => {}
-                // Not made yet: nothing below it exists either.
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
-                Err(e) => {
-                    return Err(e).with_context(|| format!("can't inspect {}", current.display()));
-                }
-            }
-        }
+    /// Refuse a worktree `path` that doesn't resolve inside the worktrees
+    /// root, as Codex checks a managed worktree's real path against its
+    /// root before using or removing it.
+    fn ensure_inside_root(&self, path: &Path) -> Result<()> {
+        anyhow::ensure!(
+            self.worktrees_root.is_absolute(),
+            "the worktrees folder must be an absolute path: {}",
+            self.worktrees_root.display()
+        );
+        std::fs::create_dir_all(&self.worktrees_root)
+            .with_context(|| format!("can't create {}", self.worktrees_root.display()))?;
+        let root = self.worktrees_root.canonicalize()?;
+        // The nearest folder that exists, resolved: what's below it isn't
+        // made yet, so can't lead elsewhere.
+        let existing = path
+            .ancestors()
+            .find(|dir| dir.exists())
+            .context("no part of the worktree path exists")?;
+        let resolved = existing.canonicalize()?;
+        anyhow::ensure!(
+            resolved.starts_with(&root),
+            "{} resolves to {}, outside {}; Koda won't make or remove a sub-agent's worktree there",
+            path.display(),
+            resolved.display(),
+            root.display()
+        );
         Ok(())
     }
 }
@@ -255,7 +271,7 @@ impl WorkspaceProvider for GitWorktreeProvider {
 
         let wt_path = self.worktree_path(slot_id);
         let branch = self.branch_name(slot_id);
-        self.refuse_symlinks(&wt_path)?;
+        self.ensure_inside_root(&wt_path)?;
 
         // Reuse on resume (idempotent).
         if wt_path.exists() {
@@ -264,7 +280,7 @@ impl WorkspaceProvider for GitWorktreeProvider {
         }
 
         std::fs::create_dir_all(wt_path.parent().unwrap_or(&self.project_root))
-            .context("Failed to create .koda/worktrees/ directory")?;
+            .context("Failed to create the worktrees folder")?;
 
         let out = git(
             &self.project_root,
@@ -414,10 +430,11 @@ impl GitWorktreeProvider {
         )
     }
 
-    /// Best-effort `git worktree remove --force` with rm-rf fallback. Neither
-    /// runs through a symlink: see [`Self::refuse_symlinks`].
+    /// `git worktree remove --force` (its work is committed by now), and
+    /// nothing else: a worktree git won't remove stays where it is, named in
+    /// the log, as Codex removes only through git.
     async fn remove_worktree(&self, path: &Path) {
-        if let Err(e) = self.refuse_symlinks(path) {
+        if let Err(e) = self.ensure_inside_root(path) {
             tracing::warn!("Not removing worktree: {e:#}");
             return;
         }
@@ -427,19 +444,19 @@ impl GitWorktreeProvider {
             &["worktree", "remove", "--force", &path.to_string_lossy()],
         )
         .await;
-
         match out {
             Ok(o) if o.status.success() => {}
-            Ok(o) => {
-                let stderr = String::from_utf8_lossy(&o.stderr);
-                tracing::warn!("git worktree remove failed ({stderr}), falling back to rm -rf");
-                let _ = tokio::fs::remove_dir_all(path).await;
-            }
-            Err(e) => {
-                tracing::warn!("Could not spawn git worktree remove: {e}");
-                let _ = tokio::fs::remove_dir_all(path).await;
-            }
+            Ok(o) => tracing::warn!(
+                "Kept worktree {}: git worktree remove failed ({})",
+                path.display(),
+                String::from_utf8_lossy(&o.stderr).trim()
+            ),
+            Err(e) => tracing::warn!(
+                "Kept worktree {}: could not run git worktree remove ({e})",
+                path.display()
+            ),
         }
+        // Its slot folder's parent is shared; leave it.
     }
 }
 
@@ -482,17 +499,17 @@ mod tests {
 
     #[test]
     fn safe_agent_strips_bad_chars() {
-        let p = GitWorktreeProvider::new("/tmp/proj", "my agent/name!");
+        let p = GitWorktreeProvider::new("/tmp/proj", "/tmp/wt", "my agent/name!");
         // spaces, slashes, and punctuation become hyphens; trailing hyphens stripped
         assert_eq!(p.safe_agent(), "my-agent-name");
         // all-punctuation collapses to the fallback
-        let p2 = GitWorktreeProvider::new("/tmp/proj", "!!!");
+        let p2 = GitWorktreeProvider::new("/tmp/proj", "/tmp/wt", "!!!");
         assert_eq!(p2.safe_agent(), "agent");
     }
 
     #[test]
     fn branch_name_is_readable() {
-        let p = GitWorktreeProvider::new("/tmp/proj", "refactor");
+        let p = GitWorktreeProvider::new("/tmp/proj", "/tmp/wt", "refactor");
         let b = p.branch_name("abcdef1234567890");
         assert_eq!(b, "koda/wt/refactor-abcdef12");
     }
@@ -503,7 +520,7 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let p = GitWorktreeProvider::new("/tmp/x", "agent");
+        let p = GitWorktreeProvider::new("/tmp/x", "/tmp/wt", "agent");
         rt.block_on(async {
             assert!(p.provision("").await.is_err());
             assert!(p.provision("foo/bar").await.is_err());
@@ -512,6 +529,16 @@ mod tests {
     }
 
     // ── GitWorktreeProvider end-to-end (requires git in PATH) ────────────────
+
+    /// A provider for `project`, its worktrees in a folder of their own
+    /// outside it, kept alive by the returned guard.
+    fn provider(project: &Path, agent: &str) -> (GitWorktreeProvider, tempfile::TempDir) {
+        let root = tempfile::tempdir().unwrap();
+        (
+            GitWorktreeProvider::new(project, root.path().join("worktrees"), agent),
+            root,
+        )
+    }
 
     async fn init_repo(path: &Path) {
         for args in [
@@ -541,7 +568,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path()).await;
 
-        let p = GitWorktreeProvider::new(tmp.path(), "my-agent");
+        let (p, _root) = provider(tmp.path(), "my-agent");
         let wt = p.provision("slot-001").await.unwrap();
 
         assert!(wt.exists());
@@ -557,37 +584,54 @@ mod tests {
         );
     }
 
-    /// A repository that commits `.koda` (or `.koda/worktrees`) as a symlink
-    /// doesn't get a worktree outside the project, and a removal doesn't
-    /// delete through it.
+    /// The worktree goes outside the project, under the worktrees root, so a
+    /// repository that commits `.koda` as a symlink decides nothing.
     #[tokio::test]
-    async fn provision_refuses_a_symlinked_koda_folder() {
-        for link in [".koda", ".koda/worktrees"] {
-            let tmp = tempfile::tempdir().unwrap();
-            let project = tmp.path().join("project");
-            let elsewhere = tmp.path().join("elsewhere");
-            std::fs::create_dir_all(&project).unwrap();
-            std::fs::create_dir_all(&elsewhere).unwrap();
-            init_repo(&project).await;
-            let link_path = project.join(link);
-            std::fs::create_dir_all(link_path.parent().unwrap()).unwrap();
-            std::os::unix::fs::symlink(&elsewhere, &link_path).unwrap();
+    async fn the_worktree_is_outside_the_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        let elsewhere = tmp.path().join("elsewhere");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        init_repo(&project).await;
+        std::os::unix::fs::symlink(&elsewhere, project.join(".koda")).unwrap();
 
-            let p = GitWorktreeProvider::new(&project, "agent");
-            let err = p.provision("slot-link").await.unwrap_err();
-            assert!(
-                format!("{err:#}").contains("is a symlink"),
-                "{link}: {err:#}"
-            );
-            assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0, "{link}");
+        let (p, root) = provider(&project, "agent");
+        let wt = p.provision("slot-out").await.unwrap();
+        let root = root.path().canonicalize().unwrap();
+        assert!(
+            wt.canonicalize().unwrap().starts_with(&root),
+            "{}",
+            wt.display()
+        );
+        assert!(wt.ends_with("agents/project/slot-out"), "{}", wt.display());
+        assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
+    }
 
-            // A folder left there by hand isn't removed through the link.
-            let target = p.worktree_path("slot-link");
-            std::fs::create_dir_all(&target).unwrap();
-            std::fs::write(target.join("keep.txt"), "x").unwrap();
-            p.remove_worktree(&target).await;
-            assert!(target.join("keep.txt").exists(), "{link}");
-        }
+    /// A worktrees folder that leads outside the root (a symlink planted
+    /// there) is refused, for making and for removing.
+    #[tokio::test]
+    async fn a_worktree_path_that_leaves_the_root_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        let elsewhere = tmp.path().join("elsewhere");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        init_repo(&project).await;
+        let root = tmp.path().join("worktrees");
+        std::fs::create_dir_all(&root).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, root.join("agents")).unwrap();
+
+        let p = GitWorktreeProvider::new(&project, &root, "agent");
+        let err = p.provision("slot-link").await.unwrap_err();
+        assert!(format!("{err:#}").contains("outside"), "{err:#}");
+        assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
+
+        let target = elsewhere.join("project/slot-link");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("keep.txt"), "x").unwrap();
+        p.remove_worktree(&p.worktree_path("slot-link")).await;
+        assert!(target.join("keep.txt").exists());
     }
 
     #[tokio::test]
@@ -595,7 +639,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path()).await;
 
-        let p = GitWorktreeProvider::new(tmp.path(), "agent");
+        let (p, _root) = provider(tmp.path(), "agent");
         let a = p.provision("slot-reuse").await.unwrap();
         let b = p.provision("slot-reuse").await.unwrap();
         assert_eq!(a, b);
@@ -606,7 +650,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path()).await;
 
-        let p = GitWorktreeProvider::new(tmp.path(), "agent");
+        let (p, _root) = provider(tmp.path(), "agent");
         let wt = p.provision("slot-clean").await.unwrap();
         assert!(wt.exists());
 
@@ -620,7 +664,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path()).await;
 
-        let p = GitWorktreeProvider::new(tmp.path(), "committer");
+        let (p, _root) = provider(tmp.path(), "committer");
         let wt = p.provision("slot-commit").await.unwrap();
         std::fs::write(wt.join("done.txt"), "done").unwrap();
         for args in [
@@ -660,7 +704,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path()).await;
 
-        let p = GitWorktreeProvider::new(tmp.path(), "idle");
+        let (p, _root) = provider(tmp.path(), "idle");
         let wt = p.provision("slot-idle").await.unwrap();
         assert!(p.release("slot-idle", &wt).await.unwrap().is_none());
 
@@ -679,7 +723,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path()).await;
 
-        let p = GitWorktreeProvider::new(tmp.path(), "refactor");
+        let (p, _root) = provider(tmp.path(), "refactor");
         let wt = p.provision("slot-dirty").await.unwrap();
 
         // Write a file so the worktree is dirty.
@@ -698,13 +742,19 @@ mod tests {
     }
 
     /// A provisioned worktree holding uncommitted work.
-    async fn dirty_worktree() -> (tempfile::TempDir, GitWorktreeProvider, PathBuf) {
+    /// The second guard keeps the worktrees folder.
+    async fn dirty_worktree() -> (
+        tempfile::TempDir,
+        GitWorktreeProvider,
+        PathBuf,
+        tempfile::TempDir,
+    ) {
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path()).await;
-        let provider = GitWorktreeProvider::new(tmp.path(), "refactor");
+        let (provider, root) = provider(tmp.path(), "refactor");
         let worktree = provider.provision("slot-dirty").await.unwrap();
         std::fs::write(worktree.join("output.rs"), "// generated").unwrap();
-        (tmp, provider, worktree)
+        (tmp, provider, worktree, root)
     }
 
     /// The work is still on disk, and the hint says where, not that it's saved.
@@ -730,7 +780,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_commit_keeps_the_worktree() {
-        let (tmp, provider, worktree) = dirty_worktree().await;
+        let (tmp, provider, worktree, _root) = dirty_worktree().await;
         // Git can't move the branch while its ref is locked.
         let lock = tmp
             .path()
@@ -750,7 +800,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_add_keeps_the_worktree() {
-        let (tmp, provider, worktree) = dirty_worktree().await;
+        let (tmp, provider, worktree, _root) = dirty_worktree().await;
         let git_dir = tmp.path().join(".git/worktrees/slot-dirty");
         std::fs::write(git_dir.join("index.lock"), "").unwrap();
 
@@ -760,7 +810,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_status_keeps_the_worktree() {
-        let (_tmp, provider, worktree) = dirty_worktree().await;
+        let (_tmp, provider, worktree, _root) = dirty_worktree().await;
         // Reading as "clean" here would force-remove the work.
         std::fs::write(worktree.join(".git"), "not a pointer").unwrap();
 
@@ -773,7 +823,7 @@ mod tests {
     async fn hooks_and_signing_cannot_refuse_the_save() {
         use std::os::unix::fs::PermissionsExt as _;
 
-        let (tmp, provider, worktree) = dirty_worktree().await;
+        let (tmp, provider, worktree, _root) = dirty_worktree().await;
         let hook = tmp.path().join(".git/hooks/pre-commit");
         std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
         std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
@@ -831,7 +881,7 @@ mod tests {
         assert!(canary.exists(), "git ran no post-checkout hook here");
         std::fs::remove_file(&canary).unwrap();
 
-        let provider = GitWorktreeProvider::new(tmp.path(), "refactor");
+        let (provider, _root) = provider(tmp.path(), "refactor");
         let worktree = provider.provision("slot-dirty").await.unwrap();
         assert!(!canary.exists(), "provisioning ran a hook");
 
@@ -863,7 +913,7 @@ mod tests {
         let canary = outside.path().join("fsmonitor-ran");
         let script = outside.path().join("fsmonitor");
         canary_script(&script, &canary);
-        let (tmp, provider, worktree) = dirty_worktree().await;
+        let (tmp, provider, worktree, _root) = dirty_worktree().await;
         git_ok(tmp.path(), &["config", "extensions.worktreeConfig", "true"]).await;
         std::fs::write(
             tmp.path().join(".git/worktrees/slot-dirty/config.worktree"),
@@ -884,7 +934,7 @@ mod tests {
     #[tokio::test]
     async fn outside_git_provision_fails_rather_than_share_the_project() {
         let tmp = tempfile::tempdir().unwrap();
-        let p = GitWorktreeProvider::new(tmp.path(), "agent");
+        let (p, _root) = provider(tmp.path(), "agent");
         let refused = p.provision("slot-x").await.unwrap_err();
         assert!(
             refused.to_string().contains("not a git repository"),
@@ -895,7 +945,7 @@ mod tests {
     #[tokio::test]
     async fn release_of_the_project_itself_is_a_noop() {
         let tmp = tempfile::tempdir().unwrap();
-        let p = GitWorktreeProvider::new(tmp.path(), "agent");
+        let (p, _root) = provider(tmp.path(), "agent");
         let hint = p.release("slot-x", tmp.path()).await.unwrap();
         assert!(hint.is_none());
     }

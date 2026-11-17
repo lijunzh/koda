@@ -25,6 +25,9 @@ use ratatui::{
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 
+/// Called with a session's id once it opens.
+pub type SessionHook = Box<dyn FnOnce(&str) + Send>;
+
 /// Run the main interactive event loop with persistent TUI.
 /// How the TUI starts: which session, and what it does first.
 pub struct Start {
@@ -39,6 +42,9 @@ pub struct Start {
     /// Fork the session rather than resume it (`koda fork`): `resume`'s,
     /// or the one picked from the list.
     pub fork: bool,
+    /// Called with the first session's id once it opens (`--worktree`
+    /// records it in the worktree).
+    pub on_session: Option<SessionHook>,
 }
 
 pub async fn run(
@@ -54,9 +60,13 @@ pub async fn run(
         images,
         pick_session,
         fork,
+        on_session,
     } = start;
     let mut ctx =
         TuiContext::new(project_root, named, resume, fork, version_check, first_run).await?;
+    if let Some(on_session) = on_session {
+        on_session(&ctx.session.id);
+    }
     let first_run = ctx.first_run;
 
     // First-run welcome message (after terminal is initialized)
