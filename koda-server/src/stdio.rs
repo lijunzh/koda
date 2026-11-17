@@ -475,7 +475,7 @@ mod tests {
         serde_json::from_str(&line).unwrap()
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_message_up_to_the_limit_is_read_and_one_past_it_is_not() {
         let mut line = Vec::new();
         let mut input: &[u8] = b"12345678\n123456789\n";
@@ -503,7 +503,7 @@ mod tests {
         assert!(too_long_line().contains("64 MiB"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_bounded_outbox_lets_its_client_go_once_full() {
         let outbox = Outbox::bounded(2);
         outbox.push("a".into());
@@ -520,7 +520,7 @@ mod tests {
             .expect("the connection is told to stop");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_unbounded_outbox_keeps_everything() {
         let outbox = Outbox::default();
         for i in 0..10_000 {

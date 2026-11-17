@@ -733,6 +733,7 @@ async fn connection(id: u64, stream: UnixStream, router: Arc<Router>, initialize
     let mut lines = BufReader::new(input);
     let mut line = Vec::new();
     let mut stopping = router.stopping.subscribe();
+    let mut too_long = false;
     loop {
         line.clear();
         let read = tokio::select! {
@@ -746,6 +747,7 @@ async fn connection(id: u64, stream: UnixStream, router: Arc<Router>, initialize
             Ok(Read::TooLong) => {
                 tracing::warn!("koda serve: a client sent a message over the limit; closing it");
                 outbox.push(too_long_line());
+                too_long = true;
                 break;
             }
             Err(e) => {
@@ -971,6 +973,16 @@ async fn connection(id: u64, stream: UnixStream, router: Arc<Router>, initialize
     .await;
     outbox.close();
     let _ = writer.await;
+    if too_long {
+        // Read what the client is still sending before closing: on Linux,
+        // closing a Unix socket with unread input resets the connection, and
+        // the client would lose the error.
+        let _ = tokio::time::timeout(
+            Duration::from_secs(1),
+            tokio::io::copy(&mut lines, &mut tokio::io::sink()),
+        )
+        .await;
+    }
 }
 
 /// Connect to the shared server at `socket` as a client: the same parts
