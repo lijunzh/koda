@@ -842,6 +842,172 @@ async fn exec_resume_takes_the_last_session_or_an_id() {
     );
 }
 
+/// `koda exec fork` runs the prompt in a copy of the session, as `codex
+/// exec fork` does: by an id's first characters, with the history, the
+/// original left as it was. Without a prompt it only forks and prints the
+/// copy's id.
+#[tokio::test(flavor = "multi_thread")]
+async fn exec_fork_runs_the_prompt_in_a_copy_or_only_forks() {
+    use koda_state::session_store::SessionStore;
+    let server = stub(vec![], no_other_calls).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let session_of = |run: &Run| {
+        run.lines[0]["params"]["session"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let first = finish(command(&server, tmp.path())).await;
+    assert!(first.output.status.success(), "{}", first.stdout);
+    let source = session_of(&first);
+
+    let fork = |args: &[&str]| {
+        let mut command = tokio::process::Command::new(koda_bin());
+        command
+            .args(["exec", "fork"])
+            .args(args)
+            .args(["--provider", "lmstudio", "--model", "stub"])
+            .args(["--base-url", &server.url()])
+            .arg("--project-root")
+            .arg(tmp.path())
+            .env("XDG_CONFIG_HOME", tmp.path())
+            .kill_on_drop(true);
+        command
+    };
+    let run = finish(fork(&[&source[..8], "Carry on", "--json"])).await;
+    assert!(run.output.status.success(), "{}", run.stdout);
+    let copy = session_of(&run);
+    assert_ne!(copy, source);
+    let requests = server.received_requests().await;
+    let last = String::from_utf8_lossy(&requests.last().unwrap().body).to_string();
+    assert!(last.contains("Fix the parser"), "history lost: {last}");
+    assert!(last.contains("Carry on"), "{last}");
+    let db = koda_state::db::Database::init(&tmp.path().join("koda"))
+        .await
+        .unwrap();
+    let said = |messages: Vec<koda_state::session_store::Message>| {
+        messages
+            .iter()
+            .filter_map(|m| m.content.clone())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert!(!said(db.load_all_messages(&source).await.unwrap()).contains("Carry on"));
+
+    // No prompt: the fork only, its id on stdout, and no model call.
+    let chats = || async {
+        server
+            .received_requests()
+            .await
+            .iter()
+            .filter(|r| r.url.path().ends_with("/chat/completions"))
+            .count()
+    };
+    let calls = chats().await;
+    // Text output: the id alone, not JSON.
+    let only = fork(&[&source]).output().await.unwrap();
+    let stdout = String::from_utf8_lossy(&only.stdout);
+    assert!(
+        only.status.success(),
+        "{}",
+        String::from_utf8_lossy(&only.stderr)
+    );
+    let only_id = stdout.trim().to_string();
+    assert_eq!(only_id.len(), 36, "{stdout:?}");
+    assert_ne!(only_id, source);
+    assert_eq!(chats().await, calls, "the fork alone called the model");
+    assert!(said(db.load_all_messages(&only_id).await.unwrap()).contains("Fix the parser"));
+
+    // Images and -o go with a prompt.
+    let refused = fork(&[&source, "-o", "last.txt"]).output().await.unwrap();
+    assert!(!refused.status.success());
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(stderr.contains("only with a prompt"), "{stderr}");
+}
+
+/// `koda exec fork <id> --worktree` runs the copy in a new worktree of the
+/// repository the session worked in, wherever the command runs, as `codex
+/// exec fork --worktree` takes the thread's saved cwd.
+#[tokio::test(flavor = "multi_thread")]
+async fn exec_fork_worktree_runs_the_copy_in_a_checkout_of_the_sessions_repository() {
+    let server = stub(vec![], no_other_calls).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("proj");
+    std::fs::create_dir(&repo).unwrap();
+    let git = |args: &[&str]| {
+        let ok = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git {args:?}");
+    };
+    git(&["init", "-q", "-b", "main"]);
+    std::fs::write(repo.join("README.md"), "hi\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "first"]);
+    let config = tmp.path().join("config");
+    let mut first = command(&server, &repo);
+    first.env("XDG_CONFIG_HOME", &config);
+    let first = finish(first).await;
+    assert!(first.output.status.success(), "{}", first.stdout);
+    let source = first.lines[0]["params"]["session"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // From another folder, without --project-root; two side by side, as
+    // the docs suggest for two attempts.
+    let elsewhere = tmp.path().join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    let fork = |prompt: &str| {
+        let mut fork = tokio::process::Command::new(koda_bin());
+        fork.args(["exec", "fork", &source, prompt, "--worktree", "--json"])
+            .args(["--provider", "lmstudio", "--model", "stub"])
+            .args(["--base-url", &server.url()])
+            .current_dir(&elsewhere)
+            .env("XDG_CONFIG_HOME", &config)
+            .kill_on_drop(true);
+        fork
+    };
+    let (run, other) = tokio::join!(finish(fork("Go on")), finish(fork("Or this")));
+    assert!(
+        other.output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&other.output.stderr)
+    );
+    let buckets = std::fs::read_dir(config.join("koda/worktrees"))
+        .unwrap()
+        .flatten()
+        .filter(|entry| entry.path().is_dir())
+        .count();
+    assert_eq!(buckets, 2, "one checkout each");
+    let stderr = String::from_utf8_lossy(&run.output.stderr);
+    assert!(run.output.status.success(), "{stderr}");
+    assert!(stderr.contains("The worktree stays at"), "{stderr}");
+    let started = run.of("session/started")[0];
+    let copy = started["params"]["session"]["id"].as_str().unwrap();
+    assert_ne!(copy, source);
+    // This run's checkout is the one its session started in.
+    let checkout = std::path::PathBuf::from(started["params"]["session"]["cwd"].as_str().unwrap());
+    assert!(
+        checkout.starts_with(config.join("koda/worktrees").canonicalize().unwrap()),
+        "{}",
+        checkout.display()
+    );
+    assert_eq!(checkout.file_name().unwrap(), "proj");
+    assert_eq!(
+        std::fs::read_to_string(checkout.join("README.md")).unwrap(),
+        "hi\n"
+    );
+    assert_eq!(
+        koda_git::worktree::owner(&checkout).unwrap().as_deref(),
+        Some(copy)
+    );
+}
+
 /// `koda exec -i` sends the image with the prompt, as `codex exec -i` does.
 #[tokio::test(flavor = "multi_thread")]
 async fn exec_image_goes_with_the_prompt() {

@@ -236,3 +236,28 @@ A resumed run keeps the session's own provider, endpoint and model, as
 `codex exec resume` does: a model chosen by alias (`claude-opus`) moves to its
 line's newest. `--provider`, `--base-url` or `--model` override them for this
 run and from then on.
+
+## Forking a session in headless mode
+
+`koda exec fork <id> "<prompt>"` runs the prompt in a copy of the session, as
+`codex exec fork` does: the copy has the whole history and the session's
+provider and model (flags override them), and the original stays as it was.
+The id may be the start of one; `-` reads the prompt from stdin. Without a
+prompt Koda only forks and prints the copy's id (with `--json`,
+`session/started`), so a script can continue it later with `koda exec
+resume`:
+
+```bash
+fork=$(koda exec fork a3f8bc)
+koda exec resume "$fork" "try the other approach"
+```
+
+With `--worktree`, the copy runs in a new worktree of the repository the
+session worked in, wherever the command runs ([Sessions](./sessions.md#a-session-in-its-own-worktree)).
+Two attempts from one conversation, each in its own checkout:
+
+```bash
+koda exec fork a3f8bc --worktree "implement option A" &
+koda exec fork a3f8bc --worktree "implement option B" &
+wait
+```

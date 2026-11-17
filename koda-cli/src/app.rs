@@ -455,6 +455,43 @@ enum ExecCommand {
     /// Run a prompt in a saved session, as `codex exec resume` does: by its
     /// id (or the start of one), or the most recent with --last.
     Resume(ExecResumeArgs),
+    /// Fork a saved session by its id (or the start of one) and run the
+    /// prompt in the copy, as `codex exec fork` does. Without a prompt,
+    /// only fork it, and print the copy's id. With --worktree, the copy
+    /// runs in a new worktree of the repository the session worked in.
+    Fork(ExecForkArgs),
+}
+
+/// `koda exec fork`'s arguments: the session, the prompt, and `koda exec
+/// resume`'s flags.
+#[derive(clap::Args, Debug)]
+struct ExecForkArgs {
+    /// The session to fork: its id, or the start of one.
+    #[arg(value_name = "SESSION_ID")]
+    session_id: String,
+
+    /// The prompt to run in the copy. "-" reads it from stdin; none only
+    /// forks.
+    #[arg(value_name = "PROMPT")]
+    prompt: Option<String>,
+
+    #[command(flatten)]
+    session: SessionFlags,
+
+    #[command(flatten)]
+    flags: ConfigFlags,
+
+    /// Print the client protocol's notifications on stdout, as `koda exec
+    /// --json` does.
+    #[arg(long)]
+    json: bool,
+
+    /// With --json, also print streaming deltas.
+    #[arg(long, requires = "json")]
+    json_deltas: bool,
+
+    #[command(flatten)]
+    output: ExecOutput,
 }
 
 /// `koda exec resume`'s flags: `koda exec`'s, and which session.
@@ -558,6 +595,32 @@ pub(crate) async fn run() -> Result<()> {
                     output.images = root_images;
                 }
                 Some(exec_run(prompt, r.json, r.json_deltas, output)?)
+            }
+            ExecArgs {
+                command: Some(ExecCommand::Fork(mut f)),
+                ..
+            } => {
+                f.session.inherit(&session);
+                f.flags.inherit(&flags);
+                refuse_resume_flag(&f.session, "koda exec fork");
+                fork = true;
+                resume = Some(koda_tui::session_id::Resume::Id(f.session_id));
+                session = std::mem::take(&mut f.session);
+                flags = std::mem::take(&mut f.flags);
+                let mut output = f.output;
+                if output.images.is_empty() {
+                    output.images = root_images;
+                }
+                Some(match f.prompt {
+                    // Only the fork, as `codex exec fork` without a prompt.
+                    None => {
+                        if !output.images.is_empty() || output.output_last_message.is_some() {
+                            anyhow::bail!("koda exec fork takes --image and -o only with a prompt");
+                        }
+                        exec_fork_only(f.json)
+                    }
+                    prompt => exec_run(prompt, f.json, f.json_deltas, output)?,
+                })
             }
             mut args => {
                 args.session.inherit(&session);
@@ -714,7 +777,7 @@ pub(crate) async fn run() -> Result<()> {
         if (resume.is_some() || pick_session) && !fork {
             eprintln!(
                 "error: --worktree can't resume a session; to carry one into a new worktree, \
-                 fork it: koda fork <id> --worktree"
+                 fork it: koda fork <id> --worktree, or koda exec fork <id> --worktree"
             );
             std::process::exit(2);
         }
@@ -840,7 +903,7 @@ pub(crate) async fn run() -> Result<()> {
         // An unknown id stops the run before its turn (`session_id`). A new
         // session is the host's to create.
         let on_session = worktree.as_ref().map(WorktreeSession::binder);
-        let exit_code = headless::run_headless(project_root, resume, run, on_session).await?;
+        let exit_code = headless::run_headless(project_root, resume, fork, run, on_session).await?;
         if let Some(worktree) = &worktree {
             worktree.kept_notice();
         }
@@ -1113,6 +1176,23 @@ fn exec_run(
         // Set once the flags are read.
         named: headless::Named::default(),
     })
+}
+
+/// `koda exec fork` without a prompt: the fork only, as `codex exec fork`
+/// makes one. The copy's id goes to stdout, or `session/started` with
+/// --json.
+fn exec_fork_only(json: bool) -> headless::Run {
+    headless::Run {
+        prompt: String::new(),
+        images: Vec::new(),
+        output: if json {
+            headless::Output::Events { deltas: false }
+        } else {
+            headless::Output::Text
+        },
+        last_message: None,
+        named: headless::Named::default(),
+    }
 }
 
 /// `koda resume` and `koda exec resume` name the session themselves.

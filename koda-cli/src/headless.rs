@@ -26,7 +26,9 @@ use koda_client::protocol::item::{
     FileUpdateChange, Item, OutputStream, PatchChangeKind, ToolCallStatus, ToolEffect,
 };
 use koda_client::protocol::server::ExecSummary;
-use koda_client::protocol::session::{ApprovalPolicy, SessionStartParams, TokenUsage};
+use koda_client::protocol::session::{
+    ApprovalPolicy, SessionForkParams, SessionStartParams, TokenUsage,
+};
 use koda_client::protocol::turn::{
     ImageInput, Mention, PlanStep, Turn, TurnInterruptParams, TurnStartParams, TurnStatus, Usage,
 };
@@ -85,6 +87,7 @@ pub struct Named {
 pub async fn run_headless(
     project_root: PathBuf,
     resume: Option<koda_tui::session_id::Resume>,
+    fork: bool,
     run: Run,
     on_session: Option<koda_tui::tui_app::SessionHook>,
 ) -> Result<i32> {
@@ -134,24 +137,55 @@ pub async fn run_headless(
         ),
         None => None,
     };
-    let opened = client
-        .request::<methods::SessionStart>(SessionStartParams {
-            // Given flags win; without them a resumed session keeps its own
-            // provider and model. A new session starts from the config.
-            model_provider: provider,
-            base_url: run.named.base_url.clone(),
-            model: run.named.model.clone(),
-            session_id: resume,
-            approval_policy: Some(ApprovalPolicy::Never),
-        })
-        .await?;
-    let session_id = opened.session.id;
+    let opened = match (fork, resume) {
+        // `koda exec fork`: a copy of the session, opened, as `codex exec
+        // fork` asks for `thread/fork`; flags override the copy's model.
+        (true, Some(source)) => {
+            client
+                .request::<methods::SessionFork>(SessionForkParams {
+                    session_id: source,
+                    approval_policy: Some(ApprovalPolicy::Never),
+                    model_provider: provider,
+                    base_url: run.named.base_url.clone(),
+                    model: run.named.model.clone(),
+                })
+                .await?
+                .session
+        }
+        (_, resume) => {
+            client
+                .request::<methods::SessionStart>(SessionStartParams {
+                    // Given flags win; without them a resumed session keeps
+                    // its own provider and model. A new session starts from
+                    // the config.
+                    model_provider: provider,
+                    base_url: run.named.base_url.clone(),
+                    model: run.named.model.clone(),
+                    session_id: resume,
+                    approval_policy: Some(ApprovalPolicy::Never),
+                })
+                .await?
+                .session
+        }
+    };
+    let session_id = opened.id;
     if let Some(on_session) = on_session {
         on_session(&session_id);
     }
+    // `koda exec fork` without a prompt: the fork is all there is to do.
+    if fork && run.prompt.is_empty() {
+        while let Some(message) = client.try_next_event() {
+            view.before_turn(&message);
+        }
+        if let Output::Text = run.output {
+            println!("{session_id}");
+        }
+        client.shutdown().await;
+        return Ok(0);
+    }
     // An open session always says what it runs.
-    let model = opened.session.model.unwrap_or_default();
-    let provider = opened.session.provider.unwrap_or_default();
+    let model = opened.model.unwrap_or_default();
+    let provider = opened.provider.unwrap_or_default();
     // What starting the session said: `session/started`, and the context
     // window Koda assumed when the server didn't report one.
     while let Some(message) = client.try_next_event() {

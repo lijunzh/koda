@@ -37,6 +37,26 @@ pub struct ManagedWorktree {
 /// The file in a worktree's git metadata that names its session.
 const OWNER_FILE: &str = "koda-session.json";
 
+/// Held while `git worktree add` runs, so Koda's worktrees made at the
+/// same time (`koda exec fork --worktree` runs started side by side) are
+/// added one at a time. Every worktree of a repository has its folder's
+/// name, so git names their admin folders in `.git/worktrees/` `proj`,
+/// `proj1`, … as it adds them, and two adds at once can trip over each
+/// other's half-written entry ("failed to read
+/// .git/worktrees/proj1/commondir"), about 3 times in 200 when 4 run at
+/// once. A lock file in `root`, Koda's worktrees folder, released when the
+/// returned file drops. Codex's `create` takes no lock.
+pub fn adding_lock(root: &Path) -> io::Result<std::fs::File> {
+    std::fs::create_dir_all(root)?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(root.join(".adding.lock"))?;
+    file.lock()?;
+    Ok(file)
+}
+
 /// Make a worktree of the repository `source_cwd` is in, at its `HEAD`,
 /// under `root`, as Codex's `WorktreeManager::create` does.
 pub fn create(root: &Path, source_cwd: &Path) -> io::Result<ManagedWorktree> {
@@ -70,18 +90,21 @@ pub fn create(root: &Path, source_cwd: &Path) -> io::Result<ManagedWorktree> {
     .map_err(|e| io::Error::other(format!("the repository has no commit to start from: {e}")))?;
 
     let checkout = allocate(root, &name)?;
-    if let Err(e) = run(
-        &source_root,
-        Operation::WorkingTree,
-        [
-            OsStr::new("worktree"),
-            OsStr::new("add"),
-            OsStr::new("--detach"),
-            OsStr::new("--no-checkout"),
-            checkout.as_os_str(),
-            OsStr::new(&head_sha),
-        ],
-    ) {
+    let added = adding_lock(root).and_then(|_lock| {
+        run(
+            &source_root,
+            Operation::WorkingTree,
+            [
+                OsStr::new("worktree"),
+                OsStr::new("add"),
+                OsStr::new("--detach"),
+                OsStr::new("--no-checkout"),
+                checkout.as_os_str(),
+                OsStr::new(&head_sha),
+            ],
+        )
+    });
+    if let Err(e) = added {
         remove_empty_bucket(&checkout);
         return Err(e);
     }
@@ -345,6 +368,31 @@ mod tests {
         let b = create(&root, &repo).unwrap();
         assert_ne!(a.root, b.root);
         assert_eq!(a.cwd, a.root);
+    }
+
+    /// Several at once, as `koda exec fork <id> --worktree` runs started
+    /// side by side make them: each gets its own checkout.
+    #[test]
+    fn worktrees_made_at_the_same_time_each_get_a_checkout() {
+        let (_tmp, repo, root) = setup();
+        let made: Vec<_> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..4)
+                .map(|_| scope.spawn(|| create(&root, &repo)))
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let mut roots = Vec::new();
+        for wt in made {
+            let wt = wt.expect("a worktree failed when made alongside others");
+            assert_eq!(
+                fs::read_to_string(wt.cwd.join("sub/a.txt")).unwrap(),
+                "one\n"
+            );
+            roots.push(wt.root);
+        }
+        roots.sort();
+        roots.dedup();
+        assert_eq!(roots.len(), 4);
     }
 
     #[test]

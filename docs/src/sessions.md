@@ -26,6 +26,9 @@ koda fork
 koda fork --last "try it the other way"
 koda fork a3f8bc
 
+# The same without the TUI, as `codex exec fork`: by ID; no prompt only forks
+koda exec fork a3f8bc "try it the other way"
+
 # The older flag still works: koda -s <ID>, koda exec -s <ID> "..."
 
 # Delete a session permanently
@@ -90,6 +93,7 @@ To carry a conversation into a worktree, fork it there, as
 
 ```sh
 koda fork a3f8bc --worktree "now build it"
+koda exec fork a3f8bc --worktree "now build it"   # without the TUI
 ```
 
 The copy opens in a new worktree of the repository the session worked in,
