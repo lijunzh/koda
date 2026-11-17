@@ -857,3 +857,91 @@ async fn a_server_with_an_idle_exit_stops_once_idle() {
         .unwrap();
     assert!(!koda.socket.exists());
 }
+
+/// A client that stops reading (a TUI suspended with `Ctrl+Z`) is let go
+/// once its messages pile up, as Codex drops a slow socket client, instead
+/// of the server keeping them all; its session stays open for the next
+/// client.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_that_stops_reading_is_let_go_and_its_session_goes_on() {
+    const ASKED: usize = 30_000;
+    let server = model(vec![]).await;
+    let koda = Server::start(config(&server), Duration::from_secs(60)).await;
+    let mut stuck = Client::ready(&koda).await;
+    let session = stuck.start_session().await;
+
+    // It asks and asks, and reads none of the answers.
+    for id in 0..ASKED {
+        let line =
+            json!({"jsonrpc": "2.0", "id": 1_000 + id, "method": "state/read", "params": {}});
+        if stuck
+            .input
+            .write_all(format!("{line}\n").as_bytes())
+            .await
+            .is_err()
+        {
+            break;
+        }
+    }
+
+    // What its socket already held, then the end, well short of every
+    // answer. The last line may be cut off.
+    let mut answers = 0;
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let read = tokio::time::timeout(WAIT, stuck.output.read_line(&mut line))
+            .await
+            .expect("the stuck client was never let go");
+        match read {
+            Ok(0) | Err(_) => break,
+            Ok(_) => answers += usize::from(line.contains("\"result\"")),
+        }
+    }
+    assert!(answers < ASKED, "{answers} answers: the client was kept");
+
+    // Its session is still open: the next client attaches to it.
+    let mut other = Client::ready(&koda).await;
+    let attached = other
+        .request("session/start", json!({"sessionId": session}))
+        .await
+        .unwrap();
+    assert_eq!(attached["session"]["id"], session.as_str());
+    assert!(
+        other
+            .seen()
+            .iter()
+            .all(|l| l["method"] != "session/started"),
+        "attached, not started again"
+    );
+    koda.stop().await;
+}
+
+/// A message over 64 MiB, as Codex's WebSocket limit, is refused and ends
+/// its connection rather than being read whole; other clients carry on.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_message_over_the_limit_ends_its_connection() {
+    let server = model(vec![]).await;
+    let koda = Server::start(config(&server), Duration::from_secs(60)).await;
+    let mut big = Client::ready(&koda).await;
+    let chunk = vec![b'a'; 1 << 20];
+    for _ in 0..65 {
+        if big.input.write_all(&chunk).await.is_err() {
+            break;
+        }
+    }
+    let refused = big.read().await.expect("an error before the end");
+    assert_eq!(refused["error"]["code"], -32600, "{refused}");
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("64 MiB"),
+        "{refused}"
+    );
+    assert_eq!(big.read().await, None, "the connection ends");
+
+    let mut other = Client::ready(&koda).await;
+    other.start_session().await;
+    koda.stop().await;
+}

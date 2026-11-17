@@ -22,6 +22,13 @@
 //!   lives in a folder only its owner may change, is readable by its owner
 //!   only, and a lock keeps a second `koda serve` from taking it over. A
 //!   connection from another user is refused.
+//! - **A client that stops reading is let go, as Codex's is:** once
+//!   4,096 messages wait for it (a TUI suspended with
+//!   `Ctrl+Z`, a client that hangs), the server drops what waited and closes
+//!   the connection, so one stuck client can't grow the server without end.
+//!   Its sessions go on; reattaching reads them again and resends their
+//!   unanswered requests. Messages over 64 MiB end a connection too
+//!   ([`crate::stdio`]).
 //! - **`initialize`:** Koda's host is initialized once, when the server
 //!   starts; each connection still sends `initialize` first and gets the same
 //!   answer, followed by the config file's warnings.
@@ -39,13 +46,15 @@ use koda_protocol::rpc::{self, ErrorObject, ErrorResponse, Message, RequestId, c
 use koda_protocol::session::{SessionUnsubscribeParams, SessionUnsubscribeStatus};
 use koda_protocol::{Method, methods};
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::BufReader;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::oneshot;
 
 use crate::host::HostCommand;
 use crate::in_process::{HostStart, RequestError, RequestHandle, launch, stop_host};
-use crate::stdio::{Outbox, ServeArgs, error_line, parse, write_lines};
+use crate::stdio::{
+    Outbox, Read, ServeArgs, error_line, parse, read_message, too_long_line, write_lines,
+};
 
 /// The socket's file name, in [`default_socket_path`]'s folder.
 const SOCKET_FILE: &str = "koda.sock";
@@ -61,6 +70,11 @@ const APPROVAL_WAIT: Duration = Duration::from_secs(24 * 60 * 60);
 /// How many messages a new session may send before its connection has the
 /// answer that subscribes it; more are dropped, with a warning.
 const HELD_LIMIT: usize = 1_000;
+/// How many messages may wait for one client before the server lets it go.
+/// Codex lets a socket client go at 128; Koda waits longer because a
+/// session's first messages, up to [`HELD_LIMIT`], reach its client at once
+/// when it subscribes, and a reattaching client is resent what waits for it.
+pub(crate) const SLOW_CLIENT_LIMIT: usize = 4_096;
 
 /// Where `koda serve` listens unless told otherwise: `serve/koda.sock` in
 /// Koda's folder (`~/.config/koda`).
@@ -712,7 +726,7 @@ impl Router {
 /// Serve one client until it hangs up or its socket breaks.
 async fn connection(id: u64, stream: UnixStream, router: Arc<Router>, initialized: Value) {
     let (input, output) = stream.into_split();
-    let outbox = Arc::new(Outbox::default());
+    let outbox = Arc::new(Outbox::bounded(SLOW_CLIENT_LIMIT));
     let writer = tokio::spawn(write_lines(Arc::clone(&outbox), output));
     let mut answering = tokio::task::JoinSet::new();
     let mut ready = false;
@@ -722,13 +736,18 @@ async fn connection(id: u64, stream: UnixStream, router: Arc<Router>, initialize
     loop {
         line.clear();
         let read = tokio::select! {
-            read = lines.read_until(b'\n', &mut line) => read,
+            read = read_message(&mut lines, &mut line) => read,
             () = outbox.broken.notified() => break,
             _ = stopping.wait_for(|stop| *stop) => break,
         };
         match read {
-            Ok(0) => break,
-            Ok(_) => {}
+            Ok(Read::End) => break,
+            Ok(Read::Line) => {}
+            Ok(Read::TooLong) => {
+                tracing::warn!("koda serve: a client sent a message over the limit; closing it");
+                outbox.push(too_long_line());
+                break;
+            }
             Err(e) => {
                 tracing::debug!("koda serve: reading a client failed: {e}");
                 break;
@@ -936,6 +955,16 @@ async fn connection(id: u64, stream: UnixStream, router: Arc<Router>, initialize
         while answering.try_join_next().is_some() {}
     }
     router.disconnect(id);
+    if outbox.overflowed() {
+        // Its socket may be full and never read again: don't wait on it.
+        tracing::warn!(
+            "koda serve: a client stopped reading ({SLOW_CLIENT_LIMIT} messages waiting); \
+             closing it"
+        );
+        answering.abort_all();
+        writer.abort();
+        return;
+    }
     let _ = tokio::time::timeout(Duration::from_secs(5), async {
         while answering.join_next().await.is_some() {}
     })
@@ -989,10 +1018,10 @@ pub async fn connect(socket: &Path) -> Result<crate::in_process::Launched, Reque
                         break;
                     }
                 }
-                read = lines.read_until(b'\n', &mut line) => {
+                read = read_message(&mut lines, &mut line) => {
                     match read {
-                        Ok(0) | Err(_) => break,
-                        Ok(_) => {}
+                        Ok(Read::End | Read::TooLong) | Err(_) => break,
+                        Ok(Read::Line) => {}
                     }
                     let text = line.strip_suffix(b"\n").unwrap_or(&line);
                     let Ok(message) = parse(text) else {

@@ -21,6 +21,9 @@
 //!   block engine threads, and a turn `turn/interrupt` could no longer reach.
 //!   The queue grows only while the client lags, and EOF or a broken stdout
 //!   ends it.
+//! - **A message over 64 MiB** (Codex's WebSocket limit, tungstenite's
+//!   default) gets an error and ends the connection, rather than being read
+//!   into memory whole.
 //! - **EOF on stdin, a broken stdout or the caller's stop** ends the
 //!   connection: running turns stop, open server requests are cancelled, what
 //!   is queued is written while the pipe takes it, and [`serve`] returns.
@@ -35,7 +38,9 @@ use std::time::Duration;
 use koda_core::config::KodaConfig;
 use koda_protocol::rpc::{self, ErrorObject, ErrorResponse, Message, RequestId, codes};
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{
+    AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
+};
 use tokio::sync::{Notify, oneshot};
 use tokio::task::JoinSet;
 
@@ -139,13 +144,17 @@ where
         loop {
             line.clear();
             let read = tokio::select! {
-                read = lines.read_until(b'\n', &mut line) => read,
+                read = read_message(&mut lines, &mut line) => read,
                 () = &mut stop => break,
                 () = outbox.broken.notified() => break,
             };
             match read {
-                Ok(0) => break,
-                Ok(_) => {}
+                Ok(Read::End) => break,
+                Ok(Read::Line) => {}
+                Ok(Read::TooLong) => {
+                    outbox.push(too_long_line());
+                    break;
+                }
                 Err(e) => {
                     tracing::warn!("koda serve: reading stdin failed: {e}");
                     break;
@@ -305,6 +314,63 @@ pub(crate) fn error_line(id: Option<RequestId>, error: ErrorObject) -> serde_jso
     serde_json::to_string(&ErrorResponse::new(id, error))
 }
 
+/// The largest message Koda reads, as Codex's WebSocket transport takes
+/// (tungstenite's default): a pasted image in base64 fits, and a client that
+/// never sends a newline can't grow the server without end.
+pub(crate) const MAX_MESSAGE_BYTES: usize = 64 << 20;
+
+/// What [`read_message`] read.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Read {
+    /// The other end hung up.
+    End,
+    /// One message, in the buffer.
+    Line,
+    /// A message over [`MAX_MESSAGE_BYTES`]; the connection should end.
+    TooLong,
+}
+
+/// Read one message, a line, into `line`, stopping at
+/// [`MAX_MESSAGE_BYTES`].
+pub(crate) async fn read_message<R: AsyncBufRead + Unpin>(
+    input: &mut R,
+    line: &mut Vec<u8>,
+) -> std::io::Result<Read> {
+    read_capped(input, line, MAX_MESSAGE_BYTES).await
+}
+
+/// [`read_message`] with a limit of `max` bytes before the newline.
+async fn read_capped<R: AsyncBufRead + Unpin>(
+    input: &mut R,
+    line: &mut Vec<u8>,
+    max: usize,
+) -> std::io::Result<Read> {
+    let cap = max as u64 + 1;
+    let read = (&mut *input).take(cap).read_until(b'\n', line).await?;
+    Ok(if read == 0 {
+        Read::End
+    } else if line.len() as u64 == cap && line.last() != Some(&b'\n') {
+        Read::TooLong
+    } else {
+        Read::Line
+    })
+}
+
+/// The error a client gets for a message over [`MAX_MESSAGE_BYTES`].
+pub(crate) fn too_long_line() -> String {
+    error_line(
+        None,
+        ErrorObject::new(
+            codes::INVALID_REQUEST,
+            format!(
+                "a message is larger than {} MiB; the connection is closed",
+                MAX_MESSAGE_BYTES >> 20
+            ),
+        ),
+    )
+    .unwrap_or_default()
+}
+
 /// Lines waiting for the client, oldest first.
 #[derive(Default)]
 pub(crate) struct Outbox {
@@ -313,19 +379,54 @@ pub(crate) struct Outbox {
     ready: Notify,
     /// Nothing more will be queued.
     closed: AtomicBool,
-    /// Stdout broke: stop reading.
+    /// Stdout broke, or the client fell too far behind: stop reading.
     pub(crate) broken: Notify,
+    /// How many lines may wait before the client counts as gone; `None`
+    /// never gives up (stdio, whose one client can't be replaced).
+    limit: Option<usize>,
+    /// The client fell [`Outbox::limit`] lines behind: what waited is
+    /// dropped and nothing more is queued.
+    overflowed: AtomicBool,
 }
 
 impl Outbox {
+    /// An outbox whose client counts as gone once `limit` lines wait, as
+    /// Codex drops a socket client whose queue fills; the client reattaches
+    /// and reads the session again.
+    pub(crate) fn bounded(limit: usize) -> Self {
+        Self {
+            limit: Some(limit),
+            ..Self::default()
+        }
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, VecDeque<String>> {
         self.queue.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Queue a line; never dropped.
+    /// Queue a line. With a limit, a full queue drops everything waiting and
+    /// ends the connection instead.
     pub(crate) fn push(&self, line: String) {
-        self.lock().push_back(line);
+        let mut queue = self.lock();
+        if self.overflowed.load(Ordering::Acquire) {
+            return;
+        }
+        if self.limit.is_some_and(|limit| queue.len() >= limit) {
+            self.overflowed.store(true, Ordering::Release);
+            queue.clear();
+            drop(queue);
+            self.broken.notify_one();
+            self.ready.notify_one();
+            return;
+        }
+        queue.push_back(line);
+        drop(queue);
         self.ready.notify_one();
+    }
+
+    /// Whether the client fell too far behind and was let go.
+    pub(crate) fn overflowed(&self) -> bool {
+        self.overflowed.load(Ordering::Acquire)
     }
 
     pub(crate) fn close(&self) {
@@ -339,7 +440,7 @@ impl Outbox {
             if let Some(line) = self.lock().pop_front() {
                 return Some(line);
             }
-            if self.closed.load(Ordering::Acquire) {
+            if self.closed.load(Ordering::Acquire) || self.overflowed() {
                 return None;
             }
             self.ready.notified().await;
@@ -372,6 +473,61 @@ mod tests {
     fn error_of(line: &str) -> Value {
         let line = parse(line.as_bytes()).unwrap_err();
         serde_json::from_str(&line).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_message_up_to_the_limit_is_read_and_one_past_it_is_not() {
+        let mut line = Vec::new();
+        let mut input: &[u8] = b"12345678\n123456789\n";
+        assert_eq!(
+            read_capped(&mut input, &mut line, 8).await.unwrap(),
+            Read::Line
+        );
+        assert_eq!(line, b"12345678\n");
+        line.clear();
+        assert_eq!(
+            read_capped(&mut input, &mut line, 8).await.unwrap(),
+            Read::TooLong
+        );
+        line.clear();
+        let mut last: &[u8] = b"1234";
+        assert_eq!(
+            read_capped(&mut last, &mut line, 8).await.unwrap(),
+            Read::Line
+        );
+        line.clear();
+        assert_eq!(
+            read_capped(&mut last, &mut line, 8).await.unwrap(),
+            Read::End
+        );
+        assert!(too_long_line().contains("64 MiB"));
+    }
+
+    #[tokio::test]
+    async fn a_bounded_outbox_lets_its_client_go_once_full() {
+        let outbox = Outbox::bounded(2);
+        outbox.push("a".into());
+        outbox.push("b".into());
+        assert!(!outbox.overflowed());
+        outbox.push("c".into());
+        assert!(outbox.overflowed());
+        // What waited is dropped, nothing more is queued, and the reader is
+        // told to stop.
+        outbox.push("d".into());
+        assert_eq!(outbox.next().await, None);
+        tokio::time::timeout(std::time::Duration::from_secs(1), outbox.broken.notified())
+            .await
+            .expect("the connection is told to stop");
+    }
+
+    #[tokio::test]
+    async fn an_unbounded_outbox_keeps_everything() {
+        let outbox = Outbox::default();
+        for i in 0..10_000 {
+            outbox.push(i.to_string());
+        }
+        assert!(!outbox.overflowed());
+        assert_eq!(outbox.next().await.as_deref(), Some("0"));
     }
 
     #[test]
