@@ -202,10 +202,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: 1.100.0 # = rust-toolchain.toml (pin guarded in ci.yml)
-      # Every publishable crate, in dependency order. Cargo waits for each
-      # to reach the index before publishing the crates that need it.
+      # Every publishable crate not yet on crates.io, in dependency order,
+      # trying again while the index lags; see the script. If this job
+      # still fails, run the "Publish crates" workflow for the tag.
       - name: Publish to crates.io
-        run: cargo publish --workspace
+        run: scripts/publish-crates.sh
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 

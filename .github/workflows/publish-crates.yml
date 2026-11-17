@@ -1,0 +1,41 @@
+name: Publish crates
+
+# Finish a release's crates.io publish: publishes the tag's crates that
+# aren't on crates.io yet. For when the release workflow's publish job
+# stopped partway (0.7.6: crates.io's index lagged and 7 of 16 crates
+# weren't sent), since rerunning that job fails on the crates already up.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The release tag to publish, e.g. v0.7.6"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: crates-io
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.100.0 # = rust-toolchain.toml (pin guarded in ci.yml)
+      # The script on main, so a tag cut before it existed can use it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          path: release-tools
+          sparse-checkout: scripts/publish-crates.sh
+          persist-credentials: false
+      - name: Publish to crates.io
+        run: release-tools/scripts/publish-crates.sh
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
