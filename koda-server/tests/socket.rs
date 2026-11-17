@@ -36,6 +36,25 @@ fn text(reply: &str) -> ResponseTemplate {
         .set_body_string(body)
 }
 
+fn write_file(id: &str, path: &str) -> ResponseTemplate {
+    let args = json!({"file_path": path, "content": "hi"});
+    let chunks = [
+        json!({"choices": [{"delta": {"tool_calls": [{
+            "index": 0,
+            "id": id,
+            "type": "function",
+            "function": {"name": "Write", "arguments": args.to_string()},
+        }]}}]}),
+        json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+        json!({"choices": [], "usage": {"prompt_tokens": 100, "completion_tokens": 10}}),
+    ];
+    let mut body: String = chunks.iter().map(|c| format!("data: {c}\n\n")).collect();
+    body.push_str("data: [DONE]\n\n");
+    ResponseTemplate::new(200)
+        .insert_header("content-type", "text/event-stream")
+        .set_body_string(body)
+}
+
 async fn model(replies: Vec<ResponseTemplate>) -> FakeLlmServer {
     let server = FakeLlmServer::spawn().await;
     let queue = Mutex::new(VecDeque::from(replies));
@@ -49,6 +68,13 @@ async fn model(replies: Vec<ResponseTemplate>) -> FakeLlmServer {
         })
         .await;
     server
+}
+
+/// [`config`] in Safe mode, where a write waits for an approval.
+fn safe(server: &FakeLlmServer) -> KodaConfig {
+    let mut config = config(server);
+    config.trust = koda_core::trust::TrustMode::Safe;
+    config
 }
 
 fn config(server: &FakeLlmServer) -> KodaConfig {
@@ -71,21 +97,43 @@ struct Server {
 
 impl Server {
     async fn start(config: KodaConfig, unload_delay: Duration) -> Self {
+        Self::start_waiting(config, unload_delay, Duration::from_secs(60)).await
+    }
+
+    /// [`Server::start`], with requests waiting `approval_wait` for an answer.
+    async fn start_waiting(
+        config: KodaConfig,
+        unload_delay: Duration,
+        approval_wait: Duration,
+    ) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let mut server = Self::start_in(dir.path(), config, unload_delay).await;
+        let mut server =
+            Self::start_in_waiting(dir.path(), config, unload_delay, approval_wait).await;
         server._dir = Some(dir);
         server
     }
 
     /// Serve with its state in `dir`, which the caller keeps.
     async fn start_in(dir: &Path, config: KodaConfig, unload_delay: Duration) -> Self {
+        Self::start_in_waiting(dir, config, unload_delay, Duration::from_secs(60)).await
+    }
+
+    async fn start_in_waiting(
+        dir: &Path,
+        config: KodaConfig,
+        unload_delay: Duration,
+        approval_wait: Duration,
+    ) -> Self {
         let socket = dir.join("serve").join("koda.sock");
         let (stop, stopped) = oneshot::channel::<()>();
         let served = tokio::spawn(serve_with_config(
             args(dir),
             config,
             socket.clone(),
-            Options { unload_delay },
+            Options {
+                unload_delay,
+                approval_wait: Some(approval_wait),
+            },
             async {
                 let _ = stopped.await;
             },
@@ -199,6 +247,15 @@ impl Client {
         }
     }
 
+    /// Answer Koda's request `id`.
+    async fn answer(&mut self, id: &Value, result: Value) {
+        let line = json!({"jsonrpc": "2.0", "id": id, "result": result});
+        self.input
+            .write_all(format!("{line}\n").as_bytes())
+            .await
+            .unwrap();
+    }
+
     async fn request(&mut self, method: &str, params: Value) -> Result<Value, Value> {
         let id = self.send_request(method, params).await;
         self.response(id).await
@@ -287,46 +344,36 @@ async fn each_client_hears_its_own_sessions() {
     koda.stop().await;
 }
 
-/// A session outlives the client that opened it, and closes once it has had
-/// no client and no turn for the unload delay, as Codex unloads a thread.
+/// A session outlives the client that opened it: another client attaches
+/// to it as it runs, as Codex subscribes a client that resumes a loaded
+/// thread. Once it has had no client and no turn for the unload delay it
+/// closes, as Codex unloads a thread, and opening it again starts it anew.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_session_outlives_its_client_until_it_is_idle() {
     let server = model(vec![]).await;
-    let koda = Server::start(config(&server), Duration::from_millis(800)).await;
+    let koda = Server::start(config(&server), Duration::from_millis(300)).await;
     let mut first = Client::ready(&koda).await;
     let session = first.start_session().await;
     drop(first);
 
-    // Still open: it can't be opened again yet.
+    // Still open: attaching gives it as it runs, without starting it again.
     let mut second = Client::ready(&koda).await;
-    let early = second
+    let attached = second
         .request("session/start", json!({"sessionId": session}))
-        .await;
+        .await
+        .unwrap();
+    assert_eq!(attached["session"]["id"], session.as_str());
+    assert_eq!(attached["session"]["model"], "stub", "{attached}");
+    assert!(attached["session"]["tools"].is_array(), "{attached}");
     assert!(
-        early
-            .as_ref()
-            .is_err_and(|e| e.to_string().contains("already open")),
-        "{early:?}"
+        second
+            .seen()
+            .iter()
+            .all(|l| l["method"] != "session/started"),
+        "attached, not started again"
     );
 
-    // Closed once idle past the delay: it opens again, for this client.
-    let deadline = Instant::now() + WAIT;
-    loop {
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        match second
-            .request("session/start", json!({"sessionId": session}))
-            .await
-        {
-            Ok(reopened) => {
-                assert_eq!(reopened["session"]["id"], session.as_str());
-                break;
-            }
-            Err(e) => {
-                assert!(Instant::now() < deadline, "never closed: {e}");
-            }
-        }
-    }
-    // `session/unsubscribe` leaves it to the same rule.
+    // `session/unsubscribe` leaves it to the idle rule.
     let left = second
         .request("session/unsubscribe", json!({"sessionId": session}))
         .await
@@ -337,6 +384,21 @@ async fn a_session_outlives_its_client_until_it_is_idle() {
         .await
         .unwrap();
     assert_eq!(again["status"], "notLoaded");
+
+    // Closed once idle past the delay: opening it starts it again.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let reopened = second
+        .request("session/start", json!({"sessionId": session}))
+        .await
+        .unwrap();
+    assert_eq!(reopened["session"]["id"], session.as_str());
+    assert!(
+        second
+            .seen()
+            .iter()
+            .any(|l| l["method"] == "session/started" && session_of(l) == Some(session.as_str())),
+        "started anew"
+    );
     koda.stop().await;
 }
 
@@ -417,4 +479,108 @@ async fn the_socket_is_private_to_its_owner() {
             if error.kind() == std::io::ErrorKind::PermissionDenied),
         "{refused:?}"
     );
+}
+
+/// An approval left waiting when its client goes is sent to a client that
+/// attaches to the session, as Codex replays a pending request; a second
+/// client attached hears that the first answered it.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_approval_waits_for_a_client_that_attaches() {
+    let server = model(vec![write_file("w1", "a.txt"), text("Written.")]).await;
+    let koda = Server::start(safe(&server), Duration::from_secs(60)).await;
+    let mut first = Client::ready(&koda).await;
+    let session = first.start_session().await;
+    first
+        .request(
+            "turn/start",
+            json!({"sessionId": session, "input": "write it"}),
+        )
+        .await
+        .unwrap();
+    let asked = first.until_method("item/toolCall/requestApproval").await;
+    let request_id = asked.last().unwrap()["id"].clone();
+    drop(first);
+
+    // Two clients attach; each is sent the waiting approval after the
+    // session.
+    let mut second = Client::ready(&koda).await;
+    let attached = second
+        .request("session/start", json!({"sessionId": session}))
+        .await
+        .unwrap();
+    assert_eq!(attached["session"]["id"], session.as_str());
+    let resent = second.until_method("item/toolCall/requestApproval").await;
+    assert_eq!(resent.last().unwrap()["id"], request_id);
+    let mut third = Client::ready(&koda).await;
+    third
+        .request("session/start", json!({"sessionId": session}))
+        .await
+        .unwrap();
+    third.until_method("item/toolCall/requestApproval").await;
+
+    second
+        .answer(&request_id, json!({"decision": {"type": "approve"}}))
+        .await;
+    let done = second.until_method("turn/completed").await;
+    assert_eq!(
+        done.last().unwrap()["params"]["turn"]["status"],
+        "completed"
+    );
+    let project = koda
+        .socket
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("project");
+    assert_eq!(
+        std::fs::read_to_string(project.join("a.txt")).unwrap(),
+        "hi"
+    );
+    // The other client is told it was answered, so it can drop its prompt.
+    let heard = third.until_method("serverRequest/resolved").await;
+    assert_eq!(heard.last().unwrap()["params"]["requestId"], request_id);
+    koda.stop().await;
+}
+
+/// An approval no client answers is refused once the wait runs out, and
+/// the turn goes on without it.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_approval_nobody_answers_is_refused_after_the_wait() {
+    let server = model(vec![write_file("w1", "a.txt"), text("Not written.")]).await;
+    let koda = Server::start_waiting(
+        safe(&server),
+        Duration::from_secs(60),
+        Duration::from_millis(500),
+    )
+    .await;
+    let mut client = Client::ready(&koda).await;
+    let session = client.start_session().await;
+    client
+        .request(
+            "turn/start",
+            json!({"sessionId": session, "input": "write it"}),
+        )
+        .await
+        .unwrap();
+    client.until_method("item/toolCall/requestApproval").await;
+    // Nobody answers.
+    let done = client.until_method("turn/completed").await;
+    assert_eq!(
+        done.last().unwrap()["params"]["turn"]["status"],
+        "completed"
+    );
+    let project = koda
+        .socket
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("project");
+    assert!(!project.join("a.txt").exists(), "the write was refused");
+    assert!(
+        done.iter().any(|l| l["method"] == "serverRequest/resolved"),
+        "{done:?}"
+    );
+    koda.stop().await;
 }

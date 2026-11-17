@@ -130,6 +130,17 @@ and `nc -U ~/.config/koda/serve/koda.sock` is enough to try it.)
   `session/unsubscribe`, leaves its sessions open, and a running turn goes on.
   A session with no client and no running turn for a minute is closed, as
   Codex unloads an idle thread.
+- **Attaching.** `session/start` with the id of a session that's open
+  attaches the client to it, as Codex's `thread/resume` subscribes to a loaded
+  thread: the answer is the session as it runs, with its turns, and nothing
+  starts again.
+- **Requests wait for a client.** An approval, a question or the loop cap goes
+  to every client attached to its session; the first answer counts, and the
+  others get `serverRequest/resolved`, so they can drop their prompt. A client
+  that attaches later is sent the requests still waiting, after the session.
+  One that nobody answers within a day (`approval_wait_timeout_secs`) is
+  answered no: the approval is refused, the question gets an empty answer and
+  the loop stops.
 - **Answers** come back on the connection that asked. Koda takes an answer to
   one of its own requests (an approval, a question) from any connection; the
   first one counts.
@@ -142,9 +153,8 @@ and `nc -U ~/.config/koda/serve/koda.sock` is enough to try it.)
 
 ## Not yet
 
-- **An approval waits for a client.** Today it goes to the session's
-  connected clients only; resending it to a client that attaches later, and a
-  time limit when nobody answers, come next. So does `koda --remote`, which
-  attaches the TUI to a session on the shared server.
+- **The TUI on the shared server.** Next, the TUI starts `koda serve` when
+  none is running and works through it, as Codex's TUI does; `--no-daemon`
+  keeps it in its own process, and `koda --remote` attaches elsewhere.
 - **One project per server.** Sessions work in the folder `koda serve` started
   in (`--project-root`).

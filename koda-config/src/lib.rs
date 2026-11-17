@@ -139,6 +139,12 @@ pub struct ConfigToml {
         deserialize_with = "turn_token_budget"
     )]
     pub turn_token_budget: Option<u64>,
+    /// How long a request waits for a client on the shared server
+    /// (`koda serve`): an approval, a question or the loop cap that no client
+    /// answers in this many seconds is answered no. 86,400 (a day) when
+    /// unset. `koda serve --stdio` and the TUI answer their own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_wait_timeout_secs: Option<u64>,
     /// What the model takes besides text, replacing Koda's table for it:
     /// for a local vision model, say, `["text", "image"]`. Codex keeps the
     /// same on each model as `input_modalities`.
