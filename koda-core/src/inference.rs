@@ -1014,6 +1014,9 @@ pub struct InferenceContext<'a> {
     pub tools: &'a ToolRegistry,
     /// Pre-computed tool definitions sent to the LLM.
     pub tool_defs: &'a [ToolDefinition],
+    /// The MCP tools a model with tool search may find on demand
+    /// ([`crate::providers::ModelSettings::deferred_tools`]).
+    pub deferred_tools: &'a [String],
     /// Images sent with the prompt: stored on its message as the turn
     /// starts, then sent from the history like the rest of it.
     pub pending_images: Option<Vec<ImageData>>,
@@ -1209,6 +1212,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
         provider,
         tools,
         tool_defs,
+        deferred_tools,
         pending_images,
         mode,
         sink,
@@ -1504,16 +1508,18 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
         let call_started = Instant::now();
         // The turn's budget goes with the main loop's calls only: a
         // sub-agent or a summary is a conversation of its own.
-        let budgeted_settings;
-        let model_settings = match sink.turn_budget().filter(|_| paces_itself) {
-            Some(budget) => {
-                budgeted_settings = crate::config::ModelSettings {
-                    task_budget: Some(budget.task_budget()),
-                    ..config.model_settings.clone()
-                };
-                &budgeted_settings
-            }
-            None => &config.model_settings,
+        // So do the MCP tools a model with tool search may find on demand.
+        let budget = sink.turn_budget().filter(|_| paces_itself);
+        let call_settings;
+        let model_settings = if budget.is_some() || !deferred_tools.is_empty() {
+            call_settings = crate::config::ModelSettings {
+                task_budget: budget.map(|budget| budget.task_budget()),
+                deferred_tools: deferred_tools.to_vec(),
+                ..config.model_settings.clone()
+            };
+            &call_settings
+        } else {
+            &config.model_settings
         };
         let stream_result = try_with_rate_limit(
             provider,

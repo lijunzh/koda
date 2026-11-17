@@ -324,8 +324,10 @@ impl McpClient {
                 continue;
             }
 
-            let (definition, annotations) =
+            let (mut definition, annotations) =
                 super::tool_bridge::mcp_tool_to_definition(&self.name, &tool);
+            // An unusually large schema is shrunk, as Codex shrinks it.
+            super::schema::compact(&mut definition.parameters, self.config.schema_max_bytes());
 
             self.tools.push(DiscoveredTool {
                 definition,

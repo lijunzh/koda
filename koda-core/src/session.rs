@@ -574,17 +574,34 @@ impl KodaSession {
                 () = stop.cancelled() => {}
             }
         }
-        let mcp_section = if let Some(mgr) = self.agent.tools.mcp_manager() {
+        // A Claude model with tool search finds MCP tools on demand, as
+        // Codex's models find theirs; any other gets them all up front.
+        let searches = config.provider_type == crate::config::ProviderType::Anthropic
+            && crate::providers::model_effort::takes_tool_search(&config.model);
+        let (mcp_section, deferred_tools) = if let Some(mgr) = self.agent.tools.mcp_manager() {
             // Bind the Arc to extend its lifetime past the read guard
             // (try_read() returns a guard that borrows the lock).
             match mgr.try_read() {
                 Ok(guard) => {
-                    crate::prompt::render_mcp_instructions_section(&guard.server_instructions())
+                    let mut section = crate::prompt::render_mcp_instructions_section(
+                        &guard.server_instructions(),
+                    );
+                    let deferred = if searches {
+                        guard.deferrable_tool_names()
+                    } else {
+                        Vec::new()
+                    };
+                    if !deferred.is_empty() {
+                        section.push_str(&crate::prompt::render_deferred_tools_section(
+                            &guard.deferrable_servers(),
+                        ));
+                    }
+                    (section, deferred)
                 }
-                Err(_) => String::new(), // manager momentarily locked; skip this turn
+                Err(_) => (String::new(), Vec::new()), // manager momentarily locked; skip this turn
             }
         } else {
-            String::new()
+            (String::new(), Vec::new())
         };
         let base_prompt = self.agent.system_prompt_for_turn(&config.model, self.mode);
         let system_prompt = if mcp_section.is_empty() {
@@ -640,6 +657,7 @@ impl KodaSession {
             provider: self.provider.as_ref(),
             tools: &self.agent.tools,
             tool_defs: &tool_defs,
+            deferred_tools: &deferred_tools,
             pending_images,
             mode: self.mode,
             sink,

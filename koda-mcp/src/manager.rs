@@ -304,6 +304,33 @@ impl McpManager {
             .collect()
     }
 
+    /// The tools of connected servers that may be deferred behind tool
+    /// search: every server's but those that opt out (`omit_tools_from =
+    /// ["deferred"]`), as Codex defers them.
+    pub fn deferrable_tool_names(&self) -> Vec<String> {
+        self.clients
+            .values()
+            .filter(|c| c.status() == McpClientStatus::Connected && c.config().deferrable())
+            .flat_map(|c| c.tools().iter().map(|t| t.definition.name.clone()))
+            .collect()
+    }
+
+    /// The connected servers whose tools may be deferred, by name, sorted.
+    pub fn deferrable_servers(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .clients
+            .iter()
+            .filter(|(_, c)| {
+                c.status() == McpClientStatus::Connected
+                    && c.config().deferrable()
+                    && !c.tools().is_empty()
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        names.sort();
+        names
+    }
+
     /// Server-provided instructions for every connected MCP server that
     /// returned a non-empty `instructions` field during `initialize` (#922).
     ///
@@ -631,6 +658,8 @@ mod tests {
             enabled_tools: None,
             disabled_tools: None,
             required: false,
+            tool_input_schema_max_bytes: None,
+            omit_tools_from: None,
         }
     }
 

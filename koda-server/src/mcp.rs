@@ -82,6 +82,8 @@ fn to_core(name: &str, value: McpServerConfigValue) -> Result<McpServerConfig, E
         required,
         enabled_tools,
         disabled_tools,
+        tool_input_schema_max_bytes,
+        omit_tools_from,
     } = value;
     let refuse = |why: &str| Err(invalid(format!("{SERVERS_KEY}.{name}: {why}")));
     let transport = match (command, url) {
@@ -111,6 +113,23 @@ fn to_core(name: &str, value: McpServerConfigValue) -> Result<McpServerConfig, E
         (Some(_), Some(_)) => return refuse("give a `command` or a `url`, not both"),
         (None, None) => return refuse("give a `command` or a `url`"),
     };
+    let omit_tools_from = match omit_tools_from {
+        None => None,
+        Some(surfaces) => {
+            let mut parsed = Vec::new();
+            for surface in surfaces {
+                match surface.as_str() {
+                    "deferred" => parsed.push(core_config::ToolSurface::Deferred),
+                    other => {
+                        return refuse(&format!(
+                            "`omit_tools_from` takes \"deferred\", not {other:?}"
+                        ));
+                    }
+                }
+            }
+            Some(parsed)
+        }
+    };
     let config = McpServerConfig {
         transport,
         startup_timeout_sec: startup_timeout_sec.unwrap_or(DEFAULT_STARTUP_TIMEOUT_SEC),
@@ -118,6 +137,8 @@ fn to_core(name: &str, value: McpServerConfigValue) -> Result<McpServerConfig, E
         enabled_tools,
         disabled_tools,
         required,
+        tool_input_schema_max_bytes,
+        omit_tools_from,
     };
     config
         .validate()
@@ -136,6 +157,11 @@ pub(crate) fn to_value(config: &McpServerConfig) -> McpServerConfigValue {
         required: config.required,
         enabled_tools: config.enabled_tools.clone(),
         disabled_tools: config.disabled_tools.clone(),
+        tool_input_schema_max_bytes: config.tool_input_schema_max_bytes,
+        omit_tools_from: config
+            .omit_tools_from
+            .as_ref()
+            .map(|surfaces| surfaces.iter().map(|_| "deferred".to_string()).collect()),
         ..McpServerConfigValue::default()
     };
     match &config.transport {
@@ -276,6 +302,40 @@ mod tests {
         .unwrap();
         let value = to_value(&http.unwrap());
         assert_eq!(value.bearer_token_env_var.as_deref(), Some("MAIL_TOKEN"));
+    }
+
+    /// Codex's `tool_input_schema_max_bytes` and `omit_tools_from` reach the
+    /// engine and come back; `omit_tools_from` takes `deferred` only.
+    #[test]
+    fn schema_size_and_deferral_settings_round_trip() {
+        let config = check_edit(
+            "big",
+            json!({"command": "big-mcp", "tool_input_schema_max_bytes": 2000,
+                   "omit_tools_from": ["deferred"]}),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(config.schema_max_bytes(), 2000);
+        assert!(!config.deferrable());
+        let value = to_value(&config);
+        assert_eq!(value.tool_input_schema_max_bytes, Some(2000));
+        assert_eq!(
+            value.omit_tools_from.as_deref(),
+            Some(&["deferred".to_string()][..])
+        );
+
+        let plain = check_edit("plain", json!({"command": "x"}))
+            .unwrap()
+            .unwrap();
+        assert!(plain.deferrable());
+        assert_eq!(plain.schema_max_bytes(), 5_000);
+        assert!(
+            check_edit(
+                "bad",
+                json!({"command": "x", "omit_tools_from": ["direct"]})
+            )
+            .is_err()
+        );
     }
 
     #[test]

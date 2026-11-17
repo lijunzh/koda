@@ -109,6 +109,43 @@ pub struct McpServerConfig {
     /// when it fails to start, as Codex's `required`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub required: bool,
+
+    // ── How the model sees the tools ───────────────────────────────────
+    /// The size, in bytes of compact JSON, past which a tool's input schema
+    /// is shrunk, as Codex's `tool_input_schema_max_bytes`; 5,000 when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_input_schema_max_bytes: Option<usize>,
+
+    /// Where this server's tools are left out, as Codex's
+    /// `omit_tools_from`: `["deferred"]` sends them up front even to a
+    /// model that would otherwise find them through tool search.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub omit_tools_from: Option<Vec<ToolSurface>>,
+}
+
+/// Where a tool can reach the model, as Codex's `ToolExposureSurface`.
+/// Koda has one place a tool can be left out of: the deferred list.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolSurface {
+    /// Found through tool search, on a model that has it.
+    Deferred,
+}
+
+impl McpServerConfig {
+    /// Whether this server's tools may be deferred behind tool search.
+    pub fn deferrable(&self) -> bool {
+        !self
+            .omit_tools_from
+            .as_deref()
+            .is_some_and(|surfaces| surfaces.contains(&ToolSurface::Deferred))
+    }
+
+    /// The schema size past which this server's tools are shrunk.
+    pub fn schema_max_bytes(&self) -> usize {
+        self.tool_input_schema_max_bytes
+            .unwrap_or(crate::schema::DEFAULT_TOOL_SCHEMA_BYTES)
+    }
 }
 
 fn default_startup_timeout() -> u64 {
@@ -194,6 +231,8 @@ mod tests {
             enabled_tools: None,
             disabled_tools: None,
             required: false,
+            tool_input_schema_max_bytes: None,
+            omit_tools_from: None,
         }
     }
 
@@ -210,6 +249,8 @@ mod tests {
             enabled_tools: None,
             disabled_tools: None,
             required: false,
+            tool_input_schema_max_bytes: None,
+            omit_tools_from: None,
         }
     }
 
@@ -273,6 +314,8 @@ mod tests {
             enabled_tools: Some(vec!["navigate".into()]),
             disabled_tools: None,
             required: true,
+            tool_input_schema_max_bytes: None,
+            omit_tools_from: None,
         };
         let json = serde_json::to_string(&config).unwrap();
         let parsed: McpServerConfig = serde_json::from_str(&json).unwrap();
@@ -292,6 +335,8 @@ mod tests {
             enabled_tools: None,
             disabled_tools: None,
             required: false,
+            tool_input_schema_max_bytes: None,
+            omit_tools_from: None,
         };
         let json = serde_json::to_string(&config).unwrap();
         let parsed: McpServerConfig = serde_json::from_str(&json).unwrap();

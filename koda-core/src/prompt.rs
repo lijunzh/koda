@@ -250,6 +250,21 @@ fn cap_memory(memory: &str) -> String {
     )
 }
 
+/// The system prompt's note on deferred MCP tools: which servers' tools the
+/// model finds through tool search, as the Claude API's guide suggests
+/// naming the tool categories, and Codex lists its deferred namespaces.
+pub fn render_deferred_tools_section(servers: &[String]) -> String {
+    if servers.is_empty() {
+        return String::new();
+    }
+    format!(
+        "\n\n## MCP tools on demand\n\nThe tools of these MCP servers aren't listed up front: \
+         {}. When a task needs one, search for it with `tool_search_tool_bm25` (in plain words: \
+         what you want to do), then call what it finds.\n",
+        servers.join(", ")
+    )
+}
+
 /// Render the `# MCP Server Instructions` section for inclusion in the
 /// per-turn system prompt.
 ///

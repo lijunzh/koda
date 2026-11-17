@@ -1514,6 +1514,16 @@
           "description": "Headers sent with every HTTP request.",
           "type": "object"
         },
+        "omit_tools_from": {
+          "description": "Where the server's tools are left out, as Codex's `omit_tools_from`:\n`[\"deferred\"]` sends them up front even to a model with tool search.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "required": {
           "description": "A session doesn't start without it: `session/start` fails when it\nfails to start.",
           "type": "boolean"
@@ -1521,6 +1531,15 @@
         "startup_timeout_sec": {
           "description": "Seconds the server has to start (default 30).",
           "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "tool_input_schema_max_bytes": {
+          "description": "The size, in bytes of compact JSON, past which a tool's input schema\nis shrunk, as Codex's `tool_input_schema_max_bytes` (default 5,000).",
+          "format": "uint",
           "minimum": 0,
           "type": [
             "integer",

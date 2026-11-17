@@ -63,6 +63,8 @@ done
         enabled_tools: None,
         disabled_tools: None,
         required: false,
+        tool_input_schema_max_bytes: None,
+        omit_tools_from: None,
     }
 }
 
