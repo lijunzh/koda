@@ -683,20 +683,6 @@ pub(crate) async fn run() -> Result<()> {
         .load()
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    // Asked for in the TUI, Plan is refused outright rather than turned into
-    // Safe, since the person typed it (`--mode plan` or `-c mode=plan`) and
-    // can fix the command. `koda exec --mode plan "..."` may only read, as
-    // `codex exec`'s read-only sandbox allows. Plan from config.toml becomes
-    // Safe in the TUI, with a warning the host sends.
-    let run_mode = user_config.flag_value("mode").and_then(|v| v.as_str());
-    if headless_run.is_none() && mcp_cli.is_none() && run_mode == Some("plan") {
-        eprintln!(
-            "error: --mode plan is for one-shot runs (koda exec --mode plan \"...\"). \
-             Interactive sessions use --mode safe or --mode auto."
-        );
-        std::process::exit(1);
-    }
-
     // Logs go to the log database, and to `<log_dir>/koda.log` when the
     // config file sets `log_dir`, as Codex's do (see `logging`).
     let config_dir = koda_config::config_dir()?;
