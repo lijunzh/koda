@@ -26,6 +26,27 @@ fn git(operation: koda_git::Operation, args: &[&str]) -> std::io::Result<std::pr
         .output()
 }
 
+/// The untracked files as `/diff` lists them: one line each, at most
+/// [`UNTRACKED_SHOWN`], then how many more.
+const UNTRACKED_SHOWN: usize = 20;
+
+fn untracked_summary(files: &[String]) -> String {
+    if files.is_empty() {
+        return String::new();
+    }
+    let mut text = format!(" {} untracked:\n", files.len());
+    for file in files.iter().take(UNTRACKED_SHOWN) {
+        text.push_str(&format!("   {file}\n"));
+    }
+    if files.len() > UNTRACKED_SHOWN {
+        text.push_str(&format!(
+            "   … and {} more\n",
+            files.len() - UNTRACKED_SHOWN
+        ));
+    }
+    text
+}
+
 pub(crate) fn handle_diff(buffer: &mut ScrollBuffer) {
     let output = git(koda_git::Operation::WorkingTree, &["diff", "--stat"]);
 
@@ -61,14 +82,19 @@ pub(crate) fn handle_diff(buffer: &mut ScrollBuffer) {
         None
     };
 
+    // New files git doesn't track yet, as Codex's `/diff` includes them.
+    let untracked = koda_git::untracked_files(std::path::Path::new("."));
     let stat = if has_unstaged {
         diff_stat
     } else if let Some(s) = staged_stat {
         s
+    } else if !untracked.is_empty() {
+        String::new()
     } else {
         tui_output::dim_msg(buffer, "No uncommitted changes.".into());
         return;
     };
+    let stat = format!("{stat}{}", untracked_summary(&untracked));
 
     tui_output::blank(buffer);
     tui_output::emit_line(
@@ -121,4 +147,24 @@ pub(crate) fn handle_keys(buffer: &mut ScrollBuffer, providers: &crate::provider
         buffer,
         "Pick a provider below to set or update its key.".into(),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn untracked_files_are_listed_up_to_the_cap() {
+        assert_eq!(untracked_summary(&[]), "");
+        let two = untracked_summary(&["a.rs".into(), "b.rs".into()]);
+        assert_eq!(two, " 2 untracked:\n   a.rs\n   b.rs\n");
+        let many: Vec<String> = (0..25).map(|i| format!("f{i}")).collect();
+        let shown = untracked_summary(&many);
+        assert!(shown.starts_with(" 25 untracked:\n"), "{shown}");
+        assert!(
+            shown.contains("   f19\n") && !shown.contains("   f20\n"),
+            "{shown}"
+        );
+        assert!(shown.ends_with("   … and 5 more\n"), "{shown}");
+    }
 }

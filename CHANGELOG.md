@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 - **The TUI notifies you when a turn ends, a tool call waits for approval or the model asks a question, as Codex's TUI does.** A desktop notification in Ghostty, iTerm2, Kitty, Warp and WezTerm (the start of the reply, the command waiting, or the question), the bell elsewhere, only while the terminal isn't focused, which Koda learns from the terminal's focus reports. Codex's three `[tui]` keys set it: `notifications` (`true`, `false`, or a list of `agent-turn-complete`, `approval-requested`, `user-input-requested`), `notification_method` (`auto`, `osc9`, `osc777`, `bel`) and `notification_condition` (`unfocused`, `always`). Inside tmux, a desktop notification is wrapped so tmux passes it on with `allow-passthrough on`; focus reports need `focus-events on`.
 
+- **The session-start git context names the default branch**, the one work usually merges into, as Claude Code's snapshot does and as Codex finds it without the network: a remote's `HEAD`, else a local `main` or `master`.
+- **`/diff` includes new files git doesn't track yet,** as Codex's does: listed in the summary, and as added files in what `/diff review` and `/diff commit` send.
 - **`koda --oss` says what it will download, and warns when the disk is short.** Before llama.cpp downloads a model, Koda names it, its size and the Hugging Face cache it goes into, and says when the free space there is too little (Flash-Next is about 105 GB). Nothing is said for a model already on disk, in LM Studio or in the cache.
 - **The first run suggests `koda --oss`** to anyone without an API key, under the provider picker's welcome.
 

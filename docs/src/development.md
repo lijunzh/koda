@@ -21,7 +21,7 @@ koda/
 │   │   ├── config.rs       # Agent/provider config + provider metadata
 │   │   ├── context.rs      # Context window token tracking
 │   │   ├── context_analysis.rs # Per-tool token breakdown + duplicate detection
-│   │   ├── git.rs          # Read-only git context for the system prompt (branch, diff, recent commits)
+│   │   ├── git.rs          # Read-only git context for the system prompt (branch, default branch, diff, recent commits)
 │   │   ├── inference.rs    # Streaming inference loop + tool execution
 │   │   ├── inference_helpers.rs # Token estimation, message assembly, overflow detection
 │   │   ├── instructions.md # Behavioral instructions in the system prompt
