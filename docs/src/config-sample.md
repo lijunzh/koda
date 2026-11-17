@@ -100,6 +100,10 @@ unknown key in `-c` stops the run instead.
 # Koda" line to its pull requests, as Codex does. Unset: true.
 # commit_attribution = false
 
+# Text added to the end of the system prompt, as Codex's developer
+# instructions. Unset: none.
+# developer_instructions = "Answer in British English."
+
 # Tokens one turn may spend, sub-agents included: input not read from the
 # cache, plus output. Near it the model is told to wrap up; at it the turn
 # stops. At least 20000. Unset: no limit.

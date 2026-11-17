@@ -124,6 +124,15 @@ does: same history, model and mode, named "Fork of" this session's name.
 The original stays as it was, for `/resume`. See
 [Forking a session](./sessions.md#forking-a-session).
 
+## `/side` (also `/btw`)
+
+Opens a side conversation, as Codex's `/side` does: a question about the work
+that leaves the main session alone. `/side what was that config file?` asks at
+once; `/side` alone opens it for you to type. It works while a turn runs: the
+turn goes on, and so does anything it asks you, which waits for your return.
+`Ctrl+C` on an empty prompt goes back. See
+[Side conversations](./tui.md#side-conversations).
+
 ## `/rename <name>`
 
 Names the session, as Codex's `/rename` does; `/resume` lists it by that

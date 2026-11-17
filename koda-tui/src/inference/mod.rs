@@ -44,6 +44,9 @@ pub(crate) enum TurnCommand {
     },
     /// Text for the model, sent with `turn/steer`.
     Steer { text: String },
+    /// `/side` typed mid-turn: leave the turn running and open a side
+    /// conversation, with this question.
+    Side { question: String },
 }
 
 impl TurnCommand {

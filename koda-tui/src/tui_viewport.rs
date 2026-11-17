@@ -49,6 +49,8 @@ pub(crate) fn draw_viewport(
     child_activity_total: usize,
     // What stops the rows shown, for the overlay's hint row.
     child_activity_hint: &str,
+    // In a side conversation (`/side`): the hint says how to go back.
+    side: bool,
 ) -> ratatui::layout::Rect {
     let area = frame.area();
 
@@ -190,6 +192,9 @@ pub(crate) fn draw_viewport(
         // A wizard asks for a value (a key, an address), not a message.
         let hint = match prompt_mode {
             PromptMode::WizardInput { .. } => "Paste or type it, then Enter (Esc cancels)",
+            PromptMode::Chat if side => {
+                "Ask a side question... (Ctrl+C returns to the main session)"
+            }
             PromptMode::Chat => "Type a message...",
         };
         let placeholder = Paragraph::new(hint).style(Style::default().fg(Color::DarkGray));

@@ -148,6 +148,9 @@ pub(crate) fn apply_settings(config: &mut KodaConfig, loaded: &Loaded) {
     if let Some(on) = file.commit_attribution {
         config.commit_attribution = on;
     }
+    if let Some(text) = file.developer_instructions.as_deref().map(str::trim) {
+        config.developer_instructions = (!text.is_empty()).then(|| text.to_string());
+    }
     if let Some(tokens) = file.turn_token_budget {
         config.turn_token_budget = Some(tokens);
     }
@@ -834,6 +837,21 @@ mod tests {
             summaries[1].starts_with("MCP server `both` won't start"),
             "{summaries:?}"
         );
+    }
+
+    /// `developer_instructions` reaches the session's config, trimmed; an
+    /// empty one is none.
+    #[tokio::test]
+    async fn developer_instructions_come_from_the_file() {
+        let (_dir, _db, file) = scratch().await;
+        std::fs::write(file.path(), "developer_instructions = \"  Be brief.  \"\n").unwrap();
+        let mut config = KodaConfig::default_for_testing(ProviderType::LMStudio);
+        apply_settings(&mut config, &file.load().unwrap());
+        assert_eq!(config.developer_instructions.as_deref(), Some("Be brief."));
+        std::fs::write(file.path(), "developer_instructions = \"\"\n").unwrap();
+        let mut config = KodaConfig::default_for_testing(ProviderType::LMStudio);
+        apply_settings(&mut config, &file.load().unwrap());
+        assert_eq!(config.developer_instructions, None);
     }
 
     /// The file fills what a session runs with where the agent's JSON set

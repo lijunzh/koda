@@ -415,6 +415,8 @@ pub fn assemble_messages(
 ) -> Vec<ChatMessage> {
     let mut messages = vec![system_message.clone()];
     let mut summary = compaction_message(history);
+    // Calls of the last reply still waiting for their results.
+    let mut unanswered: Vec<String> = Vec::new();
 
     for msg in history
         .iter()
@@ -422,6 +424,10 @@ pub fn assemble_messages(
     {
         let role = msg.role.as_str();
         let is_plain_user = role == "user" && msg.tool_call_id.is_none();
+        match &msg.tool_call_id {
+            Some(id) => unanswered.retain(|waiting| waiting != id),
+            None => answer_unanswered(&mut messages, &mut unanswered),
+        }
 
         if let Some(text) = summary.take() {
             if is_plain_user {
@@ -440,6 +446,9 @@ pub fn assemble_messages(
             .tool_calls
             .as_deref()
             .and_then(|tc| serde_json::from_str(tc).ok());
+        if let Some(calls) = &tool_calls {
+            unanswered = calls.iter().map(|call| call.id.clone()).collect();
+        }
         messages.push(ChatMessage {
             role: role.to_string(),
             content: msg.content.clone(),
@@ -454,12 +463,36 @@ pub fn assemble_messages(
         });
     }
 
+    answer_unanswered(&mut messages, &mut unanswered);
+
     // Nothing but the summary in the history.
     if let Some(text) = summary {
         messages.push(ChatMessage::text("user", &text));
     }
 
     messages
+}
+
+/// What a call that never got a result gets, as Codex's
+/// `ensure_call_outputs_present` gives it.
+pub const ABORTED_TOOL_RESULT: &str = "aborted";
+
+/// Give each call in `unanswered` a result, `aborted`, as Codex does for a
+/// fork or a recovered session that has a call but not its output: a
+/// session forked while a tool ran, or a host that stopped mid-turn.
+/// Providers refuse a call with no result.
+fn answer_unanswered(messages: &mut Vec<ChatMessage>, unanswered: &mut Vec<String>) {
+    for id in unanswered.drain(..) {
+        messages.push(ChatMessage {
+            role: "tool".to_string(),
+            content: Some(ABORTED_TOOL_RESULT.to_string()),
+            tool_calls: None,
+            tool_call_id: Some(id),
+            images: None,
+            reasoning: None,
+            thinking_blocks: None,
+        });
+    }
 }
 
 /// Open the first user message with `context`, the project memory.
@@ -869,6 +902,63 @@ mod tests {
         assert_eq!(out.len(), 3);
         let text = out[1].content.as_deref().unwrap();
         assert!(text.starts_with("OLDER\n\nNEWER"), "{text}");
+    }
+
+    /// A call with no result, as a session forked while a tool ran or a host
+    /// stopped mid-turn leaves, gets `aborted` before the next message, as
+    /// Codex gives it; a call that has its result is left alone.
+    #[test]
+    fn a_call_with_no_result_gets_aborted() {
+        let calls = |ids: &[&str]| {
+            let calls: Vec<ToolCall> = ids
+                .iter()
+                .map(|id| ToolCall {
+                    id: id.to_string(),
+                    function_name: "Bash".into(),
+                    arguments: "{}".into(),
+                    thought_signature: None,
+                })
+                .collect();
+            let mut reply = msg("assistant", None, None);
+            reply.tool_calls = Some(serde_json::to_string(&calls).unwrap());
+            reply
+        };
+        let history = vec![
+            msg("user", Some("first"), None),
+            calls(&["a", "b"]),
+            msg("tool", Some("done"), Some("a")),
+            msg("user", Some("side question"), None),
+        ];
+        let out = assemble_messages(&system(), &history, "m");
+        let shape: Vec<_> = out
+            .iter()
+            .map(|m| {
+                (
+                    m.role.as_str(),
+                    m.tool_call_id.as_deref(),
+                    m.content.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                ("system", None, Some("You are helpful.")),
+                ("user", None, Some("first")),
+                ("assistant", None, None),
+                ("tool", Some("a"), Some("done")),
+                ("tool", Some("b"), Some(ABORTED_TOOL_RESULT)),
+                ("assistant", None, Some(INTERRUPTED_TURN_SENTINEL)),
+                ("user", None, Some("side question")),
+            ]
+        );
+
+        // At the end of the history too, and nothing for a call answered.
+        let out = assemble_messages(&system(), &history[..2], "m");
+        assert_eq!(out.last().unwrap().tool_call_id.as_deref(), Some("b"));
+        let answered = [calls(&["a"]), msg("tool", Some("done"), Some("a"))];
+        let out = assemble_messages(&system(), &answered, "m");
+        assert_eq!(out.len(), 3);
     }
 
     /// Build a bare `Message` for unit tests — mirrors the helper in db/tests.rs.

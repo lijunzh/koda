@@ -127,6 +127,12 @@ pub struct ConfigToml {
     /// on. On when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit_attribution: Option<bool>,
+    /// Instructions added to the end of the system prompt, as Codex's
+    /// `developer_instructions` adds a developer message. For a session's
+    /// own rules, set per session with `session/start`'s `config` (a side
+    /// conversation's are).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub developer_instructions: Option<String>,
     /// Tokens one turn may spend, sub-agents and compaction included,
     /// counted as Codex counts a goal's: input not read from the cache, plus
     /// output. Near it the model is told to wrap up; at it the turn stops

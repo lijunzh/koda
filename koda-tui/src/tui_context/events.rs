@@ -181,7 +181,11 @@ impl TuiContext {
                 // Ctrl+C never silently exits. Background processes keep
                 // running until `/stop`, or until Koda exits (6f).
                 let composer_dirty = !self.textarea.text().trim().is_empty();
-                if composer_dirty {
+                if !composer_dirty && self.side.is_some() {
+                    // In a side conversation, Ctrl+C goes back, as in Codex.
+                    self.quit_armed_at = None;
+                    self.leave_side_requested = true;
+                } else if composer_dirty {
                     self.quit_armed_at = None;
                     self.textarea.set_text_clearing_elements("");
                     self.history_idx = None;

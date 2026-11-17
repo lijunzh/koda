@@ -54,15 +54,40 @@ to stop at the iteration limit, or the turn failed, the text returns to the
 input box. Press `Enter` to send it as a new prompt.
 
 **Slash commands (`/compact`, `/model`, …) are not accepted
-mid-inference.** Type `/compact` while the model is
+mid-inference,** except `/stop` and `/side` (below). Type `/compact` while the model is
 thinking and you'll see a transient "slash commands disabled during
 inference — press `Esc` first" hint instead of the text being silently
 steered to the model. Press `Esc` to interrupt, then run the slash.
-`/stop`, which stops background processes, is the exception: it runs
-mid-turn, as in Codex.
+`/stop`, which stops background processes, runs mid-turn, as in Codex.
 
 To add work for after the current task, say so: "when you're done, update the
 docs". To stop first, press `Esc`.
+
+## Side conversations
+
+`/side` (or `/btw`) asks a question about the work without adding it to the
+session, as Codex's `/side` does. Koda forks the session into a side
+conversation and switches to it:
+
+```
+/side which file held the retry settings?
+```
+
+- **It knows the session:** the side conversation has the whole history,
+  and tools, so it can look things up.
+- **It leaves the work alone:** it is told, in Codex's words, that the history
+  is for reference only, and to change nothing (files, git, settings) unless
+  you ask it to there. It starts no sub-agents.
+- **The main session goes on.** `/side` works while a turn runs: the turn
+  keeps going on its own. If it asks you something (an approval, a question),
+  Koda says so, and the request waits for you.
+- **`Ctrl+C` on an empty prompt goes back.** The side conversation is deleted,
+  the main session is drawn again with what it did meanwhile, and a turn still
+  running there shows as it goes on, with any request it made.
+
+One side conversation at a time. Its rules reach the model through the
+session's [`developer_instructions`](./configuration.md), which replace any you
+set in `config.toml` for the side conversation only.
 
 ## Approval prompt
 

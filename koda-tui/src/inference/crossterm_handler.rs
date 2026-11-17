@@ -311,6 +311,18 @@ async fn handle_inference_key_inline(
                 // either Esc-interrupt or strip the leading slash to
                 // queue as a real steer message. `/stop` is the one that
                 // runs mid-turn, as in Codex: the overlay offers it.
+                // `/side` (`/btw`) runs mid-turn, as in Codex: the turn goes
+                // on and a side conversation opens.
+                if let Some(question) = ["/side", "/btw"].iter().find_map(|command| {
+                    text.trim()
+                        .strip_prefix(command)
+                        .filter(|rest| rest.is_empty() || rest.starts_with(' '))
+                }) {
+                    let question = question.trim().to_string();
+                    textarea.set_text_clearing_elements("");
+                    let _ = cmd_tx.send(TurnCommand::Side { question }).await;
+                    return false;
+                }
                 if matches!(text.trim(), "/stop" | "/clean") {
                     textarea.set_text_clearing_elements("");
                     stop.stop_background(scroll_buffer, child_activity).await;

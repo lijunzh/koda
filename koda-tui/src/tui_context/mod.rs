@@ -14,6 +14,7 @@ mod menus;
 mod plan;
 mod session_cmds;
 pub(crate) mod settings;
+mod side;
 pub(crate) mod skills;
 
 use crate::input;
@@ -124,6 +125,14 @@ pub(crate) struct TuiContext {
     /// The sessions picker forks the session picked rather than resuming
     /// it (`koda fork` without a session).
     pub(crate) fork_on_pick: bool,
+    /// The side conversation the TUI is in (`/side`), with the main
+    /// session it left.
+    pub(crate) side: Option<side::SideState>,
+    /// `/side` typed while a turn ran: its question and the turn left
+    /// running.
+    pub(crate) side_from_turn: Option<(String, String)>,
+    /// Ctrl+C on an empty prompt in a side conversation: go back.
+    pub(crate) leave_side_requested: bool,
     /// The session's mode, as the host reports it.
     pub mode: TrustMode,
     /// The host's sandbox, from `state/read`: whether Auto is possible.
@@ -157,6 +166,7 @@ pub(crate) struct TuiContext {
 /// The TUI's view of its session. The host owns the session and runs its
 /// turns; the TUI keeps what it still reads and writes directly while idle
 /// (history, `/compact`, resume, titles), as the 5c plan settled.
+#[derive(Clone)]
 pub struct TuiSession {
     /// The open session's id. A command that switches sessions changes it,
     /// and the TUI opens that session on the host before its next turn.
@@ -327,6 +337,12 @@ pub(crate) enum TurnRequest {
     Prompt(TurnInput),
     /// Compact the session (`/compact`).
     Compact,
+    /// Follow a turn already running, as after a side conversation, with
+    /// the requests it made meanwhile.
+    Watch {
+        turn_id: String,
+        waiting: Vec<koda_client::events::Outgoing>,
+    },
 }
 
 /// Outcome of dispatching a single command.
@@ -518,6 +534,9 @@ impl TuiContext {
             providers,
             host_session: session.id.clone(),
             fork_on_pick: false,
+            side: None,
+            side_from_turn: None,
+            leave_side_requested: false,
             session,
             client,
             mode: initial_mode,
@@ -589,6 +608,7 @@ impl TuiContext {
         // stops them.
         let (child_activity_rows, child_activity_total) = self.child_activity.build_rows();
         let child_activity_hint = self.child_activity.hint();
+        let side = self.side.is_some();
 
         let mut history_rect = None;
         if let Err(e) = self.terminal.draw(|f| {
@@ -610,6 +630,7 @@ impl TuiContext {
                 &child_activity_rows,
                 child_activity_total,
                 child_activity_hint,
+                side,
             ));
         }) {
             tracing::debug!("draw skipped: {e}");
@@ -640,6 +661,19 @@ impl TuiContext {
     /// Clean up terminal and print exit info.
     pub async fn cleanup(&mut self) {
         restore_terminal(&mut self.terminal);
+        // A side conversation goes with the TUI; the hint is the main
+        // session's.
+        if let Some(side) = self.side.take() {
+            let _ = self
+                .client
+                .request::<koda_client::protocol::methods::SessionDelete>(
+                    koda_client::protocol::session::SessionDeleteParams {
+                        session_id: self.session.id.clone(),
+                    },
+                )
+                .await;
+            self.session = side.main;
+        }
         crate::startup::print_resume_hint(&self.session.id);
     }
 
@@ -657,6 +691,24 @@ impl TuiContext {
                 self.refresh_mcp().await;
             }
             self.refresh_background(false).await;
+
+            // ── The side conversation: back from it, or into it ──
+            if std::mem::take(&mut self.leave_side_requested)
+                && let Some((turn_id, waiting)) = self.leave_side().await
+            {
+                self.run_inference_turn(TurnRequest::Watch { turn_id, waiting }, cmd_tx, cmd_rx)
+                    .await?;
+                continue;
+            }
+            if let Some((question, turn)) = self.side_from_turn.take() {
+                if let CommandOutcome::StartInference(input) =
+                    self.enter_side(&question, Some(turn)).await
+                {
+                    self.run_inference_turn(TurnRequest::Prompt(input), cmd_tx, cmd_rx)
+                        .await?;
+                }
+                continue;
+            }
 
             // ── Dispatch pending commands ────────────────────
             if self.tui_state == TuiState::Idle
@@ -702,6 +754,9 @@ impl TuiContext {
                 // the status bar; the rest are no turn's business, as a
                 // turn drops them when it starts.
                 Some(message) = self.client.next_event() => {
+                    if self.note_main_session(&message) {
+                        continue;
+                    }
                     self.mcp.observe(&self.session.id, &message);
                     // A warning about no session, such as a Claude model
                     // this Koda doesn't support yet, which the host says
@@ -784,6 +839,14 @@ impl TuiContext {
         if input.trim() == "/fork" {
             self.fork_session().await;
             return CommandOutcome::Handled;
+        }
+        if let Some(question) = ["/side", "/btw"].iter().find_map(|command| {
+            input
+                .trim()
+                .strip_prefix(command)
+                .filter(|rest| rest.is_empty() || rest.starts_with(' '))
+        }) {
+            return self.enter_side(question, None).await;
         }
         if input.trim() == "/status" {
             self.show_status().await;

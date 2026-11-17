@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **`/side` (also `/btw`) opens a side conversation, as Codex's `/side` does.** A fork of the session with Codex's side instructions: the history is for reference only, nothing changes unless asked, no sub-agents. It works while a turn runs: the turn goes on, and an approval or question it asks waits. `Ctrl+C` on an empty prompt returns: the side conversation is deleted, the main session is drawn again, and a turn still running there is followed to its end.
+- **`developer_instructions` adds text to the end of the system prompt, as Codex's setting does,** in `config.toml` or per session with `session/start`'s `config`.
+
 - **The shared server lets go of a client that stops reading, and of one that sends a message over 64 MiB, as Codex's does.** A client that stops reading (a TUI suspended with Ctrl+Z) used to make `koda serve` keep every message for it; once 4,096 wait, the connection now closes, and its sessions go on for the next client. A message over 64 MiB, Codex's WebSocket limit, gets `-32600` and ends its connection, on the socket and on `--stdio`. A server killed in the middle of a turn is now tested: the next server opens the session, the cut-off turn reads as `interrupted`, and the next turn runs.
 
 - **The TUI works on the shared server, as Codex's TUI works on its daemon.** `koda` connects to `koda serve`'s socket and starts it in the background when none answers; that server stops after ten minutes with no client and no work. A session outlives the TUI that opened it, so the next TUI resumes it there, and an approval it was waiting for is still waiting. A server of another version is replaced when nothing is in use, as Claude Code's supervisor restarts onto a new version; a busy one is left alone and the run uses its own process, saying so. `--no-daemon` keeps the host in the TUI's process, as `--oss` and any `-c` value (or flag that sets one) do, as in Codex; `--remote unix://PATH` uses another server. `koda exec` is unchanged.
@@ -24,6 +27,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **`koda fork <id> --worktree` and `koda exec fork <id> --worktree` open a copy of a session in a new managed worktree, as Codex's `fork --worktree` does.** The checkout is of the repository the session worked in, wherever the command runs (`--project-root` names another), and the copy has the whole history. The session must be named: `--last` and the list are refused with `--worktree`, as Codex refuses them.
 
 ### Changed
+
+- **A tool call with no result gets one, `aborted`, as Codex gives it.** A session forked while a tool ran, or one whose host stopped mid-turn, no longer sends the provider a call it would refuse for lacking a result.
 
 - **A fork belongs to the project it opens in.** A copy made with `koda fork` (or `session/fork`) from another folder was listed under the original's project, though it ran where Koda started; it is now listed where it runs, as a Codex fork takes the cwd it starts in. `/fork` inside a session is unchanged.
 
