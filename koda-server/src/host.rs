@@ -583,11 +583,17 @@ impl Host {
                 let _ = stored.await;
             }
         }
+        // The copy belongs to the folder it opens in: the one asked for, or
+        // the host's.
+        let root = match params.cwd.as_deref() {
+            Some(cwd) => session_folder(cwd)?,
+            None => self.context.project_root.clone(),
+        };
         let name = fork_name(source.title.as_deref().or(source.preview.as_deref()));
         let id = self
             .context
             .db
-            .fork_session(&source.id, &name, &self.context.project_root)
+            .fork_session(&source.id, &name, &root)
             .await
             .map_err(|e| internal(format!("couldn't fork the session: {e:#}")))?;
         let started = self
@@ -597,6 +603,8 @@ impl Host {
                 model_provider: params.model_provider,
                 base_url: params.base_url,
                 model: params.model,
+                cwd: Some(root.display().to_string()),
+                config: params.config,
             })
             .await;
         match started {
@@ -742,6 +750,29 @@ impl Host {
             .unwrap_or(config.trust)
     }
 
+    /// The context a session opens with: the host's, in `cwd` when one is
+    /// given, with `config`'s values over the run's, as Codex's
+    /// `thread/start` takes a `cwd` and a `config` map.
+    fn session_context(
+        &self,
+        cwd: Option<&str>,
+        config: Option<&std::collections::BTreeMap<String, serde_json::Value>>,
+    ) -> Result<session::SessionContext, ErrorObject> {
+        let mut context = self.context.clone();
+        if let Some(cwd) = cwd {
+            context.project_root = session_folder(cwd)?;
+        }
+        if let Some(config) = config.filter(|config| !config.is_empty()) {
+            let overrides = config
+                .iter()
+                .map(|(key, value)| koda_config::Override::from_json(key, value))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| invalid(format!("config: {e}")))?;
+            context.config_file = context.config_file.with_more_overrides(overrides);
+        }
+        Ok(context)
+    }
+
     async fn start_session(
         &self,
         params: SessionStartParams,
@@ -758,8 +789,8 @@ impl Host {
             model: params.model,
         };
         let resuming = params.session_id.is_some();
-        let mut opened =
-            session::open(self.context.clone(), params.session_id, policy, choice).await?;
+        let context = self.session_context(params.cwd.as_deref(), params.config.as_ref())?;
+        let mut opened = session::open(context, params.session_id, policy, choice).await?;
         let id = opened.session.id.clone();
         // A resumed session comes back with its turns, as Codex's
         // `thread/resume` does.
@@ -850,6 +881,22 @@ impl Host {
 
 /// A fork's name: "Fork of" what the source is called, within a name's
 /// length, or "Fork" for a source with neither name nor prompt.
+/// A session's folder as a client names it: absolute, an existing folder,
+/// without symlinks, as the host's own is.
+fn session_folder(cwd: &str) -> Result<PathBuf, ErrorObject> {
+    let path = std::path::Path::new(cwd);
+    if !path.is_absolute() {
+        return Err(invalid(format!("cwd {cwd:?} must be an absolute path")));
+    }
+    let folder = path
+        .canonicalize()
+        .map_err(|e| invalid(format!("cwd {cwd:?}: {e}")))?;
+    if !folder.is_dir() {
+        return Err(invalid(format!("cwd {cwd:?} isn't a folder")));
+    }
+    Ok(folder)
+}
+
 fn fork_name(source: Option<&str>) -> String {
     let Some(source) = source.map(str::trim).filter(|s| !s.is_empty()) else {
         return "Fork".to_string();

@@ -187,6 +187,8 @@ pub(crate) async fn open_host_session(
             model_provider: named.provider.clone(),
             base_url: named.base_url.clone(),
             model: named.model.clone(),
+            // The host's folder and the run's config, in this process.
+            ..Default::default()
         })
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -221,6 +223,8 @@ pub(crate) async fn fork_host_session(
             model_provider: named.provider.clone(),
             base_url: named.base_url.clone(),
             model: named.model.clone(),
+            // The host's folder and the run's config, in this process.
+            ..Default::default()
         })
         .await
         .map_err(|e| anyhow::anyhow!("couldn't fork session {source}: {e}"))?;

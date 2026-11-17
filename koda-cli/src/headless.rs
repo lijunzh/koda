@@ -148,6 +148,7 @@ pub async fn run_headless(
                     model_provider: provider,
                     base_url: run.named.base_url.clone(),
                     model: run.named.model.clone(),
+                    ..Default::default()
                 })
                 .await?
                 .session
@@ -163,6 +164,7 @@ pub async fn run_headless(
                     model: run.named.model.clone(),
                     session_id: resume,
                     approval_policy: Some(ApprovalPolicy::Never),
+                    ..Default::default()
                 })
                 .await?
                 .session
