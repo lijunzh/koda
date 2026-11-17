@@ -276,6 +276,11 @@ clean and smudge filters, an external diff or a textconv, as in Codex and
 Claude Code. One result: a worktree has Git LFS pointer files rather than
 the files themselves; run `git lfs pull` in it if a sub-agent needs them.
 
+Worktrees live in `.koda/worktrees/` in the project. If `.koda` or
+`.koda/worktrees` is a symlink, as a repository could commit it, Koda
+refuses to make the worktree rather than put it, and the sub-agent's write
+access, wherever the link points.
+
 Outside a git repository there are no worktrees. A sub-agent that needs one
 doesn't start, and the main agent is told why, so it can do the work itself:
 in Safe that means you approve each edit. In Auto, sub-agents write in the

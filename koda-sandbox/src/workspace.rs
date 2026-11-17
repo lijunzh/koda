@@ -210,6 +210,35 @@ impl GitWorktreeProvider {
             .join("worktrees")
             .join(slot_id)
     }
+
+    /// Refuse a worktree `path` reached through a symlink: `.koda`,
+    /// `.koda/worktrees` or the worktree's own folder. A repository can
+    /// commit `.koda` as a symlink, and following it would put the worktree,
+    /// and the sub-agent's write access with it, outside the project, and
+    /// point the removal's `rm -rf` fallback there too. Claude Code refuses
+    /// the same for `.claude/worktrees`.
+    fn refuse_symlinks(&self, path: &Path) -> Result<()> {
+        let relative = path
+            .strip_prefix(&self.project_root)
+            .context("worktree path outside the project")?;
+        let mut current = self.project_root.clone();
+        for component in relative.components() {
+            current.push(component);
+            match std::fs::symlink_metadata(&current) {
+                Ok(meta) if meta.file_type().is_symlink() => anyhow::bail!(
+                    "{} is a symlink; Koda won't make or remove a sub-agent's worktree through it",
+                    current.display()
+                ),
+                Ok(_) => {}
+                // Not made yet: nothing below it exists either.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+                Err(e) => {
+                    return Err(e).with_context(|| format!("can't inspect {}", current.display()));
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -226,6 +255,7 @@ impl WorkspaceProvider for GitWorktreeProvider {
 
         let wt_path = self.worktree_path(slot_id);
         let branch = self.branch_name(slot_id);
+        self.refuse_symlinks(&wt_path)?;
 
         // Reuse on resume (idempotent).
         if wt_path.exists() {
@@ -384,8 +414,13 @@ impl GitWorktreeProvider {
         )
     }
 
-    /// Best-effort `git worktree remove --force` with rm-rf fallback.
+    /// Best-effort `git worktree remove --force` with rm-rf fallback. Neither
+    /// runs through a symlink: see [`Self::refuse_symlinks`].
     async fn remove_worktree(&self, path: &Path) {
+        if let Err(e) = self.refuse_symlinks(path) {
+            tracing::warn!("Not removing worktree: {e:#}");
+            return;
+        }
         let out = git(
             &self.project_root,
             Operation::WorkingTree,
@@ -520,6 +555,39 @@ mod tests {
                     .unwrap_or(false)
             }
         );
+    }
+
+    /// A repository that commits `.koda` (or `.koda/worktrees`) as a symlink
+    /// doesn't get a worktree outside the project, and a removal doesn't
+    /// delete through it.
+    #[tokio::test]
+    async fn provision_refuses_a_symlinked_koda_folder() {
+        for link in [".koda", ".koda/worktrees"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let project = tmp.path().join("project");
+            let elsewhere = tmp.path().join("elsewhere");
+            std::fs::create_dir_all(&project).unwrap();
+            std::fs::create_dir_all(&elsewhere).unwrap();
+            init_repo(&project).await;
+            let link_path = project.join(link);
+            std::fs::create_dir_all(link_path.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(&elsewhere, &link_path).unwrap();
+
+            let p = GitWorktreeProvider::new(&project, "agent");
+            let err = p.provision("slot-link").await.unwrap_err();
+            assert!(
+                format!("{err:#}").contains("is a symlink"),
+                "{link}: {err:#}"
+            );
+            assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0, "{link}");
+
+            // A folder left there by hand isn't removed through the link.
+            let target = p.worktree_path("slot-link");
+            std::fs::create_dir_all(&target).unwrap();
+            std::fs::write(target.join("keep.txt"), "x").unwrap();
+            p.remove_worktree(&target).await;
+            assert!(target.join("keep.txt").exists(), "{link}");
+        }
     }
 
     #[tokio::test]
