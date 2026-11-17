@@ -3665,6 +3665,17 @@
     "TurnError": {
       "description": "What went wrong.",
       "properties": {
+        "code": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TurnErrorCode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What kind of failure, for a client to act on, when Koda knows one,\nas Codex's turn errors carry `codexErrorInfo`."
+        },
         "message": {
           "description": "One sentence for a person.",
           "type": "string"
@@ -3674,6 +3685,16 @@
         "message"
       ],
       "type": "object"
+    },
+    "TurnErrorCode": {
+      "description": "What kind of failure a [`TurnError`] is.",
+      "oneOf": [
+        {
+          "const": "tokenBudgetSpent",
+          "description": "The turn spent its token budget (`turn_token_budget`) and stopped\nbefore its next model call. What it did so far stays in the session.",
+          "type": "string"
+        }
+      ]
     },
     "TurnInterruptParams": {
       "additionalProperties": false,

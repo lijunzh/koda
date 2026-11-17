@@ -554,7 +554,7 @@ impl KodaSession {
             .tools
             .set_takes_pdfs(takes.contains(&koda_config::InputModality::Pdf));
         let started = std::time::Instant::now();
-        let meter = crate::engine::sink::TurnMeter::new(sink);
+        let meter = crate::engine::sink::TurnMeter::with_budget(sink, config.turn_token_budget);
         let sink: &dyn EngineSink = &meter;
 
         // Compose the per-turn system prompt: static `agent.system_prompt`
@@ -665,6 +665,11 @@ impl KodaSession {
                 message: message.clone(),
             },
             Ok(TurnOutcome::Abandoned) => crate::engine::event::TurnEndReason::Cancelled,
+            Ok(TurnOutcome::BudgetSpent(message)) => {
+                crate::engine::event::TurnEndReason::BudgetSpent {
+                    message: message.clone(),
+                }
+            }
             Ok(TurnOutcome::Finished) if effective_cancel.is_cancelled() => {
                 crate::engine::event::TurnEndReason::Cancelled
             }
@@ -690,7 +695,7 @@ impl KodaSession {
                 "the turn did not stop within {}s of being cancelled",
                 crate::inference::CANCEL_GRACE.as_secs()
             ),
-            TurnOutcome::Finished | TurnOutcome::Aborted(_) => Ok(()),
+            TurnOutcome::Finished | TurnOutcome::Aborted(_) | TurnOutcome::BudgetSpent(_) => Ok(()),
         }
     }
 

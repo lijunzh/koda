@@ -75,6 +75,7 @@ Every key, in Codex's names where Codex has one:
 | `model_post_turn_compact_threshold_percent` | Compact after a turn's final reply once this share of the window is used (1–100; 0 turns it off) |
 | `file_mentions` | `false` sends an `@` mention's path only, for the model to read, as Codex does; on by default, sending its contents as Claude Code does (see [File & image attachments](./attachments.md#mentioning-files)) |
 | `commit_attribution` | `false` stops the model adding Koda's attribution to the commits and pull requests it makes. On by default, as Codex's: commit messages end with `Co-authored-by: Koda <noreply@lijunzhu.info>`, and pull requests carry `Generated with [Koda](https://github.com/lijunzh/koda).` |
+| `turn_token_budget` | Tokens one turn may spend, sub-agents and compaction included, counted as Codex counts a goal's (input not read from the cache, plus output). At least 20,000; no limit when unset. See [Limiting what a turn spends](#limiting-what-a-turn-spends) |
 | `model_input_modalities` | What the model takes besides text, over what a local server reports and Koda's table: `["text", "image"]` for a vision model the server doesn't report; `pdf` is the third value (see [File & image attachments](./attachments.md#images)) |
 | `mode` | The [trust mode](./approval.md) a new session starts in: `auto`, `safe` or `plan` |
 | `oss_provider` | The local provider `--oss` uses: `llama-cpp` (default; Koda starts and stops it), `lm-studio` or `ollama` ([Local models](./local-models.md#one-command-koda---oss)) |
@@ -188,3 +189,33 @@ syntax_highlight = false
 
 It covers `Read` output, `Bash` headers and inline code, and is read when the
 TUI starts; restart Koda after changing it.
+
+## Limiting what a turn spends
+
+`turn_token_budget` caps the tokens one turn spends: the model calls of the
+turn itself, its sub-agents' and any compaction's. For a scheduled or
+unattended run, set it in `config.toml`, or for one run with
+`koda exec -c turn_token_budget=200000 "…"`.
+
+- **What counts** is Codex's rule for a goal's budget: input tokens not read
+  from the provider's cache, plus output tokens. A long session isn't charged
+  again for the history its cache serves.
+- **Pacing.** A Claude model that takes the API's
+  [task budget](https://platform.claude.com/docs/en/build-with-claude/task-budgets)
+  (Haiku 5.5, Sonnet 5.5, Opus 5.5 and others) is sent the budget and sees it
+  count down. Any other model is told once, at 90% of the budget, to wrap up:
+  start nothing new, summarize what's done and what's left.
+- **The stop**, as Claude Code's `--max-budget-usd`: Koda checks the budget
+  as each model call returns. The call that reaches it completes and its
+  tools run; then the turn makes no further call, a running sub-agent stops at
+  its next call, and a new one is refused. Spend can pass the budget by that
+  one call, so leave headroom.
+- **How it ends:** what the turn did stays in the session, and a follow-up
+  continues with a fresh budget. The turn fails with
+  `Turn failed: token budget spent (…)`; over the
+  [protocol](./headless.md#the-client-protocol) its `error.code` is
+  `tokenBudgetSpent`, and `koda exec` exits 1.
+
+The budget must be at least 20,000 tokens, the Claude API's smallest task
+budget; a smaller one stops Koda at startup.
+

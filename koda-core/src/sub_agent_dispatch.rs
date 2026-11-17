@@ -269,6 +269,15 @@ fn run_sub_agent<'a>(
         let cancel = parent_tx.turn.cancel.clone();
         let parent_spawner = parent_tx.caller_spawner;
 
+        // A turn that spent its token budget starts no sub-agent, as Claude
+        // Code refuses one once `--max-budget-usd` is reached.
+        if sink.turn_budget().is_some_and(|budget| budget.is_spent()) {
+            anyhow::bail!(
+                "Budget limit reached: this turn has spent its token budget \
+                 (turn_token_budget), so no sub-agent can start. Finish with what you have."
+            );
+        }
+
         // Phase E of #996: allocate this invocation's id up-front. It
         // becomes the `caller_spawner` for every tool call inside
         // this sub-agent's loop, AND the `spawner` tag the cleanup
@@ -927,6 +936,30 @@ fn run_sub_agent<'a>(
                     });
                 }
 
+                // The turn's budget spent, the sub-agent makes no further
+                // call and returns what it has, as Claude Code stops a
+                // running sub-agent at `--max-budget-usd`.
+                if sink.turn_budget().is_some_and(|budget| budget.is_spent()) {
+                    sink.emit(EngineEvent::SpinnerStop);
+                    release_workspace(
+                        workspace.as_ref(),
+                        &sub_session,
+                        &effective_root,
+                        agent_name,
+                        sink,
+                    )
+                    .await;
+                    let so_far = db
+                        .last_assistant_message(&sub_session)
+                        .await
+                        .unwrap_or_default();
+                    let note = "[stopped: the turn's token budget (turn_token_budget) is spent]";
+                    return Ok(if so_far.trim().is_empty() {
+                        note.to_string()
+                    } else {
+                        format!("{note}\n\n{so_far}")
+                    });
+                }
                 let chat = provider.chat(&messages, &tool_defs, &sub_config.model_settings);
                 let Some(response) = unless_cancelled(&cancel, chat).await else {
                     sink.emit(EngineEvent::SpinnerStop);

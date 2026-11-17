@@ -523,6 +523,22 @@ pub struct ModelSettings {
     pub reasoning_effort: Option<String>,
     /// Maximum context window size in tokens.
     pub max_context_tokens: usize,
+    /// The turn's token budget, for a Claude model that paces itself
+    /// against one ([`model_effort::takes_task_budget`]). Only the main
+    /// loop's calls carry it.
+    pub task_budget: Option<TaskBudget>,
+}
+
+/// The Claude API's task budget (`output_config.task_budget`, beta
+/// `task-budgets-2026-03-13`): tokens for the whole agentic loop, which the
+/// model sees counting down. Advisory: the API never stops at it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TaskBudget {
+    /// The whole budget.
+    pub total: u64,
+    /// What is left, once Koda's compaction has replaced history the
+    /// server counted; `None` lets the server count from `total`.
+    pub remaining: Option<u64>,
 }
 
 impl ModelSettings {
@@ -538,6 +554,7 @@ impl ModelSettings {
             thinking_budget: None,
             reasoning_effort: None,
             max_context_tokens,
+            task_budget: None,
         }
     }
 }

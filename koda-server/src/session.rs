@@ -1054,6 +1054,7 @@ impl HostSink {
                     {
                         done.turn.error = Some(TurnError {
                             message: message.clone(),
+                            code: None,
                         });
                     }
                 }

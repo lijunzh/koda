@@ -26,6 +26,8 @@ const ANTHROPIC_API_VERSION: &str = "2023-06-01";
 const ANTHROPIC_BETA_FEATURES: &str = "prompt-caching-2024-07-31";
 /// Lets a request say what happens to a thinking block whose history changed.
 const THINKING_BINDING_BETA: &str = "thinking-binding-controls-2026-08-01";
+/// Lets a request carry `output_config.task_budget`.
+const TASK_BUDGET_BETA: &str = "task-budgets-2026-03-13";
 
 /// Koda is built for the current Claude models, which have a 1M window
 /// natively. The `-1m` names that opted Sonnet 4.x into the 1M beta are
@@ -1097,6 +1099,18 @@ impl LlmProvider for AnthropicProvider {
         {
             body["output_config"] = serde_json::json!({ "effort": effort });
         }
+        // The turn's budget, for a model that paces itself against it. The
+        // same value on every call of the turn, so the cached prefix holds.
+        let task_budget = settings
+            .task_budget
+            .filter(|_| crate::model_effort::takes_task_budget(api_model));
+        if let Some(budget) = task_budget {
+            let mut value = serde_json::json!({ "type": "tokens", "total": budget.total });
+            if let Some(remaining) = budget.remaining {
+                value["remaining"] = serde_json::json!(remaining);
+            }
+            body["output_config"]["task_budget"] = value;
+        }
         super::trace_request("anthropic", &body);
 
         let req = self
@@ -1105,11 +1119,14 @@ impl LlmProvider for AnthropicProvider {
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_API_VERSION)
             .header("anthropic-beta", {
+                let mut betas = ANTHROPIC_BETA_FEATURES.to_string();
                 if binding {
-                    format!("{ANTHROPIC_BETA_FEATURES},{THINKING_BINDING_BETA}")
-                } else {
-                    ANTHROPIC_BETA_FEATURES.to_string()
+                    betas = format!("{betas},{THINKING_BINDING_BETA}");
                 }
+                if task_budget.is_some() {
+                    betas = format!("{betas},{TASK_BUDGET_BETA}");
+                }
+                betas
             })
             .json(&body);
 

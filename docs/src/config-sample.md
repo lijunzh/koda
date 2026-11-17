@@ -100,6 +100,11 @@ unknown key in `-c` stops the run instead.
 # Koda" line to its pull requests, as Codex does. Unset: true.
 # commit_attribution = false
 
+# Tokens one turn may spend, sub-agents included: input not read from the
+# cache, plus output. Near it the model is told to wrap up; at it the turn
+# stops. At least 20000. Unset: no limit.
+# turn_token_budget = 200000
+
 # Also write the log to <log_dir>/koda.log, at RUST_LOG's level. "~/" is
 # your home folder; a relative path is under ~/.config/koda/.
 # Unset: only the log database (see the Debugging chapter).

@@ -801,6 +801,7 @@ mod tests {
                     status,
                     error: error.map(|message| TurnError {
                         message: message.into(),
+                        code: None,
                     }),
                     usage: None,
                     duration_ms: None,

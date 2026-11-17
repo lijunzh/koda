@@ -338,9 +338,20 @@ impl EventProjector {
                 let (status, error) = match reason {
                     TurnEndReason::Complete => (TurnStatus::Completed, None),
                     TurnEndReason::Cancelled => (TurnStatus::Interrupted, None),
-                    TurnEndReason::Error { message } => {
-                        (TurnStatus::Failed, Some(TurnError { message }))
-                    }
+                    TurnEndReason::Error { message } => (
+                        TurnStatus::Failed,
+                        Some(TurnError {
+                            message,
+                            code: None,
+                        }),
+                    ),
+                    TurnEndReason::BudgetSpent { message } => (
+                        TurnStatus::Failed,
+                        Some(TurnError {
+                            message,
+                            code: Some(koda_protocol::turn::TurnErrorCode::TokenBudgetSpent),
+                        }),
+                    ),
                     // A reason added later reads as a failure until mapped.
                     _ => (TurnStatus::Failed, None),
                 };
@@ -599,7 +610,10 @@ impl EventProjector {
                 out.push(notification(ServerNotification::Error(ErrorNotification {
                     session_id: self.session_id.clone(),
                     turn_id: self.turn_id.clone(),
-                    error: TurnError { message },
+                    error: TurnError {
+                        message,
+                        code: None,
+                    },
                     will_retry: true,
                     retry: Some(Retry {
                         reason: retry_reason_of(reason),
@@ -679,7 +693,10 @@ impl EventProjector {
                 out.push(notification(ServerNotification::Error(ErrorNotification {
                     session_id: self.session_id.clone(),
                     turn_id: self.turn_id.clone(),
-                    error: TurnError { message },
+                    error: TurnError {
+                        message,
+                        code: None,
+                    },
                     will_retry: false,
                     retry: None,
                 })));

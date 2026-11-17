@@ -114,6 +114,37 @@ pub fn lookup(model: &str) -> Option<&'static ModelEffort> {
     TABLE.iter().find(|(name, _)| *name == id).map(|(_, e)| e)
 }
 
+/// Claude models that take a task budget (`task-budgets-2026-03-13`), by
+/// API id, from the Claude API's task budgets page (2026-11-17). Sonnet 5,
+/// Opus 4.6, Sonnet 4.6 and Haiku 4.5 don't.
+const TASK_BUDGET_MODELS: &[&str] = &[
+    "claude-fable-5-2",
+    "claude-mythos-5-2",
+    "claude-fable-5-1",
+    "claude-mythos-5-1",
+    "claude-fable-5",
+    "claude-mythos-5",
+    "claude-mythos-preview",
+    "claude-opus-5-5",
+    "claude-opus-5",
+    "claude-sonnet-5-5",
+    "claude-haiku-5-5",
+    "claude-opus-4-8",
+    "claude-opus-4-7",
+];
+
+/// Whether `model` (an API id, a snapshot or an alias) takes the Claude
+/// API's task budget.
+pub fn takes_task_budget(model: &str) -> bool {
+    let resolved = crate::model_alias::resolve(model).map(|r| r.model_id);
+    let id = resolved.as_deref().unwrap_or(model);
+    let id = match id.rsplit_once('-') {
+        Some((base, date)) if date.len() == 8 && date.bytes().all(|b| b.is_ascii_digit()) => base,
+        _ => id,
+    };
+    TASK_BUDGET_MODELS.contains(&id)
+}
+
 /// The level to send to `model`, given the one chosen for the session, if
 /// any. `None` when the model isn't in the table: send nothing.
 ///
@@ -252,6 +283,16 @@ mod tests {
         // `claude-opus-5` must not be found as a prefix of `claude-opus-5-5`.
         assert_eq!(applied("claude-opus-5-5", None), Some("medium"));
         assert_eq!(applied("claude-opus-5", None), Some("high"));
+    }
+
+    #[test]
+    fn task_budgets_go_to_the_models_that_take_them() {
+        assert!(takes_task_budget("claude-haiku-5-5"));
+        assert!(takes_task_budget("claude-haiku-5-5-20261001"));
+        assert!(takes_task_budget("claude-opus-5"));
+        assert!(!takes_task_budget("claude-sonnet-5"));
+        assert!(!takes_task_budget("claude-opus-4-6"));
+        assert!(!takes_task_budget("qwen3.8-flash-next"));
     }
 
     #[test]

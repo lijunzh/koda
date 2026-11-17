@@ -1635,6 +1635,7 @@ mod tests {
         let mut failed = turn(vec![stored(None, refused, None)], TurnStatus::Failed, None);
         failed.error = Some(koda_client::protocol::turn::TurnError {
             message: "the provider went away".into(),
+            code: None,
         });
         let mut renderer = TuiRenderer::new();
         let mut buffer = ScrollBuffer::new(256);

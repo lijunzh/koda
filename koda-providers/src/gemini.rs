@@ -1328,6 +1328,7 @@ mod tests {
             thinking_budget: Some(10000),
             reasoning_effort: None,
             max_context_tokens: 32_000,
+            task_budget: None,
         };
         let body = p.build_request_body(&[], None, &[], Some(&settings));
         let thinking_config = &body["generationConfig"]["thinkingConfig"];
@@ -1344,6 +1345,7 @@ mod tests {
             thinking_budget: None,
             reasoning_effort: None,
             max_context_tokens: 32_000,
+            task_budget: None,
         };
         let body = p.build_request_body(&[], None, &[], Some(&settings));
         assert!(body["generationConfig"]["thinkingConfig"].is_null());

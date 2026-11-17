@@ -1062,6 +1062,9 @@ pub enum TurnOutcome {
     /// Cancelled, but it hadn't stopped after [`CANCEL_GRACE`], so it was
     /// dropped wherever it was.
     Abandoned,
+    /// The turn spent its token budget and stopped before its next model
+    /// call, with this message ([`crate::budget`]).
+    BudgetSpent(String),
 }
 
 /// How long a cancelled turn gets to stop before it's dropped. Not everything
@@ -1100,6 +1103,7 @@ impl TurnStats {
         match result {
             Err(e) if e.is::<TurnAborted>() => "aborted",
             Err(e) if e.is::<TurnAbandoned>() => "abandoned",
+            Err(e) if e.is::<TurnBudgetSpent>() => "token_budget",
             Err(_) => "error",
             Ok(()) if cancelled => "cancelled",
             Ok(()) => self.limit.unwrap_or(if self.final_reply.is_some() {
@@ -1123,6 +1127,20 @@ impl std::fmt::Display for TurnAborted {
 }
 
 impl std::error::Error for TurnAborted {}
+
+/// Marker error for a turn that spent its token budget: like
+/// [`TurnAborted`], [`inference_loop_outcome`] turns it back into
+/// [`TurnOutcome::BudgetSpent`].
+#[derive(Debug)]
+struct TurnBudgetSpent(String);
+
+impl std::fmt::Display for TurnBudgetSpent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for TurnBudgetSpent {}
 
 /// Marker error for a turn [`until_abandoned`] gave up on: like
 /// [`TurnAborted`], it never reaches callers.
@@ -1168,6 +1186,10 @@ pub async fn inference_loop_outcome(ctx: InferenceContext<'_>) -> Result<TurnOut
     match result {
         Ok(()) => Ok(TurnOutcome::Finished),
         Err(e) if e.is::<TurnAbandoned>() => Ok(TurnOutcome::Abandoned),
+        Err(e) if e.is::<TurnBudgetSpent>() => match e.downcast::<TurnBudgetSpent>() {
+            Ok(TurnBudgetSpent(message)) => Ok(TurnOutcome::BudgetSpent(message)),
+            Err(e) => Err(e),
+        },
         Err(e) => match e.downcast::<TurnAborted>() {
             Ok(TurnAborted(message)) => Ok(TurnOutcome::Aborted(message)),
             Err(e) => Err(e),
@@ -1285,6 +1307,11 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
     let mut total_char_count: usize = 0;
     let loop_start = Instant::now();
 
+    // A Claude model that takes the API's task budget sees it count down,
+    // and needs no wrap-up message of Koda's.
+    let paces_itself = config.provider_type == crate::config::ProviderType::Anthropic
+        && crate::providers::model_effort::takes_task_budget(&config.model);
+
     // Pre-build the base system message (avoids re-cloning 4-8KB per iteration)
     let base_system_prompt = system_prompt.to_string();
     let memory_context = crate::prompt::project_memory_context(project_memory);
@@ -1355,6 +1382,36 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
                 message: "Interrupted".into(),
             });
             return Ok(());
+        }
+
+        // The turn's token budget (`turn_token_budget`, [`crate::budget`]):
+        // spent, the turn makes no further model call, as Claude Code's
+        // `--max-budget-usd` stops a run; near it, a model that doesn't see
+        // the API's countdown is told once to wrap up, in Codex's words.
+        if let Some(budget) = sink.turn_budget() {
+            if budget.is_spent() {
+                // Said once, by the failed turn's line.
+                let message = budget.stop_message();
+                sink.emit(EngineEvent::SpinnerStop);
+                stats.limit = Some("token_budget");
+                return Err(TurnBudgetSpent(message).into());
+            }
+            if !paces_itself && budget.take_wrap_up() {
+                tracing::info!(
+                    spent = budget.spent(),
+                    limit = budget.limit(),
+                    "turn budget nearly spent; asking the model to wrap up"
+                );
+                db.insert_message(
+                    session_id,
+                    &Role::User,
+                    Some(&budget.wrap_up_message()),
+                    None,
+                    None,
+                    None,
+                )
+                .await?;
+            }
         }
 
         // Inject the "mid-turn steer" lane: batch whatever the client sent
@@ -1445,11 +1502,24 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
         });
 
         let call_started = Instant::now();
+        // The turn's budget goes with the main loop's calls only: a
+        // sub-agent or a summary is a conversation of its own.
+        let budgeted_settings;
+        let model_settings = match sink.turn_budget().filter(|_| paces_itself) {
+            Some(budget) => {
+                budgeted_settings = crate::config::ModelSettings {
+                    task_budget: Some(budget.task_budget()),
+                    ..config.model_settings.clone()
+                };
+                &budgeted_settings
+            }
+            None => &config.model_settings,
+        };
         let stream_result = try_with_rate_limit(
             provider,
             &messages,
             active_tool_defs,
-            &config.model_settings,
+            model_settings,
             config.request_max_retries,
             &cancel,
             sink,

@@ -42,7 +42,7 @@ to 0.7](./upgrading-0.7.md#running-koda).
 | Code | Meaning |
 |------|---------|
 | `0` | Turn completed successfully |
-| `1` | Error (API failure, bad config, a cancelled turn that wouldn't stop, …), with the reason on stderr and, with `--json`, in `exec/summary`'s `error` |
+| `1` | Error (API failure, bad config, a cancelled turn that wouldn't stop, a turn that spent its [`turn_token_budget`](./configuration.md#limiting-what-a-turn-spends), …), with the reason on stderr and, with `--json`, in `exec/summary`'s `error` |
 
 ## Trust mode in headless mode
 
@@ -152,7 +152,7 @@ below as described, and Ctrl+C sends `turn/interrupt`.
 | `error` | `error.message`, `willRetry`, `retry` | With `willRetry`, Koda tries the model call again and the turn goes on. `retry` has `reason` (`rateLimit`, `network`, `serverError`, `streamFailed`, `contextOverflow`, `emptyResponse`), `attempt` (the one that failed, from 1), `maxAttempts` and `delayMs` |
 | `warning` | `message` | For people |
 | `serverRequest/resolved` | `requestId` | The request was answered. In `koda exec`, right after each request |
-| `turn/completed` | `turn`: `status`, `error`, `usage`, `durationMs` | Exactly one per turn, after any retries. `status` is `completed`, `interrupted` or `failed` |
+| `turn/completed` | `turn`: `status`, `error`, `usage`, `durationMs` | Exactly one per turn, after any retries. `status` is `completed`, `interrupted` or `failed`. A failed turn's `error` may carry a `code`: `tokenBudgetSpent` when it spent its [`turn_token_budget`](./configuration.md#limiting-what-a-turn-spends) |
 | `exec/summary` | the run as a whole | `koda exec` only, always last |
 
 ### Items

@@ -148,6 +148,9 @@ pub(crate) fn apply_settings(config: &mut KodaConfig, loaded: &Loaded) {
     if let Some(on) = file.commit_attribution {
         config.commit_attribution = on;
     }
+    if let Some(tokens) = file.turn_token_budget {
+        config.turn_token_budget = Some(tokens);
+    }
     if let Some(list) = &file.model_input_modalities {
         config.input_modalities = Some(list.clone());
     }

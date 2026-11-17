@@ -560,3 +560,16 @@ fn notifications_take_a_bool_or_a_list_from_the_command_line() {
         Some(crate::NotificationMethod::Osc777)
     );
 }
+
+/// `turn_token_budget` reads as a number of tokens, and one under the
+/// Claude API's smallest task budget is refused with the reason.
+#[test]
+fn a_turn_token_budget_must_be_at_least_twenty_thousand() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = ConfigFile::in_dir(dir.path());
+    std::fs::write(file.path(), "turn_token_budget = 200000\n").unwrap();
+    assert_eq!(file.load().unwrap().config.turn_token_budget, Some(200_000));
+    std::fs::write(file.path(), "turn_token_budget = 5000\n").unwrap();
+    let error = file.load().unwrap_err().to_string();
+    assert!(error.contains("at least 20000"), "{error}");
+}
