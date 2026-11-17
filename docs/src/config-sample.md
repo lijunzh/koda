@@ -105,6 +105,11 @@ unknown key in `-c` stops the run instead.
 # stops. At least 20000. Unset: no limit.
 # turn_token_budget = 200000
 
+# How long a request (an approval, a question, the loop cap) waits for a
+# client on the shared server (`koda serve`) before Koda answers no.
+# Unset: 86400, a day.
+# approval_wait_timeout_secs = 3600
+
 # Also write the log to <log_dir>/koda.log, at RUST_LOG's level. "~/" is
 # your home folder; a relative path is under ~/.config/koda/.
 # Unset: only the log database (see the Debugging chapter).

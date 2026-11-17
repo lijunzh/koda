@@ -35,7 +35,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use koda_core::config::KodaConfig;
-use koda_protocol::rpc::{self, ErrorObject, ErrorResponse, Message, codes};
+use koda_protocol::rpc::{self, ErrorObject, ErrorResponse, Message, RequestId, codes};
 use koda_protocol::session::{SessionUnsubscribeParams, SessionUnsubscribeStatus};
 use koda_protocol::{Method, methods};
 use serde_json::Value;
@@ -54,6 +54,10 @@ const LOCK_FILE: &str = "koda-serve.lock";
 /// How long a session with no subscriber and no running turn stays open,
 /// as Codex's `thread_unload_delay` defaults to.
 const UNLOAD_DELAY: Duration = Duration::from_secs(60);
+/// How long a request waits for a client unless `approval_wait_timeout_secs`
+/// says otherwise: a day, so an approval asked overnight is still there in
+/// the morning.
+const APPROVAL_WAIT: Duration = Duration::from_secs(24 * 60 * 60);
 /// How many messages a new session may send before its connection has the
 /// answer that subscribes it; more are dropped, with a warning.
 const HELD_LIMIT: usize = 1_000;
@@ -103,12 +107,16 @@ impl std::error::Error for ServeError {}
 pub struct Options {
     /// How long an idle session with no subscriber stays open.
     pub unload_delay: Duration,
+    /// How long a request waits for an answer; the config file's when
+    /// `None`.
+    pub approval_wait: Option<Duration>,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
             unload_delay: UNLOAD_DELAY,
+            approval_wait: None,
         }
     }
 }
@@ -144,6 +152,13 @@ async fn serve_on(
     stop: impl Future<Output = ()> + Send,
 ) -> Result<(), ServeError> {
     let (listener, _lock) = bind(&socket)?;
+    let approval_wait = options.approval_wait.unwrap_or_else(|| {
+        args.config_file
+            .load()
+            .ok()
+            .and_then(|loaded| loaded.config.approval_wait_timeout_secs)
+            .map_or(APPROVAL_WAIT, Duration::from_secs)
+    });
     let launched = launch(
         HostStart {
             config_file: args.config_file,
@@ -171,6 +186,7 @@ async fn serve_on(
         state: Mutex::default(),
         handle: handle.clone(),
         unload_delay: options.unload_delay,
+        approval_wait,
         stopping: tokio::sync::watch::Sender::new(false),
     });
     let pump = {
@@ -314,11 +330,41 @@ fn session_of(message: &Value) -> Option<&str> {
         .or_else(|| params["session"]["id"].as_str())
 }
 
+/// What a client attaching to an open session is told.
+struct Attached {
+    /// The requests still waiting in it.
+    waiting: Vec<String>,
+    /// The session as it runs.
+    live: Option<Value>,
+}
+
+/// The stored session `stored` (with its turns) as it runs now: what
+/// `live` says of its model, provider, window, mode and tools.
+fn with_live(mut stored: Value, live: Option<&Value>) -> Value {
+    if let Some(live) = live {
+        for key in [
+            "model",
+            "provider",
+            "contextWindow",
+            "mode",
+            "tools",
+            "instructionSources",
+        ] {
+            if !live[key].is_null() {
+                stored[key] = live[key].clone();
+            }
+        }
+    }
+    stored
+}
+
 /// Which connections get which messages.
 struct Router {
     state: Mutex<RouterState>,
     handle: RequestHandle,
     unload_delay: Duration,
+    /// How long a request waits for an answer before Koda answers no.
+    approval_wait: Duration,
     /// Set once the server stops: every connection ends.
     stopping: tokio::sync::watch::Sender<bool>,
 }
@@ -329,9 +375,8 @@ struct RouterState {
     connections: HashMap<u64, Arc<Outbox>>,
     /// Each open session's subscribers.
     subscribers: HashMap<String, HashSet<u64>>,
-    /// Sessions that have had a subscriber.
-    claimed: HashSet<String>,
-    /// What a session sent before anyone subscribed to it.
+    /// What a session sent while not open here: a new session's first
+    /// messages, before its connection has the answer that subscribes it.
     held: HashMap<String, Vec<String>>,
     /// Sessions with a turn running.
     running: HashSet<String>,
@@ -340,6 +385,14 @@ struct RouterState {
     activity: HashMap<String, u64>,
     /// The config file's warnings, for each connection after `initialize`.
     warnings: Vec<String>,
+    /// Sessions open in the host.
+    open: HashSet<String>,
+    /// Each session's requests nobody has answered yet: their ids and
+    /// lines, oldest first, for a client that attaches.
+    pending: HashMap<String, Vec<(Value, String)>>,
+    /// Each open session as it runs (`session/started`, then its settings
+    /// as they change), for a client that attaches.
+    live: HashMap<String, Value>,
 }
 
 impl Router {
@@ -362,7 +415,37 @@ impl Router {
             }
             return;
         };
+        // A request waits until a client answers it, Koda resolves it, or
+        // the wait runs out; a client that attaches is sent it again.
+        if value.get("id").is_some() && !method.is_empty() {
+            state
+                .pending
+                .entry(session.clone())
+                .or_default()
+                .push((value["id"].clone(), line.clone()));
+            self.answer_no_after_wait(&session, value["id"].clone());
+        }
+        if method == "serverRequest/resolved" {
+            let resolved = &value["params"]["requestId"];
+            if let Some(pending) = state.pending.get_mut(&session) {
+                pending.retain(|(id, _)| id != resolved);
+            }
+        }
         match method {
+            "session/started" => {
+                state
+                    .live
+                    .insert(session.clone(), value["params"]["session"].clone());
+            }
+            "session/settings/updated" => {
+                if let Some(live) = state.live.get_mut(&session) {
+                    let settings = &value["params"]["settings"];
+                    live["model"] = settings["model"].clone();
+                    live["provider"] = settings["modelProvider"].clone();
+                    live["contextWindow"] = settings["contextWindow"].clone();
+                    live["mode"] = settings["mode"].clone();
+                }
+            }
             "turn/started" => {
                 state.running.insert(session.clone());
                 *state.activity.entry(session.clone()).or_default() += 1;
@@ -383,15 +466,16 @@ impl Router {
             for outbox in subscribers {
                 outbox.push(line.clone());
             }
-        } else if !state.claimed.contains(&session) {
+        } else if !state.open.contains(&session) {
             let held = state.held.entry(session.clone()).or_default();
             if held.len() < HELD_LIMIT {
                 held.push(line);
             } else {
-                tracing::warn!("koda serve: dropped a message for unclaimed session {session}");
+                tracing::warn!(
+                    "koda serve: dropped a message for session {session}, not open here"
+                );
             }
         } else if value.get("id").is_some() {
-            // Answered from any connection that knows it; 10b replays these.
             tracing::info!("koda serve: {method} waits for a client of session {session}");
         }
         if method == "turn/completed" {
@@ -408,7 +492,7 @@ impl Router {
             .entry(session.to_string())
             .or_default()
             .insert(connection);
-        state.claimed.insert(session.to_string());
+        state.open.insert(session.to_string());
         *state.activity.entry(session.to_string()).or_default() += 1;
         let held = state.held.remove(session).unwrap_or_default();
         if let Some(outbox) = state.connections.get(&connection) {
@@ -416,6 +500,66 @@ impl Router {
                 outbox.push(line);
             }
         }
+    }
+
+    /// Attach `connection` to `session` if the host has it open, as Codex
+    /// subscribes a client that resumes a loaded thread: the requests still
+    /// waiting in it, to send the client once it has the session.
+    fn attach(&self, connection: u64, session: &str) -> Option<Attached> {
+        let attached = {
+            let state = self.lock();
+            if !state.open.contains(session) {
+                return None;
+            }
+            Attached {
+                waiting: state
+                    .pending
+                    .get(session)
+                    .map(|pending| pending.iter().map(|(_, line)| line.clone()).collect())
+                    .unwrap_or_default(),
+                live: state.live.get(session).cloned(),
+            }
+        };
+        self.subscribe(connection, session);
+        Some(attached)
+    }
+
+    /// Answer request `id` of `session` no once [`Router::approval_wait`]
+    /// has passed, if nobody has: the approval is refused, the question gets
+    /// an empty answer, the loop stops.
+    fn answer_no_after_wait(self: &Arc<Self>, session: &str, id: Value) {
+        let router = Arc::clone(self);
+        let session = session.to_string();
+        tokio::spawn(async move {
+            tokio::time::sleep(router.approval_wait).await;
+            let waiting = router
+                .lock()
+                .pending
+                .get(&session)
+                .is_some_and(|pending| pending.iter().any(|(pending, _)| *pending == id));
+            let Ok(request_id) = serde_json::from_value::<RequestId>(id) else {
+                return;
+            };
+            if !waiting {
+                return;
+            }
+            let secs = router.approval_wait.as_secs();
+            tracing::info!(
+                "koda serve: no client answered {request_id:?} of session {session} in {secs}s; \
+                 answering no"
+            );
+            let _ = router
+                .handle
+                .commands
+                .send(HostCommand::Response {
+                    id: request_id,
+                    result: Err(ErrorObject::new(
+                        codes::INTERNAL_ERROR,
+                        format!("no client answered within {secs}s (approval_wait_timeout_secs)"),
+                    )),
+                })
+                .await;
+        });
     }
 
     /// Unsubscribe `connection` from `session`. `true` if it was subscribed.
@@ -471,9 +615,11 @@ impl Router {
                 if !unchanged || !idle(&state, &session) {
                     return;
                 }
-                // Still claimed: what it says as it closes goes nowhere.
                 state.subscribers.remove(&session);
                 state.activity.remove(&session);
+                state.open.remove(&session);
+                state.pending.remove(&session);
+                state.live.remove(&session);
             }
             tracing::info!("koda serve: closing idle session {session}");
             if let Err(e) = router
@@ -581,6 +727,53 @@ async fn connection(id: u64, stream: UnixStream, router: Arc<Router>, initialize
                         serde_json::to_string(&rpc::Response::new(request_id, result))
                             .unwrap_or_default(),
                     );
+                    continue;
+                }
+                // Resuming a session the host already has open attaches to
+                // it, with the requests still waiting in it sent after the
+                // answer, as Codex replays them to a client that resumes.
+                let resuming = (method == methods::SessionStart::NAME)
+                    .then(|| {
+                        request.params.as_ref()?["sessionId"]
+                            .as_str()
+                            .map(str::to_string)
+                    })
+                    .flatten();
+                if let Some(session) = resuming
+                    && let Some(Attached { waiting, live }) = router.attach(id, &session)
+                {
+                    let outbox = Arc::clone(&outbox);
+                    let router = Arc::clone(&router);
+                    answering.spawn(async move {
+                        let read = router
+                            .handle
+                            .request::<methods::SessionRead>(
+                                koda_protocol::session::SessionReadParams {
+                                    session_id: session,
+                                    include_turns: true,
+                                },
+                            )
+                            .await;
+                        let line = match read {
+                            Ok(read) => serde_json::to_string(&rpc::Response::new(
+                                request_id,
+                                serde_json::json!({ "session": with_live(
+                                    serde_json::to_value(read.session).unwrap_or_default(),
+                                    live.as_ref(),
+                                ) }),
+                            )),
+                            Err(e) => error_line(
+                                Some(request_id),
+                                ErrorObject::new(codes::INTERNAL_ERROR, e.to_string()),
+                            ),
+                        };
+                        if let Ok(line) = line {
+                            outbox.push(line);
+                        }
+                        for request in waiting {
+                            outbox.push(request);
+                        }
+                    });
                     continue;
                 }
                 let (reply, answer) = oneshot::channel();
