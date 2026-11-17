@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **The TUI notifies you when a turn ends, a tool call waits for approval or the model asks a question, as Codex's TUI does.** A desktop notification in Ghostty, iTerm2, Kitty, Warp and WezTerm (the start of the reply, the command waiting, or the question), the bell elsewhere, only while the terminal isn't focused, which Koda learns from the terminal's focus reports. Codex's three `[tui]` keys set it: `notifications` (`true`, `false`, or a list of `agent-turn-complete`, `approval-requested`, `user-input-requested`), `notification_method` (`auto`, `osc9`, `osc777`, `bel`) and `notification_condition` (`unfocused`, `always`). Inside tmux, a desktop notification is wrapped so tmux passes it on with `allow-passthrough on`; focus reports need `focus-events on`.
+
 ### Security
 
 - **The git commands Koda runs itself no longer run programs a repository's config names.** The git context at session start, sub-agent worktrees (making, committing, removing) and `/diff` run outside the sandbox, and a repository's `.git/config` or attributes can make git run a program: a hook, an fsmonitor, a clean or smudge filter, an external diff, a textconv. Only worktrees turned hooks and the fsmonitor off. All of them now go through one hardened runner, the new `koda-git` crate, with Codex's settings: hooks and the fsmonitor off, filter drivers off for working-tree commands, attribute files from config ignored, `safe.bareRepository=explicit`, inherited `GIT_DIR`-style variables removed, no prompts, and `--no-ext-diff --no-textconv` on diffs. The model's own `git` commands are unchanged: they go through the Bash tool and the sandbox. A sub-agent's worktree now has Git LFS pointer files, as Claude Code's do. And Koda no longer makes or removes a sub-agent's worktree through a symlink: a repository that committed `.koda` (or `.koda/worktrees`) as one would have had the worktree, and the sub-agent's write access, outside the project, and the removal's `rm -rf` fallback pointed there. Claude Code refuses the same.

@@ -145,6 +145,14 @@ unknown key in `-c` stops the run instead.
 # [tui]
 # Colour code blocks and diffs. Unset: true.
 # syntax_highlight = false
+# Notify when a turn ends, a tool call waits for approval or the model asks
+# a question. Unset: true. Or only some of them:
+# notifications = ["approval-requested", "user-input-requested"]
+# How: a desktop notification (OSC 9) in Ghostty, iTerm2, Kitty, Warp and
+# WezTerm, the bell elsewhere. Unset: "auto". Or "osc9", "osc777", "bel".
+# notification_method = "bel"
+# When: only while the terminal isn't focused. Unset: "unfocused". Or "always".
+# notification_condition = "always"
 
 # ── Sandbox ────────────────────────────────────────────────────────────
 

@@ -454,6 +454,32 @@ impl TuiContext {
                 .push(crate::tui_render::worked_for_line(ms));
         }
 
+        // Tell a user who looked away that Koda is waiting again, as Codex
+        // does: the reply's start, or why the turn failed. Not for a turn
+        // the user stopped, nor when Koda is quitting.
+        if !quit_requested && !host_stopped {
+            let status = tracker.completed().map(|turn| turn.status);
+            let message = match status {
+                Some(koda_client::protocol::turn::TurnStatus::Completed) => {
+                    Some(tracker.last_reply().unwrap_or_default().to_string())
+                }
+                Some(koda_client::protocol::turn::TurnStatus::Failed) => {
+                    let reason = tracker
+                        .completed()
+                        .and_then(|turn| turn.error.as_ref())
+                        .map(|error| error.message.clone())
+                        .unwrap_or_default();
+                    Some(format!("Turn failed: {reason}"))
+                }
+                _ => None,
+            };
+            if let Some(message) = message {
+                crate::notifications::notify(crate::notifications::Notification::TurnComplete {
+                    message,
+                });
+            }
+        }
+
         let unsent = tracker.take_unsent_steers();
         // A Plan turn that ended with a plan: implement it, or keep
         // planning, as Codex's TUI asks once the turn is done and nothing

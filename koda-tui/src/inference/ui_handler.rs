@@ -7,6 +7,7 @@
 //! request's id, and its answer goes back as the response to it
 //! ([`super::TurnCommand::Answer`]).
 
+use crate::notifications::Notification;
 use crate::scroll_buffer::ScrollBuffer;
 use crate::tui_types::{MenuContent, PromptMode};
 
@@ -26,6 +27,9 @@ pub(super) fn show_request(
 ) {
     match request {
         ServerRequest::UserInput { id, params } => {
+            crate::notifications::notify(Notification::UserInputRequested {
+                question: params.question.clone(),
+            });
             *prompt_mode = PromptMode::WizardInput {
                 label: "Answer".into(),
                 mask: false,
@@ -37,6 +41,9 @@ pub(super) fn show_request(
             };
         }
         ServerRequest::ToolCallApproval { id, params } => {
+            crate::notifications::notify(Notification::ApprovalRequested {
+                subject: format!("{}: {}", params.tool, params.detail),
+            });
             renderer.approval(&params.item_id, &params.changes, buffer);
             *menu = MenuContent::Approval {
                 id: id.clone(),
@@ -63,6 +70,9 @@ pub(super) fn show_request(
                 ]));
             }
             *menu = MenuContent::LoopCap { id: id.clone() };
+            crate::notifications::notify(Notification::ApprovalRequested {
+                subject: format!("Koda hit the iteration cap ({})", params.cap),
+            });
         }
     }
 }

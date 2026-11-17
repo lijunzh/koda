@@ -105,7 +105,8 @@ pub(super) async fn handle_crossterm_event_inline(
             )
             .await;
         }
-        _ => {}
+        Event::FocusGained => crate::notifications::set_focused(true),
+        Event::FocusLost => crate::notifications::set_focused(false),
     }
     false
 }

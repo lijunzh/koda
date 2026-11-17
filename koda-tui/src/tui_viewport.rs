@@ -705,7 +705,11 @@ pub(crate) fn init_terminal() -> Result<Term> {
         crossterm::terminal::EnterAlternateScreen,
         crossterm::event::EnableBracketedPaste,
         EnableSelectiveMouseCapture,
+        // Focus reports, so notifications go out only while the terminal
+        // isn't focused, as in Codex.
+        crossterm::event::EnableFocusChange,
     )?;
+    crate::notifications::init();
 
     set_panic_hook();
     install_signal_handler();
@@ -732,6 +736,7 @@ pub(crate) fn restore_terminal_modes() {
         std::io::stdout(),
         DisableSelectiveMouseCapture,
         crossterm::event::DisableBracketedPaste,
+        crossterm::event::DisableFocusChange,
         crossterm::terminal::LeaveAlternateScreen,
     );
     let _ = crossterm::terminal::disable_raw_mode();

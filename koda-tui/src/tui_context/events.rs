@@ -29,7 +29,8 @@ impl TuiContext {
             Event::Key(key) => {
                 return self.handle_idle_key(key).await;
             }
-            _ => {}
+            Event::FocusGained => crate::notifications::set_focused(true),
+            Event::FocusLost => crate::notifications::set_focused(false),
         }
         Ok(true)
     }

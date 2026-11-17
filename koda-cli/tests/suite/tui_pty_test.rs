@@ -2717,3 +2717,32 @@ async fn mode_plan_opens_the_tui_in_plan() {
     let screen = tui.screen();
     assert!(screen.contains("Proposed plan"), "{screen}");
 }
+
+/// Notifications, as Codex sends them: with the terminal reported unfocused
+/// (`ESC [ O`), an approval and the turn's end each post one; focused again
+/// (`ESC [ I`), a turn's end posts nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn notifications_go_out_only_while_the_terminal_is_unfocused() {
+    const OSC9: &str = "\x1b]9;";
+    let server = scripted_model(vec![tool_calls(&[write_file("a.txt")])]).await;
+    let home = home();
+    let mut tui = Tui::start_with_args(
+        home.path(),
+        &server.url(),
+        &["-c", "tui.notification_method=osc9"],
+        IDLE_HINT,
+    );
+
+    tui.type_text("\x1b[O");
+    let start = tui.output_len();
+    tui.submit("first prompt");
+    tui.wait_for_output_after(start, &format!("{OSC9}Approval requested: Write"));
+    tui.approve_until(|| home.path().join("a.txt").exists());
+    tui.wait_for_output_after(start, &format!("{OSC9}All done."));
+
+    tui.type_text("\x1b[I");
+    let start = tui.output_len();
+    tui.submit_and_finish("second prompt", "All done.");
+    let after = String::from_utf8_lossy(&tui.output.lock().unwrap()[start..]).to_string();
+    assert!(!after.contains(OSC9), "notified while focused: {after:?}");
+}

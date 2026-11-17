@@ -359,6 +359,9 @@ stream_idle_timeout_ms = 600000
 
 [tui]
 syntax_highlight = false
+notifications = ["approval-requested"]
+notification_method = "bel"
+notification_condition = "always"
 
 [sandbox]
 allow_local_binding = true
@@ -374,6 +377,20 @@ allow_local_binding = true
     assert_eq!(anthropic.stream_max_retries, Some(3));
     assert_eq!(anthropic.stream_idle_timeout_ms, Some(600_000));
     assert_eq!(config.tui.syntax_highlight, Some(false));
+    assert_eq!(
+        config.tui.notifications,
+        Some(crate::Notifications::Custom(vec![
+            "approval-requested".into()
+        ]))
+    );
+    assert_eq!(
+        config.tui.notification_method,
+        Some(crate::NotificationMethod::Bel)
+    );
+    assert_eq!(
+        config.tui.notification_condition,
+        Some(crate::NotificationCondition::Always)
+    );
     assert_eq!(config.sandbox.allow_local_binding, Some(true));
 
     let (_dir2, bad) = file_with("mode = \"yolo\"\n");
@@ -511,4 +528,35 @@ fn test_config_dir_with_home() {
     crate::runtime_env::unmask("XDG_CONFIG_HOME");
     // Should end with koda regardless of base path
     assert!(dir.ends_with("koda"), "got: {dir:?}");
+}
+
+#[test]
+fn notifications_take_a_bool_or_a_list_from_the_command_line() {
+    let (_dir, file) = file_with("[tui]\nnotifications = true\n");
+    let off = file
+        .clone()
+        .with_overrides(vec![parse_override("tui.notifications=false").unwrap()])
+        .load()
+        .unwrap();
+    assert_eq!(
+        off.config.tui.notifications,
+        Some(crate::Notifications::Enabled(false))
+    );
+    let some = file
+        .with_overrides(vec![
+            parse_override(r#"tui.notifications=["agent-turn-complete"]"#).unwrap(),
+            parse_override("tui.notification_method=osc777").unwrap(),
+        ])
+        .load()
+        .unwrap();
+    assert_eq!(
+        some.config.tui.notifications,
+        Some(crate::Notifications::Custom(vec![
+            "agent-turn-complete".into()
+        ]))
+    );
+    assert_eq!(
+        some.config.tui.notification_method,
+        Some(crate::NotificationMethod::Osc777)
+    );
 }

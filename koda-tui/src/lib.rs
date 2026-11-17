@@ -33,6 +33,7 @@ pub(crate) mod legacy_clones;
 pub(crate) mod md_render;
 pub(crate) mod mode;
 pub(crate) mod mouse_select;
+pub(crate) mod notifications;
 pub(crate) mod panic_log;
 pub mod protocol_text;
 pub mod providers;
