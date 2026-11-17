@@ -43,7 +43,7 @@ impl Providers {
     }
 
     /// The id of the provider a person typed (`--provider`), matched as
-    /// [`Self::find`] matches, since `session/start` takes ids only, as
+    /// `find` matches, since `session/start` takes ids only, as
     /// Codex's `thread/start` does. A name the list doesn't have goes as
     /// typed: the host refuses one it doesn't know, with its ids.
     pub fn id_for(&self, typed: &str) -> String {
