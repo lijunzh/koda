@@ -211,6 +211,56 @@ pub struct TuiToml {
     /// Colour code blocks and diffs; `false` for plain text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub syntax_highlight: Option<bool>,
+    /// Desktop notifications or the bell when a turn ends or Koda waits for
+    /// you, as Codex's `tui.notifications`: `true` (unset), `false`, or the
+    /// events to notify for (`agent-turn-complete`, `approval-requested`,
+    /// `user-input-requested`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notifications: Option<Notifications>,
+    /// How to notify: `auto` (unset), `osc9`, `osc777` or `bel`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notification_method: Option<NotificationMethod>,
+    /// When to notify: `unfocused` (unset) or `always`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notification_condition: Option<NotificationCondition>,
+}
+
+/// `[tui] notifications`: all on or off, or the events to notify for, as
+/// Codex's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Notifications {
+    /// Every event, or none.
+    Enabled(bool),
+    /// Only these events.
+    Custom(Vec<String>),
+}
+
+/// `[tui] notification_method`, as Codex's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NotificationMethod {
+    /// A desktop notification (OSC 9) in Ghostty, iTerm2, Kitty, Warp and
+    /// WezTerm; the bell elsewhere.
+    #[default]
+    Auto,
+    /// OSC 9, a desktop notification.
+    Osc9,
+    /// OSC 777, a desktop notification with a title.
+    Osc777,
+    /// The bell.
+    Bel,
+}
+
+/// `[tui] notification_condition`, as Codex's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NotificationCondition {
+    /// Only while the terminal isn't focused, as far as it reports focus.
+    #[default]
+    Unfocused,
+    /// Whether or not it's focused.
+    Always,
 }
 
 impl TuiToml {

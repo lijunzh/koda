@@ -80,4 +80,46 @@ and don't ask again this session for the same command or file.
 
 See [Approval & trust modes](./approval.md) for the full reference.
 
+## Notifications
+
+When a turn ends, a tool call waits for approval or the model asks a
+question, Koda tells you, as Codex does, while the terminal isn't focused:
+
+- **Ghostty, iTerm2, Kitty, Warp and WezTerm** get a desktop notification
+  (OSC 9) with the start of the reply, the command waiting, or the question.
+  iTerm2 shows it once its alert settings are on (Settings → Profiles →
+  Terminal → Notification Center Alerts).
+- **Other terminals**, Apple Terminal among them, get the bell. Turn on
+  "Audible bell" or "Visual bell" in Terminal's profile to hear or see it.
+
+Koda knows the terminal isn't focused from the focus reports the terminal
+sends when you switch away and back. Until the first one arrives it counts the
+terminal as focused, so a terminal that never reports focus never notifies;
+set `notification_condition = "always"` there. To check yours, run this,
+switch to another window and back, then press `Ctrl+D`; `^[[O` and `^[[I`
+mean it reports focus:
+
+```sh
+printf '\e[?1004h'; command cat -v; printf '\e[?1004l'
+```
+
+(`command` skips a `cat` alias such as `bat`; the last `printf` turns the
+reports off again.)
+
+**Inside tmux,** add `set -g focus-events on` to `~/.tmux.conf` so tmux
+passes focus reports on. The bell needs nothing more; a desktop notification
+also needs `set -g allow-passthrough on`.
+
+Settings, in `[tui]` of `config.toml`:
+
+```toml
+[tui]
+notifications = true            # or false, or a list of events
+notification_method = "auto"    # or "osc9", "osc777", "bel"
+notification_condition = "unfocused"  # or "always"
+```
+
+The events are `agent-turn-complete`, `approval-requested` and
+`user-input-requested`.
+
 See also [Slash commands](./commands.md) and [Keybindings](./keybindings.md).

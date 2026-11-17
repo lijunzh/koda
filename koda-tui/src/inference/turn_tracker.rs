@@ -29,6 +29,9 @@ pub(crate) struct TurnTracker {
     /// The model proposed a plan: one of its replies, not a sub-agent's,
     /// has a `<proposed_plan>` block.
     proposed_plan: bool,
+    /// The model's last reply this turn, not a sub-agent's: the turn-ended
+    /// notification shows its start.
+    last_reply: Option<String>,
 }
 
 impl TurnTracker {
@@ -48,9 +51,11 @@ impl TurnTracker {
             {
                 if let Item::AgentMessage { text, .. } = &done.item
                     && done.parent_item_id.is_none()
-                    && crate::widgets::plan_menu::proposes_plan(text)
                 {
-                    self.proposed_plan = true;
+                    if crate::widgets::plan_menu::proposes_plan(text) {
+                        self.proposed_plan = true;
+                    }
+                    self.last_reply = Some(text.clone());
                 }
                 if let Item::UserMessage {
                     client_message_ids, ..
@@ -77,6 +82,11 @@ impl TurnTracker {
     /// The turn's `turn/completed`, once it has arrived.
     pub(crate) fn completed(&self) -> Option<&Turn> {
         self.completed.as_ref()
+    }
+
+    /// The model's last reply this turn.
+    pub(crate) fn last_reply(&self) -> Option<&str> {
+        self.last_reply.as_deref()
     }
 
     /// Whether the model proposed a plan this turn.

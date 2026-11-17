@@ -82,6 +82,9 @@ Every key, in Codex's names where Codex has one:
 | `[model_providers.<id>]` | Per provider: `base_url`, `request_max_retries`, `stream_max_retries`, `stream_idle_timeout_ms` (0 turns the limit off) |
 | `[mcp_servers.<name>]` | An MCP server every new session starts |
 | `[tui] syntax_highlight` | `false` shows code and diffs without colour. Read by the TUI from its own machine's file |
+| `[tui] notifications` | Notify when a turn ends or Koda waits for you: `true` (unset), `false`, or the events, from `agent-turn-complete`, `approval-requested`, `user-input-requested` (see [TUI](./tui.md#notifications)) |
+| `[tui] notification_method` | `auto` (unset): a desktop notification in Ghostty, iTerm2, Kitty, Warp and WezTerm, the bell elsewhere; or `osc9`, `osc777`, `bel` |
+| `[tui] notification_condition` | `unfocused` (unset): only while the terminal isn't focused; or `always` |
 | `log_dir` | Also write the log to `<log_dir>/koda.log`, at `RUST_LOG`'s level, as Codex's `log_dir` does; relative to `~/.config/koda/`. Unset, the log database is the only log (see [Debugging a run](./debugging.md#the-log)) |
 | `[sandbox] allow_local_binding` | `true` lets sandboxed commands on macOS use any local port (see [Sandbox](./sandbox.md#when-a-command-needs-to-leave-the-sandbox)) |
 
