@@ -257,10 +257,12 @@ pub fn render_deferred_tools_section(servers: &[String]) -> String {
     if servers.is_empty() {
         return String::new();
     }
+    let search = crate::providers::anthropic::TOOL_SEARCH_NAME;
     format!(
         "\n\n## MCP tools on demand\n\nThe tools of these MCP servers aren't listed up front: \
-         {}. When a task needs one, search for it with `tool_search_tool_bm25` (in plain words: \
-         what you want to do), then call what it finds.\n",
+         {}. When a task needs one, search for it with `{search}` (in plain words: what you want \
+         to do), then call what it finds. Call the search by exactly that name, lowercase with \
+         underscores: it is the API's own tool, not one of Koda's, whose names are capitalized.\n",
         servers.join(", ")
     )
 }
@@ -342,6 +344,15 @@ fn list_available_agents(project_root: &Path) -> Vec<(String, Option<String>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_deferred_section_names_the_search_exactly() {
+        let section = render_deferred_tools_section(&["mail".into()]);
+        assert!(section.contains("mail."));
+        assert!(section.contains("`tool_search_tool_bm25`"));
+        assert!(section.contains("exactly that name"));
+        assert_eq!(render_deferred_tools_section(&[]), "");
+    }
     use crate::skills::SkillRegistry;
     use tempfile::TempDir;
 
