@@ -1115,6 +1115,7 @@ async fn the_first_run_greets_and_still_answers() {
     let home = tempfile::tempdir().unwrap();
     // Nothing chooses the provider: the first run asks which one.
     let mut tui = Tui::start_unchosen(home.path(), &server.url(), "Welcome to Koda");
+    tui.wait_for_screen("koda --oss");
     tui.wait_for_screen("Choose your LLM provider");
     tui.type_text(ESC);
     tui.wait_for_screen_without("Choose your LLM provider");

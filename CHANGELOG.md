@@ -12,6 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 - **The session-start git context names the default branch**, the one work usually merges into, as Claude Code's snapshot does and as Codex finds it without the network: a remote's `HEAD`, else a local `main` or `master`.
 - **`/diff` includes new files git doesn't track yet,** as Codex's does: listed in the summary, and as added files in what `/diff review` and `/diff commit` send.
+- **`koda --oss` says what it will download, and warns when the disk is short.** Before llama.cpp downloads a model, Koda names it, its size and the Hugging Face cache it goes into, and says when the free space there is too little (Flash-Next is about 105 GB). Nothing is said for a model already on disk, in LM Studio or in the cache.
+- **The first run suggests `koda --oss`** to anyone without an API key, under the provider picker's welcome.
 
 ### Security
 
