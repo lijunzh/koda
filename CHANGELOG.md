@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-11-16
+
 ### Added
 
 - **`koda --worktree` runs a session in a new managed Git worktree, as Codex's `--worktree` does.** A detached checkout of the project's `HEAD` in `~/.config/koda/worktrees/<id>/<project>`, outside the repository, made through `koda-git`'s hardened runner (filters off while the files are checked out); the session that runs there is recorded in the worktree's git metadata. For new sessions, `koda` and `koda exec`; `resume` and `fork` refuse it. Koda keeps the worktree and prints how to remove it.
@@ -23,7 +25,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
-- **The TUI is its own crate, `koda-tui`, and `--oss` is `koda-oss`, as Codex keeps `codex-tui` apart from `codex-cli`.** `koda-cli` stays the `koda` command (arguments, `koda exec`, `koda serve`, `koda mcp`), so `cargo install koda-cli` is unchanged; it now depends on the two new published crates. Nothing a user sees changes, except that the TUI's log lines are now filed under `koda_tui` rather than `koda_cli` (`RUST_LOG=koda_tui=debug`; a crash is still `koda_cli::panic`).
+- **The TUI is its own crate, `koda-tui`, and `--oss` is `koda-oss`, as Codex keeps `codex-tui` apart from `codex-cli`.** `koda-cli` stays the `koda` command (arguments, `koda exec`, `koda serve`, `koda mcp`), so `cargo install koda-cli` is unchanged; it now depends on these two and on `koda-git` (under Security), three crates new on crates.io. Nothing a user sees changes, except that the TUI's log lines are now filed under `koda_tui` rather than `koda_cli` (`RUST_LOG=koda_tui=debug`; a crash is still `koda_cli::panic`).
 
 ## [0.7.4] - 2026-11-16
 
