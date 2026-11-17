@@ -41,7 +41,7 @@ async fn the_client_connects_to_the_shared_server() {
     };
     let deadline = Instant::now() + Duration::from_secs(30);
     let client = loop {
-        match InProcessClient::connect(&socket, info.clone()).await {
+        match InProcessClient::connect(&socket, dir.path().to_path_buf(), info.clone()).await {
             Ok(client) => break client,
             Err(e) => {
                 assert!(Instant::now() < deadline, "never connected: {e}");
@@ -58,7 +58,12 @@ async fn the_client_connects_to_the_shared_server() {
     client.shutdown().await;
 
     // No server: a clear error, not a hang.
-    let missing = InProcessClient::connect(&dir.path().join("nothing.sock"), info).await;
+    let missing = InProcessClient::connect(
+        &dir.path().join("nothing.sock"),
+        dir.path().to_path_buf(),
+        info,
+    )
+    .await;
     assert!(
         missing
             .as_ref()

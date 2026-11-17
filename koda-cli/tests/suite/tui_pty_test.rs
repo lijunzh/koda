@@ -110,18 +110,35 @@ impl Tui {
     }
 
     fn start_command(home: &Path, flags: &[&str], model: Option<&str>, ready: &str) -> Self {
+        Self::launch(home, flags, model, ready, true)
+    }
+
+    /// `koda` on the shared server: none of the config flags the other
+    /// tests pin (`--max-context-tokens`, `--mode`), which keep a run in
+    /// its own process. The server it starts is stopped by [`StopServer`].
+    fn start_shared(home: &Path, base_url: &str, extra: &[&str], ready: &str) -> Self {
+        let mut flags = vec!["--provider", "lmstudio", "--base-url", base_url];
+        flags.extend(extra);
+        Self::launch(home, &flags, Some("stub-model"), ready, false)
+    }
+
+    fn launch(home: &Path, flags: &[&str], model: Option<&str>, ready: &str, pinned: bool) -> Self {
         let (master, slave) = open_pty();
         let mut command = Command::new(env!("CARGO_BIN_EXE_koda"));
+        command.args(model.map(|m| ["--model", m]).into_iter().flatten());
+        if pinned {
+            command
+                .args(["--max-context-tokens", "64000"])
+                // Safe unless the test picks a mode (clap refuses `--mode`
+                // twice).
+                .args(
+                    (!flags.contains(&"--mode"))
+                        .then_some(["--mode", "safe"])
+                        .into_iter()
+                        .flatten(),
+                );
+        }
         command
-            .args(model.map(|m| ["--model", m]).into_iter().flatten())
-            .args(["--max-context-tokens", "64000"])
-            // Safe unless the test picks a mode (clap refuses `--mode` twice).
-            .args(
-                (!flags.contains(&"--mode"))
-                    .then_some(["--mode", "safe"])
-                    .into_iter()
-                    .flatten(),
-            )
             .args(flags)
             .arg("--project-root")
             .arg(home)
@@ -2875,4 +2892,139 @@ async fn fork_worktree_opens_the_copy_in_a_new_checkout() {
             .await
             .contains("carry it on")
     );
+}
+
+/// Stops the shared server a test's TUI started, whatever happens.
+struct StopServer<'a>(&'a Path);
+
+impl Drop for StopServer<'_> {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new(env!("CARGO_BIN_EXE_koda"))
+            .args(["serve", "--stop"])
+            .env("HOME", self.0)
+            .env("XDG_CONFIG_HOME", self.0.join(".config"))
+            .output();
+    }
+}
+
+/// The TUI works on the shared server by default, as Codex's TUI uses its
+/// daemon: it starts `koda serve` when none answers, the server outlives the
+/// TUI, and the next TUI resumes the session there. `--no-daemon` keeps the
+/// host in the TUI's process, as do `-c` values.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_tui_works_on_the_shared_server() {
+    let server = scripted_model(vec![]).await;
+    let home = home();
+    let _stop = StopServer(home.path());
+    let socket = home.path().join(".config/koda/serve/koda.sock");
+
+    let mut tui = Tui::start_shared(home.path(), &server.url(), &["--no-daemon"], IDLE_HINT);
+    tui.submit_and_finish("in my own process", "All done.");
+    tui.type_text("/exit\r");
+    assert!(tui.exits());
+    assert!(!socket.exists(), "--no-daemon starts no server");
+
+    let mut tui = Tui::start_shared(home.path(), &server.url(), &[], IDLE_HINT);
+    assert!(socket.exists(), "the TUI started koda serve");
+    tui.submit_and_finish("on the shared server", "All done.");
+    tui.type_text("/exit\r");
+    assert!(tui.exits());
+    assert!(socket.exists(), "the server outlives the TUI");
+
+    // The next TUI resumes the session on the server.
+    let mut tui = Tui::start_shared(
+        home.path(),
+        &server.url(),
+        &["resume", "--last", "and again"],
+        "session resumed",
+    );
+    let sent = wait_for_model_call(&server, 3).await;
+    assert!(
+        sent.contains("on the shared server"),
+        "history lost: {sent}"
+    );
+    assert!(sent.contains("and again"), "{sent}");
+    tui.wait_for_screen("All done.");
+    tui.type_text("/exit\r");
+    assert!(tui.exits());
+}
+
+/// A server of another version on Koda's socket, as an update leaves one:
+/// it answers `initialize` with an old version, and `serve/stop` as told.
+fn old_server(socket: &Path, stops: bool) -> tokio::task::JoinHandle<()> {
+    std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+    std::fs::set_permissions(
+        socket.parent().unwrap(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .unwrap();
+    let listener = tokio::net::UnixListener::bind(socket).unwrap();
+    let socket = socket.to_path_buf();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                return;
+            };
+            let (input, mut output) = stream.into_split();
+            let mut lines = tokio::io::BufReader::new(input).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                let result = match request["method"].as_str() {
+                    Some("initialize") => serde_json::json!({
+                        "serverInfo": {"name": "koda", "version": "0.0.1"},
+                        "protocolVersion": 2,
+                    }),
+                    Some("serve/stop") if stops => serde_json::json!({"stopped": true}),
+                    Some("serve/stop") => {
+                        serde_json::json!({"stopped": false, "reason": "session s1 is in use"})
+                    }
+                    _ => continue,
+                };
+                let answer =
+                    serde_json::json!({"jsonrpc": "2.0", "id": request["id"], "result": result});
+                let _ = output.write_all(format!("{answer}\n").as_bytes()).await;
+                if request["method"] == "serve/stop" && stops {
+                    let _ = std::fs::remove_file(&socket);
+                    return;
+                }
+            }
+        }
+    })
+}
+
+/// A server of another version is replaced when nothing is in use, as
+/// Claude Code's supervisor restarts onto a new version; a busy one is left
+/// alone and the TUI runs in its own process, saying so, as Codex falls back.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_of_another_version_is_replaced_or_left_alone() {
+    let server = scripted_model(vec![]).await;
+    let home = home();
+    let _stop = StopServer(home.path());
+    let socket = home.path().join(".config/koda/serve/koda.sock");
+
+    let busy = old_server(&socket, false);
+    let mut tui = Tui::start_shared(home.path(), &server.url(), &[], IDLE_HINT);
+    tui.wait_for_screen("Running without the shared background server");
+    tui.submit_and_finish("beside a busy server", "All done.");
+    tui.type_text("/exit\r");
+    assert!(tui.exits());
+    busy.abort();
+    let _ = std::fs::remove_file(&socket);
+
+    let idle = old_server(&socket, true);
+    let mut tui = Tui::start_shared(home.path(), &server.url(), &[], IDLE_HINT);
+    tui.submit_and_finish("on a fresh server", "All done.");
+    let _ = idle.await;
+    assert!(
+        socket.exists(),
+        "the TUI started its own server in its place"
+    );
+    let screen = tui.screen();
+    assert!(
+        !screen.contains("Running without the shared background server"),
+        "{screen}"
+    );
+    tui.type_text("/exit\r");
+    assert!(tui.exits());
 }

@@ -59,8 +59,10 @@ pub(crate) async fn all_sessions(client: &InProcessClient) -> anyhow::Result<Vec
     let mut cursor = None;
     loop {
         let page = client
+            // This client's project: on the shared server, the server's own
+            // folder is another's.
             .request::<methods::SessionList>(SessionListParams {
-                cwd: None,
+                cwd: Some(client.project_root().display().to_string()),
                 limit: Some(PAGE),
                 cursor,
             })

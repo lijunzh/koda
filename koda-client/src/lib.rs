@@ -73,6 +73,10 @@ pub struct InProcessClient {
     host: JoinHandle<()>,
     events: mpsc::UnboundedReceiver<Outgoing>,
     server: InitializeResponse,
+    /// The folder this client's sessions work in, which it names in
+    /// `session/start` and lists sessions and skills for: one shared server
+    /// serves every project.
+    project_root: PathBuf,
 }
 
 impl InProcessClient {
@@ -124,6 +128,7 @@ impl InProcessClient {
             home,
             client_info,
         } = args;
+        let project_root_for_client = project_root.clone();
         let launched = launch(
             HostStart {
                 config_file,
@@ -135,6 +140,7 @@ impl InProcessClient {
         )
         .await?;
         let mut client = Self {
+            project_root: project_root_for_client,
             requests: launched.requests,
             host: launched.host,
             events: launched.events,
@@ -154,16 +160,19 @@ impl InProcessClient {
 
     /// What the server said in `initialize`.
     /// Connect to the shared server (`koda serve`) at `socket` and
-    /// initialize, instead of starting a host in this process: the same
+    /// initialize, for sessions in `project_root`, instead of starting a host
+    /// in this process: the same
     /// client, its requests and events going over the socket. [`Self::shutdown`]
     /// only hangs up; the sessions stay on the server.
     #[cfg(unix)]
     pub async fn connect(
         socket: &std::path::Path,
+        project_root: PathBuf,
         client_info: ClientInfo,
     ) -> Result<Self, RequestError> {
         let connected = koda_server::socket::connect(socket).await?;
         let mut client = Self {
+            project_root,
             requests: connected.requests,
             host: connected.host,
             events: connected.events,
@@ -179,6 +188,11 @@ impl InProcessClient {
             .request::<methods::Initialize>(InitializeParams { client_info })
             .await?;
         Ok(client)
+    }
+
+    /// The folder this client's sessions work in.
+    pub fn project_root(&self) -> &std::path::Path {
+        &self.project_root
     }
 
     pub fn server(&self) -> &InitializeResponse {

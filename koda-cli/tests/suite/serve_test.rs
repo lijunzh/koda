@@ -402,3 +402,32 @@ async fn serve_stop_and_the_idle_exit() {
     assert!(status.success(), "{status:?}");
     assert!(!socket.exists());
 }
+
+/// `--no-daemon` and `--remote` are the TUI's: `koda exec` keeps its host
+/// in its own process and says so, and `--remote` takes `unix://PATH`.
+#[test]
+fn the_tuis_server_flags_are_refused_where_they_dont_apply() {
+    let root = tempfile::tempdir().unwrap();
+    let run = |args: &[&str]| {
+        std::process::Command::new(koda_bin())
+            .args(args)
+            .env("XDG_CONFIG_HOME", root.path())
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    };
+    for args in [
+        &["exec", "--no-daemon", "hi"][..],
+        &["exec", "--remote", "unix:///tmp/k.sock", "hi"],
+    ] {
+        let out = run(args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("for the TUI"),
+            "{args:?}"
+        );
+    }
+    let out = run(&["--remote", "tcp://127.0.0.1:9"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("unix://PATH"));
+}

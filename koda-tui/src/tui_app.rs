@@ -45,6 +45,8 @@ pub struct Start {
     /// Called with the first session's id once it opens (`--worktree`
     /// records it in the worktree).
     pub on_session: Option<SessionHook>,
+    /// Where the host is: the shared server, or this process.
+    pub backend: crate::backend::Backend,
 }
 
 pub async fn run(
@@ -61,9 +63,18 @@ pub async fn run(
         pick_session,
         fork,
         on_session,
+        backend,
     } = start;
-    let mut ctx =
-        TuiContext::new(project_root, named, resume, fork, version_check, first_run).await?;
+    let mut ctx = TuiContext::new(
+        project_root,
+        named,
+        resume,
+        fork,
+        version_check,
+        first_run,
+        backend,
+    )
+    .await?;
     if let Some(on_session) = on_session {
         on_session(&ctx.session.id);
     }

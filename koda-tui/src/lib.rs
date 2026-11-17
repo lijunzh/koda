@@ -17,6 +17,7 @@ compile_error!(
 );
 
 pub(crate) mod ansi_parse;
+pub mod backend;
 pub(crate) mod child_activity;
 pub(crate) mod clipboard;
 pub(crate) mod clipboard_image;

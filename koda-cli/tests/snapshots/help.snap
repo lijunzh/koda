@@ -58,6 +58,12 @@ Options:
       --worktree
           Run the session in a new managed Git worktree, as Codex's `--worktree` does: a detached checkout of the project's HEAD under Koda's config folder (worktrees/), outside the repository. Kept when Koda exits; remove it with `git worktree remove <path>`. With `koda fork <id>`, the fork opens in a checkout of the repository the session worked in
 
+      --no-daemon
+          Run the TUI's host in this process, not on the shared server (koda serve), as Codex's --no-daemon does
+
+      --remote <ADDR>
+          Use the shared server at this address (unix://PATH) instead of Koda's own; it isn't started or replaced
+
   -a, --agent <AGENT>
           Agent to use: a built-in, or a JSON file in .koda/agents/ or ~/.config/koda/agents/ (default: config.toml's `agent`, else `default`)
 

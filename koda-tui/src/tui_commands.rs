@@ -163,7 +163,13 @@ pub async fn handle_slash_command(
         "/memory" => SlashAction::Memory(arg.map(str::to_string)),
 
         "/skills" => {
-            crate::tui_context::skills::show_skills(&client.request_handle(), arg, buffer).await;
+            crate::tui_context::skills::show_skills(
+                &client.request_handle(),
+                client.project_root(),
+                arg,
+                buffer,
+            )
+            .await;
             SlashAction::Continue
         }
 
@@ -252,7 +258,7 @@ pub(crate) async fn list_sessions(
     use koda_client::protocol::{methods, session::SessionListParams};
     client
         .request::<methods::SessionList>(SessionListParams {
-            cwd: None,
+            cwd: Some(client.project_root().display().to_string()),
             limit: Some(limit),
             cursor: None,
         })
