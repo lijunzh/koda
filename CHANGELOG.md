@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A turn cut off before its first reply reads as interrupted after a restart.** When the server was killed mid-turn before it had stored the turn's own record (it stores them in the background), the turn was rebuilt from its messages and, having only the question, listed as `completed`. A last turn whose question has no reply is now `interrupted`, as one left mid-way already was.
+
 ## [0.7.6] - 2026-11-17
 
 ### Added
