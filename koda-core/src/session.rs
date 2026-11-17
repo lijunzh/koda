@@ -361,7 +361,7 @@ impl KodaSession {
             // agents survive across turns and the cache yields
             // cross-turn hits.
             bg_agents,
-            git_snapshot: crate::git::GitSnapshot::default(),
+            git_snapshot: crate::git::GitSnapshot::new(config.commit_attribution),
             sub_agent_cache: SubAgentCache::new(),
             session_allows: Default::default(),
             // No forwarder yet; clients (the TUI) call
