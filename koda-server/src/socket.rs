@@ -848,3 +848,106 @@ async fn connection(id: u64, stream: UnixStream, router: Arc<Router>, initialize
     outbox.close();
     let _ = writer.await;
 }
+
+/// Connect to the shared server at `socket` as a client: the same parts
+/// [`crate::in_process::launch`] gives for a host in this process, so a
+/// client works either way. Requests go out as JSON-RPC lines, each answered
+/// on its own; the server's notifications and requests arrive on `events`.
+/// Stopping it ([`RequestHandle::shutdown`]) only hangs up: the sessions
+/// stay on the server, as a session outlives its client.
+pub async fn connect(socket: &Path) -> Result<crate::in_process::Launched, RequestError> {
+    let stream = UnixStream::connect(socket)
+        .await
+        .map_err(|e| RequestError::Connect(format!("{}: {e}", socket.display())))?;
+    let (input, mut output) = stream.into_split();
+    let (commands, mut incoming) = tokio::sync::mpsc::channel::<HostCommand>(64);
+    let (events, received) = tokio::sync::mpsc::unbounded_channel();
+    let task = tokio::spawn(async move {
+        use tokio::io::AsyncWriteExt;
+        let mut waiting: HashMap<RequestId, oneshot::Sender<crate::host::Answer>> = HashMap::new();
+        let mut lines = BufReader::new(input);
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            tokio::select! {
+                command = incoming.recv() => {
+                    let out = match command {
+                        Some(HostCommand::Request { request, reply }) => {
+                            waiting.insert(request.id.clone(), reply);
+                            serde_json::to_string(&request)
+                        }
+                        Some(HostCommand::Response { id, result: Ok(result) }) => {
+                            serde_json::to_string(&rpc::Response::new(id, result))
+                        }
+                        Some(HostCommand::Response { id, result: Err(error) }) => {
+                            error_line(Some(id), error)
+                        }
+                        Some(HostCommand::Shutdown { done }) => {
+                            let _ = output.shutdown().await;
+                            let _ = done.send(());
+                            break;
+                        }
+                        None => break,
+                    };
+                    let Ok(out) = out else { continue };
+                    if output.write_all(format!("{out}\n").as_bytes()).await.is_err() {
+                        break;
+                    }
+                }
+                read = lines.read_until(b'\n', &mut line) => {
+                    match read {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                    let text = line.strip_suffix(b"\n").unwrap_or(&line);
+                    let Ok(message) = parse(text) else {
+                        tracing::warn!("koda serve sent a line that isn't JSON-RPC");
+                        continue;
+                    };
+                    match message {
+                        Message::Response(response) => {
+                            if let Some(reply) = waiting.remove(&response.id) {
+                                let _ = reply.send(Ok(response.result));
+                            }
+                        }
+                        Message::Error(ErrorResponse { id: Some(id), error, .. }) => {
+                            if let Some(reply) = waiting.remove(&id) {
+                                let _ = reply.send(Err(error));
+                            }
+                        }
+                        Message::Error(ErrorResponse { id: None, error, .. }) => {
+                            tracing::warn!("koda serve refused a line: {error}");
+                        }
+                        Message::Request(request) => {
+                            match koda_protocol::ServerRequest::try_from(request) {
+                                Ok(request) => {
+                                    let _ = events.send(crate::events::Outgoing::Request(request));
+                                }
+                                Err(e) => tracing::warn!("koda serve sent a request Koda doesn't know: {e}"),
+                            }
+                        }
+                        Message::Notification(notification) => {
+                            match koda_protocol::ServerNotification::try_from(notification) {
+                                Ok(notification) => {
+                                    let _ = events
+                                        .send(crate::events::Outgoing::Notification(notification));
+                                }
+                                Err(e) => tracing::debug!("koda serve sent a notification Koda doesn't know: {e}"),
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Requests still waiting see the connection closed.
+        drop(waiting);
+    });
+    Ok(crate::in_process::Launched {
+        requests: RequestHandle {
+            commands,
+            next_id: Arc::new(std::sync::atomic::AtomicI64::new(1)),
+        },
+        host: task,
+        events: received,
+    })
+}
