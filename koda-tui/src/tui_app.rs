@@ -65,6 +65,13 @@ pub async fn run(
             "  \u{1f43b} Welcome to Koda! Let's pick your LLM provider.",
             Style::default().fg(Color::Cyan),
         ));
+        // No key, no server: `koda --oss` runs a local model with nothing
+        // to set up, started and stopped with Koda.
+        ctx.emit(Line::styled(
+            "  No API key? Quit and run `koda --oss` to try Koda on a local model \
+             (llama.cpp; see the Local models page).",
+            Style::default().fg(Color::DarkGray),
+        ));
     }
 
     // The dialogs' answers and steering text, from the key handlers to the

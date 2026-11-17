@@ -39,8 +39,10 @@ oss_model = "ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M"   # ~22 GB; 79 of 93 in K
 ```
 
 **The download** happens once, on the first run, into the Hugging Face cache
-(`~/.cache/huggingface/hub/`), done by llama.cpp; Koda shows progress while
-it waits. A model LM Studio has already downloaded (in `~/.lmstudio/models/`)
+(`~/.cache/huggingface/hub/`, or `HF_HUB_CACHE`, or `HF_HOME/hub`), done by
+llama.cpp; Koda shows progress while it waits. Before it starts, Koda says
+how big the download is and where it goes, and warns when the disk there has
+too little room for it (Flash-Next is about 105 GB). A model LM Studio has already downloaded (in `~/.lmstudio/models/`)
 is used where it is, with the vision projector beside it, instead of being
 downloaded again.
 

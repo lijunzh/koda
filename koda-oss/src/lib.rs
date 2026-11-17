@@ -242,6 +242,98 @@ pub fn start_notice(model: &OssModel, unified_memory: Option<u64>) -> Vec<String
     lines
 }
 
+/// What to say before llama.cpp downloads `model`: where it goes, how big
+/// it is, and whether the disk there has room. `None` when nothing will be
+/// downloaded: a file on disk, a copy LM Studio has, or one already in the
+/// Hugging Face cache. `home` is the user's home folder.
+pub fn download_notice(model: &OssModel, home: Option<&Path>) -> Option<String> {
+    if local_file(model, home).is_some() {
+        return None;
+    }
+    let cache = hf_cache(|name| std::env::var(name).ok(), home)?;
+    if in_hf_cache(model, &cache) {
+        return None;
+    }
+    Some(download_message(model, &cache, free_bytes(&cache)))
+}
+
+/// The Hugging Face cache llama.cpp's `-hf` downloads into, as the Hugging
+/// Face tools find it: `HF_HUB_CACHE`, else `HF_HOME/hub`, else
+/// `~/.cache/huggingface/hub`.
+fn hf_cache(var: impl Fn(&str) -> Option<String>, home: Option<&Path>) -> Option<PathBuf> {
+    let set = |name: &str| var(name).filter(|value| !value.is_empty());
+    if let Some(dir) = set("HF_HUB_CACHE") {
+        return Some(PathBuf::from(dir));
+    }
+    if let Some(dir) = set("HF_HOME") {
+        return Some(PathBuf::from(dir).join("hub"));
+    }
+    Some(home?.join(".cache/huggingface/hub"))
+}
+
+/// Whether `model`'s file is already in the Hugging Face cache at `cache`:
+/// a `.gguf` with its quant in the name under
+/// `models--<org>--<repo>/snapshots/`.
+fn in_hf_cache(model: &OssModel, cache: &Path) -> bool {
+    let Some((repo, quant)) = model.spec.split_once(':') else {
+        return false;
+    };
+    let quant = quant.to_ascii_lowercase();
+    let snapshots = cache
+        .join(format!("models--{}", repo.replace('/', "--")))
+        .join("snapshots");
+    let Ok(revisions) = std::fs::read_dir(snapshots) else {
+        return false;
+    };
+    revisions.flatten().any(|revision| {
+        std::fs::read_dir(revision.path()).is_ok_and(|files| {
+            files.flatten().any(|file| {
+                let name = file.file_name().to_string_lossy().to_ascii_lowercase();
+                name.ends_with(".gguf") && !name.starts_with("mmproj") && name.contains(&quant)
+            })
+        })
+    })
+}
+
+/// Free bytes on the disk that holds `path`, or the nearest folder above it
+/// that exists.
+fn free_bytes(path: &Path) -> Option<u64> {
+    let existing = path.ancestors().find(|dir| dir.exists())?;
+    let c_path = std::ffi::CString::new(existing.as_os_str().as_encoded_bytes()).ok()?;
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: `c_path` is a valid C string and `stat` a writable statvfs.
+    if unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) } != 0 {
+        return None;
+    }
+    #[allow(clippy::unnecessary_cast)]
+    Some(stat.f_bavail as u64 * stat.f_frsize as u64)
+}
+
+/// The download notice for `model` going to `cache`, with `free` bytes there.
+fn download_message(model: &OssModel, cache: &Path, free: Option<u64>) -> String {
+    const GB: f64 = 1_000_000_000.0;
+    let size = model
+        .size_gb
+        .map(|gb| format!(" (about {gb} GB)"))
+        .unwrap_or_default();
+    let mut message = format!(
+        "--oss: downloading {}{size} into {}, once; the first start takes a while.",
+        model.name,
+        cache.display()
+    );
+    // Room for the model and a margin for what else is written meanwhile.
+    if let (Some(gb), Some(free)) = (model.size_gb, free)
+        && (free as f64) < gb * GB * 1.05
+    {
+        message.push_str(&format!(
+            " Only {:.0} GB is free there, too little for it: free some space first, or \
+             set oss_model in config.toml to a smaller model.",
+            free as f64 / GB
+        ));
+    }
+    message
+}
+
 /// A model's name from its file: the stem, without a shard suffix such as
 /// `-00001-of-00004`.
 fn gguf_name(file: &Path) -> String {
@@ -844,6 +936,81 @@ mod tests {
     use super::*;
 
     const GIB: u64 = 1024 * 1024 * 1024;
+
+    #[test]
+    fn the_hf_cache_is_hf_hub_cache_then_hf_home_then_home() {
+        let vars = |pairs: &'static [(&'static str, &'static str)]| {
+            move |name: &str| {
+                pairs
+                    .iter()
+                    .find(|(k, _)| *k == name)
+                    .map(|(_, v)| v.to_string())
+            }
+        };
+        let home = Path::new("/home/me");
+        assert_eq!(
+            hf_cache(
+                vars(&[("HF_HUB_CACHE", "/c"), ("HF_HOME", "/h")]),
+                Some(home)
+            ),
+            Some(PathBuf::from("/c"))
+        );
+        assert_eq!(
+            hf_cache(vars(&[("HF_HOME", "/h")]), Some(home)),
+            Some(PathBuf::from("/h/hub"))
+        );
+        assert_eq!(
+            hf_cache(vars(&[]), Some(home)),
+            Some(PathBuf::from("/home/me/.cache/huggingface/hub"))
+        );
+        assert_eq!(hf_cache(vars(&[]), None), None);
+    }
+
+    #[test]
+    fn a_cached_model_is_found_in_its_snapshot() {
+        let cache = tempfile::tempdir().unwrap();
+        let model = quick_model();
+        assert!(!in_hf_cache(&model, cache.path()));
+        let snapshot = cache
+            .path()
+            .join("models--LiquidAI--LFM3-1.7B-GGUF/snapshots/abc123");
+        std::fs::create_dir_all(&snapshot).unwrap();
+        std::fs::write(snapshot.join("mmproj-LFM3-Q4_K_M.gguf"), "").unwrap();
+        assert!(
+            !in_hf_cache(&model, cache.path()),
+            "a projector isn't the model"
+        );
+        std::fs::write(snapshot.join("LFM3-1.7B-Q4_K_M.gguf"), "").unwrap();
+        assert!(in_hf_cache(&model, cache.path()));
+    }
+
+    #[test]
+    fn the_notice_warns_when_the_disk_is_short() {
+        let cache = Path::new("/cache");
+        let roomy = download_message(&full_model(), cache, Some(500_000_000_000));
+        assert!(
+            roomy.contains("about 105 GB") && roomy.contains("/cache"),
+            "{roomy}"
+        );
+        assert!(!roomy.contains("too little"), "{roomy}");
+        let short = download_message(&full_model(), cache, Some(40_000_000_000));
+        assert!(
+            short.contains("Only 40 GB is free there, too little"),
+            "{short}"
+        );
+        // A model of unknown size gets no warning.
+        let custom = OssModel {
+            size_gb: None,
+            ..quick_model()
+        };
+        assert!(!download_message(&custom, cache, Some(1)).contains("too little"));
+    }
+
+    #[test]
+    fn free_bytes_reads_the_nearest_existing_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(free_bytes(&dir.path().join("not/made/yet")).is_some_and(|b| b > 0));
+    }
 
     #[test]
     fn a_128_gb_mac_gets_flash_next_and_anything_else_the_quick_try() {
