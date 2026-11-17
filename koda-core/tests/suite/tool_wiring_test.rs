@@ -203,3 +203,26 @@ fn test_describe_action_covers_all_mutating_tools() {
         );
     }
 }
+
+/// A model that calls the API's tool search under Koda's capitalized style
+/// (`ToolSearchToolBm25`, which Haiku did once in nine runs) is told the
+/// exact name, so it can retry; other unknown names get the plain error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_misspelled_tool_search_is_told_the_real_name() {
+    let registry = koda_core::tools::ToolRegistry::new(PathBuf::from("/tmp/test"), 100_000);
+    for name in ["ToolSearchToolBm25", "ToolSearch", "tool-search"] {
+        let result = registry.execute(name, "{}", None, None).await;
+        assert!(!result.success);
+        assert!(
+            result
+                .output
+                .contains("`tool_search_tool_bm25`, spelled exactly so"),
+            "{name}: {}",
+            result.output
+        );
+    }
+    let other = registry
+        .execute("FrobnicateWidgets", "{}", None, None)
+        .await;
+    assert_eq!(other.output, "Error: Unknown tool: FrobnicateWidgets");
+}
