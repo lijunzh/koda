@@ -776,6 +776,10 @@ pub(crate) async fn run() -> Result<()> {
             for line in koda_oss::start_notice(model, koda_oss::unified_memory()) {
                 eprintln!("{line}");
             }
+            let home = std::env::var_os("HOME").map(PathBuf::from);
+            if let Some(line) = koda_oss::download_notice(model, home.as_deref()) {
+                eprintln!("{line}");
+            }
             let server = koda_oss::Server::start(model, &config_dir, *check_gpu).await?;
             session.base_url = Some(server.base_url());
             // The llama-cpp provider sends `KODA_API_KEY` to the server.

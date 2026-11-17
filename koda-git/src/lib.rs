@@ -108,6 +108,84 @@ pub async fn tokio_command(
     Ok(command)
 }
 
+/// The repository's default branch, as Codex finds it without the network:
+/// a remote's `HEAD` (`origin` first), else a local `main` or `master`.
+/// `None` outside a repository or when none of them exists.
+pub fn default_branch(dir: &Path) -> Option<String> {
+    let stdout = |args: &[&str]| {
+        base(dir)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|out| out.status.success())
+            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+    let mut remotes: Vec<String> = stdout(&["remote"])
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    remotes.sort_by_key(|remote| remote != "origin");
+    for remote in remotes {
+        let head = format!("refs/remotes/{remote}/HEAD");
+        if let Some(target) = stdout(&["symbolic-ref", "--quiet", &head])
+            && let Some(name) = target.strip_prefix(&format!("refs/remotes/{remote}/"))
+            && !name.is_empty()
+        {
+            return Some(name.to_string());
+        }
+    }
+    ["main", "master"]
+        .into_iter()
+        .find(|name| {
+            stdout(&[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{name}"),
+            ])
+            .is_some()
+        })
+        .map(str::to_string)
+}
+
+/// Files in `dir`'s working tree that git doesn't track and doesn't ignore,
+/// relative to `dir`. Empty outside a repository.
+pub fn untracked_files(dir: &Path) -> Vec<String> {
+    command(dir, Operation::WorkingTree)
+        .ok()
+        .and_then(|mut command| {
+            command
+                .args(["ls-files", "--others", "--exclude-standard", "-z"])
+                .output()
+                .ok()
+        })
+        .filter(|out| out.status.success())
+        .map(|out| {
+            String::from_utf8_lossy(&out.stdout)
+                .split('\0')
+                .filter(|file| !file.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// An untracked `file` as a diff that adds it, as Codex's `/diff` shows
+/// one: `git diff --no-index /dev/null <file>`.
+pub fn untracked_diff(dir: &Path, file: &str) -> Option<String> {
+    let out = command(dir, Operation::WorkingTree)
+        .ok()?
+        .args(["diff"])
+        .args(DIFF_ARGS)
+        .args(["--no-index", "--", "/dev/null", file])
+        .output()
+        .ok()?;
+    // 1: the files differ, which they always do here.
+    matches!(out.status.code(), Some(0 | 1))
+        .then(|| String::from_utf8_lossy(&out.stdout).to_string())
+}
+
 /// The hardened command without the filter overrides.
 fn base(dir: &Path) -> Command {
     let mut command = Command::new("git");
@@ -326,6 +404,42 @@ mod tests {
         for name in INHERITED_SELECTORS {
             assert!(removed.iter().any(|key| key == name), "{name} kept");
         }
+    }
+
+    #[test]
+    fn default_branch_prefers_the_remotes_head_then_main() {
+        let tmp = tempfile::tempdir().unwrap();
+        let origin = tmp.path().join("origin");
+        fs::create_dir(&origin).unwrap();
+        git(&origin, &["init", "-q", "-b", "trunk"]);
+        git(&origin, &["commit", "-q", "--allow-empty", "-m", "first"]);
+        let clone = tmp.path().join("clone");
+        git(
+            tmp.path(),
+            &["clone", "-q", origin.to_str().unwrap(), "clone"],
+        );
+        git(&clone, &["checkout", "-q", "-b", "feature"]);
+        assert_eq!(default_branch(&clone).as_deref(), Some("trunk"));
+        // No remote: a local main.
+        assert_eq!(default_branch(&origin), None);
+        git(&origin, &["branch", "main"]);
+        assert_eq!(default_branch(&origin).as_deref(), Some("main"));
+        // Outside a repository.
+        assert_eq!(default_branch(tmp.path()), None);
+    }
+
+    #[test]
+    fn untracked_files_show_as_added_and_run_nothing() {
+        let (_tmp, repo) = hostile_repo();
+        fs::write(repo.join("new.txt"), "fresh\n").unwrap();
+        fs::write(repo.join(".gitignore"), "ignored.txt\n").unwrap();
+        fs::write(repo.join("ignored.txt"), "x\n").unwrap();
+        let files = untracked_files(&repo);
+        assert!(files.contains(&"new.txt".to_string()), "{files:?}");
+        assert!(!files.contains(&"ignored.txt".to_string()), "{files:?}");
+        let diff = untracked_diff(&repo, "new.txt").unwrap();
+        assert!(diff.contains("+fresh"), "{diff}");
+        assert_eq!(ran(&repo), "", "a repository program ran");
     }
 
     #[test]

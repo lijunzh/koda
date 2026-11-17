@@ -88,9 +88,10 @@ the history as it was.
 
 ## `/diff`
 
-Shows a summary of uncommitted `git diff` in the project root. Then offers:
+Shows a summary of uncommitted changes in the project root: `git diff`, and
+new files git doesn't track yet, as Codex's `/diff` includes them. Then offers:
 
-- **Review** — sends the diff to the model for code review comments
+- **Review** — sends the diff, new files included, to the model for code review comments
 - **Commit** — asks the model to write a conventional commit message and
   runs `git commit -m "…"`
 
