@@ -41,6 +41,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **A Claude model that calls the tool search by the wrong name is told the right one.** The system prompt now says to call `tool_search_tool_bm25` exactly so, since it is the API's tool and Koda's own tools are capitalized; a call to `ToolSearchToolBm25` or `ToolSearch`, as Haiku made once in nine runs, gets an error naming the real tool.
 - **Worktrees of one repository made at the same time no longer fail now and then.** Two `koda --worktree` runs started together (or two `koda exec fork --worktree`) could stop with git's "failed to read .git/worktrees/<name>/commondir", about 3 times in 200 when 4 ran at once: every worktree of a repository has its name, and git's adds trip over each other's half-written entries. Koda now adds them one at a time, under a lock in its worktrees folder. Codex has the same race.
 
 ## [0.7.5] - 2026-11-16

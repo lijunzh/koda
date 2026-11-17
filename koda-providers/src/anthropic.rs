@@ -649,7 +649,9 @@ struct StreamMessageInfo {
 /// The Claude API's tool search, BM25 over names and descriptions, as
 /// Codex's `tool_search` ranks its deferred tools with BM25.
 const TOOL_SEARCH_TYPE: &str = "tool_search_tool_bm25_20251119";
-const TOOL_SEARCH_NAME: &str = "tool_search_tool_bm25";
+/// The name the model calls the search by. The API fixes it; it can't be
+/// renamed to match Koda's own tool names.
+pub const TOOL_SEARCH_NAME: &str = "tool_search_tool_bm25";
 
 // ── ChunkParser implementation ──────────────────────────────────
 

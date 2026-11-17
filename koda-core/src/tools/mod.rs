@@ -771,6 +771,11 @@ impl ToolRegistry {
                  This model appears to struggle with tool calling. \
                  Consider switching to a model with native function-call support."
             )
+        } else if looks_like_tool_search(name) {
+            format!(
+                "Unknown tool: {name}. To find MCP tools, call `{}`, spelled exactly so.",
+                crate::providers::anthropic::TOOL_SEARCH_NAME
+            )
         } else {
             format!("Unknown tool: {name}")
         };
@@ -978,6 +983,18 @@ pub fn resolve_read_path(project_root: &Path, requested: &str) -> Result<PathBuf
         );
     }
     Ok(resolved)
+}
+
+/// Whether an unknown tool name is the model reaching for the API's tool
+/// search under another spelling (`ToolSearchToolBm25`, `ToolSearch`), as
+/// Haiku did once in nine runs: the error then gives the exact name.
+fn looks_like_tool_search(name: &str) -> bool {
+    let squashed: String = name
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    squashed.starts_with("toolsearch")
 }
 
 #[cfg(test)]
