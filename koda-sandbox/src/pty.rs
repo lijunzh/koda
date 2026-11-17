@@ -48,7 +48,7 @@ pub fn open() -> std::io::Result<Pty> {
             &mut terminal,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            &mut size,
+            &raw mut size,
         )
     };
     if rc != 0 {
@@ -192,7 +192,7 @@ mod tests {
     async fn a_typed_ctrl_c_interrupts_the_command() {
         let pty = open().unwrap();
         let mut cmd = Command::new("/bin/sh");
-        cmd.arg("-c").arg("echo READY; sleep 30");
+        cmd.arg("-c").arg("echo READY; exec sleep 30");
         attach(&mut cmd, &pty.terminal).unwrap();
         let mut child = cmd.spawn().unwrap();
         drop(cmd);
@@ -203,10 +203,20 @@ mod tests {
         // Keep reading: a command can't finish exiting while the terminal
         // holds output nobody read (here, the echoed `^C`).
         let reader = std::thread::spawn(move || read_until(&mut controller, "never printed"));
-        let status = tokio::time::timeout(std::time::Duration::from_secs(10), child.wait())
-            .await
-            .expect("Ctrl+C should stop it")
-            .unwrap();
+        // Poll for the exit, as Koda's background registry does, rather than
+        // await it: under load, an awaited wait here sometimes missed an exit
+        // on Linux, while the process was gone.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Ctrl+C should stop it"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        };
         assert!(!status.success());
         assert!(reader.join().unwrap().contains("^C"));
     }

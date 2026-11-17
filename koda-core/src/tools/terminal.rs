@@ -7,8 +7,9 @@
 //! own: a command can't finish exiting while its terminal holds output that
 //! nobody read.
 //!
-//! The buffer keeps the last [`MAX_UNREAD_BYTES`] not yet read, as Codex
-//! keeps 1 MiB, and counts what it drops.
+//! The buffer keeps the last
+//! [`MAX_UNREAD_BYTES`](crate::tools::terminal::MAX_UNREAD_BYTES) not yet
+//! read, as Codex keeps 1 MiB, and counts what it drops.
 
 use std::io::{Read as _, Write as _};
 use std::os::fd::OwnedFd;
