@@ -38,6 +38,7 @@ pub(crate) fn values(loaded: &Loaded) -> KodaConfigValues {
     let config = &loaded.config;
     KodaConfigValues {
         model: config.model.clone(),
+        review_model: config.review_model.clone(),
         model_provider: config.model_provider.clone(),
         model_reasoning_effort: config.model_reasoning_effort.clone(),
         model_context_window: config.model_context_window,

@@ -100,6 +100,10 @@ unknown key in `-c` stops the run instead.
 # Koda" line to its pull requests, as Codex does. Unset: true.
 # commit_attribution = false
 
+# The model /review runs on, as Codex's review_model. Unset: the
+# session's own model.
+# review_model = "claude-haiku-5-5"
+
 # Text added to the end of the system prompt, as Codex's developer
 # instructions. Unset: none.
 # developer_instructions = "Answer in British English."

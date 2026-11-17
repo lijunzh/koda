@@ -1312,6 +1312,13 @@
             "null"
           ]
         },
+        "review_model": {
+          "description": "The model `/review` runs on, as Codex's `review_model`; the\nsession's own when unset.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "sandbox": {
           "$ref": "#/$defs/SandboxConfigValue",
           "description": "What sandboxed commands may do beyond Koda's defaults."

@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **`/review` reviews code changes, as Codex's `/review` does,** with Codex's rubric, in a session of its own: the uncommitted changes, `/review <branch>` against a branch from the merge base, `/review <commit>`, or instructions. The findings are listed (P0 to P3, with a verdict) back in your session, and your next message there carries them, so "fix the P1" works. `review_model` picks the model it runs on; `config/read` reports it.
 - **`/side` (also `/btw`) opens a side conversation, as Codex's `/side` does.** A fork of the session with Codex's side instructions: the history is for reference only, nothing changes unless asked, no sub-agents. It works while a turn runs: the turn goes on, and an approval or question it asks waits. `Ctrl+C` on an empty prompt returns: the side conversation is deleted, the main session is drawn again, and a turn still running there is followed to its end.
 - **`developer_instructions` adds text to the end of the system prompt, as Codex's setting does,** in `config.toml` or per session with `session/start`'s `config`.
 

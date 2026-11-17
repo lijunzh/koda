@@ -124,6 +124,24 @@ does: same history, model and mode, named "Fork of" this session's name.
 The original stays as it was, for `/resume`. See
 [Forking a session](./sessions.md#forking-a-session).
 
+## `/review`
+
+Reviews code changes in a session of its own, as Codex's `/review` does, with
+Codex's review rubric: discrete, actionable bugs the change introduced, each
+tagged P0 to P3, and a verdict.
+
+| You type | It reviews |
+|----------|------------|
+| `/review` | The uncommitted changes: staged, unstaged and untracked |
+| `/review main` | The changes against a branch, from the merge base |
+| `/review a1b2c3d` | What one commit changed |
+| `/review focus on error handling` | Whatever the words ask |
+
+The review shows as it runs, then Koda goes back to your session and lists the
+findings. Your next message there carries them, so "fix the P1" works. It runs
+on `review_model` when [`config.toml`](./configuration.md) sets one, else on
+the session's model. It runs at the prompt, not during a turn.
+
 ## `/side` (also `/btw`)
 
 Opens a side conversation, as Codex's `/side` does: a question about the work
