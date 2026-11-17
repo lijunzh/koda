@@ -124,16 +124,34 @@ impl Server {
         unload_delay: Duration,
         approval_wait: Duration,
     ) -> Self {
+        Self::start_in_with(
+            dir,
+            config,
+            Options {
+                unload_delay,
+                idle_exit: None,
+                approval_wait: Some(approval_wait),
+            },
+        )
+        .await
+    }
+
+    /// [`Server::start`] with these options.
+    async fn start_with(config: KodaConfig, options: Options) -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let mut server = Self::start_in_with(dir.path(), config, options).await;
+        server._dir = Some(dir);
+        server
+    }
+
+    async fn start_in_with(dir: &Path, config: KodaConfig, options: Options) -> Self {
         let socket = dir.join("serve").join("koda.sock");
         let (stop, stopped) = oneshot::channel::<()>();
         let served = tokio::spawn(serve_with_config(
             args(dir),
             config,
             socket.clone(),
-            Options {
-                unload_delay,
-                approval_wait: Some(approval_wait),
-            },
+            options,
             async {
                 let _ = stopped.await;
             },
@@ -761,4 +779,81 @@ async fn a_client_runs_a_turn_over_the_socket() {
         .unwrap();
     assert_eq!(attached["session"]["id"], session.as_str());
     koda.stop().await;
+}
+
+/// `serve/stop` stops the server, as `claude daemon stop` does; with
+/// `ifIdle` only when nothing would be lost, which a TUI of another version
+/// asks before it starts its own server.
+#[tokio::test(flavor = "multi_thread")]
+async fn serve_stop_stops_the_server_unless_asked_only_when_idle() {
+    let server = model(vec![]).await;
+    let mut koda = Server::start(config(&server), Duration::from_secs(60)).await;
+    let mut asking = Client::ready(&koda).await;
+    let mut other = Client::ready(&koda).await;
+    let session = other.start_session().await;
+
+    let busy = asking
+        .request("serve/stop", json!({"ifIdle": true}))
+        .await
+        .unwrap();
+    assert_eq!(busy["stopped"], false, "{busy}");
+    assert!(
+        busy["reason"].as_str().unwrap().contains(&session),
+        "a session with a client is in use: {busy}"
+    );
+    // Its client gone, the session stays open but idle: stored, so losing
+    // nothing. Another client still counts.
+    drop(other);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let mut third = Client::ready(&koda).await;
+    let still = asking
+        .request("serve/stop", json!({"ifIdle": true}))
+        .await
+        .unwrap();
+    assert_eq!(still["stopped"], false, "{still}");
+    assert!(still["reason"].as_str().unwrap().contains("other client"));
+    drop(third.request("state/read", json!({})).await);
+    drop(third);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let idle = asking
+        .request("serve/stop", json!({"ifIdle": true}))
+        .await
+        .unwrap();
+    assert_eq!(idle["stopped"], true, "{idle}");
+    tokio::time::timeout(WAIT, &mut koda.served)
+        .await
+        .expect("koda serve didn't stop")
+        .unwrap()
+        .unwrap();
+    assert!(!koda.socket.exists());
+}
+
+/// Started with an idle exit, as the TUI starts it, the server stops once
+/// it has had no client and no work that long, and not while a client is
+/// connected.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_with_an_idle_exit_stops_once_idle() {
+    let server = model(vec![]).await;
+    let mut koda = Server::start_with(
+        config(&server),
+        Options {
+            unload_delay: Duration::from_secs(60),
+            idle_exit: Some(Duration::from_millis(400)),
+            approval_wait: None,
+        },
+    )
+    .await;
+    let client = Client::ready(&koda).await;
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    assert!(
+        !koda.served.is_finished(),
+        "not while a client is connected"
+    );
+    drop(client);
+    tokio::time::timeout(WAIT, &mut koda.served)
+        .await
+        .expect("koda serve didn't stop when idle")
+        .unwrap()
+        .unwrap();
+    assert!(!koda.socket.exists());
 }

@@ -107,6 +107,10 @@ impl std::error::Error for ServeError {}
 pub struct Options {
     /// How long an idle session with no subscriber stays open.
     pub unload_delay: Duration,
+    /// Stop once the server has had no client and no work this long, as a
+    /// server the TUI started does (`koda serve --idle-exit-secs`); `None`
+    /// runs until stopped.
+    pub idle_exit: Option<Duration>,
     /// How long a request waits for an answer; the config file's when
     /// `None`.
     pub approval_wait: Option<Duration>,
@@ -116,6 +120,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             unload_delay: UNLOAD_DELAY,
+            idle_exit: None,
             approval_wait: None,
         }
     }
@@ -123,12 +128,20 @@ impl Default for Options {
 
 /// Listen at `socket` until `stop` completes, then stop every session and
 /// remove the socket. New sessions start from the config file.
+///
+/// With `idle_exit`, it also stops once it has had no client and no work
+/// that long, as a server the TUI started does.
 pub async fn serve(
     args: ServeArgs,
     socket: PathBuf,
+    idle_exit: Option<Duration>,
     stop: impl Future<Output = ()> + Send,
 ) -> Result<(), ServeError> {
-    serve_on(args, None, socket, Options::default(), stop).await
+    let options = Options {
+        idle_exit,
+        ..Options::default()
+    };
+    serve_on(args, None, socket, options, stop).await
 }
 
 /// [`serve`] with new sessions starting from `config`, for tests that need
@@ -188,6 +201,7 @@ async fn serve_on(
         unload_delay: options.unload_delay,
         approval_wait,
         stopping: tokio::sync::watch::Sender::new(false),
+        stop_requested: tokio::sync::Notify::new(),
     });
     let pump = {
         let router = Arc::clone(&router);
@@ -207,9 +221,36 @@ async fn serve_on(
     let next_connection = AtomicU64::new(1);
     let mut connections = tokio::task::JoinSet::new();
     tokio::pin!(stop);
+    // How often the idle exit is checked: a quarter of it, at most every 15 s.
+    let mut idle_check = tokio::time::interval(
+        options
+            .idle_exit
+            .map_or(Duration::from_secs(15), |idle| {
+                (idle / 4).min(Duration::from_secs(15))
+            })
+            .max(Duration::from_millis(10)),
+    );
+    let mut idle_since: Option<std::time::Instant> = None;
     loop {
         tokio::select! {
             () = &mut stop => break,
+            () = router.stop_requested.notified() => {
+                tracing::info!("koda serve: a client asked it to stop");
+                break;
+            }
+            _ = idle_check.tick(), if options.idle_exit.is_some() => {
+                let idle = connections.is_empty() && router.busy_reason(None).is_none();
+                match (idle, idle_since) {
+                    (false, _) => idle_since = None,
+                    (true, None) => idle_since = Some(std::time::Instant::now()),
+                    (true, Some(since)) => {
+                        if options.idle_exit.is_some_and(|limit| since.elapsed() >= limit) {
+                            tracing::info!("koda serve: idle, stopping");
+                            break;
+                        }
+                    }
+                }
+            }
             accepted = listener.accept() => match accepted {
                 Ok((stream, _)) => {
                     match stream.peer_cred() {
@@ -367,6 +408,8 @@ struct Router {
     approval_wait: Duration,
     /// Set once the server stops: every connection ends.
     stopping: tokio::sync::watch::Sender<bool>,
+    /// A client asked the server to stop (`serve/stop`).
+    stop_requested: tokio::sync::Notify,
 }
 
 #[derive(Default)]
@@ -500,6 +543,31 @@ impl Router {
                 outbox.push(line);
             }
         }
+    }
+
+    /// Why stopping now would lose something, if it would: a session with a
+    /// client, a running turn or a request waiting, or a client other than
+    /// `asking`. An open session with none of those is stored and opens
+    /// again as it was, as Claude Code's supervisor moves idle sessions over.
+    fn busy_reason(&self, asking: Option<u64>) -> Option<String> {
+        let state = self.lock();
+        let working = state.open.iter().find(|session| {
+            state.running.contains(*session)
+                || state
+                    .subscribers
+                    .get(*session)
+                    .is_some_and(|ids| !ids.is_empty())
+                || state.pending.get(*session).is_some_and(|p| !p.is_empty())
+        });
+        if let Some(session) = working {
+            return Some(format!("session {session} is in use"));
+        }
+        let others = state
+            .connections
+            .keys()
+            .filter(|id| Some(**id) != asking)
+            .count();
+        (others > 0).then(|| format!("{others} other client(s) connected"))
     }
 
     /// Attach `connection` to `session` if the host has it open, as Codex
@@ -708,6 +776,33 @@ async fn connection(id: u64, stream: UnixStream, router: Arc<Router>, initialize
                 }
                 if !ready {
                     outbox.push(refuse("Not initialized"));
+                    continue;
+                }
+                if method == methods::ServeStop::NAME {
+                    let if_idle = request
+                        .params
+                        .as_ref()
+                        .and_then(|p| p["ifIdle"].as_bool())
+                        .unwrap_or(false);
+                    let busy = if if_idle {
+                        router.busy_reason(Some(id))
+                    } else {
+                        None
+                    };
+                    let result = koda_protocol::serve::ServeStopResponse {
+                        stopped: busy.is_none(),
+                        reason: busy.clone(),
+                    };
+                    outbox.push(
+                        serde_json::to_string(&rpc::Response::new(
+                            request_id,
+                            serde_json::to_value(result).unwrap_or_default(),
+                        ))
+                        .unwrap_or_default(),
+                    );
+                    if busy.is_none() {
+                        router.stop_requested.notify_one();
+                    }
                     continue;
                 }
                 if method == methods::SessionUnsubscribe::NAME {
