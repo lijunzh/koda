@@ -2944,7 +2944,13 @@ async fn the_tui_works_on_the_shared_server() {
         "history lost: {sent}"
     );
     assert!(sent.contains("and again"), "{sent}");
-    tui.wait_for_screen("All done.");
+    // The turn's end, not just its reply: `/exit` typed while a turn is
+    // still finishing cancels it and waits out its grace (up to 5 s), which
+    // on a slow runner outlasted `exits()`.
+    tui.wait_for_screen_that(
+        |screen| screen.contains("All done.") && !screen.contains(BUSY_PROMPT),
+        "finish the resumed turn",
+    );
     tui.type_text("/exit\r");
     assert!(tui.exits());
 }

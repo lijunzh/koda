@@ -443,7 +443,16 @@ fn rebuild_from(messages: &[Message], progress: &mut HashMap<String, Vec<String>
             }
         }
     }
-    if mid_turn && let Some(last) = turns.last_mut() {
+    // A turn left mid-way, or one whose question has no reply yet: the host
+    // stopped before the model answered, as when it's killed in the middle
+    // of a turn before the turn's own records were stored.
+    if let Some(last) = turns.last_mut()
+        && (mid_turn
+            || matches!(
+                last.items.last().map(|i| &i.item),
+                Some(Item::UserMessage { .. })
+            ))
+    {
         last.status = TurnStatus::Interrupted;
     }
     turns
@@ -613,6 +622,30 @@ mod tests {
         assert_eq!(turns[0].items[1].parent_item_id.as_deref(), Some("call-a"));
         assert_eq!(turns[1].status, TurnStatus::Interrupted);
         assert_eq!(replay(&records, true)[1].status, TurnStatus::InProgress);
+    }
+
+    /// A host killed after storing a turn's question but before storing the
+    /// turn itself (its records are written in the background): the turn is
+    /// rebuilt from the messages, and with no reply it was cut off. Seen on
+    /// CI as the kill test's first turn listed `completed`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_question_with_no_reply_is_an_interrupted_turn() {
+        let (_dir, db, session) = db().await;
+        insert(&db, &session, Role::System, "system prompt").await;
+        insert(&db, &session, Role::User, "First question").await;
+        let rebuilt = turns_for_resume(&db, &session).await.unwrap();
+        assert_eq!(rebuilt.len(), 1, "{rebuilt:#?}");
+        assert_eq!(rebuilt[0].status, TurnStatus::Interrupted);
+        // Stored that way, so it stays interrupted once later turns follow.
+        let stored = turns(&db, &session, false).await.unwrap();
+        assert_eq!(stored[0].status, TurnStatus::Interrupted);
+
+        // A question that was answered is still a completed turn.
+        let (_answered_dir, answered, chat) = super::tests::db().await;
+        insert(&answered, &chat, Role::User, "Hi").await;
+        insert(&answered, &chat, Role::Assistant, "Hello.").await;
+        let rebuilt = turns(&answered, &chat, false).await.unwrap();
+        assert_eq!(rebuilt[0].status, TurnStatus::Completed);
     }
 
     /// A session from before 6h: prompts open turns, steering text joins
