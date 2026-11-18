@@ -211,7 +211,7 @@ jobs:
           if sudo sysctl -a 2>/dev/null | grep -q '^kernel.apparmor_restrict_unprivileged_userns'; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
+      - uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2
         with:
           tool: cargo-nextest
       - name: Test
@@ -407,7 +407,7 @@ jobs:
       # A prebuilt cargo-audit: `cargo install` compiled it from source each
       # time a cache missed. It reads Cargo.lock and builds nothing, so the
       # job needs no Rust cache.
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
+      - uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2
         if: steps.scope.outputs.run == 'true'
         with:
           tool: cargo-audit

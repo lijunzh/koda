@@ -69,7 +69,7 @@ jobs:
         with:
           toolchain: 1.100.0 # = rust-toolchain.toml (pin guarded in ci.yml)
       # A prebuilt cargo-audit; it reads Cargo.lock and builds nothing.
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
+      - uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2
         with:
           tool: cargo-audit
       - name: Run cargo audit
@@ -131,7 +131,7 @@ jobs:
           if sudo sysctl -a 2>/dev/null | grep -q '^kernel.apparmor_restrict_unprivileged_userns'; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
+      - uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2
         with:
           tool: cargo-nextest
       # As CI tests: nextest runs tests from all binaries at once, where
