@@ -473,6 +473,9 @@ async fn a_server_killed_mid_turn_leaves_the_session_to_go_on() {
         lines: tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
         input: tokio::net::unix::OwnedWriteHalf,
         next: i64,
+        /// Lines read while waiting for a response, for `until`: the server
+        /// can send a turn's `turn/started` before its `turn/start` response.
+        backlog: std::collections::VecDeque<Value>,
     }
     impl Conn {
         async fn open(socket: &std::path::Path) -> Self {
@@ -489,6 +492,7 @@ async fn a_server_killed_mid_turn_leaves_the_session_to_go_on() {
                 lines: BufReader::new(output).lines(),
                 input,
                 next: 1,
+                backlog: std::collections::VecDeque::new(),
             };
             conn.request(
                 "initialize",
@@ -523,9 +527,15 @@ async fn a_server_killed_mid_turn_leaves_the_session_to_go_on() {
                     assert!(line.get("error").is_none(), "{method}: {line}");
                     return line["result"].clone();
                 }
+                self.backlog.push_back(line);
             }
         }
         async fn until(&mut self, method: &str) -> Value {
+            while let Some(line) = self.backlog.pop_front() {
+                if line["method"] == method {
+                    return line;
+                }
+            }
             loop {
                 let line = self.read().await;
                 if line["method"] == method {

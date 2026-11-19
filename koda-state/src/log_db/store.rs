@@ -2,6 +2,7 @@
 //! limits with `session_id` where Codex has `thread_id`.
 
 use super::{LogEntry, LogQuery, LogRow};
+use crate::busy_retry::{PoolWriteExt as _, WriteQueryExt as _};
 use crate::sqlite::LOGS_DB;
 use anyhow::Result;
 use sqlx::sqlite::SqlitePool;
@@ -65,7 +66,12 @@ impl LogStore {
     }
 
     async fn with_pool(pool: SqlitePool) -> Result<Self> {
-        sqlx::raw_sql(SCHEMA).execute(&pool).await?;
+        // Idempotent, so it can run again if another process held the lock.
+        crate::busy_retry::retry_on_busy(|| async {
+            sqlx::raw_sql(SCHEMA).execute(&pool).await?;
+            Ok(())
+        })
+        .await?;
         Ok(Self { pool })
     }
 
@@ -76,7 +82,7 @@ impl LogStore {
         if entries.is_empty() {
             return Ok(());
         }
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin_immediate().await?;
         // SQLite allows 32,766 bound values; 11 per row.
         for chunk in entries.chunks(2_000) {
             let mut insert = QueryBuilder::<Sqlite>::new(
@@ -122,7 +128,7 @@ impl LogStore {
         loop {
             sqlx::query("DELETE FROM logs WHERE ts < ?")
                 .bind(now_secs.saturating_sub(keep_secs))
-                .execute(&self.pool)
+                .execute_write(&self.pool)
                 .await?;
             // Free pages are reused, not returned, so they don't count.
             let used: i64 = sqlx::query_scalar(
@@ -159,7 +165,7 @@ impl LogStore {
                     // Fold the WAL left by earlier runs back in, without
                     // waiting on readers or writers.
                     let _ = sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
-                        .execute(&store.pool)
+                        .execute_write(&store.pool)
                         .await;
                     first = false;
                 }

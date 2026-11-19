@@ -58,10 +58,18 @@ impl DbSpec {
     }
 
     /// Open it at `path`, as tests do.
+    ///
+    /// As Codex opens its state database (`codex-rs/state/src/sqlite/
+    /// connection.rs`): settings stored in the file (WAL, incremental
+    /// auto-vacuum) are set once, on one connection, when the file is new;
+    /// every connection gets only the settings that are per connection.
+    /// Setting `auto_vacuum` on every connection, as Koda did, writes the
+    /// file's header each time, so opening a connection, even to read, took
+    /// the write lock and failed when another process held it past the busy
+    /// timeout. Opening is retried while SQLite is busy, as Codex retries it.
     pub async fn open(self, path: &Path) -> Result<SqlitePool> {
         let url = format!("sqlite:{}?mode=rwc", path.display());
         let options = SqliteConnectOptions::from_str(&url)?
-            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
             // NORMAL, as Codex opens its state database: with WAL, a commit
             // no longer waits for an fsync, only a checkpoint does, so the
             // write lock is held for the write and not the disk. FULL (sqlx's
@@ -71,20 +79,53 @@ impl DbSpec {
             // (run 2510). The trade: a power loss can lose the last
             // commits, never corrupt the file; a crash of Koda loses nothing.
             .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
-            .auto_vacuum(sqlx::sqlite::SqliteAutoVacuum::Incremental)
             .foreign_keys(true)
             .create_if_missing(true)
-            // Retry for up to 5 s when another connection holds the write
-            // lock. Without this, concurrent writes from parallel sub-agents
-            // (#595) return SQLITE_BUSY immediately and the insert is silently
-            // dropped. Individual writes are ~1 ms so the retry resolves fast.
+            // Wait up to 5 s when another connection holds the write lock,
+            // as Codex does; writes then retry twice more
+            // ([`crate::busy_retry`]).
             .busy_timeout(std::time::Duration::from_millis(5000));
-        SqlitePoolOptions::new()
-            .max_connections(self.max_connections)
-            .connect_with(options)
+        let pool = crate::busy_retry::retry_sqlx(|| {
+            SqlitePoolOptions::new()
+                .max_connections(self.max_connections)
+                .connect_with(options.clone())
+        })
+        .await
+        .with_context(|| format!("Failed to open the {}: {url}", self.label))?;
+        crate::busy_retry::retry_sqlx(|| initialize_file(&pool))
             .await
-            .with_context(|| format!("Failed to open the {}: {url}", self.label))
+            .with_context(|| format!("Failed to set up the {}: {url}", self.label))?;
+        Ok(pool)
     }
+}
+
+/// The settings a database file keeps: incremental auto-vacuum, which only a
+/// file with no tables yet takes, and WAL. Each needs the write lock, so only
+/// a file that lacks them is changed.
+async fn initialize_file(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let mut conn = pool.acquire().await?;
+    let empty: bool = sqlx::query_scalar("SELECT NOT EXISTS (SELECT 1 FROM sqlite_schema)")
+        .fetch_one(&mut *conn)
+        .await?;
+    if empty {
+        let mode: i64 = sqlx::query_scalar("PRAGMA auto_vacuum")
+            .fetch_one(&mut *conn)
+            .await?;
+        if mode == 0 {
+            sqlx::query("PRAGMA auto_vacuum = INCREMENTAL")
+                .execute(&mut *conn)
+                .await?;
+        }
+    }
+    let journal: String = sqlx::query_scalar("PRAGMA journal_mode")
+        .fetch_one(&mut *conn)
+        .await?;
+    if journal != "wal" {
+        sqlx::query("PRAGMA journal_mode = WAL")
+            .execute(&mut *conn)
+            .await?;
+    }
+    Ok(())
 }
 
 /// Make `path` readable and writable by its owner only (#693).
@@ -124,5 +165,44 @@ mod tests {
             assert_eq!(mode, "wal");
             assert_eq!(sync, 1, "1 is NORMAL, 2 FULL");
         }
+        let (vacuum,): (i64,) = sqlx::query_as("PRAGMA auto_vacuum")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(vacuum, 2, "a new file is incremental");
+    }
+
+    /// Opening the database writes nothing, so it doesn't wait for a writer
+    /// in another process. It used to set `auto_vacuum` on every connection,
+    /// which writes the file's header: an open behind a held write lock
+    /// waited out the busy timeout and failed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn opening_takes_no_write_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("koda.db");
+        let first = SESSIONS_DB.open(&path).await.unwrap();
+        sqlx::query("CREATE TABLE t (v INTEGER)")
+            .execute(&first)
+            .await
+            .unwrap();
+        let mut held = first.begin_with("BEGIN IMMEDIATE").await.unwrap();
+        sqlx::query("INSERT INTO t VALUES (1)")
+            .execute(&mut *held)
+            .await
+            .unwrap();
+
+        let started = std::time::Instant::now();
+        let second = SESSIONS_DB.open(&path).await.unwrap();
+        let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM t")
+            .fetch_one(&second)
+            .await
+            .unwrap();
+        assert_eq!(n, 0, "the held write isn't committed");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "opening waited {:?} for the write lock",
+            started.elapsed()
+        );
+        held.rollback().await.unwrap();
     }
 }

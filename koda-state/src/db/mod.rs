@@ -25,6 +25,7 @@
 
 mod context_cache;
 pub mod queries;
+use crate::busy_retry::WriteQueryExt as _;
 use crate::sqlite;
 #[cfg(test)]
 mod tests;
@@ -98,7 +99,7 @@ impl Database {
 
     /// Apply the schema to `pool` and wrap it.
     async fn with_pool(pool: SqlitePool) -> Result<Self> {
-        Self::migrate(&pool).await?;
+        crate::busy_retry::retry_on_busy(|| Self::migrate(&pool)).await?;
         Ok(Self {
             pool,
             context_cache: std::sync::Arc::new(ContextCache::new()),
@@ -483,7 +484,7 @@ impl Database {
         )
         .bind(key)
         .bind(value)
-        .execute(&self.pool)
+        .execute_write(&self.pool)
         .await?;
         Ok(())
     }
@@ -492,7 +493,7 @@ impl Database {
     pub async fn kv_delete(&self, key: &str) -> Result<()> {
         sqlx::query("DELETE FROM kv_store WHERE key = ?")
             .bind(key)
-            .execute(&self.pool)
+            .execute_write(&self.pool)
             .await?;
         Ok(())
     }
