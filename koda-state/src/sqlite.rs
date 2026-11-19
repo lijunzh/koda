@@ -62,6 +62,15 @@ impl DbSpec {
         let url = format!("sqlite:{}?mode=rwc", path.display());
         let options = SqliteConnectOptions::from_str(&url)?
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+            // NORMAL, as Codex opens its state database: with WAL, a commit
+            // no longer waits for an fsync, only a checkpoint does, so the
+            // write lock is held for the write and not the disk. FULL (sqlx's
+            // default) held it through every fsync, and on a slow disk that
+            // outlasted the busy timeout below: a sub-agent's first write
+            // failed with "database is locked" on a starved macOS CI runner
+            // (run 2510). The trade: a power loss can lose the last
+            // commits, never corrupt the file; a crash of Koda loses nothing.
+            .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
             .auto_vacuum(sqlx::sqlite::SqliteAutoVacuum::Incremental)
             .foreign_keys(true)
             .create_if_missing(true)
@@ -90,4 +99,30 @@ fn restrict_permissions(path: &Path) {
     }
     #[cfg(not(unix))]
     let _ = path;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// WAL with synchronous NORMAL on every connection, as Codex opens its
+    /// state database, so a commit holds the write lock only for the write.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn every_connection_is_wal_with_synchronous_normal() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = SESSIONS_DB.open(&dir.path().join("koda.db")).await.unwrap();
+        for _ in 0..3 {
+            let mut conn = pool.acquire().await.unwrap();
+            let (mode,): (String,) = sqlx::query_as("PRAGMA journal_mode")
+                .fetch_one(&mut *conn)
+                .await
+                .unwrap();
+            let (sync,): (i64,) = sqlx::query_as("PRAGMA synchronous")
+                .fetch_one(&mut *conn)
+                .await
+                .unwrap();
+            assert_eq!(mode, "wal");
+            assert_eq!(sync, 1, "1 is NORMAL, 2 FULL");
+        }
+    }
 }
