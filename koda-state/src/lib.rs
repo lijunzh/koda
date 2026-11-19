@@ -22,6 +22,7 @@
 
 #![warn(missing_docs)]
 
+pub mod busy_retry;
 pub mod db;
 pub mod log_db;
 pub mod session_store;

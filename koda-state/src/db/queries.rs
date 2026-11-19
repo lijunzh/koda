@@ -5,6 +5,7 @@
 //! call: orphan tool-call pruning, null-content cleanup, and whitespace-only
 //! message removal.
 
+use crate::busy_retry::{PoolWriteExt as _, WriteQueryExt as _};
 use anyhow::Result;
 use std::path::Path;
 
@@ -210,7 +211,7 @@ impl Database {
         // that upgrade. Taking the write lock up front makes the
         // wait honour the timeout, so concurrent event inserts
         // (`PersistingSink`) and sub-agent writes queue behind it.
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = self.pool.begin_immediate().await?;
 
         // Get active (non-compacted) message IDs ordered oldest→newest
         let all_ids: Vec<(i64, String)> = sqlx::query_as(
@@ -453,7 +454,7 @@ impl SessionStore for Database {
             .bind(&id)
             .bind(agent_name)
             .bind(&root)
-            .execute(&self.pool)
+            .execute_write(&self.pool)
             .await?;
         tracing::info!("Created session: {id} (project: {root})");
         Ok(id)
@@ -462,7 +463,7 @@ impl SessionStore for Database {
     async fn fork_session(&self, source: &str, title: &str, project_root: &Path) -> Result<String> {
         let id = uuid::Uuid::new_v4().to_string();
         let root = project_root.to_string_lossy().to_string();
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin_immediate().await?;
         let copied = sqlx::query(
             "INSERT INTO sessions \
                (id, agent_name, project_root, last_accessed_at, title, mode, provider, base_url, model) \
@@ -576,13 +577,13 @@ impl SessionStore for Database {
         .bind(usage.map(|u| u.cache_creation_tokens))
         .bind(usage.map(|u| u.thinking_tokens))
         .bind(agent_name)
-        .execute(&self.pool)
+        .execute_write(&self.pool)
         .await?;
 
         // Update session activity timestamp
         sqlx::query("UPDATE sessions SET last_accessed_at = datetime('now') WHERE id = ?")
             .bind(session_id)
-            .execute(&self.pool)
+            .execute_write(&self.pool)
             .await?;
 
         Ok(result.last_insert_rowid())
@@ -603,12 +604,12 @@ impl SessionStore for Database {
         .bind(content)
         .bind(full_content)
         .bind(tool_call_id)
-        .execute(&self.pool)
+        .execute_write(&self.pool)
         .await?;
 
         sqlx::query("UPDATE sessions SET last_accessed_at = datetime('now') WHERE id = ?")
             .bind(session_id)
-            .execute(&self.pool)
+            .execute_write(&self.pool)
             .await?;
 
         Ok(result.last_insert_rowid())
@@ -617,7 +618,7 @@ impl SessionStore for Database {
     async fn mark_message_complete(&self, message_id: i64) -> Result<()> {
         sqlx::query("UPDATE messages SET completed_at = datetime('now') WHERE id = ?")
             .bind(message_id)
-            .execute(&self.pool)
+            .execute_write(&self.pool)
             .await?;
         Ok(())
     }
@@ -647,7 +648,7 @@ impl SessionStore for Database {
             return Ok(());
         }
 
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin_immediate().await?;
 
         for msg in messages {
             // Inline `completed_at`: assistant rows are born complete
@@ -691,7 +692,7 @@ impl SessionStore for Database {
         sqlx::query("UPDATE messages SET thinking_blocks = ? WHERE id = ?")
             .bind(blocks)
             .bind(message_id)
-            .execute(&self.pool)
+            .execute_write(&self.pool)
             .await?;
         Ok(())
     }
@@ -709,7 +710,7 @@ impl SessionStore for Database {
             .bind(images)
             .bind(message_id)
             .bind(session_id)
-            .execute(&self.pool)
+            .execute_write(&self.pool)
             .await?;
         // A tool row is complete when inserted, so a cached context may
         // already hold it.
@@ -725,7 +726,7 @@ impl SessionStore for Database {
         )
         .bind(images)
         .bind(session_id)
-        .execute(&self.pool)
+        .execute_write(&self.pool)
         .await?;
         self.context_cache.invalidate(session_id);
         Ok(())
@@ -746,7 +747,7 @@ impl SessionStore for Database {
             .bind(content)
             .bind(model)
             .bind(message_id)
-            .execute(&self.pool)
+            .execute_write(&self.pool)
             .await?;
         // (#1166) Retroactive content mutation — bump gen so any cached
         // load_context snapshot containing this row's pre-update content
@@ -1031,7 +1032,7 @@ impl SessionStore for Database {
 
     /// Delete a session and all its messages/metadata atomically.
     async fn delete_session(&self, session_id: &str) -> Result<bool> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin_immediate().await?;
 
         sqlx::query("DELETE FROM messages WHERE session_id = ?")
             .bind(session_id)
@@ -1057,7 +1058,7 @@ impl SessionStore for Database {
 
         // Reclaim freed pages from the deletion.
         sqlx::query("PRAGMA incremental_vacuum")
-            .execute(&self.pool)
+            .execute_write(&self.pool)
             .await?;
 
         // (#1166) Drop any cached context for this session so a future
@@ -1073,7 +1074,7 @@ impl SessionStore for Database {
         sqlx::query("UPDATE sessions SET title = ? WHERE id = ?")
             .bind(title)
             .bind(session_id)
-            .execute(&self.pool)
+            .execute_write(&self.pool)
             .await?;
         Ok(())
     }
@@ -1082,7 +1083,7 @@ impl SessionStore for Database {
         sqlx::query("UPDATE sessions SET mode = ? WHERE id = ?")
             .bind(mode)
             .bind(session_id)
-            .execute(&self.pool)
+            .execute_write(&self.pool)
             .await?;
         Ok(())
     }
@@ -1099,7 +1100,7 @@ impl SessionStore for Database {
             .bind(base_url)
             .bind(model)
             .bind(session_id)
-            .execute(&self.pool)
+            .execute_write(&self.pool)
             .await?;
         Ok(())
     }
@@ -1228,7 +1229,7 @@ impl SessionStore for Database {
         if records.is_empty() {
             return Ok(());
         }
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin_immediate().await?;
         for record in records {
             sqlx::query(
                 "INSERT INTO turn_records (session_id, turn_id, kind, payload) VALUES (?, ?, ?, ?)",
@@ -1276,7 +1277,7 @@ impl SessionStore for Database {
         .bind(session_id)
         .bind(key)
         .bind(value)
-        .execute(&self.pool)
+        .execute_write(&self.pool)
         .await?;
         Ok(())
     }
@@ -1308,7 +1309,7 @@ impl SessionStore for Database {
         .bind(kind)
         .bind(payload)
         .bind(parent_tool_call_id)
-        .execute(&self.pool)
+        .execute_write(&self.pool)
         .await?;
         Ok(result.last_insert_rowid())
     }
