@@ -104,6 +104,11 @@ unknown key in `-c` stops the run instead.
 # model, and no turns Koda starts on a goal by itself (/goal). Unset: true.
 # goals = false
 
+# Who decides a goal is achieved: "self", the working model after its
+# completion audit, as in Codex, or "evaluator", a check after each turn
+# that reads the conversation, as in Claude Code. Unset: "self".
+# goal_judge = "evaluator"
+
 # The model /review runs on, as Codex's review_model. Unset: the
 # session's own model.
 # review_model = "claude-haiku-5-5"

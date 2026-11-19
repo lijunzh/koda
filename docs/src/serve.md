@@ -105,6 +105,15 @@ reports every change, by a client, by the model's `CreateGoal` or `UpdateGoal`
 `timeUsedSeconds`, or a new status (`complete`, `blocked`, `budgetLimited`).
 `session/goal/cleared` follows a clear.
 
+With `goal_judge = "evaluator"`, a check after each turn on an active goal
+decides, and `session/goal/judged` reports what it found, with the `turnId`:
+`verdict` `met` (the goal is then `complete`), `notYet` (the next turn takes the
+`reason` as guidance) or `impossible` (the goal is then `blocked`):
+
+```json
+{"jsonrpc":"2.0","method":"session/goal/judged","params":{"sessionId":"a3f8bc12-…","turnId":"7c1e…","verdict":"notYet","reason":"The tests haven't been run."}}
+```
+
 An interrupt ends the turn, not the goal, but no turn starts on the goal by
 itself after it, as in Claude Code: the goal goes on once the next `turn/start`
 turn ends, or at once after a `session/goal/set` (such as `status: "active"`).

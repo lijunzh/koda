@@ -132,6 +132,11 @@ pub struct ConfigToml {
     /// feature. On when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goals: Option<bool>,
+    /// Who decides a goal is achieved: the working model (`self`, Codex's
+    /// way, when unset) or a check after each turn (`evaluator`, Claude
+    /// Code's way).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_judge: Option<GoalJudge>,
     /// The model `/review` runs on, as Codex's `review_model`: an id or an
     /// alias, on the session's provider. The session's own model when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -201,6 +206,21 @@ pub struct ConfigToml {
     /// log database is the only log.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log_dir: Option<String>,
+}
+
+/// `goal_judge`: who decides a goal is achieved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GoalJudge {
+    /// The working model marks it complete with `UpdateGoal` after the
+    /// completion audit its continuation asks for, as in Codex.
+    #[default]
+    #[serde(rename = "self")]
+    Model,
+    /// After each turn, one more call asks whether the goal holds: met, not
+    /// yet (with what remains) or impossible, as Claude Code's `/goal`. The
+    /// working model has no say.
+    Evaluator,
 }
 
 /// What a model takes as input, as Codex's `InputModality`, with PDFs,

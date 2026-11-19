@@ -224,6 +224,10 @@ impl KodaAgent {
         let mut defs = self.tool_defs.clone();
         if !config.goals {
             defs.retain(|d| !crate::goal::GOAL_TOOL_NAMES.contains(&d.name.as_str()));
+        } else if config.goal_judge == koda_config::GoalJudge::Evaluator {
+            // The evaluator decides when the goal is done, so the working
+            // model can't mark it, as in Claude Code. The user pauses it.
+            defs.retain(|d| d.name != "UpdateGoal");
         }
         defs.extend(
             self.tools

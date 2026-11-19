@@ -930,6 +930,26 @@
         }
       ]
     },
+    "GoalVerdict": {
+      "description": "What a goal's evaluator found after a turn.",
+      "oneOf": [
+        {
+          "const": "met",
+          "description": "The goal holds; `session/goal/updated` follows with it complete.",
+          "type": "string"
+        },
+        {
+          "const": "notYet",
+          "description": "Not yet; the next turn on the goal takes the reason as guidance.",
+          "type": "string"
+        },
+        {
+          "const": "impossible",
+          "description": "It can never be satisfied; `session/goal/updated` follows with it\nblocked.",
+          "type": "string"
+        }
+      ]
+    },
     "ImageInput": {
       "description": "An image sent with a turn's input.",
       "properties": {
@@ -2770,6 +2790,36 @@
           "description": "The goal, if the session has one."
         }
       },
+      "type": "object"
+    },
+    "SessionGoalJudgedNotification": {
+      "description": "`session/goal/judged`: with `goal_judge = \"evaluator\"` (Claude Code's\nway), the check after a turn on an active goal found it met, not yet\nmet, or impossible.",
+      "properties": {
+        "reason": {
+          "description": "Why, in a sentence or two, if it said.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sessionId": {
+          "description": "The session.",
+          "type": "string"
+        },
+        "turnId": {
+          "description": "The turn it judged.",
+          "type": "string"
+        },
+        "verdict": {
+          "$ref": "#/$defs/GoalVerdict",
+          "description": "What it found."
+        }
+      },
+      "required": [
+        "sessionId",
+        "turnId",
+        "verdict"
+      ],
       "type": "object"
     },
     "SessionGoalSetParams": {
@@ -4767,6 +4817,11 @@
     "session/goal/cleared": {
       "params": {
         "$ref": "#/$defs/SessionGoalClearedNotification"
+      }
+    },
+    "session/goal/judged": {
+      "params": {
+        "$ref": "#/$defs/SessionGoalJudgedNotification"
       }
     },
     "session/goal/updated": {

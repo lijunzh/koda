@@ -81,6 +81,7 @@ pub mod engine;
 /// Git context injection — branch, staged/unstaged diffs, recent commits.
 pub mod git;
 pub mod goal;
+pub(crate) mod goal_judge;
 /// The main inference loop — send messages, stream responses, dispatch tools.
 pub mod inference;
 /// Shared helpers used by the inference loop.

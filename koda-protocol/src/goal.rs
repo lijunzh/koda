@@ -145,6 +145,36 @@ pub struct SessionGoalUpdatedNotification {
     pub goal: Goal,
 }
 
+/// What a goal's evaluator found after a turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum GoalVerdict {
+    /// The goal holds; `session/goal/updated` follows with it complete.
+    Met,
+    /// Not yet; the next turn on the goal takes the reason as guidance.
+    NotYet,
+    /// It can never be satisfied; `session/goal/updated` follows with it
+    /// blocked.
+    Impossible,
+}
+
+/// `session/goal/judged`: with `goal_judge = "evaluator"` (Claude Code's
+/// way), the check after a turn on an active goal found it met, not yet
+/// met, or impossible.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionGoalJudgedNotification {
+    /// The session.
+    pub session_id: String,
+    /// The turn it judged.
+    pub turn_id: String,
+    /// What it found.
+    pub verdict: GoalVerdict,
+    /// Why, in a sentence or two, if it said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 /// `session/goal/cleared`: a session's goal was removed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]

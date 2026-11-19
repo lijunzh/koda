@@ -178,6 +178,9 @@ struct ChatRequest {
     messages: Vec<ApiMessage>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<ApiTool>,
+    /// `"none"` when the reply may not call a tool.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -612,10 +615,12 @@ impl OpenAiCompatProvider {
             })
             .collect();
 
+        let tool_choice = (settings.no_tool_calls && !api_tools.is_empty()).then_some("none");
         ChatRequest {
             model: model.to_string(),
             messages: api_messages,
             tools: api_tools,
+            tool_choice,
             stream_options: stream.map(|_| StreamOptions {
                 include_usage: true,
             }),
@@ -1021,6 +1026,38 @@ mod tests {
 
     fn default_settings() -> ModelSettings {
         ModelSettings::defaults_for("gpt-4o", &crate::provider_catalog::ProviderType::OpenAI)
+    }
+
+    #[test]
+    fn a_reply_that_may_not_call_a_tool_keeps_the_tools() {
+        let tools = [crate::ToolDefinition {
+            name: "Read".into(),
+            description: "Read a file".into(),
+            parameters: serde_json::json!({"type": "object"}),
+        }];
+        let messages = [ChatMessage::text("user", "hello")];
+        let request = |tools: &[crate::ToolDefinition], no_tool_calls| {
+            let settings = ModelSettings {
+                no_tool_calls,
+                ..default_settings()
+            };
+            serde_json::to_value(OpenAiCompatProvider::build_request(
+                &messages,
+                tools,
+                "gpt-4o",
+                None,
+                &settings,
+                ReasoningField::default(),
+            ))
+            .unwrap()
+        };
+        assert_eq!(request(&tools, true)["tool_choice"], "none");
+        assert_eq!(
+            request(&tools, true)["tools"],
+            request(&tools, false)["tools"]
+        );
+        assert!(request(&tools, false).get("tool_choice").is_none());
+        assert!(request(&[], true).get("tool_choice").is_none());
     }
 
     #[test]

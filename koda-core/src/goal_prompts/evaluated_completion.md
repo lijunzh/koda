@@ -1,0 +1,2 @@
+Completion:
+You do not mark this goal complete. After each turn, a separate check reads this conversation and decides whether the objective is achieved. It cannot run commands or open files, so it judges only the evidence the conversation shows. Verify your work in the open: run the commands, tests and checks that prove each requirement, and leave their output in the conversation. A claim of completion without that evidence does not count.

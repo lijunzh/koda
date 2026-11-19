@@ -532,6 +532,11 @@ pub struct ModelSettings {
     /// that has the search ([`model_effort::takes_tool_search`]), as Codex
     /// defers them. Only the main loop's calls carry them.
     pub deferred_tools: Vec<String>,
+    /// The reply may not call a tool. The tools are still sent, so the
+    /// request reads as the turn's own and a server's prompt cache holds;
+    /// `tool_choice` says none may be called. A goal's evaluator asks this
+    /// way (`koda_core::goal_judge`).
+    pub no_tool_calls: bool,
 }
 
 /// The Claude API's task budget (`output_config.task_budget`, beta
@@ -561,6 +566,7 @@ impl ModelSettings {
             max_context_tokens,
             task_budget: None,
             deferred_tools: Vec::new(),
+            no_tool_calls: false,
         }
     }
 }

@@ -3271,6 +3271,36 @@ async fn esc_holds_the_goal_until_the_next_message() {
     assert_eq!(model_calls(&server).await.len(), 4);
 }
 
+/// With `goal_judge = "evaluator"`, each check's verdict shows as it comes,
+/// and a met goal is complete.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_evaluators_verdicts_show_until_the_goal_is_met() {
+    let server = scripted_model(vec![
+        text_reply("Made some progress."),
+        text_reply(r#"{"ok": false, "reason": "Lint still fails.", "impossible": false}"#),
+        text_reply("Lint is clean now."),
+        text_reply(r#"{"ok": true, "reason": "Lint is clean."}"#),
+    ])
+    .await;
+    let home = home();
+    let mut tui = Tui::start_with_args(
+        home.path(),
+        &server.url(),
+        &["-c", "goal_judge=evaluator"],
+        IDLE_HINT,
+    );
+
+    tui.submit("/goal Make lint clean");
+    tui.wait_for_screen("Goal check: not met yet. Lint still fails.");
+    tui.wait_for_screen("Goal check: met. Lint is clean.");
+    tui.wait_for_screen("Goal complete");
+    assert!(
+        !tui.screen().contains(r#""ok""#),
+        "the check's answer isn't shown as a reply: {}",
+        tui.screen()
+    );
+}
+
 /// `/goal pause`, typed while one of a goal's turns runs, stops the goal once
 /// that turn ends.
 #[tokio::test(flavor = "multi_thread")]

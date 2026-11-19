@@ -22,7 +22,7 @@ prompt. See [Trust modes](./approval.md) for the canonical matrix.
 | `TodoWrite` | Read-only | Update the session task list (Koda-owned state, no FS impact) |
 | `GetGoal` | Read-only | Read the session's goal: its objective, status, budget and use ([`/goal`](./commands.md#goal)) |
 | `CreateGoal` | Read-only | Set the session's goal, only when the user asks for one; fails while an unfinished goal exists |
-| `UpdateGoal` | Read-only | Mark the goal complete, blocked, or (at the user's request) paused |
+| `UpdateGoal` | Read-only | Mark the goal complete, blocked, or (at the user's request) paused. Not offered with `goal_judge = "evaluator"`, where a check after each turn decides |
 | `RecallContext` | Read-only | Search session history for past context |
 | `ListSkills` | Read-only | List available skills |
 | `ActivateSkill` | Internal | Load a skill's instructions into context |

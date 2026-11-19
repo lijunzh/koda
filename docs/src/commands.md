@@ -192,6 +192,26 @@ running turn. A `/goal <objective>` replaces any goal the session has; in Plan
 mode, no turn starts by itself. `goals = false` in `config.toml` turns goals
 off.
 
+### Who decides it's done
+
+By default the working model does, after the completion audit, as in Codex.
+With `goal_judge = "evaluator"` in `config.toml`, a separate check decides, as
+in Claude Code: after each turn on an active goal, Koda asks the same model one
+more question, whether the conversation shows the goal achieved. The answer
+shows as a `Goal check:` line:
+
+- **met:** the goal is complete;
+- **not met yet:** the next turn starts with the check's reason as guidance;
+- **impossible:** the goal is blocked; `/goal resume` tries again.
+
+The check can't run commands or open files; it judges only what the
+conversation shows, so the model is told to leave the proof (test output, a
+clean build) in the conversation. The model has no `UpdateGoal` tool then, and
+the continuation leaves out Codex's audits. The check sends the turn's own
+request with the question after it and tool calls barred, so a server that
+caches prompts reads only the question and the answer as new. Its tokens count
+toward the goal and its budget.
+
 ## `/rename <name>`
 
 Names the session, as Codex's `/rename` does; `/resume` lists it by that

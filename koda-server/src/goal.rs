@@ -144,6 +144,9 @@ pub(crate) struct TurnActivity {
     pub failed: bool,
     /// The turn was interrupted.
     pub interrupted: bool,
+    /// The goal evaluator found the goal not met yet, and why
+    /// (`goal_judge = "evaluator"`): the next turn's guidance.
+    pub check: Option<String>,
     /// What its model calls used, sub-agents included.
     pub usage: UsageTotals,
     /// How long it took.
@@ -174,6 +177,10 @@ impl TurnActivity {
                 self.usage = usage.clone();
                 self.elapsed_ms = *elapsed_ms;
             }
+            EngineEvent::GoalJudged {
+                verdict: koda_core::goal::GoalVerdict::NotYet,
+                reason,
+            } => self.check = reason.clone(),
             EngineEvent::TurnEnd { reason, .. } => {
                 use koda_core::engine::TurnEndReason;
                 self.failed = matches!(reason, TurnEndReason::Error { .. });

@@ -491,6 +491,33 @@ async fn streamed_body(settings: &ModelSettings) -> Value {
     serde_json::from_slice(&reqs[0].body).unwrap()
 }
 
+/// A reply that may not call a tool keeps the tools, so the request reads as
+/// the turn's, and says none may be called.
+#[tokio::test]
+async fn chat_stream_can_forbid_tool_calls_and_keep_the_tools() {
+    let server = FakeLlmServer::spawn().await;
+    server
+        .mount_sse("POST", r".*/v1/messages$", &[r#"{"type":"message_stop"}"#])
+        .await;
+    let provider = AnthropicProvider::new("k".into(), Some(&server.url()));
+    let quiet = ModelSettings {
+        no_tool_calls: true,
+        ..settings()
+    };
+    for settings in [settings(), quiet] {
+        let mut collector = provider
+            .chat_stream(&[user_msg("hi")], &cache_test_tools(), &settings)
+            .await
+            .unwrap();
+        while collector.rx.recv().await.is_some() {}
+    }
+    let reqs = server.received_requests().await;
+    let body = |i: usize| -> Value { serde_json::from_slice(&reqs[i].body).unwrap() };
+    assert!(body(0).get("tool_choice").is_none());
+    assert_eq!(body(1)["tool_choice"], json!({"type": "none"}));
+    assert_eq!(body(0)["tools"], body(1)["tools"]);
+}
+
 /// A model in the catalog gets its level sent, the chosen one or Claude
 /// Code's default; a model the catalog doesn't have yet gets none.
 #[tokio::test]

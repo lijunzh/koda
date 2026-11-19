@@ -18,7 +18,8 @@ use koda_client::RequestHandle;
 use koda_client::events::Outgoing;
 use koda_client::protocol::ServerNotification;
 use koda_client::protocol::goal::{
-    Goal, GoalStatus, SessionGoalClearParams, SessionGoalGetParams, SessionGoalSetParams,
+    Goal, GoalStatus, GoalVerdict, SessionGoalClearParams, SessionGoalGetParams,
+    SessionGoalSetParams,
 };
 use koda_client::protocol::methods;
 
@@ -178,6 +179,19 @@ fn duration(seconds: i64) -> String {
     }
 }
 
+/// What the goal evaluator's verdict says (`goal_judge = "evaluator"`).
+fn verdict(verdict: GoalVerdict, reason: Option<&str>) -> String {
+    let what = match verdict {
+        GoalVerdict::Met => "Goal check: met",
+        GoalVerdict::NotYet => "Goal check: not met yet",
+        GoalVerdict::Impossible => "Goal check: impossible",
+    };
+    match reason {
+        Some(reason) => format!("{what}. {reason}"),
+        None => format!("{what}."),
+    }
+}
+
 /// What a change to the goal says, given the goal as last reported.
 fn change(before: Option<&Goal>, now: &Goal) -> Option<String> {
     let same = before.filter(|before| {
@@ -229,6 +243,15 @@ impl TuiContext {
                     tui_output::ok_msg(&mut self.scroll_buffer, line);
                 }
             }
+            ServerNotification::SessionGoalJudged(judged)
+                if judged.session_id == self.session.id =>
+            {
+                let line = verdict(judged.verdict, judged.reason.as_deref());
+                match judged.verdict {
+                    GoalVerdict::NotYet => tui_output::dim_msg(&mut self.scroll_buffer, line),
+                    _ => tui_output::ok_msg(&mut self.scroll_buffer, line),
+                }
+            }
             ServerNotification::SessionGoalCleared(cleared)
                 if cleared.session_id == self.session.id =>
             {
@@ -255,6 +278,15 @@ mod tests {
             created_at: 1,
             updated_at: 1,
         }
+    }
+
+    #[test]
+    fn a_verdict_says_what_the_check_found() {
+        assert_eq!(
+            verdict(GoalVerdict::NotYet, Some("Lint still fails.")),
+            "Goal check: not met yet. Lint still fails."
+        );
+        assert_eq!(verdict(GoalVerdict::Met, None), "Goal check: met.");
     }
 
     #[test]
