@@ -3301,6 +3301,30 @@ async fn the_evaluators_verdicts_show_until_the_goal_is_met() {
     );
 }
 
+/// A background command that exits starts a turn by itself, as Claude
+/// Code's do, and the TUI shows the exit and the turn.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_background_command_that_exits_starts_a_turn() {
+    let server = scripted_model(vec![
+        tool_calls(&[(
+            "Bash",
+            json!({"command": "sleep 0.5; echo built", "background": true}),
+        )]),
+        text_reply("Started the build."),
+        text_reply("The build finished."),
+    ])
+    .await;
+    let home = home();
+    let mut tui = Tui::start_with_args(home.path(), &server.url(), &["--mode", "auto"], IDLE_HINT);
+
+    tui.submit("build it in the background");
+    tui.wait_for_screen("Started the build.");
+    tui.wait_for_screen("Background command exited (code 0): sleep 0.5; echo built");
+    tui.wait_for_screen("The build finished.");
+    tui.wait_for_screen_without(BUSY_PROMPT);
+    assert_eq!(model_calls(&server).await.len(), 3);
+}
+
 /// `/goal pause`, typed while one of a goal's turns runs, stops the goal once
 /// that turn ends.
 #[tokio::test(flavor = "multi_thread")]

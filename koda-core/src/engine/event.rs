@@ -139,6 +139,13 @@ pub enum EngineEvent {
         goal: crate::goal::Goal,
     },
 
+    /// Background commands the model started exited by themselves, and the
+    /// model is told at this step.
+    BackgroundExited {
+        /// Each one's process id, command and exit code.
+        exits: Vec<(u32, String, Option<i32>)>,
+    },
+
     /// The goal evaluator judged the turn's active goal
     /// (`goal_judge = "evaluator"`). A met or impossible goal's new status
     /// follows as [`EngineEvent::GoalUpdated`].

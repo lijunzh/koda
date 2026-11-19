@@ -298,6 +298,102 @@ pub(crate) async fn after_turn(
     Ok(db.update_goal(session_id, update).await?.or(Some(goal)))
 }
 
+/// Idle check-ins Koda makes on a goal between the user's turns, as Claude
+/// Code makes at most three.
+const CHECK_INS: u8 = 3;
+
+/// A goal waiting on running background commands, and when Koda checks in
+/// on them, as Claude Code does: first after the configured time (30 min),
+/// then twice as long each time, up to four times the first, and at most
+/// [`CHECK_INS`] times until the user's next turn.
+#[derive(Debug, Default)]
+pub(crate) struct CheckIn {
+    /// Since when the goal has waited; `None` while it isn't waiting.
+    since: Option<std::time::Instant>,
+    /// The wait before the next check-in, once one has happened.
+    next: Option<std::time::Duration>,
+    /// Check-ins since the user's last turn.
+    count: u8,
+}
+
+impl CheckIn {
+    /// The goal is waiting on background commands.
+    pub(crate) fn wait(&mut self) {
+        self.since.get_or_insert_with(std::time::Instant::now);
+    }
+
+    /// The commands are done; the goal goes on.
+    pub(crate) fn done_waiting(&mut self) {
+        self.since = None;
+        self.next = None;
+    }
+
+    /// The user started a turn: check-ins may happen again.
+    pub(crate) fn user_turn(&mut self) {
+        self.count = 0;
+    }
+
+    /// How long the goal has waited, if a check-in is due after `first`.
+    pub(crate) fn due(&self, first: std::time::Duration) -> Option<std::time::Duration> {
+        let waited = self.since?.elapsed();
+        (self.count < CHECK_INS && waited >= self.next.unwrap_or(first)).then_some(waited)
+    }
+
+    /// A check-in is starting; whether it is the last until the user's turn.
+    pub(crate) fn checked_in(&mut self, first: std::time::Duration) -> bool {
+        self.count += 1;
+        let next = (self.next.unwrap_or(first) * 2).min(first * 4);
+        self.next = Some(next);
+        self.since = Some(std::time::Instant::now());
+        self.count >= CHECK_INS
+    }
+}
+
+/// What a check-in on a waiting goal says before the goal's continuation:
+/// the commands still running, and what to do about them, as Claude Code's.
+pub(crate) fn checkin_message(
+    running: &[koda_core::tools::bg_process::BgProcessSnapshot],
+    waited: std::time::Duration,
+    last: bool,
+) -> String {
+    let mut text = format!(
+        "Check-in: background commands have kept this goal waiting for {}. Still running:\n",
+        minutes(waited)
+    );
+    for process in running {
+        text.push_str(&format!(
+            "- PID {}: {} (running for {}",
+            process.pid,
+            process.command,
+            minutes(process.age)
+        ));
+        if let Some(log) = &process.log {
+            text.push_str(&format!("; output: {}", log.display()));
+        }
+        text.push_str(")\n");
+    }
+    text.push_str(
+        "Read their output. If they're making progress, keep waiting: you'll be told when they \
+         exit. If one is stuck or no longer needed, fix or stop it, then go on with the goal.",
+    );
+    if last {
+        text.push_str(
+            " This is the last check-in until the user's next message; Koda waits for the \
+             commands after this.",
+        );
+    }
+    text
+}
+
+fn minutes(duration: std::time::Duration) -> String {
+    let minutes = duration.as_secs() / 60;
+    match minutes {
+        0 => format!("{}s", duration.as_secs()),
+        m if m >= 60 => format!("{}h {}m", m / 60, m % 60),
+        m => format!("{m} min"),
+    }
+}
+
 /// The running turn's goal budget: what it may still spend, and whether it
 /// has been told to wrap up.
 #[derive(Debug)]
@@ -585,5 +681,37 @@ mod tests {
             })
             .is_none()
         );
+    }
+
+    #[test]
+    fn check_ins_back_off_and_stop_at_three_until_the_user_returns() {
+        use std::time::Duration;
+        let first = Duration::ZERO;
+        let mut checkin = CheckIn::default();
+        assert_eq!(checkin.due(first), None, "not waiting");
+        checkin.wait();
+        assert!(checkin.due(first).is_some());
+        assert!(!checkin.checked_in(first));
+        assert!(!checkin.checked_in(first));
+        assert!(checkin.checked_in(first), "the third is the last");
+        assert_eq!(checkin.due(first), None);
+        checkin.user_turn();
+        assert!(checkin.due(first).is_some());
+
+        let first = Duration::from_secs(60);
+        let mut checkin = CheckIn::default();
+        checkin.wait();
+        assert_eq!(checkin.due(first), None, "not yet");
+        checkin.checked_in(first);
+        assert_eq!(checkin.next, Some(first * 2));
+        checkin.checked_in(first);
+        checkin.checked_in(first);
+        assert_eq!(
+            checkin.next,
+            Some(first * 4),
+            "at most four times the first"
+        );
+        checkin.done_waiting();
+        assert_eq!(checkin.next, None);
     }
 }

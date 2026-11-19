@@ -1083,3 +1083,152 @@ async fn an_unreadable_check_counts_as_not_yet() {
     assert!(!requests[2]["messages"].to_string().contains("<goal_check>"));
     wire.finish().await;
 }
+
+// ── Background commands ─────────────────────────────────────────────────
+
+fn background(id: &str, command: &str) -> ResponseTemplate {
+    tool_call(id, "Bash", json!({"command": command, "background": true}))
+}
+
+/// A background command that exits wakes the idle session, as Claude Code
+/// tells Claude: Koda starts a turn whose first step tells the model the
+/// command, its exit code and its last lines, and clients hear of it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_background_command_that_exits_wakes_the_session() {
+    let server = model(vec![
+        background("a", "sleep 0.5; echo all 12 tests passed; exit 1"),
+        text("Started the tests."),
+        text("The tests finished."),
+    ])
+    .await;
+    let mut wire = Wire::open(config(&server, false)).await;
+    let started = wire.turn("Run the tests in the background").await;
+    let first = wire.until_method("turn/completed").await;
+    assert_eq!(turn_completed(&first)["id"], started.as_str());
+
+    // Koda's own turn, with nothing sent to start it.
+    let lines = wire.until_method("turn/completed").await;
+    assert_eq!(count(&lines, "turn/started"), 1);
+    let exited = lines
+        .iter()
+        .find(|l| l["method"] == "session/backgroundTerminals/exited")
+        .unwrap_or_else(|| panic!("no exit notice in {lines:?}"));
+    let data = &exited["params"]["data"][0];
+    assert_eq!(data["exitCode"], 1, "{exited}");
+    assert!(data["command"].as_str().unwrap().starts_with("sleep 0.5"));
+
+    let requests = chat_requests(&server).await;
+    assert_eq!(requests.len(), 3);
+    let result = requests[1]["messages"].to_string();
+    assert!(
+        result.contains("You'll be told when it exits"),
+        "no polling: {result}"
+    );
+    let told = requests[2]["messages"].to_string();
+    assert!(told.contains("<background_command_exited"), "{told}");
+    assert!(told.contains("Result: exit code 1"), "{told}");
+    assert!(told.contains("all 12 tests passed"), "{told}");
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert_eq!(chat_requests(&server).await.len(), 3, "told once");
+    wire.finish().await;
+}
+
+/// A goal waits while its background command runs, as Claude Code's does:
+/// no turn starts on it until the command exits, then the exit's turn and
+/// the goal's next one follow.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_goal_waits_for_its_background_command() {
+    let server = model(vec![
+        background("a", "sleep 1"),
+        text("Waiting for the build."),
+        text("The build is done."),
+        tool_call("b", "UpdateGoal", json!({"status": "complete"})),
+        text("Goal complete."),
+    ])
+    .await;
+    let mut wire = Wire::open(config(&server, false)).await;
+    wire.set_goal(json!({"objective": "Build it"})).await;
+    wire.until_method("turn/completed").await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(chat_requests(&server).await.len(), 2, "the goal waits");
+
+    let lines = wire
+        .until(|l| {
+            l["method"] == "session/goal/updated" && l["params"]["goal"]["status"] == "complete"
+        })
+        .await;
+    assert!(
+        lines
+            .iter()
+            .any(|l| l["method"] == "session/backgroundTerminals/exited")
+    );
+    let requests = chat_requests(&server).await;
+    assert_eq!(requests.len(), 5);
+    let woken = requests[2]["messages"].to_string();
+    assert!(woken.contains("<background_command_exited"));
+    let next = requests[3]["messages"].to_string();
+    assert!(next.contains("Continue working toward the active thread goal"));
+    wire.finish().await;
+}
+
+/// A background command that keeps a goal waiting past its check-in time
+/// gets a check-in, at most three until the user's next turn, each later
+/// one after twice the wait.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_goal_checks_in_on_a_command_that_keeps_it_waiting() {
+    let server = model(vec![
+        background("a", "sleep 30"),
+        text("Waiting."),
+        text("Still running; waiting."),
+        text("Still running; waiting."),
+        text("Still running; waiting."),
+    ])
+    .await;
+    let mut config = config(&server, false);
+    config.goal_checkin = Some(Duration::from_millis(200));
+    let mut wire = Wire::open(config).await;
+    wire.set_goal(json!({"objective": "Ship it"})).await;
+    model_calls(&server, 5).await;
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+    let requests = chat_requests(&server).await;
+    assert_eq!(requests.len(), 5, "three check-ins, then none");
+    let checkin = |n: usize| -> String {
+        let messages = requests[n]["messages"].as_array().unwrap();
+        messages.last().unwrap()["content"].to_string()
+    };
+    assert!(checkin(2).contains("Check-in: background commands have kept this goal waiting"));
+    assert!(checkin(2).contains("sleep 30 (running for"));
+    assert!(checkin(2).contains("Continue working toward the active thread goal"));
+    assert!(!checkin(3).contains("last check-in"));
+    assert!(checkin(4).contains("This is the last check-in"));
+    wire.finish().await;
+}
+
+/// Under the evaluator, no check runs while a background command runs, as
+/// Claude Code defers it: the turn the exit starts is checked when it ends.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_evaluator_waits_for_background_work() {
+    let server = model(vec![
+        background("a", "sleep 0.5"),
+        text("Waiting for the tests."),
+        text("The tests pass."),
+        text(r#"{"ok": true, "reason": "The tests pass."}"#),
+    ])
+    .await;
+    let mut wire = Wire::open(judged(config(&server, false))).await;
+    wire.set_goal(json!({"objective": "Make the tests pass"}))
+        .await;
+    wire.until(|l| {
+        l["method"] == "session/goal/updated" && l["params"]["goal"]["status"] == "complete"
+    })
+    .await;
+    let requests = chat_requests(&server).await;
+    assert_eq!(requests.len(), 4, "no check while the command ran");
+    assert!(
+        requests[2]["messages"]
+            .to_string()
+            .contains("<background_command_exited")
+    );
+    assert_eq!(requests[3]["tool_choice"], "none", "the check");
+    wire.finish().await;
+}

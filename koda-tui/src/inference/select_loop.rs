@@ -202,7 +202,7 @@ impl TuiContext {
                 if self.note_main_session(&message) {
                     continue;
                 }
-                self.note_goal(&message);
+                self.note_session(&message);
                 match &message {
                     Outgoing::Notification(ServerNotification::TurnStarted(started))
                         if started.session_id == self.session.id =>
@@ -611,7 +611,7 @@ impl TuiContext {
                     }
                     Some(message) => {
                         self.note_main_session(&message);
-                        self.note_goal(&message);
+                        self.note_session(&message);
                     }
                     None => anyhow::bail!("Koda's host stopped"),
                 }
@@ -632,7 +632,7 @@ impl TuiContext {
             return;
         }
         self.mcp.observe(&self.session.id, &message);
-        self.note_goal(&message);
+        self.note_session(&message);
         tracker.observe_message(&message);
         let notification = match &message {
             Outgoing::Request(request) => {

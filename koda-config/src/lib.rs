@@ -137,6 +137,12 @@ pub struct ConfigToml {
     /// Code's way).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal_judge: Option<GoalJudge>,
+    /// Minutes a goal waits on running background commands before Koda
+    /// checks in on them, as Claude Code's `CLAUDE_CODE_GOAL_CHECKIN_MINUTES`:
+    /// later check-ins wait twice as long, up to four times this. `0` turns
+    /// check-ins off. 30 when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_checkin_minutes: Option<u64>,
     /// The model `/review` runs on, as Codex's `review_model`: an id or an
     /// alias, on the session's provider. The session's own model when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
