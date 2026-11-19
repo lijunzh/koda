@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **Parallel sub-agents no longer fail with "database is locked" on a slow disk.** The session database now commits with SQLite's `synchronous = NORMAL`, as Codex opens its state database: in WAL mode a commit no longer waits for the disk to flush, so it holds the write lock for the write alone, and other writers stop running out their 5-second wait. A power cut can lose the last few commits but never corrupts the file; a crash of Koda itself loses nothing.
 - **A turn cut off before its first reply reads as interrupted after a restart.** When the server was killed mid-turn before it had stored the turn's own record (it stores them in the background), the turn was rebuilt from its messages and, having only the question, listed as `completed`. A last turn whose question has no reply is now `interrupted`, as one left mid-way already was.
 
 ## [0.7.6] - 2026-11-17
