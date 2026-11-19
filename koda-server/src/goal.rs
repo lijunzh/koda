@@ -10,14 +10,15 @@
 //!
 //! - **a turn that failed,** so a failing model call doesn't loop;
 //! - **three automatic turns in a row that did nothing:** no text, no
-//!   tool call, ended empty or interrupted;
+//!   tool call;
 //! - **three goal turns in a row whose only tool results were failed
 //!   commands:** the shell can't do what the goal needs.
 //!
-//! An interrupt ends the turn, not the goal: the next turn starts once the
-//! session is idle, and an interrupted automatic turn that did nothing
-//! counts toward the three. The user stops a goal by pausing or clearing
-//! it. Reaching the token budget makes the goal `budget_limited`: the
+//! An interrupt ends the turn, not the goal, but no turn on the goal starts
+//! after it until the user starts one or changes the goal (`/goal resume`),
+//! as in Claude Code; the goal goes on once that turn ends. An interrupted
+//! turn isn't counted as one that did nothing. The user stops a goal by
+//! pausing or clearing it. Reaching the token budget makes the goal `budget_limited`: the
 //! running turn is told to wrap up, and no other starts.
 
 use koda_core::engine::{EngineEvent, ToolOutcome, UsageTotals};
@@ -208,7 +209,8 @@ impl Strikes {
                 ..Self::default()
             };
         }
-        let empty = automatic && !turn.active;
+        // The user stopped it, so it says nothing about the goal.
+        let empty = automatic && !turn.active && !turn.interrupted;
         self.empty = if empty { self.empty + 1 } else { 0 };
         if turn.tool_succeeded {
             self.failed_commands = 0;
@@ -509,6 +511,19 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(now.status, GoalStatus::Blocked);
+    }
+
+    #[test]
+    fn an_interrupted_turn_is_not_one_that_did_nothing() {
+        let interrupted = TurnActivity {
+            interrupted: true,
+            ..turn(false)
+        };
+        let mut strikes = Strikes::default();
+        for _ in 0..STRIKES + 1 {
+            assert!(!strikes.count("g", true, &interrupted));
+        }
+        assert_eq!(strikes.empty, 0);
     }
 
     #[test]

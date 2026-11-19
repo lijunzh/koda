@@ -184,9 +184,10 @@ Nothing else stops it: a model that keeps working without ever marking the
 goal complete keeps going, as in Codex. Give the goal a budget to bound what it
 can spend.
 
-**Esc stops the turn, not the goal**, as in Codex: the next turn starts once
-the session is idle. `/goal pause` works while a turn runs, and stops the goal
-once that turn ends. Text you send while Koda works on the goal joins the
+**Esc stops the turn, not the goal**, and hands the session back to you, as in
+Claude Code: the goal stays active, and Koda goes on with it after your next
+message, or at once on `/goal resume`. `/goal pause` works while a turn runs,
+and stops the goal once that turn ends. Text you send while Koda works on the goal joins the
 running turn. A `/goal <objective>` replaces any goal the session has; in Plan
 mode, no turn starts by itself. `goals = false` in `config.toml` turns goals
 off.

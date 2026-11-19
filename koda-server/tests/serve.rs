@@ -793,12 +793,15 @@ async fn a_failed_goal_turn_blocks_the_goal() {
     wire.finish().await;
 }
 
-/// An interrupt stops the turn, not the goal: Koda starts the next turn on
-/// it. Pausing the goal during that turn lets it end, and no other starts.
+/// An interrupt stops the turn, not the goal, and hands the session back:
+/// no turn starts on the goal until the user's next turn has ended, as in
+/// Claude Code. Pausing the goal during a turn lets it end, and no other
+/// starts.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_interrupt_stops_the_turn_and_a_pause_stops_the_goal() {
+async fn an_interrupt_waits_for_the_user_and_a_pause_stops_the_goal() {
     let server = model(vec![
         write_file("call_1", "a.txt"),
+        text("Noted."),
         write_file("call_2", "b.txt"),
     ])
     .await;
@@ -818,10 +821,18 @@ async fn an_interrupt_stops_the_turn_and_a_pause_stops_the_goal() {
     let ended = wire.until_method("turn/completed").await;
     assert_eq!(turn_completed(&ended)["status"], "interrupted");
 
-    // The goal goes on.
+    // The goal stays active and waits.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(chat_requests(&server).await.len(), 1, "no turn by itself");
+    assert_eq!(wire.goal().await["status"], "active");
+
+    // The user's turn runs, and the goal goes on once it ends.
+    let mine = wire.turn("Carry on").await;
+    let lines = wire.until_method("turn/completed").await;
+    assert_eq!(turn_completed(&lines)["id"], mine.as_str());
     let started = wire.until_method("turn/started").await;
     let next = started.last().unwrap()["params"]["turn"]["id"].clone();
-    assert_ne!(next, turn);
+    assert_ne!(next, mine.as_str());
     wire.approval().await;
     let paused = wire.set_goal(json!({"status": "paused"})).await;
     assert_eq!(paused["status"], "paused");
@@ -833,8 +844,41 @@ async fn an_interrupt_stops_the_turn_and_a_pause_stops_the_goal() {
     .unwrap();
     wire.until_method("turn/completed").await;
     tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(chat_requests(&server).await.len(), 2, "no third turn");
+    assert_eq!(chat_requests(&server).await.len(), 3, "no fourth turn");
     assert_eq!(wire.goal().await["status"], "paused");
+    wire.finish().await;
+}
+
+/// After an interrupt, `/goal resume` goes on with the goal at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resuming_after_an_interrupt_goes_on_with_the_goal() {
+    let server = model(vec![
+        write_file("call_1", "a.txt"),
+        tool_call("call_2", "UpdateGoal", json!({"status": "complete"})),
+        text("Done."),
+    ])
+    .await;
+    let mut wire = Wire::open(config(&server, true)).await;
+    let session = wire.session.clone();
+    wire.set_goal(json!({"objective": "Write the files"})).await;
+    let started = wire.until_method("turn/started").await;
+    let turn = started.last().unwrap()["params"]["turn"]["id"].clone();
+    wire.approval().await;
+    wire.call(
+        "turn/interrupt",
+        json!({"sessionId": session, "turnId": turn}),
+    )
+    .await
+    .unwrap();
+    wire.until_method("turn/completed").await;
+
+    wire.set_goal(json!({"status": "active"})).await;
+    let lines = wire
+        .until(|l| {
+            l["method"] == "session/goal/updated" && l["params"]["goal"]["status"] == "complete"
+        })
+        .await;
+    assert_eq!(count(&lines, "turn/started"), 1);
     wire.finish().await;
 }
 

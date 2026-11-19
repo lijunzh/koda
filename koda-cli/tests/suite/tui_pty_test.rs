@@ -3237,8 +3237,42 @@ async fn a_goal_runs_turn_after_turn_until_complete() {
     tui.wait_for_screen("Goal (complete): Ship the release");
 }
 
-/// Esc stops a goal's turn, not the goal; `/goal pause`, typed while one of
-/// its turns runs, stops it once that turn ends.
+/// Esc stops a goal's turn, not the goal, and hands the TUI back: nothing
+/// runs until the next message, and the goal goes on after that turn.
+#[tokio::test(flavor = "multi_thread")]
+async fn esc_holds_the_goal_until_the_next_message() {
+    let server = scripted_model(vec![
+        text_reply("Working on it.").set_delay(Duration::from_secs(3)),
+        text_reply("Noted."),
+        tool_calls(&[("UpdateGoal", json!({"status": "complete"}))]),
+        text_reply("All done."),
+    ])
+    .await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.submit("/goal Keep the docs current");
+    tui.wait_for_screen("Goal set: Keep the docs current");
+    wait_for_model_call(&server, 1).await;
+    tui.stop_turn(ESC);
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert_eq!(
+        model_calls(&server).await.len(),
+        1,
+        "nothing runs after Esc"
+    );
+    tui.submit("/goal");
+    tui.wait_for_screen("Goal (active): Keep the docs current");
+
+    tui.submit("check the changelog too");
+    tui.wait_for_screen("Noted.");
+    tui.wait_for_screen("Goal complete");
+    tui.wait_for_screen("All done.");
+    assert_eq!(model_calls(&server).await.len(), 4);
+}
+
+/// `/goal pause`, typed while one of a goal's turns runs, stops the goal once
+/// that turn ends.
 #[tokio::test(flavor = "multi_thread")]
 async fn goal_pause_mid_turn_stops_the_goal() {
     let server = scripted_model(vec![

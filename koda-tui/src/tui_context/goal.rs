@@ -8,8 +8,9 @@
 //! - `/goal budget <tokens>` limits the tokens it may use; `/goal budget
 //!   off` removes the limit.
 //!
-//! It runs during a turn too: an interrupt (Esc) stops the turn, not the
-//! goal, so `/goal pause` is how the goal is stopped. What changes is said
+//! It runs during a turn too. An interrupt (Esc) stops the turn, not the
+//! goal: Koda waits for the next message, or `/goal resume`, before it goes
+//! on. `/goal pause` is how the goal is stopped. What changes is said
 //! as the host reports it (`session/goal/updated`), whoever changed it: the
 //! user, the model, or Koda as it stops a goal that can't go on.
 

@@ -418,6 +418,7 @@ pub(crate) async fn open(
             commands,
             waiting: None,
             strikes: crate::goal::Strikes::default(),
+            held: false,
         },
         restored_usage,
     })
@@ -450,6 +451,9 @@ pub(crate) struct SessionTask {
     waiting: Option<SessionCommand>,
     /// The counts that block the session's goal.
     strikes: crate::goal::Strikes,
+    /// The last turn was interrupted: the goal waits for the user, as Claude
+    /// Code's does, until a turn they start ends or they change the goal.
+    held: bool,
 }
 
 impl SessionTask {
@@ -539,6 +543,7 @@ impl SessionTask {
     async fn goal_request(&mut self, request: GoalRequest, reply: oneshot::Sender<Answer>) -> bool {
         if !matches!(request, GoalRequest::Get) {
             self.strikes.reset();
+            self.held = false;
         }
         let set = goal_request(
             &self.session.db,
@@ -564,10 +569,12 @@ impl SessionTask {
         set.goal.status == koda_core::goal::GoalStatus::Active
     }
 
-    /// Start a turn on the session's goal, if it is active and nothing
-    /// waits: Codex's continuation when a thread goes idle.
+    /// Start a turn on the session's goal, if it is active, nothing waits
+    /// and the user didn't just interrupt: Codex's continuation when a
+    /// thread goes idle.
     async fn continue_goal(&mut self) -> Option<Next> {
-        if !self.config.goals || self.session.mode == koda_core::trust::TrustMode::Plan {
+        if !self.config.goals || self.held || self.session.mode == koda_core::trust::TrustMode::Plan
+        {
             return None;
         }
         // A client's command goes first; with the host gone, nothing starts.
@@ -871,6 +878,7 @@ impl SessionTask {
             reload_mcp,
             rules,
             strikes,
+            held,
             ..
         } = self;
         // For `session/name/set` during the turn, which holds the session.
@@ -1062,6 +1070,9 @@ impl SessionTask {
                 Err(e) => tracing::warn!("couldn't count the turn toward the goal: {e:#}"),
             }
         }
+        // An interrupt hands the session back to the user: the goal stays
+        // as it is, and goes on after the next turn they start.
+        *held = !interrupts.is_empty();
         for reply in interrupts {
             let _ = reply.send(to_json(TurnInterruptResponse {}));
         }

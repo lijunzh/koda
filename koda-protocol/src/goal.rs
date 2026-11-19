@@ -5,8 +5,10 @@
 //! While the goal is active, each time the session goes idle the host
 //! starts another turn on it by itself, as `turn/started` shows. The model
 //! sees the goal through its `GetGoal`, `CreateGoal` and `UpdateGoal` tools.
-//! An interrupt stops the turn, not the goal: `session/goal/set` with
-//! `status: "paused"` stops it, and `session/goal/clear` removes it.
+//! An interrupt stops the turn, not the goal, and no turn starts on the
+//! goal by itself until a `turn/start` turn ends or a `session/goal/set`
+//! goes on with it. `session/goal/set` with `status: "paused"` stops it, and
+//! `session/goal/clear` removes it.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};

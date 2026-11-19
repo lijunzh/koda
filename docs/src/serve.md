@@ -105,9 +105,11 @@ reports every change, by a client, by the model's `CreateGoal` or `UpdateGoal`
 `timeUsedSeconds`, or a new status (`complete`, `blocked`, `budgetLimited`).
 `session/goal/cleared` follows a clear.
 
-An interrupt ends the turn, not the goal; the next turn starts once the turn
-has stopped. `turn/start` during one of Koda's own turns is refused as during
-any turn: send `turn/steer` instead.
+An interrupt ends the turn, not the goal, but no turn starts on the goal by
+itself after it, as in Claude Code: the goal goes on once the next `turn/start`
+turn ends, or at once after a `session/goal/set` (such as `status: "active"`).
+`turn/start` during one of Koda's own turns is refused as during any turn: send
+`turn/steer` instead.
 
 ## Errors
 
