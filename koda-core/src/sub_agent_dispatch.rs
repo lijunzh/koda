@@ -718,6 +718,13 @@ fn run_sub_agent<'a>(
             if !denied.contains(&"AskUser".to_string()) {
                 denied.push("AskUser".to_string());
             }
+            // A goal is the session's, kept by its main agent; a sub-agent
+            // works on the task it was given.
+            for name in crate::goal::GOAL_TOOL_NAMES {
+                if !denied.iter().any(|d| d == name) {
+                    denied.push(name.to_string());
+                }
+            }
             // Phase E of #996 wired `caller_spawner` through the
             // dispatch layer, so the bg-task tools (ListBackgroundTasks /
             // CancelTask / WaitTask) now correctly scope to the calling

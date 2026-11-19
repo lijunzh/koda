@@ -151,6 +151,47 @@ turn goes on, and so does anything it asks you, which waits for your return.
 `Ctrl+C` on an empty prompt goes back. See
 [Side conversations](./tui.md#side-conversations).
 
+## `/goal`
+
+Gives Koda a goal to keep working on, turn after turn, until the model finds
+it achieved, as Codex's `/goal` does:
+
+```text
+/goal Migrate every handler to the new API and get the tests passing
+/goal                  ← show the goal: its status, tokens and time used
+/goal pause            ← stop it; /goal resume goes on with it
+/goal budget 500k      ← limit the tokens it may use (/goal budget off)
+/goal clear            ← remove it
+```
+
+Each time the session goes idle with the goal active, Koda starts another
+turn on it by itself, with Codex's instructions: keep the full objective, work
+from evidence, and before calling it done, audit every requirement against
+the current state. The model marks the goal complete with its `UpdateGoal`
+tool. You can also ask for a goal in plain words ("make it your goal to…");
+the model then sets it with `CreateGoal`.
+
+A goal stops when:
+
+- the model marks it complete, or blocked after the same blocker three turns
+  in a row;
+- you pause or clear it;
+- its token budget is used up (the running turn is told to wrap up first);
+- a turn fails, three of Koda's turns in a row do nothing, or three goal
+  turns in a row have only failed commands, so a stuck goal doesn't loop.
+
+Nothing else stops it: a model that keeps working without ever marking the
+goal complete keeps going, as in Codex. Give the goal a budget to bound what it
+can spend.
+
+**Esc stops the turn, not the goal**, and hands the session back to you, as in
+Claude Code: the goal stays active, and Koda goes on with it after your next
+message, or at once on `/goal resume`. `/goal pause` works while a turn runs,
+and stops the goal once that turn ends. Text you send while Koda works on the goal joins the
+running turn. A `/goal <objective>` replaces any goal the session has; in Plan
+mode, no turn starts by itself. `goals = false` in `config.toml` turns goals
+off.
+
 ## `/rename <name>`
 
 Names the session, as Codex's `/rename` does; `/resume` lists it by that

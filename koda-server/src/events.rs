@@ -563,6 +563,15 @@ impl EventProjector {
                 }));
             }
 
+            EngineEvent::GoalUpdated { goal } => {
+                out.push(notification(ServerNotification::SessionGoalUpdated(
+                    koda_protocol::goal::SessionGoalUpdatedNotification {
+                        session_id: self.session_id.clone(),
+                        turn_id: self.turn_id.clone(),
+                        goal: crate::goal::to_wire(&goal),
+                    },
+                )));
+            }
             EngineEvent::TodoUpdate { items, .. } => {
                 out.push(notification(ServerNotification::TurnPlanUpdated(
                     TurnPlanUpdatedNotification {

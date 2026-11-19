@@ -8,6 +8,7 @@
 
 pub(crate) mod background;
 mod events;
+pub(crate) mod goal;
 mod mcp;
 mod memory;
 mod menus;
@@ -166,6 +167,8 @@ pub(crate) struct TuiContext {
     pub(crate) mcp: mcp::McpView,
     /// The MCP view is for a session no longer open: list again.
     pub(crate) mcp_stale: bool,
+    /// The session's goal as the host last reported it.
+    pub(crate) goal: Option<koda_client::protocol::goal::Goal>,
 }
 
 /// The TUI's view of its session. The host owns the session and runs its
@@ -555,6 +558,7 @@ impl TuiContext {
             child_activity: crate::child_activity::ChildActivityTracker::default(),
             mcp: mcp::McpView::default(),
             mcp_stale: true,
+            goal: None,
         };
         ctx.refresh_model_names().await;
         Ok(ctx)
@@ -766,6 +770,26 @@ impl TuiContext {
                     if self.note_main_session(&message) {
                         continue;
                     }
+                    self.note_goal(&message);
+                    // A turn the host started by itself, on the session's
+                    // goal: follow it as one of ours.
+                    if let koda_client::events::Outgoing::Notification(
+                        koda_client::protocol::ServerNotification::TurnStarted(started),
+                    ) = &message
+                        && started.session_id == self.session.id
+                    {
+                        let turn_id = started.turn.id.clone();
+                        self.run_inference_turn(
+                            TurnRequest::Watch {
+                                turn_id,
+                                waiting: Vec::new(),
+                            },
+                            cmd_tx,
+                            cmd_rx,
+                        )
+                        .await?;
+                        continue;
+                    }
                     self.mcp.observe(&self.session.id, &message);
                     // A warning about no session, such as a Claude model
                     // this Koda doesn't support yet, which the host says
@@ -866,6 +890,20 @@ impl TuiContext {
         }
         if input.trim() == "/status" {
             self.show_status().await;
+            return CommandOutcome::Handled;
+        }
+        if let Some(arg) = input
+            .trim()
+            .strip_prefix("/goal")
+            .filter(|rest| rest.is_empty() || rest.starts_with(' '))
+        {
+            goal::command(
+                &self.client.request_handle(),
+                &self.session.id,
+                arg,
+                &mut self.scroll_buffer,
+            )
+            .await;
             return CommandOutcome::Handled;
         }
         if let Some(name) = input

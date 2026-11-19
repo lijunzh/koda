@@ -132,6 +132,13 @@ pub enum EngineEvent {
         diff: crate::tools::todo::TodoDiff,
     },
 
+    /// The model created or changed the session's goal with `CreateGoal`
+    /// or `UpdateGoal`.
+    GoalUpdated {
+        /// The goal now.
+        goal: crate::goal::Goal,
+    },
+
     // ── Child sub-agent lifecycle ──────────────────────────────────
     /// A child sub-agent's status changed.
     ///
@@ -838,6 +845,15 @@ pub enum EngineCommand {
         /// The text the user submitted.
         text: String,
     },
+
+    /// Text from Koda itself for the model, delivered as steering text is,
+    /// before the next model call, but not shown as the user's: a goal's
+    /// budget is used up, or the user changed its objective. Text the turn
+    /// ends without delivering is dropped.
+    Notice {
+        /// What the model is told.
+        text: String,
+    },
 }
 
 impl EngineCommand {
@@ -861,6 +877,7 @@ impl EngineCommand {
             Self::ApprovalResponse { .. } => "ApprovalResponse",
             Self::LoopDecision { .. } => "LoopDecision",
             Self::QueueNext { .. } => "QueueNext",
+            Self::Notice { .. } => "Notice",
         }
     }
 }

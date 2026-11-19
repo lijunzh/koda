@@ -22,8 +22,10 @@
 //!
 //! - **mod.rs** — `Database` struct, init/open, schema migrations, row types
 //! - **queries.rs** — `SessionStore` trait implementation (all SQL queries)
+//! - **goals.rs** — a session's goal
 
 mod context_cache;
+pub mod goals;
 pub mod queries;
 use crate::busy_retry::WriteQueryExt as _;
 use crate::sqlite;
@@ -312,6 +314,9 @@ impl Database {
         )
         .execute(pool)
         .await?;
+
+        // A session's goal (Codex's `thread_goals`).
+        Self::migrate_goals(pool).await?;
 
         Ok(())
     }

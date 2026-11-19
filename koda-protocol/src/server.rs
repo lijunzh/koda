@@ -122,6 +122,10 @@ server_notifications! {
     /// A session was named.
     SessionNameUpdated => "session/name/updated" (crate::session::SessionNameUpdatedNotification),
     SessionSettingsUpdated => "session/settings/updated" (crate::session::SessionSettingsUpdatedNotification),
+    /// A session's goal was set or changed.
+    SessionGoalUpdated => "session/goal/updated" (crate::goal::SessionGoalUpdatedNotification),
+    /// A session's goal was removed.
+    SessionGoalCleared => "session/goal/cleared" (crate::goal::SessionGoalClearedNotification),
     /// A session's MCP server started, failed or was stopped while starting.
     McpServerStatusUpdated => "mcpServer/startupStatus/updated" (crate::mcp::McpServerStatusUpdatedNotification),
     /// A turn began.

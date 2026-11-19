@@ -845,6 +845,91 @@
       ],
       "type": "object"
     },
+    "Goal": {
+      "description": "A session's goal.",
+      "properties": {
+        "createdAt": {
+          "description": "When it was set, in Unix seconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "objective": {
+          "description": "What to achieve.",
+          "type": "string"
+        },
+        "sessionId": {
+          "description": "The session it belongs to.",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/GoalStatus",
+          "description": "Where it stands."
+        },
+        "timeUsedSeconds": {
+          "description": "Time its turns have taken, in seconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "tokenBudget": {
+          "description": "The tokens it may use, if limited.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "tokensUsed": {
+          "description": "Tokens its turns have used: input not read from the cache, plus\noutput.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "updatedAt": {
+          "description": "When it last changed, in Unix seconds.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sessionId",
+        "objective",
+        "status",
+        "tokensUsed",
+        "timeUsedSeconds",
+        "createdAt",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "GoalStatus": {
+      "description": "Where a goal stands.",
+      "oneOf": [
+        {
+          "const": "active",
+          "description": "Koda keeps working on it.",
+          "type": "string"
+        },
+        {
+          "const": "paused",
+          "description": "Stopped by the user.",
+          "type": "string"
+        },
+        {
+          "const": "blocked",
+          "description": "Stopped because no progress could be made: the model said so, a turn\nfailed, or three turns in a row did nothing.",
+          "type": "string"
+        },
+        {
+          "const": "budgetLimited",
+          "description": "Its token budget is used up.",
+          "type": "string"
+        },
+        {
+          "const": "complete",
+          "description": "The model found the objective achieved.",
+          "type": "string"
+        }
+      ]
+    },
     "ImageInput": {
       "description": "An image sent with a turn's input.",
       "properties": {
@@ -2616,6 +2701,155 @@
       ],
       "type": "object"
     },
+    "SessionGoalClearParams": {
+      "additionalProperties": false,
+      "description": "`session/goal/clear`: remove an open session's goal. A turn on it that\nis running goes on to its end; no other starts. `session/goal/cleared`\nfollows when there was one.",
+      "properties": {
+        "sessionId": {
+          "description": "An open session.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "type": "object"
+    },
+    "SessionGoalClearResponse": {
+      "description": "The answer to `session/goal/clear`.",
+      "properties": {
+        "cleared": {
+          "description": "Whether the session had a goal.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "cleared"
+      ],
+      "type": "object"
+    },
+    "SessionGoalClearedNotification": {
+      "description": "`session/goal/cleared`: a session's goal was removed.",
+      "properties": {
+        "sessionId": {
+          "description": "The session.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "type": "object"
+    },
+    "SessionGoalGetParams": {
+      "additionalProperties": false,
+      "description": "`session/goal/get`: an open session's goal.",
+      "properties": {
+        "sessionId": {
+          "description": "An open session.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "type": "object"
+    },
+    "SessionGoalGetResponse": {
+      "description": "The answer to `session/goal/get`.",
+      "properties": {
+        "goal": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Goal"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The goal, if the session has one."
+        }
+      },
+      "type": "object"
+    },
+    "SessionGoalSetParams": {
+      "additionalProperties": false,
+      "description": "`session/goal/set`: set an open session's goal, or change it.\n\nWith an `objective` and no goal, a new goal starts, active unless\n`status` says otherwise. With a goal, the fields given change it: a new\nobjective is told to the model at its next step. Without an objective,\nthe session must have a goal. Setting an active goal on an idle session\nstarts a turn on it. `session/goal/updated` follows.",
+      "properties": {
+        "objective": {
+          "description": "The objective: not empty, at most 4,000 characters.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sessionId": {
+          "description": "An open session.",
+          "type": "string"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GoalStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The status."
+        },
+        "tokenBudget": {
+          "description": "The token budget: a positive number, or `null` for none. Absent\nkeeps it.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "type": "object"
+    },
+    "SessionGoalSetResponse": {
+      "description": "The answer to `session/goal/set`.",
+      "properties": {
+        "goal": {
+          "$ref": "#/$defs/Goal",
+          "description": "The goal now."
+        }
+      },
+      "required": [
+        "goal"
+      ],
+      "type": "object"
+    },
+    "SessionGoalUpdatedNotification": {
+      "description": "`session/goal/updated`: a session's goal was set or changed, by a client,\nby the model, or by Koda as it counted a turn's use or stopped the goal.",
+      "properties": {
+        "goal": {
+          "$ref": "#/$defs/Goal",
+          "description": "The goal now."
+        },
+        "sessionId": {
+          "description": "The session.",
+          "type": "string"
+        },
+        "turnId": {
+          "description": "The turn that changed it, if one did.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "sessionId",
+        "goal"
+      ],
+      "type": "object"
+    },
     "SessionListParams": {
       "additionalProperties": false,
       "description": "`session/list`: stored sessions, newest first. Codex's `thread/list`.",
@@ -4332,6 +4566,30 @@
         "$ref": "#/$defs/SessionForkResponse"
       }
     },
+    "session/goal/clear": {
+      "params": {
+        "$ref": "#/$defs/SessionGoalClearParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionGoalClearResponse"
+      }
+    },
+    "session/goal/get": {
+      "params": {
+        "$ref": "#/$defs/SessionGoalGetParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionGoalGetResponse"
+      }
+    },
+    "session/goal/set": {
+      "params": {
+        "$ref": "#/$defs/SessionGoalSetParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionGoalSetResponse"
+      }
+    },
     "session/list": {
       "params": {
         "$ref": "#/$defs/SessionListParams"
@@ -4504,6 +4762,16 @@
     "session/deleted": {
       "params": {
         "$ref": "#/$defs/SessionDeletedNotification"
+      }
+    },
+    "session/goal/cleared": {
+      "params": {
+        "$ref": "#/$defs/SessionGoalClearedNotification"
+      }
+    },
+    "session/goal/updated": {
+      "params": {
+        "$ref": "#/$defs/SessionGoalUpdatedNotification"
       }
     },
     "session/name/updated": {

@@ -241,6 +241,9 @@ mod naming_convention {
         "WebSearch",
         "Write",
         "WriteStdin",
+        "GetGoal",
+        "CreateGoal",
+        "UpdateGoal",
     ];
 
     #[test]
@@ -273,7 +276,7 @@ mod naming_convention {
 
     #[test]
     fn test_expected_tool_count() {
-        // 21 built-in tools.
+        // 24 built-in tools.
         // - #996 Layer 2 added ListBackgroundTasks, CancelTask,
         //   WaitTask (19 → 22).
         // - #1325 Phase 3 added SendMessage, WaitForMail (22 → 24).
@@ -287,7 +290,8 @@ mod naming_convention {
         // - Delete removed (21 → 20): files are deleted with `rm` in Bash,
         //   as in the peers.
         // - WriteStdin, typing into a background command (20 → 21).
-        assert_eq!(BUILTIN_TOOLS.len(), 21);
+        // - GetGoal, CreateGoal and UpdateGoal, a session's goal (21 → 24).
+        assert_eq!(BUILTIN_TOOLS.len(), 24);
     }
 
     /// Ensure BUILTIN_TOOLS stays in sync with the actual registry.

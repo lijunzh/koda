@@ -100,6 +100,12 @@ impl TurnStop {
         .await;
     }
 
+    /// `/goal` during the turn: an interrupt stops only the turn, so this is
+    /// how the goal is paused or cleared while Koda works on it.
+    pub(crate) async fn goal(&self, arg: &str, buffer: &mut crate::scroll_buffer::ScrollBuffer) {
+        crate::tui_context::goal::command(&self.requests, &self.session_id, arg, buffer).await;
+    }
+
     /// Send the mode Shift+Tab chose during the turn; the host applies it
     /// once the turn has ended. Not waited for.
     pub(crate) fn set_mode(&self, mode: koda_client::protocol::state::TrustMode) {

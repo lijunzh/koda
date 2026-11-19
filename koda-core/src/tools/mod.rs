@@ -70,6 +70,8 @@ pub mod file_tools;
 pub mod fuzzy;
 /// Glob pattern search tool (`Glob`).
 pub mod glob_tool;
+/// The model's goal tools (`GetGoal`, `CreateGoal`, `UpdateGoal`).
+pub mod goal;
 /// Recursive text search tool (`Grep`).
 pub mod grep;
 /// Images sent from files: scaled and recompressed to the model's limits.

@@ -78,6 +78,11 @@ pub(crate) enum SessionCommand {
     /// when idle or once the running turn has ended. `done` is dropped once
     /// the session has taken them, or, during a turn, queued them.
     ReloadMcp { done: oneshot::Sender<()> },
+    /// `session/goal/set`, `session/goal/get` or `session/goal/clear`.
+    Goal {
+        request: GoalRequest,
+        reply: oneshot::Sender<Answer>,
+    },
     /// Stop the turn, if one runs, and end the task. `done`, if given, is
     /// dropped once the task has ended.
     Shutdown { done: Option<oneshot::Sender<()>> },
@@ -101,6 +106,7 @@ impl SessionCommand {
             | Self::Interrupt { reply, .. }
             | Self::Steer { reply, .. }
             | Self::Compact { reply }
+            | Self::Goal { reply, .. }
             | Self::UpdateSettings { reply, .. } => {
                 let _ = reply.send(Err(error));
             }
@@ -111,6 +117,13 @@ impl SessionCommand {
             | Self::Named { .. } => {}
         }
     }
+}
+
+/// A request about the session's goal.
+pub(crate) enum GoalRequest {
+    Set(koda_protocol::goal::SessionGoalSetParams),
+    Get,
+    Clear,
 }
 
 /// What every session on a host shares.
@@ -367,6 +380,7 @@ pub(crate) async fn open(
         history: Some(history),
         // Koda answers itself only when nobody is there to ask.
         answers: (policy == ApprovalPolicy::Never).then(|| engine_tx.clone()),
+        notices: engine_tx.clone(),
         state: Mutex::new(SinkState {
             projector,
             prompt: None,
@@ -374,6 +388,8 @@ pub(crate) async fn open(
             kinds: HashMap::new(),
             pending_end: None,
             learned_window: None,
+            goal_turn: crate::goal::TurnActivity::default(),
+            goal_budget: None,
         }),
     });
     // Sub-agents' status goes out as it changes, not only between the
@@ -400,6 +416,9 @@ pub(crate) async fn open(
             engine_tx,
             engine_rx,
             commands,
+            waiting: None,
+            strikes: crate::goal::Strikes::default(),
+            held: false,
         },
         restored_usage,
     })
@@ -427,6 +446,14 @@ pub(crate) struct SessionTask {
     engine_tx: mpsc::Sender<EngineCommand>,
     engine_rx: mpsc::Receiver<EngineCommand>,
     commands: mpsc::UnboundedReceiver<SessionCommand>,
+    /// A command read while deciding whether to go on with the goal: it
+    /// comes first.
+    waiting: Option<SessionCommand>,
+    /// The counts that block the session's goal.
+    strikes: crate::goal::Strikes,
+    /// The last turn was interrupted: the goal waits for the user, as Claude
+    /// Code's does, until a turn they start ends or they change the goal.
+    held: bool,
 }
 
 impl SessionTask {
@@ -443,7 +470,14 @@ impl SessionTask {
     }
 
     async fn serve(&mut self) {
-        while let Some(command) = self.commands.recv().await {
+        loop {
+            let command = match self.waiting.take() {
+                Some(command) => command,
+                None => match self.commands.recv().await {
+                    Some(command) => command,
+                    None => return,
+                },
+            };
             match command {
                 SessionCommand::StartTurn { params, reply } => {
                     let next = self.turn(params, reply).await;
@@ -494,9 +528,95 @@ impl SessionTask {
                         }
                     }
                 }
+                SessionCommand::Goal { request, reply } => {
+                    if self.goal_request(request, reply).await && !self.follow(Next::Idle).await {
+                        return;
+                    }
+                }
                 SessionCommand::Shutdown { .. } => return,
             }
         }
+    }
+
+    /// Answer a goal request while no turn runs. Whether the goal is now
+    /// active, so a turn on it may start.
+    async fn goal_request(&mut self, request: GoalRequest, reply: oneshot::Sender<Answer>) -> bool {
+        if !matches!(request, GoalRequest::Get) {
+            self.strikes.reset();
+            self.held = false;
+        }
+        let set = goal_request(
+            &self.session.db,
+            &self.session.id,
+            &self.sink,
+            request,
+            reply,
+        )
+        .await;
+        let Some(set) = set else {
+            return false;
+        };
+        // A session started with a goal is named by it, as by a first prompt.
+        if !self.session.title_set {
+            self.session.title_set = true;
+            let title: String = set.goal.objective.chars().take(50).collect();
+            let _ = self
+                .session
+                .db
+                .set_session_title(&self.session.id, &title)
+                .await;
+        }
+        set.goal.status == koda_core::goal::GoalStatus::Active
+    }
+
+    /// Start a turn on the session's goal, if it is active, nothing waits
+    /// and the user didn't just interrupt: Codex's continuation when a
+    /// thread goes idle.
+    async fn continue_goal(&mut self) -> Option<Next> {
+        if !self.config.goals || self.held || self.session.mode == koda_core::trust::TrustMode::Plan
+        {
+            return None;
+        }
+        // A client's command goes first; with the host gone, nothing starts.
+        if self.waiting.is_none() {
+            match self.commands.try_recv() {
+                Ok(command) => self.waiting = Some(command),
+                Err(mpsc::error::TryRecvError::Disconnected) => return None,
+                Err(mpsc::error::TryRecvError::Empty) => {}
+            }
+        }
+        if self.waiting.is_some() {
+            return None;
+        }
+        let goal = match self.session.db.get_goal(&self.session.id).await {
+            Ok(goal) => goal?,
+            Err(e) => {
+                tracing::warn!("couldn't read the session's goal: {e:#}");
+                return None;
+            }
+        };
+        if goal.status != koda_core::goal::GoalStatus::Active {
+            return None;
+        }
+        let message = koda_core::goal::continuation_message(&goal);
+        if let Err(e) = self
+            .session
+            .db
+            .insert_message(
+                &self.session.id,
+                &Role::User,
+                Some(&message),
+                None,
+                None,
+                None,
+            )
+            .await
+        {
+            tracing::warn!("couldn't start a turn on the goal: {e:#}");
+            return None;
+        }
+        let turn_id = uuid::Uuid::new_v4().to_string();
+        Some(self.run_turn(turn_id, Work::Goal).await)
     }
 
     /// Run the compactions that turns ended asking for. Returns whether the
@@ -508,7 +628,10 @@ impl SessionTask {
                 self.reload_mcp_now().await;
             }
             next = match next {
-                Next::Idle => return true,
+                Next::Idle => match self.continue_goal().await {
+                    Some(next) => next,
+                    None => return true,
+                },
                 Next::Stop => return false,
                 Next::Compact(reply) => self.compact(reply).await,
             };
@@ -717,7 +840,25 @@ impl SessionTask {
 
     /// Run a turn to its end, reading the client's commands meanwhile.
     async fn run_turn(&mut self, turn_id: String, work: Work) -> Next {
-        let steerable = matches!(work, Work::Prompt(_));
+        let steerable = !matches!(work, Work::Compact);
+        // The goal as the turn starts, whose turns are counted toward it.
+        let automatic = matches!(work, Work::Goal);
+        let goal_before = if steerable && self.config.goals {
+            self.session
+                .db
+                .get_goal(&self.session.id)
+                .await
+                .inspect_err(|e| tracing::warn!("couldn't read the session's goal: {e:#}"))
+                .ok()
+                .flatten()
+        } else {
+            None
+        };
+        let budget = goal_before
+            .as_ref()
+            .filter(|goal| goal.status == koda_core::goal::GoalStatus::Active)
+            .and_then(crate::goal::BudgetWatch::new);
+        self.sink.begin_goal_turn(budget);
         let cancel = self.session.cancel_token().child_token();
         // `session/compact/start` during the turn: it stops, and the
         // compaction runs once it has.
@@ -736,6 +877,8 @@ impl SessionTask {
             pending_settings,
             reload_mcp,
             rules,
+            strikes,
+            held,
             ..
         } = self;
         // For `session/name/set` during the turn, which holds the session.
@@ -745,7 +888,11 @@ impl SessionTask {
             let mut turn: std::pin::Pin<
                 Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>,
             > = match work {
-                Work::Prompt(images) => {
+                Work::Prompt(_) | Work::Goal => {
+                    let images = match work {
+                        Work::Prompt(images) => images,
+                        _ => None,
+                    };
                     let run = session.run_turn_as(
                         turn_id.clone(),
                         config,
@@ -850,6 +997,23 @@ impl SessionTask {
                                 }
                             }
                         }
+                        // Answered now. A new objective is told to the turn
+                        // at its next step; a pause or clear lets it end.
+                        Some(SessionCommand::Goal { request, reply }) => {
+                            if !matches!(request, GoalRequest::Get) {
+                                strikes.reset();
+                            }
+                            if let Some(set) =
+                                goal_request(&db, &session_id, sink, request, reply).await
+                                && set.objective_changed
+                                && set.goal.status == koda_core::goal::GoalStatus::Active
+                            {
+                                let text = koda_core::goal::objective_updated_message(&set.goal);
+                                if engine_tx.try_send(EngineCommand::Notice { text }).is_err() {
+                                    tracing::warn!("the turn's input is full; the new objective waits for the next turn");
+                                }
+                            }
+                        }
                         // The running turn keeps its servers.
                         Some(SessionCommand::ReloadMcp { done }) => {
                             *reload_mcp = true;
@@ -888,6 +1052,27 @@ impl SessionTask {
         // it. Left in the channel, it would go out with the next prompt.
         let _ = session.take_queued_steers(engine_rx);
         sink.end_turn(error).await;
+        // What the turn did counts toward the session's goal.
+        if steerable && config.goals {
+            let activity = sink.take_goal_turn();
+            match crate::goal::after_turn(
+                &db,
+                &session_id,
+                goal_before.as_ref(),
+                automatic,
+                &activity,
+                strikes,
+            )
+            .await
+            {
+                Ok(Some(goal)) => sink.goal_updated(Some(turn_id.clone()), &goal),
+                Ok(None) => {}
+                Err(e) => tracing::warn!("couldn't count the turn toward the goal: {e:#}"),
+            }
+        }
+        // An interrupt hands the session back to the user: the goal stays
+        // as it is, and goes on after the next turn they start.
+        *held = !interrupts.is_empty();
         for reply in interrupts {
             let _ = reply.send(to_json(TurnInterruptResponse {}));
         }
@@ -909,6 +1094,8 @@ impl SessionTask {
 enum Work {
     /// Answer the prompt just saved, with these images.
     Prompt(Option<Vec<ImageData>>),
+    /// Go on with the session's goal, as the message just saved says.
+    Goal,
     /// Compact the history (`session/compact/start`).
     Compact,
 }
@@ -982,6 +1169,10 @@ struct SinkState {
     pending_end: Option<EngineEvent>,
     /// A context window the server stated mid-turn.
     learned_window: Option<usize>,
+    /// What the running turn did, for the session's goal.
+    goal_turn: crate::goal::TurnActivity,
+    /// The goal's budget, watched while the turn spends it.
+    goal_budget: Option<crate::goal::BudgetWatch>,
 }
 
 /// The session's [`EngineSink`]: engine events become protocol messages on
@@ -995,6 +1186,8 @@ pub(crate) struct HostSink {
     history: Option<crate::history::HistoryWriter>,
     /// Set under [`ApprovalPolicy::Never`]: where Koda's own answers go.
     answers: Option<mpsc::Sender<EngineCommand>>,
+    /// Where Koda's notices to the running turn go.
+    notices: mpsc::Sender<EngineCommand>,
     state: Mutex<SinkState>,
 }
 
@@ -1007,6 +1200,31 @@ impl HostSink {
         let mut state = self.lock();
         state.prompt = Some((prompt, client_message_ids, mentions));
         state.steers.clear();
+    }
+
+    /// A turn is starting: count what it does afresh, and watch `budget`.
+    fn begin_goal_turn(&self, budget: Option<crate::goal::BudgetWatch>) {
+        let mut state = self.lock();
+        state.goal_turn = crate::goal::TurnActivity::default();
+        state.goal_budget = budget;
+    }
+
+    /// What the turn that ended did.
+    fn take_goal_turn(&self) -> crate::goal::TurnActivity {
+        let mut state = self.lock();
+        state.goal_budget = None;
+        std::mem::take(&mut state.goal_turn)
+    }
+
+    /// Send `session/goal/updated`.
+    fn goal_updated(&self, turn_id: Option<String>, goal: &koda_core::goal::Goal) {
+        self.notify(ServerNotification::SessionGoalUpdated(
+            koda_protocol::goal::SessionGoalUpdatedNotification {
+                session_id: self.session_id.clone(),
+                turn_id,
+                goal: crate::goal::to_wire(goal),
+            },
+        ));
     }
 
     /// Wait until the turns sent so far are stored.
@@ -1086,6 +1304,23 @@ impl HostSink {
     fn handle(&self, parent: Option<&str>, event: EngineEvent) {
         let mut state = self.lock();
         let own_answer = self.answers.as_ref().and_then(|_| policy_answer(&event));
+        if parent.is_none() {
+            state.goal_turn.observe(&event);
+        }
+        // Every call, sub-agents' too, spends the goal's budget; reaching
+        // it, the turn is told to wrap up.
+        if let EngineEvent::ModelUsage { usage } = &event
+            && let Some(text) = state
+                .goal_budget
+                .as_mut()
+                .and_then(|watch| watch.charge(usage))
+            && self
+                .notices
+                .try_send(EngineCommand::Notice { text })
+                .is_err()
+        {
+            tracing::warn!("the turn's input is full; the goal's budget notice was lost");
+        }
         let out = match (parent, event) {
             (None, EngineEvent::SteerDelivered { texts }) => {
                 let ids = (0..texts.len())
@@ -1294,6 +1529,70 @@ fn policy_answer(event: &EngineEvent) -> Option<(String, EngineCommand)> {
     Some((id, command))
 }
 
+/// Answer a goal request, sending what changed to the session's clients.
+/// The goal, when the request set it.
+async fn goal_request(
+    db: &Database,
+    session_id: &str,
+    sink: &HostSink,
+    request: GoalRequest,
+    reply: oneshot::Sender<Answer>,
+) -> Option<crate::goal::GoalSet> {
+    use koda_protocol::goal::{
+        SessionGoalClearResponse, SessionGoalClearedNotification, SessionGoalGetResponse,
+        SessionGoalSetResponse,
+    };
+    let read = |e: anyhow::Error| internal(format!("couldn't read the goal: {e:#}"));
+    match request {
+        GoalRequest::Get => {
+            let answer = db
+                .get_goal(session_id)
+                .await
+                .map_err(read)
+                .and_then(|goal| {
+                    to_json(SessionGoalGetResponse {
+                        goal: goal.as_ref().map(crate::goal::to_wire),
+                    })
+                });
+            let _ = reply.send(answer);
+            None
+        }
+        GoalRequest::Clear => {
+            match db.delete_goal(session_id).await {
+                Ok(cleared) => {
+                    let _ = reply.send(to_json(SessionGoalClearResponse {
+                        cleared: cleared.is_some(),
+                    }));
+                    if cleared.is_some() {
+                        sink.notify(ServerNotification::SessionGoalCleared(
+                            SessionGoalClearedNotification {
+                                session_id: session_id.to_string(),
+                            },
+                        ));
+                    }
+                }
+                Err(e) => {
+                    let _ = reply.send(Err(internal(format!("couldn't clear the goal: {e:#}"))));
+                }
+            }
+            None
+        }
+        GoalRequest::Set(params) => match crate::goal::set(db, session_id, params).await {
+            Ok(set) => {
+                let _ = reply.send(to_json(SessionGoalSetResponse {
+                    goal: crate::goal::to_wire(&set.goal),
+                }));
+                sink.goal_updated(None, &set.goal);
+                Some(set)
+            }
+            Err(error) => {
+                let _ = reply.send(Err(error));
+                None
+            }
+        },
+    }
+}
+
 fn core_mode(mode: koda_protocol::state::TrustMode) -> koda_core::trust::TrustMode {
     use koda_core::trust::TrustMode as C;
     use koda_protocol::state::TrustMode as P;
@@ -1328,6 +1627,7 @@ mod tests {
             open_requests: OpenRequests::default(),
             history: None,
             answers,
+            notices: mpsc::channel(8).0,
             state: Mutex::new(SinkState {
                 projector: EventProjector::with_request_ids("s1", Arc::default()),
                 prompt: None,
@@ -1335,6 +1635,8 @@ mod tests {
                 kinds: HashMap::new(),
                 pending_end: None,
                 learned_window: None,
+                goal_turn: crate::goal::TurnActivity::default(),
+                goal_budget: None,
             }),
         };
         (sink, rx)

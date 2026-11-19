@@ -34,6 +34,15 @@ Prompt text (at upstream commit 05ae1b0fdd5ab412d24248acc76c5d9f6f275440):
   koda-tui/src/tui_context/side.rs (side-conversation instructions)
       from codex-rs/context-fragments/src/side_conversation.rs (adapted)
 
+Prompt text (at upstream commit 6271f35f527bf7709b9af5e4e752e9f122706a17):
+
+  koda-core/src/goal_prompts/continuation.md, budget_limit.md and
+  objective_updated.md
+      from codex-rs/ext/goal/templates/goals/ (verbatim; Koda's tool names
+      are put in when they are rendered)
+  koda-core/src/tools/goal.rs (goal tool descriptions)
+      from codex-rs/ext/goal/src/spec.rs (Koda's tool names)
+
 These are owned copies: koda does not track upstream changes to them
 (decided 2026-10-27). The upstream paths above are for diffing on demand.
 

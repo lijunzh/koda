@@ -123,6 +123,11 @@ fn test_classify_tool_covers_all_tools_explicitly() {
         // ReadOnly; classifying it as a mutation broke Plan-mode planning
         // entirely (#1212).
         ("TodoWrite", ToolEffect::ReadOnly),
+        // The goal tools change Koda's own record of the session's goal,
+        // as TodoWrite changes its plan.
+        ("GetGoal", ToolEffect::ReadOnly),
+        ("CreateGoal", ToolEffect::ReadOnly),
+        ("UpdateGoal", ToolEffect::ReadOnly),
         // Pre-#1325 Phase 5b also pinned the bg-task management trio
         // (`ListBackgroundTasks`, `CancelTask`, `WaitTask`) here —
         // retired in 5b, see `tools/mod.rs` for the migration story.

@@ -34,7 +34,8 @@ use tokio::task::{JoinHandle, JoinSet};
 
 use crate::events::Outgoing;
 use crate::session::{
-    self, OpenRequests, SessionCommand, SessionContext, SessionHandles, internal, invalid,
+    self, GoalRequest, OpenRequests, SessionCommand, SessionContext, SessionHandles, internal,
+    invalid,
 };
 
 /// Open sessions' in-process handles, by id; shared with the client.
@@ -398,6 +399,28 @@ impl Host {
             ClientRequest::SessionCompactStart { params, .. } => {
                 (params.session_id, SessionCommand::Compact { reply })
             }
+            // The session's task answers these, in order with its turns.
+            ClientRequest::SessionGoalSet { params, .. } => (
+                params.session_id.clone(),
+                SessionCommand::Goal {
+                    request: GoalRequest::Set(params),
+                    reply,
+                },
+            ),
+            ClientRequest::SessionGoalGet { params, .. } => (
+                params.session_id,
+                SessionCommand::Goal {
+                    request: GoalRequest::Get,
+                    reply,
+                },
+            ),
+            ClientRequest::SessionGoalClear { params, .. } => (
+                params.session_id,
+                SessionCommand::Goal {
+                    request: GoalRequest::Clear,
+                    reply,
+                },
+            ),
         };
         self.to_session(&session_id, command).await;
     }

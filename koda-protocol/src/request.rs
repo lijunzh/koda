@@ -158,6 +158,22 @@ client_requests! {
         params: crate::session::SessionNameSetParams,
         response: crate::session::SessionNameSetResponse,
     },
+    /// Set or change an open session's goal; `session/goal/updated`
+    /// follows.
+    SessionGoalSet => "session/goal/set" {
+        params: crate::goal::SessionGoalSetParams,
+        response: crate::goal::SessionGoalSetResponse,
+    },
+    /// An open session's goal.
+    SessionGoalGet => "session/goal/get" {
+        params: crate::goal::SessionGoalGetParams,
+        response: crate::goal::SessionGoalGetResponse,
+    },
+    /// Remove an open session's goal; `session/goal/cleared` follows.
+    SessionGoalClear => "session/goal/clear" {
+        params: crate::goal::SessionGoalClearParams,
+        response: crate::goal::SessionGoalClearResponse,
+    },
     /// Change what a session's next turns run with. A running turn keeps
     /// its own; `session/settings/updated` follows once applied.
     SessionSettingsUpdate => "session/settings/update" {
