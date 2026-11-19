@@ -253,6 +253,9 @@ pub struct KodaConfig {
     /// Whether the model has its goal tools and Koda keeps an active goal
     /// going (`goals`, on by default, as in Codex).
     pub goals: bool,
+    /// Who decides a goal is achieved (`goal_judge`): the working model, as
+    /// in Codex, unless set to Claude Code's evaluator.
+    pub goal_judge: koda_config::GoalJudge,
     /// Instructions added to the end of the system prompt
     /// (`developer_instructions`), as Codex's developer instructions.
     pub developer_instructions: Option<String>,
@@ -441,6 +444,7 @@ impl KodaConfig {
             file_mentions: true,
             commit_attribution: true,
             goals: true,
+            goal_judge: koda_config::GoalJudge::Model,
             developer_instructions: None,
             turn_token_budget: None,
             input_modalities: None,
@@ -741,6 +745,7 @@ impl KodaConfig {
             file_mentions: true,
             commit_attribution: true,
             goals: true,
+            goal_judge: koda_config::GoalJudge::Model,
             developer_instructions: None,
             turn_token_budget: None,
             input_modalities: None,

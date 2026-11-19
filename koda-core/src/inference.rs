@@ -1974,6 +1974,32 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
                 continue;
             }
 
+            // A goal under the evaluator is judged now, as Claude Code's
+            // Stop hook judges one: the turn's own request, its last reply
+            // included, then the question.
+            if config.goals
+                && config.goal_judge == koda_config::GoalJudge::Evaluator
+                && mode != crate::trust::TrustMode::Plan
+                && usage.stop_reason != "max_tokens"
+                && !is_failed_stop(&usage.stop_reason)
+                && !cancel.is_cancelled()
+            {
+                let (messages, _) = assemble_context(&turn).await?;
+                crate::goal_judge::judge_turn(
+                    db,
+                    session_id,
+                    crate::goal_judge::TurnRequest {
+                        provider,
+                        messages,
+                        tool_defs: active_tool_defs,
+                        settings: model_settings,
+                    },
+                    sink,
+                    &cancel,
+                )
+                .await;
+            }
+
             stats.final_reply = Some((full_text.len(), ends_with_question(&full_text)));
 
             // `last_prompt_tokens` (this iteration's prompt size) drives the

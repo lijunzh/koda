@@ -139,6 +139,16 @@ pub enum EngineEvent {
         goal: crate::goal::Goal,
     },
 
+    /// The goal evaluator judged the turn's active goal
+    /// (`goal_judge = "evaluator"`). A met or impossible goal's new status
+    /// follows as [`EngineEvent::GoalUpdated`].
+    GoalJudged {
+        /// What it found.
+        verdict: crate::goal::GoalVerdict,
+        /// Why, if it said.
+        reason: Option<String>,
+    },
+
     // ── Child sub-agent lifecycle ──────────────────────────────────
     /// A child sub-agent's status changed.
     ///

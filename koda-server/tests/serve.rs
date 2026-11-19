@@ -957,3 +957,129 @@ async fn a_goal_the_model_creates_goes_on_after_the_turn() {
     assert_eq!(chat_requests(&server).await.len(), 4);
     wire.finish().await;
 }
+
+// ── The goal evaluator (`goal_judge = "evaluator"`) ─────────────────────
+
+fn judged(config: KodaConfig) -> KodaConfig {
+    KodaConfig {
+        goal_judge: koda_config::GoalJudge::Evaluator,
+        ..config
+    }
+}
+
+/// With the evaluator, a check after each turn decides: not yet sends its
+/// reason into the next turn, met completes the goal. The check is the
+/// turn's own request with the question after it, tools kept but barred,
+/// and the working model has no `UpdateGoal`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_evaluator_decides_when_a_goal_is_met() {
+    let server = model(vec![
+        text("Made some progress."),
+        text(r#"{"ok": false, "reason": "The tests haven't been run.", "impossible": false}"#),
+        text("Ran the tests: all pass."),
+        text(r#"Checking. {"ok": true, "reason": "The tests pass."}"#),
+    ])
+    .await;
+    let mut wire = Wire::open(judged(config(&server, false))).await;
+    wire.set_goal(json!({"objective": "Make the tests pass"}))
+        .await;
+
+    let lines = wire.until_method("session/goal/judged").await;
+    let first = &lines.last().unwrap()["params"];
+    assert_eq!(first["verdict"], "notYet", "{first}");
+    assert_eq!(first["reason"], "The tests haven't been run.");
+    let lines = wire
+        .until(|l| {
+            l["method"] == "session/goal/updated" && l["params"]["goal"]["status"] == "complete"
+        })
+        .await;
+    let met = lines
+        .iter()
+        .find(|l| l["method"] == "session/goal/judged")
+        .expect("the second check");
+    assert_eq!(met["params"]["verdict"], "met");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let requests = chat_requests(&server).await;
+    assert_eq!(requests.len(), 4, "two turns, two checks, nothing after");
+    let (turn, check) = (&requests[0], &requests[1]);
+    let tools = |r: &Value| -> Vec<String> {
+        r["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["function"]["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert!(!tools(turn).contains(&"UpdateGoal".to_string()));
+    assert!(tools(turn).contains(&"GetGoal".to_string()));
+    // The check reads as the turn: the same tools and the same messages,
+    // then the reply and the question.
+    assert_eq!(tools(check), tools(turn));
+    assert_eq!(check["tool_choice"], "none");
+    assert!(turn.get("tool_choice").is_none());
+    let sent = turn["messages"].as_array().unwrap();
+    let asked = check["messages"].as_array().unwrap();
+    assert_eq!(&asked[..sent.len()], &sent[..], "the turn's prefix");
+    assert_eq!(asked.len(), sent.len() + 2);
+    assert_eq!(asked[sent.len()]["content"], "Made some progress.");
+    assert!(
+        asked[sent.len() + 1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("<goal_condition>\nMake the tests pass\n</goal_condition>")
+    );
+    // The next turn starts with what the check said remains, and without
+    // Codex's completion audit.
+    let next = requests[2]["messages"].to_string();
+    assert!(next.contains("<goal_check>\\nThe tests haven't been run.\\n</goal_check>"));
+    assert!(!next.contains("Completion audit"));
+    // The checks' tokens count toward the goal.
+    let goal = wire.goal().await;
+    assert_eq!(goal["tokensUsed"], 4 * 220, "{goal}");
+    wire.finish().await;
+}
+
+/// A goal the check finds impossible is blocked, and nothing more runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_goal_the_evaluator_finds_impossible_is_blocked() {
+    let server = model(vec![
+        text("There's no such service to call."),
+        text(r#"{"ok": false, "reason": "The service doesn't exist.", "impossible": true}"#),
+    ])
+    .await;
+    let mut wire = Wire::open(judged(config(&server, false))).await;
+    wire.set_goal(json!({"objective": "Call the service"}))
+        .await;
+    let lines = wire
+        .until(|l| {
+            l["method"] == "session/goal/updated" && l["params"]["goal"]["status"] == "blocked"
+        })
+        .await;
+    assert!(lines.iter().any(|l| l["params"]["verdict"] == "impossible"));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(chat_requests(&server).await.len(), 2);
+    wire.finish().await;
+}
+
+/// An answer the check can't read counts as not yet: the goal goes on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unreadable_check_counts_as_not_yet() {
+    let server = model(vec![
+        text("Working."),
+        text("I think it's probably fine."),
+        text("Done now."),
+        text(r#"{"ok": true, "reason": "Done."}"#),
+    ])
+    .await;
+    let mut wire = Wire::open(judged(config(&server, false))).await;
+    wire.set_goal(json!({"objective": "Finish"})).await;
+    wire.until(|l| {
+        l["method"] == "session/goal/updated" && l["params"]["goal"]["status"] == "complete"
+    })
+    .await;
+    let requests = chat_requests(&server).await;
+    assert_eq!(requests.len(), 4);
+    assert!(!requests[2]["messages"].to_string().contains("<goal_check>"));
+    wire.finish().await;
+}

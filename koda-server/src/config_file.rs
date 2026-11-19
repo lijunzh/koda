@@ -149,6 +149,9 @@ pub(crate) fn apply_settings(config: &mut KodaConfig, loaded: &Loaded) {
     if let Some(on) = file.goals {
         config.goals = on;
     }
+    if let Some(judge) = file.goal_judge {
+        config.goal_judge = judge;
+    }
     if let Some(on) = file.commit_attribution {
         config.commit_attribution = on;
     }

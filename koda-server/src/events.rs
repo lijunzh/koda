@@ -572,6 +572,22 @@ impl EventProjector {
                     },
                 )));
             }
+            EngineEvent::GoalJudged { verdict, reason } => {
+                use koda_core::goal::GoalVerdict;
+                use koda_protocol::goal::GoalVerdict as Wire;
+                out.push(notification(ServerNotification::SessionGoalJudged(
+                    koda_protocol::goal::SessionGoalJudgedNotification {
+                        session_id: self.session_id.clone(),
+                        turn_id: self.turn(),
+                        verdict: match verdict {
+                            GoalVerdict::Met => Wire::Met,
+                            GoalVerdict::NotYet => Wire::NotYet,
+                            GoalVerdict::Impossible => Wire::Impossible,
+                        },
+                        reason,
+                    },
+                )));
+            }
             EngineEvent::TodoUpdate { items, .. } => {
                 out.push(notification(ServerNotification::TurnPlanUpdated(
                     TurnPlanUpdatedNotification {

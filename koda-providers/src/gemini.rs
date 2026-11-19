@@ -833,6 +833,12 @@ impl GeminiProvider {
             }
             if !tools.is_empty() {
                 body["tools"] = serde_json::to_value(tools).unwrap_or_default();
+                // A cached content's tools can't be given a config, so the
+                // reply's own check (no tool call honoured) covers that case.
+                if settings.is_some_and(|settings| settings.no_tool_calls) {
+                    body["toolConfig"] =
+                        serde_json::json!({ "functionCallingConfig": { "mode": "NONE" } });
+                }
             }
         }
         body
@@ -1330,10 +1336,31 @@ mod tests {
             max_context_tokens: 32_000,
             task_budget: None,
             deferred_tools: Vec::new(),
+            no_tool_calls: false,
         };
         let body = p.build_request_body(&[], None, &[], Some(&settings));
         let thinking_config = &body["generationConfig"]["thinkingConfig"];
         assert_eq!(thinking_config["thinkingBudget"], 10000);
+    }
+
+    #[test]
+    fn a_reply_that_may_not_call_a_tool_says_so() {
+        let p = make_provider();
+        let tools = GeminiProvider::build_tools(&[ToolDefinition {
+            name: "Read".into(),
+            description: "Read a file".into(),
+            parameters: serde_json::json!({"type": "object"}),
+        }]);
+        let mut settings = crate::ModelSettings::defaults_for(
+            "gemini-2.5-flash",
+            &crate::provider_catalog::ProviderType::Gemini,
+        );
+        let body = p.build_request_body(&[], None, &tools, Some(&settings));
+        assert!(body.get("toolConfig").is_none());
+        settings.no_tool_calls = true;
+        let body = p.build_request_body(&[], None, &tools, Some(&settings));
+        assert_eq!(body["toolConfig"]["functionCallingConfig"]["mode"], "NONE");
+        assert!(body["tools"].is_array());
     }
 
     #[test]
@@ -1348,6 +1375,7 @@ mod tests {
             max_context_tokens: 32_000,
             task_budget: None,
             deferred_tools: Vec::new(),
+            no_tool_calls: false,
         };
         let body = p.build_request_body(&[], None, &[], Some(&settings));
         assert!(body["generationConfig"]["thinkingConfig"].is_null());

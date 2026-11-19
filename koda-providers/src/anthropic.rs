@@ -312,6 +312,8 @@ struct MessagesRequest {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     diagnostics: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     output_config: Option<serde_json::Value>,
@@ -994,6 +996,8 @@ impl LlmProvider for AnthropicProvider {
             model: api_model.to_string(),
             max_tokens: settings.max_tokens.unwrap_or(16384),
             system,
+            tool_choice: (settings.no_tool_calls && !api_tools.is_empty())
+                .then(|| serde_json::json!({ "type": "none" })),
             messages: api_messages,
             tools: api_tools,
             diagnostics,
@@ -1195,6 +1199,9 @@ impl LlmProvider for AnthropicProvider {
         }
         if !api_tools.is_empty() {
             body["tools"] = serde_json::to_value(&api_tools)?;
+            if settings.no_tool_calls {
+                body["tool_choice"] = serde_json::json!({ "type": "none" });
+            }
         }
         if let Some(diagnostics) = diagnostics {
             body["diagnostics"] = diagnostics;

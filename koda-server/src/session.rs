@@ -419,6 +419,7 @@ pub(crate) async fn open(
             waiting: None,
             strikes: crate::goal::Strikes::default(),
             held: false,
+            check: None,
         },
         restored_usage,
     })
@@ -454,6 +455,9 @@ pub(crate) struct SessionTask {
     /// The last turn was interrupted: the goal waits for the user, as Claude
     /// Code's does, until a turn they start ends or they change the goal.
     held: bool,
+    /// What the goal evaluator said remains after the last turn, for the
+    /// next turn on the goal.
+    check: Option<String>,
 }
 
 impl SessionTask {
@@ -544,6 +548,7 @@ impl SessionTask {
         if !matches!(request, GoalRequest::Get) {
             self.strikes.reset();
             self.held = false;
+            self.check = None;
         }
         let set = goal_request(
             &self.session.db,
@@ -598,7 +603,12 @@ impl SessionTask {
         if goal.status != koda_core::goal::GoalStatus::Active {
             return None;
         }
-        let message = koda_core::goal::continuation_message(&goal);
+        let message = match self.config.goal_judge {
+            koda_config::GoalJudge::Model => koda_core::goal::continuation_message(&goal),
+            koda_config::GoalJudge::Evaluator => {
+                koda_core::goal::evaluated_continuation_message(&goal, self.check.as_deref())
+            }
+        };
         if let Err(e) = self
             .session
             .db
@@ -879,6 +889,7 @@ impl SessionTask {
             rules,
             strikes,
             held,
+            check,
             ..
         } = self;
         // For `session/name/set` during the turn, which holds the session.
@@ -1055,6 +1066,7 @@ impl SessionTask {
         // What the turn did counts toward the session's goal.
         if steerable && config.goals {
             let activity = sink.take_goal_turn();
+            *check = activity.check.clone();
             match crate::goal::after_turn(
                 &db,
                 &session_id,
