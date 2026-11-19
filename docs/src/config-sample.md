@@ -100,6 +100,10 @@ unknown key in `-c` stops the run instead.
 # Koda" line to its pull requests, as Codex does. Unset: true.
 # commit_attribution = false
 
+# false turns goals off: no GetGoal, CreateGoal or UpdateGoal for the
+# model, and no turns Koda starts on a goal by itself (/goal). Unset: true.
+# goals = false
+
 # The model /review runs on, as Codex's review_model. Unset: the
 # session's own model.
 # review_model = "claude-haiku-5-5"

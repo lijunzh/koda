@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **Goals: Koda keeps working on an objective, turn after turn, until it's done, as Codex's `/goal` does.** `/goal <objective>` sets one (or ask the model in plain words); each time the session goes idle with the goal active, Koda starts another turn on it with Codex's continuation instructions, which ask for a requirement-by-requirement audit before the model marks the goal complete with its new `UpdateGoal` tool (`GetGoal` and `CreateGoal` read and set it). A goal stops when it's complete, when you pause or clear it, when its token budget (`/goal budget 500k`) is used up, or when it's stuck: a failed turn, three of Koda's turns in a row that do nothing, or three turns of only failed commands. Esc stops the turn, not the goal; `/goal pause` works mid-turn. Over the protocol: `session/goal/set`, `get` and `clear`, with `session/goal/updated` and `session/goal/cleared`. On by default; `goals = false` turns it off.
+
 ### Fixed
 
 - **Koda's database waits its turn instead of failing when another writer holds it, as Codex's does.** A write that finds the database busy past SQLite's 5-second wait tries twice more; every transaction that writes takes the write lock before it reads (`BEGIN IMMEDIATE`), so it can't fail on upgrading; and opening the database no longer writes to it: the file's settings (WAL, incremental auto-vacuum) are set once when it's created, where every connection used to rewrite the header and so needed the write lock just to open, even to read. A new test has three processes and eighteen sessions writing at once behind a lock held past the wait; without the retries it fails with "database is locked".

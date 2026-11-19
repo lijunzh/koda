@@ -74,6 +74,7 @@ Every key, in Codex's names where Codex has one:
 | `agent` | The agent sessions run, as `--agent` names it: a built-in, or a JSON file in `.koda/agents/` or `~/.config/koda/agents/` (default: `default`) |
 | `model_post_turn_compact_threshold_percent` | Compact after a turn's final reply once this share of the window is used (1–100; 0 turns it off) |
 | `file_mentions` | `false` sends an `@` mention's path only, for the model to read, as Codex does; on by default, sending its contents as Claude Code does (see [File & image attachments](./attachments.md#mentioning-files)) |
+| `goals` | `false` turns goals off: the model loses its goal tools and Koda starts no turn on a goal by itself. On by default, as Codex's (see [`/goal`](./commands.md#goal)) |
 | `commit_attribution` | `false` stops the model adding Koda's attribution to the commits and pull requests it makes. On by default, as Codex's: commit messages end with `Co-authored-by: Koda <noreply@lijunzhu.info>`, and pull requests carry `Generated with [Koda](https://github.com/lijunzh/koda).` |
 | `review_model` | The model [`/review`](./commands.md#review) runs on, on the session's provider, as Codex's `review_model`. The session's own model when unset |
 | `developer_instructions` | Text added to the end of the system prompt, as Codex's `developer_instructions`. Most useful per session through `session/start`'s `config`, which is how a [side conversation](./tui.md#side-conversations) gets its rules |

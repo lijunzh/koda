@@ -3198,3 +3198,68 @@ async fn review_lists_findings_and_the_next_prompt_carries_them() {
         "the review session was kept"
     );
 }
+
+// ── /goal ───────────────────────────────────────────────────────────────
+
+/// `/goal` sets a goal; the TUI follows the turns Koda starts on it by
+/// itself until the model marks it complete, and then nothing more runs.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_goal_runs_turn_after_turn_until_complete() {
+    let server = scripted_model(vec![
+        text_reply("Made some progress."),
+        tool_calls(&[("UpdateGoal", json!({"status": "complete"}))]),
+        text_reply("The release is out."),
+    ])
+    .await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.submit("/goal Ship the release");
+    tui.wait_for_screen("Goal set: Ship the release");
+    // Koda's own turns are shown as they run.
+    tui.wait_for_screen("Made some progress.");
+    tui.wait_for_screen("Goal complete");
+    tui.wait_for_screen("The release is out.");
+    let first = wait_for_model_call(&server, 1).await;
+    assert!(
+        first.contains("Continue working toward the active thread goal"),
+        "{first}"
+    );
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        model_calls(&server).await.len(),
+        3,
+        "nothing after complete"
+    );
+
+    tui.wait_for_screen_without(BUSY_PROMPT);
+    tui.submit("/goal");
+    tui.wait_for_screen("Goal (complete): Ship the release");
+}
+
+/// Esc stops a goal's turn, not the goal; `/goal pause`, typed while one of
+/// its turns runs, stops it once that turn ends.
+#[tokio::test(flavor = "multi_thread")]
+async fn goal_pause_mid_turn_stops_the_goal() {
+    let server = scripted_model(vec![
+        text_reply("Working on it.").set_delay(Duration::from_secs(3)),
+    ])
+    .await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.submit("/goal Keep the docs current");
+    tui.wait_for_screen("Goal set: Keep the docs current");
+    wait_for_model_call(&server, 1).await;
+    tui.wait_for_screen(BUSY_PROMPT);
+    tui.submit("/goal pause");
+    tui.wait_for_screen("Goal paused.");
+    tui.wait_for_screen("Working on it.");
+    tui.wait_for_screen_without(BUSY_PROMPT);
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert_eq!(
+        model_calls(&server).await.len(),
+        1,
+        "a paused goal starts no turn"
+    );
+}

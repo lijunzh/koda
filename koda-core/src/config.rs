@@ -250,6 +250,9 @@ pub struct KodaConfig {
     /// Whether the model adds Koda's attribution to its commits and pull
     /// requests (`commit_attribution`, on by default), as Codex does.
     pub commit_attribution: bool,
+    /// Whether the model has its goal tools and Koda keeps an active goal
+    /// going (`goals`, on by default, as in Codex).
+    pub goals: bool,
     /// Instructions added to the end of the system prompt
     /// (`developer_instructions`), as Codex's developer instructions.
     pub developer_instructions: Option<String>,
@@ -437,6 +440,7 @@ impl KodaConfig {
             post_turn_compact_percent: 0,
             file_mentions: true,
             commit_attribution: true,
+            goals: true,
             developer_instructions: None,
             turn_token_budget: None,
             input_modalities: None,
@@ -736,6 +740,7 @@ impl KodaConfig {
             post_turn_compact_percent: 0,
             file_mentions: true,
             commit_attribution: true,
+            goals: true,
             developer_instructions: None,
             turn_token_budget: None,
             input_modalities: None,

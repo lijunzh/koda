@@ -20,6 +20,9 @@ prompt. See [Trust modes](./approval.md) for the canonical matrix.
 | `MemoryRead` | Read-only | Read from project or global memory |
 | `MemoryWrite` | Mutating | Save a fact to Koda's notes, outside the project |
 | `TodoWrite` | Read-only | Update the session task list (Koda-owned state, no FS impact) |
+| `GetGoal` | Read-only | Read the session's goal: its objective, status, budget and use ([`/goal`](./commands.md#goal)) |
+| `CreateGoal` | Read-only | Set the session's goal, only when the user asks for one; fails while an unfinished goal exists |
+| `UpdateGoal` | Read-only | Mark the goal complete, blocked, or (at the user's request) paused |
 | `RecallContext` | Read-only | Search session history for past context |
 | `ListSkills` | Read-only | List available skills |
 | `ActivateSkill` | Internal | Load a skill's instructions into context |
@@ -90,7 +93,7 @@ prompts and the sandbox ([Approval](approval.md), [Sandbox](sandbox.md)).
 
 | Category | Tools | Plan | Safe | Auto |
 |----------|-------|------|------|------|
-| Read-only | Read, Grep, Glob, List, ListAgents, WebFetch, WebSearch, RecallContext, TodoWrite | ✅ Auto | ✅ Auto | ✅ Auto |
+| Read-only | Read, Grep, Glob, List, ListAgents, WebFetch, WebSearch, RecallContext, TodoWrite, GetGoal, CreateGoal, UpdateGoal | ✅ Auto | ✅ Auto | ✅ Auto |
 | Internal | ActivateSkill | ✅ Auto | ✅ Auto | ✅ Auto |
 | Mutations | Write, Edit, MemoryWrite, Cargo | ❌ Deny | ⏸ Prompt | ✅ Auto |
 | Agent calls | InvokeAgent, SpawnAgent | ✅ Auto | ✅ Auto | ✅ Auto |

@@ -1049,6 +1049,11 @@ impl SessionStore for Database {
             .execute(&mut *tx)
             .await?;
 
+        sqlx::query("DELETE FROM session_goals WHERE session_id = ?")
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await?;
+
         let result = sqlx::query("DELETE FROM sessions WHERE id = ?")
             .bind(session_id)
             .execute(&mut *tx)

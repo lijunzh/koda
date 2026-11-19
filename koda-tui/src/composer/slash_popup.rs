@@ -67,6 +67,12 @@ pub const SLASH_COMMANDS: &[(&str, &str, Option<&str>)] = &[
         "Copy this session into a new one and switch to it",
         None,
     ),
+    // No arg hint: a bare `/goal` shows the goal.
+    (
+        "/goal",
+        "Set a goal Koda works on until it's done (pause, resume, clear, budget)",
+        None,
+    ),
     ("/help", "Show commands and shortcuts", None),
     (
         "/init",

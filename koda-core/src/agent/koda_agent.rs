@@ -222,6 +222,9 @@ impl KodaAgent {
     /// lists.
     pub fn turn_tool_defs(&self, config: &KodaConfig) -> Vec<ToolDefinition> {
         let mut defs = self.tool_defs.clone();
+        if !config.goals {
+            defs.retain(|d| !crate::goal::GOAL_TOOL_NAMES.contains(&d.name.as_str()));
+        }
         defs.extend(
             self.tools
                 .mcp_definitions(&config.allowed_tools, &config.disallowed_tools),

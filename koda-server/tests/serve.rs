@@ -696,3 +696,220 @@ async fn a_turn_failing_after_partial_output_ends_once() {
     wire.call("state/read", json!({})).await.unwrap();
     wire.finish().await;
 }
+
+// ── Goals ───────────────────────────────────────────────────────────────
+
+impl Wire {
+    /// Set the session's goal; the goal as answered.
+    async fn set_goal(&mut self, params: Value) -> Value {
+        let mut params = params;
+        params["sessionId"] = json!(self.session.clone());
+        self.call("session/goal/set", params).await.unwrap()["goal"].clone()
+    }
+
+    async fn goal(&mut self) -> Value {
+        let session = self.session.clone();
+        self.call("session/goal/get", json!({"sessionId": session}))
+            .await
+            .unwrap()["goal"]
+            .clone()
+    }
+}
+
+/// The last `session/goal/updated` among `lines`: the goal it reports.
+fn goal_updated(lines: &[Value]) -> &Value {
+    &lines
+        .iter()
+        .rev()
+        .find(|l| l["method"] == "session/goal/updated")
+        .unwrap_or_else(|| panic!("no session/goal/updated in {lines:?}"))["params"]["goal"]
+}
+
+/// Setting a goal on an idle session starts a turn on it, and Koda goes on
+/// turn after turn until the model marks it complete, then stops.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_goal_goes_on_until_the_model_completes_it() {
+    let server = model(vec![
+        text("Made some progress."),
+        tool_call("call_1", "UpdateGoal", json!({"status": "complete"})),
+        text("Done: the goal is complete."),
+    ])
+    .await;
+    let mut wire = Wire::open(config(&server, false)).await;
+    let goal = wire
+        .set_goal(json!({"objective": "Ship the <release>"}))
+        .await;
+    assert_eq!(goal["status"], "active");
+
+    // Two turns, both Koda's own: no turn/start was sent.
+    let first = wire.until_method("turn/completed").await;
+    assert_eq!(count(&first, "turn/started"), 1);
+    assert_eq!(goal_updated(&first)["status"], "active", "{first:?}");
+    let second = wire.until_method("turn/completed").await;
+    assert_eq!(count(&second, "turn/started"), 1);
+    let lines = wire.until_method("session/goal/updated").await;
+    let done = goal_updated(&lines);
+    assert_eq!(done["status"], "complete", "{done}");
+    assert!(done["tokensUsed"].as_i64().unwrap() > 0, "{done}");
+
+    // Each turn began with Codex's continuation, the objective as data.
+    let requests = chat_requests(&server).await;
+    let first_call = requests[0].to_string();
+    assert!(first_call.contains("Continue working toward the active thread goal"));
+    assert!(first_call.contains("<external_goal_objective>\\nShip the &lt;release&gt;"));
+    assert!(
+        first_call.contains("\"name\":\"UpdateGoal\""),
+        "the tools are offered"
+    );
+    // Koda's continuation is the model's to read, not a message of the user's.
+    assert!(
+        !first
+            .iter()
+            .any(|l| l.to_string().contains("Continue working toward")),
+        "{first:?}"
+    );
+
+    // Complete: no other turn starts.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(chat_requests(&server).await.len(), 3);
+    assert_eq!(wire.goal().await["status"], "complete");
+    wire.finish().await;
+}
+
+/// A goal turn that fails blocks the goal, so a failing model doesn't loop.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_goal_turn_blocks_the_goal() {
+    let server = model(vec![ResponseTemplate::new(400).set_body_string("boom")]).await;
+    let mut wire = Wire::open(config(&server, false)).await;
+    wire.set_goal(json!({"objective": "Ship it"})).await;
+    let lines = wire
+        .until(|l| {
+            l["method"] == "session/goal/updated" && l["params"]["goal"]["status"] == "blocked"
+        })
+        .await;
+    assert_eq!(turn_completed(&lines)["status"], "failed");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(chat_requests(&server).await.len(), 1);
+    wire.finish().await;
+}
+
+/// An interrupt stops the turn, not the goal: Koda starts the next turn on
+/// it. Pausing the goal during that turn lets it end, and no other starts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_interrupt_stops_the_turn_and_a_pause_stops_the_goal() {
+    let server = model(vec![
+        write_file("call_1", "a.txt"),
+        write_file("call_2", "b.txt"),
+    ])
+    .await;
+    let mut wire = Wire::open(config(&server, true)).await;
+    let session = wire.session.clone();
+    wire.set_goal(json!({"objective": "Write the files"})).await;
+
+    let started = wire.until_method("turn/started").await;
+    let turn = started.last().unwrap()["params"]["turn"]["id"].clone();
+    wire.approval().await;
+    wire.call(
+        "turn/interrupt",
+        json!({"sessionId": session, "turnId": turn}),
+    )
+    .await
+    .unwrap();
+    let ended = wire.until_method("turn/completed").await;
+    assert_eq!(turn_completed(&ended)["status"], "interrupted");
+
+    // The goal goes on.
+    let started = wire.until_method("turn/started").await;
+    let next = started.last().unwrap()["params"]["turn"]["id"].clone();
+    assert_ne!(next, turn);
+    wire.approval().await;
+    let paused = wire.set_goal(json!({"status": "paused"})).await;
+    assert_eq!(paused["status"], "paused");
+    wire.call(
+        "turn/interrupt",
+        json!({"sessionId": session, "turnId": next}),
+    )
+    .await
+    .unwrap();
+    wire.until_method("turn/completed").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(chat_requests(&server).await.len(), 2, "no third turn");
+    assert_eq!(wire.goal().await["status"], "paused");
+    wire.finish().await;
+}
+
+/// Reaching the goal's budget tells the running turn to wrap up, and marks
+/// the goal budget-limited once the turn ends; no other turn starts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reaching_the_budget_wraps_up_the_turn_and_stops_the_goal() {
+    let server = model(vec![
+        tool_call("call_1", "GetGoal", json!({})),
+        text("Wrapping up."),
+    ])
+    .await;
+    let mut wire = Wire::open(config(&server, false)).await;
+    wire.set_goal(json!({"objective": "Ship it", "tokenBudget": 100}))
+        .await;
+    let lines = wire
+        .until(|l| {
+            l["method"] == "session/goal/updated"
+                && l["params"]["goal"]["status"] == "budgetLimited"
+        })
+        .await;
+    assert_eq!(count(&lines, "turn/started"), 1);
+    let requests = chat_requests(&server).await;
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests[1]
+            .to_string()
+            .contains("The active thread goal has reached its token budget"),
+        "the turn wasn't told"
+    );
+    assert!(
+        !requests[0]
+            .to_string()
+            .contains("has reached its token budget")
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(chat_requests(&server).await.len(), 2);
+    wire.finish().await;
+}
+
+/// The model creates the goal during the user's turn, when asked to; Koda
+/// goes on with it once that turn ends.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_goal_the_model_creates_goes_on_after_the_turn() {
+    let server = model(vec![
+        tool_call(
+            "call_1",
+            "CreateGoal",
+            json!({"objective": "Fix the tests"}),
+        ),
+        text("I'll keep at it."),
+        tool_call("call_2", "UpdateGoal", json!({"status": "complete"})),
+        text("All fixed."),
+    ])
+    .await;
+    let mut wire = Wire::open(config(&server, false)).await;
+    wire.turn("Make it your goal to fix the tests").await;
+    let lines = wire
+        .until(|l| {
+            l["method"] == "session/goal/updated" && l["params"]["goal"]["status"] == "complete"
+        })
+        .await;
+    assert_eq!(
+        count(&lines, "turn/started"),
+        2,
+        "the user's turn, then Koda's"
+    );
+    // The model's own change was reported during its turn.
+    let created = lines
+        .iter()
+        .find(|l| l["method"] == "session/goal/updated")
+        .unwrap();
+    assert_eq!(created["params"]["goal"]["objective"], "Fix the tests");
+    assert!(created["params"]["turnId"].is_string());
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(chat_requests(&server).await.len(), 4);
+    wire.finish().await;
+}

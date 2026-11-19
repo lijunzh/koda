@@ -84,6 +84,31 @@ instead. `backwardsCursor`, with the other direction, reads back from a page's
 first turn, that turn included, to catch what changed in a turn that was
 running. Cursors are opaque, and one whose turn is gone is refused.
 
+## A session's goal
+
+`session/goal/set` gives an open session a goal Koda keeps working on, as
+Codex's `thread/goal/set` does; `session/goal/get` reads it and
+`session/goal/clear` removes it:
+
+```json
+{"jsonrpc":"2.0","id":8,"method":"session/goal/set","params":{"sessionId":"a3f8bc12-…","objective":"Get the test suite passing","tokenBudget":500000}}
+```
+
+With no goal, an `objective` starts one, `active` unless `status` says
+otherwise. With one, the fields given change it: `status` (`active` resumes,
+`paused` stops), `tokenBudget` (`null` removes the limit) or `objective`, which
+the running turn is told before its next step. While the goal is `active` and
+the session is idle, Koda starts a turn on it by itself: `turn/started` with no
+`turn/start` before it, and no `userMessage` item. `session/goal/updated`
+reports every change, by a client, by the model's `CreateGoal` or `UpdateGoal`
+(with the `turnId`), or by Koda as a turn ends: its `tokensUsed` and
+`timeUsedSeconds`, or a new status (`complete`, `blocked`, `budgetLimited`).
+`session/goal/cleared` follows a clear.
+
+An interrupt ends the turn, not the goal; the next turn starts once the turn
+has stopped. `turn/start` during one of Koda's own turns is refused as during
+any turn: send `turn/steer` instead.
+
 ## Errors
 
 | The client sends | Koda answers |

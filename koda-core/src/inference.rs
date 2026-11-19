@@ -1423,6 +1423,12 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
         // the loop cap so a stop there leaves the text out of the history.
         // Text left over when a turn ends comes back to the client from
         // `KodaSession::take_queued_steers`.
+        // Koda's own notices (a goal's budget used up, its objective
+        // changed) go in the same way, unseen by the client.
+        for notice in cmd_rx.take_notices() {
+            db.insert_message(session_id, &Role::User, Some(&notice), None, None, None)
+                .await?;
+        }
         let next_texts = cmd_rx.take_steers();
         if !next_texts.is_empty() {
             let combined = next_texts.join("\n\n");

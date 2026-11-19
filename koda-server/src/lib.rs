@@ -21,6 +21,7 @@ mod config_file;
 pub mod events;
 /// `feedback/save`: a report ZIP, as Codex writes one.
 pub mod feedback;
+mod goal;
 mod history;
 mod host;
 pub mod in_process;

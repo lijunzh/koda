@@ -60,8 +60,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, RwLock};
 
 use super::{
-    DynTool, Tool, ToolEffect, agent, ask_user, boxed, cargo, file_tools, glob_tool, grep, memory,
-    recall, shell, skill_tools, spawn_agent, todo, web_fetch, web_search, write_stdin,
+    DynTool, Tool, ToolEffect, agent, ask_user, boxed, cargo, file_tools, glob_tool, goal, grep,
+    memory, recall, shell, skill_tools, spawn_agent, todo, web_fetch, web_search, write_stdin,
 };
 
 /// The read-only metadata side of [`crate::tools::ToolRegistry`].
@@ -176,6 +176,9 @@ impl ToolCatalog {
         for def in todo::definitions() {
             definitions.insert(def.name.clone(), def);
         }
+        for def in goal::definitions() {
+            definitions.insert(def.name.clone(), def);
+        }
         for def in memory::definitions() {
             definitions.insert(def.name.clone(), def);
         }
@@ -223,6 +226,9 @@ impl ToolCatalog {
             boxed(memory::MemoryReadTool),
             boxed(memory::MemoryWriteTool),
             boxed(todo::TodoWriteTool),
+            boxed(goal::GetGoalTool),
+            boxed(goal::CreateGoalTool),
+            boxed(goal::UpdateGoalTool),
             boxed(recall::RecallContextTool),
             // PR-8: meta cohort. `InvokeAgent` and `AskUser` are
             // intercepted upstream of the registry; their trait

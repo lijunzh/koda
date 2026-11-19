@@ -127,6 +127,11 @@ pub struct ConfigToml {
     /// on. On when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit_attribution: Option<bool>,
+    /// Whether the model has its goal tools (`GetGoal`, `CreateGoal`,
+    /// `UpdateGoal`) and Koda keeps an active goal going, as Codex's goals
+    /// feature. On when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goals: Option<bool>,
     /// The model `/review` runs on, as Codex's `review_model`: an id or an
     /// alias, on the session's provider. The session's own model when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]

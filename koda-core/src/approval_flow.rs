@@ -21,6 +21,9 @@ use tokio_util::sync::CancellationToken;
 pub(crate) struct CommandInbox<'a> {
     rx: &'a mut mpsc::Receiver<EngineCommand>,
     steers: &'a mut Vec<String>,
+    /// Koda's own notices ([`EngineCommand::Notice`]), delivered with the
+    /// steering text; the turn's alone.
+    notices: Vec<String>,
 }
 
 impl<'a> CommandInbox<'a> {
@@ -28,7 +31,11 @@ impl<'a> CommandInbox<'a> {
         rx: &'a mut mpsc::Receiver<EngineCommand>,
         steers: &'a mut Vec<String>,
     ) -> Self {
-        Self { rx, steers }
+        Self {
+            rx,
+            steers,
+            notices: Vec::new(),
+        }
     }
 
     /// Wait for the next command that isn't steering text.
@@ -38,6 +45,7 @@ impl<'a> CommandInbox<'a> {
         loop {
             match self.rx.recv().await {
                 Some(EngineCommand::QueueNext { text }) => self.steers.push(text),
+                Some(EngineCommand::Notice { text }) => self.notices.push(text),
                 other => return other,
             }
         }
@@ -55,6 +63,12 @@ impl<'a> CommandInbox<'a> {
         std::mem::take(self.steers)
     }
 
+    /// Take Koda's waiting notices, oldest first.
+    pub(crate) fn take_notices(&mut self) -> Vec<String> {
+        self.collect();
+        std::mem::take(&mut self.notices)
+    }
+
     /// Read the channel without waiting.
     ///
     /// Responses are only sent while a wait is reading the channel, so one
@@ -63,6 +77,7 @@ impl<'a> CommandInbox<'a> {
         while let Ok(cmd) = self.rx.try_recv() {
             match cmd {
                 EngineCommand::QueueNext { text } => self.steers.push(text),
+                EngineCommand::Notice { text } => self.notices.push(text),
                 other => {
                     // #1232 §6: name the variant instead of dumping
                     // `Discriminant(N)` (which forces devs to grep the source

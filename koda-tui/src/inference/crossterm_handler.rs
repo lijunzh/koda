@@ -328,6 +328,18 @@ async fn handle_inference_key_inline(
                     stop.stop_background(scroll_buffer, child_activity).await;
                     return false;
                 }
+                // `/goal` runs mid-turn: an interrupt stops the turn, not
+                // the goal, so pausing it must be possible while it runs.
+                if let Some(arg) = text
+                    .trim()
+                    .strip_prefix("/goal")
+                    .filter(|rest| rest.is_empty() || rest.starts_with(' '))
+                {
+                    let arg = arg.to_string();
+                    textarea.set_text_clearing_elements("");
+                    stop.goal(&arg, scroll_buffer).await;
+                    return false;
+                }
                 if is_slash_command_attempt(&text) {
                     textarea.set_text_clearing_elements("");
                     crate::tui_output::warn_msg(

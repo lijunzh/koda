@@ -80,6 +80,7 @@ pub mod engine;
 /// File lifecycle tracker — tracks files created by Koda per session (#465).
 /// Git context injection — branch, staged/unstaged diffs, recent commits.
 pub mod git;
+pub mod goal;
 /// The main inference loop — send messages, stream responses, dispatch tools.
 pub mod inference;
 /// Shared helpers used by the inference loop.
