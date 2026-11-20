@@ -62,6 +62,53 @@ pub struct McpClient {
     /// `initialize`. Injected into the system prompt so the model picks up
     /// per-server guidance (#922). `None` when the server provides none.
     instructions: Option<String>,
+    /// The resources the server offers, for `@server:uri` mentions; empty
+    /// when it offers none.
+    resources: Vec<ResourceSummary>,
+}
+
+/// One resource a server offers, as `resources/list` gives it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceSummary {
+    /// Its URI, as `@server:<uri>` names it.
+    pub uri: String,
+    /// Its name.
+    pub name: String,
+    /// A title for people, if any.
+    pub title: Option<String>,
+    /// What it is, as the server says.
+    pub description: Option<String>,
+    /// Its MIME type, if known.
+    pub mime_type: Option<String>,
+}
+
+/// What reading a resource gave.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResourceContent {
+    /// Text.
+    Text {
+        /// Its MIME type, if known.
+        mime_type: Option<String>,
+        /// The text.
+        text: String,
+    },
+    /// Bytes, base64-encoded.
+    Blob {
+        /// Its MIME type, if known.
+        mime_type: Option<String>,
+        /// The bytes, base64.
+        blob: String,
+    },
+}
+
+/// An MCP Apps page for a host to draw, not content to read, which Claude
+/// Code leaves out of its `@` list: a `ui://` URI or that media type.
+fn is_ui_resource(resource: &rmcp::model::Resource) -> bool {
+    resource.uri.starts_with("ui://")
+        || resource
+            .mime_type
+            .as_deref()
+            .is_some_and(|m| m.eq_ignore_ascii_case("text/html;profile=mcp-app"))
 }
 
 impl McpClient {
@@ -75,6 +122,7 @@ impl McpClient {
             status: McpClientStatus::Disconnected,
             last_error: None,
             instructions: None,
+            resources: Vec::new(),
         }
     }
 
@@ -109,6 +157,34 @@ impl McpClient {
     /// Discovered tools (empty until connected).
     pub fn tools(&self) -> &[DiscoveredTool] {
         &self.tools
+    }
+
+    /// The resources the server offers (empty until connected).
+    pub fn resources(&self) -> &[ResourceSummary] {
+        &self.resources
+    }
+
+    /// Read resource `uri` from the server.
+    pub async fn read_resource(&self, uri: &str) -> Result<Vec<ResourceContent>> {
+        let service = self.service.as_ref().context("not connected")?;
+        let result = service
+            .read_resource(rmcp::model::ReadResourceRequestParams::new(uri))
+            .await
+            .with_context(|| format!("couldn't read {uri}"))?;
+        Ok(result
+            .contents
+            .into_iter()
+            .filter_map(|content| match content {
+                rmcp::model::ResourceContents::TextResourceContents {
+                    mime_type, text, ..
+                } => Some(ResourceContent::Text { mime_type, text }),
+                rmcp::model::ResourceContents::BlobResourceContents {
+                    mime_type, blob, ..
+                } => Some(ResourceContent::Blob { mime_type, blob }),
+                // A kind of content newer than Koda knows.
+                _ => None,
+            })
+            .collect())
     }
 
     /// Server-provided instructions from the `initialize` response, if any.
@@ -297,7 +373,43 @@ impl McpClient {
             .and_then(|info| info.instructions.clone())
             .filter(|s| !s.trim().is_empty());
         self.service = Some(service);
-        self.discover_tools().await
+        self.discover_tools().await?;
+        self.discover_resources().await;
+        Ok(())
+    }
+
+    /// List the server's resources, if it offers any. A server whose list
+    /// fails still connects: its tools work without them.
+    async fn discover_resources(&mut self) {
+        self.resources.clear();
+        let Some(service) = self.service.as_ref() else {
+            return;
+        };
+        let offers = service
+            .peer()
+            .peer_info()
+            .is_some_and(|info| info.capabilities.resources.is_some());
+        if !offers {
+            return;
+        }
+        match service.list_all_resources().await {
+            Ok(resources) => {
+                self.resources = resources
+                    .into_iter()
+                    .filter(|r| !is_ui_resource(r))
+                    .map(|r| ResourceSummary {
+                        uri: r.uri.clone(),
+                        name: r.name.clone(),
+                        title: r.title.clone(),
+                        description: r.description.clone(),
+                        mime_type: r.mime_type.clone(),
+                    })
+                    .collect();
+            }
+            Err(e) => {
+                tracing::warn!(server = %self.name, "couldn't list MCP resources: {e}");
+            }
+        }
     }
 
     /// Fetch the tool list from the connected server.

@@ -1610,6 +1610,45 @@
         }
       ]
     },
+    "McpResource": {
+      "description": "One resource a server offers, MCP's `Resource`.",
+      "properties": {
+        "description": {
+          "description": "What it is, as the server says.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mimeType": {
+          "description": "Its MIME type.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Its name.",
+          "type": "string"
+        },
+        "title": {
+          "description": "A title for people.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "uri": {
+          "description": "Its URI.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "uri",
+        "name"
+      ],
+      "type": "object"
+    },
     "McpServerConfigValue": {
       "additionalProperties": false,
       "description": "One MCP server's config, in Codex's `[mcp_servers.<name>]` shape: a\n`command` for a server Koda starts, or a `url` for one it reaches over\nstreamable HTTP.",
@@ -1792,6 +1831,14 @@
         "name": {
           "description": "The server's name.",
           "type": "string"
+        },
+        "resources": {
+          "default": [],
+          "description": "The resources it offers, as Codex lists them: what `@server:uri`\nnames in a message. MCP Apps pages (`ui://`) are left out.",
+          "items": {
+            "$ref": "#/$defs/McpResource"
+          },
+          "type": "array"
         },
         "runtimeStatus": {
           "$ref": "#/$defs/McpServerConnectionStatus",

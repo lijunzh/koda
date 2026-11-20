@@ -583,15 +583,23 @@ impl TuiContext {
                             is_dir: path.ends_with('/'),
                             path,
                             skill: None,
+                            resource: None,
                         })
                         .collect();
                 // A path being typed (`@src/`) isn't a skill's name.
                 if !partial.contains('/') {
                     items.extend(skills(partial));
                 }
+                // The servers' resources, as Claude Code lists them with files.
+                items.extend(
+                    self.mcp
+                        .resource_matches(partial)
+                        .into_iter()
+                        .map(|(mention, about)| FileItem::resource(&mention, &about)),
+                );
                 Some((
                     items,
-                    "\u{1f4c2} Files and skills",
+                    "\u{1f4c2} Files, skills and resources",
                     text[..start].to_string(),
                 ))
             }

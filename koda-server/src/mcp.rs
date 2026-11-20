@@ -15,7 +15,7 @@ use koda_core::mcp::config::{
 use koda_core::mcp::manager::{McpStartupStatus, McpStatusFn, SharedMcpManager};
 use koda_protocol::ServerNotification;
 use koda_protocol::mcp::{
-    ListMcpServerStatusParams, ListMcpServerStatusResponse, McpServerConfigValue,
+    ListMcpServerStatusParams, ListMcpServerStatusResponse, McpResource, McpServerConfigValue,
     McpServerConnectionStatus, McpServerStartupState, McpServerStatus,
     McpServerStatusUpdatedNotification, McpTool, SERVERS_KEY,
 };
@@ -218,6 +218,17 @@ pub(crate) async fn session_status(
                 })
                 .collect(),
             tools_error: s.error,
+            resources: s
+                .resources
+                .into_iter()
+                .map(|r| McpResource {
+                    uri: r.uri,
+                    name: r.name,
+                    title: r.title,
+                    description: r.description,
+                    mime_type: r.mime_type,
+                })
+                .collect(),
             name: s.name,
         })
         .collect();
@@ -239,6 +250,7 @@ pub(crate) fn configured_status(
             runtime_status: McpServerConnectionStatus::NotStarted,
             tools: BTreeMap::new(),
             tools_error: None,
+            resources: Vec::new(),
         })
         .collect();
     data.sort_by(|a, b| a.name.cmp(&b.name));

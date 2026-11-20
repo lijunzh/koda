@@ -412,9 +412,34 @@ impl McpManager {
                         description: server_description(c.name(), &t.definition.description),
                     })
                     .collect(),
+                resources: c.resources().to_vec(),
                 error: c.last_error().map(String::from),
             })
             .collect()
+    }
+
+    /// Read resource `uri` from server `server`, as an `@server:uri`
+    /// mention asks.
+    pub async fn read_resource(
+        &self,
+        server: &str,
+        uri: &str,
+    ) -> Result<Vec<crate::client::ResourceContent>> {
+        let client = self
+            .clients
+            .get(server)
+            .context(format!("MCP server '{server}' not found"))?;
+        if client.status() != McpClientStatus::Connected {
+            anyhow::bail!("MCP server '{server}' is not connected");
+        }
+        client.read_resource(uri).await
+    }
+
+    /// Whether `name` is one of the session's servers, connected.
+    pub fn is_connected(&self, name: &str) -> bool {
+        self.clients
+            .get(name)
+            .is_some_and(|c| c.status() == McpClientStatus::Connected)
     }
 
     /// Compact status for the TUI status bar.
@@ -574,6 +599,8 @@ pub struct McpServerStatus {
     pub tool_count: usize,
     /// The tools, by their names on the server.
     pub tools: Vec<McpToolSummary>,
+    /// The resources it offers.
+    pub resources: Vec<crate::client::ResourceSummary>,
     /// Last error message (if failed).
     pub error: Option<String>,
 }
