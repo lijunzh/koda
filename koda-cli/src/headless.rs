@@ -24,6 +24,7 @@
 
 use koda_client::events::Outgoing;
 use koda_client::protocol::background::BackgroundTerminalsListParams;
+use koda_client::protocol::goal::GoalStatus;
 use koda_client::protocol::initialize::ClientInfo;
 use koda_client::protocol::item::{
     FileUpdateChange, Item, OutputStream, PatchChangeKind, ToolCallStatus, ToolEffect,
@@ -200,24 +201,38 @@ pub async fn run_headless(
     // From here a Ctrl+C asks the turn to stop instead of killing Koda.
     let mut ctrl_c = CtrlC::listen()?;
     let started = Instant::now();
-    let turn = client
-        .request::<methods::TurnStart>(TurnStartParams {
-            session_id: session_id.clone(),
-            input: user_message,
-            images,
-            mentions,
-            skills: Vec::new(),
-            client_message_id: None,
-            mode: None,
-        })
-        .await?
-        .turn;
+    // `/goal <objective>` sets the session's goal instead of sending a
+    // message, and the run follows the goal's turns until it's no longer
+    // active, as `claude -p "/goal …"` runs the loop to completion.
+    let goal = goal_objective(&run.prompt);
+    let first_turn = match goal {
+        Some(objective) => {
+            set_goal(&client, &session_id, objective).await?;
+            None
+        }
+        None => Some(
+            client
+                .request::<methods::TurnStart>(TurnStartParams {
+                    session_id: session_id.clone(),
+                    input: user_message,
+                    images,
+                    mentions,
+                    skills: Vec::new(),
+                    client_message_id: None,
+                    mode: None,
+                })
+                .await?
+                .turn,
+        ),
+    };
     let requests = client.request_handle();
     let mut interrupt = None;
     // The turn a Ctrl+C stops: this run's, then each one the session starts
-    // for its background commands. `None` while waiting between them.
-    let mut running = Some(turn.id.clone());
+    // for its goal or its background commands. `None` while waiting.
+    let mut running = first_turn.map(|turn| turn.id);
     let mut last: Option<Turn> = None;
+    // Whether the goal set above is still being worked on.
+    let mut goal_active = goal.is_some();
     let completed: Turn = loop {
         tokio::select! {
             message = client.next_event() => match message {
@@ -227,23 +242,44 @@ pub async fn run_headless(
                     {
                         running = Some(started.turn.id.clone());
                     }
+                    let goal_ended = match &message {
+                        Outgoing::Notification(ServerNotification::SessionGoalUpdated(update))
+                            if update.session_id == session_id =>
+                        {
+                            goal_active = update.goal.status == GoalStatus::Active;
+                            !goal_active
+                        }
+                        _ => false,
+                    };
                     let Some(done) = view.protocol(message) else {
+                        // A goal stopped between turns (blocked, its budget
+                        // used up) starts no turn: stop waiting for one,
+                        // unless background commands still will.
+                        if goal_ended && running.is_none() && last.is_some() {
+                            let listed = background(&client, &session_id).await?;
+                            if !listed.waiting {
+                                break last.take().context("no turn to end the run with")?;
+                            }
+                        }
                         continue;
                     };
                     running = None;
                     // As `claude -p` does, the run stays open while the
-                    // model's background commands run: each exit, or its
-                    // time limit, starts a turn that tells the model.
+                    // goal is active, or the model's background commands
+                    // run: each exit, or its time limit, starts a turn that
+                    // tells the model.
                     if done.status != TurnStatus::Completed || interrupt.is_some() {
                         break done;
                     }
-                    let listed = client
-                        .request::<methods::SessionBackgroundTerminalsList>(
-                            BackgroundTerminalsListParams {
-                                session_id: session_id.clone(),
-                            },
-                        )
-                        .await?;
+                    if goal.is_some() {
+                        goal_active = goal_status(&client, &session_id).await?
+                            == Some(GoalStatus::Active);
+                    }
+                    let listed = background(&client, &session_id).await?;
+                    if goal_active {
+                        last = Some(done);
+                        continue;
+                    }
                     if !listed.waiting {
                         break done;
                     }
@@ -279,6 +315,11 @@ pub async fn run_headless(
             }
         }
     };
+    // What the host sent before it answered the last check, such as the
+    // goal's final update, still belongs to the run.
+    while let Some(message) = client.try_next_event() {
+        view.protocol(message);
+    }
     let elapsed_ms = started.elapsed().as_millis() as u64;
 
     let response = view.stats.last_reply.clone().unwrap_or_default();
@@ -441,6 +482,58 @@ fn exec_summary(outcome: RunOutcome<'_>) -> ExecSummary {
 // ---------------------------------------------------------------------------
 // View — what the run prints, and the counts its summary reports
 // ---------------------------------------------------------------------------
+
+/// The objective of a `/goal <objective>` prompt.
+fn goal_objective(prompt: &str) -> Option<&str> {
+    prompt
+        .trim()
+        .strip_prefix("/goal ")
+        .map(str::trim)
+        .filter(|objective| !objective.is_empty())
+}
+
+/// Set the session's goal to `objective`, replacing any it has, as the
+/// TUI's `/goal <objective>` does; the host then starts its turns.
+async fn set_goal(client: &InProcessClient, session_id: &str, objective: &str) -> Result<()> {
+    use koda_client::protocol::goal::{SessionGoalClearParams, SessionGoalSetParams};
+    client
+        .request::<methods::SessionGoalClear>(SessionGoalClearParams {
+            session_id: session_id.to_string(),
+        })
+        .await?;
+    client
+        .request::<methods::SessionGoalSet>(SessionGoalSetParams {
+            session_id: session_id.to_string(),
+            objective: Some(objective.to_string()),
+            status: Some(GoalStatus::Active),
+            token_budget: None,
+        })
+        .await?;
+    Ok(())
+}
+
+/// The session's goal's status, if it has one.
+async fn goal_status(client: &InProcessClient, session_id: &str) -> Result<Option<GoalStatus>> {
+    use koda_client::protocol::goal::SessionGoalGetParams;
+    let answer = client
+        .request::<methods::SessionGoalGet>(SessionGoalGetParams {
+            session_id: session_id.to_string(),
+        })
+        .await?;
+    Ok(answer.goal.map(|goal| goal.status))
+}
+
+/// The session's background commands, and whether a turn will start for them.
+async fn background(
+    client: &InProcessClient,
+    session_id: &str,
+) -> Result<koda_client::protocol::background::BackgroundTerminalsListResponse> {
+    Ok(client
+        .request::<methods::SessionBackgroundTerminalsList>(BackgroundTerminalsListParams {
+            session_id: session_id.to_string(),
+        })
+        .await?)
+}
 
 /// Lines from the start of a new file shown in its diff.
 const NEW_FILE_LINES: usize = 60;
@@ -699,6 +792,28 @@ impl View {
                 ));
             }
             ServerNotification::Warning(w) => notice((Tone::Warn, w.message.clone())),
+            // The goal's state and the evaluator's checks, as the TUI shows
+            // them.
+            ServerNotification::SessionGoalUpdated(update) => {
+                let status = match update.goal.status {
+                    GoalStatus::Active => "active",
+                    GoalStatus::Paused => "paused",
+                    GoalStatus::Blocked => "blocked",
+                    GoalStatus::BudgetLimited => "budget used up",
+                    GoalStatus::Complete => "complete",
+                };
+                eprintln!("\x1b[2mGoal ({status}): {}\x1b[0m", update.goal.objective);
+            }
+            ServerNotification::SessionGoalJudged(judged) => {
+                use koda_client::protocol::goal::GoalVerdict;
+                let verdict = match judged.verdict {
+                    GoalVerdict::Met => "met",
+                    GoalVerdict::NotYet => "not met yet",
+                    GoalVerdict::Impossible => "impossible",
+                };
+                let reason = judged.reason.as_deref().unwrap_or_default();
+                eprintln!("\x1b[2mGoal check: {verdict}. {reason}\x1b[0m");
+            }
             // A retry's notice says what happened and when Koda tries again.
             ServerNotification::Error(e) if e.will_retry => {
                 notice((Tone::Warn, e.error.message.clone()));

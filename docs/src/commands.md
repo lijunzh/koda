@@ -201,6 +201,10 @@ check-ins wait twice as long, up to 2 hours, and there are at most three until
 your next message. `goal_checkin_minutes` changes the 30 (`0` turns check-ins
 off).
 
+**In `koda exec`**, as with `claude -p`, a prompt of `/goal <objective>` sets
+the goal and the run follows its turns until it's complete, blocked or out of
+budget, then prints the last reply ([Headless mode](./headless.md#goals)).
+
 ### Who decides it's done
 
 By default the working model does, after the completion audit, as in Codex.

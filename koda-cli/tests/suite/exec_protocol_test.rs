@@ -1685,3 +1685,118 @@ async fn a_skill_named_in_the_prompt_reaches_the_model() {
     assert!(calls[0].contains("<name>checklist</name>"), "{}", calls[0]);
     assert!(calls[0].contains("Run every test first."), "{}", calls[0]);
 }
+
+// ── Goals ────────────────────────────────────────────────────────────────
+
+/// `koda exec` run with `prompt`, against `server`, in a fresh project.
+async fn run_prompt(server: &FakeLlmServer, prompt: &str, extra: &[&str]) -> Run {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut command = tokio::process::Command::new(koda_bin());
+    command
+        .args(["exec", prompt, "--json"])
+        .args(["--provider", "lmstudio", "--model", "stub"])
+        .args(["--base-url", &server.url()])
+        .args(extra)
+        .arg("--project-root")
+        .arg(tmp.path())
+        .env("XDG_CONFIG_HOME", tmp.path())
+        .kill_on_drop(true);
+    finish(command).await
+}
+
+/// The goal statuses the run reported, in order.
+fn goal_statuses(run: &Run) -> Vec<String> {
+    run.of("session/goal/updated")
+        .iter()
+        .map(|l| l["params"]["goal"]["status"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// `/goal <objective>` sets the goal, and the run follows its turns until
+/// the model marks it complete, as `claude -p "/goal …"` runs the loop to
+/// completion.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_goal_runs_until_the_model_completes_it() {
+    let server = stub(
+        vec![
+            text("Working on it."),
+            tool_call("done", "UpdateGoal", json!({"status": "complete"})),
+            text("All done."),
+        ],
+        no_other_calls,
+    )
+    .await;
+    let run = run_prompt(&server, "/goal Keep the docs current", &[]).await;
+    assert!(run.output.status.success(), "{}", run.stdout);
+    assert_eq!(run.of("turn/completed").len(), 2, "{}", run.stdout);
+    assert_eq!(
+        goal_statuses(&run).last().map(String::as_str),
+        Some("complete")
+    );
+    let replies = run.completed("agentMessage");
+    assert_eq!(replies.last().unwrap()["item"]["text"], "All done.");
+    let calls = chat_calls(&server).await;
+    assert!(calls[0].contains("Keep the docs current"), "{}", calls[0]);
+}
+
+/// A goal Koda blocks, after three of its turns whose commands all failed,
+/// ends the run with no further turn.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_blocked_goal_ends_the_run() {
+    let failed = || tool_call("f", "Bash", json!({"command": "false"}));
+    let server = stub(
+        vec![
+            failed(),
+            text("Tried."),
+            failed(),
+            text("Tried again."),
+            failed(),
+            text("Still failing."),
+        ],
+        no_other_calls,
+    )
+    .await;
+    let run = run_prompt(&server, "/goal Keep the docs current", &[]).await;
+    assert!(run.output.status.success(), "{}", run.stdout);
+    assert_eq!(run.of("turn/completed").len(), 3, "{}", run.stdout);
+    assert_eq!(
+        goal_statuses(&run).last().map(String::as_str),
+        Some("blocked")
+    );
+    assert_eq!(chat_calls(&server).await.len(), 6, "no fourth turn");
+}
+
+/// With `goal_judge = "evaluator"`, a check after each turn decides, and
+/// the run ends once it says the goal is met.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_goal_with_the_evaluator_runs_until_it_is_met() {
+    let server = stub(
+        vec![
+            text("Made some progress."),
+            text(r#"{"ok": false, "reason": "Lint still fails.", "impossible": false}"#),
+            tool_call("lint", "Bash", json!({"command": "true"})),
+            text("Lint is clean now."),
+            text(r#"{"ok": true, "reason": "Lint is clean."}"#),
+        ],
+        no_other_calls,
+    )
+    .await;
+    let run = run_prompt(
+        &server,
+        "/goal Make lint clean",
+        &["-c", "goal_judge=evaluator"],
+    )
+    .await;
+    assert!(run.output.status.success(), "{}", run.stdout);
+    assert_eq!(run.of("turn/completed").len(), 2, "{}", run.stdout);
+    let verdicts: Vec<&str> = run
+        .of("session/goal/judged")
+        .iter()
+        .map(|l| l["params"]["verdict"].as_str().unwrap())
+        .collect();
+    assert_eq!(verdicts, vec!["notYet", "met"], "{}", run.stdout);
+    assert_eq!(
+        goal_statuses(&run).last().map(String::as_str),
+        Some("complete")
+    );
+}

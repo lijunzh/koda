@@ -8,6 +8,23 @@ indented under its `InvokeAgent` call with its notices, changes to the
 model's plan as `[todos] +added ~changed -removed`, warnings, and a last line
 with the turn's output tokens, time and speed.
 
+## Goals
+
+As `claude -p "/goal …"` does, a prompt of `/goal <objective>` sets the
+session's goal instead of sending a message, and the run follows the goal's
+turns until it's no longer active: complete, blocked, or out of budget
+([`/goal`](./commands.md#goal)). The last turn's reply is the run's, and the
+stream carries each `session/goal/updated` (and, with
+`goal_judge = "evaluator"`, each `session/goal/judged`); text output shows
+them as `Goal (…)` and `Goal check:` lines on stderr. Ctrl+C stops the turn
+running, or the wait between turns. A goal that never finishes, because the
+model keeps working without marking it complete, runs until it's stopped:
+give the run a time limit of its own.
+
+```bash
+koda exec '/goal every test in tests/ passes' -c goal_judge=evaluator
+```
+
 ## Background commands
 
 As `claude -p` does, a run stays open while a command the model started with
