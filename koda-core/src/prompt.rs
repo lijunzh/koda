@@ -235,6 +235,24 @@ pub fn project_memory_context(memory: &str) -> Option<String> {
     ))
 }
 
+/// A subfolder's instruction file, sent with a file mentioned there, as
+/// Claude Code loads a subfolder's `CLAUDE.md` once a file in it is read.
+/// `file` and `folder` are as the model should see them, relative to the
+/// project. Ranked as Codex ranks a nested `AGENTS.md`: over the project's
+/// instructions for the files in its folder, under the user's.
+pub fn folder_instructions_context(file: &str, folder: &str, content: &str) -> String {
+    format!(
+        "<system-reminder>\n\
+         ## Instructions for {folder}\n\
+         From `{file}`, for the files under `{folder}`. For those files they take \
+         precedence over the project's instructions; the user's direct instructions \
+         take precedence over them.\n\
+         {}\n\
+         </system-reminder>",
+        cap_memory(content).trim_end()
+    )
+}
+
 /// Limit memory to [`MEMORY_MAX_CHARS`], saying so in the prompt so the model
 /// can read the rest and tell the user to trim the file.
 fn cap_memory(memory: &str) -> String {

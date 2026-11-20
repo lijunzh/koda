@@ -857,6 +857,60 @@ async fn mentions_are_read_by_the_host() {
     koda.client.shutdown().await;
 }
 
+/// A mentioned file's folders below the project send their instruction
+/// files with it, as Claude Code adds the `CLAUDE.md` of an `@` file's
+/// folder and those above it: root first, each once while the session is
+/// open. The project's own file is in every prompt already.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_mentioned_files_folder_instructions_come_with_it() {
+    use koda_client::protocol::turn::Mention;
+    let server = model(vec![text("One."), text("Two.")]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("project");
+    std::fs::create_dir_all(project.join("src/api")).unwrap();
+    std::fs::write(project.join("src/AGENTS.md"), "Use tabs in src.").unwrap();
+    std::fs::write(project.join("src/api/CLAUDE.md"), "Every handler logs.").unwrap();
+    std::fs::write(project.join("src/api/a.rs"), "fn a() {}\n").unwrap();
+    std::fs::write(project.join("src/api/b.rs"), "fn b() {}\n").unwrap();
+    let mut koda = Koda::start_in(config(&server), dir).await;
+
+    let session = koda.session.clone();
+    let start = |input: &str, path: &str| TurnStartParams {
+        session_id: session.clone(),
+        input: input.to_string(),
+        images: Vec::new(),
+        mentions: vec![Mention { path: path.into() }],
+        skills: Vec::new(),
+        client_message_id: None,
+        mode: None,
+    };
+    koda.client
+        .request::<methods::TurnStart>(start("look at @src/api/a.rs", "src/api/a.rs"))
+        .await
+        .unwrap();
+    koda.until("turn/completed").await;
+    let sent = chat_requests(&server).await[0]["messages"].to_string();
+    let src = sent.find("## Instructions for src\\n").expect(&sent);
+    let api = sent.find("## Instructions for src/api\\n").expect(&sent);
+    assert!(src < api, "root first: {sent}");
+    assert!(sent.contains("From `src/api/CLAUDE.md`"), "{sent}");
+    assert!(sent.contains("Every handler logs."), "{sent}");
+    assert!(sent.contains("fn a()"), "{sent}");
+
+    koda.client
+        .request::<methods::TurnStart>(start("and @src/api/b.rs", "src/api/b.rs"))
+        .await
+        .unwrap();
+    koda.until("turn/completed").await;
+    let sent = chat_requests(&server).await[1]["messages"].to_string();
+    assert_eq!(
+        sent.matches("Every handler logs.").count(),
+        1,
+        "sent once, with the first mention: {sent}"
+    );
+    koda.client.shutdown().await;
+}
+
 /// A skill the user names is sent to the model with the text, as Codex sends
 /// a `$name` skill: a `$name` typed in the text, or one picked (`skills`),
 /// in Codex's `<skill>` block. The item keeps the text as typed. A

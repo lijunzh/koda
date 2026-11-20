@@ -29,13 +29,23 @@ after your text, as Claude Code does:
   the path and a note saying what it is, and can inspect it with Bash.
 - **A path that doesn't exist** comes back with that, so the model knows.
 
+**Instruction files come with a file in a subfolder,** as Claude Code adds a
+mentioned file's `CLAUDE.md`. The project's own `AGENTS.md` is in every
+prompt. When you mention a file or directory below it, each folder from the
+project root down to it that has its own instruction file (the first of
+`AGENTS.override.md`, `AGENTS.md` and `CLAUDE.md`) sends it too, the
+outermost first. For the files in its folder it ranks above the project's
+instructions, and below what you ask. Each one is sent once while the session
+is open.
+
 Paths are relative to the project, or absolute. A mention can name any file
 the `Read` tool can, which is any path except Koda's own secret folders; Koda
 reads it on the machine its host runs on, so a client of
 [`koda serve`](./serve.md) on another machine names the host's files.
 
 To send only the paths, for the model to read itself as Codex does, set
-`file_mentions = false` in `config.toml`.
+`file_mentions = false` in `config.toml`; no folder instructions are sent
+then either.
 
 ## Images
 
