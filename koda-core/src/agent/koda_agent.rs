@@ -136,11 +136,12 @@ impl KodaAgent {
         project_root: PathBuf,
         interactive: bool,
     ) -> Result<Self> {
-        let tools = ToolRegistry::with_trust(
+        let mut tools = ToolRegistry::with_trust(
             project_root.clone(),
             config.max_context_tokens,
             config.trust,
         );
+        tools.max_goal_token_budget = config.max_goal_token_budget;
         let mut tool_defs = tools.get_definitions(&config.allowed_tools, &config.disallowed_tools);
         // Built-ins only: `turn_tool_defs` adds the MCP tools each turn.
         tool_defs.retain(|d| !crate::mcp::is_mcp_tool_name(&d.name));

@@ -249,6 +249,14 @@ pub async fn run_headless(
                             goal_active = update.goal.status == GoalStatus::Active;
                             !goal_active
                         }
+                        // Koda stopped starting the goal's turns: nobody is
+                        // here to send the next message, so the run ends.
+                        Outgoing::Notification(ServerNotification::SessionGoalHeld(held))
+                            if held.session_id == session_id =>
+                        {
+                            goal_active = false;
+                            true
+                        }
                         _ => false,
                     };
                     let Some(done) = view.protocol(message) else {
@@ -804,6 +812,13 @@ impl View {
                 };
                 eprintln!("\x1b[2mGoal ({status}): {}\x1b[0m", update.goal.objective);
             }
+            ServerNotification::SessionGoalHeld(held) => notice((
+                Tone::Warn,
+                format!(
+                    "Goal on hold: {} turns in a row called no tool, so Koda stopped.",
+                    held.turns
+                ),
+            )),
             ServerNotification::SessionGoalJudged(judged) => {
                 use koda_client::protocol::goal::GoalVerdict;
                 let verdict = match judged.verdict {

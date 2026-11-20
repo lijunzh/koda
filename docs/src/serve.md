@@ -125,6 +125,15 @@ decides, and `session/goal/judged` reports what it found, with the `turnId`:
 {"jsonrpc":"2.0","method":"session/goal/judged","params":{"sessionId":"a3f8bc12-…","turnId":"7c1e…","verdict":"notYet","reason":"The tests haven't been run."}}
 ```
 
+After eight of Koda's goal turns in a row that call no tool, Koda holds the
+goal, as Claude Code stops such a loop: `session/goal/held` (Koda's own) says
+so, with the `turnId` and `turns`, and the goal, still active, goes on as after
+an interrupt (below).
+
+```json
+{"jsonrpc":"2.0","method":"session/goal/held","params":{"sessionId":"a3f8bc12-…","turnId":"7c1e…","turns":8}}
+```
+
 An interrupt ends the turn, not the goal, but no turn starts on the goal by
 itself after it, as in Claude Code: the goal goes on once the next `turn/start`
 turn ends, or at once after a `session/goal/set` (such as `status: "active"`).

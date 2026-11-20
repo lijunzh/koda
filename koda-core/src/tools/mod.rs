@@ -243,6 +243,9 @@ pub struct ToolRegistry {
     last_bash: LastBashCache,
     /// Discovered skills.
     pub skill_registry: crate::skills::SkillRegistry,
+    /// The most tokens a goal may use (`max_goal_token_budget`), for
+    /// `CreateGoal`.
+    pub max_goal_token_budget: Option<i64>,
     /// Database handle for tools that need session access (RecallContext).
     db: std::sync::RwLock<Option<std::sync::Arc<koda_state::db::Database>>>,
     /// Current session ID (for RecallContext).
@@ -320,6 +323,7 @@ impl ToolRegistry {
             last_writer: Arc::new(std::sync::Mutex::new(HashMap::new())),
             last_bash: Arc::new(std::sync::Mutex::new(None)),
             skill_registry,
+            max_goal_token_budget: None,
             db: std::sync::RwLock::new(None),
             session_id: std::sync::RwLock::new(None),
             caps: OutputCaps::for_context(max_context_tokens),
@@ -667,6 +671,7 @@ impl ToolRegistry {
                 socks5_port,
                 session,
                 skill_registry: &self.skill_registry,
+                max_goal_token_budget: self.max_goal_token_budget,
                 takes_images: self.takes_images(),
                 takes_pdfs: self.takes_pdfs(),
             };

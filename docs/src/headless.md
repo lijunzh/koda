@@ -17,9 +17,11 @@ turns until it's no longer active: complete, blocked, or out of budget
 stream carries each `session/goal/updated` (and, with
 `goal_judge = "evaluator"`, each `session/goal/judged`); text output shows
 them as `Goal (…)` and `Goal check:` lines on stderr. Ctrl+C stops the turn
-running, or the wait between turns. A goal that never finishes, because the
-model keeps working without marking it complete, runs until it's stopped:
-give the run a time limit of its own.
+running, or the wait between turns. A goal on hold after eight turns that
+call no tool ends the run, since nobody is there to send the next message. A
+goal that never finishes, because the model keeps working without marking it
+complete, runs until its budget is used up: set one with
+`-c max_goal_token_budget=…`, or give the run a time limit of its own.
 
 ```bash
 koda exec '/goal every test in tests/ passes' -c goal_judge=evaluator

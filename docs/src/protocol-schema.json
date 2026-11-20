@@ -2896,8 +2896,33 @@
       },
       "type": "object"
     },
+    "SessionGoalHeldNotification": {
+      "description": "`session/goal/judged`: with `goal_judge = \"evaluator\"` (Claude Code's\n`session/goal/held`: Koda stopped starting turns on the goal, which\nstays set, after goal turns in a row that called no tool, as Claude\nCode stops a goal loop that answers without working. The user's next\nmessage, or `/goal resume`, goes on with it. Koda's own.",
+      "properties": {
+        "sessionId": {
+          "description": "The session.",
+          "type": "string"
+        },
+        "turnId": {
+          "description": "The turn after which it stopped.",
+          "type": "string"
+        },
+        "turns": {
+          "description": "How many goal turns in a row called no tool.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sessionId",
+        "turnId",
+        "turns"
+      ],
+      "type": "object"
+    },
     "SessionGoalJudgedNotification": {
-      "description": "`session/goal/judged`: with `goal_judge = \"evaluator\"` (Claude Code's\nway), the check after a turn on an active goal found it met, not yet\nmet, or impossible.",
+      "description": "way), the check after a turn on an active goal found it met, not yet\nmet, or impossible.",
       "properties": {
         "reason": {
           "description": "Why, in a sentence or two, if it said.",
@@ -4953,6 +4978,11 @@
     "session/goal/cleared": {
       "params": {
         "$ref": "#/$defs/SessionGoalClearedNotification"
+      }
+    },
+    "session/goal/held": {
+      "params": {
+        "$ref": "#/$defs/SessionGoalHeldNotification"
       }
     },
     "session/goal/judged": {

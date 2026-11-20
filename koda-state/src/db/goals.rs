@@ -125,6 +125,23 @@ pub fn validate_budget(token_budget: Option<i64>) -> std::result::Result<(), Str
     }
 }
 
+/// The budget a goal gets when `asked` is asked for and the config caps
+/// goals at `max` (`max_goal_token_budget`), as Codex applies its
+/// `max_goal_token_budget`: no budget means the maximum, and one over it
+/// is refused.
+pub fn budget_within(
+    asked: Option<i64>,
+    max: Option<i64>,
+) -> std::result::Result<Option<i64>, String> {
+    validate_budget(asked)?;
+    match (asked, max) {
+        (Some(budget), Some(max)) if budget > max => Err(format!(
+            "goal token budget {budget} exceeds the maximum allowed goal token budget of {max}"
+        )),
+        _ => Ok(asked.or(max)),
+    }
+}
+
 #[derive(sqlx::FromRow)]
 struct GoalRow {
     session_id: String,
@@ -389,6 +406,16 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_maximum_budget_is_the_default_and_the_ceiling() {
+        assert_eq!(super::budget_within(None, None), Ok(None));
+        assert_eq!(super::budget_within(Some(5), None), Ok(Some(5)));
+        assert_eq!(super::budget_within(None, Some(100)), Ok(Some(100)));
+        assert_eq!(super::budget_within(Some(40), Some(100)), Ok(Some(40)));
+        assert!(super::budget_within(Some(101), Some(100)).is_err());
+        assert!(super::budget_within(Some(0), Some(100)).is_err());
+    }
     use super::*;
     use crate::session_store::SessionStore as _;
 

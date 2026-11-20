@@ -152,6 +152,9 @@ pub(crate) fn apply_settings(config: &mut KodaConfig, loaded: &Loaded) {
     if let Some(judge) = file.goal_judge {
         config.goal_judge = judge;
     }
+    if let Some(tokens) = file.max_goal_token_budget {
+        config.max_goal_token_budget = i64::try_from(tokens).ok().filter(|t| *t > 0);
+    }
     if let Some(minutes) = file.goal_checkin_minutes {
         config.goal_checkin =
             (minutes > 0).then(|| std::time::Duration::from_secs(minutes.saturating_mul(60)));

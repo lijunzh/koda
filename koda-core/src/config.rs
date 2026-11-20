@@ -260,6 +260,9 @@ pub struct KodaConfig {
     /// checks in on them (`goal_checkin_minutes`, 30 by default, as Claude
     /// Code's); `None` turns check-ins off.
     pub goal_checkin: Option<std::time::Duration>,
+    /// The most tokens a goal may use, and the budget of one set without
+    /// any (`max_goal_token_budget`, as Codex's); `None` for no limit.
+    pub max_goal_token_budget: Option<i64>,
     /// How long a background command may run in a session nobody attends
     /// (`background_time_limit_minutes`, 10 by default, as `claude -p`);
     /// `None` lets it run until it exits.
@@ -454,6 +457,7 @@ impl KodaConfig {
             goals: true,
             goal_judge: koda_config::GoalJudge::Model,
             goal_checkin: Some(std::time::Duration::from_secs(30 * 60)),
+            max_goal_token_budget: None,
             background_time_limit: Some(std::time::Duration::from_secs(10 * 60)),
             developer_instructions: None,
             turn_token_budget: None,
@@ -757,6 +761,7 @@ impl KodaConfig {
             goals: true,
             goal_judge: koda_config::GoalJudge::Model,
             goal_checkin: Some(std::time::Duration::from_secs(30 * 60)),
+            max_goal_token_budget: None,
             background_time_limit: Some(std::time::Duration::from_secs(10 * 60)),
             developer_instructions: None,
             turn_token_budget: None,

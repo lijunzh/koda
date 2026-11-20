@@ -1800,3 +1800,43 @@ async fn a_goal_with_the_evaluator_runs_until_it_is_met() {
         Some("complete")
     );
 }
+
+/// A goal whose turns only answer, with no tool call, is put on hold after
+/// eight of them, as Claude Code stops such a loop; nobody is there to send
+/// the next message, so the run ends with the goal still set.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_goal_that_only_answers_is_held_and_the_run_ends() {
+    let server = stub(vec![], no_other_calls).await;
+    let run = run_prompt(&server, "/goal Keep the docs current", &[]).await;
+    assert!(run.output.status.success(), "{}", run.stdout);
+    assert_eq!(run.of("turn/completed").len(), 8, "{}", run.stdout);
+    assert_eq!(run.one("session/goal/held")["params"]["turns"], 8);
+    assert_eq!(
+        goal_statuses(&run).last().map(String::as_str),
+        Some("active")
+    );
+    assert_eq!(chat_calls(&server).await.len(), 8);
+}
+
+/// `max_goal_token_budget` gives a goal set without a budget the maximum,
+/// as Codex's does, so a goal in `koda exec` stops when it's used up.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_maximum_budget_ends_a_goal_in_exec() {
+    let server = stub(vec![], no_other_calls).await;
+    let run = run_prompt(
+        &server,
+        "/goal Keep the docs current",
+        &["-c", "max_goal_token_budget=500"],
+    )
+    .await;
+    assert!(run.output.status.success(), "{}", run.stdout);
+    let first = &run.of("session/goal/updated")[0]["params"]["goal"];
+    assert_eq!(first["tokenBudget"], 500, "{}", run.stdout);
+    assert_eq!(
+        goal_statuses(&run).last().map(String::as_str),
+        Some("budgetLimited"),
+        "{}",
+        run.stdout
+    );
+    assert!(run.of("turn/completed").len() < 8, "{}", run.stdout);
+}
