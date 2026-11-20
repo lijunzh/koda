@@ -35,7 +35,7 @@
 
 use crate::engine::{EngineEvent, EngineSink};
 use crate::providers::ToolDefinition;
-use crate::tools::bg_process::BgRegistry;
+use crate::tools::bg_process::{BgRegistry, MAX_BACKGROUND_LIMIT};
 use crate::tools::terminal::Terminal;
 use anyhow::Result;
 use koda_sandbox::process_group::{self, ProcessGroup};
@@ -141,7 +141,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "Timeout in seconds (default: 120, max: 600; ignored when background=true). A command that needs longer belongs in the background."
+                    "description": "Timeout in seconds (default: 120, max: 600). A command that needs longer belongs in the background. With background=true it's ignored, except in a session with a time limit for background commands (`koda exec`), where it sets how long the command may run (max: 7200)."
                 },
                 "background": {
                     "type": "boolean",
@@ -232,7 +232,7 @@ pub async fn run_shell_command(
     );
 
     if background {
-        let (mut msg, terminal) = spawn_background(
+        let (mut msg, pid, terminal) = spawn_background(
             project_root,
             command,
             tty,
@@ -254,11 +254,27 @@ pub async fn run_shell_command(
             },
             caller_spawner,
         )?;
-        if args.get("timeout").is_some_and(|t| !t.is_null()) {
-            msg.push_str(
+        let asked = args["timeout"].as_u64();
+        match bg.time_limit() {
+            // Nobody attends the session: the command gets a time limit, as
+            // Claude Code's do in `claude -p`.
+            Some(default) => {
+                let limit = asked
+                    .map_or(default, std::time::Duration::from_secs)
+                    .min(MAX_BACKGROUND_LIMIT);
+                bg.set_limit(pid, limit);
+                msg.push_str(&format!(
+                    "\nTime limit: {}, then Koda stops it and tells you. Pass a longer \
+                     `timeout` (in seconds, at most {}) with `background` if it needs more.",
+                    duration_words(limit),
+                    duration_words(MAX_BACKGROUND_LIMIT),
+                ));
+            }
+            _ if asked.is_some() => msg.push_str(
                 "\nThe timeout was ignored: a background command runs until it \
                  exits, is killed, or the session ends.",
-            );
+            ),
+            _ => {}
         }
         if let Some((pid, terminal)) = terminal {
             let output = terminal.read(FIRST_OUTPUT_WAIT).await;
@@ -720,7 +736,7 @@ fn spawn_background(
     policy: &koda_sandbox::SandboxPolicy,
     egress: Egress,
     caller_spawner: Option<u32>,
-) -> Result<(String, Option<StartedTerminal>)> {
+) -> Result<(String, u32, Option<StartedTerminal>)> {
     // Spawn via sandbox wrapper (enforced for all trust modes).
     // No stdin, so the process doesn't block on terminal I/O; stdout and
     // stderr share one append-mode log, in the order they were written.
@@ -807,6 +823,7 @@ fn spawn_background(
                  output.\n{told}To stop:  Bash{{command: \"kill {pid}\"}}\n\
                  Note: process will be stopped automatically when the session ends."
             ),
+            pid,
             Some((pid, terminal)),
         ));
     }
@@ -820,8 +837,22 @@ fn spawn_background(
          checks or stops the process itself.\n\
          Note: process will be stopped automatically when the session ends."
         ),
+        pid,
         None,
     ))
+}
+
+/// `10m`, `2h`, `1h 30m`, `45s`.
+fn duration_words(duration: std::time::Duration) -> String {
+    let seconds = duration.as_secs();
+    let (hours, minutes, rest) = (seconds / 3_600, seconds % 3_600 / 60, seconds % 60);
+    match (hours, minutes, rest) {
+        (0, 0, s) => format!("{s}s"),
+        (0, m, 0) => format!("{m}m"),
+        (0, m, s) => format!("{m}m {s}s"),
+        (h, 0, _) => format!("{h}h"),
+        (h, m, _) => format!("{h}h {m}m"),
+    }
 }
 
 /// How long a `tty` start waits for the command's first output, so the

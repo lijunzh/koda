@@ -8,6 +8,24 @@ indented under its `InvokeAgent` call with its notices, changes to the
 model's plan as `[todos] +added ~changed -removed`, warnings, and a last line
 with the turn's output tokens, time and speed.
 
+## Background commands
+
+As `claude -p` does, a run stays open while a command the model started with
+`Bash` `background: true` is still running. When the command exits, Koda tells
+the model in a turn of its own, and that turn's reply ends the run (or it
+starts another command and the run waits again). With text output, stderr says
+`Waiting for background commands to finish` and names them. Ctrl+C while
+waiting stops the wait, and the commands with it.
+
+Nobody attends a run, so its background commands have a time limit, as Claude
+Code's do in `claude -p`: 10 minutes, or the `timeout` the model passes with
+`background`, up to 2 hours. A command that reaches it is stopped, and the
+model is told why, so it can start it again with a longer `timeout`. A dev
+server left running therefore holds a run for at most its limit.
+`background_time_limit_minutes` changes the 10, and `0` takes the limit off,
+so a run then waits as long as the command runs. A command the model stops
+itself ends the wait with no further turn.
+
 ```bash
 koda exec "what does this codebase do?"
 
@@ -122,7 +140,9 @@ generated from the protocol's types, and CI fails if the two differ.
 {"jsonrpc":"2.0","method":"exec/summary","params":{"sessionId":"a3f8bc12-…","success":true,"…":"…"}}
 ```
 
-A run prints `session/started`, one turn, and `exec/summary`, in that order.
+A run prints `session/started`, one turn, and `exec/summary`, in that order;
+a turn Koda starts for the model's [background commands](#background-commands)
+comes after the first, with `exec/summary` still last.
 Between the first two may come a `warning` from starting the session: a local
 server that doesn't report its context window gets one saying what Koda
 assumed. Every message after the first carries `sessionId`; every message in a

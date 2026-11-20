@@ -156,6 +156,10 @@ pub(crate) fn apply_settings(config: &mut KodaConfig, loaded: &Loaded) {
         config.goal_checkin =
             (minutes > 0).then(|| std::time::Duration::from_secs(minutes.saturating_mul(60)));
     }
+    if let Some(minutes) = file.background_time_limit_minutes {
+        config.background_time_limit =
+            (minutes > 0).then(|| std::time::Duration::from_secs(minutes.saturating_mul(60)));
+    }
     if let Some(on) = file.commit_attribution {
         config.commit_attribution = on;
     }

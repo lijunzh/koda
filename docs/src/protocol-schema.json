@@ -290,6 +290,11 @@
             "$ref": "#/$defs/BackgroundTerminal"
           },
           "type": "array"
+        },
+        "waiting": {
+          "default": false,
+          "description": "Whether the session will start a turn by itself for the model's\nbackground commands: one is still running, or has ended and the\nmodel hasn't been told yet. A sub-agent's commands don't count.\nKoda's own; `koda exec` waits while it's true, as `claude -p` waits\nfor background work.",
+          "type": "boolean"
         }
       },
       "required": [

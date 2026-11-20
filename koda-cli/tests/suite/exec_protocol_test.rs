@@ -1518,3 +1518,141 @@ async fn fork_worktree_needs_a_session_id() {
         assert!(stderr.contains("needs a session id"), "{args:?}: {stderr}");
     }
 }
+
+// ── Background work ──────────────────────────────────────────────────────
+
+/// The model's streaming calls, in order.
+async fn chat_calls(server: &FakeLlmServer) -> Vec<String> {
+    server
+        .received_requests()
+        .await
+        .iter()
+        .filter(|r| r.url.path().ends_with("/chat/completions") && body(r)["stream"] == json!(true))
+        .map(|r| String::from_utf8_lossy(&r.body).into_owned())
+        .collect()
+}
+
+/// The run stays open while the model's background command runs, as
+/// `claude -p` does: the exit starts a turn that tells the model, and that
+/// turn's reply ends the run.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_waits_for_its_background_command() {
+    let server = stub(
+        vec![
+            tool_call(
+                "a",
+                "Bash",
+                json!({"command": "sleep 1; echo built", "background": true}),
+            ),
+            text("Started the build."),
+            text("The build finished."),
+        ],
+        no_other_calls,
+    )
+    .await;
+    let run = run_koda(&server).await;
+    assert!(run.output.status.success(), "{}", run.stdout);
+
+    assert_eq!(run.of("turn/completed").len(), 2, "{}", run.stdout);
+    assert_eq!(
+        run.of("session/backgroundTerminals/exited").len(),
+        1,
+        "{}",
+        run.stdout
+    );
+    let replies = run.completed("agentMessage");
+    assert_eq!(
+        replies.last().unwrap()["item"]["text"],
+        "The build finished.",
+        "{}",
+        run.stdout
+    );
+    assert_eq!(run.summary()["turnStatus"], "completed");
+
+    let calls = chat_calls(&server).await;
+    assert_eq!(calls.len(), 3, "{calls:?}");
+    // `claude -p`'s default for a text prompt.
+    assert!(calls[1].contains("Time limit: 10m"), "{}", calls[1]);
+    assert!(
+        calls[2].contains("<background_command_exited"),
+        "{}",
+        calls[2]
+    );
+    assert!(calls[2].contains("built"), "{}", calls[2]);
+}
+
+/// Nobody attends a run, so its background commands have a time limit, as
+/// in `claude -p`: the model's `timeout` sets it, and when it runs out Koda
+/// stops the command and tells the model, which ends the run.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_background_command_stops_at_its_time_limit() {
+    let server = stub(
+        vec![
+            tool_call(
+                "a",
+                "Bash",
+                json!({"command": "sleep 60", "background": true, "timeout": 1}),
+            ),
+            text("Started it."),
+            text("It ran out of time."),
+        ],
+        no_other_calls,
+    )
+    .await;
+    let started = std::time::Instant::now();
+    let run = run_koda(&server).await;
+    assert!(run.output.status.success(), "{}", run.stdout);
+    assert!(
+        started.elapsed() < Duration::from_secs(30),
+        "waited past the limit"
+    );
+    assert_eq!(run.of("turn/completed").len(), 2, "{}", run.stdout);
+
+    let calls = chat_calls(&server).await;
+    assert_eq!(calls.len(), 3, "{calls:?}");
+    assert!(calls[1].contains("Time limit: 1s"), "{}", calls[1]);
+    assert!(
+        calls[2].contains("stopped after reaching its background time limit of 1s"),
+        "{}",
+        calls[2]
+    );
+}
+
+/// A command the model stops itself ends the wait without another turn:
+/// nobody is waiting for it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_background_command_the_model_stops_needs_no_turn() {
+    let server = FakeLlmServer::spawn().await;
+    let script = Mutex::new(VecDeque::from(vec![tool_call(
+        "a",
+        "Bash",
+        json!({"command": "sleep 60", "background": true}),
+    )]));
+    server
+        .mount_fn("POST", r".*/chat/completions$", move |request| {
+            let request = body(request);
+            if let Some(next) = script.lock().unwrap().pop_front() {
+                return next;
+            }
+            // Stop the PID the start reported, then finish.
+            let sent = request["messages"].to_string();
+            match sent.split("PID:").nth(1) {
+                Some(rest) if !sent.contains("kill-1") => {
+                    let pid: String = rest
+                        .chars()
+                        .skip_while(|c| !c.is_ascii_digit())
+                        .take_while(char::is_ascii_digit)
+                        .collect();
+                    tool_call("kill-1", "Bash", json!({"command": format!("kill {pid}")}))
+                }
+                _ => text("Stopped it."),
+            }
+        })
+        .await;
+    let started = std::time::Instant::now();
+    let run = run_koda(&server).await;
+    assert!(run.output.status.success(), "{}", run.stdout);
+    assert!(started.elapsed() < Duration::from_secs(30), "kept waiting");
+    assert_eq!(run.of("turn/completed").len(), 1, "{}", run.stdout);
+    assert!(run.of("session/backgroundTerminals/exited").is_empty());
+}

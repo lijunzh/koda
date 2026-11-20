@@ -143,6 +143,12 @@ pub struct ConfigToml {
     /// check-ins off. 30 when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal_checkin_minutes: Option<u64>,
+    /// Minutes a background command may run in a session nobody attends
+    /// (`koda exec`), as Claude Code's time limit for background commands
+    /// in `claude -p`: the model's `timeout` asks for another, up to two
+    /// hours. `0` turns the limit off. 10 when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_time_limit_minutes: Option<u64>,
     /// The model `/review` runs on, as Codex's `review_model`: an id or an
     /// alias, on the session's provider. The session's own model when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
