@@ -8,6 +8,24 @@ system prompt on demand.
 /skills security         ← filter by name or description
 ```
 
+## Loading a skill yourself
+
+As in Codex, name a skill with `$` and Koda loads it with your message:
+
+```text
+review this diff with $review-checklist
+```
+
+Typing `$` opens a list of skills to pick from, filtered as you type; `@`
+lists skills too, after the files. Picking one puts `$name` in the message.
+`$name` typed anywhere in a message works the same way, in `koda exec` too
+(quote the prompt with `'…'` so the shell leaves the `$` alone). The model
+gets the skill's `SKILL.md` with your message, in a `<skill>` block that names
+it and its file. A `$name` that names no skill stays text, and common shell
+variables such as `$PATH` and `$HOME` are never read as skills. A model-only
+skill (`user_invocable: false`) isn't loaded this way. `allowed_tools` applies
+when the model activates a skill with `ActivateSkill`, not to one you load.
+
 `/skills` leaves out model-only skills (`user_invocable: false`). A
 `SKILL.md` that can't be loaded, such as one without a `name:` in its
 frontmatter, is listed under the skills with the reason.

@@ -425,6 +425,69 @@ fn parse_skill_md(raw: &str, source: SkillSource) -> Result<Skill, String> {
     })
 }
 
+/// Whether `c` can be part of a skill's name in a `$name` mention, as
+/// Codex's mention parser has it: ASCII letters and digits, `_`, `-`, `:`.
+pub fn is_mention_name_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | ':')
+}
+
+/// Shell variables a `$` in a message more likely means than a skill, which
+/// Codex's parser skips.
+fn is_common_env_var(name: &str) -> bool {
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "PATH"
+            | "HOME"
+            | "USER"
+            | "SHELL"
+            | "PWD"
+            | "TMPDIR"
+            | "TEMP"
+            | "TMP"
+            | "LANG"
+            | "TERM"
+            | "XDG_CONFIG_HOME"
+    )
+}
+
+/// The names a message mentions with `$name`, in order, each once, as
+/// Codex reads `$` mentions: a `$` followed by name characters
+/// ([`is_mention_name_char`]), anywhere in the text, except common shell
+/// variables such as `$PATH`. Whether a name is a skill is the caller's to
+/// check.
+pub fn mentioned_names(text: &str) -> Vec<&str> {
+    let mut names: Vec<&str> = Vec::new();
+    let mut rest = text;
+    while let Some(at) = rest.find('$') {
+        let after = &rest[at + 1..];
+        let end = after
+            .char_indices()
+            .find(|(_, c)| !is_mention_name_char(*c))
+            .map_or(after.len(), |(i, _)| i);
+        let name = &after[..end];
+        if !name.is_empty() && !is_common_env_var(name) && !names.contains(&name) {
+            names.push(name);
+        }
+        rest = &after[end..];
+    }
+    names
+}
+
+/// A skill as the model gets it when a person names it, Codex's block: its
+/// name, where it came from and its instructions.
+pub fn mention_block(skill: &Skill) -> String {
+    let path = skill
+        .meta
+        .path
+        .as_ref()
+        .map_or_else(|| "built-in".to_string(), |p| p.display().to_string());
+    format!(
+        "<skill>\n<name>{}</name>\n<path>{path}</path>\n{}\n</skill>",
+        skill.meta.name,
+        skill.content.trim_end()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -788,5 +851,42 @@ Do the review.
                 message: "its frontmatter has no `name:`".into(),
             }]
         );
+    }
+
+    #[test]
+    fn dollar_mentions_are_read_as_codex_reads_them() {
+        assert_eq!(
+            mentioned_names("use $review-pr on this, then $lint:fix and $review-pr again"),
+            vec!["review-pr", "lint:fix"]
+        );
+        assert_eq!(mentioned_names("$deploy"), vec!["deploy"]);
+        assert_eq!(
+            mentioned_names("costs $5"),
+            vec!["5"],
+            "the caller checks it's a skill"
+        );
+        assert!(
+            mentioned_names("echo $PATH and $home").is_empty(),
+            "shell variables"
+        );
+        assert!(mentioned_names("a lone $ sign, $ and $").is_empty());
+        assert_eq!(mentioned_names("(see $notes.)"), vec!["notes"]);
+        assert_eq!(
+            mentioned_names("héllo $café"),
+            vec!["caf"],
+            "ASCII names only"
+        );
+    }
+
+    #[test]
+    fn a_mentioned_skill_is_sent_in_codexs_block() {
+        let raw = "---\nname: checklist\ndescription: d\ntags: []\n---\nCheck the tests.\n\n";
+        let mut skill = parse_skill_md(raw, SkillSource::Project).unwrap();
+        assert_eq!(
+            mention_block(&skill),
+            "<skill>\n<name>checklist</name>\n<path>built-in</path>\nCheck the tests.\n</skill>"
+        );
+        skill.meta.path = Some("/p/.koda/skills/checklist/SKILL.md".into());
+        assert!(mention_block(&skill).contains("<path>/p/.koda/skills/checklist/SKILL.md</path>"));
     }
 }

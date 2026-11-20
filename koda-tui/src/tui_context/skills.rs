@@ -78,13 +78,43 @@ pub(crate) async fn show_skills(
     tui_output::blank(buffer);
     tui_output::dim_msg(
         buffer,
-        "Ask Koda to activate a skill, or use ActivateSkill tool directly.".into(),
+        "Type $ to pick one, or $name in a message, and Koda loads it. Koda can also load one itself.".into(),
     );
     tui_output::dim_msg(
         buffer,
         "Create your own: .koda/skills/<name>/SKILL.md or ~/.config/koda/skills/<name>/SKILL.md"
             .into(),
     );
+}
+
+/// The skills a person can load with `$name` (not the model-only ones), by
+/// name, for the composer's `$` and `@` dropdowns. None when they can't be
+/// listed.
+pub(crate) async fn user_skills(
+    requests: &RequestHandle,
+    project_root: &std::path::Path,
+) -> Vec<SkillMetadata> {
+    match requests
+        .request::<methods::SkillsList>(SkillsListParams {
+            cwds: vec![project_root.display().to_string()],
+        })
+        .await
+    {
+        Ok(listed) => {
+            let mut skills: Vec<SkillMetadata> = listed
+                .data
+                .into_iter()
+                .flat_map(|entry| entry.skills)
+                .filter(|skill| skill.user_invocable)
+                .collect();
+            skills.sort_by(|a, b| a.name.cmp(&b.name));
+            skills
+        }
+        Err(e) => {
+            tracing::warn!("couldn't list the skills for the composer: {e}");
+            Vec::new()
+        }
+    }
 }
 
 /// Whether `query` appears in the skill's name or description, ignoring case.

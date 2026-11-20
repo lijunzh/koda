@@ -97,6 +97,12 @@ pub struct TurnStartParams {
     /// on the host's machine.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mentions: Vec<Mention>,
+    /// Skills the user picked, as Codex's `UserInput::Skill`: the host sends
+    /// the model each one's instructions with the text. A `$name` in `input`
+    /// that names a skill counts too, so a client that keeps `$name` in the
+    /// text needn't send these.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<SkillInput>,
     /// The client's id for the message, echoed on its `userMessage` item.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_message_id: Option<String>,
@@ -112,6 +118,17 @@ pub struct TurnStartParams {
 pub struct Mention {
     /// Its path, as the user wrote it.
     pub path: String,
+}
+
+/// A skill the user picked, by its name as `skills/list` gives it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillInput {
+    /// The skill's name.
+    pub name: String,
+    /// Its `SKILL.md`, as `skills/list` gives it; the name decides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
 }
 
 /// An image sent with a turn's input.

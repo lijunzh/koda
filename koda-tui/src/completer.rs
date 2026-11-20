@@ -182,6 +182,39 @@ impl InputCompleter {
 /// // No @ at all
 /// assert_eq!(find_last_at_token("just a normal prompt"), None);
 /// ```
+/// Where the `$name` skill mention being typed at the end of `text` starts:
+/// a `$` at the start or after whitespace, followed only by name
+/// characters, as Codex's `$` picker opens.
+pub fn find_last_dollar_token(text: &str) -> Option<usize> {
+    let start = text.rfind('$')?;
+    let before_ok = start == 0 || matches!(text.as_bytes()[start - 1], b' ' | b'\n');
+    // Codex's name characters, as the host reads `$name`.
+    let name_ok = text[start + 1..]
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | ':'));
+    (before_ok && name_ok).then_some(start)
+}
+
+/// The skills whose names match `partial`, best first: a prefix before a
+/// fuzzy match, then by name. All of them for an empty `partial`.
+pub fn skill_matches<'a>(
+    skills: &'a [koda_client::protocol::skills::SkillMetadata],
+    partial: &str,
+) -> Vec<&'a koda_client::protocol::skills::SkillMetadata> {
+    let mut scored: Vec<(i32, &koda_client::protocol::skills::SkillMetadata)> = skills
+        .iter()
+        .filter_map(|skill| {
+            if partial.is_empty() {
+                return Some((0, skill));
+            }
+            fuzzy_score(&partial.to_lowercase(), &skill.name.to_lowercase())
+                .map(|score| (score, skill))
+        })
+        .collect();
+    scored.sort_by(|(a, x), (b, y)| b.cmp(a).then_with(|| x.name.cmp(&y.name)));
+    scored.into_iter().map(|(_, skill)| skill).collect()
+}
+
 pub fn find_last_at_token(text: &str) -> Option<usize> {
     for (i, c) in text.char_indices().rev() {
         if c == '@' && (i == 0 || matches!(text.as_bytes()[i - 1], b' ' | b'\n')) {
@@ -664,5 +697,41 @@ mod tests {
         let camel = fuzzy_score("dm", "DropdownMenu").unwrap();
         let flat = fuzzy_score("dm", "random_dm_file").unwrap();
         assert!(camel > flat, "camelCase {camel} should beat flat {flat}");
+    }
+
+    #[test]
+    fn a_dollar_mention_opens_where_codexs_picker_does() {
+        assert_eq!(find_last_dollar_token("$"), Some(0));
+        assert_eq!(find_last_dollar_token("use $che"), Some(4));
+        assert_eq!(find_last_dollar_token("use $lint:fi"), Some(4));
+        assert_eq!(find_last_dollar_token("a\n$x"), Some(2));
+        assert_eq!(find_last_dollar_token("use $checklist "), None, "done");
+        assert_eq!(find_last_dollar_token("cost$5"), None, "inside a word");
+        assert_eq!(find_last_dollar_token("$a.b"), None);
+        assert_eq!(find_last_dollar_token("no mention"), None);
+    }
+
+    #[test]
+    fn skills_match_by_name_prefix_first() {
+        use koda_client::protocol::skills::{SkillMetadata, SkillScope};
+        let skill = |name: &str| SkillMetadata {
+            name: name.into(),
+            description: String::new(),
+            path: None,
+            scope: SkillScope::Repo,
+            enabled: true,
+            user_invocable: true,
+        };
+        let skills = [skill("review-pr"), skill("deploy"), skill("pre-review")];
+        let names = |partial: &str| -> Vec<String> {
+            skill_matches(&skills, partial)
+                .into_iter()
+                .map(|s| s.name.clone())
+                .collect()
+        };
+        assert_eq!(names(""), vec!["deploy", "pre-review", "review-pr"]);
+        assert_eq!(names("rev").first().map(String::as_str), Some("review-pr"));
+        assert_eq!(names("dep"), vec!["deploy"]);
+        assert!(names("zzz").is_empty());
     }
 }

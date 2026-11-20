@@ -23,7 +23,8 @@ Run `koda` with no arguments to open the full-screen TUI.
   syntax-highlighted code blocks, rendered markdown, and collapsible
   tool-call summaries.
 - **Input** — multi-line editor with tab-completion for slash commands and
-  `@file` paths, and reverse-search (`Ctrl+R`).
+  `@file` paths, a skill picker on `$` (see [Skills](./skills.md#loading-a-skill-yourself)),
+  and reverse-search (`Ctrl+R`).
 - **Status bar** — live view of model, trust mode, current working
   directory (right-truncated to fit, with `~` substitution for `$HOME`),
   context usage bar, MCP server count (when configured), inference time,

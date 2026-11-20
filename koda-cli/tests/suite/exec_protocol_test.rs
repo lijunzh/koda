@@ -1656,3 +1656,32 @@ async fn a_background_command_the_model_stops_needs_no_turn() {
     assert_eq!(run.of("turn/completed").len(), 1, "{}", run.stdout);
     assert!(run.of("session/backgroundTerminals/exited").is_empty());
 }
+
+/// `$name` in an exec prompt loads the skill, as in the TUI: the host reads
+/// the mention from the text.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_skill_named_in_the_prompt_reaches_the_model() {
+    let server = stub(vec![text("Checked.")], no_other_calls).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let skill = tmp.path().join(".koda/skills/checklist");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: checklist\ndescription: d\n---\nRun every test first.\n",
+    )
+    .unwrap();
+    let mut command = tokio::process::Command::new(koda_bin());
+    command
+        .args(["exec", "Release it with $checklist", "--json"])
+        .args(["--provider", "lmstudio", "--model", "stub"])
+        .args(["--base-url", &server.url()])
+        .arg("--project-root")
+        .arg(tmp.path())
+        .env("XDG_CONFIG_HOME", tmp.path())
+        .kill_on_drop(true);
+    let run = finish(command).await;
+    assert!(run.output.status.success(), "{}", run.stdout);
+    let calls = chat_calls(&server).await;
+    assert!(calls[0].contains("<name>checklist</name>"), "{}", calls[0]);
+    assert!(calls[0].contains("Run every test first."), "{}", calls[0]);
+}

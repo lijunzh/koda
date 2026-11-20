@@ -118,6 +118,9 @@ pub(crate) struct TuiContext {
     pub settings: koda_client::protocol::session::SessionSettings,
     /// The host's providers, for `/provider` and `/key`.
     pub providers: crate::providers::Providers,
+    /// The skills a person can load with `$name`, for the `$` and `@`
+    /// dropdowns. Skills are found when the session starts.
+    pub skills: Vec<koda_client::protocol::skills::SkillMetadata>,
     pub session: TuiSession,
     /// Koda's host, in process: it runs the session's turns.
     pub client: koda_client::InProcessClient,
@@ -417,6 +420,7 @@ impl TuiContext {
             Some(source) if fork => fork_host_session(&client, &source, &named).await?,
             resume => open_host_session(&client, resume, &named).await?,
         };
+        let skills = skills::user_skills(&client.request_handle(), &project_root).await;
 
         // The mode the host opened it in: a resumed session's own, or the
         // flags' or the config's, after the host's rule: Auto needs the
@@ -540,6 +544,7 @@ impl TuiContext {
             paste_burst: crate::composer::paste_burst::PasteBurst::default(),
             settings: session_settings,
             providers,
+            skills,
             host_session: session.id.clone(),
             fork_on_pick: false,
             side: None,

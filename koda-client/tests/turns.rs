@@ -187,6 +187,7 @@ impl Koda {
                 input: input.to_string(),
                 images: Vec::new(),
                 mentions: Vec::new(),
+                skills: Vec::new(),
                 client_message_id: client_message_id.map(str::to_string),
                 mode: None,
             })
@@ -746,6 +747,7 @@ async fn requests_without_a_running_turn_or_session_are_refused() {
                 input: "hi".to_string(),
                 images: Vec::new(),
                 mentions: Vec::new(),
+                skills: Vec::new(),
                 client_message_id: None,
                 mode: Some(TrustMode::Safe),
             })
@@ -809,6 +811,7 @@ async fn mentions_are_read_by_the_host() {
             mentions: ["notes.md", "src", "blob.bin", "shot.png"]
                 .map(mention)
                 .to_vec(),
+            skills: Vec::new(),
             client_message_id: None,
             mode: None,
         })
@@ -841,6 +844,7 @@ async fn mentions_are_read_by_the_host() {
             input: "look at @notes.md".to_string(),
             images: Vec::new(),
             mentions: vec![mention("notes.md")],
+            skills: Vec::new(),
             client_message_id: None,
             mode: None,
         })
@@ -850,6 +854,79 @@ async fn mentions_are_read_by_the_host() {
     let sent = chat_requests(&server).await[1]["messages"].to_string();
     assert!(sent.contains("Mentioned, not attached"), "{sent}");
     assert!(!sent.contains("alpha"), "{sent}");
+    koda.client.shutdown().await;
+}
+
+/// A skill the user names is sent to the model with the text, as Codex sends
+/// a `$name` skill: a `$name` typed in the text, or one picked (`skills`),
+/// in Codex's `<skill>` block. The item keeps the text as typed. A
+/// model-only skill, an unknown name and a shell variable stay text.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_named_skill_is_sent_with_the_text() {
+    use koda_client::protocol::turn::SkillInput;
+    let server = model(vec![text("Checked."), text("Deployed.")]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let skills = dir.path().join("project/.koda/skills");
+    for (name, extra, body) in [
+        ("checklist", "", "Run every test before you answer."),
+        ("deploy", "", "Deploy with the blue-green script."),
+        (
+            "internal",
+            "user_invocable: false\n",
+            "Only the model loads this.",
+        ),
+    ] {
+        std::fs::create_dir_all(skills.join(name)).unwrap();
+        std::fs::write(
+            skills.join(name).join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {name}\n{extra}---\n{body}\n"),
+        )
+        .unwrap();
+    }
+    let mut koda = Koda::start_in(config(&server), dir).await;
+
+    let typed = "use $checklist and $internal on $nothing, keep $PATH";
+    koda.turn(typed).await;
+    let messages = koda.until("turn/completed").await;
+    let Item::UserMessage { text, .. } = completed(&messages)[0] else {
+        panic!("no user message first");
+    };
+    assert_eq!(text, typed, "the item keeps the text as typed");
+    let sent = chat_requests(&server).await[0]["messages"].to_string();
+    assert!(
+        sent.contains("<skill>\\n<name>checklist</name>\\n<path>"),
+        "{sent}"
+    );
+    assert!(sent.contains("Run every test before you answer."), "{sent}");
+    assert!(
+        !sent.contains("Only the model loads this."),
+        "model-only: {sent}"
+    );
+    assert_eq!(sent.matches("<skill>").count(), 1, "{sent}");
+
+    // Picked by a client, with no `$name` in the text.
+    koda.client
+        .request::<methods::TurnStart>(TurnStartParams {
+            session_id: koda.session.clone(),
+            input: "ship it".to_string(),
+            images: Vec::new(),
+            mentions: Vec::new(),
+            skills: vec![SkillInput {
+                name: "deploy".into(),
+                path: None,
+            }],
+            client_message_id: None,
+            mode: None,
+        })
+        .await
+        .unwrap();
+    koda.until("turn/completed").await;
+    let sent = chat_requests(&server).await[1]["messages"].to_string();
+    assert!(sent.contains("<name>deploy</name>"), "{sent}");
+    assert!(
+        sent.contains("Deploy with the blue-green script."),
+        "{sent}"
+    );
     koda.client.shutdown().await;
 }
 
@@ -971,6 +1048,7 @@ async fn a_resumed_session_keeps_its_history() {
             input: "Remember 42".to_string(),
             images: Vec::new(),
             mentions: Vec::new(),
+            skills: Vec::new(),
             client_message_id: None,
             mode: None,
         })

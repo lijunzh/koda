@@ -267,6 +267,7 @@ impl TuiContext {
                         .into_iter()
                         .map(|path| koda_client::protocol::turn::Mention { path })
                         .collect(),
+                    skills: Vec::new(),
                     client_message_id: None,
                     mode: None,
                 })

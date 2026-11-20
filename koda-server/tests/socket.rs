@@ -727,6 +727,7 @@ async fn a_client_runs_a_turn_over_the_socket() {
             input: "write it".into(),
             images: Vec::new(),
             mentions: Vec::new(),
+            skills: Vec::new(),
             client_message_id: None,
             mode: None,
         })
