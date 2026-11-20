@@ -3242,7 +3242,7 @@ async fn a_goal_runs_turn_after_turn_until_complete() {
 #[tokio::test(flavor = "multi_thread")]
 async fn esc_holds_the_goal_until_the_next_message() {
     let server = scripted_model(vec![
-        text_reply("Working on it.").set_delay(Duration::from_secs(3)),
+        text_reply("Working on it.").set_delay(Duration::from_secs(10)),
         text_reply("Noted."),
         tool_calls(&[("UpdateGoal", json!({"status": "complete"}))]),
         text_reply("All done."),
@@ -3254,6 +3254,9 @@ async fn esc_holds_the_goal_until_the_next_message() {
     tui.submit("/goal Keep the docs current");
     tui.wait_for_screen("Goal set: Keep the docs current");
     wait_for_model_call(&server, 1).await;
+    // On a slow machine the model can have the call before the TUI shows
+    // the goal's turn running, and Esc at idle stops nothing.
+    tui.wait_for_screen(BUSY_PROMPT);
     tui.stop_turn(ESC);
     tokio::time::sleep(Duration::from_millis(800)).await;
     assert_eq!(
