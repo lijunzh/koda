@@ -572,6 +572,27 @@ impl EventProjector {
                     },
                 )));
             }
+            EngineEvent::BackgroundExited { exits } => {
+                use koda_protocol::background::{
+                    BackgroundTerminalExit, BackgroundTerminalsExitedNotification,
+                };
+                out.push(notification(
+                    ServerNotification::SessionBackgroundTerminalsExited(
+                        BackgroundTerminalsExitedNotification {
+                            session_id: self.session_id.clone(),
+                            turn_id: self.turn(),
+                            data: exits
+                                .into_iter()
+                                .map(|(pid, command, exit_code)| BackgroundTerminalExit {
+                                    process_id: pid.to_string(),
+                                    command,
+                                    exit_code,
+                                })
+                                .collect(),
+                        },
+                    ),
+                ));
+            }
             EngineEvent::GoalJudged { verdict, reason } => {
                 use koda_core::goal::GoalVerdict;
                 use koda_protocol::goal::GoalVerdict as Wire;

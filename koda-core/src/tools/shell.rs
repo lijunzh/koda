@@ -779,10 +779,19 @@ fn spawn_background(
         .ok_or_else(|| anyhow::anyhow!("Spawned process has no PID (already exited)"))?;
 
     bg.insert(pid, command.to_string(), child, caller_spawner);
+    bg.set_log(pid, log_path.clone());
     if let Some(socket) = serve {
         bg.set_loopback_socket(pid, socket);
     }
     let log = log_path.display();
+    // The session tells the model when its own commands exit; a
+    // sub-agent's are stopped when it ends.
+    let told = if caller_spawner.is_none() {
+        "You'll be told when it exits, with its exit code and last lines: don't poll it to \
+         wait for it.\n"
+    } else {
+        ""
+    };
     if let Some((controller, log_file)) = controller {
         let terminal = Arc::new(
             Terminal::start(controller, log_file)
@@ -795,7 +804,7 @@ fn spawn_background(
                  Command: {command}\n  Output:  {log} (everything it printed)\n\
                  Type into it with WriteStdin{{pid: {pid}, chars: \"...\"}}: end a line with \
                  \"\\n\", and \"\\u0003\" is Ctrl+C. WriteStdin with no chars waits for more \
-                 output.\nTo stop:  Bash{{command: \"kill {pid}\"}}\n\
+                 output.\n{told}To stop:  Bash{{command: \"kill {pid}\"}}\n\
                  Note: process will be stopped automatically when the session ends."
             ),
             Some((pid, terminal)),
@@ -805,7 +814,7 @@ fn spawn_background(
         format!(
             "Background process started.\n  PID:     {pid}\n  Command: {command}\n  \
          Output:  {log} (stdout and stderr; read it with Read, or Bash{{command: \"tail -50 {log}\"}})\n\
-         Still running?  Bash{{command: \"kill -0 {pid}\"}}\n\
+         {told}Still running?  Bash{{command: \"kill -0 {pid}\"}}\n\
          To stop:  Bash{{command: \"kill {pid}\"}}\n\
          Send either on its own, not chained with other commands, and Koda \
          checks or stops the process itself.\n\

@@ -109,6 +109,11 @@ unknown key in `-c` stops the run instead.
 # that reads the conversation, as in Claude Code. Unset: "self".
 # goal_judge = "evaluator"
 
+# Minutes a goal waits on running background commands before Koda checks in
+# on them (later check-ins wait twice as long, up to four times this). 0
+# turns check-ins off. Unset: 30, as Claude Code's.
+# goal_checkin_minutes = 60
+
 # The model /review runs on, as Codex's review_model. Unset: the
 # session's own model.
 # review_model = "claude-haiku-5-5"

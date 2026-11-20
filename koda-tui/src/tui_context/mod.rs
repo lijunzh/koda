@@ -770,7 +770,7 @@ impl TuiContext {
                     if self.note_main_session(&message) {
                         continue;
                     }
-                    self.note_goal(&message);
+                    self.note_session(&message);
                     // A turn the host started by itself, on the session's
                     // goal: follow it as one of ours.
                     if let koda_client::events::Outgoing::Notification(

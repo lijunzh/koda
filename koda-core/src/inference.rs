@@ -1429,6 +1429,22 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
             db.insert_message(session_id, &Role::User, Some(&notice), None, None, None)
                 .await?;
         }
+        // Background commands that exited since the last step, as Claude
+        // Code tells Claude: the model needn't poll for them. An idle
+        // session starts a turn for them (the host), whose first step this
+        // is.
+        let exits = tools.bg_registry.take_exits();
+        if !exits.is_empty() {
+            let notice = crate::tools::bg_process::exit_notice(&exits);
+            db.insert_message(session_id, &Role::User, Some(&notice), None, None, None)
+                .await?;
+            sink.emit(EngineEvent::BackgroundExited {
+                exits: exits
+                    .into_iter()
+                    .map(|exit| (exit.pid, exit.command, exit.code))
+                    .collect(),
+            });
+        }
         let next_texts = cmd_rx.take_steers();
         if !next_texts.is_empty() {
             let combined = next_texts.join("\n\n");
@@ -1976,8 +1992,11 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
 
             // A goal under the evaluator is judged now, as Claude Code's
             // Stop hook judges one: the turn's own request, its last reply
-            // included, then the question.
+            // included, then the question. Not while a background command
+            // runs, as Claude Code waits for background work: its exit
+            // starts a turn, judged when it ends.
             if config.goals
+                && !tools.bg_registry.any_running()
                 && config.goal_judge == koda_config::GoalJudge::Evaluator
                 && mode != crate::trust::TrustMode::Plan
                 && usage.stop_reason != "max_tokens"

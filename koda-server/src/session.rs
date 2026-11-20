@@ -420,6 +420,7 @@ pub(crate) async fn open(
             strikes: crate::goal::Strikes::default(),
             held: false,
             check: None,
+            checkin: crate::goal::CheckIn::default(),
         },
         restored_usage,
     })
@@ -458,6 +459,8 @@ pub(crate) struct SessionTask {
     /// What the goal evaluator said remains after the last turn, for the
     /// next turn on the goal.
     check: Option<String>,
+    /// The goal waiting on background commands, and when to check in.
+    checkin: crate::goal::CheckIn,
 }
 
 impl SessionTask {
@@ -477,10 +480,25 @@ impl SessionTask {
         loop {
             let command = match self.waiting.take() {
                 Some(command) => command,
-                None => match self.commands.recv().await {
-                    Some(command) => command,
-                    None => return,
-                },
+                None => {
+                    // While the model's background commands run, look in on
+                    // them: an exit starts a turn that tells the model.
+                    let watching = self.background().any_running() || self.background().has_exits();
+                    tokio::select! {
+                        command = self.commands.recv() => match command {
+                            Some(command) => command,
+                            None => return,
+                        },
+                        () = tokio::time::sleep(WATCH_EVERY), if watching => {
+                            if let Some(next) = self.wake().await
+                                && !self.follow(next).await
+                            {
+                                return;
+                            }
+                            continue;
+                        }
+                    }
+                }
             };
             match command {
                 SessionCommand::StartTurn { params, reply } => {
@@ -574,48 +592,105 @@ impl SessionTask {
         set.goal.status == koda_core::goal::GoalStatus::Active
     }
 
-    /// Start a turn on the session's goal, if it is active, nothing waits
-    /// and the user didn't just interrupt: Codex's continuation when a
-    /// thread goes idle.
-    async fn continue_goal(&mut self) -> Option<Next> {
-        if !self.config.goals || self.held || self.session.mode == koda_core::trust::TrustMode::Plan
-        {
-            return None;
-        }
-        // A client's command goes first; with the host gone, nothing starts.
+    /// The model's background commands.
+    fn background(&self) -> &koda_core::tools::bg_process::BgRegistry {
+        &self.session.agent.tools.bg_registry
+    }
+
+    /// A pending client command, read ahead so it goes first; `false` when
+    /// the host is gone.
+    fn peek_command(&mut self) -> bool {
         if self.waiting.is_none() {
             match self.commands.try_recv() {
                 Ok(command) => self.waiting = Some(command),
-                Err(mpsc::error::TryRecvError::Disconnected) => return None,
+                Err(mpsc::error::TryRecvError::Disconnected) => return false,
                 Err(mpsc::error::TryRecvError::Empty) => {}
             }
         }
-        if self.waiting.is_some() {
+        true
+    }
+
+    /// While idle: a turn that tells the model its background commands
+    /// exited, as Claude Code starts one when a background task finishes;
+    /// or, on a goal they've kept waiting, a check-in on them.
+    async fn wake(&mut self) -> Option<Next> {
+        if !self.peek_command() || self.waiting.is_some() {
             return None;
         }
-        let goal = match self.session.db.get_goal(&self.session.id).await {
-            Ok(goal) => goal?,
+        if self.background().has_exits() {
+            let turn_id = uuid::Uuid::new_v4().to_string();
+            return Some(self.run_turn(turn_id, Work::Wake).await);
+        }
+        self.check_in().await
+    }
+
+    /// Check in on background commands that have kept the goal waiting
+    /// past its check-in time, as Claude Code does: the goal's turn, with
+    /// the running commands listed first.
+    async fn check_in(&mut self) -> Option<Next> {
+        if !self.goal_may_run() {
+            return None;
+        }
+        let interval = self.config.goal_checkin?;
+        let waited = self.checkin.due(interval)?;
+        let goal = self.active_goal().await?;
+        let running: Vec<_> = self
+            .background()
+            .snapshot()
+            .into_iter()
+            .filter(|process| {
+                process.spawner.is_none()
+                    && process.status == koda_core::tools::bg_process::BgProcessStatus::Running
+            })
+            .collect();
+        if running.is_empty() {
+            return None;
+        }
+        let last = self.checkin.checked_in(interval);
+        let message = format!(
+            "{}\n\n{}",
+            crate::goal::checkin_message(&running, waited, last),
+            self.continuation(&goal)
+        );
+        self.start_goal_turn(&message).await
+    }
+
+    /// Whether Koda may start a turn on the goal by itself now.
+    fn goal_may_run(&self) -> bool {
+        self.config.goals && !self.held && self.session.mode != koda_core::trust::TrustMode::Plan
+    }
+
+    /// The session's goal, if it is active.
+    async fn active_goal(&self) -> Option<koda_core::goal::Goal> {
+        match self.session.db.get_goal(&self.session.id).await {
+            Ok(Some(goal)) if goal.status == koda_core::goal::GoalStatus::Active => Some(goal),
+            Ok(_) => None,
             Err(e) => {
                 tracing::warn!("couldn't read the session's goal: {e:#}");
-                return None;
+                None
             }
-        };
-        if goal.status != koda_core::goal::GoalStatus::Active {
-            return None;
         }
-        let message = match self.config.goal_judge {
-            koda_config::GoalJudge::Model => koda_core::goal::continuation_message(&goal),
+    }
+
+    /// What starts a turn Koda runs on the goal by itself, by its judge.
+    fn continuation(&self, goal: &koda_core::goal::Goal) -> String {
+        match self.config.goal_judge {
+            koda_config::GoalJudge::Model => koda_core::goal::continuation_message(goal),
             koda_config::GoalJudge::Evaluator => {
-                koda_core::goal::evaluated_continuation_message(&goal, self.check.as_deref())
+                koda_core::goal::evaluated_continuation_message(goal, self.check.as_deref())
             }
-        };
+        }
+    }
+
+    /// Save `message`, unseen by clients, and run the goal's turn on it.
+    async fn start_goal_turn(&mut self, message: &str) -> Option<Next> {
         if let Err(e) = self
             .session
             .db
             .insert_message(
                 &self.session.id,
                 &Role::User,
-                Some(&message),
+                Some(message),
                 None,
                 None,
                 None,
@@ -627,6 +702,27 @@ impl SessionTask {
         }
         let turn_id = uuid::Uuid::new_v4().to_string();
         Some(self.run_turn(turn_id, Work::Goal).await)
+    }
+
+    /// Start a turn on the session's goal, if it is active, nothing waits
+    /// and the user didn't just interrupt: Codex's continuation when a
+    /// thread goes idle.
+    async fn continue_goal(&mut self) -> Option<Next> {
+        // A client's command goes first; with the host gone, nothing starts.
+        if !self.goal_may_run() || !self.peek_command() || self.waiting.is_some() {
+            return None;
+        }
+        let goal = self.active_goal().await?;
+        // A background command still running holds the goal, as Claude
+        // Code's waits for background work: its exit starts a turn, and the
+        // goal goes on after it. A check-in catches one that hangs.
+        if self.background().any_running() {
+            self.checkin.wait();
+            return None;
+        }
+        self.checkin.done_waiting();
+        let message = self.continuation(&goal);
+        self.start_goal_turn(&message).await
     }
 
     /// Run the compactions that turns ended asking for. Returns whether the
@@ -853,6 +949,8 @@ impl SessionTask {
         let steerable = !matches!(work, Work::Compact);
         // The goal as the turn starts, whose turns are counted toward it.
         let automatic = matches!(work, Work::Goal);
+        // Only a turn the user started lifts an interrupt's hold on the goal.
+        let users = matches!(work, Work::Prompt(_));
         let goal_before = if steerable && self.config.goals {
             self.session
                 .db
@@ -890,6 +988,7 @@ impl SessionTask {
             strikes,
             held,
             check,
+            checkin,
             ..
         } = self;
         // For `session/name/set` during the turn, which holds the session.
@@ -899,7 +998,7 @@ impl SessionTask {
             let mut turn: std::pin::Pin<
                 Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>,
             > = match work {
-                Work::Prompt(_) | Work::Goal => {
+                Work::Prompt(_) | Work::Goal | Work::Wake => {
                     let images = match work {
                         Work::Prompt(images) => images,
                         _ => None,
@@ -1083,8 +1182,14 @@ impl SessionTask {
             }
         }
         // An interrupt hands the session back to the user: the goal stays
-        // as it is, and goes on after the next turn they start.
-        *held = !interrupts.is_empty();
+        // as it is, and goes on after the next turn they start. A turn Koda
+        // started for a background exit leaves the hold as it was.
+        if !interrupts.is_empty() {
+            *held = true;
+        } else if users {
+            *held = false;
+            checkin.user_turn();
+        }
         for reply in interrupts {
             let _ = reply.send(to_json(TurnInterruptResponse {}));
         }
@@ -1108,9 +1213,15 @@ enum Work {
     Prompt(Option<Vec<ImageData>>),
     /// Go on with the session's goal, as the message just saved says.
     Goal,
+    /// Tell the model background commands it started have exited: the
+    /// turn's first step does.
+    Wake,
     /// Compact the history (`session/compact/start`).
     Compact,
 }
+
+/// How often an idle session looks in on its running background commands.
+const WATCH_EVERY: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// What the task does once a turn has ended.
 enum Next {

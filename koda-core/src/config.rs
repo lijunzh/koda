@@ -256,6 +256,10 @@ pub struct KodaConfig {
     /// Who decides a goal is achieved (`goal_judge`): the working model, as
     /// in Codex, unless set to Claude Code's evaluator.
     pub goal_judge: koda_config::GoalJudge,
+    /// How long a goal waits on running background commands before Koda
+    /// checks in on them (`goal_checkin_minutes`, 30 by default, as Claude
+    /// Code's); `None` turns check-ins off.
+    pub goal_checkin: Option<std::time::Duration>,
     /// Instructions added to the end of the system prompt
     /// (`developer_instructions`), as Codex's developer instructions.
     pub developer_instructions: Option<String>,
@@ -445,6 +449,7 @@ impl KodaConfig {
             commit_attribution: true,
             goals: true,
             goal_judge: koda_config::GoalJudge::Model,
+            goal_checkin: Some(std::time::Duration::from_secs(30 * 60)),
             developer_instructions: None,
             turn_token_budget: None,
             input_modalities: None,
@@ -746,6 +751,7 @@ impl KodaConfig {
             commit_attribution: true,
             goals: true,
             goal_judge: koda_config::GoalJudge::Model,
+            goal_checkin: Some(std::time::Duration::from_secs(30 * 60)),
             developer_instructions: None,
             turn_token_budget: None,
             input_modalities: None,

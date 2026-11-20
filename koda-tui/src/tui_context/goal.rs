@@ -179,6 +179,15 @@ fn duration(seconds: i64) -> String {
     }
 }
 
+/// `Background command exited (code 0): cargo test`.
+fn exit_line(exit: &koda_client::protocol::background::BackgroundTerminalExit) -> String {
+    let how = exit.exit_code.map_or_else(
+        || "stopped by a signal".to_string(),
+        |code| format!("code {code}"),
+    );
+    format!("Background command exited ({how}): {}", exit.command)
+}
+
 /// What the goal evaluator's verdict says (`goal_judge = "evaluator"`).
 fn verdict(verdict: GoalVerdict, reason: Option<&str>) -> String {
     let what = match verdict {
@@ -228,8 +237,9 @@ fn change(before: Option<&Goal>, now: &Goal) -> Option<String> {
 }
 
 impl TuiContext {
-    /// Say what changed when the host reports the session's goal changed.
-    pub(crate) fn note_goal(&mut self, message: &Outgoing) {
+    /// Say what changed when the host reports the session's goal changed,
+    /// or that background commands exited (the model is being told).
+    pub(crate) fn note_session(&mut self, message: &Outgoing) {
         let Outgoing::Notification(notification) = message else {
             return;
         };
@@ -250,6 +260,13 @@ impl TuiContext {
                 match judged.verdict {
                     GoalVerdict::NotYet => tui_output::dim_msg(&mut self.scroll_buffer, line),
                     _ => tui_output::ok_msg(&mut self.scroll_buffer, line),
+                }
+            }
+            ServerNotification::SessionBackgroundTerminalsExited(exited)
+                if exited.session_id == self.session.id =>
+            {
+                for exit in &exited.data {
+                    tui_output::dim_msg(&mut self.scroll_buffer, exit_line(exit));
                 }
             }
             ServerNotification::SessionGoalCleared(cleared)

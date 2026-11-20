@@ -192,6 +192,15 @@ running turn. A `/goal <objective>` replaces any goal the session has; in Plan
 mode, no turn starts by itself. `goals = false` in `config.toml` turns goals
 off.
 
+**A goal waits for background commands**, as Claude Code's does: while one the
+model started is running, Koda starts no turn on the goal (and runs no
+evaluator check); its exit starts the next turn. If they keep the goal waiting
+for 30 minutes, Koda checks in: a turn that lists them and asks the model to
+keep waiting if they're progressing, or fix or stop one that's stuck. Later
+check-ins wait twice as long, up to 2 hours, and there are at most three until
+your next message. `goal_checkin_minutes` changes the 30 (`0` turns check-ins
+off).
+
 ### Who decides it's done
 
 By default the working model does, after the completion audit, as in Codex.
@@ -276,6 +285,13 @@ Codex. It works during a turn too. `Esc` and `Ctrl+C` stop the turn and its
 sub-agents but leave background processes running; they also stop when Koda
 exits. To stop just one, ask: "stop the dev server". Koda stops a background
 process it started itself, without asking in Auto mode.
+
+**When one exits by itself, Koda tells the model**, as Claude Code does: its
+command, exit code, run time and last lines, with a `Background command exited`
+line on screen. If the session is idle, Koda starts a turn for it, so "run the
+tests in the background and tell me" works without another prompt; during a
+turn, the model hears at its next step. A process you or Koda stopped isn't
+reported, and a dev server that keeps running never wakes anything.
 
 The **activity overlay** just above the status bar shows, in real time, the
 sub-agents of the current turn and every background process: name, the last

@@ -186,6 +186,32 @@
       ],
       "type": "object"
     },
+    "BackgroundTerminalExit": {
+      "description": "A background process that exited by itself.",
+      "properties": {
+        "command": {
+          "description": "The command the model ran.",
+          "type": "string"
+        },
+        "exitCode": {
+          "description": "Its exit code; absent when a signal ended it.",
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "processId": {
+          "description": "Its id, as `list` gave it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "processId",
+        "command"
+      ],
+      "type": "object"
+    },
     "BackgroundTerminalsCleanParams": {
       "additionalProperties": false,
       "description": "`session/backgroundTerminals/clean`: stop them all.",
@@ -212,6 +238,32 @@
       },
       "required": [
         "terminated"
+      ],
+      "type": "object"
+    },
+    "BackgroundTerminalsExitedNotification": {
+      "description": "`session/backgroundTerminals/exited`: background processes the model\nstarted have exited by themselves, and the model is being told, as\nClaude Code tells Claude when a background task finishes. Its\n`turnId` is the turn that tells it: a running one, or one Koda starts\nfor it when the session is idle. A process a client or Koda stopped\nisn't reported.",
+      "properties": {
+        "data": {
+          "description": "The processes.",
+          "items": {
+            "$ref": "#/$defs/BackgroundTerminalExit"
+          },
+          "type": "array"
+        },
+        "sessionId": {
+          "description": "The session.",
+          "type": "string"
+        },
+        "turnId": {
+          "description": "The turn that tells the model.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "turnId",
+        "data"
       ],
       "type": "object"
     },
@@ -4807,6 +4859,11 @@
     "serverRequest/resolved": {
       "params": {
         "$ref": "#/$defs/ServerRequestResolvedNotification"
+      }
+    },
+    "session/backgroundTerminals/exited": {
+      "params": {
+        "$ref": "#/$defs/BackgroundTerminalsExitedNotification"
       }
     },
     "session/deleted": {

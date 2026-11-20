@@ -120,6 +120,24 @@ turn ends, or at once after a `session/goal/set` (such as `status: "active"`).
 `turn/start` during one of Koda's own turns is refused as during any turn: send
 `turn/steer` instead.
 
+## Background commands
+
+A command the model starts with `Bash` `background: true` outlives its turn;
+`session/backgroundTerminals/list`, `terminate` and `clean` list and stop them.
+When one exits by itself, Koda tells the model, as Claude Code does: its
+command, exit code, run time and last lines, at the running turn's next step,
+or in a turn Koda starts for it when the session is idle (`turn/started` with
+no `turn/start` before it). `session/backgroundTerminals/exited` reports it,
+with the `turnId` of the turn that tells the model:
+
+```json
+{"jsonrpc":"2.0","method":"session/backgroundTerminals/exited","params":{"sessionId":"a3f8bc12-…","turnId":"7c1e…","data":[{"processId":"5821","command":"cargo test","exitCode":0}]}}
+```
+
+A process a client or Koda stopped isn't reported. While one the model started
+is running, Koda starts no turn on the session's goal by itself; its exit
+does, and a check-in follows if the goal waits past `goal_checkin_minutes`.
+
 ## Errors
 
 | The client sends | Koda answers |

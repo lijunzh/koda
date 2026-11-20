@@ -3242,7 +3242,7 @@ async fn a_goal_runs_turn_after_turn_until_complete() {
 #[tokio::test(flavor = "multi_thread")]
 async fn esc_holds_the_goal_until_the_next_message() {
     let server = scripted_model(vec![
-        text_reply("Working on it.").set_delay(Duration::from_secs(3)),
+        text_reply("Working on it.").set_delay(Duration::from_secs(10)),
         text_reply("Noted."),
         tool_calls(&[("UpdateGoal", json!({"status": "complete"}))]),
         text_reply("All done."),
@@ -3254,6 +3254,9 @@ async fn esc_holds_the_goal_until_the_next_message() {
     tui.submit("/goal Keep the docs current");
     tui.wait_for_screen("Goal set: Keep the docs current");
     wait_for_model_call(&server, 1).await;
+    // On a slow machine the model can have the call before the TUI shows
+    // the goal's turn running, and Esc at idle stops nothing.
+    tui.wait_for_screen(BUSY_PROMPT);
     tui.stop_turn(ESC);
     tokio::time::sleep(Duration::from_millis(800)).await;
     assert_eq!(
@@ -3299,6 +3302,30 @@ async fn the_evaluators_verdicts_show_until_the_goal_is_met() {
         "the check's answer isn't shown as a reply: {}",
         tui.screen()
     );
+}
+
+/// A background command that exits starts a turn by itself, as Claude
+/// Code's do, and the TUI shows the exit and the turn.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_background_command_that_exits_starts_a_turn() {
+    let server = scripted_model(vec![
+        tool_calls(&[(
+            "Bash",
+            json!({"command": "sleep 0.5; echo built", "background": true}),
+        )]),
+        text_reply("Started the build."),
+        text_reply("The build finished."),
+    ])
+    .await;
+    let home = home();
+    let mut tui = Tui::start_with_args(home.path(), &server.url(), &["--mode", "auto"], IDLE_HINT);
+
+    tui.submit("build it in the background");
+    tui.wait_for_screen("Started the build.");
+    tui.wait_for_screen("Background command exited (code 0): sleep 0.5; echo built");
+    tui.wait_for_screen("The build finished.");
+    tui.wait_for_screen_without(BUSY_PROMPT);
+    assert_eq!(model_calls(&server).await.len(), 3);
 }
 
 /// `/goal pause`, typed while one of a goal's turns runs, stops the goal once
