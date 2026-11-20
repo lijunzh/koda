@@ -138,6 +138,15 @@ A process a client or Koda stopped isn't reported. While one the model started
 is running, Koda starts no turn on the session's goal by itself; its exit
 does, and a check-in follows if the goal waits past `goal_checkin_minutes`.
 
+`list`'s `waiting` says whether Koda will start a turn by itself for the
+model's commands: one is running, or has ended and the model hasn't been told
+yet. `koda exec` waits while it's true, as `claude -p` waits for background
+work. In a session started with `approvalPolicy: never`, which nobody attends,
+background commands have a time limit, as Claude Code's do in an unattended
+session: `background_time_limit_minutes` (10 by default), or the `timeout`
+the model passes, up to 2 hours. Koda stops a command at its limit and tells
+the model, which can start it again with a longer `timeout`.
+
 ## Errors
 
 | The client sends | Koda answers |

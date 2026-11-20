@@ -1124,6 +1124,10 @@ async fn a_background_command_that_exits_wakes_the_session() {
         result.contains("You'll be told when it exits"),
         "no polling: {result}"
     );
+    assert!(
+        !result.contains("Time limit"),
+        "a session someone attends has none: {result}"
+    );
     let told = requests[2]["messages"].to_string();
     assert!(told.contains("<background_command_exited"), "{told}");
     assert!(told.contains("Result: exit code 1"), "{told}");

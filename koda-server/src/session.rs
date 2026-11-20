@@ -267,6 +267,15 @@ pub(crate) async fn open(
         .map_err(|e| internal(format!("couldn't build the agent: {e:#}")))?;
     crate::builtin_skills::inject_builtin_skills(&mut agent);
     agent.rebuild_system_prompt(&config);
+    // Nobody attends the session: its background commands get a time
+    // limit, as Claude Code's do in `claude -p`, so a client that waits for
+    // them (`koda exec`) isn't held forever by a server left running.
+    if !interactive {
+        agent
+            .tools
+            .bg_registry
+            .set_time_limit(config.background_time_limit);
+    }
     let agent = Arc::new(agent);
     let history = crate::history::HistoryWriter::spawn(db.clone(), id.clone());
     let mut session = KodaSession::new(id.clone(), agent, db, &config, mode).await;

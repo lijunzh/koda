@@ -114,6 +114,11 @@ unknown key in `-c` stops the run instead.
 # turns check-ins off. Unset: 30, as Claude Code's.
 # goal_checkin_minutes = 60
 
+# Minutes a background command may run in a session nobody attends
+# (koda exec), as Claude Code's time limit in claude -p; the model's
+# timeout can ask for up to 2 hours. 0 turns the limit off. Unset: 10.
+# background_time_limit_minutes = 30
+
 # The model /review runs on, as Codex's review_model. Unset: the
 # session's own model.
 # review_model = "claude-haiku-5-5"

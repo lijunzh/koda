@@ -1,4 +1,6 @@
-//! One-shot runs: one prompt, one turn, then exit: `koda exec`.
+//! One-shot runs: one prompt, one turn, then exit: `koda exec`. While the
+//! model's background commands run, the run stays open for the turns the
+//! session starts when they end, as `claude -p` does.
 //!
 //! The run goes through the client API, as every Koda front end will: it
 //! starts Koda's host in process, opens a session whose requests Koda
@@ -21,6 +23,7 @@
 //!   `--json-deltas`.
 
 use koda_client::events::Outgoing;
+use koda_client::protocol::background::BackgroundTerminalsListParams;
 use koda_client::protocol::initialize::ClientInfo;
 use koda_client::protocol::item::{
     FileUpdateChange, Item, OutputStream, PatchChangeKind, ToolCallStatus, ToolEffect,
@@ -210,24 +213,64 @@ pub async fn run_headless(
         .turn;
     let requests = client.request_handle();
     let mut interrupt = None;
+    // The turn a Ctrl+C stops: this run's, then each one the session starts
+    // for its background commands. `None` while waiting between them.
+    let mut running = Some(turn.id.clone());
+    let mut last: Option<Turn> = None;
     let completed: Turn = loop {
         tokio::select! {
             message = client.next_event() => match message {
                 Some(message) => {
-                    if let Some(turn) = view.protocol(message) {
-                        break turn;
+                    if let Outgoing::Notification(ServerNotification::TurnStarted(started)) =
+                        &message
+                    {
+                        running = Some(started.turn.id.clone());
                     }
+                    let Some(done) = view.protocol(message) else {
+                        continue;
+                    };
+                    running = None;
+                    // As `claude -p` does, the run stays open while the
+                    // model's background commands run: each exit, or its
+                    // time limit, starts a turn that tells the model.
+                    if done.status != TurnStatus::Completed || interrupt.is_some() {
+                        break done;
+                    }
+                    let listed = client
+                        .request::<methods::SessionBackgroundTerminalsList>(
+                            BackgroundTerminalsListParams {
+                                session_id: session_id.clone(),
+                            },
+                        )
+                        .await?;
+                    if !listed.waiting {
+                        break done;
+                    }
+                    if let Output::Text = run.output {
+                        let commands: Vec<&str> =
+                            listed.data.iter().map(|t| t.command.as_str()).collect();
+                        eprintln!(
+                            "\x1b[2mWaiting for background commands to finish: {}\x1b[0m",
+                            commands.join(", ")
+                        );
+                    }
+                    last = Some(done);
                 }
                 None => anyhow::bail!("Koda's host stopped during the turn"),
             },
             () = ctrl_c.recv(), if interrupt.is_none() => {
                 eprintln!("\n\x1b[33m\u{26a0} Interrupted\x1b[0m");
+                // Waiting between turns: stop waiting. The background
+                // commands stop with the session.
+                let Some(turn_id) = running.clone() else {
+                    break last.take().context("no turn to end the run with")?;
+                };
                 // Answered once the turn has stopped. The turn bounds its
                 // own wind-down, so this can't hang the run.
                 let requests = requests.clone();
                 let params = TurnInterruptParams {
                     session_id: session_id.clone(),
-                    turn_id: turn.id.clone(),
+                    turn_id,
                 };
                 interrupt = Some(tokio::spawn(async move {
                     requests.request::<methods::TurnInterrupt>(params).await
