@@ -127,6 +127,7 @@ server_notifications! {
     /// A session's goal was removed.
     SessionGoalCleared => "session/goal/cleared" (crate::goal::SessionGoalClearedNotification),
     SessionGoalJudged => "session/goal/judged" (crate::goal::SessionGoalJudgedNotification),
+    SessionGoalHeld => "session/goal/held" (crate::goal::SessionGoalHeldNotification),
     SessionBackgroundTerminalsExited => "session/backgroundTerminals/exited" (crate::background::BackgroundTerminalsExitedNotification),
     /// A session's MCP server started, failed or was stopped while starting.
     McpServerStatusUpdated => "mcpServer/startupStatus/updated" (crate::mcp::McpServerStatusUpdatedNotification),

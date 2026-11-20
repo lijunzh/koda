@@ -143,6 +143,10 @@ pub struct ConfigToml {
     /// check-ins off. 30 when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal_checkin_minutes: Option<u64>,
+    /// The most tokens any goal may use, and the budget of a goal set
+    /// without one, as Codex's `max_goal_token_budget`. Unset: no limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_goal_token_budget: Option<u64>,
     /// Minutes a background command may run in a session nobody attends
     /// (`koda exec`), as Claude Code's time limit for background commands
     /// in `claude -p`: the model's `timeout` asks for another, up to two

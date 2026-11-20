@@ -33,6 +33,11 @@ use crate::session::{internal, invalid};
 /// Turns in a row, of either kind, after which Codex blocks a goal.
 const STRIKES: u8 = 3;
 
+/// Goal turns in a row that call no tool before Koda stops starting them,
+/// as Claude Code overrides its goal's Stop hook after eight blocks with
+/// no tool call between them.
+pub(crate) const NO_TOOL_TURNS: u8 = 8;
+
 /// A goal as the protocol sends it.
 pub(crate) fn to_wire(goal: &Goal) -> wire::Goal {
     wire::Goal {
@@ -77,14 +82,19 @@ pub(crate) async fn set(
     db: &Database,
     session_id: &str,
     params: SessionGoalSetParams,
+    max_budget: Option<i64>,
 ) -> Result<GoalSet, ErrorObject> {
     let objective = params.objective.as_deref().map(str::trim);
     if let Some(objective) = objective {
         goals::validate_objective(objective).map_err(invalid)?;
     }
-    if let Some(budget) = params.token_budget {
-        goals::validate_budget(budget).map_err(invalid)?;
-    }
+    // Under `max_goal_token_budget`, as Codex's: a budget given (`null`
+    // included) is held to it.
+    let token_budget = params
+        .token_budget
+        .map(|budget| goals::budget_within(budget, max_budget))
+        .transpose()
+        .map_err(invalid)?;
     let status = params.status.map(from_wire);
     if status == Some(GoalStatus::BudgetLimited) {
         return Err(invalid(
@@ -104,7 +114,11 @@ pub(crate) async fn set(
                 session_id,
                 objective,
                 status.unwrap_or(GoalStatus::Active),
-                params.token_budget.flatten(),
+                match token_budget {
+                    Some(budget) => budget,
+                    // A new goal set without a budget gets the maximum.
+                    None => max_budget,
+                },
             )
             .await
             .map_err(stored)?;
@@ -117,7 +131,7 @@ pub(crate) async fn set(
     let update = GoalUpdate {
         objective: objective.map(str::to_string),
         status,
-        token_budget: params.token_budget,
+        token_budget,
         expected_goal_id: Some(existing.goal_id),
     };
     let goal = db
@@ -136,6 +150,8 @@ pub(crate) async fn set(
 pub(crate) struct TurnActivity {
     /// The model wrote text, thought aloud, or called a tool.
     pub active: bool,
+    /// The model called a tool.
+    pub tool_called: bool,
     /// A tool call succeeded.
     pub tool_succeeded: bool,
     /// A command (`Bash`) failed.
@@ -162,7 +178,10 @@ impl TurnActivity {
             {
                 self.active = true;
             }
-            EngineEvent::ToolCallStart { .. } => self.active = true,
+            EngineEvent::ToolCallStart { .. } => {
+                self.active = true;
+                self.tool_called = true;
+            }
             EngineEvent::ToolCallResult { name, outcome, .. } => {
                 self.active = true;
                 match outcome {
@@ -200,6 +219,8 @@ pub(crate) struct Strikes {
     empty: u8,
     /// Goal turns in a row with failed commands and no tool that worked.
     failed_commands: u8,
+    /// Koda's goal turns in a row that called no tool.
+    no_tools: u8,
 }
 
 impl Strikes {
@@ -224,7 +245,19 @@ impl Strikes {
         } else if turn.command_failed {
             self.failed_commands += 1;
         }
+        self.no_tools = if automatic && !turn.tool_called {
+            self.no_tools + 1
+        } else {
+            0
+        };
         self.empty >= STRIKES || self.failed_commands >= STRIKES
+    }
+
+    /// Whether Koda's goal turns have gone [`NO_TOOL_TURNS`] in a row
+    /// without a tool call, so it should stop starting them; the count
+    /// starts over.
+    pub(crate) fn take_stalled(&mut self) -> Option<u8> {
+        (self.no_tools >= NO_TOOL_TURNS).then(|| std::mem::take(&mut self.no_tools))
     }
 }
 
@@ -467,9 +500,11 @@ mod tests {
     #[tokio::test]
     async fn set_starts_a_goal_then_changes_it() {
         let (_dir, db, id) = db().await;
-        let err = set(&db, &id, params(None)).await.err().unwrap();
+        let err = set(&db, &id, params(None), None).await.err().unwrap();
         assert!(err.message.contains("no goal"), "{}", err.message);
-        let first = set(&db, &id, params(Some("  ship it  "))).await.unwrap();
+        let first = set(&db, &id, params(Some("  ship it  ")), None)
+            .await
+            .unwrap();
         assert_eq!(first.goal.objective, "ship it");
         assert_eq!(first.goal.status, GoalStatus::Active);
         assert!(!first.objective_changed);
@@ -481,13 +516,16 @@ mod tests {
                 token_budget: Some(Some(1_000)),
                 ..params(None)
             },
+            None,
         )
         .await
         .unwrap();
         assert_eq!(paused.goal.status, GoalStatus::Paused);
         assert_eq!(paused.goal.token_budget, Some(1_000));
         assert_eq!(paused.goal.goal_id, first.goal.goal_id);
-        let edited = set(&db, &id, params(Some("ship it twice"))).await.unwrap();
+        let edited = set(&db, &id, params(Some("ship it twice")), None)
+            .await
+            .unwrap();
         assert!(edited.objective_changed);
         assert_eq!(edited.goal.status, GoalStatus::Paused, "the status is kept");
         assert!(
@@ -497,10 +535,46 @@ mod tests {
                 SessionGoalSetParams {
                     status: Some(wire::GoalStatus::BudgetLimited),
                     ..params(None)
-                }
+                },
+                None,
             )
             .await
             .is_err()
+        );
+    }
+
+    /// `max_goal_token_budget`, as Codex's: a goal set without a budget gets
+    /// the maximum, asking for none gives the maximum, and more is refused.
+    #[tokio::test]
+    async fn the_maximum_budget_caps_every_goal() {
+        let (_dir, db, id) = db().await;
+        let max = Some(50_000);
+        let first = set(&db, &id, params(Some("ship it")), max).await.unwrap();
+        assert_eq!(first.goal.token_budget, Some(50_000), "the default");
+        let smaller = SessionGoalSetParams {
+            token_budget: Some(Some(10_000)),
+            ..params(None)
+        };
+        let set_smaller = set(&db, &id, smaller, max).await.unwrap();
+        assert_eq!(set_smaller.goal.token_budget, Some(10_000));
+        let off = SessionGoalSetParams {
+            token_budget: Some(None),
+            ..params(None)
+        };
+        let turned_off = set(&db, &id, off, max).await.unwrap();
+        assert_eq!(
+            turned_off.goal.token_budget,
+            Some(50_000),
+            "no budget is the max"
+        );
+        let over = SessionGoalSetParams {
+            token_budget: Some(Some(60_000)),
+            ..params(None)
+        };
+        let refused = set(&db, &id, over, max).await.err().unwrap();
+        assert!(
+            refused.message.contains("exceeds the maximum"),
+            "{refused:?}"
         );
     }
 
@@ -649,6 +723,34 @@ mod tests {
         assert!(strikes.count("g", true, &failing));
         // Another goal counts from zero.
         assert!(!strikes.count("h", true, &failing));
+    }
+
+    /// Claude Code's no-progress stop: eight of Koda's goal turns in a row
+    /// with no tool call put the goal on hold; a tool call or the user's
+    /// own turn starts the count over.
+    #[test]
+    fn goal_turns_with_no_tool_call_stall_after_eight() {
+        let talking = turn(true);
+        let working = TurnActivity {
+            tool_called: true,
+            ..turn(true)
+        };
+        let mut strikes = Strikes::default();
+        for _ in 0..7 {
+            strikes.count("g", true, &talking);
+            assert_eq!(strikes.take_stalled(), None);
+        }
+        strikes.count("g", true, &working);
+        for _ in 0..7 {
+            strikes.count("g", true, &talking);
+        }
+        strikes.count("g", false, &talking);
+        assert_eq!(strikes.take_stalled(), None, "the user's turn resets");
+        for _ in 0..NO_TOOL_TURNS {
+            strikes.count("g", true, &talking);
+        }
+        assert_eq!(strikes.take_stalled(), Some(NO_TOOL_TURNS));
+        assert_eq!(strikes.take_stalled(), None, "the count starts over");
     }
 
     #[test]

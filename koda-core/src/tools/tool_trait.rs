@@ -164,6 +164,9 @@ pub struct ToolExecCtx<'a> {
     /// Whether the model takes PDFs: Read returns a short PDF whole.
     pub takes_pdfs: bool,
 
+    /// The most tokens a goal may use (`max_goal_token_budget`).
+    pub max_goal_token_budget: Option<i64>,
+
     /// Optional engine sink + call-id pair for tools that stream
     /// progress events to the UI (e.g. `Bash` shell output,
     /// `TodoWrite` todo updates). `None` means "no streaming
@@ -447,6 +450,7 @@ impl<'a> ToolExecCtx<'a> {
             caps,
             takes_images: false,
             takes_pdfs: false,
+            max_goal_token_budget: None,
             sink: None,
             caller_spawner: None,
             can_ask: true,
@@ -597,6 +601,7 @@ mod tests {
             skill_registry: skills,
             takes_images: false,
             takes_pdfs: false,
+            max_goal_token_budget: None,
         }
     }
 

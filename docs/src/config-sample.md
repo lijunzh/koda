@@ -114,6 +114,10 @@ unknown key in `-c` stops the run instead.
 # turns check-ins off. Unset: 30, as Claude Code's.
 # goal_checkin_minutes = 60
 
+# The most tokens any goal may use, and the budget of a goal set without
+# one, as Codex's max_goal_token_budget. Unset: no limit.
+# max_goal_token_budget = 2000000
+
 # Minutes a background command may run in a session nobody attends
 # (koda exec), as Claude Code's time limit in claude -p; the model's
 # timeout can ask for up to 2 hours. 0 turns the limit off. Unset: 10.

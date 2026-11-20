@@ -159,6 +159,21 @@ pub enum GoalVerdict {
 }
 
 /// `session/goal/judged`: with `goal_judge = "evaluator"` (Claude Code's
+/// `session/goal/held`: Koda stopped starting turns on the goal, which
+/// stays set, after goal turns in a row that called no tool, as Claude
+/// Code stops a goal loop that answers without working. The user's next
+/// message, or `/goal resume`, goes on with it. Koda's own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionGoalHeldNotification {
+    /// The session.
+    pub session_id: String,
+    /// The turn after which it stopped.
+    pub turn_id: String,
+    /// How many goal turns in a row called no tool.
+    pub turns: u32,
+}
+
 /// way), the check after a turn on an active goal found it met, not yet
 /// met, or impossible.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

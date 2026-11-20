@@ -269,6 +269,16 @@ impl TuiContext {
                     tui_output::dim_msg(&mut self.scroll_buffer, exit_line(exit));
                 }
             }
+            ServerNotification::SessionGoalHeld(held) if held.session_id == self.session.id => {
+                tui_output::warn_msg(
+                    &mut self.scroll_buffer,
+                    format!(
+                        "Goal on hold: {} turns in a row called no tool. It goes on after your \
+                         next message, or /goal resume.",
+                        held.turns
+                    ),
+                );
+            }
             ServerNotification::SessionGoalCleared(cleared)
                 if cleared.session_id == self.session.id =>
             {

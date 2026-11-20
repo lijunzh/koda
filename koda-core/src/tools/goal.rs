@@ -123,9 +123,10 @@ impl Tool for CreateGoalTool {
                 None => return failed("token_budget must be an integer"),
             },
         };
-        if let Err(why) = goals::validate_budget(token_budget) {
-            return failed(why);
-        }
+        let token_budget = match goals::budget_within(token_budget, ctx.max_goal_token_budget) {
+            Ok(budget) => budget,
+            Err(why) => return failed(why),
+        };
         match db.create_goal(session_id, objective, token_budget).await {
             Ok(Some(goal)) => {
                 updated(ctx, &goal);

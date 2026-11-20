@@ -180,9 +180,15 @@ A goal stops when:
 - a turn fails, three of Koda's turns in a row do nothing, or three goal
   turns in a row have only failed commands, so a stuck goal doesn't loop.
 
-Nothing else stops it: a model that keeps working without ever marking the
-goal complete keeps going, as in Codex. Give the goal a budget to bound what it
-can spend.
+**It goes on hold** after eight of Koda's goal turns in a row that call no
+tool, as Claude Code stops a goal loop that only answers: the goal stays
+active, a warning says so, and Koda goes on with it after your next message or
+`/goal resume`.
+
+Otherwise a model that keeps working without ever marking the goal complete
+keeps going, as in Codex. Give the goal a budget to bound what it can spend:
+`/goal budget`, or `max_goal_token_budget` in `config.toml`, Codex's setting,
+which every goal set without a budget gets, and which no budget may pass.
 
 **Esc stops the turn, not the goal**, and hands the session back to you, as in
 Claude Code: the goal stays active, and Koda goes on with it after your next

@@ -588,6 +588,7 @@ impl SessionTask {
             &self.sink,
             request,
             reply,
+            self.config.max_goal_token_budget,
         )
         .await;
         let Some(set) = set else {
@@ -1265,7 +1266,7 @@ impl SessionTask {
                                 strikes.reset();
                             }
                             if let Some(set) =
-                                goal_request(&db, &session_id, sink, request, reply).await
+                                goal_request(&db, &session_id, sink, request, reply, config.max_goal_token_budget).await
                                 && set.objective_changed
                                 && set.goal.status == koda_core::goal::GoalStatus::Active
                             {
@@ -1330,6 +1331,18 @@ impl SessionTask {
                 Ok(Some(goal)) => sink.goal_updated(Some(turn_id.clone()), &goal),
                 Ok(None) => {}
                 Err(e) => tracing::warn!("couldn't count the turn toward the goal: {e:#}"),
+            }
+            // Turns that only answer, as Claude Code stops a goal loop that
+            // makes no tool call: the goal stays, and waits for the user.
+            if let Some(turns) = strikes.take_stalled() {
+                *held = true;
+                sink.notify(ServerNotification::SessionGoalHeld(
+                    koda_protocol::goal::SessionGoalHeldNotification {
+                        session_id: session_id.clone(),
+                        turn_id: turn_id.clone(),
+                        turns: u32::from(turns),
+                    },
+                ));
             }
         }
         // An interrupt hands the session back to the user: the goal stays
@@ -1811,6 +1824,7 @@ async fn goal_request(
     sink: &HostSink,
     request: GoalRequest,
     reply: oneshot::Sender<Answer>,
+    max_budget: Option<i64>,
 ) -> Option<crate::goal::GoalSet> {
     use koda_protocol::goal::{
         SessionGoalClearResponse, SessionGoalClearedNotification, SessionGoalGetResponse,
@@ -1851,19 +1865,21 @@ async fn goal_request(
             }
             None
         }
-        GoalRequest::Set(params) => match crate::goal::set(db, session_id, params).await {
-            Ok(set) => {
-                let _ = reply.send(to_json(SessionGoalSetResponse {
-                    goal: crate::goal::to_wire(&set.goal),
-                }));
-                sink.goal_updated(None, &set.goal);
-                Some(set)
+        GoalRequest::Set(params) => {
+            match crate::goal::set(db, session_id, params, max_budget).await {
+                Ok(set) => {
+                    let _ = reply.send(to_json(SessionGoalSetResponse {
+                        goal: crate::goal::to_wire(&set.goal),
+                    }));
+                    sink.goal_updated(None, &set.goal);
+                    Some(set)
+                }
+                Err(error) => {
+                    let _ = reply.send(Err(error));
+                    None
+                }
             }
-            Err(error) => {
-                let _ = reply.send(Err(error));
-                None
-            }
-        },
+        }
     }
 }
 
