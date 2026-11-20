@@ -31,7 +31,7 @@ use koda_protocol::session::{
     SessionSettingsUpdateResponse, SessionSettingsUpdatedNotification, SessionStartedNotification,
 };
 use koda_protocol::turn::{
-    LoopCapDecision, LoopCapResponse, Mention, Turn, TurnError, TurnInterruptParams,
+    LoopCapDecision, LoopCapResponse, Mention, SkillInput, Turn, TurnError, TurnInterruptParams,
     TurnInterruptResponse, TurnStartParams, TurnStartResponse, TurnStatus, TurnSteerParams,
     TurnSteerResponse,
 };
@@ -862,6 +862,7 @@ impl SessionTask {
             input,
             images,
             mentions,
+            skills,
             client_message_id,
             mode,
             ..
@@ -877,6 +878,7 @@ impl SessionTask {
         // Read tool's rules; the model gets them after the text, and the
         // item keeps the text as written.
         let message = self.with_mentions(&input, &mentions, &mut images).await;
+        let message = self.with_skills(message, &input, &skills);
         let images = (!images.is_empty()).then_some(images);
         if let Some(mode) = mode {
             self.session.mode = core_mode(mode);
@@ -951,6 +953,31 @@ impl SessionTask {
             Some(context) => format!("{input}\n\n{context}"),
             None => input.to_string(),
         }
+    }
+
+    /// `message` with the instructions of each skill the user named after it,
+    /// as Codex sends a `$name` skill: those picked (`skills`), then each
+    /// `$name` in `input` that names one. A model-only skill
+    /// (`user_invocable: false`) isn't the user's to load, and a `$name` that
+    /// names no skill stays text.
+    fn with_skills(&self, message: String, input: &str, picked: &[SkillInput]) -> String {
+        let registry = &self.session.agent.tools.skill_registry;
+        let mut names: Vec<&str> = picked.iter().map(|skill| skill.name.as_str()).collect();
+        for name in koda_core::skills::mentioned_names(input) {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        let blocks: Vec<String> = names
+            .into_iter()
+            .filter_map(|name| registry.get(name))
+            .filter(|skill| skill.meta.user_invocable)
+            .map(koda_core::skills::mention_block)
+            .collect();
+        if blocks.is_empty() {
+            return message;
+        }
+        format!("{message}\n\n{}", blocks.join("\n\n"))
     }
 
     /// Run a turn to its end, reading the client's commands meanwhile.

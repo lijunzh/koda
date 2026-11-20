@@ -65,6 +65,17 @@ the text (see [File & image attachments](./attachments.md#mentioning-files)). Th
 `userMessage` item keeps the text as the user wrote it and lists the paths under
 `mentions`.
 
+## Named skills
+
+A `$name` in `input` that names a skill loads it, as Codex reads `$` mentions:
+Koda sends the model the skill's `SKILL.md` after the text, in Codex's
+`<skill>` block (`<name>`, `<path>`, then the instructions). `turn/start` also
+takes `skills: [{"name": "review-checklist"}]`, as Codex's `UserInput::Skill`,
+for a skill picked without `$name` in the text; `path`, as `skills/list` gives
+it, is optional, since the name decides. A model-only skill isn't loaded, and a
+`$name` that names no skill, or a common shell variable such as `$PATH`, stays
+text.
+
 ## A session's earlier turns
 
 `session/start` with a stored session's id reopens it and returns all its turns,

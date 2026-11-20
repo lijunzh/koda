@@ -3354,3 +3354,57 @@ async fn goal_pause_mid_turn_stops_the_goal() {
         "a paused goal starts no turn"
     );
 }
+
+/// `$` opens a list of skills, as Codex's picker does; picking one puts
+/// `$name` in the message, and the model gets the skill's instructions
+/// with it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_skill_picked_with_dollar_reaches_the_model() {
+    let server = scripted_model(vec![text_reply("Checked.")]).await;
+    let home = home();
+    let skill = home.path().join(".koda/skills/checklist");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: checklist\ndescription: The release checklist\n---\nRun every test first.\n",
+    )
+    .unwrap();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.type_text("use $che");
+    tui.wait_for_screen("$checklist");
+    tui.wait_for_screen("The release checklist");
+    tui.type_text("\r");
+    tui.wait_for_screen("use $checklist");
+    tui.submit("now");
+    tui.wait_for_screen("Checked.");
+    let sent = wait_for_model_call(&server, 1).await;
+    assert!(sent.contains("<name>checklist</name>"), "{sent}");
+    assert!(sent.contains("Run every test first."), "{sent}");
+}
+
+/// `@` lists skills after files, as Codex's `@` does, and picking one puts
+/// `$name` in the message.
+#[tokio::test(flavor = "multi_thread")]
+async fn at_lists_skills_too() {
+    let server = scripted_model(vec![text_reply("Checked.")]).await;
+    let home = home();
+    let skill = home.path().join(".koda/skills/checklist");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: checklist\ndescription: The release checklist\n---\nRun every test first.\n",
+    )
+    .unwrap();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.type_text("use @checkl");
+    tui.wait_for_screen("Files and skills");
+    tui.wait_for_screen("$checklist");
+    tui.type_text("\r");
+    tui.wait_for_screen("use $checklist");
+    tui.submit("now");
+    tui.wait_for_screen("Checked.");
+    let sent = wait_for_model_call(&server, 1).await;
+    assert!(sent.contains("Run every test first."), "{sent}");
+}

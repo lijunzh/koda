@@ -3513,6 +3513,26 @@
       ],
       "type": "object"
     },
+    "SkillInput": {
+      "description": "A skill the user picked, by its name as `skills/list` gives it.",
+      "properties": {
+        "name": {
+          "description": "The skill's name.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Its `SKILL.md`, as `skills/list` gives it; the name decides.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
     "SkillMetadata": {
       "description": "One skill.",
       "properties": {
@@ -4281,6 +4301,13 @@
         "sessionId": {
           "description": "The session.",
           "type": "string"
+        },
+        "skills": {
+          "description": "Skills the user picked, as Codex's `UserInput::Skill`: the host sends\nthe model each one's instructions with the text. A `$name` in `input`\nthat names a skill counts too, so a client that keeps `$name` in the\ntext needn't send these.",
+          "items": {
+            "$ref": "#/$defs/SkillInput"
+          },
+          "type": "array"
         }
       },
       "required": [

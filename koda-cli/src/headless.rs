@@ -206,6 +206,7 @@ pub async fn run_headless(
             input: user_message,
             images,
             mentions,
+            skills: Vec::new(),
             client_message_id: None,
             mode: None,
         })

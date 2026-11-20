@@ -709,7 +709,12 @@ impl TuiContext {
             }
             MenuContent::File { dropdown, prefix } => {
                 if let Some(item) = dropdown.selected_item() {
-                    let replacement = format!("{}@{}", prefix, item.path);
+                    // A skill goes in as `$name`, which the host loads, as
+                    // Codex's picker inserts it.
+                    let replacement = match item.skill {
+                        Some(_) => format!("{prefix}{} ", item.path),
+                        None => format!("{}@{}", prefix, item.path),
+                    };
                     self.textarea.set_text_clearing_elements("");
                     self.textarea.insert_str(&replacement);
                 }

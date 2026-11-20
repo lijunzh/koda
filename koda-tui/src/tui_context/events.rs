@@ -530,28 +530,72 @@ impl TuiContext {
             } else if matches!(self.menu, MenuContent::Slash(_)) {
                 self.menu = MenuContent::None;
             }
-        } else if let Some(at_pos) = crate::completer::find_last_at_token(trimmed) {
-            let partial = &trimmed[at_pos + 1..];
-            let prefix = &trimmed[..at_pos];
-            let matches = crate::completer::list_path_matches_public(&self.project_root, partial);
-            if !matches.is_empty() {
-                let items: Vec<crate::widgets::file_menu::FileItem> = matches
-                    .iter()
-                    .map(|p| crate::widgets::file_menu::FileItem {
-                        path: p.clone(),
-                        is_dir: p.ends_with('/'),
-                    })
-                    .collect();
-                let dd = crate::widgets::dropdown::DropdownState::new(items, "\u{1f4c2} Files");
+        } else if let Some((items, title, prefix)) = self.mention_items(&after_input) {
+            if items.is_empty() {
+                if matches!(self.menu, MenuContent::File { .. }) {
+                    self.menu = MenuContent::None;
+                }
+            } else {
                 self.menu = MenuContent::File {
-                    dropdown: dd,
-                    prefix: prefix.to_string(),
+                    dropdown: crate::widgets::dropdown::DropdownState::new(items, title),
+                    prefix,
                 };
-            } else if matches!(self.menu, MenuContent::File { .. }) {
-                self.menu = MenuContent::None;
             }
         } else if matches!(self.menu, MenuContent::Slash(_) | MenuContent::File { .. }) {
             self.menu = MenuContent::None;
+        }
+    }
+
+    /// What the mention being typed at the end of `input` offers, as Codex's
+    /// pickers do: `$` lists skills; `@` lists files, then skills. With the
+    /// dropdown's title and the text before the mention. `None` when no
+    /// mention is being typed.
+    fn mention_items(
+        &self,
+        input: &str,
+    ) -> Option<(
+        Vec<crate::widgets::file_menu::FileItem>,
+        &'static str,
+        String,
+    )> {
+        use crate::widgets::file_menu::FileItem;
+        let text = input.trim_end();
+        let at = crate::completer::find_last_at_token(text);
+        // A space after `$name` ends it: the picked skill is followed by one.
+        let dollar = crate::completer::find_last_dollar_token(input);
+        let skills = |partial: &str| {
+            crate::completer::skill_matches(&self.skills, partial)
+                .into_iter()
+                .map(|skill| FileItem::skill(&skill.name, &skill.description))
+        };
+        match (at, dollar) {
+            (_, Some(start)) if at.is_none_or(|at| start > at) => Some((
+                skills(&text[start + 1..]).collect(),
+                "\u{1f4da} Skills",
+                text[..start].to_string(),
+            )),
+            (Some(start), _) => {
+                let partial = &text[start + 1..];
+                let mut items: Vec<FileItem> =
+                    crate::completer::list_path_matches_public(&self.project_root, partial)
+                        .into_iter()
+                        .map(|path| FileItem {
+                            is_dir: path.ends_with('/'),
+                            path,
+                            skill: None,
+                        })
+                        .collect();
+                // A path being typed (`@src/`) isn't a skill's name.
+                if !partial.contains('/') {
+                    items.extend(skills(partial));
+                }
+                Some((
+                    items,
+                    "\u{1f4c2} Files and skills",
+                    text[..start].to_string(),
+                ))
+            }
+            _ => None,
         }
     }
 
