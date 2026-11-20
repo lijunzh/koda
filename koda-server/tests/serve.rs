@@ -1236,3 +1236,27 @@ async fn the_evaluator_waits_for_background_work() {
     assert_eq!(requests[3]["tool_choice"], "none", "the check");
     wire.finish().await;
 }
+
+/// A client asking for the goal between its turns doesn't stop it: the
+/// question is answered first, then the goal's next turn starts, as it
+/// would have without it. `koda exec` asks after every turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn asking_for_the_goal_between_turns_doesnt_stop_it() {
+    let server = model(vec![
+        text("Working on it."),
+        tool_call("b", "UpdateGoal", json!({"status": "complete"})),
+        text("Goal complete."),
+    ])
+    .await;
+    let mut wire = Wire::open(config(&server, false)).await;
+    wire.set_goal(json!({"objective": "Build it"})).await;
+    wire.until_method("turn/completed").await;
+    assert_eq!(wire.goal().await["status"], "active");
+
+    wire.until(|l| {
+        l["method"] == "session/goal/updated" && l["params"]["goal"]["status"] == "complete"
+    })
+    .await;
+    assert_eq!(chat_requests(&server).await.len(), 3);
+    wire.finish().await;
+}

@@ -513,35 +513,30 @@ impl SessionTask {
                     }
                 }
             };
-            match command {
-                SessionCommand::StartTurn { params, reply } => {
-                    let next = self.turn(params, reply).await;
-                    if !self.follow(next).await {
-                        return;
-                    }
-                }
-                SessionCommand::Compact { reply } => {
-                    let next = self.compact(reply).await;
-                    if !self.follow(next).await {
-                        return;
-                    }
-                }
+            let next = match command {
+                SessionCommand::StartTurn { params, reply } => self.turn(params, reply).await,
+                SessionCommand::Compact { reply } => self.compact(reply).await,
                 SessionCommand::Interrupt { reply, .. } => {
                     let _ = reply.send(Err(invalid("no active turn to interrupt")));
+                    Next::Idle
                 }
                 SessionCommand::Steer { reply, .. } => {
                     let _ = reply.send(Err(invalid("no active turn to steer")));
+                    Next::Idle
                 }
                 SessionCommand::Respond { id, .. } => {
                     tracing::debug!("an answer to request {id} arrived after its turn");
+                    Next::Idle
                 }
                 SessionCommand::ReloadMcp { done } => {
                     self.reload_mcp_now().await;
                     drop(done);
+                    Next::Idle
                 }
                 SessionCommand::FlushHistory { done } => {
                     self.sink.flush_history().await;
                     drop(done);
+                    Next::Idle
                 }
                 SessionCommand::Named { name, done } => {
                     self.session.title_set = true;
@@ -551,6 +546,7 @@ impl SessionTask {
                         .set_session_title(&self.session.id, &name)
                         .await;
                     let _ = done.send(stored.map_err(|e| format!("{e:#}")));
+                    Next::Idle
                 }
                 SessionCommand::UpdateSettings { params, reply } => {
                     match self.update_settings(params).await {
@@ -562,20 +558,25 @@ impl SessionTask {
                             let _ = reply.send(Err(error));
                         }
                     }
+                    Next::Idle
                 }
                 SessionCommand::Goal { request, reply } => {
-                    if self.goal_request(request, reply).await && !self.follow(Next::Idle).await {
-                        return;
-                    }
+                    self.goal_request(request, reply).await;
+                    Next::Idle
                 }
                 SessionCommand::Shutdown { .. } => return,
+            };
+            // A command answered between a goal's turns, such as a client
+            // asking for the goal or the turn list, goes first; then the
+            // goal goes on, as it would have without the command.
+            if !self.follow(next).await {
+                return;
             }
         }
     }
 
-    /// Answer a goal request while no turn runs. Whether the goal is now
-    /// active, so a turn on it may start.
-    async fn goal_request(&mut self, request: GoalRequest, reply: oneshot::Sender<Answer>) -> bool {
+    /// Answer a goal request while no turn runs.
+    async fn goal_request(&mut self, request: GoalRequest, reply: oneshot::Sender<Answer>) {
         if !matches!(request, GoalRequest::Get) {
             self.strikes.reset();
             self.held = false;
@@ -590,7 +591,7 @@ impl SessionTask {
         )
         .await;
         let Some(set) = set else {
-            return false;
+            return;
         };
         // A session started with a goal is named by it, as by a first prompt.
         if !self.session.title_set {
@@ -602,7 +603,6 @@ impl SessionTask {
                 .set_session_title(&self.session.id, &title)
                 .await;
         }
-        set.goal.status == koda_core::goal::GoalStatus::Active
     }
 
     /// The model's background commands.
