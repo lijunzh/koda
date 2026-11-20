@@ -428,6 +428,7 @@ pub(crate) async fn open(
             waiting: None,
             strikes: crate::goal::Strikes::default(),
             held: false,
+            folder_instructions: std::collections::HashSet::new(),
             check: None,
             checkin: crate::goal::CheckIn::default(),
         },
@@ -465,6 +466,9 @@ pub(crate) struct SessionTask {
     /// The last turn was interrupted: the goal waits for the user, as Claude
     /// Code's does, until a turn they start ends or they change the goal.
     held: bool,
+    /// The subfolders' instruction files already sent with a mentioned file,
+    /// each sent once while the session is open.
+    folder_instructions: std::collections::HashSet<std::path::PathBuf>,
     /// What the goal evaluator said remains after the last turn, for the
     /// next turn on the goal.
     check: Option<String>,
@@ -926,7 +930,7 @@ impl SessionTask {
     /// config's `file_mentions` is off, when the model gets the paths to
     /// read itself, as Codex leaves them. Mentioned images join `images`.
     async fn with_mentions(
-        &self,
+        &mut self,
         input: &str,
         mentions: &[Mention],
         images: &mut Vec<ImageData>,
@@ -949,10 +953,44 @@ impl SessionTask {
                 other => read.push((mention.path.clone(), other)),
             }
         }
-        match mention_context(&read) {
+        let mut message = match mention_context(&read) {
             Some(context) => format!("{input}\n\n{context}"),
             None => input.to_string(),
+        };
+        for instructions in self.folder_instructions_for(mentions) {
+            message.push_str("\n\n");
+            message.push_str(&instructions);
         }
+        message
+    }
+
+    /// The instruction files of the subfolders holding the mentioned paths
+    /// that this session hasn't sent yet, as Claude Code adds the `CLAUDE.md`
+    /// of an `@` file's folder and the folders above it: root first, each
+    /// once.
+    fn folder_instructions_for(&mut self, mentions: &[Mention]) -> Vec<String> {
+        let root = self.session.agent.project_root.clone();
+        let shown_root = root.canonicalize().unwrap_or_else(|_| root.clone());
+        let mut found = Vec::new();
+        for mention in mentions {
+            let path = std::path::Path::new(&mention.path);
+            for file in koda_core::memory::nested_instruction_files(&root, path) {
+                if !self.folder_instructions.insert(file.clone()) {
+                    continue;
+                }
+                let Ok(content) = std::fs::read_to_string(&file) else {
+                    continue;
+                };
+                let shown = file.strip_prefix(&shown_root).unwrap_or(&file);
+                let folder = shown.parent().unwrap_or(shown);
+                found.push(koda_core::prompt::folder_instructions_context(
+                    &shown.display().to_string(),
+                    &folder.display().to_string(),
+                    &content,
+                ));
+            }
+        }
+        found
     }
 
     /// `message` with the instructions of each skill the user named after it,

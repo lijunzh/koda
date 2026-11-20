@@ -415,6 +415,48 @@ fn project_instruction_files(project_root: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// The instruction files of the folders below `project_root` down to the
+/// one holding `path` (a file's folder, or a directory itself), root first:
+/// each folder's first of `AGENTS.override.md`, `AGENTS.md` and `CLAUDE.md`, empty ones left out. As
+/// Claude Code loads a subfolder's `CLAUDE.md` once a file there is read;
+/// the project root's own file and those above it are in every prompt
+/// already. `path` is relative to `project_root` or absolute; none for a
+/// path outside the project.
+pub fn nested_instruction_files(project_root: &Path, path: &Path) -> Vec<PathBuf> {
+    let (Ok(root), Ok(target)) = (
+        project_root.canonicalize(),
+        project_root.join(path).canonicalize(),
+    ) else {
+        return Vec::new();
+    };
+    let folder = if target.is_dir() {
+        target.as_path()
+    } else {
+        match target.parent() {
+            Some(parent) => parent,
+            None => return Vec::new(),
+        }
+    };
+    let Ok(below) = folder.strip_prefix(&root) else {
+        return Vec::new();
+    };
+    let mut current = root.clone();
+    let mut files = Vec::new();
+    for part in below.components() {
+        current.push(part);
+        let found = INSTRUCTION_FILES
+            .iter()
+            .map(|name| current.join(name))
+            .find(|file| file.is_file());
+        if let Some(file) = found
+            && std::fs::read_to_string(&file).is_ok_and(|text| !text.trim().is_empty())
+        {
+            files.push(file);
+        }
+    }
+    files
+}
+
 /// A folder's instruction file: the first of [`INSTRUCTION_FILES`], else
 /// the legacy `MEMORY.md` with a warning.
 fn folder_instruction_file(folder: &Path) -> Option<PathBuf> {
@@ -1026,5 +1068,41 @@ mod tests {
             map.contains_key(&canonical),
             "cache must contain entry for {canonical:?}"
         );
+    }
+
+    #[test]
+    fn a_mentioned_files_folders_give_their_instruction_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join("AGENTS.md"), "root rules").unwrap();
+        std::fs::create_dir_all(root.join("src/api/v2")).unwrap();
+        std::fs::write(root.join("src/CLAUDE.md"), "src rules").unwrap();
+        std::fs::write(root.join("src/api/AGENTS.md"), "   ").unwrap();
+        std::fs::write(root.join("src/api/v2/AGENTS.md"), "v2 rules").unwrap();
+        std::fs::write(root.join("src/api/v2/CLAUDE.md"), "not this one").unwrap();
+        std::fs::write(root.join("src/api/v2/lib.rs"), "").unwrap();
+        std::fs::write(root.join("src/MEMORY.md"), "legacy").unwrap();
+        let root = root.canonicalize().unwrap();
+
+        let files = nested_instruction_files(&root, Path::new("src/api/v2/lib.rs"));
+        assert_eq!(
+            files,
+            vec![
+                root.join("src/CLAUDE.md"),
+                root.join("src/api/v2/AGENTS.md")
+            ],
+            "root first; the project root's own and empty ones left out"
+        );
+        assert_eq!(
+            nested_instruction_files(&root, Path::new("src")),
+            vec![root.join("src/CLAUDE.md")],
+            "a directory gives its own"
+        );
+        assert!(nested_instruction_files(&root, Path::new("AGENTS.md")).is_empty());
+        assert!(nested_instruction_files(&root, Path::new("missing.rs")).is_empty());
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("AGENTS.md"), "x").unwrap();
+        std::fs::write(outside.path().join("f.rs"), "").unwrap();
+        assert!(nested_instruction_files(&root, &outside.path().join("f.rs")).is_empty());
     }
 }
