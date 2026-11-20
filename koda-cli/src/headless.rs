@@ -272,22 +272,32 @@ pub async fn run_headless(
                         continue;
                     };
                     running = None;
+                    if interrupt.is_some() {
+                        break done;
+                    }
                     // As `claude -p` does, the run stays open while the
                     // goal is active, or the model's background commands
                     // run: each exit, or its time limit, starts a turn that
                     // tells the model.
-                    if done.status != TurnStatus::Completed || interrupt.is_some() {
-                        break done;
-                    }
+                    //
+                    // Whether a goal goes on is the host's call, as in the
+                    // TUI, whatever the turn's status: a turn
+                    // `turn_token_budget` stopped leaves it active, and the
+                    // host starts the next turn, as Hermes and Codex go on
+                    // after a turn cut short by a limit. A failed turn
+                    // blocks it, and that update ends the run.
                     if goal.is_some() {
                         goal_active = goal_status(&client, &session_id).await?
                             == Some(GoalStatus::Active);
                     }
-                    let listed = background(&client, &session_id).await?;
                     if goal_active {
                         last = Some(done);
                         continue;
                     }
+                    if done.status != TurnStatus::Completed {
+                        break done;
+                    }
+                    let listed = background(&client, &session_id).await?;
                     if !listed.waiting {
                         break done;
                     }

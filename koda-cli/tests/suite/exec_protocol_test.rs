@@ -1766,6 +1766,75 @@ async fn a_blocked_goal_ends_the_run() {
     assert_eq!(chat_calls(&server).await.len(), 6, "no fourth turn");
 }
 
+/// A goal turn `turn_token_budget` stops leaves the goal active, and the
+/// run follows it into the next turn, as the TUI does: the turn budget caps
+/// each turn, `max_goal_token_budget` the goal. Hermes goes on after a turn
+/// its iteration cap stopped, and Codex after a turn aborted for budget.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_goal_goes_on_after_a_turn_its_token_budget_stopped() {
+    let server = stub(
+        vec![
+            costly_tool_call("look", "Bash", json!({"command": "true"}), 21_000),
+            tool_call("done", "UpdateGoal", json!({"status": "complete"})),
+            text("All done."),
+        ],
+        no_other_calls,
+    )
+    .await;
+    let run = run_prompt(
+        &server,
+        "/goal Keep the docs current",
+        &["-c", "turn_token_budget=20000"],
+    )
+    .await;
+    let turns: Vec<&Value> = run
+        .of("turn/completed")
+        .iter()
+        .map(|l| &l["params"]["turn"])
+        .collect();
+    assert_eq!(turns.len(), 2, "{}", run.stdout);
+    assert_eq!(turns[0]["status"], "failed", "{}", turns[0]);
+    assert_eq!(
+        turns[0]["error"]["code"], "tokenBudgetSpent",
+        "{}",
+        turns[0]
+    );
+    assert_eq!(turns[1]["status"], "completed", "{}", turns[1]);
+    assert_eq!(
+        goal_statuses(&run).last().map(String::as_str),
+        Some("complete")
+    );
+    assert_eq!(run.summary()["success"], true, "{}", run.stdout);
+    assert!(run.output.status.success(), "{}", run.stdout);
+}
+
+/// A goal turn that fails blocks the goal, and the run ends with that turn
+/// and exits 1: following the host doesn't keep a failing goal going.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_goal_turn_ends_the_run() {
+    let rejected = || {
+        ResponseTemplate::new(401)
+            .set_body_json(json!({"error": {"message": "invalid api key", "type": "auth"}}))
+    };
+    let server = stub(vec![rejected(), rejected()], no_other_calls).await;
+    let run = run_prompt(
+        &server,
+        "/goal Keep the docs current",
+        &["-c", "model_providers.lmstudio.request_max_retries=0"],
+    )
+    .await;
+    assert_eq!(run.turn()["status"], "failed", "{}", run.stdout);
+    assert_eq!(
+        goal_statuses(&run).last().map(String::as_str),
+        Some("blocked"),
+        "{}",
+        run.stdout
+    );
+    assert_eq!(run.summary()["turnStatus"], "failed");
+    assert_eq!(run.output.status.code(), Some(1), "{}", run.stdout);
+    assert_eq!(chat_calls(&server).await.len(), 1, "no second turn");
+}
+
 /// With `goal_judge = "evaluator"`, a check after each turn decides, and
 /// the run ends once it says the goal is met.
 #[tokio::test(flavor = "multi_thread")]
