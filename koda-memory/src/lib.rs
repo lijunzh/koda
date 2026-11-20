@@ -417,7 +417,7 @@ fn project_instruction_files(project_root: &Path) -> Vec<PathBuf> {
 
 /// The instruction files of the folders below `project_root` down to the
 /// one holding `path` (a file's folder, or a directory itself), root first:
-/// each folder's first of [`INSTRUCTION_FILES`], empty ones left out. As
+/// each folder's first of `AGENTS.override.md`, `AGENTS.md` and `CLAUDE.md`, empty ones left out. As
 /// Claude Code loads a subfolder's `CLAUDE.md` once a file there is read;
 /// the project root's own file and those above it are in every prompt
 /// already. `path` is relative to `project_root` or absolute; none for a
