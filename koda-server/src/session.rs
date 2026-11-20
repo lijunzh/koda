@@ -947,7 +947,12 @@ impl SessionTask {
             );
         }
         let mut read = Vec::new();
+        let mut resources = Vec::new();
         for mention in mentions {
+            if let Some((server, uri)) = self.resource_mention(&mention.path).await {
+                resources.push(self.read_resource(server, uri, images).await);
+                continue;
+            }
             match self.session.agent.tools.read_mention(&mention.path).await {
                 Mentioned::Image(image) => images.push(image),
                 other => read.push((mention.path.clone(), other)),
@@ -957,11 +962,83 @@ impl SessionTask {
             Some(context) => format!("{input}\n\n{context}"),
             None => input.to_string(),
         };
+        for resource in resources {
+            message.push_str("\n\n");
+            message.push_str(&resource);
+        }
         for instructions in self.folder_instructions_for(mentions) {
             message.push_str("\n\n");
             message.push_str(&instructions);
         }
         message
+    }
+
+    /// An `@server:uri` mention's server and URI, as Claude Code names an
+    /// MCP resource: one of the session's connected servers, a colon, and a
+    /// URI with a scheme. Anything else is a path.
+    async fn resource_mention<'a>(&self, path: &'a str) -> Option<(&'a str, &'a str)> {
+        let (server, uri) = path.split_once(':')?;
+        if !uri.contains("://") {
+            return None;
+        }
+        let mcp = self.mcp.as_ref()?;
+        mcp.read()
+            .await
+            .is_connected(server)
+            .then_some((server, uri))
+    }
+
+    /// Read MCP resource `uri` from `server` for the model, as Claude Code
+    /// attaches a mentioned resource: its text, marked as data, as MCP
+    /// results are; an image goes with the turn's images.
+    async fn read_resource(&self, server: &str, uri: &str, images: &mut Vec<ImageData>) -> String {
+        use koda_core::mcp::client::ResourceContent;
+        /// The most of a resource's text sent, as Read's own cap keeps a
+        /// mention from filling the window.
+        const MAX_CHARS: usize = 100_000;
+        let open = format!("<resource server=\"{server}\" uri=\"{uri}\">");
+        let Some(mcp) = self.mcp.as_ref() else {
+            return format!("{open}\nNo MCP servers.\n</resource>");
+        };
+        let contents = match mcp.read().await.read_resource(server, uri).await {
+            Ok(contents) => contents,
+            Err(e) => return format!("{open}\nNot read: {e:#}\n</resource>"),
+        };
+        let mut parts = Vec::new();
+        for content in contents {
+            match content {
+                ResourceContent::Text { text, .. } => {
+                    let total = text.chars().count();
+                    let mut text: String = text.chars().take(MAX_CHARS).collect();
+                    if total > MAX_CHARS {
+                        text.push_str(&format!("\n[Cut at {MAX_CHARS} of {total} characters.]"));
+                    }
+                    parts.push(koda_core::untrusted::wrap(
+                        &format!("{server}:{uri}"),
+                        &text,
+                    ));
+                }
+                ResourceContent::Blob {
+                    mime_type: Some(mime),
+                    blob,
+                } if mime.starts_with("image/") => {
+                    images.push(ImageData {
+                        media_type: mime.clone(),
+                        base64: blob,
+                    });
+                    parts.push(format!("An image ({mime}), attached."));
+                }
+                ResourceContent::Blob { mime_type, blob } => parts.push(format!(
+                    "Binary content ({}, about {} bytes), not attached.",
+                    mime_type.as_deref().unwrap_or("unknown type"),
+                    blob.len() / 4 * 3
+                )),
+            }
+        }
+        if parts.is_empty() {
+            parts.push("It's empty.".to_string());
+        }
+        format!("{open}\n{}\n</resource>", parts.join("\n"))
     }
 
     /// The instruction files of the subfolders holding the mentioned paths

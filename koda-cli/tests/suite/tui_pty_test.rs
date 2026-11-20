@@ -3399,7 +3399,7 @@ async fn at_lists_skills_too() {
     let mut tui = Tui::start_with_model(home.path(), &server.url());
 
     tui.type_text("use @checkl");
-    tui.wait_for_screen("Files and skills");
+    tui.wait_for_screen("Files, skills and resources");
     tui.wait_for_screen("$checklist");
     tui.type_text("\r");
     tui.wait_for_screen("use $checklist");

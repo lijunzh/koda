@@ -10,7 +10,7 @@ use koda_client::events::Outgoing;
 use koda_client::protocol::ServerNotification;
 use koda_client::protocol::config::{ConfigLayerSource, ConfigReadParams, ConfigReadResponse};
 use koda_client::protocol::mcp::{
-    ListMcpServerStatusParams, McpServerConfigValue, McpServerConnectionStatus,
+    ListMcpServerStatusParams, McpResource, McpServerConfigValue, McpServerConnectionStatus,
     McpServerStartupState, McpServerStatus,
 };
 use koda_client::protocol::methods;
@@ -23,6 +23,9 @@ use crate::widgets::status_bar::McpStatusBarInfo;
 #[derive(Debug, Default)]
 pub(crate) struct McpView {
     servers: BTreeMap<String, McpServerConnectionStatus>,
+    /// Each connected server's resources, for the `@` dropdown, as Claude
+    /// Code lists them beside files.
+    resources: Vec<(String, McpResource)>,
 }
 
 impl McpView {
@@ -31,16 +34,48 @@ impl McpView {
             .iter()
             .map(|s| (s.name.clone(), s.runtime_status))
             .collect();
+        self.resources = listed
+            .iter()
+            .filter(|s| s.runtime_status == McpServerConnectionStatus::Connected)
+            .flat_map(|s| s.resources.iter().map(|r| (s.name.clone(), r.clone())))
+            .collect();
     }
 
-    /// Follow a startup report for session `session_id`.
-    pub(crate) fn observe(&mut self, session_id: &str, message: &Outgoing) {
+    /// The resources whose `server:uri` matches `partial`, best first, as
+    /// `@server:uri` and a description, for the `@` dropdown.
+    pub(crate) fn resource_matches(&self, partial: &str) -> Vec<(String, String)> {
+        let partial = partial.to_lowercase();
+        let mut found: Vec<(bool, String, String)> = self
+            .resources
+            .iter()
+            .filter_map(|(server, resource)| {
+                let mention = format!("{server}:{}", resource.uri);
+                let lower = mention.to_lowercase();
+                let name = resource.name.to_lowercase();
+                let hit = partial.is_empty() || lower.contains(&partial) || name.contains(&partial);
+                hit.then(|| {
+                    let about = resource
+                        .title
+                        .clone()
+                        .or_else(|| resource.description.clone())
+                        .unwrap_or_else(|| resource.name.clone());
+                    (!lower.starts_with(&partial), mention, about)
+                })
+            })
+            .collect();
+        found.sort();
+        found.into_iter().map(|(_, m, about)| (m, about)).collect()
+    }
+
+    /// Follow a startup report for session `session_id`. True when a server
+    /// became ready, whose tools and resources are then worth listing.
+    pub(crate) fn observe(&mut self, session_id: &str, message: &Outgoing) -> bool {
         let Outgoing::Notification(ServerNotification::McpServerStatusUpdated(update)) = message
         else {
-            return;
+            return false;
         };
         if update.session_id != session_id {
-            return;
+            return false;
         }
         let status = match update.status {
             McpServerStartupState::Starting => McpServerConnectionStatus::Starting,
@@ -48,10 +83,11 @@ impl McpView {
             McpServerStartupState::Failed => McpServerConnectionStatus::Failed,
             McpServerStartupState::Cancelled => {
                 self.servers.remove(&update.name);
-                return;
+                return false;
             }
         };
         self.servers.insert(update.name.clone(), status);
+        status == McpServerConnectionStatus::Connected
     }
 
     /// The pill: hidden with no servers.
@@ -276,5 +312,58 @@ mod tests {
                 total: 1
             })
         );
+    }
+
+    #[test]
+    fn connected_servers_resources_match_for_the_at_menu() {
+        let resource = |uri: &str, name: &str| McpResource {
+            uri: uri.into(),
+            name: name.into(),
+            title: None,
+            description: Some(format!("about {name}")),
+            mime_type: None,
+        };
+        let server = |name: &str, status, resources| McpServerStatus {
+            name: name.into(),
+            runtime_status: status,
+            tools: Default::default(),
+            tools_error: None,
+            resources,
+        };
+        let mut view = McpView::default();
+        view.replace(&[
+            server(
+                "github",
+                McpServerConnectionStatus::Connected,
+                vec![
+                    resource("issue://123", "issue-123"),
+                    resource("repo://koda", "koda"),
+                ],
+            ),
+            server(
+                "docs",
+                McpServerConnectionStatus::Failed,
+                vec![resource("file://api", "api")],
+            ),
+        ]);
+        let mentions = |partial: &str| -> Vec<String> {
+            view.resource_matches(partial)
+                .into_iter()
+                .map(|(m, _)| m)
+                .collect()
+        };
+        assert_eq!(
+            mentions(""),
+            vec!["github:issue://123", "github:repo://koda"]
+        );
+        assert_eq!(mentions("github:iss"), vec!["github:issue://123"]);
+        assert_eq!(mentions("koda"), vec!["github:repo://koda"], "by name too");
+        assert!(
+            mentions("docs").is_empty(),
+            "a failed server's are left out"
+        );
+        assert_eq!(view.resource_matches("123")[0].1, "about issue-123");
+        assert!(view.observe("s", &update("s", "github", McpServerStartupState::Ready)));
+        assert!(!view.observe("s", &update("s", "x", McpServerStartupState::Failed)));
     }
 }

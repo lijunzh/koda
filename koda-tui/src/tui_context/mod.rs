@@ -795,7 +795,9 @@ impl TuiContext {
                         .await?;
                         continue;
                     }
-                    self.mcp.observe(&self.session.id, &message);
+                    if self.mcp.observe(&self.session.id, &message) {
+                        self.mcp_stale = true;
+                    }
                     // A warning about no session, such as a Claude model
                     // this Koda doesn't support yet, which the host says
                     // once the Models API has answered.

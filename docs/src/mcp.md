@@ -89,6 +89,25 @@ a tool named `navigate` on the `playwright` server becomes `playwright__navigate
 
 The model can call these tools directly. No extra configuration is required.
 
+## Resources
+
+A server can offer resources: an issue, a schema, a document. Mention one
+with `@server:uri`, as in Claude Code, and Koda reads it and sends it with
+your message:
+
+```text
+> suggest a fix for @github:issue://123
+> compare @postgres:schema://users with @docs:file://database/user-model
+```
+
+Typing `@` lists the connected servers' resources after files and skills,
+matched on the URI and the resource's name. A resource's text is sent marked
+as data, as a tool's result is, cut at 100,000 characters; an image is sent
+as an image; other binary content is named, not sent. MCP Apps pages
+(`ui://`) aren't listed. A mention whose server isn't one of the session's
+connected servers, or whose part after the colon has no `://`, is read as a
+file path.
+
 ## Tool filtering
 
 A server's stored config can limit which tools it exposes. No command sets

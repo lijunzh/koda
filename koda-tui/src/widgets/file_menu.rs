@@ -16,6 +16,9 @@ pub struct FileItem {
     pub is_dir: bool,
     /// A skill's description, when the item is a skill.
     pub skill: Option<String>,
+    /// What an MCP resource is, when the item is one (`path` is then
+    /// `server:uri`).
+    pub resource: Option<String>,
 }
 
 impl FileItem {
@@ -25,6 +28,17 @@ impl FileItem {
             path: format!("${name}"),
             is_dir: false,
             skill: Some(description.to_string()),
+            resource: None,
+        }
+    }
+
+    /// An MCP resource, `server:uri`, with what it is.
+    pub fn resource(mention: &str, about: &str) -> Self {
+        Self {
+            path: mention.to_string(),
+            is_dir: false,
+            skill: None,
+            resource: Some(about.to_string()),
         }
     }
 }
@@ -36,6 +50,9 @@ impl DropdownItem for FileItem {
     fn description(&self) -> String {
         if let Some(description) = &self.skill {
             return format!("\u{1f4da} {description}");
+        }
+        if let Some(about) = &self.resource {
+            return format!("\u{1f50c} {about}");
         }
         if self.is_dir {
             "\u{1f4c1}".to_string() // 📁
@@ -60,6 +77,7 @@ mod tests {
             path: "src/".into(),
             is_dir: true,
             skill: None,
+            resource: None,
         };
         assert!(!item.description().is_empty());
     }
@@ -70,6 +88,7 @@ mod tests {
             path: "main.rs".into(),
             is_dir: false,
             skill: None,
+            resource: None,
         };
         assert!(item.description().is_empty());
     }

@@ -3458,3 +3458,86 @@ async fn a_resumed_session_returns_its_turns_as_they_were_sent() {
     assert_eq!(error.code, codes::INVALID_PARAMS);
     koda.client.shutdown().await;
 }
+
+/// An MCP server with resources: `note://welcome` to read, and an MCP Apps
+/// page (`ui://panel`), which is left out of the list.
+fn mcp_resource_server(dir: &std::path::Path) -> String {
+    let script = r#"while IFS= read -r line; do
+  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{},"resources":{}},"serverInfo":{"name":"notes","version":"0.1.0"}}}\n' "$id" ;;
+    *'"method":"tools/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[]}}\n' "$id" ;;
+    *'"method":"resources/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"resources":[{"uri":"note://welcome","name":"welcome","description":"The welcome note","mimeType":"text/markdown"},{"uri":"ui://panel","name":"panel","mimeType":"text/html;profile=mcp-app"}]}}\n' "$id" ;;
+    *'"method":"resources/read"'*'note://welcome'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"contents":[{"uri":"note://welcome","mimeType":"text/markdown","text":"Welcome to the notes server."}]}}\n' "$id" ;;
+    *'"method":"resources/read"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32002,"message":"Resource not found"}}\n' "$id" ;;
+  esac
+done
+"#;
+    let path = dir.join(format!("mcp-{}.sh", uuid_like()));
+    std::fs::write(&path, script).unwrap();
+    path.display().to_string()
+}
+
+/// `@server:uri` reads an MCP resource and sends it with the text, marked
+/// as data, as Claude Code attaches a mentioned resource; the servers'
+/// resources are listed for a client's `@` menu, MCP Apps pages left out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_mentioned_mcp_resource_is_read_and_sent() {
+    use koda_client::protocol::turn::Mention;
+    let server = model(vec![text("Read."), text("Not there.")]).await;
+    let mut koda = Koda::start(config(&server)).await;
+    let script = mcp_resource_server(koda._dir.path());
+    koda.write_config(&[(
+        "mcp_servers.notes",
+        json!({"command": "sh", "args": [script]}),
+    )])
+    .await
+    .unwrap();
+    koda.switch_to_new_session().await;
+    koda.until_mcp("notes", McpServerStartupState::Ready).await;
+
+    let listed = koda.mcp_status(Some(&koda.session)).await;
+    let uris: Vec<&str> = listed[0].resources.iter().map(|r| r.uri.as_str()).collect();
+    assert_eq!(uris, vec!["note://welcome"], "{listed:?}");
+    assert_eq!(
+        listed[0].resources[0].description.as_deref(),
+        Some("The welcome note")
+    );
+
+    let session = koda.session.clone();
+    let start = |path: &str| TurnStartParams {
+        session_id: session.clone(),
+        input: format!("summarize @{path}"),
+        images: Vec::new(),
+        mentions: vec![Mention { path: path.into() }],
+        skills: Vec::new(),
+        client_message_id: None,
+        mode: None,
+    };
+    koda.client
+        .request::<methods::TurnStart>(start("notes:note://welcome"))
+        .await
+        .unwrap();
+    koda.until("turn/completed").await;
+    let sent = chat_requests(&server).await[0]["messages"].to_string();
+    assert!(
+        sent.contains(r#"<resource server=\"notes\" uri=\"note://welcome\">"#),
+        "{sent}"
+    );
+    assert!(sent.contains("Welcome to the notes server."), "{sent}");
+    assert!(sent.contains("EXTERNAL_CONTENT"), "marked as data: {sent}");
+
+    koda.client
+        .request::<methods::TurnStart>(start("notes:note://missing"))
+        .await
+        .unwrap();
+    koda.until("turn/completed").await;
+    let sent = chat_requests(&server).await[1]["messages"].to_string();
+    assert!(sent.contains("Not read:"), "{sent}");
+    koda.client.shutdown().await;
+}

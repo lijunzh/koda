@@ -38,6 +38,9 @@ outermost first. For the files in its folder it ranks above the project's
 instructions, and below what you ask. Each one is sent once while the session
 is open.
 
+An MCP server's resources are mentioned the same way, as `@server:uri`; see
+[MCP resources](./mcp.md#resources).
+
 Paths are relative to the project, or absolute. A mention can name any file
 the `Read` tool can, which is any path except Koda's own secret folders; Koda
 reads it on the machine its host runs on, so a client of

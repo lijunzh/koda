@@ -632,7 +632,9 @@ impl TuiContext {
         if self.note_main_session(&message) {
             return;
         }
-        self.mcp.observe(&self.session.id, &message);
+        if self.mcp.observe(&self.session.id, &message) {
+            self.mcp_stale = true;
+        }
         self.note_session(&message);
         tracker.observe_message(&message);
         let notification = match &message {

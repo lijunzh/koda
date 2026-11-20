@@ -101,6 +101,29 @@ pub struct McpServerStatus {
     /// Why it has no tools, when it failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools_error: Option<String>,
+    /// The resources it offers, as Codex lists them: what `@server:uri`
+    /// names in a message. MCP Apps pages (`ui://`) are left out.
+    #[serde(default)]
+    pub resources: Vec<McpResource>,
+}
+
+/// One resource a server offers, MCP's `Resource`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct McpResource {
+    /// Its URI.
+    pub uri: String,
+    /// Its name.
+    pub name: String,
+    /// A title for people.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// What it is, as the server says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Its MIME type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
 }
 
 /// One of a server's tools.
