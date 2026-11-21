@@ -1196,10 +1196,14 @@ different set.
 
 **What we deferred** (architecture supports it; we'll add when the bug exists):
 
-- **Per-tool `is_concurrency_safe(args)` predicate** (Gemini CLI). Would let
-  read-only `Bash` (e.g. `ls`, `cat`) join the parallel batch. Today all
-  `Bash` is forced sequential. `bash_safety.rs` already does the analysis
-  — surfacing it as a `ToolRegistry` method is ~80 LOC.
+- **Per-tool `is_concurrency_safe(args)` predicate** (Gemini CLI). Not
+  needed for `Bash`: a batch runs in parallel when every call auto-approves
+  and no two write the same file (`can_parallelize`), so read-only `Bash`
+  joins it in every mode, and in Auto a command that changes files does too,
+  as Codex runs every shell call in parallel. In Safe a mutating command asks,
+  and the batch splits: the auto-approved calls run together, the rest in
+  order. Tests: `read_only_bash_joins_a_parallel_batch`,
+  `a_mutating_bash_parallelizes_in_auto_only`.
 - **Sibling-cancel on parallel `Bash` failure** (Claude Code). Per-batch
   child `CancellationToken` + typed `[Cancelled: parallel call X errored]`
   result. ~30 LOC.
