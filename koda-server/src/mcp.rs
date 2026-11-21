@@ -19,7 +19,7 @@ use koda_protocol::mcp::{
     McpServerConnectionStatus, McpServerStartupState, McpServerStatus,
     McpServerStatusUpdatedNotification, McpTool, SERVERS_KEY,
 };
-use koda_protocol::rpc::ErrorObject;
+use koda_protocol::rpc::{ErrorObject, codes};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
@@ -229,6 +229,7 @@ pub(crate) async fn session_status(
                     mime_type: r.mime_type,
                 })
                 .collect(),
+            auth_status: None,
             name: s.name,
         })
         .collect();
@@ -243,9 +244,10 @@ pub(crate) fn configured_status(
     params: &ListMcpServerStatusParams,
 ) -> ListMcpServerStatusResponse {
     let mut data: Vec<McpServerStatus> = configured
-        .into_keys()
-        .filter(|name| wanted(params, name))
-        .map(|name| McpServerStatus {
+        .into_iter()
+        .filter(|(name, _)| wanted(params, name))
+        .map(|(name, server)| McpServerStatus {
+            auth_status: Some(auth_status(&name, &server)),
             name,
             runtime_status: McpServerConnectionStatus::NotStarted,
             tools: BTreeMap::new(),
@@ -255,6 +257,48 @@ pub(crate) fn configured_status(
         .collect();
     data.sort_by(|a, b| a.name.cmp(&b.name));
     ListMcpServerStatusResponse { data }
+}
+
+/// How Koda authenticates to `server`, as Codex reports it.
+fn auth_status(name: &str, server: &McpServerConfig) -> koda_protocol::mcp::McpAuthStatus {
+    use koda_protocol::mcp::McpAuthStatus;
+    match &server.transport {
+        koda_core::mcp::config::McpTransport::Stdio { .. } => McpAuthStatus::Unsupported,
+        koda_core::mcp::config::McpTransport::Http {
+            bearer_token_env_var: Some(_),
+            ..
+        } => McpAuthStatus::BearerToken,
+        koda_core::mcp::config::McpTransport::Http { .. }
+            if koda_core::mcp::oauth::has_credentials(name) =>
+        {
+            McpAuthStatus::OAuth
+        }
+        koda_core::mcp::config::McpTransport::Http { .. } => McpAuthStatus::Unknown,
+    }
+}
+
+/// Sign in to the configured HTTP server `name`: the page to open, and the
+/// sign-in under way.
+pub(crate) async fn oauth_login(
+    file: &koda_config::ConfigFile,
+    name: &str,
+) -> Result<koda_core::mcp::oauth::Login, ErrorObject> {
+    let configured = configured(file)?;
+    let server = configured
+        .get(name)
+        .ok_or_else(|| invalid_params(format!("no MCP server named {name:?}")))?;
+    let koda_core::mcp::config::McpTransport::Http { url, .. } = &server.transport else {
+        return Err(invalid_params(format!(
+            "{name} is a stdio server; OAuth is for streamable HTTP servers"
+        )));
+    };
+    koda_core::mcp::oauth::login(name, url)
+        .await
+        .map_err(|e| ErrorObject::new(codes::INTERNAL_ERROR, format!("{e:#}")))
+}
+
+fn invalid_params(message: String) -> ErrorObject {
+    ErrorObject::new(codes::INVALID_PARAMS, message)
 }
 
 fn wanted(params: &ListMcpServerStatusParams, name: &str) -> bool {

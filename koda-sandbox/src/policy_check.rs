@@ -98,6 +98,9 @@ mod tests {
         );
         // Sub-paths inside it are also denied.
         assert!(is_fully_denied(&koda_db.join("koda.db")));
+        // MCP OAuth tokens, as API keys are.
+        let tokens = Path::new(&home).join(".config/koda/mcp_oauth/notion.json");
+        assert!(is_fully_denied(&tokens));
     }
 
     #[test]

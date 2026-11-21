@@ -1610,6 +1610,31 @@
         }
       ]
     },
+    "McpAuthStatus": {
+      "description": "How Koda authenticates to a server; Codex's values.",
+      "oneOf": [
+        {
+          "const": "unknown",
+          "description": "An HTTP server with neither a bearer token nor a sign-in: it may need\nnone, or answer 401.",
+          "type": "string"
+        },
+        {
+          "const": "unsupported",
+          "description": "A stdio server: no authentication.",
+          "type": "string"
+        },
+        {
+          "const": "bearerToken",
+          "description": "A bearer token from an environment variable.",
+          "type": "string"
+        },
+        {
+          "const": "oAuth",
+          "description": "Signed in with OAuth (`mcpServer/oauth/login`).",
+          "type": "string"
+        }
+      ]
+    },
     "McpResource": {
       "description": "One resource a server offers, MCP's `Resource`.",
       "properties": {
@@ -1791,6 +1816,85 @@
         }
       ]
     },
+    "McpServerOauthLoginCompletedNotification": {
+      "description": "`mcpServer/oauthLogin/completed`: a sign-in started with\n`mcpServer/oauth/login` finished.",
+      "properties": {
+        "error": {
+          "description": "Why not.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "The server.",
+          "type": "string"
+        },
+        "success": {
+          "description": "Whether the tokens are stored.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "success"
+      ],
+      "type": "object"
+    },
+    "McpServerOauthLoginParams": {
+      "additionalProperties": false,
+      "description": "`mcpServer/oauth/login`: sign in to a configured streamable HTTP server\nwith OAuth, as Codex's. The answer gives the page to open; the host waits\nfor the browser's redirect, stores the tokens and sends\n`mcpServer/oauthLogin/completed`. Open sessions then reconnect to their\nservers.",
+      "properties": {
+        "name": {
+          "description": "The server's name in the config.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "McpServerOauthLoginResponse": {
+      "description": "The answer to `mcpServer/oauth/login`.",
+      "properties": {
+        "authorizationUrl": {
+          "description": "The authorization server's page, to open in a browser.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "authorizationUrl"
+      ],
+      "type": "object"
+    },
+    "McpServerOauthLogoutParams": {
+      "additionalProperties": false,
+      "description": "`mcpServer/oauth/logout`: forget a server's stored OAuth tokens. Koda's\nown method; Codex forgets them in `codex mcp logout`.",
+      "properties": {
+        "name": {
+          "description": "The server's name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "McpServerOauthLogoutResponse": {
+      "description": "The answer to `mcpServer/oauth/logout`.",
+      "properties": {
+        "removed": {
+          "description": "Whether there were tokens to forget.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "removed"
+      ],
+      "type": "object"
+    },
     "McpServerRefreshParams": {
       "additionalProperties": false,
       "description": "`config/mcpServer/reload`: every open session takes the configured servers\nagain, starting new ones, stopping removed ones and restarting changed\nor failed ones, before its next turn. Answered once the idle sessions\nhave taken them, so a `mcpServerStatus/list` that follows shows the\nchange; new servers are then still starting.",
@@ -1828,6 +1932,17 @@
     "McpServerStatus": {
       "description": "One server as a session has it.",
       "properties": {
+        "authStatus": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/McpAuthStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How Koda authenticates to it, as Codex's `authStatus`. Given in the\nconfigured listing (no `sessionId`)."
+        },
         "name": {
           "description": "The server's name.",
           "type": "string"
@@ -4679,6 +4794,22 @@
         "$ref": "#/$defs/InitializeResponse"
       }
     },
+    "mcpServer/oauth/login": {
+      "params": {
+        "$ref": "#/$defs/McpServerOauthLoginParams"
+      },
+      "result": {
+        "$ref": "#/$defs/McpServerOauthLoginResponse"
+      }
+    },
+    "mcpServer/oauth/logout": {
+      "params": {
+        "$ref": "#/$defs/McpServerOauthLogoutParams"
+      },
+      "result": {
+        "$ref": "#/$defs/McpServerOauthLogoutResponse"
+      }
+    },
     "mcpServerStatus/list": {
       "params": {
         "$ref": "#/$defs/ListMcpServerStatusParams"
@@ -4956,6 +5087,11 @@
     "item/toolCall/progress": {
       "params": {
         "$ref": "#/$defs/ToolCallProgressNotification"
+      }
+    },
+    "mcpServer/oauthLogin/completed": {
+      "params": {
+        "$ref": "#/$defs/McpServerOauthLoginCompletedNotification"
       }
     },
     "mcpServer/startupStatus/updated": {

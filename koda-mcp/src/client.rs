@@ -351,12 +351,49 @@ impl McpClient {
         // Enable session recovery for remote servers.
         config.reinit_on_expired_session = true;
 
-        let transport = StreamableHttpClientTransport::with_client(mcp_http_client()?, config);
-        let service = client_config()
-            .serve(transport)
-            .await
+        // A server Koda has signed in to (`koda mcp login`), when no
+        // bearer token is configured: rmcp's AuthClient adds the stored
+        // token to each request and refreshes it.
+        let signed_in = if bearer_token.is_none() {
+            crate::oauth::authorized_client(&self.name, url, mcp_http_client()?).await?
+        } else {
+            None
+        };
+        let service = match signed_in {
+            Some(client) => {
+                let transport = StreamableHttpClientTransport::with_client(client, config);
+                client_config().serve(transport).await
+            }
+            None => {
+                let transport =
+                    StreamableHttpClientTransport::with_client(mcp_http_client()?, config);
+                client_config().serve(transport).await
+            }
+        };
+        let service = service
+            .map_err(|e| self.explain_auth_failure(anyhow::Error::new(e), bearer_token.is_some()))
             .context("MCP HTTP handshake failed")?;
         self.finish_handshake(service).await
+    }
+
+    /// A handshake refused for want of a sign-in says how to sign in, as
+    /// Codex marks such a server "not logged in".
+    fn explain_auth_failure(&self, error: anyhow::Error, has_token: bool) -> anyhow::Error {
+        let text = format!("{error:#}");
+        let refused = text.contains("401")
+            || text.contains("Unauthorized")
+            || text.contains("Auth required")
+            || text.contains("AuthRequired");
+        if !refused || has_token {
+            return error;
+        }
+        let name = &self.name;
+        let how = if crate::oauth::has_credentials(name) {
+            format!("its sign-in has expired or was revoked: run `koda mcp login {name}`")
+        } else {
+            format!("it needs a sign-in: run `koda mcp login {name}`")
+        };
+        error.context(format!("{name} refused the connection; {how}"))
     }
 
     /// Common post-handshake bookkeeping shared by stdio + HTTP connect paths.

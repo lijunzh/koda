@@ -232,6 +232,7 @@ checksum = "31b698c5f9a010f6573133b09e0de5408834d0c82f8d7475a89fc1867a71cd90"
 dependencies = [
  "axum-core",
  "bytes",
+ "form_urlencoded",
  "futures-util",
  "http",
  "http-body",
@@ -245,6 +246,9 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "serde_core",
+ "serde_json",
+ "serde_path_to_error",
+ "serde_urlencoded",
  "sync_wrapper",
  "tokio",
  "tower",
@@ -463,8 +467,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
  "iana-time-zone",
+ "js-sys",
  "num-traits",
  "serde",
+ "wasm-bindgen",
  "windows-link",
 ]
 
@@ -2149,9 +2155,11 @@ name = "koda-mcp"
 version = "0.7.7"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "http",
  "koda-command",
+ "koda-config",
  "koda-providers",
  "koda-sandbox",
  "reqwest",
@@ -2759,6 +2767,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6aa2c4e539b869820a2b82e1aef6ff40aa85e65decdd5185e83fb4b1249cd00f"
 
 [[package]]
+name = "oauth2"
+version = "5.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "51e219e79014df21a225b1860a479e2dcd7cbd9130f4defd4bd0e191ea31d67d"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "getrandom 0.2.17",
+ "http",
+ "rand 0.8.8",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "sha2 0.10.9",
+ "thiserror 1.0.69",
+ "url",
+]
+
+[[package]]
 name = "objc2"
 version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3138,6 +3165,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4a6394b9e965e73d0a289ee54f589087e2c676aedf60885baf52c76b771e4958"
 
 [[package]]
+name = "ppv-lite86"
+version = "0.2.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85eae3c4ed2f50dcfe72643da4befc30deadb458a9b590d720cde2f2b1e97da9"
+dependencies = [
+ "zerocopy",
+]
+
+[[package]]
 name = "pretty_assertions"
 version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3276,6 +3312,8 @@ version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e058c7de0b26af77780c769414d6257830bb240f3c38477dbc2c16e5f54d6d4c"
 dependencies = [
+ "libc",
+ "rand_chacha",
  "rand_core 0.6.4",
 ]
 
@@ -3291,10 +3329,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "rand_chacha"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6c10a63a0fa32252be49d21e7709d4d4baf8d231c2dbce1eaa8141b9b127d88"
+dependencies = [
+ "ppv-lite86",
+ "rand_core 0.6.4",
+]
+
+[[package]]
 name = "rand_core"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
+dependencies = [
+ "getrandom 0.2.17",
+]
 
 [[package]]
 name = "rand_core"
@@ -3569,6 +3620,7 @@ dependencies = [
  "http-body-util",
  "indexmap",
  "libc",
+ "oauth2",
  "pastey",
  "percent-encoding",
  "pin-project-lite",
@@ -3589,6 +3641,7 @@ dependencies = [
  "tracing",
  "unicode-general-category",
  "unicode-normalization",
+ "url",
  "uuid",
 ]
 
@@ -3864,12 +3917,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_path_to_error"
+version = "0.1.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10a9ff822e371bb5403e391ecd83e182e0e77ba7f6fe0160b795797109d1b457"
+dependencies = [
+ "itoa",
+ "serde",
+ "serde_core",
+]
+
+[[package]]
 name = "serde_spanned"
 version = "1.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9c187e0a369471c550af028cba56d4f4fa2a489ad28151ae95a4d340a2a8b782"
 dependencies = [
  "serde_core",
+]
+
+[[package]]
+name = "serde_urlencoded"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3491c14715ca2294c4d6a88f15e84739788c1d030eed8c110436aafdaa2f3fd"
+dependencies = [
+ "form_urlencoded",
+ "itoa",
+ "ryu",
+ "serde",
 ]
 
 [[package]]
@@ -4986,6 +5062,7 @@ dependencies = [
  "idna",
  "percent-encoding",
  "serde",
+ "serde_derive",
 ]
 
 [[package]]

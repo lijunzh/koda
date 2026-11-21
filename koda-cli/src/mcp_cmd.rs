@@ -5,7 +5,8 @@
 //! keep the file's comments; the file can also be edited by hand. Open
 //! sessions take a change on `/mcp reconnect`.
 //!
-//! Left out: `login` and `logout`, until Koda has MCP OAuth.
+//! `login` and `logout` sign in to a streamable HTTP server with OAuth, as
+//! `codex mcp login` does, through the host's `mcpServer/oauth/login`.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -37,6 +38,22 @@ enum McpSubcommand {
     Add(AddArgs),
     /// Remove a server.
     Remove(RemoveArgs),
+    /// Sign in to a streamable HTTP server with OAuth.
+    Login(LoginArgs),
+    /// Forget a server's OAuth sign-in.
+    Logout(LogoutArgs),
+}
+
+#[derive(Debug, clap::Args)]
+struct LoginArgs {
+    /// Name of the MCP server to sign in to.
+    name: String,
+}
+
+#[derive(Debug, clap::Args)]
+struct LogoutArgs {
+    /// Name of the MCP server to sign out of.
+    name: String,
 }
 
 #[derive(Debug, clap::Args)]
@@ -125,7 +142,7 @@ fn parse_env_pair(raw: &str) -> Result<(String, String), String> {
 impl McpCli {
     /// Run the subcommand against a host.
     pub(crate) async fn run(self, project_root: PathBuf) -> Result<()> {
-        let client = InProcessClient::start(StartArgs {
+        let mut client = InProcessClient::start(StartArgs {
             config_file: koda_tui::user_config::file()?,
             home: koda_config::config_dir()?,
             project_root,
@@ -140,6 +157,8 @@ impl McpCli {
             McpSubcommand::Get(args) => get(&client, args).await,
             McpSubcommand::Add(args) => add(&client, args).await,
             McpSubcommand::Remove(args) => remove(&client, args).await,
+            McpSubcommand::Login(args) => login(&mut client, args).await,
+            McpSubcommand::Logout(args) => logout(&client, args).await,
         };
         client.shutdown().await;
         result
@@ -209,6 +228,70 @@ async fn remove(client: &InProcessClient, args: RemoveArgs) -> Result<()> {
     Ok(())
 }
 
+/// Sign in: the page to open, opened if a browser can be, then the wait for
+/// the host to say the sign-in finished.
+async fn login(client: &mut InProcessClient, args: LoginArgs) -> Result<()> {
+    use koda_client::events::Outgoing;
+    use koda_client::protocol::ServerNotification;
+    use koda_client::protocol::mcp::McpServerOauthLoginParams;
+    let name = args.name;
+    let started = client
+        .request::<methods::McpServerOauthLogin>(McpServerOauthLoginParams { name: name.clone() })
+        .await
+        .map_err(|e| anyhow!("{e}"))?;
+    let url = started.authorization_url;
+    println!("Sign in to '{name}' in your browser. If it doesn't open, go to:\n\n  {url}\n");
+    open_browser(&url);
+    while let Some(message) = client.next_event().await {
+        if let Outgoing::Notification(ServerNotification::McpServerOauthLoginCompleted(done)) =
+            message
+            && done.name == name
+        {
+            if done.success {
+                println!("Signed in to '{name}'.");
+                return Ok(());
+            }
+            bail!(
+                "{}",
+                done.error
+                    .unwrap_or_else(|| format!("the sign-in to '{name}' failed"))
+            );
+        }
+    }
+    bail!("Koda's host stopped before the sign-in finished")
+}
+
+async fn logout(client: &InProcessClient, args: LogoutArgs) -> Result<()> {
+    use koda_client::protocol::mcp::McpServerOauthLogoutParams;
+    let name = args.name;
+    let answer = client
+        .request::<methods::McpServerOauthLogout>(McpServerOauthLogoutParams { name: name.clone() })
+        .await
+        .map_err(|e| anyhow!("{e}"))?;
+    if answer.removed {
+        println!("Signed out of '{name}'.");
+    } else {
+        println!("No OAuth sign-in stored for '{name}'.");
+    }
+    Ok(())
+}
+
+/// Open `url` in the default browser, if there is one; the URL is printed
+/// either way.
+fn open_browser(url: &str) {
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    let _ = std::process::Command::new(opener)
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
 /// A server as JSON: its name, then its config.
 fn json_entry(name: &str, value: &McpServerConfigValue) -> Result<Value> {
     let mut entry = serde_json::Map::new();
@@ -245,6 +328,7 @@ async fn list(client: &InProcessClient, args: ListArgs) -> Result<()> {
         println!("No MCP servers configured yet. Try `koda mcp add my-tool -- my-command`.");
         return Ok(());
     }
+    let auth = auth_statuses(client).await;
     let mut stdio = Vec::new();
     let mut http = Vec::new();
     for (name, value) in &servers {
@@ -267,6 +351,7 @@ async fn list(client: &InProcessClient, args: ListArgs) -> Result<()> {
                     .bearer_token_env_var
                     .clone()
                     .unwrap_or_else(|| "-".to_string()),
+                auth.get(name).cloned().unwrap_or_else(|| "-".to_string()),
             ]),
             (None, None) => {}
         }
@@ -278,9 +363,33 @@ async fn list(client: &InProcessClient, args: ListArgs) -> Result<()> {
         println!();
     }
     if !http.is_empty() {
-        print_table(&["Name", "Url", "Bearer Token Env Var"], &http);
+        print_table(&["Name", "Url", "Bearer Token Env Var", "Auth"], &http);
     }
     Ok(())
+}
+
+/// Each configured server's auth, as Codex's list shows it.
+async fn auth_statuses(client: &InProcessClient) -> BTreeMap<String, String> {
+    use koda_client::protocol::mcp::{ListMcpServerStatusParams, McpAuthStatus};
+    let Ok(listed) = client
+        .request::<methods::McpServerStatusList>(ListMcpServerStatusParams::default())
+        .await
+    else {
+        return BTreeMap::new();
+    };
+    listed
+        .data
+        .into_iter()
+        .filter_map(|server| {
+            let label = match server.auth_status? {
+                McpAuthStatus::Unsupported => "Unsupported",
+                McpAuthStatus::BearerToken => "Bearer token",
+                McpAuthStatus::OAuth => "OAuth",
+                McpAuthStatus::Unknown => "-",
+            };
+            Some((server.name, label.to_string()))
+        })
+        .collect()
 }
 
 fn print_table(header: &[&str], rows: &[Vec<String>]) {

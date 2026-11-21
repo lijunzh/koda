@@ -479,3 +479,207 @@ async fn same_origin_307_followed() {
         assert_eq!(s.api_key.as_deref(), Some(API_KEY), "{s:?}");
     }
 }
+
+// ── OAuth sign-in (`koda mcp login`) ─────────────────────────────────────────
+
+/// A minimal OAuth authorization server for the MCP server at `/mcp`:
+/// protected-resource and authorization-server metadata, Dynamic Client
+/// Registration, an `/authorize` that approves at once, and `/token`.
+fn oauth_router(base: String) -> Router {
+    use axum::routing::{get, post};
+    let prm = {
+        let base = base.clone();
+        move || {
+            let base = base.clone();
+            async move {
+                axum::Json(json!({
+                    "resource": format!("{base}/mcp"),
+                    "authorization_servers": [base],
+                    "bearer_methods_supported": ["header"],
+                }))
+            }
+        }
+    };
+    let asm = {
+        let base = base.clone();
+        move || {
+            let base = base.clone();
+            async move {
+                axum::Json(json!({
+                    "issuer": base,
+                    "authorization_endpoint": format!("{base}/authorize"),
+                    "token_endpoint": format!("{base}/token"),
+                    "registration_endpoint": format!("{base}/register"),
+                    "response_types_supported": ["code"],
+                    "grant_types_supported": ["authorization_code", "refresh_token"],
+                    "code_challenge_methods_supported": ["S256"],
+                    "token_endpoint_auth_methods_supported": ["none"],
+                }))
+            }
+        }
+    };
+    Router::new()
+        .route("/.well-known/oauth-protected-resource", get(prm.clone()))
+        .route("/.well-known/oauth-protected-resource/mcp", get(prm))
+        .route("/.well-known/oauth-authorization-server", get(asm.clone()))
+        .route("/.well-known/oauth-authorization-server/mcp", get(asm))
+        .route(
+            "/register",
+            post(|body: String| async move {
+                let request: Value = serde_json::from_str(&body).unwrap_or_default();
+                (
+                    StatusCode::CREATED,
+                    axum::Json(json!({
+                        "client_id": "koda-test-client",
+                        "redirect_uris": request["redirect_uris"],
+                        "token_endpoint_auth_method": "none",
+                    })),
+                )
+            }),
+        )
+        .route(
+            "/authorize",
+            get(
+                |axum::extract::Query(query): axum::extract::Query<HashMap<String, String>>| async move {
+                    let location = format!(
+                        "{}?code=code-1&state={}",
+                        query["redirect_uri"], query["state"]
+                    );
+                    (StatusCode::FOUND, [(header::LOCATION, location)])
+                },
+            ),
+        )
+        .route(
+            "/token",
+            post(|| async {
+                axum::Json(json!({
+                    "access_token": "oauth-access-token",
+                    "token_type": "Bearer",
+                    "expires_in": 3600,
+                    "refresh_token": "oauth-refresh-token",
+                }))
+            }),
+        )
+}
+
+fn http_config_without_token(url: String) -> McpServerConfig {
+    McpServerConfig {
+        transport: McpTransport::Http {
+            url,
+            bearer_token_env_var: None,
+            headers: HashMap::new(),
+        },
+        ..http_config(String::new())
+    }
+}
+
+/// `koda mcp login` end to end: discovery, registration, the browser's
+/// round trip to Koda's callback, the tokens stored for the user only, and
+/// the next connection signed with the access token.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_oauth_sign_in_stores_tokens_that_sign_the_connection() {
+    let home = tempfile::tempdir().unwrap();
+    koda_config::runtime_env::set("XDG_CONFIG_HOME", home.path().to_string_lossy());
+
+    let (listener, addr) = bind().await;
+    let base = format!("http://{addr}");
+    let (mcp, seen) = legacy_router("/mcp", "2025-06-18");
+    serve(listener, mcp.merge(oauth_router(base.clone())));
+
+    let login = crate::oauth::login_unchecked("signed-in", &format!("{base}/mcp"))
+        .await
+        .expect("the sign-in starts");
+    assert!(
+        login
+            .authorization_url
+            .starts_with(&format!("{base}/authorize")),
+        "{}",
+        login.authorization_url
+    );
+    assert!(login.authorization_url.contains("code_challenge="));
+
+    // The browser: the authorization server sends it back to Koda.
+    let browser = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let approved = browser.get(&login.authorization_url).send().await.unwrap();
+    let callback = approved.headers()[header::LOCATION]
+        .to_str()
+        .unwrap()
+        .to_string();
+    let page = browser.get(&callback).send().await.unwrap();
+    assert_eq!(page.status(), 200);
+    tokio::time::timeout(Duration::from_secs(10), login.wait())
+        .await
+        .expect("the sign-in finishes")
+        .expect("the sign-in succeeds");
+
+    let stored = crate::oauth::credentials_path("signed-in").unwrap();
+    assert!(
+        std::fs::read_to_string(&stored)
+            .unwrap()
+            .contains("oauth-access-token")
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&stored).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+    assert!(crate::oauth::has_credentials("signed-in"));
+
+    // Discovery probed `/mcp` without a token; only the connection counts.
+    seen.lock().unwrap().clear();
+    let mut client = McpClient::new(
+        "signed-in".into(),
+        http_config_without_token(format!("{base}/mcp")),
+    );
+    connect_http(&mut client)
+        .await
+        .unwrap_or_else(|e| panic!("the signed-in server should connect: {e:#}"));
+    assert_eq!(echo(&client, "hi").await, "hi");
+    // rmcp's discovery probes `/mcp` without a token; every JSON-RPC
+    // request carries it.
+    let authorizations: Vec<Option<String>> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|s| s.rpc_method.is_some())
+        .map(|s| s.authorization.clone())
+        .collect();
+    assert!(
+        !authorizations.is_empty()
+            && authorizations
+                .iter()
+                .all(|a| a.as_deref() == Some("Bearer oauth-access-token")),
+        "{authorizations:?}"
+    );
+
+    assert!(crate::oauth::logout("signed-in").unwrap());
+    assert!(!crate::oauth::has_credentials("signed-in"));
+}
+
+/// A server that answers 401 to a client with no sign-in says how to sign in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refused_connection_says_to_sign_in() {
+    let (listener, addr) = bind().await;
+    serve(
+        listener,
+        Router::new().fallback(any(|| async {
+            (
+                StatusCode::UNAUTHORIZED,
+                [(header::WWW_AUTHENTICATE, "Bearer")],
+            )
+        })),
+    );
+    let mut client = McpClient::new(
+        "needs-sign-in-test".into(),
+        http_config_without_token(format!("http://{addr}/mcp")),
+    );
+    let error = connect_http(&mut client).await.unwrap_err();
+    assert!(
+        format!("{error:#}").contains("koda mcp login needs-sign-in-test"),
+        "{error:#}"
+    );
+}

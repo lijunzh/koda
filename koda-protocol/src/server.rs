@@ -131,6 +131,8 @@ server_notifications! {
     SessionBackgroundTerminalsExited => "session/backgroundTerminals/exited" (crate::background::BackgroundTerminalsExitedNotification),
     /// A session's MCP server started, failed or was stopped while starting.
     McpServerStatusUpdated => "mcpServer/startupStatus/updated" (crate::mcp::McpServerStatusUpdatedNotification),
+    /// A sign-in started with `mcpServer/oauth/login` finished.
+    McpServerOauthLoginCompleted => "mcpServer/oauthLogin/completed" (crate::mcp::McpServerOauthLoginCompletedNotification),
     /// A turn began.
     TurnStarted => "turn/started" (crate::turn::TurnStartedNotification),
     /// A turn is over, however it ended.

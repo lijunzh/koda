@@ -105,6 +105,77 @@ pub struct McpServerStatus {
     /// names in a message. MCP Apps pages (`ui://`) are left out.
     #[serde(default)]
     pub resources: Vec<McpResource>,
+    /// How Koda authenticates to it, as Codex's `authStatus`. Given in the
+    /// configured listing (no `sessionId`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_status: Option<McpAuthStatus>,
+}
+
+/// How Koda authenticates to a server; Codex's values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum McpAuthStatus {
+    /// An HTTP server with neither a bearer token nor a sign-in: it may need
+    /// none, or answer 401.
+    Unknown,
+    /// A stdio server: no authentication.
+    Unsupported,
+    /// A bearer token from an environment variable.
+    BearerToken,
+    /// Signed in with OAuth (`mcpServer/oauth/login`).
+    #[serde(rename = "oAuth")]
+    OAuth,
+}
+
+/// `mcpServer/oauth/login`: sign in to a configured streamable HTTP server
+/// with OAuth, as Codex's. The answer gives the page to open; the host waits
+/// for the browser's redirect, stores the tokens and sends
+/// `mcpServer/oauthLogin/completed`. Open sessions then reconnect to their
+/// servers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct McpServerOauthLoginParams {
+    /// The server's name in the config.
+    pub name: String,
+}
+
+/// The answer to `mcpServer/oauth/login`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerOauthLoginResponse {
+    /// The authorization server's page, to open in a browser.
+    pub authorization_url: String,
+}
+
+/// `mcpServer/oauth/logout`: forget a server's stored OAuth tokens. Koda's
+/// own method; Codex forgets them in `codex mcp logout`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct McpServerOauthLogoutParams {
+    /// The server's name.
+    pub name: String,
+}
+
+/// The answer to `mcpServer/oauth/logout`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerOauthLogoutResponse {
+    /// Whether there were tokens to forget.
+    pub removed: bool,
+}
+
+/// `mcpServer/oauthLogin/completed`: a sign-in started with
+/// `mcpServer/oauth/login` finished.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerOauthLoginCompletedNotification {
+    /// The server.
+    pub name: String,
+    /// Whether the tokens are stored.
+    pub success: bool,
+    /// Why not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// One resource a server offers, MCP's `Resource`.

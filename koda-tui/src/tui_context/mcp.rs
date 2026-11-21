@@ -324,6 +324,7 @@ mod tests {
             mime_type: None,
         };
         let server = |name: &str, status, resources| McpServerStatus {
+            auth_status: None,
             name: name.into(),
             runtime_status: status,
             tools: Default::default(),

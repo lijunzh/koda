@@ -3549,3 +3549,64 @@ async fn a_mentioned_mcp_resource_is_read_and_sent() {
     assert!(sent.contains("Not read:"), "{sent}");
     koda.client.shutdown().await;
 }
+
+/// The configured listing says how Koda authenticates to each server, and
+/// an OAuth sign-in is only for an HTTP server Koda would connect to.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_auth_status_and_sign_in_refusals() {
+    use koda_client::protocol::mcp::{
+        McpAuthStatus, McpServerOauthLoginParams, McpServerOauthLogoutParams,
+    };
+    let server = model(vec![]).await;
+    let koda = Koda::start(config(&server)).await;
+    koda.write_config(&[
+        ("mcp_servers.local", json!({"command": "true"})),
+        (
+            "mcp_servers.tokened",
+            json!({"url": "https://mcp.example.com/mcp", "bearer_token_env_var": "EXAMPLE_TOKEN"}),
+        ),
+        (
+            "mcp_servers.plain",
+            json!({"url": "https://mcp.example.com/mcp"}),
+        ),
+        (
+            "mcp_servers.inside",
+            json!({"url": "http://127.0.0.1:9/mcp"}),
+        ),
+    ])
+    .await
+    .unwrap();
+    let listed = koda.mcp_status(None).await;
+    let auth = |name: &str| {
+        listed
+            .iter()
+            .find(|s| s.name == name)
+            .and_then(|s| s.auth_status)
+    };
+    assert_eq!(auth("local"), Some(McpAuthStatus::Unsupported));
+    assert_eq!(auth("tokened"), Some(McpAuthStatus::BearerToken));
+    assert_eq!(auth("plain"), Some(McpAuthStatus::Unknown));
+
+    let login = |name: &str| {
+        koda.client
+            .request::<methods::McpServerOauthLogin>(McpServerOauthLoginParams {
+                name: name.into(),
+            })
+    };
+    let stdio = server_error(login("local").await);
+    assert!(stdio.message.contains("stdio server"), "{stdio:?}");
+    let missing = server_error(login("nowhere").await);
+    assert!(missing.message.contains("no MCP server"), "{missing:?}");
+    let inside = server_error(login("inside").await);
+    assert!(inside.message.contains("loopback"), "{inside:?}");
+
+    let logout = koda
+        .client
+        .request::<methods::McpServerOauthLogout>(McpServerOauthLogoutParams {
+            name: "plain".into(),
+        })
+        .await
+        .unwrap();
+    assert!(!logout.removed);
+    koda.client.shutdown().await;
+}
