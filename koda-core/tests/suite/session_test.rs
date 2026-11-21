@@ -68,6 +68,7 @@ async fn make_session(env: &Env, provider: Box<dyn LlmProvider>) -> (KodaSession
         // (the TUI) calls `attach_event_sink` to spawn it.
         event_forwarder: None,
         queued_steers: Vec::new(),
+        output_schema: None,
     };
     (session, cancel)
 }

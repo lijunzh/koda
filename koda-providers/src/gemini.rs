@@ -817,6 +817,10 @@ impl GeminiProvider {
                 "thinkingBudget": budget
             });
         }
+        if let Some(schema) = settings.and_then(|s| s.output_schema.as_ref()) {
+            gen_config["responseMimeType"] = serde_json::json!("application/json");
+            gen_config["responseJsonSchema"] = schema.clone();
+        }
         let mut body = serde_json::json!({
             "contents": contents,
             "generationConfig": gen_config,
@@ -1337,6 +1341,7 @@ mod tests {
             task_budget: None,
             deferred_tools: Vec::new(),
             no_tool_calls: false,
+            output_schema: None,
         };
         let body = p.build_request_body(&[], None, &[], Some(&settings));
         let thinking_config = &body["generationConfig"]["thinkingConfig"];
@@ -1364,6 +1369,25 @@ mod tests {
     }
 
     #[test]
+    fn a_reply_held_to_a_schema_asks_for_json_matching_it() {
+        let p = make_provider();
+        let mut settings = crate::ModelSettings::defaults_for(
+            "gemini-2.5-flash",
+            &crate::provider_catalog::ProviderType::Gemini,
+        );
+        let body = p.build_request_body(&[], None, &[], Some(&settings));
+        assert!(body["generationConfig"].get("responseJsonSchema").is_none());
+        let schema = serde_json::json!({"type": "object", "required": ["ok"]});
+        settings.output_schema = Some(schema.clone());
+        let body = p.build_request_body(&[], None, &[], Some(&settings));
+        assert_eq!(
+            body["generationConfig"]["responseMimeType"],
+            "application/json"
+        );
+        assert_eq!(body["generationConfig"]["responseJsonSchema"], schema);
+    }
+
+    #[test]
     fn test_build_request_no_thinking_config_when_unset() {
         let p = make_provider();
         let settings = crate::ModelSettings {
@@ -1376,6 +1400,7 @@ mod tests {
             task_budget: None,
             deferred_tools: Vec::new(),
             no_tool_calls: false,
+            output_schema: None,
         };
         let body = p.build_request_body(&[], None, &[], Some(&settings));
         assert!(body["generationConfig"]["thinkingConfig"].is_null());

@@ -279,6 +279,10 @@ pub struct KodaSession {
     /// [`crate::inference::CANCEL_GRACE`]. Clients read it with
     /// [`Self::take_queued_steers`].
     pub queued_steers: Vec<String>,
+    /// A JSON Schema every turn's last reply must match, from the latest
+    /// `turn/start` that gave one (`koda exec --output-schema`); a
+    /// `turn/start` without one clears it.
+    pub output_schema: Option<serde_json::Value>,
 }
 
 impl KodaSession {
@@ -369,6 +373,7 @@ impl KodaSession {
             // it `None` and rely on the legacy synchronous drain.
             event_forwarder: None,
             queued_steers: Vec::new(),
+            output_schema: None,
         }
     }
 
@@ -672,6 +677,7 @@ impl KodaSession {
             bg_agents: &self.bg_agents,
             sub_agent_cache: &self.sub_agent_cache,
             session_allows: &self.session_allows,
+            output_schema: self.output_schema.as_ref(),
         })
         .await;
 

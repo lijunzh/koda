@@ -110,6 +110,13 @@ pub struct TurnStartParams {
     /// its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<crate::state::TrustMode>,
+    /// A JSON Schema the last reply of this turn, and of the turns Koda
+    /// starts after it on its own (a goal's, a background command's), must
+    /// match, as Codex's `outputSchema`. The prompt says so; a reply that
+    /// doesn't match gets one more model call with the schema enforced by
+    /// the API. A `turn/start` without one clears it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<serde_json::Value>,
 }
 
 /// A file or directory mentioned in a turn's input.

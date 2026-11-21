@@ -130,6 +130,7 @@ async fn make_session_with_mcp(
         // (the TUI) calls `attach_event_sink` to spawn it.
         event_forwarder: None,
         queued_steers: Vec::new(),
+        output_schema: None,
     };
     (session, cancel, recorded)
 }

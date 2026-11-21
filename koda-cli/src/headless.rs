@@ -70,6 +70,8 @@ pub struct Run {
     pub output: Output,
     /// Where to write the last reply (`koda exec -o`).
     pub last_message: Option<PathBuf>,
+    /// The JSON Schema the last reply must match (`--output-schema`).
+    pub output_schema: Option<serde_json::Value>,
     /// What `--provider`, `--base-url` and `--model` named (a provider by
     /// its id or a name for it, a model by alias or id). The host fills in the rest: a new
     /// session from the saved choice, a resumed one from its own, as
@@ -220,6 +222,7 @@ pub async fn run_headless(
                     skills: Vec::new(),
                     client_message_id: None,
                     mode: None,
+                    output_schema: run.output_schema.clone(),
                 })
                 .await?
                 .turn,
@@ -358,6 +361,17 @@ pub async fn run_headless(
         }
         _ => Ok(()),
     };
+    // A completed run whose reply doesn't match `--output-schema` fails.
+    if let Some(schema) = &run.output_schema
+        && result.is_ok()
+        && run_failure(&result, &view.stats).is_none()
+    {
+        view.stats.schema_mismatch = crate::output_schema::mismatch(schema, &response)
+            .map(|why| format!("the last reply doesn't match --output-schema: {why}"));
+        if let Some(why) = &view.stats.schema_mismatch {
+            eprintln!("Error: {why}");
+        }
+    }
     if let Output::Events { .. } = run.output {
         // Usage is the host's latest count, sent after every model call,
         // so it holds for failed and cancelled turns too.
@@ -426,6 +440,8 @@ struct RunStats {
     sub_agent_tool_calls: BTreeMap<String, u64>,
     /// How the turn ended, and why if it failed.
     turn_end: Option<(TurnStatus, Option<String>)>,
+    /// Why the last reply doesn't match `--output-schema`, if it doesn't.
+    schema_mismatch: Option<String>,
     /// The session's latest token counts (`session/tokenUsage/updated`),
     /// by agent: everything since it was created, a resumed session's
     /// earlier turns and sub-agents included.
@@ -464,7 +480,7 @@ fn run_failure(result: &Result<()>, stats: &RunStats) -> Option<String> {
                 .clone()
                 .unwrap_or_else(|| "the turn failed".to_string()),
         ),
-        (Ok(()), _) => None,
+        (Ok(()), _) => stats.schema_mismatch.clone(),
     }
 }
 
@@ -1040,6 +1056,7 @@ mod tests {
             tool_calls: BTreeMap::from([("Read".to_string(), 2)]),
             sub_agent_tool_calls: BTreeMap::new(),
             turn_end: Some((TurnStatus::Completed, None)),
+            schema_mismatch: None,
             usage: TokenUsage {
                 by_agent: BTreeMap::from([
                     ("main".to_string(), main),

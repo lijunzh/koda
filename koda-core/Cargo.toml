@@ -37,6 +37,7 @@ serde_json = { workspace = true }
 # A private copy of a PDF for poppler to read (Read v2).
 tempfile = { workspace = true }
 schemars = { workspace = true }
+jsonschema = { workspace = true }
 
 # Logging
 tracing = { workspace = true }

@@ -191,6 +191,9 @@ struct ChatRequest {
     temperature: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_effort: Option<String>,
+    /// `json_schema` when the reply must match a schema.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_format: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -615,6 +618,19 @@ impl OpenAiCompatProvider {
             })
             .collect();
 
+        // A reply held to a schema goes without the tools: llama.cpp turns
+        // the schema into a grammar and refuses one alongside tools ("Cannot
+        // use custom grammar constraints with tools").
+        let (api_tools, response_format) = match &settings.output_schema {
+            Some(schema) => (
+                Vec::new(),
+                Some(serde_json::json!({
+                    "type": "json_schema",
+                    "json_schema": { "name": "koda_output_schema", "schema": schema },
+                })),
+            ),
+            None => (api_tools, None),
+        };
         let tool_choice = (settings.no_tool_calls && !api_tools.is_empty()).then_some("none");
         ChatRequest {
             model: model.to_string(),
@@ -628,6 +644,7 @@ impl OpenAiCompatProvider {
             max_tokens: settings.max_tokens,
             temperature: settings.temperature,
             reasoning_effort: settings.reasoning_effort.clone(),
+            response_format,
         }
     }
 }

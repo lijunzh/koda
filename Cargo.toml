@@ -78,6 +78,8 @@ libc = "0.2"
 regex = "1"
 reqwest = { version = "0.13", features = ["json", "stream"] }
 schemars = "1"
+# JSON Schema validation for `--output-schema`, without remote `$ref` fetching.
+jsonschema = { version = "0.62", default-features = false }
 shlex = "2"
 time = "0.3"
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "macros"] }

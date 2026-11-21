@@ -4370,6 +4370,9 @@
           ],
           "description": "The trust mode from this turn on. Without one, the session keeps\nits own."
         },
+        "outputSchema": {
+          "description": "A JSON Schema the last reply of this turn, and of the turns Koda\nstarts after it on its own (a goal's, a background command's), must\nmatch, as Codex's `outputSchema`. The prompt says so; a reply that\ndoesn't match gets one more model call with the schema enforced by\nthe API. A `turn/start` without one clears it."
+        },
         "sessionId": {
           "description": "The session.",
           "type": "string"

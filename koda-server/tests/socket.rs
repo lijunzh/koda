@@ -730,6 +730,7 @@ async fn a_client_runs_a_turn_over_the_socket() {
             skills: Vec::new(),
             client_message_id: None,
             mode: None,
+            output_schema: None,
         })
         .await
         .unwrap();

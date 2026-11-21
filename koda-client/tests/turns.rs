@@ -190,6 +190,7 @@ impl Koda {
                 skills: Vec::new(),
                 client_message_id: client_message_id.map(str::to_string),
                 mode: None,
+                output_schema: None,
             })
             .await?;
         assert_eq!(started.turn.status, TurnStatus::InProgress);
@@ -750,6 +751,7 @@ async fn requests_without_a_running_turn_or_session_are_refused() {
                 skills: Vec::new(),
                 client_message_id: None,
                 mode: Some(TrustMode::Safe),
+                output_schema: None,
             })
             .await,
     );
@@ -814,6 +816,7 @@ async fn mentions_are_read_by_the_host() {
             skills: Vec::new(),
             client_message_id: None,
             mode: None,
+            output_schema: None,
         })
         .await
         .unwrap();
@@ -847,6 +850,7 @@ async fn mentions_are_read_by_the_host() {
             skills: Vec::new(),
             client_message_id: None,
             mode: None,
+            output_schema: None,
         })
         .await
         .unwrap();
@@ -883,6 +887,7 @@ async fn a_mentioned_files_folder_instructions_come_with_it() {
         skills: Vec::new(),
         client_message_id: None,
         mode: None,
+        output_schema: None,
     };
     koda.client
         .request::<methods::TurnStart>(start("look at @src/api/a.rs", "src/api/a.rs"))
@@ -971,6 +976,7 @@ async fn a_named_skill_is_sent_with_the_text() {
             }],
             client_message_id: None,
             mode: None,
+            output_schema: None,
         })
         .await
         .unwrap();
@@ -1105,6 +1111,7 @@ async fn a_resumed_session_keeps_its_history() {
             skills: Vec::new(),
             client_message_id: None,
             mode: None,
+            output_schema: None,
         })
         .await
         .unwrap();
@@ -3518,6 +3525,7 @@ async fn a_mentioned_mcp_resource_is_read_and_sent() {
         skills: Vec::new(),
         client_message_id: None,
         mode: None,
+        output_schema: None,
     };
     koda.client
         .request::<methods::TurnStart>(start("notes:note://welcome"))

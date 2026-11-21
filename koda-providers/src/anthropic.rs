@@ -1001,11 +1001,7 @@ impl LlmProvider for AnthropicProvider {
             messages: api_messages,
             tools: api_tools,
             diagnostics,
-            output_config: crate::model_effort::applied(
-                api_model,
-                settings.reasoning_effort.as_deref(),
-            )
-            .map(|effort| serde_json::json!({ "effort": effort })),
+            output_config: output_config(api_model, settings),
         };
         super::trace_request("anthropic", &request);
 
@@ -1206,10 +1202,8 @@ impl LlmProvider for AnthropicProvider {
         if let Some(diagnostics) = diagnostics {
             body["diagnostics"] = diagnostics;
         }
-        if let Some(effort) =
-            crate::model_effort::applied(api_model, settings.reasoning_effort.as_deref())
-        {
-            body["output_config"] = serde_json::json!({ "effort": effort });
+        if let Some(config) = output_config(api_model, settings) {
+            body["output_config"] = config;
         }
         // The turn's budget, for a model that paces itself against it. The
         // same value on every call of the turn, so the cached prefix holds.
@@ -1385,9 +1379,47 @@ impl AnthropicProvider {
     }
 }
 
+/// `output_config`: the effort the model takes, and the schema its reply
+/// must match (structured outputs, `format: json_schema`).
+fn output_config(api_model: &str, settings: &crate::ModelSettings) -> Option<serde_json::Value> {
+    let mut config = serde_json::Map::new();
+    if let Some(effort) =
+        crate::model_effort::applied(api_model, settings.reasoning_effort.as_deref())
+    {
+        config.insert("effort".into(), serde_json::json!(effort));
+    }
+    if let Some(schema) = &settings.output_schema {
+        config.insert(
+            "format".into(),
+            serde_json::json!({ "type": "json_schema", "schema": schema }),
+        );
+    }
+    (!config.is_empty()).then_some(serde_json::Value::Object(config))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reply_held_to_a_schema_sends_it_as_the_output_format() {
+        let mut settings = crate::ModelSettings::defaults_for(
+            "claude-haiku-5-5",
+            &crate::provider_catalog::ProviderType::Anthropic,
+        );
+        assert!(
+            output_config("claude-haiku-5-5", &settings)
+                .and_then(|config| config.get("format").cloned())
+                .is_none()
+        );
+        let schema = serde_json::json!({"type": "object", "required": ["ok"]});
+        settings.output_schema = Some(schema.clone());
+        settings.reasoning_effort = Some("high".into());
+        let config = output_config("claude-haiku-5-5", &settings).unwrap();
+        assert_eq!(config["format"]["type"], "json_schema");
+        assert_eq!(config["format"]["schema"], schema);
+        assert_eq!(config["effort"], "high", "{config}");
+    }
 
     /// On for Anthropic's own API, however its URL is written, off elsewhere.
     #[test]

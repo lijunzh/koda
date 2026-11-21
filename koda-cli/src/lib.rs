@@ -23,6 +23,7 @@ pub(crate) mod headless;
 pub(crate) mod logging;
 pub(crate) mod mcp_cmd;
 pub(crate) mod onboarding;
+pub(crate) mod output_schema;
 
 /// Binary entry point. The only public symbol the `koda` binary needs.
 pub async fn run() -> anyhow::Result<()> {

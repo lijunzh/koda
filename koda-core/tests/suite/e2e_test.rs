@@ -182,6 +182,7 @@ async fn test_provider_error_emits_error_event() {
         queued_steers: &mut Vec::new(),
         bg_agents: &koda_core::child_agent::new_shared(),
         sub_agent_cache: &koda_core::sub_agent_cache::SubAgentCache::new(),
+        output_schema: None,
         session_allows: &koda_core::trust::SessionAllows::default(),
     })
     .await;
@@ -310,6 +311,7 @@ async fn test_cancel_during_streaming() {
         queued_steers: &mut Vec::new(),
         bg_agents: &koda_core::child_agent::new_shared(),
         sub_agent_cache: &koda_core::sub_agent_cache::SubAgentCache::new(),
+        output_schema: None,
         session_allows: &koda_core::trust::SessionAllows::default(),
     })
     .await;
