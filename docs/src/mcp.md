@@ -108,6 +108,21 @@ servers from a new chat (`/new`).
 
 `/mcp add` and `/mcp remove` print the `koda mcp` command to run.
 
+## Servers that ask you for input
+
+A server may stop in the middle of a tool call to ask you something
+(MCP's elicitation): a form of a few fields, or a page to visit. Koda tells
+every server it can do both, as Codex and Claude Code do.
+
+In the TUI the question dialog asks the form's fields one at a time, in
+the order of their names: type a value and press Enter. A choice or a yes/no
+shows numbered options; an empty answer takes the field's default or skips a
+field that isn't required. For a page, visit it and press Enter. `Esc`
+declines, and the tool goes on without your answer; a turn you stop cancels
+it. `koda exec` has nobody to ask, so it declines. Over the protocol the
+request is `mcpServer/elicitation/request` (Codex's name), answered with
+`accept` and the fields' values, `decline` or `cancel`.
+
 ## Tool naming
 
 MCP tools appear in Koda's tool registry as `<server>__<tool>`. For example,

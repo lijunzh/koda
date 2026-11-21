@@ -399,8 +399,15 @@ pub(crate) async fn open(
             learned_window: None,
             goal_turn: crate::goal::TurnActivity::default(),
             goal_budget: None,
+            elicitations: HashMap::new(),
         }),
     });
+    // The session's MCP servers ask the client for input through the sink.
+    if let Some(mcp) = session.mcp() {
+        mcp.read().await.set_elicitor(Arc::new(HostElicitor {
+            sink: Arc::downgrade(&sink),
+        }));
+    }
     // Sub-agents' status goes out as it changes, not only between the
     // turn's model calls.
     session.attach_event_sink(Arc::clone(&sink) as Arc<dyn EngineSink>);
@@ -524,8 +531,11 @@ impl SessionTask {
                     let _ = reply.send(Err(invalid("no active turn to steer")));
                     Next::Idle
                 }
-                SessionCommand::Respond { id, .. } => {
-                    tracing::debug!("an answer to request {id} arrived after its turn");
+                SessionCommand::Respond { id, result } => {
+                    // Only an MCP server's request outlives a turn.
+                    if self.sink.answer(&id, result).is_some() {
+                        tracing::debug!("an answer to request {id} arrived after its turn");
+                    }
                     Next::Idle
                 }
                 SessionCommand::ReloadMcp { done } => {
@@ -1459,6 +1469,7 @@ enum RequestKind {
     Approval,
     Question,
     LoopCap,
+    Elicitation,
 }
 
 struct SinkState {
@@ -1479,6 +1490,9 @@ struct SinkState {
     goal_turn: crate::goal::TurnActivity,
     /// The goal's budget, watched while the turn spends it.
     goal_budget: Option<crate::goal::BudgetWatch>,
+    /// MCP servers' requests for input waiting on the client, each with
+    /// where its answer goes.
+    elicitations: HashMap<RequestId, oneshot::Sender<Answer>>,
 }
 
 /// The session's [`EngineSink`]: engine events become protocol messages on
@@ -1567,8 +1581,14 @@ impl HostSink {
             let Some(end) = state.pending_end.take() else {
                 return;
             };
-            // Requests still open when the turn ends need no answer.
+            // Requests still open when the turn ends need no answer. An
+            // MCP server still waiting for input is told it was cancelled.
             let mut out = state.projector.resolve_all();
+            let waiting: Vec<RequestId> = state.elicitations.drain().map(|(id, _)| id).collect();
+            for id in waiting {
+                state.kinds.remove(&id);
+                out.push(self.resolved_notice(&id));
+            }
             out.extend(state.projector.project(None, end));
             if let Some(message) = error {
                 for message_out in &mut out {
@@ -1598,6 +1618,13 @@ impl HostSink {
     /// open, such as one whose turn has ended.
     fn answer(&self, id: &RequestId, result: Answer) -> Option<EngineCommand> {
         let mut state = self.lock();
+        if let Some(reply) = state.elicitations.remove(id) {
+            state.kinds.remove(id);
+            let resolved = self.resolved_notice(id);
+            self.send(&mut state, vec![resolved]);
+            let _ = reply.send(result);
+            return None;
+        }
         let kind = state.kinds.remove(id)?;
         let engine_id = state.projector.engine_request(id)?;
         let command = engine_command(kind, engine_id.clone(), result);
@@ -1687,6 +1714,7 @@ impl HostSink {
                         ServerRequest::ToolCallApproval { .. } => RequestKind::Approval,
                         ServerRequest::UserInput { .. } => RequestKind::Question,
                         ServerRequest::LoopCap { .. } => RequestKind::LoopCap,
+                        ServerRequest::McpServerElicitation { .. } => RequestKind::Elicitation,
                     };
                     state.kinds.insert(request.id().clone(), kind);
                     self.open_requests
@@ -1705,6 +1733,83 @@ impl HostSink {
             }
             // A client that has gone just stops reading.
             let _ = self.events.send(message);
+        }
+    }
+}
+
+impl HostSink {
+    /// `serverRequest/resolved` for one of the host's own requests.
+    fn resolved_notice(&self, id: &RequestId) -> Outgoing {
+        Outgoing::Notification(ServerNotification::ServerRequestResolved(
+            koda_protocol::server::ServerRequestResolvedNotification {
+                session_id: self.session_id.clone(),
+                request_id: id.clone(),
+            },
+        ))
+    }
+
+    /// Ask the client for an MCP server's request for input. `None` when
+    /// nobody is there to ask (`koda exec`), which declines it.
+    fn elicit(
+        &self,
+        request: koda_core::mcp::elicitation::ElicitationRequest,
+    ) -> Option<oneshot::Receiver<Answer>> {
+        if self.answers.is_some() {
+            return None;
+        }
+        let (reply, answer) = oneshot::channel();
+        let mut state = self.lock();
+        let id = state.projector.new_request_id();
+        state.elicitations.insert(id.clone(), reply);
+        let params = koda_protocol::mcp::McpServerElicitationRequestParams {
+            session_id: self.session_id.clone(),
+            server_name: request.server,
+            message: request.message,
+            requested_schema: request.requested_schema,
+            url: request.url,
+        };
+        self.send(
+            &mut state,
+            vec![Outgoing::Request(ServerRequest::McpServerElicitation {
+                id,
+                params,
+            })],
+        );
+        Some(answer)
+    }
+}
+
+/// The session's answer to its MCP servers' requests for input: the
+/// client's, through the sink.
+struct HostElicitor {
+    sink: std::sync::Weak<HostSink>,
+}
+
+#[async_trait::async_trait]
+impl koda_core::mcp::elicitation::Elicitor for HostElicitor {
+    async fn elicit(
+        &self,
+        request: koda_core::mcp::elicitation::ElicitationRequest,
+    ) -> koda_core::mcp::elicitation::ElicitationAnswer {
+        use koda_core::mcp::elicitation::ElicitationAnswer;
+        use koda_protocol::mcp::{McpServerElicitationAction, McpServerElicitationRequestResponse};
+        let Some(answer) = self.sink.upgrade().and_then(|sink| sink.elicit(request)) else {
+            return ElicitationAnswer::Decline;
+        };
+        // The turn ended, or the client refused or sent no answer we read.
+        let Ok(Ok(value)) = answer.await else {
+            return ElicitationAnswer::Cancel;
+        };
+        match serde_json::from_value::<McpServerElicitationRequestResponse>(value) {
+            Ok(response) => match response.action {
+                McpServerElicitationAction::Accept => ElicitationAnswer::Accept(response.content),
+                McpServerElicitationAction::Decline => ElicitationAnswer::Decline,
+                McpServerElicitationAction::Cancel => ElicitationAnswer::Cancel,
+            },
+            Err(e) => {
+                tracing::warn!("an elicitation's answer didn't decode: {e}");
+                ElicitationAnswer::Cancel
+            }
         }
     }
 }
@@ -1741,6 +1846,10 @@ fn engine_command(kind: RequestKind, id: String, result: Answer) -> EngineComman
         }
     }
     match kind {
+        // Answered in `HostSink::answer`, never turned into a command.
+        RequestKind::Elicitation => EngineCommand::Notice {
+            text: String::new(),
+        },
         RequestKind::Approval => EngineCommand::ApprovalResponse {
             id,
             decision: match decode::<ToolCallApprovalResponse>(result).map(|r| r.decision) {
@@ -1946,6 +2055,7 @@ mod tests {
                 learned_window: None,
                 goal_turn: crate::goal::TurnActivity::default(),
                 goal_budget: None,
+                elicitations: HashMap::new(),
             }),
         };
         (sink, rx)

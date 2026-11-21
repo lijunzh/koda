@@ -26,6 +26,7 @@ use crate::tui_types::{MenuContent, PromptMode};
 use super::TurnCommand;
 use crossterm::event::{Event, KeyCode, KeyModifiers};
 use koda_client::protocol::item::{ApprovalDecision, ToolCallApprovalResponse, UserInputResponse};
+use koda_client::protocol::mcp::{McpServerElicitationAction, McpServerElicitationRequestResponse};
 use koda_client::protocol::rpc::RequestId;
 use koda_client::protocol::state::{SandboxState, TrustMode};
 use koda_client::protocol::turn::{LoopCapDecision, LoopCapResponse};
@@ -241,6 +242,61 @@ async fn handle_inference_key_inline(
         match (key.code, key.modifiers) {
             (KeyCode::Enter, m) if m.contains(KeyModifiers::ALT) => {
                 textarea.insert_str("\n");
+            }
+            (KeyCode::Enter, KeyModifiers::NONE)
+                if matches!(menu, MenuContent::AskUser { form: Some(_), .. }) =>
+            {
+                // An MCP server's form: the next field, or the answer.
+                let answer = textarea.text().to_string();
+                let MenuContent::AskUser {
+                    question,
+                    options,
+                    form: Some(form),
+                    ..
+                } = menu
+                else {
+                    return false;
+                };
+                match form.submit(&answer) {
+                    Ok(None) => {
+                        textarea.set_text_clearing_elements("");
+                        *question = form.question();
+                        *options = form.options();
+                    }
+                    Ok(Some(content)) => {
+                        textarea.set_text_clearing_elements("");
+                        let id = form.id.clone();
+                        *prompt_mode = PromptMode::Chat;
+                        *menu = MenuContent::None;
+                        let _ = cmd_tx
+                            .send(TurnCommand::answer(
+                                id,
+                                McpServerElicitationRequestResponse {
+                                    action: McpServerElicitationAction::Accept,
+                                    content: Some(content),
+                                },
+                            ))
+                            .await;
+                    }
+                    Err(why) => crate::tui_output::warn_msg(scroll_buffer, why),
+                }
+            }
+            (KeyCode::Esc, _) if matches!(menu, MenuContent::AskUser { form: Some(_), .. }) => {
+                // Declined: the server's tool goes on without it.
+                textarea.set_text_clearing_elements("");
+                *prompt_mode = PromptMode::Chat;
+                if let MenuContent::AskUser { id, .. } = std::mem::replace(menu, MenuContent::None)
+                {
+                    let _ = cmd_tx
+                        .send(TurnCommand::answer(
+                            id,
+                            McpServerElicitationRequestResponse {
+                                action: McpServerElicitationAction::Decline,
+                                content: None,
+                            },
+                        ))
+                        .await;
+                }
             }
             (KeyCode::Enter, KeyModifiers::NONE) => {
                 let answer = textarea.text().to_string();

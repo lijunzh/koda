@@ -766,6 +766,18 @@ impl EventProjector {
         self.turn_id.clone().unwrap_or_default()
     }
 
+    /// A request id for a request of the host's own, not the engine's: an
+    /// MCP server's elicitation.
+    pub(crate) fn new_request_id(&mut self) -> RequestId {
+        match &self.shared_request_ids {
+            Some(ids) => RequestId::Integer(ids.fetch_add(1, Ordering::Relaxed) + 1),
+            None => {
+                self.next_request += 1;
+                RequestId::Integer(self.next_request)
+            }
+        }
+    }
+
     fn request_id(&mut self, engine_id: String) -> RequestId {
         let id = match &self.shared_request_ids {
             Some(ids) => RequestId::Integer(ids.fetch_add(1, Ordering::Relaxed) + 1),

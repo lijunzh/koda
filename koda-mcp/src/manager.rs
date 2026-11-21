@@ -66,6 +66,9 @@ pub struct McpManager {
     /// The servers' configs, to tell what a reload changes.
     configs: HashMap<String, McpServerConfig>,
 
+    /// Who answers the servers' requests for input.
+    elicitor: crate::elicitation::ElicitorSlot,
+
     /// Servers whose startup is under way, with the startup's number. A
     /// startup that finishes after a newer one began, or after its server
     /// was stopped, is discarded.
@@ -94,11 +97,18 @@ impl McpManager {
             clients: HashMap::new(),
             annotations: HashMap::new(),
             configs: HashMap::new(),
+            elicitor: Default::default(),
             startups: HashMap::new(),
             generation: 0,
             changed: watch::channel(0).0,
             on_status: None,
         }
+    }
+
+    /// Who answers the servers' requests for input, the ones already
+    /// started included.
+    pub fn set_elicitor(&self, elicitor: std::sync::Arc<dyn crate::elicitation::Elicitor>) {
+        self.elicitor.set(elicitor);
     }
 
     /// Who is told when a server's startup changes.
@@ -157,9 +167,10 @@ impl McpManager {
         if let Some(mut old) = old {
             old.disconnect().await;
         }
+        let elicitor = this.read().await.elicitor.clone();
         let this = Arc::clone(this);
         tokio::spawn(async move {
-            let mut client = McpClient::new(name.clone(), config);
+            let mut client = McpClient::new(name.clone(), config).with_elicitor(elicitor);
             let result = client.connect().await;
             let mut manager = this.write().await;
             if manager.startups.get(&name) != Some(&generation) {
@@ -528,7 +539,7 @@ impl McpManager {
 
         self.startups.remove(&name);
         self.configs.insert(name.clone(), config.clone());
-        let mut client = McpClient::new(name.clone(), config);
+        let mut client = McpClient::new(name.clone(), config).with_elicitor(self.elicitor.clone());
         client.connect().await?;
 
         // Cache annotations for the new tools.

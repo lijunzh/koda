@@ -2033,3 +2033,51 @@ async fn output_schema_refuses_a_bad_schema_file() {
     );
     assert!(model_calls(&server).await.is_empty());
 }
+
+// ── MCP elicitation ──────────────────────────────────────────────────────
+
+/// With nobody to ask, `koda exec` declines an MCP server's request for
+/// input, and the tool goes on without it.
+#[tokio::test(flavor = "multi_thread")]
+async fn exec_declines_an_mcp_servers_request_for_input() {
+    let server = stub(
+        vec![
+            tool_call("call_1", "booking__book", json!({})),
+            text("Done."),
+        ],
+        no_other_calls,
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("booking.sh");
+    std::fs::write(
+        &script,
+        r#"while IFS= read -r line; do
+  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"booking","version":"0.1.0"}}}\n' "$id" ;;
+    *'"method":"tools/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"book","description":"Book","inputSchema":{"type":"object","properties":{}},"annotations":{"readOnlyHint":true}}]}}\n' "$id" ;;
+    *'"method":"tools/call"'*)
+      call=$id
+      printf '{"jsonrpc":"2.0","id":900,"method":"elicitation/create","params":{"mode":"form","message":"Which date?","requestedSchema":{"type":"object","properties":{"date":{"type":"string"}}}}}\n'
+      IFS= read -r reply
+      case "$reply" in
+        *'"decline"'*) answer="declined" ;;
+        *) answer="unexpected: $reply" ;;
+      esac
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"%s"}]}}\n' "$call" "$answer" ;;
+  esac
+done
+"#,
+    )
+    .unwrap();
+    let config =
+        json!({"mcpServers": {"booking": {"command": "sh", "args": [script]}}}).to_string();
+    let run = run_prompt(&server, "Book a slot", &["--mcp-config", &config]).await;
+    assert!(run.output.status.success(), "{}", run.stdout);
+    let bodies = chat_bodies(&server).await;
+    let last = bodies.last().unwrap();
+    assert!(last.contains("declined"), "{last}");
+}

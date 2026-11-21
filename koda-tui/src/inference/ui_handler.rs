@@ -38,6 +38,23 @@ pub(super) fn show_request(
                 id: id.clone(),
                 question: params.question.clone(),
                 options: params.options.clone(),
+                form: None,
+            };
+        }
+        ServerRequest::McpServerElicitation { id, params } => {
+            let form = crate::elicitation_form::ElicitationForm::new(id.clone(), params);
+            crate::notifications::notify(Notification::UserInputRequested {
+                question: format!("{}: {}", params.server_name, params.message),
+            });
+            *prompt_mode = PromptMode::WizardInput {
+                label: "Answer".into(),
+                mask: false,
+            };
+            *menu = MenuContent::AskUser {
+                id: id.clone(),
+                question: form.question(),
+                options: form.options(),
+                form: Some(Box::new(form)),
             };
         }
         ServerRequest::ToolCallApproval { id, params } => {

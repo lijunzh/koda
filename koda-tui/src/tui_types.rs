@@ -100,6 +100,9 @@ pub enum MenuContent {
         id: koda_client::protocol::rpc::RequestId,
         question: String,
         options: Vec<String>,
+        /// An MCP server's form, asked a field at a time; `None` for the
+        /// model's question.
+        form: Option<Box<crate::elicitation_form::ElicitationForm>>,
     },
     /// Loop cap hotkey bar — continue or stop after the iteration limit is hit.
     LoopCap {

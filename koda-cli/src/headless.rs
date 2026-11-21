@@ -711,6 +711,14 @@ impl View {
                 return;
             }
             Outgoing::Request(ServerRequest::LoopCap { .. }) => return,
+            // The host declines these itself when nobody is there to ask.
+            Outgoing::Request(ServerRequest::McpServerElicitation { params, .. }) => {
+                eprintln!(
+                    "[koda] {} asked for input (no interactive session): {}",
+                    params.server_name, params.message
+                );
+                return;
+            }
             Outgoing::Notification(notification) => notification,
         };
         match notification {

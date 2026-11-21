@@ -2251,6 +2251,7 @@ name = "koda-server"
 version = "0.7.7"
 dependencies = [
  "anyhow",
+ "async-trait",
  "koda-config",
  "koda-core",
  "koda-protocol",
