@@ -47,6 +47,11 @@ server left running therefore holds a run for at most its limit.
 so a run then waits as long as the command runs. A command the model stops
 itself ends the wait with no further turn.
 
+Only commands started with `background: true` hold the run. Processes an
+ordinary command leaves running, such as a server it started with `&`, are
+tracked and can be stopped like background commands, but the run doesn't wait
+for them, as Codex's `exec` doesn't: they stop when the run ends.
+
 ```bash
 koda exec "what does this codebase do?"
 

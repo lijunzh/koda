@@ -42,7 +42,8 @@ pub struct BackgroundTerminalsListResponse {
     pub data: Vec<BackgroundTerminal>,
     /// Whether the session will start a turn by itself for the model's
     /// background commands: one is still running, or has ended and the
-    /// model hasn't been told yet. A sub-agent's commands don't count.
+    /// model hasn't been told yet. A sub-agent's commands don't count, nor
+    /// do processes an ordinary command left running.
     /// Koda's own; `koda exec` waits while it's true, as `claude -p` waits
     /// for background work.
     #[serde(default)]
