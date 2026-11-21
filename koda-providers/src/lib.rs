@@ -537,6 +537,13 @@ pub struct ModelSettings {
     /// `tool_choice` says none may be called. A goal's evaluator asks this
     /// way (`koda_core::goal_judge`).
     pub no_tool_calls: bool,
+    /// A JSON Schema the reply must match, enforced by the API where it
+    /// can be: Claude's `output_config.format`, Chat Completions'
+    /// `response_format`, Gemini's `responseJsonSchema`. Set only on a call
+    /// that may not call a tool (`no_tool_calls`): llama.cpp refuses a
+    /// grammar alongside tools, so a Chat Completions request with a schema
+    /// is sent without them (`koda_core::output_schema`).
+    pub output_schema: Option<serde_json::Value>,
 }
 
 /// The Claude API's task budget (`output_config.task_budget`, beta
@@ -567,6 +574,7 @@ impl ModelSettings {
             task_budget: None,
             deferred_tools: Vec::new(),
             no_tool_calls: false,
+            output_schema: None,
         }
     }
 }

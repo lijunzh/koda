@@ -49,6 +49,7 @@ async fn only_the_matching_decision_resumes_the_turn() {
         queued_steers: &mut steers,
         bg_agents: &env.bg_agents,
         sub_agent_cache: &cache,
+        output_schema: None,
         session_allows: &allows,
     });
     tokio::pin!(turn);

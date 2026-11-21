@@ -572,6 +572,11 @@ struct ExecOutput {
     #[arg(short = 'o', long = "output-last-message", value_name = "FILE")]
     output_last_message: Option<PathBuf>,
 
+    /// A JSON Schema file the last reply must match; the run exits 1 if it
+    /// doesn't.
+    #[arg(long = "output-schema", value_name = "FILE")]
+    output_schema: Option<PathBuf>,
+
     /// Attach images to the prompt (repeatable, or comma-separated).
     #[arg(short = 'i', long = "image", value_name = "FILE", value_delimiter = ',', action = clap::ArgAction::Append, display_order = 8)]
     images: Vec<PathBuf>,
@@ -1366,6 +1371,11 @@ fn exec_run(
             headless::Output::Text
         },
         last_message: output.output_last_message,
+        output_schema: output
+            .output_schema
+            .as_deref()
+            .map(crate::output_schema::load)
+            .transpose()?,
         // Set once the flags are read.
         named: headless::Named::default(),
     })
@@ -1384,6 +1394,7 @@ fn exec_fork_only(json: bool) -> headless::Run {
             headless::Output::Text
         },
         last_message: None,
+        output_schema: None,
         named: headless::Named::default(),
     }
 }

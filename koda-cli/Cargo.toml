@@ -46,6 +46,7 @@ clap = { version = "4", features = ["derive", "env", "wrap_help"] }
 tokio = { workspace = true, features = ["full"] }
 
 serde_json = { workspace = true }
+jsonschema = { workspace = true }
 
 # Logging (subscriber for CLI configuration)
 tracing = { workspace = true }

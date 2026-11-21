@@ -66,7 +66,36 @@ koda exec -o last.txt "summarize the diff"
 
 # The client protocol, one JSON line per message
 koda exec --json "fix the failing test"
+
+# A final reply a script can parse: JSON matching a schema
+koda exec --output-schema result.schema.json "did the tests pass?"
 ```
+
+## Structured output
+
+`--output-schema FILE` holds the last reply to a JSON Schema, as `codex exec
+--output-schema` and `claude -p --json-schema` do. The reply on stdout is then
+the JSON value alone, and the run exits 1 if it doesn't match:
+
+```bash
+cat > result.schema.json <<'JSON'
+{
+  "type": "object",
+  "properties": { "passed": { "type": "boolean" }, "failures": { "type": "integer" } },
+  "required": ["passed", "failures"],
+  "additionalProperties": false
+}
+JSON
+koda exec --output-schema result.schema.json "run the tests and report" | jq .passed
+```
+
+The turn runs as usual, tools and all, with the schema in the prompt. If its
+last reply doesn't match, Koda asks once more with the schema enforced by the
+API (Claude's structured outputs, a Chat Completions `response_format`,
+Gemini's `responseJsonSchema`) and no tools, since llama.cpp refuses a schema
+beside them. A schema Koda can't check stops the run before the model is
+called. Over the protocol, `turn/start` takes the same schema as
+`outputSchema`.
 
 Every `koda` flag (`--model`, `--provider`, `--mode`, `-s`, `--mcp-config`, …)
 works with it.

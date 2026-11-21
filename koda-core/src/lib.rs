@@ -104,6 +104,7 @@ pub use koda_mcp as mcp;
 pub use koda_memory as memory;
 /// Context-scaled output caps for tool results.
 pub mod output_caps;
+pub mod output_schema;
 /// Diff preview generation for file mutations.
 pub mod preview;
 /// System prompt construction.

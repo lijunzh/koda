@@ -270,6 +270,7 @@ impl TuiContext {
                     skills: Vec::new(),
                     client_message_id: None,
                     mode: None,
+                    output_schema: None,
                 })
                 .await;
             match response {

@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Added
 
 - **`Tab` queues a message for after the turn, as in Codex.** During a turn, `Enter` still steers it; `Tab` (when there's nothing to complete) holds the text, pastes and images included, and sends it as the next prompt once the turn completes, one queued message per turn. A queued slash command runs once the turn is over. `Alt+Up` with an empty input box takes the message queued last back to edit. A stopped or failed turn sends nothing queued: the messages come back to the input box.
+- **`koda exec --output-schema FILE` holds the last reply to a JSON Schema, as `codex exec --output-schema` and `claude -p --json-schema` do.** The turn runs as usual with the schema in the prompt; a last reply that doesn't match gets one more model call with the schema enforced by the API (Claude's `output_config.format`, a Chat Completions `response_format`, Gemini's `responseJsonSchema`) and no tools, since llama.cpp refuses a schema beside them. The run exits 1 if the reply still doesn't match, and a schema Koda can't check stops it before the model is called. `turn/start` takes the same schema as `outputSchema`.
 
 ## [0.7.7] - 2026-11-20
 

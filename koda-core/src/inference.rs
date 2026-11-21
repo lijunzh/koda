@@ -1044,6 +1044,9 @@ pub struct InferenceContext<'a> {
     /// Generation-based invalidation on mutating tool calls is
     /// honored uniformly via `crate::tool_dispatch::execute_one_tool`.
     pub sub_agent_cache: &'a crate::sub_agent_cache::SubAgentCache,
+    /// A JSON Schema the turn's last reply must match
+    /// ([`crate::output_schema`]); `None` for a free reply.
+    pub output_schema: Option<&'a serde_json::Value>,
 }
 
 /// Run the inference loop: send messages, stream responses, dispatch tool calls.
@@ -1222,6 +1225,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
         session_allows,
         bg_agents,
         sub_agent_cache,
+        output_schema,
     } = ctx;
     let mut cmd_rx = CommandInbox::new(cmd_rx, queued_steers);
 
@@ -2017,6 +2021,31 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
                     &cancel,
                 )
                 .await;
+            }
+
+            // A reply held to a schema that doesn't match it gets one more
+            // call, with the schema enforced (`output_schema`).
+            if let Some(schema) = output_schema
+                && usage.stop_reason != "max_tokens"
+                && !is_failed_stop(&usage.stop_reason)
+                && !cancel.is_cancelled()
+            {
+                let (messages, _) = assemble_context(&turn).await?;
+                crate::output_schema::conform(
+                    db,
+                    session_id,
+                    schema,
+                    &full_text,
+                    crate::output_schema::TurnRequest {
+                        provider,
+                        messages,
+                        tool_defs: active_tool_defs,
+                        settings: model_settings,
+                    },
+                    sink,
+                    &cancel,
+                )
+                .await?;
             }
 
             stats.final_reply = Some((full_text.len(), ends_with_question(&full_text)));

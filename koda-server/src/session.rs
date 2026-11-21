@@ -870,8 +870,19 @@ impl SessionTask {
             skills,
             client_message_id,
             mode,
+            output_schema,
             ..
         } = params;
+        if let Some(why) = output_schema
+            .as_ref()
+            .and_then(koda_core::output_schema::invalid_schema)
+        {
+            let _ = reply.send(Err(ErrorObject::new(
+                codes::INVALID_PARAMS,
+                format!("outputSchema isn't a JSON Schema Koda can check: {why}"),
+            )));
+            return Next::Idle;
+        }
         let mut images: Vec<ImageData> = images
             .into_iter()
             .map(|image| ImageData {
@@ -884,6 +895,14 @@ impl SessionTask {
         // item keeps the text as written.
         let message = self.with_mentions(&input, &mentions, &mut images).await;
         let message = self.with_skills(message, &input, &skills);
+        let message = match &output_schema {
+            Some(schema) => format!(
+                "{message}\n\n{}",
+                koda_core::output_schema::instruction(schema)
+            ),
+            None => message,
+        };
+        self.session.output_schema = output_schema;
         let images = (!images.is_empty()).then_some(images);
         if let Some(mode) = mode {
             self.session.mode = core_mode(mode);

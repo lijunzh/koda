@@ -1909,3 +1909,127 @@ async fn the_maximum_budget_ends_a_goal_in_exec() {
     );
     assert!(run.of("turn/completed").len() < 8, "{}", run.stdout);
 }
+
+// ── --output-schema ─────────────────────────────────────────────────────
+
+/// A schema file in `dir`: an object with one boolean, nothing else.
+fn schema_file(dir: &Path) -> String {
+    let path = dir.join("schema.json");
+    let schema = json!({
+        "type": "object",
+        "properties": { "passed": { "type": "boolean" } },
+        "required": ["passed"],
+        "additionalProperties": false
+    });
+    std::fs::write(&path, schema.to_string()).unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+/// The streamed model calls' request bodies.
+async fn model_calls(server: &FakeLlmServer) -> Vec<Value> {
+    chat_bodies(server)
+        .await
+        .iter()
+        .map(|b| serde_json::from_str::<Value>(b).unwrap())
+        .filter(|b| b["stream"] == json!(true))
+        .collect()
+}
+
+/// A reply that already matches the schema is the run's: one model call,
+/// the schema in the prompt, no enforcement needed.
+#[tokio::test(flavor = "multi_thread")]
+async fn output_schema_keeps_a_reply_that_matches() {
+    let server = stub(vec![text(r#"{"passed": true}"#)], no_other_calls).await;
+    let dir = tempfile::tempdir().unwrap();
+    let schema = schema_file(dir.path());
+    let run = run_prompt(&server, "Run the tests", &["--output-schema", &schema]).await;
+    assert!(run.output.status.success(), "{}", run.stdout);
+    assert_eq!(run.summary()["response"], r#"{"passed": true}"#);
+    let calls = model_calls(&server).await;
+    assert_eq!(calls.len(), 1);
+    assert!(
+        calls[0].to_string().contains("additionalProperties"),
+        "the prompt doesn't carry the schema: {}",
+        calls[0]
+    );
+    assert!(calls[0].get("response_format").is_none(), "{}", calls[0]);
+}
+
+/// A last reply that doesn't match gets one more call: no tools (llama.cpp
+/// refuses a schema beside them), the schema as `response_format`. Its
+/// reply is the run's.
+#[tokio::test(flavor = "multi_thread")]
+async fn output_schema_reformats_a_reply_that_does_not_match() {
+    let server = stub(
+        vec![text("All the tests pass."), text(r#"{"passed": true}"#)],
+        no_other_calls,
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let schema = schema_file(dir.path());
+    let run = run_prompt(&server, "Run the tests", &["--output-schema", &schema]).await;
+    assert!(run.output.status.success(), "{}", run.stdout);
+    assert_eq!(run.summary()["response"], r#"{"passed": true}"#);
+    let calls = model_calls(&server).await;
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert!(calls[0].get("response_format").is_none());
+    assert!(calls[0].get("tools").is_some());
+    assert_eq!(calls[1]["response_format"]["type"], "json_schema");
+    assert_eq!(
+        calls[1]["response_format"]["json_schema"]["schema"]["required"],
+        json!(["passed"])
+    );
+    assert!(calls[1].get("tools").is_none(), "{}", calls[1]);
+}
+
+/// A reply that still doesn't match fails the run, so a script can trust
+/// the exit code.
+#[tokio::test(flavor = "multi_thread")]
+async fn output_schema_fails_a_run_whose_reply_never_matches() {
+    let server = stub(
+        vec![text("All the tests pass."), text("Still prose.")],
+        no_other_calls,
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let schema = schema_file(dir.path());
+    let run = run_prompt(&server, "Run the tests", &["--output-schema", &schema]).await;
+    assert_eq!(run.output.status.code(), Some(1), "{}", run.stdout);
+    assert_eq!(run.summary()["success"], false);
+    assert!(
+        run.summary()["error"]
+            .as_str()
+            .unwrap()
+            .contains("doesn't match --output-schema"),
+        "{}",
+        run.summary()
+    );
+}
+
+/// A schema Koda can't check stops the run before any model call.
+#[tokio::test(flavor = "multi_thread")]
+async fn output_schema_refuses_a_bad_schema_file() {
+    let server = stub(vec![], no_other_calls).await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("schema.json");
+    std::fs::write(&path, r#"{"type": "nope"}"#).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tokio::process::Command::new(koda_bin())
+        .args(["exec", "Run the tests", "--output-schema"])
+        .arg(&path)
+        .args(["--provider", "lmstudio", "--model", "stub"])
+        .args(["--base-url", &server.url()])
+        .arg("--project-root")
+        .arg(tmp.path())
+        .env("XDG_CONFIG_HOME", tmp.path())
+        .output()
+        .await
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("isn't a JSON Schema"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(model_calls(&server).await.is_empty());
+}
