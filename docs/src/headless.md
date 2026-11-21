@@ -19,7 +19,9 @@ stream carries each `session/goal/updated` (and, with
 them as `Goal (…)` and `Goal check:` lines on stderr. Ctrl+C stops the turn
 running, or the wait between turns. A goal on hold after eight turns that
 call no tool ends the run, since nobody is there to send the next message. A
-goal that never finishes, because the model keeps working without marking it
+turn that `turn_token_budget` stopped doesn't: the goal stays active and the
+run goes on with its next turn, as in the TUI, so `turn_token_budget` caps each
+turn and `max_goal_token_budget` the goal. A goal that never finishes, because the model keeps working without marking it
 complete, runs until its budget is used up: set one with
 `-c max_goal_token_budget=…`, or give the run a time limit of its own.
 
