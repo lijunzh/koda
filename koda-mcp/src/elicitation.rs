@@ -3,7 +3,7 @@
 //!
 //! Koda tells servers it can elicit, in form mode (fields from a flat JSON
 //! Schema) and URL mode (a page to visit). A request goes to the session's
-//! [`Elicitor`], which the host fills: it asks the client
+//! [`Elicitor`](crate::elicitation::Elicitor), which the host fills: it asks the client
 //! (`mcpServer/elicitation/request`), or declines when nobody can answer, as
 //! in `koda exec`. Without an elicitor, Koda declines.
 
