@@ -891,6 +891,51 @@ mod tests {
         ));
     }
 
+    fn bash(command: &str) -> ToolCall {
+        ToolCall {
+            id: command.to_string(),
+            function_name: "Bash".to_string(),
+            arguments: serde_json::json!({ "command": command }).to_string(),
+            thought_signature: None,
+        }
+    }
+
+    /// Read-only commands auto-approve in every mode but Plan's refusals, so
+    /// a batch of them runs in parallel, with reads, as Codex runs shell
+    /// calls in parallel.
+    #[test]
+    fn read_only_bash_joins_a_parallel_batch() {
+        let calls = vec![
+            bash("git status"),
+            bash("ls -la src"),
+            make_tool_call("Read"),
+        ];
+        for mode in [TrustMode::Safe, TrustMode::Auto] {
+            assert!(
+                can_parallelize(&calls, mode, Path::new("/test/project")),
+                "{mode:?}"
+            );
+        }
+    }
+
+    /// In Auto a command that changes files runs in the sandbox without a
+    /// question, so it runs in parallel too, as in Codex. In Safe it asks,
+    /// and the batch splits: the reads run together, the rest in order.
+    #[test]
+    fn a_mutating_bash_parallelizes_in_auto_only() {
+        let calls = vec![bash("git status"), bash("touch new.txt")];
+        assert!(can_parallelize(
+            &calls,
+            TrustMode::Auto,
+            Path::new("/test/project")
+        ));
+        assert!(!can_parallelize(
+            &calls,
+            TrustMode::Safe,
+            Path::new("/test/project")
+        ));
+    }
+
     #[test]
     fn test_can_parallelize_agents() {
         let calls = vec![make_tool_call("InvokeAgent"), make_tool_call("InvokeAgent")];
