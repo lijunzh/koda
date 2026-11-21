@@ -85,6 +85,19 @@ pub struct ResourceSummary {
     pub mime_type: Option<String>,
 }
 
+/// One resource template a server offers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceTemplateSummary {
+    /// Its URI template (RFC 6570).
+    pub uri_template: String,
+    /// Its name.
+    pub name: String,
+    /// What it is, as the server says.
+    pub description: Option<String>,
+    /// The MIME type of what it gives, if known.
+    pub mime_type: Option<String>,
+}
+
 /// What reading a resource gave.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResourceContent {
@@ -177,6 +190,32 @@ impl McpClient {
     /// The resources the server offers (empty until connected).
     pub fn resources(&self) -> &[ResourceSummary] {
         &self.resources
+    }
+
+    /// The server's resource templates, as `resources/templates/list` gives
+    /// them: each one's URI template, name and description.
+    pub async fn list_resource_templates(&self) -> Result<Vec<ResourceTemplateSummary>> {
+        let service = self.service.as_ref().context("not connected")?;
+        let offers = service
+            .peer()
+            .peer_info()
+            .is_some_and(|info| info.capabilities.resources.is_some());
+        if !offers {
+            return Ok(Vec::new());
+        }
+        let templates = service
+            .list_all_resource_templates()
+            .await
+            .context("couldn't list resource templates")?;
+        Ok(templates
+            .into_iter()
+            .map(|t| ResourceTemplateSummary {
+                uri_template: t.uri_template.clone(),
+                name: t.name.clone(),
+                description: t.description.clone(),
+                mime_type: t.mime_type.clone(),
+            })
+            .collect())
     }
 
     /// Read resource `uri` from the server.

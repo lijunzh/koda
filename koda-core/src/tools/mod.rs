@@ -734,6 +734,32 @@ impl ToolRegistry {
         // anymore). PR-9 cleanup deleted it.
         // ----------------------------------------------------------
 
+        // The model's MCP resource tools (`ListMcpResources`, …).
+        if crate::mcp::resource_tools::is_resource_tool(name) {
+            let Some(mgr) = self.mcp_manager() else {
+                return ToolResult {
+                    output: "Error: no MCP servers connected.".into(),
+                    success: false,
+                    full_output: None,
+                    images: Vec::new(),
+                };
+            };
+            let result = {
+                let mgr = mgr.read().await;
+                crate::mcp::resource_tools::execute(&mgr, name, &args).await
+            };
+            return ToolResult {
+                output: result.output,
+                success: result.success,
+                full_output: None,
+                images: result
+                    .images
+                    .into_iter()
+                    .map(|(media_type, base64)| crate::providers::ImageData { media_type, base64 })
+                    .collect(),
+            };
+        }
+
         // MCP tool dispatch (#662): route `server__tool` calls to
         // the appropriate MCP server.
         if crate::mcp::is_mcp_tool_name(name) {

@@ -31,6 +31,9 @@ prompt. See [Trust modes](./approval.md) for the canonical matrix.
 | `ListAgents` | Read-only | List the available sub-agents (`detail=true` adds their system prompts) |
 | `List` | Read-only | List directory contents |
 | `AskUser` | Interactive | Ask the user a clarifying question |
+| `ListMcpResources` | Read-only | List the resources the session's MCP servers offer (offered with any MCP server, as Codex's `list_mcp_resources`) |
+| `ListMcpResourceTemplates` | Read-only | List the servers' resource templates, URIs that take parameters |
+| `ReadMcpResource` | Read-only | Read one resource by server and URI; its text comes back marked as external content, an image as an image |
 
 ### Typing into a command
 

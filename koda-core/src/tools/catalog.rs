@@ -318,6 +318,9 @@ impl ToolCatalog {
     /// Replaces the legacy `tools::classify_tool(name)` free function
     /// (deleted in PR-9 of #1265 item 5).
     pub fn classify_call(&self, name: &str, args: &serde_json::Value) -> ToolEffect {
+        if crate::mcp::resource_tools::is_resource_tool(name) {
+            return ToolEffect::ReadOnly;
+        }
         if crate::mcp::is_mcp_tool_name(name) {
             if let Some(mgr) = self.mcp_manager()
                 && let Ok(mgr) = mgr.try_read()
@@ -442,6 +445,10 @@ impl ToolCatalog {
             return Vec::new();
         };
         let mut defs = mgr.all_tool_definitions();
+        // The resource tools come with any MCP server, as Codex's do.
+        if mgr.has_servers() {
+            defs.extend(crate::mcp::resource_tools::definitions());
+        }
         defs.sort_by(|a, b| a.name.cmp(&b.name));
         if !allowed.is_empty() {
             defs.retain(|d| allowed.contains(&d.name));

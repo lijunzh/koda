@@ -3700,3 +3700,45 @@ async fn an_mcp_servers_request_for_input_reaches_the_client() {
     );
     koda.client.shutdown().await;
 }
+
+/// With an MCP server, the model gets Codex's resource tools: it lists the
+/// server's resources and reads one, and the text comes back marked as the
+/// server's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_model_lists_and_reads_mcp_resources() {
+    let server = model(vec![
+        tool_call("call_1", "ListMcpResources", json!({})),
+        tool_call(
+            "call_2",
+            "ReadMcpResource",
+            json!({"server": "notes", "uri": "note://welcome"}),
+        ),
+        text("Read it."),
+    ])
+    .await;
+    let mut koda = Koda::start(config(&server)).await;
+    let script = mcp_resource_server(koda._dir.path());
+    koda.write_config(&[(
+        "mcp_servers.notes",
+        json!({"command": "sh", "args": [script]}),
+    )])
+    .await
+    .unwrap();
+    koda.switch_to_new_session().await;
+    koda.until_mcp("notes", McpServerStartupState::Ready).await;
+
+    koda.turn("What notes are there?").await;
+    let messages = koda.until("turn/completed").await;
+    assert_eq!(turn_completed(&messages).status, TurnStatus::Completed);
+    assert!(offered(&server, 0, "ListMcpResources").await);
+    assert!(offered(&server, 0, "ReadMcpResource").await);
+    assert!(offered(&server, 0, "ListMcpResourceTemplates").await);
+    let requests = chat_requests(&server).await;
+    let listed = requests[1]["messages"].to_string();
+    assert!(listed.contains("note://welcome"), "{listed}");
+    assert!(!listed.contains("ui://panel"), "{listed}");
+    let read = requests[2]["messages"].to_string();
+    assert!(read.contains("Welcome to the notes server."), "{read}");
+    assert!(read.contains("EXTERNAL_CONTENT"), "{read}");
+    koda.client.shutdown().await;
+}
