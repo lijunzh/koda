@@ -16,7 +16,10 @@ use ratatui::{
 impl TuiContext {
     /// After `turn/completed`, with the turn's events all shown: back to
     /// idle, any dialog closed, unsent steering text back in the input box.
-    pub(super) fn post_turn_cleanup(&mut self, unsent: Vec<String>) {
+    /// A turn that didn't complete (stopped, failed, or Koda quitting) puts
+    /// the queued messages back there too, as Codex does; a completed one
+    /// leaves them for the event loop to send.
+    pub(super) fn post_turn_cleanup(&mut self, unsent: Vec<String>, completed: bool) {
         self.tui_state = TuiState::Idle;
         self.inference_start = None;
 
@@ -34,7 +37,18 @@ impl TuiContext {
         // runs until the user presses Enter: they may have stopped the turn
         // on purpose, and a new turn can block on a single-slot local server
         // that is still busy with the cancelled one (#825).
-        if !unsent.is_empty() {
+        let returned = if completed {
+            Vec::new()
+        } else {
+            self.queued.drain()
+        };
+        if !unsent.is_empty() || !returned.is_empty() {
+            let mut unsent = unsent;
+            for message in returned {
+                unsent.push(message.text);
+                self.pastes.list.extend(message.pastes);
+                self.pasted_images.extend(message.images);
+            }
             let has_draft = !self.textarea.text().is_empty();
             let draft = unsent_steers_as_draft(&unsent, has_draft);
             self.textarea.insert_str_at(0, &draft);
@@ -53,6 +67,30 @@ impl TuiContext {
         if let Some(tokens) = self.learned_context_window.take() {
             self.settings.context_window = tokens as u64;
         }
+    }
+}
+
+impl TuiContext {
+    /// `Alt+Up` during a turn: the message queued last back into the empty
+    /// input box, to change it or send it now with `Enter`, as Codex's
+    /// Alt+Up edits the last queued message.
+    pub(super) fn unqueue_last(&mut self) {
+        let Some(message) = self.queued.take_last() else {
+            crate::tui_output::dim_msg(&mut self.scroll_buffer, "Nothing is queued.".into());
+            return;
+        };
+        let mut pastes = std::mem::take(&mut self.pastes.list);
+        pastes.extend(message.pastes);
+        self.pastes
+            .restore(&mut self.textarea, &message.text, pastes);
+        self.pasted_images.extend(message.images);
+        self.scroll_buffer.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                "\u{21a9} Taken off the queue. It's back in the input box.",
+                Style::default().fg(Color::Yellow),
+            ),
+        ]));
     }
 }
 

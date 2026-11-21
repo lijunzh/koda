@@ -414,7 +414,30 @@ async fn handle_inference_key_inline(
             if let Some(completed) = completer.complete(&current) {
                 textarea.set_text_clearing_elements("");
                 textarea.insert_str(&completed);
+            } else if !current.trim().is_empty() {
+                // Nothing to complete: queue the text for after the turn,
+                // as Codex's Tab does. A slash command queues too, and runs
+                // once the turn is over.
+                textarea.set_text_clearing_elements("");
+                history.0.push(current.clone());
+                history.1.push(pastes.list.clone());
+                input_history
+                    .0
+                    .push_with_pastes(input_history.1, &current, &pastes.list);
+                *history_idx = None;
+                scroll_buffer.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled("\u{23ed} Queued: ", Style::default().fg(Color::Green)),
+                    Span::styled(
+                        truncate_preview(&current, 80),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]));
+                let _ = cmd_tx.send(TurnCommand::Queue { text: current }).await;
             }
+        }
+        (KeyCode::Up, m) if m.contains(KeyModifiers::ALT) && textarea.text().is_empty() => {
+            let _ = cmd_tx.send(TurnCommand::Unqueue).await;
         }
         _ => {
             completer.reset();

@@ -6,7 +6,8 @@
 |-----|--------|
 | `Enter` | Send message, including during inference, when the model gets it in the current turn (slash commands rejected mid-inference — press `Esc` first) |
 | `Alt+Enter` | Insert newline (multi-line input) |
-| `Tab` | Autocomplete slash commands and `@file` paths |
+| `Tab` | Autocomplete slash commands and `@file` paths; during a turn, with nothing to complete, queue the message for after the turn |
+| `Alt+Up` | During a turn, with the input box empty: take the message queued last back into it |
 | `Shift+Tab` | Cycle the mode: Safe, Auto, Plan (Auto only with the sandbox) |
 | `↑ / ↓` | Cycle through input history |
 | `Ctrl+R` | Reverse history search |

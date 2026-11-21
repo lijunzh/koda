@@ -61,8 +61,20 @@ inference — press `Esc` first" hint instead of the text being silently
 steered to the model. Press `Esc` to interrupt, then run the slash.
 `/stop`, which stops background processes, runs mid-turn, as in Codex.
 
-To add work for after the current task, say so: "when you're done, update the
-docs". To stop first, press `Esc`.
+Press **`Tab`** instead to queue the text for after the turn, as Codex's `Tab`
+does. It waits, and goes out as the next prompt once the turn completes, in a
+turn of its own:
+
+```
+  ⏭ Queued: now update the docs too
+```
+
+Several queued messages go out one per turn, oldest first. A slash command
+queues too and runs once the turn is over. `Alt+Up`, with the input box empty,
+takes the message queued last back into it, to change it or send it at once
+with `Enter`. A turn that is stopped or fails sends nothing queued: the queued
+messages come back to the input box with any steering text the model didn't
+get. To stop first, press `Esc`.
 
 ## Side conversations
 
