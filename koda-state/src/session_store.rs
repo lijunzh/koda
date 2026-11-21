@@ -181,6 +181,23 @@ pub struct TurnRecord {
 /// The [`TurnRecord::kind`] of a [`TurnContextItem`].
 pub const TURN_CONTEXT_KIND: &str = "context";
 
+/// The [`TurnRecord::kind`] of a turn's [`MessageBoundary`], stored as the
+/// turn starts so the session can be rewound to before it.
+pub const REWIND_KIND: &str = "rewind";
+
+/// Where a session's messages stood at a point: the last message's id, and
+/// how many were compacted. A compaction after the point changes the count,
+/// and a rewind across it is refused: the summary that replaced the
+/// history is gone with the turns after it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageBoundary {
+    /// The last message's id, 0 for none.
+    pub last_message_id: i64,
+    /// How many messages were compacted.
+    pub compacted: i64,
+}
+
 /// What a turn ran with, stored once per turn as a [`TURN_CONTEXT_KIND`]
 /// record, as Codex stores a `TurnContextItem` in its rollout once per
 /// user turn: so a session can be debugged with what each turn actually
@@ -544,6 +561,20 @@ pub trait SessionStore: Send + Sync {
     async fn append_turn_records(&self, session_id: &str, records: &[TurnRecord]) -> Result<()>;
     /// The session's turn records, in the order they were written.
     async fn load_turn_records(&self, session_id: &str) -> Result<Vec<TurnRecord>>;
+    /// Where the session's messages stand: the last message's id, and how
+    /// many are compacted. A turn stores it as it starts
+    /// ([`REWIND_KIND`]), so it can be rewound.
+    async fn message_boundary(&self, session_id: &str) -> Result<MessageBoundary>;
+    /// Take turn `turn_id` and everything after it out of the session: its
+    /// messages after `boundary` and its turn records from the turn's first
+    /// on, as Codex's `thread/revert` replaces a thread's history with the
+    /// part before one turn. Files are untouched.
+    async fn rewind(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        boundary: MessageBoundary,
+    ) -> Result<()>;
     /// Get the TODO list for a session.
     async fn get_todo(&self, session_id: &str) -> Result<Option<String>>;
     /// Set the TODO list for a session.

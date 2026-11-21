@@ -3456,3 +3456,34 @@ async fn at_lists_skills_too() {
     let sent = wait_for_model_call(&server, 1).await;
     assert!(sent.contains("Run every test first."), "{sent}");
 }
+
+/// `/rewind` takes the last turn out of the conversation and puts its
+/// prompt back in the input box; sent again, the model doesn't see the old
+/// reply, as after Codex's backtrack.
+#[tokio::test(flavor = "multi_thread")]
+async fn rewind_takes_the_last_turn_out() {
+    let reply = |text: &str| {
+        sse(&[
+            json!({"choices": [{"delta": {"content": text}}]}),
+            json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+        ])
+    };
+    let server = scripted_model(vec![reply("First reply."), reply("Old reply.")]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.submit_and_finish("first prompt", "First reply.");
+    tui.submit_and_finish("second prompt", "Old reply.");
+    tui.submit("/rewind");
+    tui.wait_for_screen("Took the last turn out");
+    assert!(
+        input_box(&tui.screen()).contains("secondprompt"),
+        "{}",
+        tui.screen()
+    );
+    tui.type_text("\r");
+    let sent = wait_for_model_call(&server, 3).await;
+    assert!(sent.contains("first prompt"), "{sent}");
+    assert!(sent.contains("second prompt"), "{sent}");
+    assert!(!sent.contains("Old reply."), "{sent}");
+}

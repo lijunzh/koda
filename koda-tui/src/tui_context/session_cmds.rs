@@ -223,6 +223,93 @@ impl TuiContext {
         }
     }
 
+    /// `/rewind [N]`: take the last turn, or the last `N`, out of the
+    /// conversation, as Codex's backtrack (Esc Esc) and Claude Code's
+    /// `/rewind` do; the earliest one's prompt comes back to the input box
+    /// to edit and send again. Files the turns changed stay as they are.
+    pub(crate) async fn rewind_session(&mut self, count: &str) {
+        use koda_client::protocol::item::Item;
+        use koda_client::protocol::session::{
+            SessionRewindParams, SessionTurnsListParams, SortDirection,
+        };
+        let count = count.trim();
+        let n: u32 = if count.is_empty() {
+            1
+        } else {
+            match count.parse() {
+                Ok(n) if (1..=100).contains(&n) => n,
+                _ => {
+                    tui_output::dim_msg(
+                        &mut self.scroll_buffer,
+                        "Usage: /rewind [N]: take the last turn, or the last N (up to 100), \
+                         out of the conversation."
+                            .into(),
+                    );
+                    return;
+                }
+            }
+        };
+        let turns = match self
+            .client
+            .request::<methods::SessionTurnsList>(SessionTurnsListParams {
+                session_id: self.session.id.clone(),
+                cursor: None,
+                limit: Some(n),
+                sort_direction: Some(SortDirection::Desc),
+            })
+            .await
+        {
+            Ok(turns) => turns.data,
+            Err(e) => {
+                tui_output::err_msg(&mut self.scroll_buffer, format!("{e}"));
+                return;
+            }
+        };
+        let Some(target) = turns.get(n as usize - 1) else {
+            tui_output::dim_msg(
+                &mut self.scroll_buffer,
+                format!(
+                    "This session has {} turn{}; nothing to rewind that far.",
+                    turns.len(),
+                    if turns.len() == 1 { "" } else { "s" }
+                ),
+            );
+            return;
+        };
+        let prompt = target.items.iter().find_map(|item| match &item.item {
+            Item::UserMessage { text, .. } => Some(text.clone()),
+            _ => None,
+        });
+        if let Err(e) = self
+            .client
+            .request::<methods::SessionRewind>(SessionRewindParams {
+                session_id: self.session.id.clone(),
+                before_turn_id: target.id.clone(),
+            })
+            .await
+        {
+            tui_output::err_msg(&mut self.scroll_buffer, format!("{e}"));
+            return;
+        }
+        let what = if n == 1 {
+            "the last turn".to_string()
+        } else {
+            format!("the last {n} turns")
+        };
+        tui_output::ok_msg(
+            &mut self.scroll_buffer,
+            format!("Took {what} out of the conversation. Files they changed are as they were."),
+        );
+        if let Some(prompt) = prompt.filter(|_| self.textarea.text().trim().is_empty()) {
+            self.textarea.set_text_clearing_elements("");
+            self.textarea.insert_str(&prompt);
+            tui_output::dim_msg(
+                &mut self.scroll_buffer,
+                "Its prompt is back in the input box: edit it, or send it again.".into(),
+            );
+        }
+    }
+
     /// `/init`: ask the model to write `AGENTS.md`, as Codex's `/init`
     /// does, unless the project has an instruction file already.
     pub(crate) fn init_project(&mut self) -> CommandOutcome {

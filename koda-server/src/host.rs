@@ -445,6 +445,13 @@ impl Host {
             ClientRequest::SessionCompactStart { params, .. } => {
                 (params.session_id, SessionCommand::Compact { reply })
             }
+            ClientRequest::SessionRewind { params, .. } => (
+                params.session_id,
+                SessionCommand::Rewind {
+                    before_turn_id: params.before_turn_id,
+                    reply,
+                },
+            ),
             // The session's task answers these, in order with its turns.
             ClientRequest::SessionGoalSet { params, .. } => (
                 params.session_id.clone(),

@@ -102,6 +102,11 @@ pub const SLASH_COMMANDS: &[(&str, &str, Option<&str>)] = &[
     ("/provider", "Browse all models from a provider", None),
     ("/rename", "Name this session, for /resume", None),
     (
+        "/rewind",
+        "Take the last turn (or last N) out of the conversation; files stay as they are",
+        None,
+    ),
+    (
         "/review",
         "Review the current changes, or a branch, commit or instructions you name",
         None,

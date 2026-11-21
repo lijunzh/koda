@@ -291,6 +291,25 @@ pub struct SessionCompactStartParams {
 #[serde(rename_all = "camelCase")]
 pub struct SessionCompactStartResponse {}
 
+/// `session/rewind`: take a turn and every turn after it out of an open,
+/// idle session's history, as Codex's `thread/revert` replaces a thread's
+/// history with the part before one turn. Files the turns changed stay as
+/// they are. Refused while a turn runs, for a turn from before Koda
+/// recorded where turns start (0.7.8), and across a compaction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionRewindParams {
+    /// The session.
+    pub session_id: String,
+    /// The first turn taken out, as `session/turns/list` names it.
+    pub before_turn_id: String,
+}
+
+/// The answer to `session/rewind`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRewindResponse {}
+
 /// `session/read`: a stored session, without opening it. Codex's
 /// `thread/read`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

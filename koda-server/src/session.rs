@@ -67,6 +67,11 @@ pub(crate) enum SessionCommand {
     },
     /// `session/compact/start`.
     Compact { reply: oneshot::Sender<Answer> },
+    /// `session/rewind`.
+    Rewind {
+        before_turn_id: String,
+        reply: oneshot::Sender<Answer>,
+    },
     /// `session/settings/update`.
     UpdateSettings {
         params: SessionSettingsUpdateParams,
@@ -106,6 +111,7 @@ impl SessionCommand {
             | Self::Interrupt { reply, .. }
             | Self::Steer { reply, .. }
             | Self::Compact { reply }
+            | Self::Rewind { reply, .. }
             | Self::Goal { reply, .. }
             | Self::UpdateSettings { reply, .. } => {
                 let _ = reply.send(Err(error));
@@ -523,6 +529,16 @@ impl SessionTask {
             let next = match command {
                 SessionCommand::StartTurn { params, reply } => self.turn(params, reply).await,
                 SessionCommand::Compact { reply } => self.compact(reply).await,
+                SessionCommand::Rewind {
+                    before_turn_id,
+                    reply,
+                } => {
+                    let _ =
+                        reply.send(self.rewind(&before_turn_id).await.and_then(|()| {
+                            to_json(koda_protocol::session::SessionRewindResponse {})
+                        }));
+                    Next::Idle
+                }
                 SessionCommand::Interrupt { reply, .. } => {
                     let _ = reply.send(Err(invalid("no active turn to interrupt")));
                     Next::Idle
@@ -865,6 +881,75 @@ impl SessionTask {
     }
 
     /// Compact the session as a turn of its own, answering `reply` first.
+    /// `session/rewind`: the turn's starting point, as it stored it, and
+    /// everything from there taken out of the history.
+    async fn rewind(&mut self, before_turn_id: &str) -> Result<(), ErrorObject> {
+        use koda_state::session_store::{MessageBoundary, REWIND_KIND, SessionStore};
+        // What the client was sent is stored first, so none of it lands
+        // after the rewind.
+        self.sink.flush_history().await;
+        let id = &self.session.id;
+        let records = self
+            .session
+            .db
+            .load_turn_records(id)
+            .await
+            .map_err(|e| internal(format!("couldn't read the session's turns: {e:#}")))?;
+        let boundary = records
+            .iter()
+            .find(|r| r.turn_id == before_turn_id && r.kind == REWIND_KIND)
+            .and_then(|r| serde_json::from_str::<MessageBoundary>(&r.payload).ok());
+        let Some(boundary) = boundary else {
+            let known = records.iter().any(|r| r.turn_id == before_turn_id);
+            return Err(invalid(if known {
+                format!(
+                    "turn {before_turn_id} is from before Koda recorded where turns start, so it can't be rewound"
+                )
+            } else {
+                format!("no turn {before_turn_id} in this session")
+            }));
+        };
+        self.session
+            .db
+            .rewind(id, before_turn_id, boundary)
+            .await
+            .map_err(|e| invalid(format!("{e:#}")))
+    }
+
+    /// Store where the session's messages stand as turn `turn_id` starts, so
+    /// it can be rewound to before it (`session/rewind`). `boundary` is the
+    /// point taken before the prompt's message was stored, for a prompt.
+    async fn mark_turn_start(
+        &self,
+        turn_id: &str,
+        boundary: Option<koda_state::session_store::MessageBoundary>,
+    ) {
+        use koda_state::session_store::{REWIND_KIND, SessionStore, TurnRecord};
+        let boundary = match boundary {
+            Some(boundary) => boundary,
+            None => match self.session.db.message_boundary(&self.session.id).await {
+                Ok(boundary) => boundary,
+                Err(e) => {
+                    tracing::warn!("couldn't note where turn {turn_id} starts: {e:#}");
+                    return;
+                }
+            },
+        };
+        let record = TurnRecord {
+            turn_id: turn_id.to_string(),
+            kind: REWIND_KIND.to_string(),
+            payload: serde_json::to_string(&boundary).unwrap_or_default(),
+        };
+        if let Err(e) = self
+            .session
+            .db
+            .append_turn_records(&self.session.id, &[record])
+            .await
+        {
+            tracing::warn!("couldn't note where turn {turn_id} starts: {e:#}");
+        }
+    }
+
     async fn compact(&mut self, reply: oneshot::Sender<Answer>) -> Next {
         let _ = reply.send(to_json(SessionCompactStartResponse {}));
         let turn_id = uuid::Uuid::new_v4().to_string();
@@ -921,6 +1006,11 @@ impl SessionTask {
         // The turn reads the conversation back from the database, so a
         // message that wasn't saved would be sent as nothing.
         let session_id = self.session.id.clone();
+        // Where the history stands before the prompt, for `session/rewind`.
+        let boundary = {
+            use koda_state::session_store::SessionStore;
+            self.session.db.message_boundary(&session_id).await.ok()
+        };
         if let Err(e) = self
             .session
             .db
@@ -952,6 +1042,7 @@ impl SessionTask {
         }));
         self.sink
             .begin_turn(input, client_message_id.into_iter().collect(), mentions);
+        self.mark_turn_start(&turn_id, boundary).await;
         self.run_turn(turn_id, Work::Prompt(images)).await
     }
 
@@ -1127,6 +1218,10 @@ impl SessionTask {
 
     /// Run a turn to its end, reading the client's commands meanwhile.
     async fn run_turn(&mut self, turn_id: String, work: Work) -> Next {
+        // A prompt's turn marked its start before its message was stored.
+        if !matches!(work, Work::Prompt(_)) {
+            self.mark_turn_start(&turn_id, None).await;
+        }
         let steerable = !matches!(work, Work::Compact);
         // The goal as the turn starts, whose turns are counted toward it.
         let automatic = matches!(work, Work::Goal);
@@ -1257,6 +1352,11 @@ impl SessionTask {
                                 cancel.cancel();
                                 compact_next = Some(reply);
                             }
+                        }
+                        Some(SessionCommand::Rewind { reply, .. }) => {
+                            let _ = reply.send(Err(invalid(
+                                "a turn is running; stop it before rewinding",
+                            )));
                         }
                         Some(SessionCommand::Respond { id, result }) => {
                             if let Some(command) = sink.answer(&id, result)
