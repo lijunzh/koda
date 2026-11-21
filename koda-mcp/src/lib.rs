@@ -45,6 +45,7 @@ mod compat_tests;
 
 /// Multi-server connection manager — parallel startup, tool discovery.
 pub mod manager;
+pub mod oauth;
 pub mod schema;
 
 /// Bridge MCP tools into Koda's ToolRegistry (naming, classification).

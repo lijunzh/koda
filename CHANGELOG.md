@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **`koda mcp login <name>` signs in to an MCP server with OAuth, as `codex mcp login` does.** For hosted servers that sign in through a browser: Koda discovers the authorization server, registers itself where the server allows it, runs the authorization-code flow with PKCE through a one-time listener on `127.0.0.1`, and stores the tokens in `~/.config/koda/mcp_oauth/<name>.json` (user-only, and fully blocked to sandboxed commands, as the API keys are). Connections then send the access token and refresh it. `koda mcp logout` forgets them, `koda mcp list` shows each HTTP server's auth, and a server that answers 401 says to run `koda mcp login`. Protocol: `mcpServer/oauth/login`, `mcpServer/oauth/logout`, `mcpServer/oauthLogin/completed`, and `authStatus` in the configured server listing.
 - **`Tab` queues a message for after the turn, as in Codex.** During a turn, `Enter` still steers it; `Tab` (when there's nothing to complete) holds the text, pastes and images included, and sends it as the next prompt once the turn completes, one queued message per turn. A queued slash command runs once the turn is over. `Alt+Up` with an empty input box takes the message queued last back to edit. A stopped or failed turn sends nothing queued: the messages come back to the input box.
 
 ## [0.7.7] - 2026-11-20

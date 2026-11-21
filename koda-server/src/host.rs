@@ -276,6 +276,52 @@ impl Host {
                 let _ = reply.send(to_json(koda_protocol::mcp::McpServerRefreshResponse {}));
                 return;
             }
+            ClientRequest::McpServerOauthLogin { params, .. } => {
+                let login = crate::mcp::oauth_login(&self.context.config_file, &params.name).await;
+                let login = match login {
+                    Ok(login) => login,
+                    Err(e) => {
+                        let _ = reply.send(Err(e));
+                        return;
+                    }
+                };
+                let _ = reply.send(to_json(koda_protocol::mcp::McpServerOauthLoginResponse {
+                    authorization_url: login.authorization_url.clone(),
+                }));
+                // The browser comes back later: then the tokens are stored,
+                // the client is told, and open sessions reconnect.
+                let events = self.context.events.clone();
+                let sessions: Vec<_> = self.sessions.lock().await.values().cloned().collect();
+                let name = params.name;
+                tokio::spawn(async move {
+                    let result = login.wait().await;
+                    let success = result.is_ok();
+                    let _ = events.send(Outgoing::Notification(
+                        koda_protocol::ServerNotification::McpServerOauthLoginCompleted(
+                            koda_protocol::mcp::McpServerOauthLoginCompletedNotification {
+                                name,
+                                success,
+                                error: result.err().map(|e| format!("{e:#}")),
+                            },
+                        ),
+                    ));
+                    if success {
+                        for session in sessions {
+                            let (done, _rx) = oneshot::channel();
+                            let _ = session.send(SessionCommand::ReloadMcp { done });
+                        }
+                    }
+                });
+                return;
+            }
+            ClientRequest::McpServerOauthLogout { params, .. } => {
+                let removed = koda_core::mcp::oauth::logout(&params.name)
+                    .map_err(|e| internal(format!("{e:#}")));
+                let _ = reply.send(removed.and_then(|removed| {
+                    to_json(koda_protocol::mcp::McpServerOauthLogoutResponse { removed })
+                }));
+                return;
+            }
             ClientRequest::ModelProviderList { .. } => {
                 let _ = reply.send(to_json(crate::settings::list_providers(
                     &self.context.config,

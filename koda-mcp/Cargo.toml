@@ -14,12 +14,15 @@ categories = ["development-tools"]
 
 [dependencies]
 anyhow = { workspace = true }
+async-trait = { workspace = true }
 http = "1"
 koda-command = { workspace = true }
+koda-config = { workspace = true }
 koda-providers = { workspace = true }
 koda-sandbox = { workspace = true }
 reqwest = { workspace = true }
 rmcp = { version = "3", default-features = false, features = [
+    "auth",
     "client",
     "base64",
     "transport-child-process",
@@ -32,7 +35,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 # The HTTP transport tests: rmcp's server side behind axum.
-axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "tower-log"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "tower-log", "json", "query"] }
 rmcp = { version = "3", features = [
     "server",
     "macros",

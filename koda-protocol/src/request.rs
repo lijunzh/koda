@@ -201,6 +201,17 @@ client_requests! {
         params: crate::mcp::McpServerRefreshParams,
         response: crate::mcp::McpServerRefreshResponse,
     },
+    /// Sign in to an HTTP MCP server with OAuth: the page to open, then
+    /// `mcpServer/oauthLogin/completed`.
+    McpServerOauthLogin => "mcpServer/oauth/login" {
+        params: crate::mcp::McpServerOauthLoginParams,
+        response: crate::mcp::McpServerOauthLoginResponse,
+    },
+    /// Forget an MCP server's OAuth tokens.
+    McpServerOauthLogout => "mcpServer/oauth/logout" {
+        params: crate::mcp::McpServerOauthLogoutParams,
+        response: crate::mcp::McpServerOauthLogoutResponse,
+    },
     /// Store a provider's API key.
     ModelProviderApiKeySet => "modelProvider/apiKey/set" {
         params: crate::config::ModelProviderApiKeySetParams,

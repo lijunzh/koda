@@ -61,6 +61,32 @@ named variable that isn't set fails the server with that reason. Tokens stored
 by Koda 0.6 (`/mcp add-http --token`) aren't read; Koda logs a warning for
 such a server (see [Upgrading to 0.7](./upgrading-0.7.md#projects-and-agents)).
 
+### Signing in with OAuth
+
+A hosted server that signs you in through a browser (Notion, Linear, Sentry
+and others) takes `koda mcp login`, as `codex mcp login` does:
+
+```bash
+koda mcp add notion --url https://mcp.notion.com/mcp
+koda mcp login notion
+```
+
+Koda finds the server's authorization server, registers itself as a client
+where the server allows it, and opens the sign-in page; if no browser opens,
+it prints the address. When you approve, the browser comes back to a
+one-time listener on `127.0.0.1` and Koda stores the tokens in
+`~/.config/koda/mcp_oauth/<name>.json`, readable by you only and blocked to
+the model's commands, as the API keys are. Later connections send the access
+token and refresh it when it expires. Open sessions reconnect to their
+servers once you're signed in.
+
+`koda mcp logout <name>` forgets the tokens. `koda mcp list` shows each HTTP
+server's auth: `OAuth`, `Bearer token`, or `-` for neither. A server that
+answers 401 fails with "run `koda mcp login <name>`". A configured bearer
+token wins over a sign-in. Over the protocol, `mcpServer/oauth/login` answers
+with the page to open and sends `mcpServer/oauthLogin/completed` when the
+browser comes back.
+
 > **Security note:** Bearer tokens sent over plaintext `http://` are logged as
 > a warning. Use `https://` in production. Koda also blocks connections to
 > private/loopback addresses (SSRF protection), and follows only same-origin

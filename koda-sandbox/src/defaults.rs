@@ -61,7 +61,8 @@ pub const CREDENTIAL_CONFIG_SUBDIRS: &[&str] = &[
 /// writes** are denied. These contain koda's own secrets that sandboxed
 /// commands have no legitimate reason to access.
 pub const CREDENTIAL_CONFIG_FULL_DENY: &[&str] = &[
-    "koda/db", // SQLite DB with plaintext API keys in kv_store table (#847)
+    "koda/db",        // SQLite DB with plaintext API keys in kv_store table (#847)
+    "koda/mcp_oauth", // MCP servers' OAuth access and refresh tokens (`koda mcp login`)
 ];
 
 /// Individual credential *files* under `$HOME` that are **write-protected**.

@@ -122,6 +122,7 @@ beyond that.
 
 **Fully blocked (read + write):**
 - `~/.config/koda/db` — Koda's SQLite DB containing plaintext API keys
+- `~/.config/koda/mcp_oauth` — MCP servers' OAuth tokens (`koda mcp login`)
 
 > **Security note — accepted risk:** A sandboxed command can read
 > credential material and could exfiltrate it over the network (e.g.
