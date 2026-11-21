@@ -3742,3 +3742,51 @@ async fn the_model_lists_and_reads_mcp_resources() {
     assert!(read.contains("EXTERNAL_CONTENT"), "{read}");
     koda.client.shutdown().await;
 }
+
+/// `session/rewind` takes a turn and every later one out of the history,
+/// as Codex's `thread/revert` does: the next prompt goes out without them,
+/// and the stored turns end before them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rewind_takes_turns_out_of_the_history() {
+    use koda_client::protocol::session::{SessionRewindParams, SessionTurnsListParams};
+    let server = model(vec![text("One."), text("Two."), text("Three.")]).await;
+    let mut koda = Koda::start(config(&server)).await;
+    koda.turn("first prompt").await;
+    koda.until("turn/completed").await;
+    let second = koda.turn("second prompt").await;
+    koda.until("turn/completed").await;
+
+    let rewind = |turn: &str| {
+        koda.client
+            .request::<methods::SessionRewind>(SessionRewindParams {
+                session_id: koda.session.clone(),
+                before_turn_id: turn.to_string(),
+            })
+    };
+    let unknown = server_error(rewind("no-such-turn").await);
+    assert!(unknown.message.contains("no turn"), "{unknown:?}");
+    rewind(&second).await.unwrap();
+
+    let turns = koda
+        .client
+        .request::<methods::SessionTurnsList>(SessionTurnsListParams {
+            session_id: koda.session.clone(),
+            cursor: None,
+            limit: None,
+            sort_direction: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(turns.data.len(), 1, "{:?}", turns.data);
+    assert_ne!(turns.data[0].id, second);
+
+    koda.turn("third prompt").await;
+    koda.until("turn/completed").await;
+    let requests = chat_requests(&server).await;
+    let sent = requests[2]["messages"].to_string();
+    assert!(sent.contains("first prompt"), "{sent}");
+    assert!(sent.contains("third prompt"), "{sent}");
+    assert!(!sent.contains("second prompt"), "{sent}");
+    assert!(!sent.contains("Two."), "{sent}");
+    koda.client.shutdown().await;
+}

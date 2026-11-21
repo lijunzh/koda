@@ -951,6 +951,14 @@ impl TuiContext {
             self.rename_session(name).await;
             return CommandOutcome::Handled;
         }
+        if let Some(count) = input
+            .trim()
+            .strip_prefix("/rewind")
+            .filter(|rest| rest.is_empty() || rest.starts_with(' '))
+        {
+            self.rewind_session(count).await;
+            return CommandOutcome::Handled;
+        }
         if input.trim() == "/init" {
             return self.init_project();
         }

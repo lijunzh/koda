@@ -2252,3 +2252,83 @@ async fn fork_session_copies_everything_a_session_holds() {
             .is_err()
     );
 }
+
+/// A rewind takes a turn and everything after it out of the session, and
+/// keeps what came before.
+#[tokio::test]
+async fn a_rewind_drops_a_turn_and_what_followed() {
+    use crate::session_store::{MessageBoundary, REWIND_KIND, TurnRecord};
+    let (db, tmp) = setup().await;
+    let session = db.create_session("default", tmp.path()).await.unwrap();
+    let record = |turn: &str, kind: &str| TurnRecord {
+        turn_id: turn.into(),
+        kind: kind.into(),
+        payload: "{}".into(),
+    };
+
+    let before_one = db.message_boundary(&session).await.unwrap();
+    assert_eq!(before_one, MessageBoundary::default());
+    db.append_turn_records(&session, &[record("t1", REWIND_KIND), record("t1", "turn")])
+        .await
+        .unwrap();
+    db.insert_message(&session, &Role::User, Some("first"), None, None, None)
+        .await
+        .unwrap();
+    insert_complete_assistant(&db, &session, Some("one"), None).await;
+
+    let before_two = db.message_boundary(&session).await.unwrap();
+    assert_eq!(before_two.last_message_id, 2);
+    db.append_turn_records(&session, &[record("t2", REWIND_KIND), record("t2", "turn")])
+        .await
+        .unwrap();
+    db.insert_message(&session, &Role::User, Some("second"), None, None, None)
+        .await
+        .unwrap();
+    insert_complete_assistant(&db, &session, Some("two"), None).await;
+    db.append_turn_records(&session, &[record("t3", "turn")])
+        .await
+        .unwrap();
+
+    db.rewind(&session, "t2", before_two).await.unwrap();
+    let context = db.load_context(&session).await.unwrap();
+    let texts: Vec<_> = context.iter().filter_map(|m| m.content.clone()).collect();
+    assert_eq!(texts, ["first", "one"]);
+    let turns: Vec<String> = db
+        .load_turn_records(&session)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|r| r.turn_id)
+        .collect();
+    assert_eq!(turns, ["t1", "t1"]);
+    assert!(db.rewind(&session, "t9", before_two).await.is_err());
+}
+
+/// A compaction after a turn's start refuses a rewind to before it.
+#[tokio::test]
+async fn a_rewind_across_a_compaction_is_refused() {
+    use crate::session_store::{REWIND_KIND, TurnRecord};
+    let (db, tmp) = setup().await;
+    let session = db.create_session("default", tmp.path()).await.unwrap();
+    db.insert_message(&session, &Role::User, Some("first"), None, None, None)
+        .await
+        .unwrap();
+    insert_complete_assistant(&db, &session, Some("one"), None).await;
+    let boundary = db.message_boundary(&session).await.unwrap();
+    db.append_turn_records(
+        &session,
+        &[TurnRecord {
+            turn_id: "t2".into(),
+            kind: REWIND_KIND.into(),
+            payload: "{}".into(),
+        }],
+    )
+    .await
+    .unwrap();
+    db.insert_message(&session, &Role::User, Some("second"), None, None, None)
+        .await
+        .unwrap();
+    db.compact_session(&session, "summary", 1).await.unwrap();
+    let error = db.rewind(&session, "t2", boundary).await.unwrap_err();
+    assert!(error.to_string().contains("compacted"), "{error}");
+}

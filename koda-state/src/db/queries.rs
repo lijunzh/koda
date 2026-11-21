@@ -1250,6 +1250,66 @@ impl SessionStore for Database {
         Ok(())
     }
 
+    async fn message_boundary(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::session_store::MessageBoundary> {
+        let (last_message_id, compacted): (i64, i64) = sqlx::query_as(
+            "SELECT COALESCE(MAX(id), 0), COUNT(compacted_at) FROM messages WHERE session_id = ?",
+        )
+        .bind(session_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(crate::session_store::MessageBoundary {
+            last_message_id,
+            compacted,
+        })
+    }
+
+    async fn rewind(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        boundary: crate::session_store::MessageBoundary,
+    ) -> Result<()> {
+        let mut tx = self.pool.begin_immediate().await?;
+        let (compacted,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(compacted_at) FROM messages WHERE session_id = ? AND id <= ?",
+        )
+        .bind(session_id)
+        .bind(boundary.last_message_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        anyhow::ensure!(
+            compacted == boundary.compacted,
+            "the history was compacted after that turn, so it can't be rewound to before it"
+        );
+        let first: Option<(i64,)> = sqlx::query_as(
+            "SELECT MIN(id) FROM turn_records WHERE session_id = ? AND turn_id = ?              HAVING MIN(id) IS NOT NULL",
+        )
+        .bind(session_id)
+        .bind(turn_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some((first,)) = first else {
+            anyhow::bail!("no turn {turn_id} in session {session_id}");
+        };
+        sqlx::query("DELETE FROM messages WHERE session_id = ? AND id > ?")
+            .bind(session_id)
+            .bind(boundary.last_message_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM turn_records WHERE session_id = ? AND id >= ?")
+            .bind(session_id)
+            .bind(first)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        // Rows the cache returned are gone: it assumes an append-only log.
+        self.context_cache.invalidate(session_id);
+        Ok(())
+    }
+
     async fn load_turn_records(
         &self,
         session_id: &str,

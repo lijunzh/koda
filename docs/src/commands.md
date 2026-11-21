@@ -237,6 +237,20 @@ Names the session, as Codex's `/rename` does; `/resume` lists it by that
 name. Without one, the first 50 characters of your first prompt are its
 title, and a name you give is never replaced by it.
 
+## `/rewind [N]`
+
+Takes the last turn, or the last `N`, out of the conversation, as Codex's
+backtrack (Esc Esc) and Claude Code's `/rewind` do: the model won't see them
+again, and the stored session ends before them. The earliest one's prompt
+comes back to the input box, to edit and send again.
+
+Files those turns changed stay as they are, as Codex's rewind leaves them;
+use git to undo the changes. A rewind is refused while a turn runs, for a
+turn from before Koda recorded where turns start (sessions before 0.7.8),
+and across a compaction, whose summary replaced the history it would bring
+back. Over the protocol it is `session/rewind`, with the first turn to take
+out.
+
 ## `/status`
 
 Shows what the session runs with, as Codex's `/status` does: its ID and

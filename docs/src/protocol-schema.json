@@ -3406,6 +3406,29 @@
       ],
       "type": "object"
     },
+    "SessionRewindParams": {
+      "additionalProperties": false,
+      "description": "`session/rewind`: take a turn and every turn after it out of an open,\nidle session's history, as Codex's `thread/revert` replaces a thread's\nhistory with the part before one turn. Files the turns changed stay as\nthey are. Refused while a turn runs, for a turn from before Koda\nrecorded where turns start (0.7.8), and across a compaction.",
+      "properties": {
+        "beforeTurnId": {
+          "description": "The first turn taken out, as `session/turns/list` names it.",
+          "type": "string"
+        },
+        "sessionId": {
+          "description": "The session.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "beforeTurnId"
+      ],
+      "type": "object"
+    },
+    "SessionRewindResponse": {
+      "description": "The answer to `session/rewind`.",
+      "type": "object"
+    },
     "SessionSettings": {
       "description": "What a session's turns run with.",
       "properties": {
@@ -5037,6 +5060,14 @@
       },
       "result": {
         "$ref": "#/$defs/SessionReadResponse"
+      }
+    },
+    "session/rewind": {
+      "params": {
+        "$ref": "#/$defs/SessionRewindParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionRewindResponse"
       }
     },
     "session/settings/update": {
