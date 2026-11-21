@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.7.7] - 2026-11-20
+
 ### Added
 
 - **Two guards on a goal that never ends.** `max_goal_token_budget` (Codex's setting) gives every goal set without a budget that budget and refuses a bigger one, by the user or the model's `CreateGoal`, so `koda exec '/goal …' -c max_goal_token_budget=…` is bounded. And after eight of Koda's goal turns in a row that call no tool, Koda puts the goal on hold, as Claude Code stops a goal loop that only answers: it stays active and goes on after your next message or `/goal resume`; `session/goal/held` reports it, and `koda exec` ends there.
