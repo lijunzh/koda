@@ -70,6 +70,9 @@ pub(crate) struct TuiContext {
     /// Images attached this session, so each marker's number is new.
     pub image_count: usize,
     pub pending_command: Option<String>,
+    /// Messages queued with `Tab` during a turn, sent one per turn once the
+    /// running one completes.
+    pub(crate) queued: crate::queued::Queue,
     pub should_quit: bool,
     /// #1216: Ctrl+C-arm timestamp. When the user presses Ctrl+C at
     /// idle with nothing to interrupt (empty composer, no bg work),
@@ -528,6 +531,7 @@ impl TuiContext {
             pasted_images: Vec::new(),
             image_count: 0,
             pending_command: None,
+            queued: Default::default(),
             should_quit: false,
             quit_armed_at: None,
             inference_start: None,
@@ -726,11 +730,37 @@ impl TuiContext {
                 continue;
             }
 
+            // ── A message queued during the last turn: the next prompt ──
+            // One per turn, as Codex sends them. The input box keeps what
+            // is being typed, with its pastes and images.
+            let mut draft = None;
+            if self.tui_state == TuiState::Idle
+                && self.pending_command.is_none()
+                && matches!(self.prompt_mode, PromptMode::Chat)
+                && let Some(message) = self.queued.next()
+            {
+                let icon = crate::mode::icon(self.mode);
+                self.scroll_buffer.push(Line::from(vec![
+                    Span::styled(format!("{icon}> "), Style::default().fg(Color::Cyan)),
+                    Span::raw(message.text.clone()),
+                ]));
+                draft = Some((
+                    std::mem::replace(&mut self.pastes.list, message.pastes),
+                    std::mem::replace(&mut self.pasted_images, message.images),
+                ));
+                self.pending_command = Some(message.text);
+            }
+
             // ── Dispatch pending commands ────────────────────
             if self.tui_state == TuiState::Idle
                 && let Some(raw) = self.pending_command.take()
             {
-                match self.dispatch_command(&raw).await {
+                let outcome = self.dispatch_command(&raw).await;
+                if let Some((pastes, images)) = draft.take() {
+                    self.pastes.list.extend(pastes);
+                    self.pasted_images.extend(images);
+                }
+                match outcome {
                     CommandOutcome::NoInput => {}
                     CommandOutcome::Handled => continue,
                     CommandOutcome::Quit => {

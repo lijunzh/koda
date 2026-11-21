@@ -44,6 +44,11 @@ pub(crate) enum TurnCommand {
     },
     /// Text for the model, sent with `turn/steer`.
     Steer { text: String },
+    /// Text for after the turn (`Tab`), sent as the next prompt once the
+    /// turn completes. Its pastes and images are taken from the input box's.
+    Queue { text: String },
+    /// Take the message queued last back into the input box (`Alt+Up`).
+    Unqueue,
     /// `/side` typed mid-turn: leave the turn running and open a side
     /// conversation, with this question.
     Side { question: String },

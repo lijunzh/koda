@@ -38,6 +38,7 @@ pub(crate) mod notifications;
 pub(crate) mod panic_log;
 pub mod protocol_text;
 pub mod providers;
+pub(crate) mod queued;
 pub mod retired_env;
 pub(crate) mod scroll_buffer;
 pub mod session_id;

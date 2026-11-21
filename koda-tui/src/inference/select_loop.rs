@@ -568,11 +568,15 @@ impl TuiContext {
         let offer_plan = self.mode == koda_client::protocol::state::TrustMode::Plan
             && tracker.proposed_plan()
             && unsent.is_empty()
+            && self.queued.is_empty()
             && !quit_requested
             && tracker.completed().is_some_and(|turn| {
                 turn.status == koda_client::protocol::turn::TurnStatus::Completed
             });
-        self.post_turn_cleanup(unsent);
+        let completed = tracker
+            .completed()
+            .is_some_and(|turn| turn.status == koda_client::protocol::turn::TurnStatus::Completed);
+        self.post_turn_cleanup(unsent, completed && !quit_requested && !host_stopped);
         if offer_plan {
             self.offer_to_implement_plan();
         }
@@ -738,6 +742,19 @@ impl TuiContext {
                 return;
             }
             TurnCommand::Steer { text } => text,
+            TurnCommand::Queue { text } => {
+                let message = crate::queued::QueuedMessage::take(
+                    text,
+                    &mut self.pastes.list,
+                    &mut self.pasted_images,
+                );
+                self.queued.push(message);
+                return;
+            }
+            TurnCommand::Unqueue => {
+                self.unqueue_last();
+                return;
+            }
             // The loop takes it before it gets here.
             TurnCommand::Side { .. } => return,
         };

@@ -743,6 +743,54 @@ async fn a_stop_hands_steering_text_back() {
     assert!(sent.contains("steering text"), "{sent}");
 }
 
+/// Text queued with Tab during a turn waits for the turn to end, then goes
+/// out as the next prompt, in a turn of its own, as Codex's Tab queues it.
+#[tokio::test(flavor = "multi_thread")]
+async fn tab_queues_text_for_after_the_turn() {
+    let slow = final_text().set_delay(Duration::from_secs(3));
+    let server = scripted_model(vec![slow]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.submit("first prompt");
+    wait_for_model_call(&server, 1).await;
+    tui.type_text("queued text");
+    tui.type_text("\t");
+    tui.wait_for_screen("Queued:");
+
+    let sent = wait_for_model_call(&server, 2).await;
+    assert!(sent.contains("queued text"), "{sent}");
+    let first = String::from_utf8_lossy(&model_calls(&server).await[0].body).into_owned();
+    assert!(
+        !first.contains("queued text"),
+        "the queued text reached the running turn: {first}"
+    );
+}
+
+/// A stop sends nothing queued: the queued text comes back to the input box.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stop_hands_queued_text_back() {
+    let reply = tool_calls(&[write_file("a.txt")]).set_delay(Duration::from_secs(3));
+    let server = scripted_model(vec![reply]).await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.submit("first prompt");
+    wait_for_model_call(&server, 1).await;
+    tui.type_text("queued text");
+    tui.type_text("\t");
+    tui.wait_for_output("approve");
+    tui.stop_turn(CTRL_C);
+
+    assert_eq!(model_calls(&server).await.len(), 1);
+    tui.wait_for_screen("Not sent to the model");
+    assert!(
+        input_box(&tui.screen()).contains("queuedtext"),
+        "{}",
+        tui.screen()
+    );
+}
+
 /// Whether a process whose command line matches `pattern` is running.
 fn running(pattern: &str) -> bool {
     Command::new("pgrep")

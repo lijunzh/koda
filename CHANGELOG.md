@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **`Tab` queues a message for after the turn, as in Codex.** During a turn, `Enter` still steers it; `Tab` (when there's nothing to complete) holds the text, pastes and images included, and sends it as the next prompt once the turn completes, one queued message per turn. A queued slash command runs once the turn is over. `Alt+Up` with an empty input box takes the message queued last back to edit. A stopped or failed turn sends nothing queued: the messages come back to the input box.
+
 ## [0.7.7] - 2026-11-20
 
 ### Added
