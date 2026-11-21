@@ -149,6 +149,13 @@ as an image; other binary content is named, not sent. MCP Apps pages
 connected servers, or whose part after the colon has no `://`, is read as a
 file path.
 
+The model can reach resources too, with Codex's three tools, offered
+whenever the session has an MCP server: `ListMcpResources` lists them,
+`ListMcpResourceTemplates` lists the URI templates that take parameters, and
+`ReadMcpResource` reads one by server and URI. All three are read-only, so
+they run without asking in every mode; what they read is marked as the
+server's, as a tool result is.
+
 ## Tool filtering
 
 A server's stored config can limit which tools it exposes. No command sets

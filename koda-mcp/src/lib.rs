@@ -47,6 +47,7 @@ mod compat_tests;
 pub mod elicitation;
 pub mod manager;
 pub mod oauth;
+pub mod resource_tools;
 pub mod schema;
 
 /// Bridge MCP tools into Koda's ToolRegistry (naming, classification).

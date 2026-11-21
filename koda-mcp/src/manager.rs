@@ -446,6 +446,43 @@ impl McpManager {
         client.read_resource(uri).await
     }
 
+    /// Whether the session has any MCP server, started or not.
+    pub fn has_servers(&self) -> bool {
+        !self.clients.is_empty()
+    }
+
+    /// The connected servers' names, sorted.
+    pub fn connected_servers(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .clients
+            .values()
+            .filter(|c| c.status() == McpClientStatus::Connected)
+            .map(|c| c.name().to_string())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// The resources server `name` offers.
+    pub fn resources_of(&self, name: &str) -> Vec<crate::client::ResourceSummary> {
+        self.clients
+            .get(name)
+            .map(|c| c.resources().to_vec())
+            .unwrap_or_default()
+    }
+
+    /// The resource templates server `name` offers.
+    pub async fn resource_templates_of(
+        &self,
+        name: &str,
+    ) -> Result<Vec<crate::client::ResourceTemplateSummary>> {
+        let client = self
+            .clients
+            .get(name)
+            .context(format!("MCP server '{name}' not found"))?;
+        client.list_resource_templates().await
+    }
+
     /// Whether `name` is one of the session's servers, connected.
     pub fn is_connected(&self, name: &str) -> bool {
         self.clients
