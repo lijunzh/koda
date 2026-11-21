@@ -265,3 +265,48 @@ pub enum McpServerStartupState {
     /// Stopped before it had started.
     Cancelled,
 }
+
+/// `mcpServer/elicitation/request`: an MCP server asks the user for input
+/// in the middle of a tool call, as MCP's `elicitation/create` and Codex's
+/// request of the same name. Form mode asks for the fields in
+/// `requestedSchema`; URL mode asks the user to visit `url`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerElicitationRequestParams {
+    /// The session.
+    pub session_id: String,
+    /// The server asking.
+    pub server_name: String,
+    /// What the server says it needs.
+    pub message: String,
+    /// Form mode: a JSON Schema object of flat, primitive fields (string,
+    /// number, integer, boolean, string enums).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_schema: Option<serde_json::Value>,
+    /// URL mode: the page to visit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+/// The answer to `mcpServer/elicitation/request`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerElicitationRequestResponse {
+    /// What the user did.
+    pub action: McpServerElicitationAction,
+    /// The fields' values, for an accepted form.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<serde_json::Value>,
+}
+
+/// What the user did with an elicitation: MCP's actions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum McpServerElicitationAction {
+    /// Gave what was asked.
+    Accept,
+    /// Said no; the tool goes on without it.
+    Decline,
+    /// Dismissed it; the operation stops.
+    Cancel,
+}

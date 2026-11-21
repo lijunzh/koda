@@ -185,6 +185,11 @@ server_requests! {
         params: crate::turn::LoopCapParams,
         response: crate::turn::LoopCapResponse,
     },
+    /// An MCP server asks the user for input during a tool call.
+    McpServerElicitation => "mcpServer/elicitation/request" {
+        params: crate::mcp::McpServerElicitationRequestParams,
+        response: crate::mcp::McpServerElicitationRequestResponse,
+    },
 }
 
 impl ServerNotification {

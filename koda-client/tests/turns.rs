@@ -3610,3 +3610,93 @@ async fn mcp_auth_status_and_sign_in_refusals() {
     assert!(!logout.removed);
     koda.client.shutdown().await;
 }
+
+/// A stdio MCP server whose `book` tool asks for a date with
+/// `elicitation/create` before it answers.
+fn mcp_eliciting_server(dir: &std::path::Path) -> String {
+    let script = r#"while IFS= read -r line; do
+  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      case "$line" in
+        *'"elicitation"'*) printf '%s\n' "$line" | grep -q '"form"' && touch "$0.elicits" ;;
+      esac
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"booking","version":"0.1.0"}}}\n' "$id" ;;
+    *'"method":"tools/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"book","description":"Book a slot","inputSchema":{"type":"object","properties":{}},"annotations":{"readOnlyHint":true}}]}}\n' "$id" ;;
+    *'"method":"tools/call"'*)
+      call=$id
+      printf '{"jsonrpc":"2.0","id":900,"method":"elicitation/create","params":{"mode":"form","message":"Which date?","requestedSchema":{"type":"object","properties":{"date":{"type":"string","title":"Date"}},"required":["date"]}}}\n'
+      IFS= read -r reply
+      case "$reply" in
+        *'"accept"'*)
+          date=$(printf '%s\n' "$reply" | sed -n 's/.*"date":"\([^"]*\)".*/\1/p')
+          printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"booked %s"}]}}\n' "$call" "$date" ;;
+        *)
+          printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"not booked"}]}}\n' "$call" ;;
+      esac ;;
+  esac
+done
+"#;
+    let path = dir.join(format!("mcp-{}.sh", uuid_like()));
+    std::fs::write(&path, script).unwrap();
+    path.display().to_string()
+}
+
+/// An MCP server's request for input during a tool call reaches the client
+/// as `mcpServer/elicitation/request`, as Codex sends it; the answer goes
+/// back to the server, and the tool's result carries it. Koda tells the
+/// server it can elicit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_mcp_servers_request_for_input_reaches_the_client() {
+    use koda_client::protocol::mcp::McpServerStartupState;
+    let server = model(vec![
+        tool_call("call_1", "booking__book", json!({})),
+        text("Booked."),
+    ])
+    .await;
+    let mut koda = Koda::start(config(&server)).await;
+    let script = mcp_eliciting_server(koda._dir.path());
+    koda.write_config(&[(
+        "mcp_servers.booking",
+        json!({"command": "sh", "args": [script.clone()]}),
+    )])
+    .await
+    .unwrap();
+    koda.switch_to_new_session().await;
+    koda.until_mcp("booking", McpServerStartupState::Ready)
+        .await;
+    assert!(
+        std::path::Path::new(&format!("{script}.elicits")).exists(),
+        "Koda didn't tell the server it can elicit forms"
+    );
+
+    koda.turn("Book a slot").await;
+    let request = koda.request().await;
+    let ServerRequest::McpServerElicitation { id, params } = &request else {
+        panic!("expected an elicitation, got {request:?}");
+    };
+    assert_eq!(params.server_name, "booking");
+    assert_eq!(params.message, "Which date?");
+    assert_eq!(
+        params.requested_schema.as_ref().unwrap()["required"],
+        json!(["date"])
+    );
+    koda.answer(
+        id,
+        json!({"action": "accept", "content": {"date": "2026-12-01"}}),
+    )
+    .await;
+
+    let messages = koda.until("turn/completed").await;
+    assert_eq!(turn_completed(&messages).status, TurnStatus::Completed);
+    let requests = chat_requests(&server).await;
+    assert!(
+        requests[1]["messages"]
+            .to_string()
+            .contains("booked 2026-12-01"),
+        "{}",
+        requests[1]["messages"]
+    );
+    koda.client.shutdown().await;
+}

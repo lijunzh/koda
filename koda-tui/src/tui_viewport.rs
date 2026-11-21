@@ -69,8 +69,17 @@ pub(crate) fn draw_viewport(
         MenuContent::Approval { detail, .. } if outside_sandbox_request(detail).is_some() => 3,
         MenuContent::Approval { .. } | MenuContent::LoopCap { .. } => 2,
         MenuContent::AskUser {
-            question, options, ..
-        } => ask_user_menu_height(question, options, area.width, area.height),
+            question,
+            options,
+            form,
+            ..
+        } => ask_user_menu_height(
+            question,
+            options,
+            ask_user_suffix(form.is_some()),
+            area.width,
+            area.height,
+        ),
         MenuContent::WizardTrail(trail) => (trail.len() as u16) + 1,
         MenuContent::Slash(dd) => dd.visible_count() as u16 + 1,
         MenuContent::Model(dd) => dd.visible_count() as u16 + 1,
@@ -501,8 +510,12 @@ fn render_menu(frame: &mut ratatui::Frame, menu: &MenuContent, menu_area: ratatu
             frame.render_widget(Paragraph::new(lines), menu_area);
         }
         MenuContent::AskUser {
-            question, options, ..
+            question,
+            options,
+            form,
+            ..
         } => {
+            let suffix = ask_user_suffix(form.is_some());
             let hint = if options.is_empty() {
                 "Type your answer and press Enter".to_string()
             } else {
@@ -522,10 +535,7 @@ fn render_menu(frame: &mut ratatui::Frame, menu: &MenuContent, menu_area: ratatu
                 Line::from(vec![
                     Span::styled("  ", Style::default()),
                     Span::styled(hint, Style::default().fg(Color::DarkGray)),
-                    Span::styled(
-                        "  · Esc to stop",
-                        Style::default().fg(Color::Rgb(80, 80, 80)),
-                    ),
+                    Span::styled(suffix, Style::default().fg(Color::Rgb(80, 80, 80))),
                 ]),
             ];
             // `Wrap { trim: false }` mirrors the height calculation in
@@ -629,9 +639,20 @@ fn outside_sandbox_request(detail: &str) -> Option<(&str, &str)> {
     )
 }
 
+/// What Esc does in the question dialog: stop the turn, or decline an MCP
+/// server's form.
+fn ask_user_suffix(form: bool) -> &'static str {
+    if form {
+        "  \u{00b7} Esc to decline"
+    } else {
+        "  \u{00b7} Esc to stop"
+    }
+}
+
 fn ask_user_menu_height(
     question: &str,
     options: &[String],
+    suffix: &str,
     viewport_width: u16,
     viewport_height: u16,
 ) -> u16 {
@@ -645,7 +666,7 @@ fn ask_user_menu_height(
     let q_rows = visual_line_count(&q_text, viewport_width as usize);
 
     let hint = build_ask_user_hint(options);
-    let h_text = format!("  {hint}  \u{00b7} Esc to stop");
+    let h_text = format!("  {hint}{suffix}");
     let h_rows = visual_line_count(&h_text, viewport_width as usize);
 
     let total = (q_rows + h_rows) as u16;
@@ -1068,7 +1089,7 @@ mod panic_hook_tests {
 
 #[cfg(test)]
 mod ask_user_height_tests {
-    use super::{ask_user_menu_height, outside_sandbox_request};
+    use super::{ask_user_menu_height, ask_user_suffix, outside_sandbox_request};
 
     #[test]
     fn an_outside_sandbox_request_splits_into_command_and_reason() {
@@ -1085,7 +1106,7 @@ mod ask_user_height_tests {
     /// Same as the legacy hardcoded value, so existing layouts don't shift.
     #[test]
     fn short_question_yields_two_rows() {
-        let h = ask_user_menu_height("Continue?", &[], 80, 24);
+        let h = ask_user_menu_height("Continue?", &[], ask_user_suffix(false), 80, 24);
         assert_eq!(h, 2);
     }
 
@@ -1098,7 +1119,7 @@ mod ask_user_height_tests {
                  modules to the new architecture, including the \
                  deprecated bits and the experimental ones nobody \
                  remembers writing in the first place?";
-        let h = ask_user_menu_height(q, &[], 80, 24);
+        let h = ask_user_menu_height(q, &[], ask_user_suffix(false), 80, 24);
         assert!(
             h > 2,
             "long question should grow the menu beyond 2 rows, got {h}"
@@ -1120,7 +1141,7 @@ mod ask_user_height_tests {
         //   Row 4: trailing — depends on word-wrap re-flow accounting
         // We don't pin the exact integer here (the algorithm has subtle
         // word-relocation semantics); we just bound it.
-        let h = ask_user_menu_height(&q, &[], 80, 24);
+        let h = ask_user_menu_height(&q, &[], ask_user_suffix(false), 80, 24);
         assert!(
             (4..=6).contains(&h),
             "expected 4..=6 rows for 200-char question at width 80, got {h}"
@@ -1132,7 +1153,7 @@ mod ask_user_height_tests {
     #[test]
     fn many_options_grow_the_hint_row() {
         let opts: Vec<String> = (0..12).map(|i| format!("option-{i}")).collect();
-        let h = ask_user_menu_height("Pick one:", &opts, 80, 24);
+        let h = ask_user_menu_height("Pick one:", &opts, ask_user_suffix(false), 80, 24);
         // Hint becomes "Choices: [1] option-0  [2] option-1  …" which is
         // > 80 chars → at least 2 hint rows + 1 question row.
         assert!(h >= 3, "many options must wrap the hint row, got {h}");
@@ -1143,7 +1164,7 @@ mod ask_user_height_tests {
     #[test]
     fn height_is_capped_to_half_viewport() {
         let q = "x".repeat(10_000);
-        let h = ask_user_menu_height(&q, &[], 80, 20);
+        let h = ask_user_menu_height(&q, &[], ask_user_suffix(false), 80, 20);
         assert!(h <= 10, "must not exceed half viewport, got {h} > 10");
     }
 
@@ -1151,7 +1172,7 @@ mod ask_user_height_tests {
     /// (question + hint), matching the legacy minimum.
     #[test]
     fn minimum_height_is_two_rows() {
-        let h = ask_user_menu_height("Q", &[], 80, 4);
+        let h = ask_user_menu_height("Q", &[], ask_user_suffix(false), 80, 4);
         assert_eq!(h, 2);
     }
 
@@ -1160,7 +1181,7 @@ mod ask_user_height_tests {
     #[test]
     fn narrow_terminal_wraps_short_question() {
         let q = "a".repeat(60);
-        let h = ask_user_menu_height(&q, &[], 30, 24);
+        let h = ask_user_menu_height(&q, &[], ask_user_suffix(false), 30, 24);
         assert!(
             h >= 3,
             "60 chars at width 30 should be ≥2 q-rows + 1 hint, got {h}"

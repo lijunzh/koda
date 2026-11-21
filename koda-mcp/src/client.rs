@@ -6,6 +6,7 @@
 
 use std::time::Duration;
 
+use crate::elicitation::KodaClientHandler;
 use anyhow::{Context, Result};
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, ClientConfig, ProtocolVersion};
@@ -51,7 +52,9 @@ pub struct McpClient {
     /// Server configuration.
     config: McpServerConfig,
     /// Running rmcp service (None when disconnected).
-    service: Option<RunningService<RoleClient, ClientConfig>>,
+    service: Option<RunningService<RoleClient, KodaClientHandler>>,
+    /// Who answers the server's requests for input.
+    elicitor: crate::elicitation::ElicitorSlot,
     /// Discovered tools after connection.
     tools: Vec<DiscoveredTool>,
     /// Current connection status.
@@ -123,7 +126,19 @@ impl McpClient {
             last_error: None,
             instructions: None,
             resources: Vec::new(),
+            elicitor: Default::default(),
         }
+    }
+
+    /// Let `elicitor` answer the server's requests for input.
+    pub fn with_elicitor(mut self, elicitor: crate::elicitation::ElicitorSlot) -> Self {
+        self.elicitor = elicitor;
+        self
+    }
+
+    /// Koda's side of the connection.
+    fn handler(&self) -> KodaClientHandler {
+        KodaClientHandler::new(self.name.clone(), client_config(), self.elicitor.clone())
     }
 
     /// A stand-in for a server whose startup is under way: it has no tools
@@ -281,7 +296,8 @@ impl McpClient {
 
         let transport =
             TokioChildProcess::new(cmd).context("failed to spawn MCP server process")?;
-        let service = client_config()
+        let service = self
+            .handler()
             .serve(transport)
             .await
             .context("MCP handshake failed")?;
@@ -362,12 +378,12 @@ impl McpClient {
         let service = match signed_in {
             Some(client) => {
                 let transport = StreamableHttpClientTransport::with_client(client, config);
-                client_config().serve(transport).await
+                self.handler().serve(transport).await
             }
             None => {
                 let transport =
                     StreamableHttpClientTransport::with_client(mcp_http_client()?, config);
-                client_config().serve(transport).await
+                self.handler().serve(transport).await
             }
         };
         let service = service
@@ -400,7 +416,7 @@ impl McpClient {
     /// Captures the server's `instructions` (#922) and discovers tools.
     async fn finish_handshake(
         &mut self,
-        service: RunningService<RoleClient, ClientConfig>,
+        service: RunningService<RoleClient, KodaClientHandler>,
     ) -> Result<()> {
         // Capture server-provided instructions before storing the service so
         // we don't have to re-borrow it. Filter empties to keep prompt clean.

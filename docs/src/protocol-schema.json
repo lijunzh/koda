@@ -1816,6 +1816,75 @@
         }
       ]
     },
+    "McpServerElicitationAction": {
+      "description": "What the user did with an elicitation: MCP's actions.",
+      "oneOf": [
+        {
+          "const": "accept",
+          "description": "Gave what was asked.",
+          "type": "string"
+        },
+        {
+          "const": "decline",
+          "description": "Said no; the tool goes on without it.",
+          "type": "string"
+        },
+        {
+          "const": "cancel",
+          "description": "Dismissed it; the operation stops.",
+          "type": "string"
+        }
+      ]
+    },
+    "McpServerElicitationRequestParams": {
+      "description": "`mcpServer/elicitation/request`: an MCP server asks the user for input\nin the middle of a tool call, as MCP's `elicitation/create` and Codex's\nrequest of the same name. Form mode asks for the fields in\n`requestedSchema`; URL mode asks the user to visit `url`.",
+      "properties": {
+        "message": {
+          "description": "What the server says it needs.",
+          "type": "string"
+        },
+        "requestedSchema": {
+          "description": "Form mode: a JSON Schema object of flat, primitive fields (string,\nnumber, integer, boolean, string enums)."
+        },
+        "serverName": {
+          "description": "The server asking.",
+          "type": "string"
+        },
+        "sessionId": {
+          "description": "The session.",
+          "type": "string"
+        },
+        "url": {
+          "description": "URL mode: the page to visit.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "sessionId",
+        "serverName",
+        "message"
+      ],
+      "type": "object"
+    },
+    "McpServerElicitationRequestResponse": {
+      "description": "The answer to `mcpServer/elicitation/request`.",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/McpServerElicitationAction",
+          "description": "What the user did."
+        },
+        "content": {
+          "description": "The fields' values, for an accepted form."
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "type": "object"
+    },
     "McpServerOauthLoginCompletedNotification": {
       "description": "`mcpServer/oauthLogin/completed`: a sign-in started with\n`mcpServer/oauth/login` finished.",
       "properties": {
@@ -5196,6 +5265,14 @@
       },
       "result": {
         "$ref": "#/$defs/ToolCallApprovalResponse"
+      }
+    },
+    "mcpServer/elicitation/request": {
+      "params": {
+        "$ref": "#/$defs/McpServerElicitationRequestParams"
+      },
+      "result": {
+        "$ref": "#/$defs/McpServerElicitationRequestResponse"
       }
     },
     "turn/loopCap/requestDecision": {

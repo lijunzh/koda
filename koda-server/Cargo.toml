@@ -17,6 +17,7 @@ koda-config = { workspace = true }
 koda-state = { workspace = true }
 koda-core = { workspace = true }
 koda-protocol = { workspace = true }
+async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync", "macros", "time", "io-util", "net"] }
