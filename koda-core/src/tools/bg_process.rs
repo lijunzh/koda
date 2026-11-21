@@ -160,6 +160,10 @@ struct BgEntry {
     /// The time limit stopped it. Unlike a stop by the user or Koda, the
     /// model is told, so it can start the command again with more time.
     timed_out: bool,
+    /// Left running by a foreground call ([`BgRegistry::adopt`]), not
+    /// started in the background: tracked and stopped like the rest, but no
+    /// turn waits for it or is started by it.
+    adopted: bool,
 }
 
 /// The most of a command's output an exit notice quotes.
@@ -297,6 +301,7 @@ impl BgRegistry {
                 reported: false,
                 limit: None,
                 timed_out: false,
+                adopted: false,
             },
         );
         pid
@@ -305,7 +310,11 @@ impl BgRegistry {
     /// Take over the process group a foreground call left running: its
     /// leader (the call's shell) has exited and been reaped, but processes it
     /// started with `&` are still in the group. Keyed by the group's id, the
-    /// leader's PID, like every entry.
+    /// leader's PID, like every entry. Unlike a background command, it holds
+    /// nothing open: [`Self::any_running`] and [`Self::has_exits`] leave it
+    /// out, so `koda exec` and a goal don't wait for it, as Codex's exec
+    /// doesn't and `claude -p` waits only for its background tasks. It stops
+    /// when the session ends.
     pub fn adopt(&self, group: u32, command: String, spawner: Option<u32>) -> u32 {
         self.inner.lock().unwrap().insert(
             group,
@@ -323,6 +332,7 @@ impl BgRegistry {
                 reported: false,
                 limit: None,
                 timed_out: false,
+                adopted: true,
             },
         );
         group
@@ -655,14 +665,16 @@ impl BgRegistry {
         exits
     }
 
-    /// Whether one of the model's own commands has exited by itself, or
-    /// reached its time limit, and not been handed out by
-    /// [`Self::take_exits`] yet.
+    /// Whether one of the model's own background commands has exited by
+    /// itself, or reached its time limit, and not been handed out by
+    /// [`Self::take_exits`] yet. One a foreground call left running doesn't
+    /// count: its exit is handed out with the next turn, but starts none.
     pub fn has_exits(&self) -> bool {
         self.reap();
         self.inner.lock().unwrap().values().any(|entry| {
             !entry.reported
                 && entry.spawner.is_none()
+                && !entry.adopted
                 && (matches!(entry.status, BgProcessStatus::Exited { .. }) || entry.timed_out)
         })
     }
@@ -687,15 +699,14 @@ impl BgRegistry {
         }
     }
 
-    /// Whether any of the model's own commands (not a sub-agent's) is still
+    /// Whether any of the model's own background commands (not a
+    /// sub-agent's, nor one a foreground call left running) is still
     /// running.
     pub fn any_running(&self) -> bool {
         self.reap();
-        self.inner
-            .lock()
-            .unwrap()
-            .values()
-            .any(|entry| entry.spawner.is_none() && entry.status == BgProcessStatus::Running)
+        self.inner.lock().unwrap().values().any(|entry| {
+            entry.spawner.is_none() && !entry.adopted && entry.status == BgProcessStatus::Running
+        })
     }
 
     /// Record `pid`'s terminal, for `WriteStdin`.
@@ -983,6 +994,32 @@ mod tests {
         reg.set_limit(long, Duration::from_secs(24 * 60 * 60));
         let capped = reg.inner.lock().unwrap().get(&long).unwrap().limit;
         assert_eq!(capped, Some(MAX_BACKGROUND_LIMIT), "at most two hours");
+    }
+
+    /// What a foreground call left running is tracked, but nothing waits
+    /// for it: `koda exec` stayed up 20 minutes for a test server a call
+    /// started with `&` (koda-evals, py-asyncio-timeout-hang, 2026-11-21).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_group_left_by_a_foreground_call_holds_nothing_open() {
+        let reg = BgRegistry::new();
+        let (group, mut child) = spawn_script("sleep 0.5");
+        reg.adopt(group, "python3 server.py &".into(), None);
+        let listed = reg.snapshot();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].status, BgProcessStatus::Running, "still tracked");
+        assert!(!reg.any_running(), "no turn waits for it");
+
+        let _ = child.wait().await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            matches!(reg.snapshot()[0].status, BgProcessStatus::Exited { .. }),
+            "its exit is seen"
+        );
+        assert!(!reg.has_exits(), "but starts no turn");
+
+        let (left, _child) = spawn_script("sleep 30");
+        reg.adopt(left, "serve &".into(), None);
+        assert!(reg.kill(left), "it can be stopped");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

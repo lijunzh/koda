@@ -485,9 +485,9 @@ fn left_running_note(group: u32) -> String {
     format!(
         "\n\nThe command left processes running (process group {group}). Koda now \
          tracks them as a background process: check one with Bash{{command: \"kill -0 PID\"}} \
-         and stop it with Bash{{command: \"kill PID\"}}, using any PID it started, and they \
-         stop when the session ends. Next time, start long-running commands with \
-         background=true."
+         and stop it with Bash{{command: \"kill PID\"}}, using any PID it started. Koda doesn't \
+         wait for them or tell you when they exit, and they stop when the session ends. Next \
+         time, start long-running commands with background=true."
     )
 }
 

@@ -15,6 +15,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **`Tab` queues a message for after the turn, as in Codex.** During a turn, `Enter` still steers it; `Tab` (when there's nothing to complete) holds the text, pastes and images included, and sends it as the next prompt once the turn completes, one queued message per turn. A queued slash command runs once the turn is over. `Alt+Up` with an empty input box takes the message queued last back to edit. A stopped or failed turn sends nothing queued: the messages come back to the input box.
 - **`koda exec --output-schema FILE` holds the last reply to a JSON Schema, as `codex exec --output-schema` and `claude -p --json-schema` do.** The turn runs as usual with the schema in the prompt; a last reply that doesn't match gets one more model call with the schema enforced by the API (Claude's `output_config.format`, a Chat Completions `response_format`, Gemini's `responseJsonSchema`) and no tools, since llama.cpp refuses a schema beside them. The run exits 1 if the reply still doesn't match, and a schema Koda can't check stops it before the model is called. `turn/start` takes the same schema as `outputSchema`.
 
+### Fixed
+
+- **`koda exec` no longer waits for processes an ordinary command left running.** A command that started a server with `&` and returned left it in Koda's care, and the run then waited for it as for a background command, until the time limit or the caller stopped it: a `koda exec` run stayed open 20 minutes after its turn ended. Such processes are still tracked, can be stopped, and stop when the session ends, but no longer hold `koda exec` or a goal open or start a turn when they exit, as Codex's `exec` doesn't wait for them and `claude -p` waits only for background tasks. Commands started with `background: true` are waited for as before.
+
 ## [0.7.7] - 2026-11-20
 
 ### Added
