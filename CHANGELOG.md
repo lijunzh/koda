@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.7.9] - 2026-11-22
+
 ### Security
 
 - **A sandboxed command can no longer connect to Koda's shared server.** The sandbox let commands connect to any Unix socket, Koda's own (`~/.config/koda/serve/koda.sock`) included, and the server takes an approval's answer, or a change to the config file, from any of the user's programs. Both sandboxes now close the socket's folder, as Codex closes its daemon's: it can't be read, written or connected into, and no folder above it can be renamed to bring it out. Affects 0.7.6 to 0.7.8, on macOS and Linux.
