@@ -65,6 +65,10 @@ pub struct McpServerConfigValue {
     /// `["deferred"]` sends them up front even to a model with tool search.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub omit_tools_from: Option<Vec<String>>,
+    /// The OAuth scopes a sign-in asks for, as Codex's `scopes`; unset, the
+    /// scopes the server advertises.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scopes: Option<Vec<String>>,
 }
 
 /// `mcpServerStatus/list`.
@@ -137,6 +141,10 @@ pub enum McpAuthStatus {
 pub struct McpServerOauthLoginParams {
     /// The server's name in the config.
     pub name: String,
+    /// The OAuth scopes to ask for. Unset or empty, the server's configured
+    /// `scopes`, or else the scopes it advertises.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scopes: Option<Vec<String>>,
 }
 
 /// The answer to `mcpServer/oauth/login`.

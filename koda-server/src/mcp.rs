@@ -84,6 +84,7 @@ fn to_core(name: &str, value: McpServerConfigValue) -> Result<McpServerConfig, E
         disabled_tools,
         tool_input_schema_max_bytes,
         omit_tools_from,
+        scopes,
     } = value;
     let refuse = |why: &str| Err(invalid(format!("{SERVERS_KEY}.{name}: {why}")));
     let transport = match (command, url) {
@@ -139,6 +140,7 @@ fn to_core(name: &str, value: McpServerConfigValue) -> Result<McpServerConfig, E
         required,
         tool_input_schema_max_bytes,
         omit_tools_from,
+        scopes,
     };
     config
         .validate()
@@ -162,6 +164,7 @@ pub(crate) fn to_value(config: &McpServerConfig) -> McpServerConfigValue {
             .omit_tools_from
             .as_ref()
             .map(|surfaces| surfaces.iter().map(|_| "deferred".to_string()).collect()),
+        scopes: config.scopes.clone(),
         ..McpServerConfigValue::default()
     };
     match &config.transport {
@@ -278,10 +281,13 @@ fn auth_status(name: &str, server: &McpServerConfig) -> koda_protocol::mcp::McpA
 }
 
 /// Sign in to the configured HTTP server `name`: the page to open, and the
-/// sign-in under way.
+/// sign-in under way. It asks for `scopes`, or else the server's configured
+/// ones, or else what the server advertises, in Codex's order
+/// (`resolve_oauth_scopes`).
 pub(crate) async fn oauth_login(
     file: &koda_config::ConfigFile,
     name: &str,
+    scopes: Option<Vec<String>>,
 ) -> Result<koda_core::mcp::oauth::Login, ErrorObject> {
     let configured = configured(file)?;
     let server = configured
@@ -292,7 +298,11 @@ pub(crate) async fn oauth_login(
             "{name} is a stdio server; OAuth is for streamable HTTP servers"
         )));
     };
-    koda_core::mcp::oauth::login(name, url)
+    let scopes = scopes
+        .filter(|scopes| !scopes.is_empty())
+        .or_else(|| server.scopes.clone())
+        .unwrap_or_default();
+    koda_core::mcp::oauth::login(name, url, &scopes)
         .await
         .map_err(|e| ErrorObject::new(codes::INTERNAL_ERROR, format!("{e:#}")))
 }
@@ -358,6 +368,15 @@ mod tests {
         .unwrap();
         let value = to_value(&http.unwrap());
         assert_eq!(value.bearer_token_env_var.as_deref(), Some("MAIL_TOKEN"));
+
+        let scoped = check_edit(
+            "hf",
+            json!({"url": "https://hf.example/mcp", "scopes": ["read"]}),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(scoped.scopes.as_deref(), Some(&["read".to_string()][..]));
+        assert_eq!(to_value(&scoped).scopes, scoped.scopes);
     }
 
     /// Codex's `tool_input_schema_max_bytes` and `omit_tools_from` reach the
@@ -392,6 +411,40 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    /// Every key of the config's shape is one `config.toml` can hold: a key
+    /// missing from `McpServerToml` is dropped as unknown, so the setting
+    /// does nothing.
+    #[test]
+    fn every_server_setting_is_read_from_the_config_file() {
+        let full = McpServerConfigValue {
+            command: Some("c".into()),
+            args: vec!["a".into()],
+            env: [("K".to_string(), "v".to_string())].into(),
+            cwd: Some("d".into()),
+            url: Some("u".into()),
+            bearer_token_env_var: Some("T".into()),
+            http_headers: [("H".to_string(), "v".to_string())].into(),
+            startup_timeout_sec: Some(1),
+            tool_timeout_sec: Some(2),
+            required: true,
+            enabled_tools: Some(vec!["x".into()]),
+            disabled_tools: Some(vec!["y".into()]),
+            tool_input_schema_max_bytes: Some(3),
+            omit_tools_from: Some(vec!["deferred".into()]),
+            scopes: Some(vec!["read".into()]),
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let file = koda_config::ConfigFile::in_dir(dir.path());
+        let edit = koda_config::Edit {
+            key_path: "mcp_servers.all".into(),
+            value: serde_json::to_value(&full).unwrap(),
+        };
+        file.edit(None, &[edit]).expect("every key is known");
+        let loaded = file.load().unwrap();
+        assert!(loaded.unknown_keys.is_empty(), "{:?}", loaded.unknown_keys);
+        assert_eq!(crate::config_file::servers(&loaded)["all"], full);
     }
 
     #[test]

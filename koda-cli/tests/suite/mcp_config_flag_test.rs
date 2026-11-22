@@ -188,3 +188,64 @@ async fn a_bad_flag_stops_the_start() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("SSE"), "stderr: {stderr}");
 }
+
+/// A server that can't start is named on stderr with the reason, as
+/// `codex exec` warns: the run goes on without its tools. Its URL's key
+/// stays out of it.
+#[tokio::test(flavor = "multi_thread")]
+async fn exec_says_why_a_server_did_not_start() {
+    let server = FakeLlmServer::spawn().await;
+    server
+        .mount_fn("POST", r".*/chat/completions$", move |_| final_text())
+        .await;
+    let tmp = tempfile::tempdir().unwrap();
+    // Koda refuses a loopback server, so this one fails to start.
+    let edit = koda_config::Edit {
+        key_path: "mcp_servers.inside".into(),
+        value: json!({"url": "http://127.0.0.1:9/mcp?apiKey=TEST_SECRET"}),
+    };
+    config_file(&tmp).edit(None, &[edit]).unwrap();
+    let run = |args: &'static [&'static str]| {
+        let mut cmd = tokio::process::Command::new(koda_bin());
+        cmd.args(["exec", "hi"])
+            .args(args)
+            .args(["--provider", "lmstudio", "--model", "stub"])
+            .args(["--base-url", &server.url()])
+            .arg("--project-root")
+            .arg(tmp.path())
+            .env("XDG_CONFIG_HOME", tmp.path())
+            .kill_on_drop(true);
+        async move {
+            let output = tokio::time::timeout(Duration::from_secs(120), cmd.output())
+                .await
+                .expect("koda hung")
+                .expect("failed to run koda");
+            assert!(output.status.success(), "{output:?}");
+            (
+                String::from_utf8_lossy(&output.stdout).into_owned(),
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )
+        }
+    };
+    let (stdout, stderr) = run(&[]).await;
+    assert_eq!(
+        stderr.matches("MCP server 'inside' unavailable: ").count(),
+        1,
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("loopback") || stderr.contains("private"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("TEST_SECRET"), "{stderr}");
+    assert!(stdout.contains("Done."), "{stdout}");
+
+    // `--json` has the notification, and no extra text.
+    let (stdout, stderr) = run(&["--json"]).await;
+    assert!(
+        stdout.contains("mcpServer/startupStatus/updated") && stdout.contains("\"failed\""),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("TEST_SECRET"), "{stdout}");
+    assert!(!stderr.contains("unavailable"), "{stderr}");
+}

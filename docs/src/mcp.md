@@ -80,12 +80,20 @@ the model's commands, as the API keys are. Later connections send the access
 token and refresh it when it expires. Open sessions reconnect to their
 servers once you're signed in.
 
-`koda mcp logout <name>` forgets the tokens. `koda mcp list` shows each HTTP
-server's auth: `OAuth`, `Bearer token`, or `-` for neither. A server that
-answers 401 fails with "run `koda mcp login <name>`". A configured bearer
-token wins over a sign-in. Over the protocol, `mcpServer/oauth/login` answers
-with the page to open and sends `mcpServer/oauthLogin/completed` when the
-browser comes back.
+By default Koda asks for every scope the server advertises, as Codex does.
+To ask for fewer, name them: `koda mcp login notion --scopes read,search`, or
+put `scopes = ["read", "search"]` in the server's `[mcp_servers.<name>]`
+table. `--scopes` wins over the table. The server's docs say what each scope
+allows.
+
+`koda mcp logout <name>` forgets the tokens. It doesn't withdraw the access
+at the service: to do that, remove Koda in the service's own settings.
+`koda mcp list` shows each HTTP server's auth: `OAuth`, `Bearer token`, or `-`
+for neither. A server that answers 401 fails with "run `koda mcp login
+<name>`", which `koda exec` prints on stderr, `/mcp` shows, and the model is
+told when it asks for the server. A configured bearer token wins over a
+sign-in. Over the protocol, `mcpServer/oauth/login` answers with the page to
+open and sends `mcpServer/oauthLogin/completed` when the browser comes back.
 
 > **Security note:** Bearer tokens sent over plaintext `http://` are logged as
 > a warning. Use `https://` in production. Koda also blocks connections to

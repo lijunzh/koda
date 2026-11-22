@@ -425,9 +425,10 @@ impl McpClient {
                 self.handler().serve(transport).await
             }
         };
-        let service = service
-            .map_err(|e| self.explain_auth_failure(anyhow::Error::new(e), bearer_token.is_some()))
-            .context("MCP HTTP handshake failed")?;
+        let service = service.map_err(|e| {
+            let e = anyhow::Error::new(e).context("MCP HTTP handshake failed");
+            self.explain_auth_failure(e, bearer_token.is_some())
+        })?;
         self.finish_handshake(service).await
     }
 
@@ -448,7 +449,8 @@ impl McpClient {
         } else {
             format!("it needs a sign-in: run `koda mcp login {name}`")
         };
-        error.context(format!("{name} refused the connection; {how}"))
+        tracing::debug!(server = %name, error = %text, "MCP server refused the connection");
+        anyhow::anyhow!("{name} refused the connection; {how}")
     }
 
     /// Common post-handshake bookkeeping shared by stdio + HTTP connect paths.

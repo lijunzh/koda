@@ -147,6 +147,9 @@ impl Entry {
             required: false,
             enabled_tools: self.enabled_tools,
             disabled_tools: self.disabled_tools,
+            tool_input_schema_max_bytes: None,
+            omit_tools_from: None,
+            scopes: None,
         })
     }
 }

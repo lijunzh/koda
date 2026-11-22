@@ -1754,6 +1754,16 @@
           "description": "A session doesn't start without it: `session/start` fails when it\nfails to start.",
           "type": "boolean"
         },
+        "scopes": {
+          "description": "The OAuth scopes a sign-in asks for, as Codex's `scopes`; unset, the\nscopes the server advertises.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "startup_timeout_sec": {
           "description": "Seconds the server has to start (default 30).",
           "format": "uint64",
@@ -1917,6 +1927,16 @@
         "name": {
           "description": "The server's name in the config.",
           "type": "string"
+        },
+        "scopes": {
+          "description": "The OAuth scopes to ask for. Unset or empty, the server's configured\n`scopes`, or else the scopes it advertises.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
         }
       },
       "required": [

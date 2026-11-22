@@ -48,6 +48,11 @@ enum McpSubcommand {
 struct LoginArgs {
     /// Name of the MCP server to sign in to.
     name: String,
+    /// Comma-separated list of OAuth scopes to request.
+    /// Without it: the server's `scopes` in config.toml, or else every scope
+    /// the server advertises.
+    #[arg(long, value_delimiter = ',', value_name = "SCOPE,SCOPE")]
+    scopes: Vec<String>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -236,7 +241,10 @@ async fn login(client: &mut InProcessClient, args: LoginArgs) -> Result<()> {
     use koda_client::protocol::mcp::McpServerOauthLoginParams;
     let name = args.name;
     let started = client
-        .request::<methods::McpServerOauthLogin>(McpServerOauthLoginParams { name: name.clone() })
+        .request::<methods::McpServerOauthLogin>(McpServerOauthLoginParams {
+            name: name.clone(),
+            scopes: (!args.scopes.is_empty()).then_some(args.scopes),
+        })
         .await
         .map_err(|e| anyhow!("{e}"))?;
     let url = started.authorization_url;
@@ -450,6 +458,9 @@ async fn get(client: &InProcessClient, args: GetArgs) -> Result<()> {
             dash(value.bearer_token_env_var.as_deref())
         );
         println!("  http_headers: {}", env_display(&value.http_headers));
+        if let Some(scopes) = &value.scopes {
+            println!("  scopes: {}", scopes.join(", "));
+        }
     }
     if let Some(secs) = value.startup_timeout_sec {
         println!("  startup_timeout_sec: {secs}");

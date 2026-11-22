@@ -95,6 +95,27 @@ fn servers_are_added_listed_shown_and_removed() {
     assert!(String::from_utf8_lossy(&missing.stderr).contains("No MCP server named 'mail'"));
 }
 
+/// A server's `scopes` in config.toml are read and shown.
+#[test]
+fn a_server_s_scopes_are_shown() {
+    let home = tempfile::tempdir().unwrap();
+    let home = home.path();
+    let dir = home.join(".config/koda");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("config.toml"),
+        "[mcp_servers.hf]\nurl = \"https://hf.example/mcp\"\nscopes = [\"read\", \"write\"]\n",
+    )
+    .unwrap();
+    let shown = koda_mcp(home, &["get", "hf"]);
+    assert!(
+        stdout(&shown).contains("  scopes: read, write"),
+        "{shown:?}"
+    );
+    // A key Koda knows: no warning about it.
+    assert!(!String::from_utf8_lossy(&shown.stderr).contains("scopes"));
+}
+
 #[test]
 fn a_bad_server_is_refused() {
     let home = tempfile::tempdir().unwrap();

@@ -187,7 +187,7 @@ impl McpManager {
             }
             let status = match result {
                 Ok(()) => McpStartupStatus::Ready,
-                Err(e) => McpStartupStatus::Failed(format!("{e:#}")),
+                Err(e) => McpStartupStatus::Failed(without_url_secrets(&format!("{e:#}"))),
             };
             manager.clients.insert(name.clone(), client);
             manager.report(&name, status);
@@ -490,6 +490,27 @@ impl McpManager {
             .is_some_and(|c| c.status() == McpClientStatus::Connected)
     }
 
+    /// Why `name` can't be used, for the model: what is wrong with a server
+    /// the session has, or that it has none of that name.
+    pub fn why_not_connected(&self, name: &str) -> String {
+        let Some(client) = self.clients.get(name) else {
+            let connected = self.connected_servers();
+            let connected = if connected.is_empty() {
+                "none".to_string()
+            } else {
+                connected.join(", ")
+            };
+            return format!("no MCP server named '{name}'. Connected: {connected}.");
+        };
+        match client.last_error() {
+            Some(why) => format!(
+                "MCP server '{name}' isn't connected: {}.",
+                without_url_secrets(why)
+            ),
+            None => format!("MCP server '{name}' isn't connected."),
+        }
+    }
+
     /// Compact status for the TUI status bar.
     ///
     /// Returns `None` if no MCP servers are configured (hide the indicator).
@@ -673,6 +694,37 @@ pub struct McpStatusBarInfo {
     pub total: usize,
 }
 
+/// `text` with each URL's user, query and fragment left out: a server's
+/// address can hold a key (`?apiKey=…`), and a failure quotes the address.
+/// Codex keeps it out of its startup warnings too.
+fn without_url_secrets(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = [rest.find("http://"), rest.find("https://")]
+        .into_iter()
+        .flatten()
+        .min()
+    {
+        let (before, url) = rest.split_at(start);
+        out.push_str(before);
+        let end = url
+            .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '`' | ')' | '>' | ','))
+            .unwrap_or(url.len());
+        let (url, after) = url.split_at(end);
+        let address = url.split(['?', '#']).next().unwrap_or_default();
+        let (scheme, address) = address.split_once("://").unwrap_or_default();
+        let (host, path) = match address.find('/') {
+            Some(slash) => address.split_at(slash),
+            None => (address, ""),
+        };
+        let host = host.rsplit('@').next().unwrap_or_default();
+        out.push_str(&format!("{scheme}://{host}{path}"));
+        rest = after;
+    }
+    out.push_str(rest);
+    out
+}
+
 /// A tool's description as its server gave it: without the `[MCP:<server>]`
 /// mark Koda adds for the model, and `None` when the server gave none.
 fn server_description(server: &str, description: &str) -> Option<String> {
@@ -735,6 +787,7 @@ mod tests {
             required: false,
             tool_input_schema_max_bytes: None,
             omit_tools_from: None,
+            scopes: None,
         }
     }
 
@@ -755,6 +808,46 @@ mod tests {
     }
 
     // ── call_tool on disconnected server ───────────────────────────────
+
+    #[test]
+    fn a_failure_keeps_a_url_s_secrets_out() {
+        for (text, clean) in [
+            (
+                "error sending request for url (https://x.example/mcp?apiKey=SECRET): refused",
+                "error sending request for url (https://x.example/mcp): refused",
+            ),
+            (
+                "http://me:SECRET@x.example:9/mcp#SECRET and https://y.example?k=SECRET",
+                "http://x.example:9/mcp and https://y.example",
+            ),
+            ("no address here", "no address here"),
+            ("http://", "http://"),
+        ] {
+            assert_eq!(without_url_secrets(text), clean);
+        }
+    }
+
+    /// The model is told what is wrong with a server, not only that it isn't
+    /// connected.
+    #[test]
+    fn why_a_server_is_not_connected() {
+        let mut manager = McpManager::new();
+        assert_eq!(
+            manager.why_not_connected("hf"),
+            "no MCP server named 'hf'. Connected: none."
+        );
+        let mut client = McpClient::new("hf".into(), dummy_config());
+        client.set_status_for_test(McpClientStatus::Failed);
+        client.set_last_error_for_test(Some(
+            "hf refused the connection; it needs a sign-in: run `koda mcp login hf`".into(),
+        ));
+        manager.insert_client_for_test(client);
+        assert_eq!(
+            manager.why_not_connected("hf"),
+            "MCP server 'hf' isn't connected: hf refused the connection; it needs a sign-in: \
+             run `koda mcp login hf`."
+        );
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn call_tool_on_disconnected_server_returns_err() {

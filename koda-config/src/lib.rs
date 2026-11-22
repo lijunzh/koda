@@ -460,6 +460,15 @@ pub struct McpServerToml {
     /// These tools are never offered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disabled_tools: Option<Vec<String>>,
+    /// The size, in bytes, past which a tool's input schema is shrunk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_input_schema_max_bytes: Option<usize>,
+    /// Where the server's tools are left out (`["deferred"]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub omit_tools_from: Option<Vec<String>>,
+    /// The OAuth scopes `koda mcp login` asks for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scopes: Option<Vec<String>>,
 }
 
 /// The file as read, with the `-c` values over it.
@@ -885,7 +894,7 @@ fn remove(table: &mut dyn TableLike, parents: &[&str], last: &str) {
 pub(crate) const SERVERS_KEY: &str = "mcp_servers";
 
 /// [`McpServerToml`]'s fields in declaration order.
-const SERVER_KEY_ORDER: [&str; 12] = [
+const SERVER_KEY_ORDER: [&str; 15] = [
     "command",
     "args",
     "env",
@@ -898,6 +907,9 @@ const SERVER_KEY_ORDER: [&str; 12] = [
     "required",
     "enabled_tools",
     "disabled_tools",
+    "tool_input_schema_max_bytes",
+    "omit_tools_from",
+    "scopes",
 ];
 
 /// A JSON value as TOML: `None` for `null`. An object becomes a table, its
