@@ -263,6 +263,8 @@ fn the_server_key_order_matches_the_struct() {
         required: true,
         enabled_tools: Some(vec![]),
         disabled_tools: Some(vec![]),
+        tool_input_schema_max_bytes: Some(3),
+        omit_tools_from: Some(vec![]),
         scopes: Some(vec![]),
     };
     // Serializing a struct writes its fields in declaration order; read the

@@ -177,6 +177,8 @@ unknown key in `-c` stops the run instead.
 # disabled_tools = ["close"]                  # all but these (enabled_tools wins)
 # startup_timeout_sec = 30                    # unset: 30
 # tool_timeout_sec = 120                      # unset: 120
+# tool_input_schema_max_bytes = 5000          # unset: 5000; larger schemas shrink
+# omit_tools_from = ["deferred"]              # send its tools up front always
 # required = true                             # unset: false; true: a session
 #                                             # doesn't start without it
 

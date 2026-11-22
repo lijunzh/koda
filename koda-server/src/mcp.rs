@@ -413,6 +413,40 @@ mod tests {
         );
     }
 
+    /// Every key of the config's shape is one `config.toml` can hold: a key
+    /// missing from `McpServerToml` is dropped as unknown, so the setting
+    /// does nothing.
+    #[test]
+    fn every_server_setting_is_read_from_the_config_file() {
+        let full = McpServerConfigValue {
+            command: Some("c".into()),
+            args: vec!["a".into()],
+            env: [("K".to_string(), "v".to_string())].into(),
+            cwd: Some("d".into()),
+            url: Some("u".into()),
+            bearer_token_env_var: Some("T".into()),
+            http_headers: [("H".to_string(), "v".to_string())].into(),
+            startup_timeout_sec: Some(1),
+            tool_timeout_sec: Some(2),
+            required: true,
+            enabled_tools: Some(vec!["x".into()]),
+            disabled_tools: Some(vec!["y".into()]),
+            tool_input_schema_max_bytes: Some(3),
+            omit_tools_from: Some(vec!["deferred".into()]),
+            scopes: Some(vec!["read".into()]),
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let file = koda_config::ConfigFile::in_dir(dir.path());
+        let edit = koda_config::Edit {
+            key_path: "mcp_servers.all".into(),
+            value: serde_json::to_value(&full).unwrap(),
+        };
+        file.edit(None, &[edit]).expect("every key is known");
+        let loaded = file.load().unwrap();
+        assert!(loaded.unknown_keys.is_empty(), "{:?}", loaded.unknown_keys);
+        assert_eq!(crate::config_file::servers(&loaded)["all"], full);
+    }
+
     #[test]
     fn a_bad_server_is_refused() {
         for (name, value) in [

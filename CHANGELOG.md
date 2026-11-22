@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **`omit_tools_from` and `tool_input_schema_max_bytes` work in `config.toml`.** Koda documented both for an MCP server's table and ignored them there, with an "Unknown key" warning.
 - **`koda exec` says why an MCP server didn't start, as `codex exec` does.** The text output prints it on stderr ("MCP server 'hf' unavailable: hf refused the connection; it needs a sign-in: run `koda mcp login hf`"); before, the run went on without the server's tools and said nothing, and the model was told only that no server of that name was connected. The model and `/mcp` now get the reason too. A failure quotes the server's address without its query, so a key in the URL stays out.
 - **`koda exec` no longer waits for processes an ordinary command left running.** A command that started a server with `&` and returned left it in Koda's care, and the run then waited for it as for a background command, until the time limit or the caller stopped it: a `koda exec` run stayed open 20 minutes after its turn ended. Such processes are still tracked, can be stopped, and stop when the session ends, but no longer hold `koda exec` or a goal open or start a turn when they exit, as Codex's `exec` doesn't wait for them and `claude -p` waits only for background tasks. Commands started with `background: true` are waited for as before.
 
