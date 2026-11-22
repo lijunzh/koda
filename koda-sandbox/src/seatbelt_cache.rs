@@ -77,6 +77,10 @@ pub struct ProfileKey {
     /// mutate HOME.
     pub home: String,
 
+    /// The config folders (`~/.config`, `$XDG_CONFIG_HOME`) whose Koda
+    /// secrets the profile denies.
+    pub config_folders: Vec<PathBuf>,
+
     /// Canonical, validated `$TMPDIR` the profile makes writable, if any
     /// (see `seatbelt::resolve_tmpdir`). In the key because a different
     /// `TMPDIR` emits a different profile.
@@ -192,6 +196,7 @@ mod tests {
         ProfileKey {
             canonical_root: PathBuf::from(root),
             home: "/Users/test".into(),
+            config_folders: Vec::new(),
             tmpdir: None,
             proxy: None,
             loopback_ports: Vec::new(),

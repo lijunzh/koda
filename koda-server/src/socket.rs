@@ -179,6 +179,8 @@ async fn serve_on(
     stop: impl Future<Output = ()> + Send,
 ) -> Result<(), ServeError> {
     let (listener, _lock) = bind(&socket)?;
+    // Its sessions' commands run as the user too, and must not be clients.
+    koda_sandbox::protect_socket(&socket);
     let approval_wait = options.approval_wait.unwrap_or_else(|| {
         args.config_file
             .load()

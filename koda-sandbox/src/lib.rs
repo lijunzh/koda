@@ -59,6 +59,7 @@ pub mod rlimits;
 pub mod seatbelt;
 #[cfg(target_os = "macos")]
 pub mod seatbelt_cache;
+pub mod server_socket;
 #[cfg(target_os = "linux")]
 pub mod stage2;
 pub mod url_guard;
@@ -82,6 +83,7 @@ pub use proxy::{
     Filter, PROXY_PORT_ENV_KEY, ProxyHandle, Socks5Server, ca_bundle_for_policy, proxy_env_vars,
     socks5_env_vars,
 };
+pub use server_socket::protect_socket;
 pub use violations::{
     DEFAULT_RING_CAPACITY, SandboxViolationStore, Violation, ViolationKind, global_store,
     render_block,

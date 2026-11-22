@@ -65,6 +65,19 @@ pub const CREDENTIAL_CONFIG_FULL_DENY: &[&str] = &[
     "koda/mcp_oauth", // MCP servers' OAuth access and refresh tokens (`koda mcp login`)
 ];
 
+/// The folders `.config/` paths are looked up in: `~/.config`, and
+/// `$XDG_CONFIG_HOME` when it names another, where Koda then keeps its own.
+pub(crate) fn config_folders(home: &str) -> Vec<std::path::PathBuf> {
+    let mut folders = vec![std::path::Path::new(home).join(".config")];
+    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from)
+        && xdg.is_absolute()
+        && !folders.contains(&xdg)
+    {
+        folders.push(xdg);
+    }
+    folders
+}
+
 /// Individual credential *files* under `$HOME` that are **write-protected**.
 /// Reads are allowed so tools like `curl`, `git`, `npm`, and `docker` can
 /// authenticate.

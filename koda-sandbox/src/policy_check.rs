@@ -9,13 +9,15 @@
 //! (Phase 2 of #934).
 
 use crate::defaults::CREDENTIAL_CONFIG_FULL_DENY;
+use crate::server_socket::SERVER_SUBDIR;
 use std::path::Path;
 
 /// Returns `true` when `path` falls inside a fully-denied location.
 ///
-/// "Fully denied" means both reads **and** writes are blocked. Currently
-/// only `~/.config/koda/db` is fully denied — koda's own SQLite database
-/// containing plaintext API keys.
+/// "Fully denied" means both reads **and** writes are blocked: Koda's
+/// database (plaintext API keys), its MCP OAuth tokens and the folder of its
+/// shared server's socket, under `~/.config/koda` and, when that is set
+/// elsewhere, `$XDG_CONFIG_HOME/koda`.
 ///
 /// Ordinary credential directories (`~/.ssh`, `~/.aws`, …) are **not**
 /// included: reads are allowed there, mirroring the Bash sandbox which
@@ -27,7 +29,20 @@ use std::path::Path;
 /// pattern match so any path containing `.config/koda/db` consecutively
 /// still gets denied even with no home directory at all.
 pub fn is_fully_denied(path: &Path) -> bool {
-    is_fully_denied_with_home(path, resolve_home_dir().as_deref())
+    let home = resolve_home_dir();
+    is_fully_denied_with_home(path, home.as_deref())
+        || crate::defaults::config_folders(home.as_deref().unwrap_or_default())
+            .iter()
+            .any(|config| fully_denied_subdirs().any(|rel| path.starts_with(config.join(rel))))
+}
+
+/// The folders fully denied in a config folder: Koda's secrets, and its
+/// shared server's socket.
+fn fully_denied_subdirs() -> impl Iterator<Item = &'static str> {
+    CREDENTIAL_CONFIG_FULL_DENY
+        .iter()
+        .copied()
+        .chain([SERVER_SUBDIR])
 }
 
 /// Best-effort home directory lookup with cross-platform fallback.
@@ -48,10 +63,7 @@ pub(crate) fn is_fully_denied_with_home(path: &Path, home: Option<&str>) -> bool
     // any fully-denied relative path? Only runs when home is known.
     if let Some(home) = home {
         let home_path = Path::new(home);
-        if CREDENTIAL_CONFIG_FULL_DENY
-            .iter()
-            .any(|rel| path.starts_with(home_path.join(".config").join(rel)))
-        {
+        if fully_denied_subdirs().any(|rel| path.starts_with(home_path.join(".config").join(rel))) {
             return true;
         }
     }
@@ -70,7 +82,7 @@ pub(crate) fn is_fully_denied_with_home(path: &Path, home: Option<&str>) -> bool
         })
         .collect();
 
-    CREDENTIAL_CONFIG_FULL_DENY.iter().any(|rel| {
+    fully_denied_subdirs().any(|rel| {
         // Build the target sequence: [".config", <rel parts split by '/'>...]
         let mut needle: Vec<&str> = vec![".config"];
         needle.extend(rel.split('/'));
@@ -99,6 +111,11 @@ mod tests {
         // Sub-paths inside it are also denied.
         assert!(is_fully_denied(&koda_db.join("koda.db")));
         // MCP OAuth tokens, as API keys are.
+        let socket = Path::new(&home).join(".config/koda/serve/koda.sock");
+        assert!(
+            is_fully_denied(&socket),
+            "the shared server's socket must be fully denied"
+        );
         let tokens = Path::new(&home).join(".config/koda/mcp_oauth/notion.json");
         assert!(is_fully_denied(&tokens));
     }

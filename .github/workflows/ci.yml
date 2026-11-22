@@ -300,6 +300,10 @@ jobs:
             # ── sandbox spawn-with-policy integration (`#[cfg(unix)]`) ─────
             "unix::spawn_with_policy_write_outside_root_is_denied"
             "unix::spawn_with_policy_symlink_escape_is_denied"
+            # ── Koda's shared server (koda-sandbox/tests/server_socket.rs) ─
+            "a_sandboxed_command_cannot_reach_the_server"
+            "another_path_to_the_socket_is_closed_too"
+            "moving_a_folder_above_the_socket_does_not_open_it"
           )
           missing=()
           for t in "${required_tests[@]}"; do
