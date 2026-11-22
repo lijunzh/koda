@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.7.8] - 2026-11-22
+
 ### Added
 
 - **`koda mcp login --scopes` asks an MCP server for fewer permissions, as `codex mcp login --scopes` does.** `--scopes read,search` names the OAuth scopes to request; `scopes = [...]` in the server's `config.toml` table saves them, and `mcpServer/oauth/login` takes them. Without either, Koda asks for every scope the server advertises, as before and as Codex does.
