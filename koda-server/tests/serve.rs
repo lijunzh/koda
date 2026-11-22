@@ -178,9 +178,14 @@ impl Wire {
     }
 
     async fn send_line(&mut self, line: &str) {
+        self.try_send_line(line).await.unwrap();
+    }
+
+    /// [`Wire::send_line`], for a connection that may have ended already.
+    async fn try_send_line(&mut self, line: &str) -> std::io::Result<()> {
         let input = self.input.as_mut().expect("stdin is closed");
-        input.write_all(line.as_bytes()).await.unwrap();
-        input.write_all(b"\n").await.unwrap();
+        input.write_all(line.as_bytes()).await?;
+        input.write_all(b"\n").await
     }
 
     async fn send(&mut self, message: Value) {
@@ -585,8 +590,14 @@ async fn a_broken_stdout_ends_the_connection() {
     let server = model(vec![text("Hello.")]).await;
     let mut wire = Wire::open(config(&server, false)).await;
     drop(wire.output.take());
-    // Something to write.
-    wire.send_request("state/read", json!({})).await;
+    // Something to write. The connection may have ended already: the
+    // notifications after `session/start`'s answer can meet the broken
+    // stdout first, and then stdin is gone too.
+    let request =
+        json!({"jsonrpc": "2.0", "id": wire.next_id, "method": "state/read", "params": {}});
+    if let Err(e) = wire.try_send_line(&request.to_string()).await {
+        assert_eq!(e.kind(), std::io::ErrorKind::BrokenPipe, "{e}");
+    }
     tokio::time::timeout(Duration::from_secs(15), &mut wire.served)
         .await
         .expect("koda serve didn't end when stdout broke")
