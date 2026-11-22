@@ -126,6 +126,9 @@ fn build_command_inner(
     let home = std::env::var("HOME").unwrap_or_else(|_| "/Users".into());
     validate_seatbelt_path(&root)?;
     validate_seatbelt_path(&home)?;
+    for config in crate::defaults::config_folders(&home) {
+        validate_seatbelt_path(&config.to_string_lossy())?;
+    }
 
     // Phase 4a of #934: cache the compiled SBPL by
     // (canonical_root, home, proxy, policy). The build closure runs
@@ -149,6 +152,7 @@ fn build_command_inner(
     let key = crate::seatbelt_cache::ProfileKey {
         canonical_root: canonical.clone(),
         home: home.clone(),
+        config_folders: crate::defaults::config_folders(&home),
         tmpdir,
         proxy,
         loopback_ports,
@@ -162,7 +166,7 @@ fn build_command_inner(
     // when the cache hits.
     let overlay = policy_overlay_rules(policy)?;
 
-    let profile = crate::seatbelt_cache::get_or_compute(key, |k| {
+    let mut profile = crate::seatbelt_cache::get_or_compute(key, |k| {
         let root = k.canonical_root.to_string_lossy();
         let home = &k.home;
         // Start from the project profile then append credential deny
@@ -202,6 +206,8 @@ fn build_command_inner(
         profile.push_str(&overlay);
         profile
     });
+    // Outside the cache: a socket may be protected at any time.
+    profile.push_str(&server_socket_rules(&home)?);
 
     let mut cmd = Command::new("sandbox-exec");
     cmd.arg("-p")
@@ -535,14 +541,45 @@ pub(crate) fn credential_deny_rules(home: &str) -> String {
 
     // Tier 2 — full read+write deny (koda's own secrets).
     rules.push_str("; ── strict: full deny for koda-internal secrets ─────────────\n");
-    for rel in CREDENTIAL_CONFIG_FULL_DENY {
-        let p = home_path(home, &format!(".config/{rel}"));
-        rules.push_str(&format!(
-            "(deny file-read* file-write* (subpath \"{p}\"))\n"
-        ));
+    for config in crate::defaults::config_folders(home) {
+        for rel in CREDENTIAL_CONFIG_FULL_DENY {
+            let p = home_path(&config.to_string_lossy(), rel);
+            rules.push_str(&format!(
+                "(deny file-read* file-write* (subpath \"{p}\"))\n"
+            ));
+        }
     }
 
     rules
+}
+
+/// Close Koda's shared server to the command ([`crate::server_socket`]), as
+/// Codex's `seatbelt_daemon.rs` closes its daemon: its folder and sockets
+/// can't be read, written or connected to, and no folder above them can be
+/// renamed, which would move them past rules that name paths. Emitted last,
+/// so nothing reopens them.
+fn server_socket_rules(home: &str) -> Result<String> {
+    let mut rules = String::from("; \u{2500}\u{2500} Koda's shared server \u{2500}\u{2500}\n");
+    let mut above = std::collections::BTreeSet::new();
+    for path in crate::server_socket::folders(home)
+        .into_iter()
+        .chain(crate::server_socket::sockets())
+    {
+        let p = path.to_string_lossy();
+        validate_seatbelt_path(&p)?;
+        rules.push_str(&format!(
+            "(deny file-read* file-write* (literal \"{p}\") (subpath \"{p}\"))\n\
+             (deny network-outbound (remote unix-socket (subpath \"{p}\")))\n"
+        ));
+        above.extend(path.ancestors().skip(1).map(Path::to_path_buf));
+    }
+    for folder in above {
+        let p = folder.to_string_lossy();
+        rules.push_str(&format!(
+            "(deny file-write-unlink (require-all (vnode-type DIRECTORY) (literal \"{p}\")))\n"
+        ));
+    }
+    Ok(rules)
 }
 
 /// Deny writes to `.git/config` and `.git/hooks/` when

@@ -88,6 +88,7 @@ pub fn build_command(
         apply_git_config_deny(&mut cmd, &root);
     }
     apply_policy_overlay(&mut cmd, policy)?;
+    apply_server_socket_masks(&mut cmd, &home);
     cmd.args(["--", "sh", "-c", command])
         .current_dir(project_root);
     // #1228: scrub the LLM-bound shell's env down to the allowlist.
@@ -142,6 +143,7 @@ pub fn build_command_with_proxy(
         apply_git_config_deny(&mut cmd, &root);
     }
     apply_policy_overlay(&mut cmd, policy)?;
+    apply_server_socket_masks(&mut cmd, &home);
 
     // #1228: scrub the LLM-bound shell's env down to the allowlist BEFORE
     // we add the STAGE2_* control vars below — env_clear() inside scrub()
@@ -211,10 +213,40 @@ pub fn build_command_with_proxy(
 /// between the proxied and unproxied build paths so they stay in
 /// lockstep.
 fn apply_credential_denies(cmd: &mut Command, home: &str) {
-    for rel in CREDENTIAL_CONFIG_FULL_DENY {
-        let p = format!("{home}/.config/{rel}");
-        if Path::new(&p).exists() {
-            cmd.args(["--tmpfs", &p]);
+    for config in crate::defaults::config_folders(home) {
+        for rel in CREDENTIAL_CONFIG_FULL_DENY {
+            let p = config.join(rel);
+            if p.exists() {
+                cmd.arg("--tmpfs").arg(p);
+            }
+        }
+    }
+}
+
+/// Close Koda's shared server to the command ([`crate::server_socket`]), as
+/// Codex's `append_daemon_socket_masks` closes its daemon: an empty folder
+/// nobody may enter over its folder, and `/dev/null` over a socket
+/// somewhere else. Applied last, so no other mount reopens them.
+///
+/// A mask needs something to cover, and a server may start while the command
+/// runs, so the folder is made first wherever Koda keeps its own files.
+fn apply_server_socket_masks(cmd: &mut Command, home: &str) {
+    use std::os::unix::fs::DirBuilderExt;
+    for folder in crate::server_socket::folders(home) {
+        if folder.parent().is_some_and(Path::is_dir) {
+            let _ = std::fs::DirBuilder::new().mode(0o700).create(&folder);
+        }
+        if folder.is_dir() {
+            cmd.args(["--perms", "000", "--tmpfs"]).arg(&folder);
+            cmd.arg("--remount-ro").arg(&folder);
+        }
+    }
+    for socket in crate::server_socket::sockets() {
+        let inside = crate::server_socket::folders(home)
+            .iter()
+            .any(|folder| socket.starts_with(folder));
+        if !inside && socket.exists() {
+            cmd.args(["--ro-bind", "/dev/null"]).arg(&socket);
         }
     }
 }
@@ -474,6 +506,32 @@ fn is_shared_temp_root(root: &Path) -> bool {
         .any(|dir| dir == root || dir.canonicalize().is_ok_and(|dir| dir == canonical))
 }
 
+/// The folders between one of `writable` and Koda's server folder or socket,
+/// outermost first. Bound over themselves, as mount points, they can't be
+/// renamed: a command in a project that holds Koda's folder could otherwise
+/// move it, and the next command's mask would cover a path with nothing in
+/// it. Codex has no such folders, since its daemon's is in `/tmp` itself.
+fn server_folder_pins(writable: &[PathBuf], home: &str) -> Vec<PathBuf> {
+    let roots: Vec<PathBuf> = writable
+        .iter()
+        .filter_map(|root| root.canonicalize().ok())
+        .collect();
+    let mut pins = std::collections::BTreeSet::new();
+    for path in crate::server_socket::folders(home)
+        .into_iter()
+        .chain(crate::server_socket::sockets())
+    {
+        for folder in path.ancestors().skip(1) {
+            let inside = |root: &PathBuf| folder != root && folder.starts_with(root);
+            if folder.is_dir() && roots.iter().any(inside) {
+                pins.insert(folder.to_path_buf());
+            }
+        }
+    }
+    // Sorted, so a folder comes before what is in it.
+    pins.into_iter().collect()
+}
+
 fn base_cmd(project_root: &Path) -> (Command, String) {
     let root = project_root.to_string_lossy().into_owned();
     let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
@@ -493,6 +551,11 @@ fn base_cmd(project_root: &Path) -> (Command, String) {
         if Path::new(&p).exists() {
             cmd.args(["--bind", p.as_str(), p.as_str()]);
         }
+    }
+    let mut writable = vec![project_root.to_path_buf(), "/tmp".into(), "/var/tmp".into()];
+    writable.extend([".cargo", ".npm", ".cache"].map(|subdir| Path::new(&home).join(subdir)));
+    for pin in server_folder_pins(&writable, &home) {
+        cmd.arg("--bind").arg(&pin).arg(&pin);
     }
     cmd.args(["--dev", "/dev"]).args(["--proc", "/proc"]);
 
@@ -709,6 +772,19 @@ mod tests {
             args.iter().any(|a| a == "--unshare-pid"),
             "--unshare-pid missing"
         );
+
+        // Koda's shared server stays closed behind the proxy too.
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
+        for folder in crate::server_socket::folders(&home) {
+            let folder = folder.to_string_lossy().to_string();
+            assert!(
+                !Path::new(&folder).is_dir()
+                    || args
+                        .windows(2)
+                        .any(|w| w[0] == "--remount-ro" && w[1] == folder),
+                "{folder} isn't masked: {args:?}"
+            );
+        }
 
         // UDS bind-mount must reference the host path on both sides.
         let uds_str = uds.to_string_lossy().to_string();

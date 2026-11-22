@@ -249,7 +249,7 @@ and `nc -U ~/.config/koda/serve/koda.sock` is enough to try it.)
 - **Private to you.** The socket is readable by its owner only, in a folder
   only you can change; a connection from another user is refused, and a lock
   keeps a second `koda serve` from taking the socket over. A socket left by a
-  crashed server is replaced.
+  crashed server is replaced. Sandboxed commands can't connect to it.
 - **A client that stops reading is let go** once 4,096 messages wait for it
   (a TUI suspended with Ctrl+Z, a client that hangs), as Codex does, so one
   stuck client can't make the server hold everything.

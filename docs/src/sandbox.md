@@ -123,6 +123,14 @@ beyond that.
 **Fully blocked (read + write):**
 - `~/.config/koda/db` — Koda's SQLite DB containing plaintext API keys
 - `~/.config/koda/mcp_oauth` — MCP servers' OAuth tokens (`koda mcp login`)
+- `~/.config/koda/serve` — the [shared server](./serve.md#the-shared-server)'s
+  socket, which a command can't connect to either: a client of the server can
+  answer approvals and change the config. Codex closes its daemon's the same
+  way. A socket given with `koda serve --listen` is closed to that server's own
+  sessions.
+
+The three are closed under `$XDG_CONFIG_HOME/koda` too, when that is set. A
+command can still connect to other Unix sockets (`ssh-agent`, Docker).
 
 > **Security note — accepted risk:** A sandboxed command can read
 > credential material and could exfiltrate it over the network (e.g.
