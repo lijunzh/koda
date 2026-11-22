@@ -111,6 +111,11 @@ mod tests {
         // Sub-paths inside it are also denied.
         assert!(is_fully_denied(&koda_db.join("koda.db")));
         // MCP OAuth tokens, as API keys are.
+        let socket = Path::new(&home).join(".config/koda/serve/koda.sock");
+        assert!(
+            is_fully_denied(&socket),
+            "the shared server's socket must be fully denied"
+        );
         let tokens = Path::new(&home).join(".config/koda/mcp_oauth/notion.json");
         assert!(is_fully_denied(&tokens));
     }
