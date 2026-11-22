@@ -147,6 +147,7 @@ impl Entry {
             required: false,
             enabled_tools: self.enabled_tools,
             disabled_tools: self.disabled_tools,
+            scopes: None,
         })
     }
 }

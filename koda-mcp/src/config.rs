@@ -121,6 +121,11 @@ pub struct McpServerConfig {
     /// model that would otherwise find them through tool search.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub omit_tools_from: Option<Vec<ToolSurface>>,
+
+    /// The OAuth scopes `koda mcp login` asks for, as Codex's `scopes`;
+    /// unset or empty, the scopes the server advertises.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scopes: Option<Vec<String>>,
 }
 
 /// Where a tool can reach the model, as Codex's `ToolExposureSurface`.
@@ -233,6 +238,7 @@ mod tests {
             required: false,
             tool_input_schema_max_bytes: None,
             omit_tools_from: None,
+            scopes: None,
         }
     }
 
@@ -251,6 +257,7 @@ mod tests {
             required: false,
             tool_input_schema_max_bytes: None,
             omit_tools_from: None,
+            scopes: None,
         }
     }
 
@@ -316,6 +323,7 @@ mod tests {
             required: true,
             tool_input_schema_max_bytes: None,
             omit_tools_from: None,
+            scopes: None,
         };
         let json = serde_json::to_string(&config).unwrap();
         let parsed: McpServerConfig = serde_json::from_str(&json).unwrap();
@@ -337,6 +345,7 @@ mod tests {
             required: false,
             tool_input_schema_max_bytes: None,
             omit_tools_from: None,
+            scopes: None,
         };
         let json = serde_json::to_string(&config).unwrap();
         let parsed: McpServerConfig = serde_json::from_str(&json).unwrap();

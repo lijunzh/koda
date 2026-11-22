@@ -216,6 +216,7 @@ fn http_config(url: String) -> McpServerConfig {
         required: false,
         tool_input_schema_max_bytes: None,
         omit_tools_from: None,
+        scopes: None,
     }
 }
 
@@ -345,6 +346,7 @@ async fn legacy_stdio_server_2024_11_05() {
         required: false,
         tool_input_schema_max_bytes: None,
         omit_tools_from: None,
+        scopes: None,
     };
     let mut client = McpClient::new("legacy".into(), config);
     client
@@ -382,6 +384,7 @@ async fn mcp_results_reach_the_model_marked_as_external_content() {
         required: false,
         tool_input_schema_max_bytes: None,
         omit_tools_from: None,
+        scopes: None,
     };
     let mut client = McpClient::new("legacy".into(), config);
     client.connect().await.expect("stdio server should connect");
@@ -496,6 +499,7 @@ fn oauth_router(base: String) -> Router {
                     "resource": format!("{base}/mcp"),
                     "authorization_servers": [base],
                     "bearer_methods_supported": ["header"],
+                    "scopes_supported": ["read", "write"],
                 }))
             }
         }
@@ -573,6 +577,30 @@ fn http_config_without_token(url: String) -> McpServerConfig {
     }
 }
 
+/// The scopes a sign-in page was opened with.
+fn asked_scopes(authorization_url: &str) -> String {
+    reqwest::Url::parse(authorization_url)
+        .unwrap()
+        .query_pairs()
+        .find(|(key, _)| key == "scope")
+        .map(|(_, value)| value.into_owned())
+        .unwrap_or_default()
+}
+
+/// Chosen scopes are asked for instead of the advertised ones.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sign_in_asks_for_the_chosen_scopes() {
+    let (listener, addr) = bind().await;
+    let base = format!("http://{addr}");
+    let (mcp, _) = legacy_router("/mcp", "2025-06-18");
+    serve(listener, mcp.merge(oauth_router(base.clone())));
+    let login =
+        crate::oauth::login_unchecked("scoped", &format!("{base}/mcp"), &["read".to_string()])
+            .await
+            .expect("the sign-in starts");
+    assert_eq!(asked_scopes(&login.authorization_url), "read");
+}
+
 /// `koda mcp login` end to end: discovery, registration, the browser's
 /// round trip to Koda's callback, the tokens stored for the user only, and
 /// the next connection signed with the access token.
@@ -586,7 +614,7 @@ async fn an_oauth_sign_in_stores_tokens_that_sign_the_connection() {
     let (mcp, seen) = legacy_router("/mcp", "2025-06-18");
     serve(listener, mcp.merge(oauth_router(base.clone())));
 
-    let login = crate::oauth::login_unchecked("signed-in", &format!("{base}/mcp"))
+    let login = crate::oauth::login_unchecked("signed-in", &format!("{base}/mcp"), &[])
         .await
         .expect("the sign-in starts");
     assert!(
@@ -597,6 +625,8 @@ async fn an_oauth_sign_in_stores_tokens_that_sign_the_connection() {
         login.authorization_url
     );
     assert!(login.authorization_url.contains("code_challenge="));
+    // Nothing chosen: everything the server advertises, as Codex asks.
+    assert_eq!(asked_scopes(&login.authorization_url), "read write");
 
     // The browser: the authorization server sends it back to Koda.
     let browser = reqwest::Client::builder()
@@ -678,8 +708,7 @@ async fn a_refused_connection_says_to_sign_in() {
         http_config_without_token(format!("http://{addr}/mcp")),
     );
     let error = connect_http(&mut client).await.unwrap_err();
-    assert!(
-        format!("{error:#}").contains("koda mcp login needs-sign-in-test"),
-        "{error:#}"
-    );
+    let wanted = "needs-sign-in-test refused the connection; it needs a sign-in: \
+                  run `koda mcp login needs-sign-in-test`";
+    assert_eq!(format!("{error:#}"), wanted);
 }

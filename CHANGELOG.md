@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **`koda mcp login --scopes` asks an MCP server for fewer permissions, as `codex mcp login --scopes` does.** `--scopes read,search` names the OAuth scopes to request; `scopes = [...]` in the server's `config.toml` table saves them, and `mcpServer/oauth/login` takes them. Without either, Koda asks for every scope the server advertises, as before and as Codex does.
 - **`/rewind [N]` takes the last turn, or the last N, out of the conversation, as Codex's backtrack and Claude Code's `/rewind` do.** The model won't see them again and the stored session ends before them; the earliest one's prompt comes back to the input box to edit and resend. Files stay as they are, as in Codex. Refused during a turn, for turns from before this release, and across a compaction. Protocol: `session/rewind` with `beforeTurnId`; each turn now stores where its messages start.
 - **The model can list and read MCP resources, with Codex's three tools.** `ListMcpResources`, `ListMcpResourceTemplates` and `ReadMcpResource` (Codex's `list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource`) come with any MCP server. They are read-only; a read's text comes back marked as the server's, cut at 100,000 characters, and an image as an image. Before, only you could bring a resource in, with `@server:uri`.
 - **An MCP server can ask you for input in the middle of a tool call, as in Codex and Claude Code.** Koda now tells servers it supports MCP elicitation, form and URL mode. The TUI's question dialog asks a form's fields one at a time (choices and yes/no as numbered options, defaults on an empty answer, `Esc` to decline); `koda exec` declines, having nobody to ask. Protocol: the server request `mcpServer/elicitation/request`, answered `accept` with the values, `decline` or `cancel`.
@@ -17,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **`koda exec` says why an MCP server didn't start, as `codex exec` does.** The text output prints it on stderr ("MCP server 'hf' unavailable: hf refused the connection; it needs a sign-in: run `koda mcp login hf`"); before, the run went on without the server's tools and said nothing, and the model was told only that no server of that name was connected. The model and `/mcp` now get the reason too. A failure quotes the server's address without its query, so a key in the URL stays out.
 - **`koda exec` no longer waits for processes an ordinary command left running.** A command that started a server with `&` and returned left it in Koda's care, and the run then waited for it as for a background command, until the time limit or the caller stopped it: a `koda exec` run stayed open 20 minutes after its turn ended. Such processes are still tracked, can be stopped, and stop when the session ends, but no longer hold `koda exec` or a goal open or start a turn when they exit, as Codex's `exec` doesn't wait for them and `claude -p` waits only for background tasks. Commands started with `background: true` are waited for as before.
 
 ## [0.7.7] - 2026-11-20

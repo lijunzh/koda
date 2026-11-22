@@ -144,19 +144,20 @@ impl Login {
     }
 }
 
-/// Start signing in to the MCP server `server` at `url`. A private,
+/// Start signing in to the MCP server `server` at `url`, asking for
+/// `scopes`; with none, rmcp asks for what the server advertises. A private,
 /// loopback or link-local URL is refused, as connecting to it is.
-pub async fn login(server: &str, url: &str) -> Result<Login> {
+pub async fn login(server: &str, url: &str, scopes: &[String]) -> Result<Login> {
     if !koda_sandbox::url_guard::is_safe_url(url) {
         bail!(
             "{server}'s URL {url} is private, loopback or link-local, which Koda doesn't connect to"
         );
     }
-    login_unchecked(server, url).await
+    login_unchecked(server, url, scopes).await
 }
 
 /// [`login`] without the address check, for tests against a local server.
-pub(crate) async fn login_unchecked(server: &str, url: &str) -> Result<Login> {
+pub(crate) async fn login_unchecked(server: &str, url: &str, scopes: &[String]) -> Result<Login> {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .context("couldn't listen for the sign-in's redirect")?;
@@ -169,7 +170,11 @@ pub(crate) async fn login_unchecked(server: &str, url: &str) -> Result<Login> {
     manager.set_credential_store(FileStore::new(server)?);
     let mut state = OAuthState::Unauthorized(manager);
     state
-        .start_authorization(AuthorizationRequest::new(&redirect_uri).with_client_name("Koda"))
+        .start_authorization(
+            AuthorizationRequest::new(&redirect_uri)
+                .with_client_name("Koda")
+                .with_scopes(scopes.iter().cloned()),
+        )
         .await
         .map_err(|e| anyhow!("{server} can't start an OAuth sign-in: {e}"))?;
     let authorization_url = state

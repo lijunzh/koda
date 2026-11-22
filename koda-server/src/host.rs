@@ -277,7 +277,9 @@ impl Host {
                 return;
             }
             ClientRequest::McpServerOauthLogin { params, .. } => {
-                let login = crate::mcp::oauth_login(&self.context.config_file, &params.name).await;
+                let login =
+                    crate::mcp::oauth_login(&self.context.config_file, &params.name, params.scopes)
+                        .await;
                 let login = match login {
                     Ok(login) => login,
                     Err(e) => {

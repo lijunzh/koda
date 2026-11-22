@@ -263,6 +263,7 @@ fn the_server_key_order_matches_the_struct() {
         required: true,
         enabled_tools: Some(vec![]),
         disabled_tools: Some(vec![]),
+        scopes: Some(vec![]),
     };
     // Serializing a struct writes its fields in declaration order; read the
     // keys back in that order (a `serde_json::Map` would sort them).

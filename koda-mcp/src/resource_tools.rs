@@ -95,10 +95,7 @@ pub async fn execute(manager: &McpManager, name: &str, args: &Value) -> Resource
     let server = args["server"].as_str().filter(|s| !s.is_empty());
     let servers: Vec<String> = match server {
         Some(server) if !manager.is_connected(server) => {
-            return failed(format!(
-                "Error: no connected MCP server named '{server}'. Connected: {}.",
-                manager.connected_servers().join(", ")
-            ));
+            return failed(format!("Error: {}", manager.why_not_connected(server)));
         }
         Some(server) => vec![server.to_string()],
         None => manager.connected_servers(),

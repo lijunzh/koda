@@ -29,6 +29,7 @@ use koda_client::protocol::initialize::ClientInfo;
 use koda_client::protocol::item::{
     FileUpdateChange, Item, OutputStream, PatchChangeKind, ToolCallStatus, ToolEffect,
 };
+use koda_client::protocol::mcp::{McpServerStartupState, McpServerStatusUpdatedNotification};
 use koda_client::protocol::server::ExecSummary;
 use koda_client::protocol::session::{
     ApprovalPolicy, SessionForkParams, SessionStartParams, TokenUsage,
@@ -632,6 +633,10 @@ impl View {
             (Output::Text, Outgoing::Notification(ServerNotification::ConfigWarning(w))) => {
                 eprintln!("\x1b[33m  \u{26a0} {}\x1b[0m", w.summary);
             }
+            (
+                Output::Text,
+                Outgoing::Notification(ServerNotification::McpServerStatusUpdated(update)),
+            ) => mcp_unavailable(update),
             (Output::Text, _) => {}
         }
     }
@@ -834,6 +839,7 @@ impl View {
                 ));
             }
             ServerNotification::Warning(w) => notice((Tone::Warn, w.message.clone())),
+            ServerNotification::McpServerStatusUpdated(update) => mcp_unavailable(update),
             // The goal's state and the evaluator's checks, as the TUI shows
             // them.
             ServerNotification::SessionGoalUpdated(update) => {
@@ -916,6 +922,19 @@ impl View {
 }
 
 /// A notice on stderr.
+/// Say that an MCP server didn't start, and why, as `codex exec` warns: the
+/// run goes on without its tools, which is otherwise invisible here.
+fn mcp_unavailable(update: &McpServerStatusUpdatedNotification) {
+    if update.status != McpServerStartupState::Failed {
+        return;
+    }
+    let why = update.error.as_deref().unwrap_or("it failed to start");
+    notice((
+        Tone::Warn,
+        format!("MCP server '{}' unavailable: {why}", update.name),
+    ));
+}
+
 fn notice((tone, text): (Tone, String)) {
     match tone {
         Tone::Info => eprintln!("\x1b[36m  {text}\x1b[0m"),

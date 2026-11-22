@@ -3591,6 +3591,7 @@ async fn mcp_auth_status_and_sign_in_refusals() {
         koda.client
             .request::<methods::McpServerOauthLogin>(McpServerOauthLoginParams {
                 name: name.into(),
+                scopes: None,
             })
     };
     let stdio = server_error(login("local").await);

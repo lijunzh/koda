@@ -252,6 +252,7 @@ fn loopback_config(port: u16, bearer_token_env_var: Option<String>) -> McpServer
         required: false,
         tool_input_schema_max_bytes: None,
         omit_tools_from: None,
+        scopes: None,
     }
 }
 
@@ -305,6 +306,7 @@ async fn mcp_client_connect_rejects_metadata_endpoint() {
         required: false,
         tool_input_schema_max_bytes: None,
         omit_tools_from: None,
+        scopes: None,
     };
     let mut client = McpClient::new("test".into(), config);
     let result = client.connect().await;

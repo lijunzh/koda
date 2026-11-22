@@ -185,6 +185,8 @@ unknown key in `-c` stops the run instead.
 # url = "https://mcp.example.com/mcp"
 # bearer_token_env_var = "DOCS_MCP_TOKEN"     # the variable holding its token
 # http_headers = { "X-Team" = "platform" }    # sent with every request
+# scopes = ["read"]                           # what `koda mcp login` asks for;
+#                                             # unset: all the server offers
 
 # ── TUI ────────────────────────────────────────────────────────────────
 

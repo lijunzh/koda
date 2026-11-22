@@ -65,6 +65,7 @@ done
         required: false,
         tool_input_schema_max_bytes: None,
         omit_tools_from: None,
+        scopes: None,
     }
 }
 
