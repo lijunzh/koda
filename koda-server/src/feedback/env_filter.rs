@@ -61,6 +61,7 @@ pub(super) const REDACT_NAMES: &[&str] = &[
     "ANTHROPIC_API_KEY",
     "GEMINI_API_KEY",
     "GOOGLE_API_KEY",
+    "BRAVE_API_KEY",
     "GITHUB_TOKEN",
     "GH_TOKEN",
     "ELEMENT_API_KEY",

@@ -16,7 +16,7 @@
 //! | **Grep** | `grep` | ReadOnly | Recursive text search (respects .gitignore) |
 //! | **Glob** | `glob_tool` | ReadOnly | Find files by glob pattern |
 //! | **WebFetch** | `web_fetch` | RemoteAction | Fetch URL content (HTML→text) |
-//! | **WebSearch** | `web_search` | RemoteAction | Web search via DuckDuckGo |
+//! | **WebSearch** | `web_search` | RemoteAction | Web search via Brave or DuckDuckGo |
 //! | **InvokeAgent** | `agent` | LocalMutation | Delegate task to a sub-agent |
 //! | **ListAgents** | `agent` | ReadOnly | List available sub-agents |
 //! | **SpawnAgent** | `spawn_agent` | LocalMutation | Codex-compatible peer-spawn (synonym for InvokeAgent) |
@@ -213,6 +213,18 @@ pub fn wrap_result(r: anyhow::Result<String>) -> ToolResult {
         },
     }
 }
+
+/// The `User-Agent` Koda's web tools send: who is asking and where to read
+/// about it, never a browser's string. OpenClaw identifies itself the same
+/// way, and Anthropic and OpenAI name the agents that fetch for their
+/// models.
+pub const USER_AGENT: &str = concat!(
+    "Koda/",
+    env!("CARGO_PKG_VERSION"),
+    " (AI coding agent; +",
+    env!("CARGO_PKG_REPOSITORY"),
+    ")"
+);
 
 /// What Read's description adds for a model that takes images.
 pub const READ_IMAGES_NOTE: &str = " An image file (PNG, JPEG, GIF, WebP) comes back as an \

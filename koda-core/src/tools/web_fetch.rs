@@ -42,8 +42,6 @@ const DEFAULT_TIMEOUT_SECS: u64 = 15;
 /// redirect loop ourselves (#1280).
 pub(crate) const MAX_REDIRECTS: usize = 10;
 
-const USER_AGENT: &str = "Koda/0.1 (AI coding agent)";
-
 /// Return tool definitions for the LLM.
 pub fn definitions() -> Vec<ToolDefinition> {
     vec![ToolDefinition {
@@ -253,7 +251,7 @@ where
         let client = pinned_client_for(&current);
         let response = client
             .get(current.url.clone())
-            .header("User-Agent", USER_AGENT)
+            .header("User-Agent", crate::tools::USER_AGENT)
             .send()
             .await
             .map_err(|e| anyhow::anyhow!("HTTP request failed: {e}"))?;

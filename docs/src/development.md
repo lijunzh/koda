@@ -69,7 +69,7 @@ koda/
 │   │       ├── tool_trait.rs # Tool trait and per-invocation context
 │   │       ├── validate.rs # Pre-flight input validation
 │   │       ├── web_fetch.rs# WebFetch (URL content retrieval)
-│   │       └── web_search.rs # WebSearch (DuckDuckGo)
+│   │       └── web_search.rs # WebSearch (Brave, DuckDuckGo)
 │   └── tests/              # Engine integration tests
 ├── koda-cli/               # The `koda` command: arguments, dispatch, koda exec, koda serve, koda mcp
 │   ├── src/

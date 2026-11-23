@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **`WebSearch` searches with Brave when `BRAVE_API_KEY` is set.** Results come from the Brave Search API, the dependable route for models without a search of their own, as in OpenClaw's Brave provider; the date a page was published is shown when Brave knows it. Without a key, DuckDuckGo is used as before, and its failures (the bot check above all) now suggest setting a Brave key.
+
+### Changed
+
+- **`WebSearch` takes Claude Code's arguments:** a `query` of at least two characters, plus `allowed_domains` or `blocked_domains` (not both), which narrow the search with `site:` operators and are checked again on the results. `num_results` is gone; five results come back.
+- **`WebSearch` and `WebFetch` identify themselves** as `Koda/<version> (AI coding agent; +https://github.com/lijunzh/koda)`. `WebSearch` had posed as Firefox, and `WebFetch` reported version 0.1.
+
 ### Fixed
 
 - **`WebSearch` returns results again.** DuckDuckGo's results page now links to each page directly instead of through its redirect, and Koda read only the redirect, so every search said "No results found". Both forms are read now, ads and DuckDuckGo's own pages are skipped, and `&#x27;` and other numeric entities in titles and snippets are decoded.
