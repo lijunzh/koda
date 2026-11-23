@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.7.10] - 2026-11-23
+
 ### Added
 
 - **On Claude models, `WebSearch` searches with Anthropic's web search, as Claude Code's does.** Each call is a separate request to the session's model with Anthropic's search tool forced (up to 8 searches, thinking off); the model's summary and the links come back, with a reminder to cite them. The search is billed to your Anthropic account. Other models use Brave or DuckDuckGo, below.
@@ -18,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 - **`WebSearch` takes Claude Code's arguments:** a `query` of at least two characters, plus `allowed_domains` or `blocked_domains` (not both), which narrow the search with `site:` operators and are checked again on the results. `num_results` is gone; five results come back.
 - **`WebSearch` and `WebFetch` identify themselves** as `Koda/<version> (AI coding agent; +https://github.com/lijunzh/koda)`. `WebSearch` had posed as Firefox, and `WebFetch` reported version 0.1.
+- **The sandbox's path check, which every file tool runs, is faster.** It no longer builds paths of its own while comparing them; 0.7.9 had made it slightly slower (lijunzh/koda#1749).
 
 ### Fixed
 
