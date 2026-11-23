@@ -152,6 +152,10 @@ fn test_classify_tool_covers_all_tools_explicitly() {
         // WriteStdin with no args types nothing: only a read. Typing
         // (`chars` non-empty) is a LocalMutation, per call.
         ("WriteStdin", ToolEffect::ReadOnly),
+        // Monitor with no command is judged as Bash is: unreadable, so
+        // Destructive. TaskStop stops the model's own background work.
+        ("Monitor", ToolEffect::Destructive),
+        ("TaskStop", ToolEffect::LocalMutation),
     ]
     .into_iter()
     .collect();

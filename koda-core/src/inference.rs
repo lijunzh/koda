@@ -1453,6 +1453,23 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
                     .collect(),
             });
         }
+        // Monitors' events, and how each ended, as Claude Code streams a
+        // monitor's lines into the conversation.
+        let monitor_notices = tools.bg_registry.take_monitor_notices();
+        if !monitor_notices.is_empty() {
+            let lines: usize = monitor_notices.iter().map(|n| n.lines.len()).sum();
+            let notice = crate::tools::monitor::notice_text(&monitor_notices);
+            db.insert_message(session_id, &Role::User, Some(&notice), None, None, None)
+                .await?;
+            sink.emit(EngineEvent::Info {
+                message: format!(
+                    "  Monitor: {lines} new line{} from {} monitor{}",
+                    if lines == 1 { "" } else { "s" },
+                    monitor_notices.len(),
+                    if monitor_notices.len() == 1 { "" } else { "s" },
+                ),
+            });
+        }
         let next_texts = cmd_rx.take_steers();
         if !next_texts.is_empty() {
             let combined = next_texts.join("\n\n");

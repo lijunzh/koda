@@ -157,6 +157,9 @@ struct BgEntry {
     /// How long it may run, in a session with a time limit for background
     /// commands ([`BgRegistry::set_time_limit`]).
     limit: Option<Duration>,
+    /// Its watch, when `Monitor` started it: its stdout reaches the model as
+    /// events, and its end as a monitor notice instead of an exit notice.
+    monitor: Option<crate::tools::monitor::MonitorWatch>,
     /// The time limit stopped it. Unlike a stop by the user or Koda, the
     /// model is told, so it can start the command again with more time.
     timed_out: bool,
@@ -300,6 +303,7 @@ impl BgRegistry {
                 log: None,
                 reported: false,
                 limit: None,
+                monitor: None,
                 timed_out: false,
                 adopted: false,
             },
@@ -331,6 +335,7 @@ impl BgRegistry {
                 log: None,
                 reported: false,
                 limit: None,
+                monitor: None,
                 timed_out: false,
                 adopted: true,
             },
@@ -639,7 +644,9 @@ impl BgRegistry {
         let mut guard = self.inner.lock().unwrap();
         let mut exits: Vec<BgExit> = guard
             .iter_mut()
-            .filter(|(_, entry)| !entry.reported && entry.spawner.is_none())
+            .filter(|(_, entry)| {
+                !entry.reported && entry.spawner.is_none() && entry.monitor.is_none()
+            })
             .filter_map(|(pid, entry)| {
                 let code = match entry.status {
                     BgProcessStatus::Running => return None,
@@ -675,8 +682,90 @@ impl BgRegistry {
             !entry.reported
                 && entry.spawner.is_none()
                 && !entry.adopted
+                && entry.monitor.is_none()
                 && (matches!(entry.status, BgProcessStatus::Exited { .. }) || entry.timed_out)
         })
+    }
+
+    /// Watch `pid`'s output as a monitor's ([`crate::tools::monitor`]).
+    pub fn set_monitor(&self, pid: u32, watch: crate::tools::monitor::MonitorWatch) {
+        if let Some(entry) = self.inner.lock().unwrap().get_mut(&pid) {
+            entry.monitor = Some(watch);
+        }
+    }
+
+    /// How many monitors are running.
+    pub fn running_monitors(&self) -> usize {
+        self.reap();
+        self.inner
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|entry| entry.monitor.is_some() && entry.status == BgProcessStatus::Running)
+            .count()
+    }
+
+    /// Read the monitors' new output and settle how they ended: stop one
+    /// past its deadline or its event cap, and note a command that exited.
+    /// One the user or `TaskStop` stopped owes the model nothing more.
+    fn poll_monitors(&self) {
+        use crate::tools::monitor::MonitorEnd;
+        self.reap();
+        let mut guard = self.inner.lock().unwrap();
+        for (pid, entry) in guard.iter_mut() {
+            let Some(watch) = entry.monitor.as_mut() else {
+                continue;
+            };
+            if watch.end.is_some() || !watch.untold() {
+                continue;
+            }
+            match entry.status {
+                BgProcessStatus::Running => {
+                    let end = if watch.past_deadline(entry.started_at) {
+                        Some(MonitorEnd::Deadline(watch.deadline()))
+                    } else {
+                        watch.read(false);
+                        watch.over_cap().then_some(MonitorEnd::TooManyEvents)
+                    };
+                    if let Some(end) = end {
+                        if let Err(e) = kill_command(*pid, entry.child.as_mut()) {
+                            tracing::warn!("BgRegistry: stopping monitor {pid}: {e}");
+                        }
+                        entry.status = BgProcessStatus::Killed;
+                        watch.end = Some(end);
+                    }
+                }
+                BgProcessStatus::Exited { code } => {
+                    watch.read(true);
+                    watch.end = Some(MonitorEnd::Exited(code));
+                }
+                // Stopped by the user or `TaskStop`: nobody is waiting.
+                BgProcessStatus::Killed => watch.silence(),
+            }
+        }
+    }
+
+    /// The monitor notices due now, each once.
+    pub fn take_monitor_notices(&self) -> Vec<crate::tools::monitor::MonitorNotice> {
+        self.poll_monitors();
+        let mut guard = self.inner.lock().unwrap();
+        let mut notices: Vec<_> = guard
+            .iter_mut()
+            .filter_map(|(pid, entry)| entry.monitor.as_mut()?.take_notice(*pid))
+            .collect();
+        notices.sort_by_key(|notice| notice.id);
+        notices
+    }
+
+    /// Whether a monitor notice is due: what an idle session starts a turn
+    /// for, as it does for an exit.
+    pub fn has_monitor_notices(&self) -> bool {
+        self.poll_monitors();
+        self.inner
+            .lock()
+            .unwrap()
+            .values()
+            .any(|entry| entry.monitor.as_ref().is_some_and(|w| w.notice_due()))
     }
 
     /// Give background commands started from now on a time limit, as Claude

@@ -61,7 +61,8 @@ use std::sync::{Arc, RwLock};
 
 use super::{
     DynTool, Tool, ToolEffect, agent, ask_user, boxed, cargo, file_tools, glob_tool, goal, grep,
-    memory, recall, shell, skill_tools, spawn_agent, todo, web_fetch, web_search, write_stdin,
+    memory, monitor, recall, shell, skill_tools, spawn_agent, todo, web_fetch, web_search,
+    write_stdin,
 };
 
 /// The read-only metadata side of [`crate::tools::ToolRegistry`].
@@ -198,6 +199,13 @@ impl ToolCatalog {
         // Typing into a background command's terminal.
         let write_stdin_def = write_stdin::WriteStdinTool.definition();
         definitions.insert(write_stdin_def.name.clone(), write_stdin_def);
+        // Watching a command's output, and stopping background work.
+        for def in [
+            monitor::MonitorTool.definition(),
+            monitor::TaskStopTool.definition(),
+        ] {
+            definitions.insert(def.name.clone(), def);
+        }
 
         // Tools migrated onto the `Tool` trait. PR-4 introduces the
         // file-ops cohort. Subsequent PRs (5..8) register the search,
@@ -220,6 +228,8 @@ impl ToolCatalog {
             boxed(shell::BashTool),
             boxed(cargo::CargoTool),
             boxed(write_stdin::WriteStdinTool),
+            boxed(monitor::MonitorTool),
+            boxed(monitor::TaskStopTool),
             // PR-7: misc cohort.
             boxed(web_fetch::WebFetchTool),
             boxed(web_search::WebSearchTool),

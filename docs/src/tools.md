@@ -12,6 +12,8 @@ prompt. See [Trust modes](./approval.md) for the canonical matrix.
 | `Edit` | Mutating | Targeted text replacement within a file |
 | `Bash` | Varies | Run a shell command in the sandbox; with `outside_sandbox` and a `reason`, run one command outside it once you approve. With `background`, it runs on and its output goes to a log, and the model is told when it exits (an idle session wakes for it; in [`koda exec`](./headless.md#background-commands) it has a time limit, 10 minutes or its `timeout`, up to 2 hours); with `tty`, it runs in the background with a terminal of its own, for a program that waits for typed input |
 | `WriteStdin` | Mutating (Read-only with no `chars`) | Type into a command started with `tty` and read what it printed since the last read: answer a prompt, drive a REPL or a debugger, send Ctrl+C (`\u0003`). With no `chars`, it only waits for output. See [Typing into a command](#typing-into-a-command) |
+| `Monitor` | As `Bash` judges its command | Run a command in the background and receive each line it prints to stdout as an event while the conversation goes on ([Watching a command](#watching-a-command)) |
+| `TaskStop` | Mutating | Stop a background command or a monitor by its ID |
 | `Cargo` | Mutating | `cargo check`, `clippy`, `test` or `build` from the project root, with one line per compiler diagnostic and, for `test`, the failing tests with panic locations |
 | `Grep` | Read-only | Search file contents with a regex: matching files (the default), matching lines with optional context, or counts; filter by glob or file type; results in pages |
 | `Glob` | Read-only | List files matching a glob pattern |
@@ -62,6 +64,30 @@ the program printed:
   whatever is typed into it afterwards, so the two can't be combined.
 - **Stopping it:** `kill PID`, `/stop`, Ctrl+C typed with `WriteStdin`, or
   the end of the session, as for any background command.
+
+### Watching a command
+
+`Monitor` is Claude Code's tool of the same name. The model gives it a command,
+a short description and, optionally, `timeout_ms`; the command runs in the
+background, in the same sandbox as `Bash`, and each line it prints to stdout
+reaches the model as an event, so it reacts to a log line, a failed build or a
+finished deploy without polling.
+
+- **Events:** lines arriving within 200 ms come together, at the start of the
+  model's next step. A session waiting for you starts a turn for them, as it
+  does when a background command exits. Stderr goes to a file, not to events.
+- **The end:** the watch ends at its deadline (5 minutes by default, at most
+  30, and at most 10 in `koda exec`), when its command exits, or after 1,000
+  events, and the model gets one last notice. A watch that ends silent but
+  wrote to stderr names that file.
+- **Limits Claude Code doesn't document, taken from qwen-code:** a line is cut
+  at 4,096 bytes; past a burst of 5 lines, a monitor gets 1 a second, and the
+  rest are dropped and counted; at most 16 run at once.
+- **Approval:** the same rules as `Bash` for the command. Sub-agents can't
+  start one: its events go to the main conversation.
+- **Stopping it:** `TaskStop` with its ID, `/stop`, or the end of the
+  session. A watch that you or the model stopped sends no further notice.
+  `TaskStop` also stops a command started with `Bash{background: true}`.
 
 ### Web search budget
 

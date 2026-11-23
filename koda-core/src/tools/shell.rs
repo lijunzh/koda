@@ -842,6 +842,68 @@ fn spawn_background(
     ))
 }
 
+/// Start `Monitor`'s command: a background command in the sandbox, as
+/// [`spawn_background`] starts one, whose stdout and stderr go to separate
+/// files, since its stdout lines are the monitor's events. Returns its PID,
+/// the monitor's id.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn spawn_monitor(
+    project_root: &Path,
+    command: &str,
+    bg: &BgRegistry,
+    trust: &crate::trust::TrustMode,
+    policy: &koda_sandbox::SandboxPolicy,
+    proxy_port: Option<u16>,
+    socks5_port: Option<u16>,
+    description: &str,
+    deadline: std::time::Duration,
+) -> Result<u32> {
+    let (out_path, out) = background_log()?;
+    let (err_path, err) = background_log()?;
+    let loopback = koda_sandbox::Loopback {
+        serve: loopback_socket(proxy_port),
+        ..bg.loopback().await
+    };
+    let serve = loopback.serve.clone();
+    let mut cmd = command_for(
+        command,
+        project_root,
+        trust,
+        policy,
+        Egress::Sandboxed {
+            proxy_port,
+            socks5_port,
+            loopback,
+        },
+    )?;
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(out)
+        .stderr(err);
+    process_group::isolate(&mut cmd);
+    let child = cmd
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to start the monitor's command: {e}"))?;
+    drop(cmd);
+    let pid = child
+        .id()
+        .ok_or_else(|| anyhow::anyhow!("The monitor's command has no PID (already exited)"))?;
+    bg.insert(pid, command.to_string(), child, None);
+    bg.set_log(pid, out_path.clone());
+    if let Some(socket) = serve {
+        bg.set_loopback_socket(pid, socket);
+    }
+    bg.set_monitor(
+        pid,
+        crate::tools::monitor::MonitorWatch::new(
+            description.to_string(),
+            out_path,
+            err_path,
+            deadline,
+        ),
+    );
+    Ok(pid)
+}
+
 /// `10m`, `2h`, `1h 30m`, `45s`.
 fn duration_words(duration: std::time::Duration) -> String {
     let seconds = duration.as_secs();
@@ -1861,6 +1923,113 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    /// Start a monitor in `dir` the way `Monitor` does.
+    async fn monitor_with(
+        dir: &std::path::Path,
+        registry: &BgRegistry,
+        command: &str,
+        deadline: std::time::Duration,
+    ) -> u32 {
+        spawn_monitor(
+            dir,
+            command,
+            registry,
+            &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
+            None,
+            None,
+            "test",
+            deadline,
+        )
+        .await
+        .unwrap()
+    }
+
+    /// Monitor notices until one ends the watch, or `within` passes.
+    async fn notices_until_end(
+        registry: &BgRegistry,
+        within: std::time::Duration,
+    ) -> Vec<crate::tools::monitor::MonitorNotice> {
+        let start = std::time::Instant::now();
+        let mut all = Vec::new();
+        while start.elapsed() < within {
+            all.extend(registry.take_monitor_notices());
+            if all.iter().any(|n| n.end.is_some()) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        all
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_monitor_streams_stdout_lines_and_its_exit() {
+        use crate::tools::monitor::MonitorEnd;
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = BgRegistry::new();
+        let pid = monitor_with(
+            tmp.path(),
+            &registry,
+            "printf 'ready\nERROR disk full\n'; echo noise >&2; exit 3",
+            std::time::Duration::from_secs(60),
+        )
+        .await;
+        let notices = notices_until_end(&registry, std::time::Duration::from_secs(10)).await;
+        let lines: Vec<&str> = notices
+            .iter()
+            .flat_map(|n| n.lines.iter().map(String::as_str))
+            .collect();
+        assert_eq!(lines, ["ready", "ERROR disk full"], "stderr isn't an event");
+        let last = notices.last().unwrap();
+        assert_eq!(last.id, pid);
+        assert_eq!(last.end, Some(MonitorEnd::Exited(Some(3))));
+        assert_eq!(last.stderr, None, "it sent events");
+        assert!(registry.take_exits().is_empty(), "no second, exit notice");
+        assert!(!registry.has_monitor_notices(), "told once");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_monitor_stops_at_its_deadline_and_names_stderr_when_silent() {
+        use crate::tools::monitor::MonitorEnd;
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = BgRegistry::new();
+        let deadline = std::time::Duration::from_secs(1);
+        let pid = monitor_with(
+            tmp.path(),
+            &registry,
+            "echo cannot open log >&2; sleep 30",
+            deadline,
+        )
+        .await;
+        let notices = notices_until_end(&registry, std::time::Duration::from_secs(10)).await;
+        let last = notices.last().expect("an end notice");
+        assert_eq!(last.end, Some(MonitorEnd::Deadline(deadline)));
+        assert!(last.stderr.is_some(), "silent, but it wrote to stderr");
+        assert_ne!(registry.status(pid), Some(BgProcessStatus::Running));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stopped_monitor_owes_the_model_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = BgRegistry::new();
+        let pid = monitor_with(
+            tmp.path(),
+            &registry,
+            "sleep 30",
+            std::time::Duration::from_secs(60),
+        )
+        .await;
+        assert_eq!(registry.running_monitors(), 1);
+        assert_eq!(
+            registry.kill_as_caller(pid, None),
+            crate::child_agent::CancelOutcome::Cancelled
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(registry.take_monitor_notices().is_empty());
+        assert!(!registry.has_monitor_notices());
+        assert_eq!(registry.running_monitors(), 0);
     }
 
     /// The first number in a call's output: the PID an `echo $!` printed.

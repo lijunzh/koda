@@ -509,7 +509,9 @@ impl SessionTask {
                 None => {
                     // While the model's background commands run, look in on
                     // them: an exit starts a turn that tells the model.
-                    let watching = self.background().any_running() || self.background().has_exits();
+                    let watching = self.background().any_running()
+                        || self.background().has_exits()
+                        || self.background().has_monitor_notices();
                     tokio::select! {
                         command = self.commands.recv() => match command {
                             Some(command) => command,
@@ -657,7 +659,7 @@ impl SessionTask {
         if !self.peek_command() || self.waiting.is_some() {
             return None;
         }
-        if self.background().has_exits() {
+        if self.background().has_exits() || self.background().has_monitor_notices() {
             let turn_id = uuid::Uuid::new_v4().to_string();
             return Some(self.run_turn(turn_id, Work::Wake).await);
         }
