@@ -1160,7 +1160,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn provider_search_is_used_with_domains_as_given() {
         use crate::providers::{SearchLink, SearchPart};
         let fake = FakeSearcher {
