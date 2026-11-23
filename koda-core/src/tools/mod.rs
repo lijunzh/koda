@@ -80,6 +80,8 @@ pub mod media;
 pub mod memory;
 /// `@` mentions, read under the Read tool's rules.
 pub mod mention;
+/// `Monitor` and `TaskStop`, as in Claude Code.
+pub mod monitor;
 /// What Read returns for a Jupyter notebook.
 pub mod notebook;
 /// What Read returns for a PDF.
@@ -1960,6 +1962,22 @@ pub fn describe_action(tool_name: &str, args: &serde_json::Value) -> String {
         }
         "Cargo" => cargo::describe(args),
         "WriteStdin" => write_stdin::describe(args),
+        "Monitor" => {
+            let what = args
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let cmd = args.get("command").and_then(|v| v.as_str()).unwrap_or("?");
+            format!("Monitor {what}: {cmd}")
+        }
+        "TaskStop" => {
+            let id = args
+                .get("task_id")
+                .or(args.get("shell_id"))
+                .map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_string))
+                .unwrap_or_else(|| "?".to_string());
+            format!("Stop background task {id}")
+        }
         "Write" => {
             let path = args
                 .get("path")

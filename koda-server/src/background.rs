@@ -51,7 +51,7 @@ pub(crate) fn list(agent: &KodaAgent) -> BackgroundTerminalsListResponse {
     let registry = &agent.tools.bg_registry;
     BackgroundTerminalsListResponse {
         data: data.into_iter().map(|(_, terminal)| terminal).collect(),
-        waiting: registry.any_running() || registry.has_exits(),
+        waiting: registry.any_running() || registry.has_exits() || registry.has_monitor_notices(),
     }
 }
 

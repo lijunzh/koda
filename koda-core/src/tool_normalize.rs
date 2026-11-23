@@ -50,6 +50,8 @@ const CANONICAL: &[&str] = &[
     "WebSearch",
     "Write",
     "WriteStdin",
+    "Monitor",
+    "TaskStop",
 ];
 
 /// Static alias map: lowercased variant → canonical name.

@@ -241,6 +241,8 @@ mod naming_convention {
         "WebSearch",
         "Write",
         "WriteStdin",
+        "Monitor",
+        "TaskStop",
         "GetGoal",
         "CreateGoal",
         "UpdateGoal",
@@ -276,7 +278,7 @@ mod naming_convention {
 
     #[test]
     fn test_expected_tool_count() {
-        // 24 built-in tools.
+        // 26 built-in tools.
         // - #996 Layer 2 added ListBackgroundTasks, CancelTask,
         //   WaitTask (19 → 22).
         // - #1325 Phase 3 added SendMessage, WaitForMail (22 → 24).
@@ -291,7 +293,8 @@ mod naming_convention {
         //   as in the peers.
         // - WriteStdin, typing into a background command (20 → 21).
         // - GetGoal, CreateGoal and UpdateGoal, a session's goal (21 → 24).
-        assert_eq!(BUILTIN_TOOLS.len(), 24);
+        // - Monitor and TaskStop, as in Claude Code (24 → 26).
+        assert_eq!(BUILTIN_TOOLS.len(), 26);
     }
 
     /// Ensure BUILTIN_TOOLS stays in sync with the actual registry.
