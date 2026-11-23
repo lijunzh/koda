@@ -29,11 +29,15 @@ use std::path::Path;
 /// pattern match so any path containing `.config/koda/db` consecutively
 /// still gets denied even with no home directory at all.
 pub fn is_fully_denied(path: &Path) -> bool {
-    let home = resolve_home_dir();
-    is_fully_denied_with_home(path, home.as_deref())
-        || crate::defaults::config_folders(home.as_deref().unwrap_or_default())
-            .iter()
-            .any(|config| fully_denied_subdirs().any(|rel| path.starts_with(config.join(rel))))
+    is_fully_denied_with_home(path, resolve_home_dir().as_deref())
+        || crate::defaults::xdg_config_home().is_some_and(|xdg| denied_in(path, &xdg))
+}
+
+/// Whether `path` is in a folder fully denied in `config`. Runs for every
+/// path a tool is given, so it makes no path of its own.
+fn denied_in(path: &Path, config: &Path) -> bool {
+    path.strip_prefix(config)
+        .is_ok_and(|rest| fully_denied_subdirs().any(|rel| rest.starts_with(rel)))
 }
 
 /// The folders fully denied in a config folder: Koda's secrets, and its
@@ -62,8 +66,7 @@ pub(crate) fn is_fully_denied_with_home(path: &Path, home: Option<&str>) -> bool
     // Primary check: does the path live under `${home}/.config/<rel>` for
     // any fully-denied relative path? Only runs when home is known.
     if let Some(home) = home {
-        let home_path = Path::new(home);
-        if fully_denied_subdirs().any(|rel| path.starts_with(home_path.join(".config").join(rel))) {
+        if denied_in(path, &Path::new(home).join(".config")) {
             return true;
         }
     }
@@ -82,18 +85,20 @@ pub(crate) fn is_fully_denied_with_home(path: &Path, home: Option<&str>) -> bool
         })
         .collect();
 
-    fully_denied_subdirs().any(|rel| {
-        // Build the target sequence: [".config", <rel parts split by '/'>...]
-        let mut needle: Vec<&str> = vec![".config"];
-        needle.extend(rel.split('/'));
-        // Sliding window match against the path components.
-        components.windows(needle.len()).any(|window| {
-            window
-                .iter()
-                .zip(needle.iter())
-                .all(|(comp, want)| comp.to_str() == Some(*want))
+    components
+        .iter()
+        .enumerate()
+        .filter(|(_, component)| **component == ".config")
+        .any(|(i, _)| {
+            let rest = &components[i + 1..];
+            fully_denied_subdirs().any(|rel| {
+                rel.split('/').count() <= rest.len()
+                    && rel
+                        .split('/')
+                        .zip(rest)
+                        .all(|(want, component)| *component == want)
+            })
         })
-    })
 }
 
 #[cfg(test)]
@@ -118,6 +123,24 @@ mod tests {
         );
         let tokens = Path::new(&home).join(".config/koda/mcp_oauth/notion.json");
         assert!(is_fully_denied(&tokens));
+    }
+
+    /// Koda's folder under another config folder (`XDG_CONFIG_HOME`).
+    #[test]
+    fn fully_denied_folders_are_denied_in_any_config_folder() {
+        let config = Path::new("/elsewhere/cfg");
+        for path in [
+            "koda/db",
+            "koda/db/koda.db",
+            "koda/mcp_oauth/s.json",
+            "koda/serve/koda.sock",
+        ] {
+            assert!(denied_in(&config.join(path), config), "{path}");
+        }
+        for path in ["koda", "koda/config.toml", "koda/db2", "other/koda/db"] {
+            assert!(!denied_in(&config.join(path), config), "{path}");
+        }
+        assert!(!denied_in(Path::new("/elsewhere/koda/db"), config));
     }
 
     #[test]
