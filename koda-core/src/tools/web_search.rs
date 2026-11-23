@@ -96,10 +96,6 @@ pub async fn web_search(args: &Value) -> Result<String> {
     .map_err(|e| anyhow::anyhow!("Search request failed: {e}"))?;
 
     let status = response.status();
-    if !status.is_success() {
-        anyhow::bail!("DuckDuckGo returned HTTP {status}");
-    }
-
     let html = response
         .text()
         .await
@@ -108,6 +104,17 @@ pub async fn web_search(args: &Value) -> Result<String> {
     let results = parse_results(&html, num_results);
 
     if results.is_empty() {
+        if is_bot_check(&html) {
+            anyhow::bail!(
+                "DuckDuckGo answered with a bot check instead of results, so this search \
+                 failed; it does not mean nothing matches. Searching again soon will likely \
+                 get the same check. Tell the user, or read a known URL with WebFetch."
+            );
+        }
+        // A bot check comes as 202; anything but 200 without results is a failure.
+        if status != reqwest::StatusCode::OK {
+            anyhow::bail!("DuckDuckGo returned HTTP {status} and no results");
+        }
         return Ok(format!(
             "No results found for: \"{query}\"\n\
              Tip: try a more specific query, or use WebFetch to read a known URL directly."
@@ -136,46 +143,39 @@ struct SearchResult {
 
 /// Parse DuckDuckGo HTML results.
 ///
-/// Splits on the `uddg=` marker that appears in every result anchor's `href`
-/// (`//duckduckgo.com/l/?uddg=<encoded_url>&…`).  Each segment starting from
-/// index 1 begins with the percent-encoded actual URL.
+/// Each result's title is an `<a class="result__a" href="…">`. The `href`
+/// is the page itself, or (in older pages) a `//duckduckgo.com/l/?uddg=<encoded
+/// url>&…` redirect, from which the page's URL is taken. The snippet is the
+/// `result__snippet` element between this title and the next one.
 fn parse_results(html: &str, max: usize) -> Vec<SearchResult> {
     let mut results = Vec::new();
-    let segments: Vec<&str> = html.split("uddg=").collect();
+    let anchors = result_anchor_starts(html);
 
-    for segment in segments.iter().skip(1) {
+    for (i, &start) in anchors.iter().enumerate() {
         if results.len() >= max {
             break;
         }
+        let scope_end = anchors.get(i + 1).copied().unwrap_or(html.len());
+        let block = &html[start..scope_end];
 
-        // URL: everything up to the first &, ", or whitespace
-        let url_end = segment
-            .find(|c: char| c == '&' || c == '"' || c.is_whitespace())
-            .unwrap_or_else(|| segment.len().min(300));
-        let url = percent_decode(&segment[..url_end]);
-
-        // Only keep real http/https results — skips ads, disambiguation boxes, etc.
-        if !url.starts_with("http") {
+        let Some(tag_end) = block.find('>') else {
             continue;
-        }
+        };
+        let Some(url) = attribute(&block[..tag_end], "href").and_then(|h| result_url(&h)) else {
+            continue;
+        };
 
-        // Title: skip past the closing > of the <a …> tag, then read until </a>
-        let title = segment
-            .find('>')
-            .map(|close| {
-                let after = &segment[close + 1..];
-                let end = after.find("</a>").unwrap_or_else(|| after.len().min(200));
-                strip_inline(&after[..end])
-            })
-            .unwrap_or_default();
-
+        let after = &block[tag_end + 1..];
+        let title_end = after
+            .find("</a>")
+            .unwrap_or_else(|| after.floor_char_boundary(200));
+        let title = strip_inline(&after[..title_end]);
         if title.is_empty() {
             continue;
         }
 
-        // Snippet: look within the next ~2 KB of this segment (same result block)
-        let window = &segment[..segment.len().min(2048)];
-        let snippet = extract_snippet(window);
+        let rest = &after[title_end..];
+        let snippet = extract_snippet(&rest[..rest.floor_char_boundary(4096)]);
 
         results.push(SearchResult {
             title,
@@ -187,7 +187,73 @@ fn parse_results(html: &str, max: usize) -> Vec<SearchResult> {
     results
 }
 
-/// Extract text from the `class="result__snippet"` element closest to `pos`.
+/// Byte offsets of each `<a …>` tag whose class list includes `result__a`.
+fn result_anchor_starts(html: &str) -> Vec<usize> {
+    let mut starts = Vec::new();
+    let mut from = 0;
+    while let Some(rel) = html[from..].find("<a") {
+        let start = from + rel;
+        from = start + 2;
+        if !html[from..].starts_with(|c: char| c.is_ascii_whitespace()) {
+            continue;
+        }
+        let tag_end = html[start..].find('>').map_or(html.len(), |e| start + e);
+        let is_result = attribute(&html[start..tag_end], "class")
+            .is_some_and(|c| c.split_whitespace().any(|c| c == "result__a"));
+        if is_result {
+            starts.push(start);
+        }
+    }
+    starts
+}
+
+/// The value of `name="…"` in an opening tag.
+fn attribute(tag: &str, name: &str) -> Option<String> {
+    let needle = format!("{name}=\"");
+    let pos = tag
+        .match_indices(&needle)
+        .find(|&(i, _)| tag[..i].ends_with(|c: char| c.is_ascii_whitespace()))?
+        .0
+        + needle.len();
+    let end = tag[pos..].find('"')? + pos;
+    Some(tag[pos..end].replace("&amp;", "&"))
+}
+
+/// The result's page from a title link: a direct link as it is, a
+/// DuckDuckGo redirect by its `uddg` parameter. Anything else (an ad, a
+/// DuckDuckGo page) is skipped.
+fn result_url(href: &str) -> Option<String> {
+    let normalized = if href.starts_with("//") {
+        format!("https:{href}")
+    } else {
+        href.to_string()
+    };
+    let parsed = url::Url::parse(&normalized).ok()?;
+    let target = match parsed.query_pairs().find(|(k, _)| k == "uddg") {
+        Some((_, v)) => url::Url::parse(&v).ok()?,
+        None => parsed,
+    };
+    let is_web = matches!(target.scheme(), "http" | "https");
+    let is_ddg = target
+        .host_str()
+        .is_some_and(|h| h == "duckduckgo.com" || h.ends_with(".duckduckgo.com"));
+    (is_web && !is_ddg).then(|| target.to_string())
+}
+
+/// Whether DuckDuckGo answered with its bot check instead of results.
+fn is_bot_check(html: &str) -> bool {
+    [
+        "anomaly-modal",
+        "anomaly.js",
+        "challenge-form",
+        "g-recaptcha",
+    ]
+    .iter()
+    .any(|marker| html.contains(marker))
+}
+
+/// Extract the text of the first `class="result__snippet"` element (an `<a>`
+/// in current pages, a `<div>` in older ones).
 fn extract_snippet(html: &str) -> String {
     let marker = "result__snippet\"";
     let Some(m) = html.find(marker) else {
@@ -199,8 +265,10 @@ fn extract_snippet(html: &str) -> String {
         return String::new();
     };
     let text_region = &after_marker[close + 1..];
-    let end = text_region
-        .find("</div>")
+    let end = ["</a>", "</div>"]
+        .iter()
+        .filter_map(|close| text_region.find(close))
+        .min()
         .unwrap_or_else(|| text_region.floor_char_boundary(600));
     let raw = strip_inline(&text_region[..end]);
     if raw.len() > 300 {
@@ -208,6 +276,49 @@ fn extract_snippet(html: &str) -> String {
     } else {
         raw
     }
+}
+
+/// Decode the named entities DuckDuckGo uses and any numeric one
+/// (`&#39;`, `&#x27;`); anything else is left as written.
+fn decode_entities(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        rest = &rest[amp..];
+        let decoded = rest[1..].find(';').filter(|&n| n <= 10).and_then(|n| {
+            let name = &rest[1..=n];
+            let ch = match name {
+                "amp" => Some('&'),
+                "lt" => Some('<'),
+                "gt" => Some('>'),
+                "quot" => Some('"'),
+                "apos" => Some('\''),
+                "nbsp" => Some(' '),
+                _ => {
+                    let num = name.strip_prefix('#')?;
+                    let code = match num.strip_prefix(['x', 'X']) {
+                        Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+                        None => num.parse().ok()?,
+                    };
+                    char::from_u32(code)
+                }
+            }?;
+            Some((ch, n + 2))
+        });
+        match decoded {
+            Some((ch, len)) => {
+                out.push(ch);
+                rest = &rest[len..];
+            }
+            None => {
+                out.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Strip inline HTML tags and decode common entities; collapse whitespace.
@@ -222,40 +333,9 @@ fn strip_inline(s: &str) -> String {
             _ => {}
         }
     }
-    let decoded = out
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&nbsp;", " ");
+    let decoded = decode_entities(&out);
     // Collapse whitespace
     decoded.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// Percent-decode a URL-encoded string (`%XX` sequences and `+` → space).
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = String::with_capacity(s.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hi = char::from(bytes[i + 1]).to_digit(16);
-            let lo = char::from(bytes[i + 2]).to_digit(16);
-            if let (Some(h), Some(l)) = (hi, lo) {
-                out.push(char::from(((h * 16) + l) as u8));
-                i += 3;
-                continue;
-            }
-        } else if bytes[i] == b'+' {
-            out.push(' ');
-            i += 1;
-            continue;
-        }
-        out.push(char::from(bytes[i]));
-        i += 1;
-    }
-    out
 }
 
 // =============================================================
@@ -346,23 +426,6 @@ mod tests {
     }
 
     #[test]
-    fn percent_decode_basic() {
-        assert_eq!(percent_decode("hello%20world"), "hello world");
-        assert_eq!(
-            percent_decode("https%3A%2F%2Fdocs.rs%2Ftokio"),
-            "https://docs.rs/tokio"
-        );
-        assert_eq!(percent_decode("a+b+c"), "a b c");
-        assert_eq!(percent_decode("no+encoding"), "no encoding");
-    }
-
-    #[test]
-    fn percent_decode_invalid_escape_passthrough() {
-        // Malformed %XX should be passed through unchanged
-        assert_eq!(percent_decode("%zz"), "%zz");
-    }
-
-    #[test]
     fn strip_inline_removes_tags_and_decodes() {
         assert_eq!(strip_inline("<b>hello</b> &amp; world"), "hello & world");
         assert_eq!(strip_inline("  lots  of   spaces  "), "lots of spaces");
@@ -426,34 +489,6 @@ mod tests {
         assert!(!required.contains(&"num_results"));
     }
 
-    // ── percent_decode edge cases ────────────────────────────────────
-
-    #[test]
-    fn percent_decode_slash_and_colon() {
-        assert_eq!(percent_decode("%2F"), "/");
-        assert_eq!(percent_decode("%3A"), ":");
-        assert_eq!(percent_decode("%26"), "&");
-        assert_eq!(percent_decode("%3D"), "=");
-    }
-
-    #[test]
-    fn percent_decode_plus_becomes_space() {
-        assert_eq!(percent_decode("hello+world"), "hello world");
-    }
-
-    #[test]
-    fn percent_decode_combined() {
-        // "hello%20world" → "hello world"
-        assert_eq!(percent_decode("hello%20world"), "hello world");
-    }
-
-    #[test]
-    fn percent_decode_truncated_escape_passthrough() {
-        // "%" at end with nothing after is passed through as-is
-        assert_eq!(percent_decode("%"), "%");
-        assert_eq!(percent_decode("%2"), "%2");
-    }
-
     // ── strip_inline edge cases ──────────────────────────────────────
 
     #[test]
@@ -483,5 +518,90 @@ mod tests {
     fn parse_zero_max_returns_no_results() {
         let results = parse_results(FIXTURE, 0);
         assert!(results.is_empty());
+    }
+
+    /// Today's page: direct links, `<a>` snippets, attributes in any order.
+    const DIRECT_FIXTURE: &str = r#"
+        <div class="result results_links results_links_deep web-result ">
+          <h2 class="result__title">
+            <a rel="nofollow" class="result__a" href="https://tokio.rs/tokio/topics/shutdown">Graceful <b>Shutdown</b> | Tokio</a>
+          </h2>
+          <a class="result__url" href="https://tokio.rs/tokio/topics/shutdown">tokio.rs/tokio/topics/shutdown</a>
+          <a class="result__snippet" href="https://tokio.rs/tokio/topics/shutdown">How to <b>shut down</b> &amp; clean up.</a>
+        </div>
+        <div class="result results_links web-result ">
+          <h2 class="result__title">
+            <a href="https://docs.rs/tokio-graceful?a=1&amp;b=2"
+               class="result__a" rel="nofollow">tokio-graceful</a>
+          </h2>
+        </div>
+    "#;
+
+    #[test]
+    fn parse_direct_links() {
+        let results = parse_results(DIRECT_FIXTURE, 10);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].title, "Graceful Shutdown | Tokio");
+        assert_eq!(results[0].url, "https://tokio.rs/tokio/topics/shutdown");
+        assert_eq!(results[0].snippet, "How to shut down & clean up.");
+        assert_eq!(results[1].title, "tokio-graceful");
+        assert_eq!(results[1].url, "https://docs.rs/tokio-graceful?a=1&b=2");
+        assert_eq!(
+            results[1].snippet, "",
+            "a snippet never comes from another result"
+        );
+    }
+
+    #[test]
+    fn parse_skips_ads_and_duckduckgo_links() {
+        let html = r#"
+            <a class="result__a" href="//duckduckgo.com/y.js?ad_domain=example.com">Ad</a>
+            <a class="result__a" href="/html/?q=more">More</a>
+            <a class="result__a" href="javascript:void(0)">Script</a>
+            <a class="result__a" href="https://example.org/">Real</a>
+        "#;
+        let results = parse_results(html, 10);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].url, "https://example.org/");
+    }
+
+    #[test]
+    fn parse_ignores_other_classes_containing_result_a() {
+        let html = r#"<a class="result__about" href="https://a.example/">x</a>
+            <a class="result__a-like" href="https://b.example/">y</a>"#;
+        assert!(parse_results(html, 10).is_empty());
+    }
+
+    #[test]
+    fn bot_check_is_detected() {
+        let page = r#"<form id="challenge-form" action="//duckduckgo.com/anomaly.js?sv=html">
+            <div class="anomaly-modal__modal">Select all squares containing a duck</div></form>"#;
+        assert!(parse_results(page, 10).is_empty());
+        assert!(is_bot_check(page));
+        assert!(!is_bot_check(DIRECT_FIXTURE));
+        assert!(!is_bot_check(FIXTURE));
+    }
+
+    #[test]
+    fn non_ascii_titles_do_not_panic() {
+        let long = "界".repeat(300);
+        let html = format!(r#"<a class="result__a" href="https://example.org/">{long}"#);
+        let results = parse_results(&html, 10);
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].title.is_empty());
+    }
+
+    #[test]
+    fn entities_decode_numeric_and_named() {
+        assert_eq!(
+            strip_inline("I&#x27;m &#39;here&#39; &amp; &quot;there&quot;"),
+            "I'm 'here' & \"there\""
+        );
+        assert_eq!(strip_inline("a &amp;amp; b"), "a &amp; b", "decoded once");
+        assert_eq!(
+            strip_inline("AT&T &bogus; &#xZZ; &"),
+            "AT&T &bogus; &#xZZ; &"
+        );
+        assert_eq!(strip_inline("&#128512;"), "\u{1F600}");
     }
 }

@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`WebSearch` returns results again.** DuckDuckGo's results page now links to each page directly instead of through its redirect, and Koda read only the redirect, so every search said "No results found". Both forms are read now, ads and DuckDuckGo's own pages are skipped, and `&#x27;` and other numeric entities in titles and snippets are decoded.
+- **A DuckDuckGo bot check is reported as a failed search, not as no results.** DuckDuckGo sometimes answers with a CAPTCHA page (HTTP 202), which Koda counted as a search that found nothing. The model is now told the search failed and that retrying right away will likely meet the same check.
+
 ## [0.7.9] - 2026-11-22
 
 ### Security
