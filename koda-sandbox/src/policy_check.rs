@@ -65,10 +65,10 @@ fn resolve_home_dir() -> Option<String> {
 pub(crate) fn is_fully_denied_with_home(path: &Path, home: Option<&str>) -> bool {
     // Primary check: does the path live under `${home}/.config/<rel>` for
     // any fully-denied relative path? Only runs when home is known.
-    if let Some(home) = home {
-        if denied_in(path, &Path::new(home).join(".config")) {
-            return true;
-        }
+    if let Some(home) = home
+        && denied_in(path, &Path::new(home).join(".config"))
+    {
+        return true;
     }
 
     // Fallback: pattern-match the path components themselves. Even with
