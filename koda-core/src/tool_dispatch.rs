@@ -186,6 +186,16 @@ pub(crate) fn has_file_conflict(tool_calls: &[ToolCall]) -> bool {
     })
 }
 
+/// Whether `name` is a tool this module runs itself, not the registry,
+/// whose entry for it is only a stub. Such a tool must never be run straight
+/// from the registry, as the inference loop runs read-only tools early.
+pub(crate) fn handled_by_dispatch(name: &str) -> bool {
+    matches!(
+        name,
+        "InvokeAgent" | "SpawnAgent" | "SendMessage" | "AskUser"
+    )
+}
+
 /// Whether an `InvokeAgent` or `SpawnAgent` call asks to run in the
 /// background. Anything but a JSON `true` (or `"true"`) runs it blocking.
 fn runs_in_background(arguments: &str) -> bool {
