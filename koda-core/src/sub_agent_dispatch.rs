@@ -180,28 +180,81 @@ fn available_agents_hint(project_root: &std::path::Path) -> String {
 /// instead of 11 individual ambient args. The parent's `tools` field
 /// is intentionally unused — sub-agents construct their own
 /// `sub_tools` registry from `sub_config.allowed_tools`.
+/// What a sub-agent takes from the agent that starts it. A blocking call
+/// borrows it from the turn ([`Parent::of`]); a background agent, which
+/// outlives the turn, from values its task owns.
+pub(crate) struct Parent<'a> {
+    pub project_root: &'a std::path::Path,
+    pub config: &'a crate::config::KodaConfig,
+    pub db: &'a koda_state::db::Database,
+    pub session_id: &'a str,
+    pub sink: &'a dyn crate::engine::EngineSink,
+    pub cancel: CancellationToken,
+    pub sub_agent_cache: &'a crate::sub_agent_cache::SubAgentCache,
+    pub bg_agents: &'a std::sync::Arc<crate::child_agent::ChildAgentRegistry>,
+    pub mode: TrustMode,
+    pub session_allows: &'a crate::trust::SessionAllows,
+    /// Every agent in the session draws on one `WebSearch` budget, as in
+    /// Claude Code.
+    pub web_search_budget: std::sync::Arc<crate::tools::web_search::WebSearchBudget>,
+    pub caller_spawner: Option<u32>,
+}
+
+impl<'a> Parent<'a> {
+    /// The turn calling a sub-agent and waiting for it.
+    pub(crate) fn of(tx: &ToolExecutionContext<'a>) -> Self {
+        let turn = tx.turn;
+        Self {
+            project_root: turn.project_root,
+            config: turn.config,
+            db: turn.db,
+            session_id: turn.session_id,
+            sink: turn.sink,
+            cancel: turn.cancel.clone(),
+            sub_agent_cache: turn.sub_agent_cache,
+            bg_agents: turn.bg_agents,
+            mode: turn.mode,
+            session_allows: turn.session_allows,
+            web_search_budget: turn.tools.web_search_budget(),
+            caller_spawner: tx.caller_spawner,
+        }
+    }
+}
+
+/// A background run's links to its entry in
+/// [`crate::tools::bg_agents::BgAgents`].
+pub(crate) struct Background {
+    /// Messages from `SendMessage`, read at each step.
+    pub inbox: crate::tools::bg_agents::Inbox,
+    /// The agent's session: filled to continue one, and filled by a new
+    /// agent once its session exists.
+    pub session: crate::tools::bg_agents::SessionSlot,
+}
+
 pub(crate) fn execute_sub_agent<'a>(
-    parent_tx: ToolExecutionContext<'a>,
+    parent: Parent<'a>,
     arguments: &'a str,
     cmd_rx: &'a mut mpsc::Receiver<EngineCommand>,
     parent_cache: Option<crate::tools::FileReadCache>,
     parent_sandbox_policy: &'a koda_sandbox::SandboxPolicy,
     parent_tool_call_id: Option<&'a str>,
+    background: Option<&'a Background>,
 ) -> impl std::future::Future<Output = Result<String>> + Send + 'a {
     // The sub-agent's last `ChildTaskUpdate` says how it ended, as Codex's
     // collab item does, so a client can drop its row on that event. Sent
     // here, once the run has returned whichever way it did; a cache hit
     // registers nothing and sends nothing.
-    let cancel = parent_tx.turn.cancel.clone();
+    let cancel = parent.cancel.clone();
     let ended: EndedSlot = Default::default();
     let run = run_sub_agent(
-        parent_tx,
+        parent,
         arguments,
         cmd_rx,
         parent_cache,
         parent_sandbox_policy,
         parent_tool_call_id,
         ended.clone(),
+        background,
     );
     async move {
         let result = run.await;
@@ -230,8 +283,9 @@ type EndedSlot = std::sync::Arc<parking_lot::Mutex<Option<crate::child_agent::Ch
 const ENDED_SUMMARY_CHARS: usize = 200;
 
 #[tracing::instrument(skip_all, fields(agent_name, cached = false, session_id = tracing::field::Empty))]
+#[allow(clippy::too_many_arguments)]
 fn run_sub_agent<'a>(
-    parent_tx: ToolExecutionContext<'a>,
+    parent: Parent<'a>,
     arguments: &'a str,
     cmd_rx: &'a mut mpsc::Receiver<EngineCommand>,
     parent_cache: Option<crate::tools::FileReadCache>,
@@ -247,6 +301,7 @@ fn run_sub_agent<'a>(
     // them under the parent's `InvokeAgent` tool result.
     parent_tool_call_id: Option<&'a str>,
     ended: EndedSlot,
+    background: Option<&'a Background>,
 ) -> impl std::future::Future<Output = Result<String>> + Send + 'a {
     async move {
         // #1265 item 4 PR-3: rebind context fields to the same names
@@ -254,23 +309,22 @@ fn run_sub_agent<'a>(
         // 700-line function reads exactly as before. The parent's
         // `tools` registry is intentionally NOT bound — sub-agents
         // build their own from `sub_config.allowed_tools`.
-        let crate::turn_context::TurnContext {
+        let Parent {
             project_root,
             config: parent_config,
             db,
             session_id: parent_session_id,
             sink,
+            cancel,
             sub_agent_cache,
             bg_agents,
             mode,
             session_allows,
-            ..
-        } = *parent_tx.turn;
-        let cancel = parent_tx.turn.cancel.clone();
-        // Every agent in the session draws on one `WebSearch` budget, as
-        // in Claude Code.
-        let web_search_budget = parent_tx.turn.tools.web_search_budget();
-        let parent_spawner = parent_tx.caller_spawner;
+            web_search_budget,
+            caller_spawner: parent_spawner,
+        } = parent;
+        // A background agent being continued works in its own session again.
+        let resume_session = background.and_then(|b| b.session.lock().clone());
 
         // A turn that spent its token budget starts no sub-agent, as Claude
         // Code refuses one once `--max-budget-usd` is reached.
@@ -324,7 +378,9 @@ fn run_sub_agent<'a>(
         // parent's sink and skips the registry, the worktree and the
         // provider call (`test_sub_agent_cache_hit_skips_llm` asserts
         // both).
-        if let Some(cached) = sub_agent_cache.get(agent_name, prompt) {
+        if background.is_none()
+            && let Some(cached) = sub_agent_cache.get(agent_name, prompt)
+        {
             sink.emit_from(
                 parent_tool_call_id,
                 EngineEvent::Info {
@@ -517,7 +573,9 @@ fn run_sub_agent<'a>(
             (cfg, max_turns, raw.isolation)
         };
 
-        let sub_session = {
+        let sub_session = if let Some(sid) = resume_session {
+            sid
+        } else {
             let sid = db
                 .create_session(&sub_config.agent_name, project_root)
                 .await?;
@@ -541,6 +599,9 @@ fn run_sub_agent<'a>(
             if is_fork {
                 let parent_history = db.load_context(parent_session_id).await?;
                 db.copy_messages_into_session(&sid, &parent_history).await?
+            }
+            if let Some(background) = background {
+                *background.session.lock() = Some(sid.clone());
             }
             sid
         };
@@ -726,6 +787,11 @@ fn run_sub_agent<'a>(
             if !denied.contains(&"AskUser".to_string()) {
                 denied.push("AskUser".to_string());
             }
+            // Background agents are the main agent's: a sub-agent has none
+            // to message.
+            if !denied.contains(&"SendMessage".to_string()) {
+                denied.push("SendMessage".to_string());
+            }
             // A goal is the session's, kept by its main agent; a sub-agent
             // works on the task it was given.
             for name in crate::goal::GOAL_TOOL_NAMES {
@@ -884,6 +950,22 @@ fn run_sub_agent<'a>(
                 // headless clients reflect real progress instead of the
                 // `iter: 0` placeholder sent on entry.
                 fg_emitter.send(crate::child_agent::AgentStatus::Running { iter });
+                // `SendMessage` to a running background agent: read at its
+                // next step, as a steer is by the main agent.
+                if let Some(background) = background {
+                    let messages = std::mem::take(&mut *background.inbox.lock());
+                    for message in messages {
+                        db.insert_message(
+                            &sub_session,
+                            &Role::User,
+                            Some(&message),
+                            None,
+                            None,
+                            None,
+                        )
+                        .await?;
+                    }
+                }
                 // Respect parent cancellation (#286)
                 if cancel.is_cancelled() {
                     // Release workspace on cancellation.
@@ -1610,6 +1692,164 @@ fn recover_last_assistant_text(messages: &[ChatMessage]) -> Option<String> {
                 .filter(|t| !t.is_empty())
                 .map(|t| t.to_string())
         })
+}
+
+/// `InvokeAgent { run_in_background: true }`: start the sub-agent and
+/// return its id at once, as Claude Code's `Agent` does in the background.
+/// It reports through a notice when it finishes
+/// ([`crate::tools::bg_agents::notice_text`]).
+pub(crate) fn start_background(tx: &ToolExecutionContext<'_>, arguments: &str) -> Result<String> {
+    let args: serde_json::Value = serde_json::from_str(arguments)?;
+    let turn = tx.turn;
+    let agent_name = parse_agent_name_required(&args, turn.project_root)?;
+    let prompt = args["prompt"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Missing 'prompt'"))?;
+    if tx.caller_spawner.is_some() {
+        anyhow::bail!("A sub-agent can't start sub-agents.");
+    }
+    if turn
+        .sink
+        .turn_budget()
+        .is_some_and(|budget| budget.is_spent())
+    {
+        anyhow::bail!(
+            "Budget limit reached: this turn has spent its token budget \
+             (turn_token_budget), so no sub-agent can start. Finish with what you have."
+        );
+    }
+    let agents = std::sync::Arc::clone(turn.tools.bg_registry.agents());
+    let Some(run) = agents.start(&agent_name, prompt) else {
+        anyhow::bail!(
+            "{} background agents are already running, the most at once. Wait for one to \
+             finish, or stop one with TaskStop.",
+            crate::tools::bg_agents::MAX_RUNNING
+        );
+    };
+    let id = run.id.clone();
+    spawn_run(tx, &agents, run, arguments.to_string());
+    Ok(format!(
+        "Started agent {id} ({agent_name}) in the background. You'll be told when it \
+         finishes: don't wait or poll for it, and don't do its work yourself. Go on with \
+         other work, or end your turn if there is none. SendMessage to {id} gives it more \
+         instructions; TaskStop with {id} stops it."
+    ))
+}
+
+/// `SendMessage`: a running background agent reads `message` at its next
+/// step; a finished one runs again with its whole conversation, in the
+/// background, as Claude Code's `SendMessage` resumes an agent.
+pub(crate) fn send_message(tx: &ToolExecutionContext<'_>, arguments: &str) -> Result<String> {
+    use crate::tools::bg_agents::Delivery;
+    let args: serde_json::Value = serde_json::from_str(arguments)?;
+    let to = args["to"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("Missing 'to': the agent's id"))?;
+    let message = args["message"]
+        .as_str()
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("Missing 'message'"))?;
+    let agents = std::sync::Arc::clone(tx.turn.tools.bg_registry.agents());
+    match agents.deliver(to, message) {
+        Delivery::Queued => Ok(format!(
+            "Sent. Agent {to} is running and reads your message at its next step."
+        )),
+        Delivery::Resume {
+            agent_name, run, ..
+        } => {
+            let arguments = serde_json::json!({ "agent_name": agent_name, "prompt": message });
+            spawn_run(tx, &agents, run, arguments.to_string());
+            Ok(format!(
+                "Agent {to} ({agent_name}) continues in the background with your message and \
+                 its earlier conversation. You'll be told when it finishes."
+            ))
+        }
+        Delivery::Unknown => anyhow::bail!(
+            "No background agent {to}. SendMessage reaches agents started with \
+             InvokeAgent{{run_in_background: true}}, by the id it returned."
+        ),
+        Delivery::Full => anyhow::bail!(
+            "{} background agents are already running, the most at once; agent {to} can \
+             continue once one finishes.",
+            crate::tools::bg_agents::MAX_RUNNING
+        ),
+        Delivery::NoSession => anyhow::bail!(
+            "Agent {to} ended before it began work, so there is nothing to continue. Start a \
+             new agent instead."
+        ),
+    }
+}
+
+/// Run `run` of a background agent on its own task, with owned copies of
+/// what the turn lends a blocking call. It sends nothing to the session's
+/// event stream, whose turns it outlives: its answer arrives as a notice.
+fn spawn_run(
+    tx: &ToolExecutionContext<'_>,
+    agents: &std::sync::Arc<crate::tools::bg_agents::BgAgents>,
+    run: crate::tools::bg_agents::Run,
+    arguments: String,
+) {
+    let turn = tx.turn;
+    let project_root = turn.project_root.to_path_buf();
+    let config = turn.config.clone();
+    let db = turn.db.clone();
+    let session_id = turn.session_id.to_string();
+    let bg_agents = std::sync::Arc::clone(turn.bg_agents);
+    let mode = turn.mode;
+    let web_search_budget = turn.tools.web_search_budget();
+    let caller_spawner = tx.caller_spawner;
+    let parent_cache = turn.tools.file_read_cache();
+    let policy = turn.tools.sandbox_policy().clone();
+    let table = std::sync::Arc::downgrade(agents);
+    let background = Background {
+        inbox: std::sync::Arc::clone(&run.inbox),
+        session: std::sync::Arc::clone(&run.session),
+    };
+    let finished = run.clone();
+    let task = async move {
+        let sink = crate::engine::sink::NullSink;
+        // A background agent is never answered from the result cache:
+        // continued or messaged, it isn't the same call twice.
+        let cache = crate::sub_agent_cache::SubAgentCache::new();
+        // Nobody can approve for it (PR 2 routes its approvals to the
+        // session), so it starts with no session approvals.
+        let allows = crate::trust::SessionAllows::default();
+        let (_, mut no_answers) = mpsc::channel(1);
+        let parent = Parent {
+            project_root: &project_root,
+            config: &config,
+            db: &db,
+            session_id: &session_id,
+            sink: &sink,
+            cancel: finished.cancel.clone(),
+            sub_agent_cache: &cache,
+            bg_agents: &bg_agents,
+            mode,
+            session_allows: &allows,
+            web_search_budget,
+            caller_spawner,
+        };
+        let result = execute_sub_agent(
+            parent,
+            &arguments,
+            &mut no_answers,
+            Some(parent_cache),
+            &policy,
+            None,
+            Some(&background),
+        )
+        .await;
+        if let Some(table) = table.upgrade() {
+            table.finish(&finished, result);
+        }
+    };
+    // Boxed: the sub-agent's future names this one's type through
+    // `execute_one_tool`, as the blocking call's does.
+    let task: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> = Box::pin(task);
+    let handle = tokio::spawn(task);
+    agents.attach(&run, tokio_util::task::AbortOnDropHandle::new(handle));
 }
 
 #[cfg(test)]

@@ -37,9 +37,10 @@ pub fn definitions() -> Vec<ToolDefinition> {
             the tool result.\n\
             \n\
             This is an alias for `InvokeAgent` with the codex v2 / Claude Code `spawn_agent` \
-            argument shape: same dispatch path, same execution model. The call BLOCKS until \
-            the sub-agent finishes, and the result IS the sub-agent's final answer. \
-            Nothing runs in the background and there is no task id to wait on.\n\
+            argument shape: same dispatch path, same execution model. By default the call BLOCKS \
+            until the sub-agent finishes, and the result IS the sub-agent's final answer. \
+            With `run_in_background: true` it returns the agent's id at once and you are told \
+            when it finishes, as with `InvokeAgent`.\n\
             \n\
             `task_name` identifies the agent configuration to load (same as \
             `InvokeAgent`'s `agent_name`). Use `ListAgents` to see available agents.\n\
@@ -57,6 +58,10 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 "message": {
                     "type": "string",
                     "description": "The task prompt to hand to the sub-agent."
+                },
+                "run_in_background": {
+                    "type": "boolean",
+                    "description": "Return at once; you are told when it finishes."
                 }
             },
             "required": ["task_name", "message"]

@@ -2219,7 +2219,7 @@ async fn a_background_process_runs_until_stop() {
     assert!(tui.screen().contains("/stop to stop"), "{}", tui.screen());
 
     tui.submit("/stop");
-    tui.wait_for_screen("Stopped 1 background process.");
+    tui.wait_for_screen("Stopped 1 background task.");
     tui.wait_for_screen_without("/stop to stop");
     let deadline = Instant::now() + Duration::from_secs(3);
     while running("sleep 35") {
@@ -2227,7 +2227,7 @@ async fn a_background_process_runs_until_stop() {
         std::thread::sleep(Duration::from_millis(50));
     }
     tui.submit("/stop");
-    tui.wait_for_screen("No background processes running.");
+    tui.wait_for_screen("Nothing is running in the background.");
 }
 
 /// `/stop` runs during a turn, as Codex's does, and the turn goes on.
@@ -2244,7 +2244,7 @@ async fn stop_works_during_a_turn() {
     tui.approve_until(|| running("sleep 36"));
     wait_for_model_call(&server, 2).await;
     tui.submit("/stop");
-    tui.wait_for_screen("Stopped 1 background process.");
+    tui.wait_for_screen("Stopped 1 background task.");
     assert!(tui.screen().contains(BUSY_PROMPT), "{}", tui.screen());
     let deadline = Instant::now() + Duration::from_secs(3);
     while running("sleep 36") {

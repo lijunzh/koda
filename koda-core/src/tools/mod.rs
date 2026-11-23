@@ -65,6 +65,8 @@ pub use catalog::ToolCatalog;
 /// `extract_file_path` matches with co-located methods.
 pub mod tool_trait;
 pub use tool_trait::{DynTool, Tool, ToolExecCtx, boxed};
+/// Background sub-agents, as in Claude Code.
+pub mod bg_agents;
 /// File CRUD tools (`Read`, `Write`, `Edit`, `Delete`, `List`).
 pub mod file_tools;
 pub mod fuzzy;

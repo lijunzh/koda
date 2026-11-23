@@ -1470,6 +1470,24 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
                 ),
             });
         }
+        // Background agents that finished, as Claude Code tells Claude in
+        // a later turn.
+        let agent_notices = tools.bg_registry.agents().take_notices();
+        if !agent_notices.is_empty() {
+            let notice = crate::tools::bg_agents::notice_text(&agent_notices);
+            db.insert_message(session_id, &Role::User, Some(&notice), None, None, None)
+                .await?;
+            for agent in &agent_notices {
+                sink.emit(EngineEvent::Info {
+                    message: format!(
+                        "  Agent {} ({}) {}",
+                        agent.id,
+                        agent.agent_name,
+                        agent.state.as_str()
+                    ),
+                });
+            }
+        }
         let next_texts = cmd_rx.take_steers();
         if !next_texts.is_empty() {
             let combined = next_texts.join("\n\n");

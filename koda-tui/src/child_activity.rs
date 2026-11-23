@@ -19,7 +19,7 @@
 //! same split.
 
 use crate::widgets::child_activity_overlay::{ActivityRow, ActivityStatus, MAX_VISIBLE};
-use koda_client::protocol::background::BackgroundTerminal;
+use koda_client::protocol::background::{BackgroundAgent, BackgroundTerminal};
 use std::time::{Duration, Instant};
 
 /// A sub-agent of the running turn: its `InvokeAgent` call.
@@ -44,6 +44,9 @@ pub struct ChildActivityTracker {
     /// The background processes, as the host last listed them, oldest
     /// first.
     processes: Vec<BackgroundTerminal>,
+    /// The model's background agents, as the host last listed them, oldest
+    /// first.
+    background_agents: Vec<BackgroundAgent>,
     /// When the host last listed them.
     listed_at: Option<Instant>,
 }
@@ -98,6 +101,16 @@ impl ChildActivityTracker {
         self.listed_at = Some(Instant::now());
     }
 
+    /// The background processes and background agents the host now lists.
+    pub fn set_background(
+        &mut self,
+        processes: Vec<BackgroundTerminal>,
+        agents: Vec<BackgroundAgent>,
+    ) {
+        self.background_agents = agents;
+        self.set_processes(processes);
+    }
+
     /// Whether to ask the host for the background processes again: about
     /// once a second while a turn runs, which may start one, or while one
     /// is listed, which may exit.
@@ -108,7 +121,7 @@ impl ChildActivityTracker {
 
     /// Whether any background process is listed.
     pub fn has_processes(&self) -> bool {
-        !self.processes.is_empty()
+        !self.processes.is_empty() || !self.background_agents.is_empty()
     }
 
     /// The rows to draw, at most [`MAX_VISIBLE`], and how many there are
@@ -141,7 +154,17 @@ impl ChildActivityTracker {
             activity: Some(p.command.clone()),
             status: ActivityStatus::Running,
         });
-        let mut all: Vec<ActivityRow> = agents.chain(processes).collect();
+        let background_agents = self.background_agents.iter().map(|a| ActivityRow {
+            icon: "\u{1f916}", // 🤖
+            label: format!("{} {}", a.agent_name, a.agent_id),
+            age: format_age(Duration::from_millis(
+                now_ms.saturating_sub(a.started_at).max(0) as u64,
+            )),
+            // Its task tells two `explore`s apart.
+            activity: Some(a.prompt.lines().next().unwrap_or_default().to_string()),
+            status: ActivityStatus::Running,
+        });
+        let mut all: Vec<ActivityRow> = agents.chain(background_agents).chain(processes).collect();
         let total = all.len();
         all.truncate(MAX_VISIBLE);
         (all, total)
@@ -150,7 +173,7 @@ impl ChildActivityTracker {
     /// What the hint row says stops the rows shown.
     pub fn hint(&self) -> &'static str {
         match (!self.agents.is_empty(), self.has_processes()) {
-            (true, true) => "Esc to interrupt \u{b7} /stop to stop background processes",
+            (true, true) => "Esc to interrupt \u{b7} /stop to stop background work",
             (true, false) => "Esc to interrupt",
             _ => "/stop to stop",
         }
@@ -274,6 +297,33 @@ mod tests {
         assert_eq!(t.build_rows().0[0].status, ActivityStatus::Cancelling);
         t.clear_agents();
         assert_eq!(t.build_rows().1, 0);
+    }
+
+    #[test]
+    fn background_agents_are_listed_after_the_turns_sub_agents() {
+        let mut t = ChildActivityTracker::default();
+        t.agent_started("call-1", "explore");
+        t.set_background(
+            vec![process(42, "cargo build", 8)],
+            vec![BackgroundAgent {
+                agent_id: "a1b2".into(),
+                agent_name: "task".into(),
+                prompt: "write the tests\nand run them".into(),
+                started_at: 0,
+            }],
+        );
+        let (rows, total) = t.build_rows();
+        assert_eq!(total, 3);
+        assert_eq!(rows[1].label, "task a1b2");
+        assert_eq!(rows[1].activity.as_deref(), Some("write the tests"));
+        assert!(rows[2].label.starts_with("process:"));
+        t.clear_agents();
+        assert!(
+            t.has_processes(),
+            "a background agent keeps the list polling"
+        );
+        t.set_background(Vec::new(), Vec::new());
+        assert!(!t.has_processes());
     }
 
     #[test]

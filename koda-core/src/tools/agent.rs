@@ -47,15 +47,16 @@ pub fn definitions() -> Vec<ToolDefinition> {
             name: "InvokeAgent".to_string(),
             description: "Delegate a task to a sub-agent and get its final answer back as the tool result.
 
-The call BLOCKS until the sub-agent finishes \u{2014} same shape as any other tool. \
+By default the call BLOCKS until the sub-agent finishes \u{2014} same shape as any other tool. \
 When this tool returns, `output` IS the sub-agent's final answer; act on it directly.
 
 EXECUTION MODEL
 
-- Sub-agents run **synchronously** on your task. Dispatching one pauses your \
-  reasoning until the sub-agent's loop completes; you resume with its final \
-  output as the tool result. There is no separate handle to poll, no inbox \
-  to drain.
+- By default sub-agents run **synchronously** on your task. Dispatching one pauses \
+  your reasoning until the sub-agent's loop completes; you resume with its final \
+  output as the tool result.
+- `run_in_background: true` returns the agent's id at once; you are told when it \
+  finishes. Don't wait or poll. `SendMessage` reaches it; `TaskStop` stops it.
 - `SpawnAgent` is an alias for `InvokeAgent` with a codex-compatible argument \
   shape (`task_name` + `message` instead of `agent_name` + `prompt`). Same \
   dispatch path, same execution model. Use whichever your skill manifest \
@@ -94,7 +95,7 @@ KEY RULES
   summarize sub-agent results in your own reply if the user needs to see them.
 - Sub-agents CANNOT spawn other sub-agents. Plan all fan-out at this level; \
   the `InvokeAgent` tool is filtered from every sub-agent's tool set.
-- Identical (agent_name, prompt) pairs hit a cache and skip the LLM call. \
+- Identical blocking (agent_name, prompt) pairs hit a cache and skip the LLM call. \
   Cheap to retry idempotent tasks; no need to memoize yourself.
 - A tool result starting with '[ERROR: sub-agent ...]' or 'Error invoking \
   sub-agent: ...' is a structural failure (workspace setup, isolation issue, \
@@ -126,6 +127,10 @@ KEY RULES
                     "prompt": {
                         "type": "string",
                         "description": "The task to delegate to the sub-agent"
+                    },
+                    "run_in_background": {
+                        "type": "boolean",
+                        "description": "Return at once; you are told when it finishes."
                     }
                 },
                 "required": ["agent_name", "prompt"]
@@ -516,14 +521,14 @@ mod tests {
         // longer exists, so a regression that re-introduces them would
         // mislead the model about the dispatch shape.
         assert!(
-            !desc.contains("task_id")
-                && !desc.contains("task ID")
-                && !desc.contains("WaitForMail")
-                && !desc.contains("auto-drain")
-                && !desc.contains("in the background"),
+            !desc.contains("WaitForMail") && !desc.contains("auto-drain"),
             "description must NOT name retired async-era concepts \
-             (task_id / WaitForMail / auto-drain / background spawn) \
-             \u{2014} #1366 deleted them."
+             (WaitForMail / auto-drain) \u{2014} #1366 deleted them; background \
+             agents came back in Claude Code's shape, with no mailbox."
+        );
+        assert!(
+            desc.contains("run_in_background") && desc.contains("SendMessage"),
+            "description must explain background agents and how to reach them"
         );
         // Parallel fan-out via multiple calls in one assistant message
         // is still a thing on the c path — the dispatcher runs them

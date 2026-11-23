@@ -60,9 +60,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, RwLock};
 
 use super::{
-    DynTool, Tool, ToolEffect, agent, ask_user, boxed, cargo, file_tools, glob_tool, goal, grep,
-    memory, monitor, recall, shell, skill_tools, spawn_agent, todo, web_fetch, web_search,
-    write_stdin,
+    DynTool, Tool, ToolEffect, agent, ask_user, bg_agents, boxed, cargo, file_tools, glob_tool,
+    goal, grep, memory, monitor, recall, shell, skill_tools, spawn_agent, todo, web_fetch,
+    web_search, write_stdin,
 };
 
 /// The read-only metadata side of [`crate::tools::ToolRegistry`].
@@ -203,6 +203,7 @@ impl ToolCatalog {
         for def in [
             monitor::MonitorTool.definition(),
             monitor::TaskStopTool.definition(),
+            bg_agents::SendMessageTool.definition(),
         ] {
             definitions.insert(def.name.clone(), def);
         }
@@ -230,6 +231,7 @@ impl ToolCatalog {
             boxed(write_stdin::WriteStdinTool),
             boxed(monitor::MonitorTool),
             boxed(monitor::TaskStopTool),
+            boxed(bg_agents::SendMessageTool),
             // PR-7: misc cohort.
             boxed(web_fetch::WebFetchTool),
             boxed(web_search::WebSearchTool),

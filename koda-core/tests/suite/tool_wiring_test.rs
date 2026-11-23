@@ -156,6 +156,8 @@ fn test_classify_tool_covers_all_tools_explicitly() {
         // Destructive. TaskStop stops the model's own background work.
         ("Monitor", ToolEffect::Destructive),
         ("TaskStop", ToolEffect::LocalMutation),
+        // SendMessage, like InvokeAgent: the agent's own calls are gated.
+        ("SendMessage", ToolEffect::ReadOnly),
     ]
     .into_iter()
     .collect();

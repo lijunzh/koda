@@ -47,7 +47,7 @@ pub(crate) async fn list_background(
         .request::<methods::SessionBackgroundTerminalsList>(params)
         .await
     {
-        Ok(listed) => tracker.set_processes(listed.data),
+        Ok(listed) => tracker.set_background(listed.data, listed.agents),
         // Keep the last list; the next tick asks again.
         Err(e) => tracing::debug!("session/backgroundTerminals/list: {e}"),
     }
@@ -68,11 +68,11 @@ pub(crate) async fn stop_background(
         .await
     {
         Ok(cleaned) if cleaned.terminated == 0 => {
-            tui_output::dim_msg(buffer, "No background processes running.".into());
+            tui_output::dim_msg(buffer, "Nothing is running in the background.".into());
         }
         Ok(cleaned) => {
             let n = cleaned.terminated;
-            let noun = if n == 1 { "process" } else { "processes" };
+            let noun = if n == 1 { "task" } else { "tasks" };
             tui_output::ok_msg(buffer, format!("Stopped {n} background {noun}."));
         }
         Err(e) => tui_output::err_msg(buffer, format!("Couldn't stop them: {e}")),

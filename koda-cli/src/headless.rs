@@ -306,11 +306,15 @@ pub async fn run_headless(
                         break done;
                     }
                     if let Output::Text = run.output {
-                        let commands: Vec<&str> =
-                            listed.data.iter().map(|t| t.command.as_str()).collect();
+                        let work: Vec<String> = listed
+                            .agents
+                            .iter()
+                            .map(|a| format!("agent {} ({})", a.agent_id, a.agent_name))
+                            .chain(listed.data.iter().map(|t| t.command.clone()))
+                            .collect();
                         eprintln!(
-                            "\x1b[2mWaiting for background commands to finish: {}\x1b[0m",
-                            commands.join(", ")
+                            "\x1b[2mWaiting for background work to finish: {}\x1b[0m",
+                            work.join(", ")
                         );
                     }
                     last = Some(done);
