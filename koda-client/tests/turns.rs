@@ -2364,6 +2364,77 @@ async fn an_api_key_is_stored_and_never_returned() {
     koda.client.shutdown().await;
 }
 
+/// The Brave Search key for `WebSearch` is stored like a provider's: it
+/// shows in `webSearch/apiKey/read` and the store, never in a response, and
+/// removing it forgets it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_web_search_key_is_stored_and_never_returned() {
+    use koda_client::protocol::config::{
+        WebSearchApiKeyReadParams, WebSearchApiKeyRemoveParams, WebSearchApiKeySetParams,
+    };
+    let server = model(vec![]).await;
+    let koda = Koda::start(config(&server)).await;
+    let secret = "brave-test-not-a-real-key-4242";
+    let empty = server_error(
+        koda.client
+            .request::<methods::WebSearchApiKeySet>(WebSearchApiKeySetParams {
+                api_key: "  ".into(),
+            })
+            .await,
+    );
+    assert!(empty.message.contains("empty"), "{empty:?}");
+
+    let set = koda
+        .client
+        .request::<methods::WebSearchApiKeySet>(WebSearchApiKeySetParams {
+            api_key: secret.into(),
+        })
+        .await
+        .unwrap();
+    assert!(!serde_json::to_string(&set).unwrap().contains(secret));
+    let read = koda
+        .client
+        .request::<methods::WebSearchApiKeyRead>(WebSearchApiKeyReadParams {})
+        .await
+        .unwrap();
+    assert!(read.has_api_key);
+    assert_eq!(read.env_key, "BRAVE_API_KEY");
+    assert!(!serde_json::to_string(&read).unwrap().contains(secret));
+    assert_eq!(
+        koda_core::runtime_env::get("BRAVE_API_KEY").as_deref(),
+        Some(secret),
+        "WebSearch reads the key from this run's environment"
+    );
+    let db = Database::init(&koda._dir.path().join("config"))
+        .await
+        .unwrap();
+    assert_eq!(
+        koda_core::keystore::get_key(&db, "BRAVE_API_KEY")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(secret)
+    );
+
+    koda.client
+        .request::<methods::WebSearchApiKeyRemove>(WebSearchApiKeyRemoveParams {})
+        .await
+        .unwrap();
+    let read = koda
+        .client
+        .request::<methods::WebSearchApiKeyRead>(WebSearchApiKeyReadParams {})
+        .await
+        .unwrap();
+    assert!(!read.has_api_key);
+    assert_eq!(
+        koda_core::keystore::get_key(&db, "BRAVE_API_KEY")
+            .await
+            .unwrap(),
+        None
+    );
+    koda.client.shutdown().await;
+}
+
 /// `auto-detect` resolves on the host to the local server's loaded model.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn auto_detect_takes_the_servers_loaded_model() {

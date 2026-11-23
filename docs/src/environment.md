@@ -24,11 +24,12 @@ lists what replaced each.
 | Together AI | `TOGETHER_API_KEY` |
 | Fireworks AI | `FIREWORKS_API_KEY` |
 | LM Studio, Ollama, vLLM, llama.cpp | `KODA_API_KEY`, only for a server that requires one (vLLM started with `--api-key`, say) |
-| Brave Search, for `WebSearch` on models other than Claude | `BRAVE_API_KEY`. Without it `WebSearch` uses DuckDuckGo, which often answers with a bot check. Set it in your shell: `/key` saves model providers' keys only |
+| Brave Search, for `WebSearch` on models other than Claude | `BRAVE_API_KEY`. Without it `WebSearch` uses DuckDuckGo, which often answers with a bot check |
 
 You don't need to set these: `/key` in the TUI saves a key in Koda's
-database, and Koda loads it at startup. **A variable you set wins over a
-saved key.** Keys never go in `config.toml`, and the commands Koda runs never
+database, a model provider's or Brave Search's, and Koda loads it at
+startup. **A variable you set wins over a saved key** when Koda starts; a key
+you type into `/key` is used for the rest of that run. Keys never go in `config.toml`, and the commands Koda runs never
 see them (see [Commands Koda runs](#commands-koda-runs)).
 
 An MCP server's token stays in a variable too: its `bearer_token_env_var`

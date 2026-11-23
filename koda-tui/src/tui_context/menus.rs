@@ -30,6 +30,28 @@ pub(crate) fn provider_items(
         })
         .collect()
 }
+
+/// The `/key` picker item for Brave Search's key. No provider has this id.
+pub(crate) const WEB_SEARCH_KEY_ITEM: &str = "web-search";
+
+/// `/key`'s picker items: the providers that take a key, then Brave
+/// Search's key for `WebSearch` when the host said whether it has one.
+pub(crate) fn key_items(
+    providers: &crate::providers::Providers,
+    web_search: Option<&koda_client::protocol::config::WebSearchApiKeyReadResponse>,
+) -> Vec<crate::widgets::provider_menu::ProviderItem> {
+    let mut items = provider_items(providers, true);
+    items.extend(
+        web_search.map(|key| crate::widgets::provider_menu::ProviderItem {
+            key: WEB_SEARCH_KEY_ITEM.to_string(),
+            name: key.name.clone(),
+            local: false,
+            key_set: key.has_api_key,
+        }),
+    );
+    items
+}
+
 /// Whether a `/provider` argument is an endpoint URL rather than a provider
 /// name. A URL sets `base_url` and the provider type is re-detected from it.
 pub(crate) fn is_provider_url(arg: &str) -> bool {
@@ -136,13 +158,19 @@ impl TuiContext {
         self.menu = MenuContent::Provider(dd);
     }
 
-    /// `/key`: the providers that take a key, whether the host has one for
-    /// each, and a picker to set one.
+    /// `/key`: the providers that take a key and Brave Search's for
+    /// `WebSearch`, whether the host has one for each, and a picker to set
+    /// one.
     pub(crate) async fn open_key_picker(&mut self) {
         // Asked again: a key may have been set elsewhere meanwhile.
         self.providers = crate::providers::Providers::fetch(&self.client).await;
-        crate::tui_wizards::handle_keys(&mut self.scroll_buffer, &self.providers);
-        let items = provider_items(&self.providers, true);
+        let web_search = super::settings::web_search_key(&self.client).await;
+        crate::tui_wizards::handle_keys(
+            &mut self.scroll_buffer,
+            &self.providers,
+            web_search.as_ref(),
+        );
+        let items = key_items(&self.providers, web_search.as_ref());
         let dd = crate::widgets::dropdown::DropdownState::new(items, "\u{1f511} Set API key for");
         self.menu = MenuContent::Key(dd);
     }
@@ -620,6 +648,16 @@ impl TuiContext {
                 return;
             }
             MenuContent::Key(dd) => {
+                if dd
+                    .selected_item()
+                    .is_some_and(|item| item.key == WEB_SEARCH_KEY_ITEM)
+                {
+                    // Asked again: the item only knows the name.
+                    if let Some(key) = super::settings::web_search_key(&self.client).await {
+                        self.start_web_search_key(key);
+                    }
+                    return;
+                }
                 let picked = dd
                     .selected_item()
                     .and_then(|item| self.providers.find(&item.key))
@@ -730,6 +768,22 @@ impl TuiContext {
         self.menu = MenuContent::None;
     }
 
+    /// `/key`'s Brave Search entry: ask for the key, masked.
+    fn start_web_search_key(
+        &mut self,
+        key: koda_client::protocol::config::WebSearchApiKeyReadResponse,
+    ) {
+        let label = if key.has_api_key {
+            format!("API key for {} (Enter to keep current)", key.name)
+        } else {
+            format!("API key for {}", key.name)
+        };
+        self.menu = MenuContent::WizardTrail(vec![("Key".into(), key.name.clone())]);
+        self.prompt_mode = PromptMode::WizardInput { label, mask: true };
+        self.provider_wizard = Some(ProviderWizard::WebSearchKey { key });
+        self.textarea.set_text_clearing_elements("");
+    }
+
     // ── Wizard submit ──────────────────────────────────────────
 
     /// Store `provider`'s key through the host, which also makes it this
@@ -749,6 +803,17 @@ impl TuiContext {
                 crate::tui_output::err_msg(&mut self.scroll_buffer, format!("{e:#}"));
                 false
             }
+        }
+    }
+
+    /// Store the Brave Search key through the host and say so, masked.
+    async fn store_web_search_key(&mut self, env_key: &str, value: &str) {
+        match super::settings::set_web_search_key(&self.client, value).await {
+            Ok(()) => self.scroll_buffer.push(Line::styled(
+                format!("  \u{2714} {env_key} set to {}", mask_key(value)),
+                Style::default().fg(Color::Green),
+            )),
+            Err(e) => crate::tui_output::err_msg(&mut self.scroll_buffer, format!("{e:#}")),
         }
     }
 
@@ -797,6 +862,16 @@ impl TuiContext {
                         self.store_key(&provider, &value).await;
                     }
                     // Key-only mode: just return to chat, no provider switch
+                }
+                ProviderWizard::WebSearchKey { key } => {
+                    if value.is_empty() && !key.has_api_key {
+                        self.scroll_buffer.push(Line::styled(
+                            "  \u{2716} No API key provided.",
+                            Style::default().fg(Color::Red),
+                        ));
+                    } else if !value.is_empty() {
+                        self.store_web_search_key(&key.env_key, &value).await;
+                    }
                 }
                 ProviderWizard::Url { provider } => {
                     let url = if value.is_empty() {
@@ -847,7 +922,47 @@ fn mask_key(key: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{history_search_matches, is_provider_url, mask_key};
+    use super::{
+        WEB_SEARCH_KEY_ITEM, history_search_matches, is_provider_url, key_items, mask_key,
+    };
+
+    /// `/key` lists the providers that take a key, then Brave Search with
+    /// whether the host has its key; without the host's answer, no Brave.
+    #[test]
+    fn key_items_end_with_brave_search() {
+        use koda_client::protocol::config::WebSearchApiKeyReadResponse;
+        use koda_client::protocol::model::ModelProviderSummary;
+        let provider = |id: &str, requires_api_key: bool| ModelProviderSummary {
+            id: id.to_string(),
+            name: id.to_string(),
+            base_url: String::new(),
+            requires_api_key,
+            has_api_key: false,
+            env_key: String::new(),
+        };
+        let providers = crate::providers::Providers::from_list(vec![
+            provider("anthropic", true),
+            provider("lm-studio", false),
+        ]);
+        let brave = WebSearchApiKeyReadResponse {
+            name: "Brave Search".into(),
+            env_key: "BRAVE_API_KEY".into(),
+            has_api_key: true,
+        };
+        let items = key_items(&providers, Some(&brave));
+        let keys: Vec<_> = items.iter().map(|i| i.key.as_str()).collect();
+        assert_eq!(keys, ["anthropic", WEB_SEARCH_KEY_ITEM]);
+        let last = items.last().unwrap();
+        assert_eq!(last.name, "Brave Search");
+        assert!(last.key_set && !last.local);
+        assert!(providers.find(WEB_SEARCH_KEY_ITEM).is_none());
+
+        let keys: Vec<_> = key_items(&providers, None)
+            .into_iter()
+            .map(|i| i.key)
+            .collect();
+        assert_eq!(keys, ["anthropic"]);
+    }
 
     #[test]
     fn a_stored_key_is_shown_masked() {

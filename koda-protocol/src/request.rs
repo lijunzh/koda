@@ -222,6 +222,21 @@ client_requests! {
         params: crate::config::ModelProviderApiKeyRemoveParams,
         response: crate::config::ModelProviderApiKeyResponse,
     },
+    /// Whether `WebSearch` has a Brave Search key. Never the key.
+    WebSearchApiKeyRead => "webSearch/apiKey/read" {
+        params: crate::config::WebSearchApiKeyReadParams,
+        response: crate::config::WebSearchApiKeyReadResponse,
+    },
+    /// Store the Brave Search key `WebSearch` uses.
+    WebSearchApiKeySet => "webSearch/apiKey/set" {
+        params: crate::config::WebSearchApiKeySetParams,
+        response: crate::config::WebSearchApiKeyResponse,
+    },
+    /// Forget the stored Brave Search key.
+    WebSearchApiKeyRemove => "webSearch/apiKey/remove" {
+        params: crate::config::WebSearchApiKeyRemoveParams,
+        response: crate::config::WebSearchApiKeyResponse,
+    },
     /// The models a provider offers.
     ModelList => "model/list" {
         params: crate::model::ModelListParams,

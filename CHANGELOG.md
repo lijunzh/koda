@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 - **On Claude models, `WebSearch` searches with Anthropic's web search, as Claude Code's does.** Each call is a separate request to the session's model with Anthropic's search tool forced (up to 8 searches, thinking off); the model's summary and the links come back, with a reminder to cite them. The search is billed to your Anthropic account. Other models use Brave or DuckDuckGo, below.
 - **`WebSearch` searches with Brave when `BRAVE_API_KEY` is set.** Results come from the Brave Search API, the dependable route for models without a search of their own, as in OpenClaw's Brave provider; the date a page was published is shown when Brave knows it. Without a key, DuckDuckGo is used as before, and its failures (the bot check above all) now suggest setting a Brave key.
+- **`/key` saves the Brave Search key too.** It lists Brave Search after the model providers; a key saved there reaches `WebSearch` from the next search, with no `BRAVE_API_KEY` in your shell. A variable you set still wins over a saved key at startup. Clients store it with `webSearch/apiKey/set` and `remove` and ask whether one is set with `webSearch/apiKey/read`; no response carries the key. Codex has no counterpart, since its search runs at OpenAI.
 
 ### Changed
 

@@ -323,7 +323,8 @@ The protocol grows with the code that serves it. It has `initialize`,
 `session/name/set`, `session/fork`,
 `session/compact/start`, `session/settings/update`, `session/unsubscribe`,
 `model/list`, `modelProvider/list`, `modelProvider/apiKey/set`,
-`modelProvider/apiKey/remove`, `config/read`, `config/batchWrite`,
+`modelProvider/apiKey/remove`, `webSearch/apiKey/read`, `webSearch/apiKey/set`,
+`webSearch/apiKey/remove`, `config/read`, `config/batchWrite`,
 `storage/read`, `storage/purge`,
 `turn/start`,
 `turn/interrupt` and `turn/steer`,
@@ -393,7 +394,9 @@ saved one takes none of the saved model, and a provider's endpoint applies
 whenever a session runs on it. API keys go through
 `modelProvider/apiKey/set` and `remove`, Koda's own requests, since Koda keeps a
 key per provider and Codex's `account/login/start` signs in one OpenAI
-account; no response carries a key. `session/compact/start`
+account; `WebSearch`'s Brave Search key goes through `webSearch/apiKey/set`,
+`remove` and `read` the same way, since Codex's search runs at OpenAI and
+takes no key. No response carries a key. `session/compact/start`
 (Codex's `thread/compact/start`) is answered at once and compacts as a turn of
 its own, with a `contextCompaction` item whose trigger is `manual`; a running
 turn is stopped first and ends interrupted, and the compaction's turn can be

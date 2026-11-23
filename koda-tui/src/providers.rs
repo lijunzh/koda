@@ -28,6 +28,12 @@ impl Providers {
         Self { list }
     }
 
+    /// Providers as given, for tests that can't ask a host.
+    #[cfg(test)]
+    pub(crate) fn from_list(list: Vec<ModelProviderSummary>) -> Self {
+        Self { list }
+    }
+
     /// Every provider, in the host's order.
     pub(crate) fn all(&self) -> &[ModelProviderSummary] {
         &self.list

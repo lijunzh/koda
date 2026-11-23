@@ -255,6 +255,26 @@ impl Host {
                     }));
                 return;
             }
+            ClientRequest::WebSearchApiKeyRead { .. } => {
+                let _ = reply.send(to_json(crate::settings::web_search_key()));
+                return;
+            }
+            ClientRequest::WebSearchApiKeySet { params, .. } => {
+                let set =
+                    crate::settings::set_web_search_key(&self.context.db, &params.api_key).await;
+                let _ = reply.send(
+                    set.and_then(|()| to_json(koda_protocol::config::WebSearchApiKeyResponse {})),
+                );
+                return;
+            }
+            ClientRequest::WebSearchApiKeyRemove { .. } => {
+                let removed = crate::settings::remove_web_search_key(&self.context.db).await;
+                let _ = reply.send(
+                    removed
+                        .and_then(|()| to_json(koda_protocol::config::WebSearchApiKeyResponse {})),
+                );
+                return;
+            }
             ClientRequest::McpServerStatusList { params, .. } => {
                 let _ = reply.send(self.mcp_status(params).await.and_then(to_json));
                 return;
