@@ -193,11 +193,28 @@ pub async fn web_search(
     provider: Option<&dyn crate::providers::WebSearcher>,
 ) -> Result<String> {
     let request = SearchRequest::from_args(args)?;
+    Ok(search(&request, provider).await?.0)
+}
+
+/// Run a validated search: the formatted results, and what the provider's
+/// search request used when it made one.
+async fn search(
+    request: &SearchRequest,
+    provider: Option<&dyn crate::providers::WebSearcher>,
+) -> Result<(String, Option<crate::engine::UsageTotals>)> {
     if let Some(searcher) = provider {
-        let parts = searcher
+        let answer = searcher
             .search(&request.query, &request.allowed, &request.blocked)
             .await?;
-        return Ok(format_provider_results(&request.query, &parts));
+        let usage = crate::engine::UsageTotals {
+            context_tokens: answer.context_tokens,
+            web_search_requests: answer.web_search_requests,
+            ..(&answer.usage).into()
+        };
+        return Ok((
+            format_provider_results(&request.query, &answer.parts),
+            Some(usage),
+        ));
     }
 
     static HTTP_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
@@ -214,7 +231,7 @@ pub async fn web_search(
         .filter(|r| request.keeps(&r.url))
         .take(RESULTS)
         .collect();
-    Ok(format_results(&request.query, &results))
+    Ok((format_results(&request.query, &results), None))
 }
 
 /// The Brave Search API key, from the environment or Koda's key store.
@@ -661,8 +678,158 @@ impl Tool for WebSearchTool {
         ToolEffect::ReadOnly
     }
     async fn execute(&self, ctx: &ToolExecCtx<'_>, args: &serde_json::Value) -> ToolResult {
-        let r = web_search(args, ctx.web_searcher.as_deref()).await;
-        crate::tools::wrap_result(r.map(|results| crate::untrusted::wrap("WebSearch", &results)))
+        let request = match SearchRequest::from_args(args) {
+            Ok(request) => request,
+            Err(e) => return crate::tools::wrap_result(Err(e)),
+        };
+        // Claude Code checks its budget once the input is valid and before
+        // it picks how to search, so every backend draws on it.
+        if let Some(budget) = ctx.web_search_budget
+            && !budget.try_consume()
+        {
+            return crate::tools::wrap_result(Ok(budget.refusal()));
+        }
+        let r = search(&request, ctx.web_searcher.as_deref()).await;
+        // The search request counts toward the turn and the session, as the
+        // goal judge's and compaction's calls do.
+        if let (Ok((_, Some(usage))), Some((sink, _))) = (&r, ctx.sink) {
+            sink.emit(crate::engine::EngineEvent::ModelUsage {
+                usage: usage.clone(),
+            });
+        }
+        crate::tools::wrap_result(
+            r.map(|(results, _)| crate::untrusted::wrap("WebSearch", &results)),
+        )
+    }
+}
+
+// ── Session budget (Claude Code's per-session web search cap) ──────────────
+
+/// `WebSearch` calls a session may make when `max_web_searches_per_session`
+/// is unset, as Claude Code's `CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION`
+/// defaults.
+pub const DEFAULT_MAX_WEB_SEARCHES_PER_SESSION: u32 = 200;
+/// Calls the budget gets back per hour in a session a person attends when
+/// `web_search_refills_per_hour` is unset, as in Claude Code's interactive
+/// sessions. A session nobody attends (`koda exec`) gets none back, as
+/// `claude -p` gets none.
+pub const DEFAULT_WEB_SEARCH_REFILLS_PER_HOUR: u32 = 100;
+const HOUR: Duration = Duration::from_secs(3600);
+
+/// How many `WebSearch` calls a session has left, shared by every agent in
+/// it, as Claude Code's session budget is: up to `max` calls, with one
+/// coming back every hour / `refills_per_hour` since the budget was last
+/// used, and all of them once it has refilled to empty. A new session
+/// (`/new`, `/clear`) starts a new budget.
+#[derive(Debug)]
+pub struct WebSearchBudget {
+    max: u32,
+    refills_per_hour: u32,
+    state: std::sync::Mutex<BudgetState>,
+}
+
+#[derive(Debug)]
+struct BudgetState {
+    /// Calls used and not yet refilled.
+    used: u32,
+    /// Time accrued toward the next refill, times `refills_per_hour`.
+    accrued: u128,
+    /// When the budget was last brought up to date.
+    last: std::time::Instant,
+}
+
+impl Default for WebSearchBudget {
+    fn default() -> Self {
+        Self::new(DEFAULT_MAX_WEB_SEARCHES_PER_SESSION, 0)
+    }
+}
+
+impl WebSearchBudget {
+    /// A budget of `max` calls that refills `refills_per_hour` an hour.
+    pub fn new(max: u32, refills_per_hour: u32) -> Self {
+        Self {
+            max,
+            refills_per_hour,
+            state: std::sync::Mutex::new(BudgetState {
+                used: 0,
+                accrued: 0,
+                last: std::time::Instant::now(),
+            }),
+        }
+    }
+
+    /// Take one call from the budget; `false`, taking nothing, when it's
+    /// used up.
+    pub fn try_consume(&self) -> bool {
+        self.try_consume_at(std::time::Instant::now())
+    }
+
+    fn try_consume_at(&self, now: std::time::Instant) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.refill(&mut state, now);
+        if state.used >= self.max {
+            return false;
+        }
+        state.used += 1;
+        true
+    }
+
+    /// Give back the calls the time since the last update has earned,
+    /// as Claude Code's budget does.
+    fn refill(&self, state: &mut BudgetState, now: std::time::Instant) {
+        let elapsed = now.saturating_duration_since(state.last);
+        state.last = now;
+        if state.used == 0 {
+            state.accrued = 0;
+            return;
+        }
+        state.accrued += elapsed.as_millis() * u128::from(self.refills_per_hour);
+        let back = state.accrued / HOUR.as_millis();
+        if back >= u128::from(state.used) {
+            state.used = 0;
+            state.accrued = 0;
+            return;
+        }
+        state.used -= back as u32;
+        state.accrued -= back * HOUR.as_millis();
+    }
+
+    /// What the tool answers once the budget is used up, in Claude Code's
+    /// words, naming Koda's setting where Claude Code names its variable.
+    pub fn refusal(&self) -> String {
+        let calls = |n: u32| if n == 1 { "call" } else { "calls" };
+        let limit = format!("{} WebSearch {}", self.max, calls(self.max));
+        let (limit, next) = if self.refills_per_hour > 0 {
+            (
+                format!(
+                    "limit: {limit} shared by every agent in this session; the budget refills \
+                     at about {} {} per hour, so searching becomes possible again later in the \
+                     session",
+                    self.refills_per_hour,
+                    calls(self.refills_per_hour)
+                ),
+                "Do not pause or wait for the refill: continue with the information already \
+                 gathered and say so in your answer",
+            )
+        } else {
+            (
+                format!(
+                    "limit: {limit}, shared by every agent in this session; it does not refill"
+                ),
+                "Continue with the information already gathered instead of searching again, \
+                 and say so in your answer",
+            )
+        };
+        format!(
+            "Web search was not performed: this session's web search budget is used up \
+             ({limit}). {next}; do not work around the limit by querying search engines with \
+             curl or wget from Bash, or by searching or fetching through a third-party reader, \
+             proxy or archive service. If more searches are genuinely needed, ask the user to \
+             raise max_web_searches_per_session in Koda's config.toml."
+        )
     }
 }
 
@@ -1154,12 +1321,22 @@ mod tests {
             query: &str,
             allowed: &[String],
             blocked: &[String],
-        ) -> Result<Vec<crate::providers::SearchPart>> {
+        ) -> Result<crate::providers::SearchAnswer> {
             self.asked
                 .lock()
                 .unwrap()
                 .push((query.into(), allowed.to_vec(), blocked.to_vec()));
-            Ok(self.parts.clone())
+            Ok(crate::providers::SearchAnswer {
+                parts: self.parts.clone(),
+                usage: crate::providers::TokenUsage {
+                    prompt_tokens: 2000,
+                    completion_tokens: 300,
+                    cache_read_tokens: 50,
+                    ..Default::default()
+                },
+                context_tokens: 2050,
+                web_search_requests: 2,
+            })
         }
     }
 
@@ -1215,5 +1392,200 @@ mod tests {
             "{out}"
         );
         assert!(format_provider_results("q", &[]).contains("No links found."));
+    }
+
+    // ── Usage and the session budget ──────────────────────────────────
+
+    /// A sink that keeps every event.
+    #[derive(Default)]
+    struct Kept(std::sync::Mutex<Vec<crate::engine::EngineEvent>>);
+
+    impl crate::engine::EngineSink for Kept {
+        fn emit(&self, event: crate::engine::EngineEvent) {
+            self.0.lock().unwrap().push(event);
+        }
+    }
+
+    impl Kept {
+        fn usage(&self) -> Vec<crate::engine::UsageTotals> {
+            self.0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|e| match e {
+                    crate::engine::EngineEvent::ModelUsage { usage } => Some(usage.clone()),
+                    _ => None,
+                })
+                .collect()
+        }
+    }
+
+    /// A registry whose `WebSearch` searches with a fake provider search,
+    /// against `budget`.
+    fn registry_with(
+        fake: std::sync::Arc<FakeSearcher>,
+        budget: std::sync::Arc<WebSearchBudget>,
+    ) -> crate::tools::ToolRegistry {
+        let registry = crate::tools::ToolRegistry::new(std::env::temp_dir(), 100_000)
+            .with_web_search_budget(budget);
+        registry.set_web_searcher(Some(fake));
+        registry
+    }
+
+    fn fake() -> std::sync::Arc<FakeSearcher> {
+        std::sync::Arc::new(FakeSearcher {
+            parts: vec![crate::providers::SearchPart::Text("found".into())],
+            asked: Default::default(),
+        })
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_provider_search_reports_its_usage() {
+        let registry = registry_with(fake(), Default::default());
+        let sink = Kept::default();
+        let r = registry
+            .execute(
+                "WebSearch",
+                r#"{"query":"rust 2024"}"#,
+                Some((&sink, "call-1")),
+                None,
+            )
+            .await;
+        assert!(r.success, "{}", r.output);
+        assert_eq!(
+            sink.usage(),
+            vec![crate::engine::UsageTotals {
+                prompt_tokens: 2000,
+                completion_tokens: 300,
+                cache_read_tokens: 50,
+                api_calls: 1,
+                context_tokens: 2050,
+                web_search_requests: 2,
+                ..Default::default()
+            }]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_usage_reaches_the_turns_meter_and_budget() {
+        let registry = registry_with(fake(), Default::default());
+        let inner = Kept::default();
+        let meter = crate::engine::sink::TurnMeter::with_budget(&inner, Some(20_000));
+        let r = registry
+            .execute(
+                "WebSearch",
+                r#"{"query":"rust 2024"}"#,
+                Some((&meter, "call-1")),
+                None,
+            )
+            .await;
+        assert!(r.success, "{}", r.output);
+        let usage = meter.usage();
+        assert_eq!(usage.api_calls, 1);
+        assert_eq!(usage.web_search_requests, 2);
+        assert_eq!(usage.completion_tokens, 300);
+        assert_eq!(inner.usage().len(), 1, "passed on to the client");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_spent_budget_answers_without_searching() {
+        let searcher = fake();
+        let budget = std::sync::Arc::new(WebSearchBudget::new(2, 0));
+        let registry = registry_with(searcher.clone(), budget.clone());
+        let sink = Kept::default();
+        let search =
+            |args: &'static str| registry.execute("WebSearch", args, Some((&sink, "c")), None);
+
+        // An invalid call takes nothing from the budget, as Claude Code
+        // checks its input first.
+        assert!(!search(r#"{"query":"x"}"#).await.success);
+        assert!(search(r#"{"query":"one"}"#).await.success);
+        assert!(search(r#"{"query":"two"}"#).await.success);
+        let refused = search(r#"{"query":"three"}"#).await;
+        assert!(
+            refused.success,
+            "an answer, not an error, as in Claude Code"
+        );
+        assert_eq!(refused.output, budget.refusal());
+        assert_eq!(
+            searcher.asked.lock().unwrap().len(),
+            2,
+            "the third never searched"
+        );
+        assert_eq!(sink.usage().len(), 2, "a refused call uses nothing");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_budget_covers_every_backend() {
+        // No provider search: the call would go to Brave or DuckDuckGo, but
+        // the spent budget stops it first, as Claude Code checks it before
+        // picking how to search.
+        let budget = std::sync::Arc::new(WebSearchBudget::new(0, 0));
+        let registry = crate::tools::ToolRegistry::new(std::env::temp_dir(), 100_000)
+            .with_web_search_budget(budget.clone());
+        let r = registry
+            .execute("WebSearch", r#"{"query":"rust 2024"}"#, None, None)
+            .await;
+        assert_eq!(r.output, budget.refusal());
+    }
+
+    #[test]
+    fn the_budget_refills_as_claude_codes_does() {
+        use std::time::Instant;
+        // 100 an hour: one call back every 36 seconds.
+        let budget = WebSearchBudget::new(3, 100);
+        let start = Instant::now();
+        let at = |secs: u64| start + Duration::from_secs(secs);
+        budget.state.lock().unwrap().last = start;
+        assert!(budget.try_consume_at(at(0)));
+        assert!(budget.try_consume_at(at(0)));
+        assert!(budget.try_consume_at(at(0)));
+        assert!(!budget.try_consume_at(at(35)), "nothing back yet");
+        assert!(budget.try_consume_at(at(36)), "one back after 36s");
+        assert!(!budget.try_consume_at(at(37)));
+        // Time accrued toward the next refill carries over: 35s here plus
+        // 1s from before.
+        assert!(budget.try_consume_at(at(72)));
+        // Long enough to refill everything: the whole budget is back.
+        let later = at(72 + 3600);
+        assert!(budget.try_consume_at(later));
+        assert!(budget.try_consume_at(later));
+        assert!(budget.try_consume_at(later));
+        assert!(!budget.try_consume_at(later));
+    }
+
+    #[test]
+    fn a_budget_without_refills_stays_spent() {
+        let budget = WebSearchBudget::new(1, 0);
+        let start = std::time::Instant::now();
+        budget.state.lock().unwrap().last = start;
+        assert!(budget.try_consume_at(start));
+        assert!(!budget.try_consume_at(start + Duration::from_secs(10 * 3600)));
+    }
+
+    #[test]
+    fn the_refusal_has_claude_codes_words() {
+        assert_eq!(
+            WebSearchBudget::new(200, 0).refusal(),
+            "Web search was not performed: this session's web search budget is used up \
+             (limit: 200 WebSearch calls, shared by every agent in this session; it does not \
+             refill). Continue with the information already gathered instead of searching \
+             again, and say so in your answer; do not work around the limit by querying search \
+             engines with curl or wget from Bash, or by searching or fetching through a \
+             third-party reader, proxy or archive service. If more searches are genuinely \
+             needed, ask the user to raise max_web_searches_per_session in Koda's config.toml."
+        );
+        assert_eq!(
+            WebSearchBudget::new(1, 1).refusal(),
+            "Web search was not performed: this session's web search budget is used up \
+             (limit: 1 WebSearch call shared by every agent in this session; the budget \
+             refills at about 1 call per hour, so searching becomes possible again later in \
+             the session). Do not pause or wait for the refill: continue with the information \
+             already gathered and say so in your answer; do not work around the limit by \
+             querying search engines with curl or wget from Bash, or by searching or fetching \
+             through a third-party reader, proxy or archive service. If more searches are \
+             genuinely needed, ask the user to raise max_web_searches_per_session in Koda's \
+             config.toml."
+        );
     }
 }

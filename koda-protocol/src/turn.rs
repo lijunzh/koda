@@ -78,6 +78,11 @@ pub struct Usage {
     pub reasoning_tokens: u64,
     /// Model calls that finished.
     pub model_calls: u64,
+    /// Web searches run on the provider's servers (a Claude model's
+    /// `WebSearch`), which it bills apart from tokens, as Claude Code
+    /// reports `webSearchRequests`. Koda's own.
+    #[serde(default)]
+    pub web_search_requests: u64,
 }
 
 /// `turn/start`.

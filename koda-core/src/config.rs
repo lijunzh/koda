@@ -273,6 +273,13 @@ pub struct KodaConfig {
     /// Tokens one turn may spend (`turn_token_budget`); `None` for no
     /// limit. See [`crate::budget`].
     pub turn_token_budget: Option<u64>,
+    /// `WebSearch` calls a session may make
+    /// (`max_web_searches_per_session`, 200 by default, as Claude Code).
+    pub max_web_searches_per_session: u32,
+    /// `WebSearch` calls the session's budget gets back per hour
+    /// (`web_search_refills_per_hour`); `None` for Claude Code's default,
+    /// 100 in a session a person attends and none in one nobody does.
+    pub web_search_refills_per_hour: Option<u32>,
     /// What the model takes besides text, from the config file's
     /// `model_input_modalities`; `None` for Koda's table
     /// ([`Self::input_modalities`]).
@@ -461,6 +468,9 @@ impl KodaConfig {
             background_time_limit: Some(std::time::Duration::from_secs(10 * 60)),
             developer_instructions: None,
             turn_token_budget: None,
+            max_web_searches_per_session:
+                crate::tools::web_search::DEFAULT_MAX_WEB_SEARCHES_PER_SESSION,
+            web_search_refills_per_hour: None,
             input_modalities: None,
             reported_vision: None,
             reported_tool_images: None,
@@ -765,6 +775,9 @@ impl KodaConfig {
             background_time_limit: Some(std::time::Duration::from_secs(10 * 60)),
             developer_instructions: None,
             turn_token_budget: None,
+            max_web_searches_per_session:
+                crate::tools::web_search::DEFAULT_MAX_WEB_SEARCHES_PER_SESSION,
+            web_search_refills_per_hour: None,
             input_modalities: None,
             reported_vision: None,
             reported_tool_images: None,

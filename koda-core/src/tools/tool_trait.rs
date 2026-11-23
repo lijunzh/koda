@@ -248,6 +248,10 @@ pub struct ToolExecCtx<'a> {
     /// that has one (Claude); `None` sends `WebSearch` to Brave or
     /// DuckDuckGo. Other tools ignore this.
     pub web_searcher: Option<std::sync::Arc<dyn crate::providers::WebSearcher>>,
+
+    /// The session's `WebSearch` budget, shared by every agent in it;
+    /// `None` searches without one. Other tools ignore this.
+    pub web_search_budget: Option<&'a crate::tools::web_search::WebSearchBudget>,
 }
 
 /// A self-contained built-in tool.
@@ -467,6 +471,7 @@ impl<'a> ToolExecCtx<'a> {
             session: None,
             skill_registry,
             web_searcher: None,
+            web_search_budget: None,
         }
     }
 }
@@ -609,6 +614,7 @@ mod tests {
             takes_pdfs: false,
             max_goal_token_budget: None,
             web_searcher: None,
+            web_search_budget: None,
         }
     }
 

@@ -172,6 +172,12 @@ pub(crate) fn apply_settings(config: &mut KodaConfig, loaded: &Loaded) {
     if let Some(tokens) = file.turn_token_budget {
         config.turn_token_budget = Some(tokens);
     }
+    if let Some(calls) = file.max_web_searches_per_session {
+        config.max_web_searches_per_session = calls;
+    }
+    if let Some(calls) = file.web_search_refills_per_hour {
+        config.web_search_refills_per_hour = Some(calls);
+    }
     if let Some(list) = &file.model_input_modalities {
         config.input_modalities = Some(list.clone());
     }

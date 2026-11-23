@@ -175,6 +175,18 @@ pub struct ConfigToml {
         deserialize_with = "turn_token_budget"
     )]
     pub turn_token_budget: Option<u64>,
+    /// `WebSearch` calls a session may make, shared by every agent in it,
+    /// as Claude Code's `CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION`: past
+    /// it the tool answers without searching and tells the model to go on
+    /// with what it has. 200 when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_web_searches_per_session: Option<u32>,
+    /// `WebSearch` calls the session's budget gets back per hour, as
+    /// Claude Code's `CLAUDE_CODE_WEB_SEARCH_REFILLS_PER_HOUR`. 100 when
+    /// unset in a session a person attends; 0 (no refill) in one nobody
+    /// does (`koda exec`), as in `claude -p`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_search_refills_per_hour: Option<u32>,
     /// How long a request waits for a client on the shared server
     /// (`koda serve`): an approval, a question or the loop cap that no client
     /// answers in this many seconds is answered no. 86,400 (a day) when

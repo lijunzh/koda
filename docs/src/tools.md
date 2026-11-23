@@ -16,7 +16,7 @@ prompt. See [Trust modes](./approval.md) for the canonical matrix.
 | `Grep` | Read-only | Search file contents with a regex: matching files (the default), matching lines with optional context, or counts; filter by glob or file type; results in pages |
 | `Glob` | Read-only | List files matching a glob pattern |
 | `WebFetch` | Read-only | Fetch a URL and return its text content, marked as external content |
-| `WebSearch` | Read-only | Search the web and return the top five results (title, URL, snippet, date when known), marked as external content. Claude Code's shape: a `query`, plus `allowed_domains` or `blocked_domains` (not both). On a Claude model it searches as Claude Code's `WebSearch` does: a separate request to the same model with Anthropic's web search tool, which returns the model's summary and the links (billed to your Anthropic account: Anthropic's per-search price plus the tokens). On other models, with `BRAVE_API_KEY` set (or a key saved with `/key`), results come from the [Brave Search API](https://brave.com/search/api/); without it, from DuckDuckGo, which often answers with a bot check: the search then fails with that reason and suggests a Brave key |
+| `WebSearch` | Read-only | Search the web and return the top five results (title, URL, snippet, date when known), marked as external content. Claude Code's shape: a `query`, plus `allowed_domains` or `blocked_domains` (not both). On a Claude model it searches as Claude Code's `WebSearch` does: a separate request to the same model with Anthropic's web search tool, which returns the model's summary and the links (billed to your Anthropic account: Anthropic's per-search price plus the tokens). On other models, with `BRAVE_API_KEY` set (or a key saved with `/key`), results come from the [Brave Search API](https://brave.com/search/api/); without it, from DuckDuckGo, which often answers with a bot check: the search then fails with that reason and suggests a Brave key. A session may make 200 calls, as in Claude Code (see [Web search budget](#web-search-budget)) |
 | `MemoryRead` | Read-only | Read from project or global memory |
 | `MemoryWrite` | Mutating | Save a fact to Koda's notes, outside the project |
 | `TodoWrite` | Read-only | Update the session task list (Koda-owned state, no FS impact) |
@@ -62,6 +62,36 @@ the program printed:
   whatever is typed into it afterwards, so the two can't be combined.
 - **Stopping it:** `kill PID`, `/stop`, Ctrl+C typed with `WriteStdin`, or
   the end of the session, as for any background command.
+
+### Web search budget
+
+A session may make 200 `WebSearch` calls, shared by every agent in it, as
+Claude Code caps a session's searches. Once they're used up, `WebSearch`
+answers without searching: it tells the model the budget is spent, to go on
+with what it has already found and say so, not to work around the limit with
+`curl` or a search proxy, and to ask you to raise the limit if more searches
+are really needed.
+
+- **It refills** in a session you attend: one call comes back every 36
+  seconds (100 an hour) after the budget is used, as in Claude Code's
+  interactive sessions. A session nobody attends (`koda exec`, a client with
+  `approvalPolicy: never`) gets none back, as in `claude -p`.
+- **Settings:** `max_web_searches_per_session` and
+  `web_search_refills_per_hour` in `config.toml` ([Configuration](configuration.md#the-config-file)),
+  Koda's names for Claude Code's `CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION`
+  and `CLAUDE_CODE_WEB_SEARCH_REFILLS_PER_HOUR`.
+- **Every way of searching counts:** Anthropic's search, Brave and
+  DuckDuckGo alike, since Claude Code checks its budget before it picks how
+  to search. A call with a bad argument counts for nothing.
+- **A new session starts a new budget:** `/new`, `/clear`, or starting Koda
+  again, resumed sessions included.
+- **What a search costs is counted.** On a Claude model the search request
+  counts toward the session's and the turn's usage (`turn/completed`,
+  `session/tokenUsage/updated`, `exec/summary`), under the agent that
+  searched, and toward `turn_token_budget`, as compaction does. Its searches
+  are counted too, in `usage.webSearchRequests`, since Anthropic bills each
+  one apart from the tokens. Like compaction's, these calls aren't stored, so
+  a resumed session's earlier usage leaves them out.
 
 ### External content
 
