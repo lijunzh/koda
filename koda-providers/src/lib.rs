@@ -504,6 +504,51 @@ pub trait LlmProvider: Send + Sync {
     fn context_tokens(&self, usage: &TokenUsage) -> i64 {
         usage.prompt_tokens
     }
+
+    /// A [`WebSearcher`] that searches with this provider's own search tool
+    /// for `model`, as Claude Code's `WebSearch` does with Anthropic's.
+    /// `None` when the provider or the model has none.
+    fn web_searcher(&self, _model: &str) -> Option<std::sync::Arc<dyn WebSearcher>> {
+        None
+    }
+}
+
+/// One web search run on a model provider's servers.
+///
+/// Claude Code's `WebSearch` is a tool on the client that, when called,
+/// sends a separate request to the same Claude model with Anthropic's
+/// server-side search tool and hands back the model's summary and the
+/// links. Koda's `WebSearch` does the same through this trait.
+#[async_trait]
+pub trait WebSearcher: Send + Sync {
+    /// Search for `query`, keeping only `allowed_domains` or leaving out
+    /// `blocked_domains` (at most one of them is non-empty).
+    async fn search(
+        &self,
+        query: &str,
+        allowed_domains: &[String],
+        blocked_domains: &[String],
+    ) -> Result<Vec<SearchPart>>;
+}
+
+/// A piece of a provider search's answer, in the order it came.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SearchPart {
+    /// The searching model's own words: its summary of the results.
+    Text(String),
+    /// The pages one search found.
+    Links(Vec<SearchLink>),
+    /// A search the provider couldn't run, with its error code.
+    Error(String),
+}
+
+/// A page a provider search found.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SearchLink {
+    /// The page's title.
+    pub title: String,
+    /// The page's URL.
+    pub url: String,
 }
 
 // ── Provider factory ──────────────────────────────────────────

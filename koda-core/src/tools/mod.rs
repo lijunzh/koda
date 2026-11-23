@@ -262,6 +262,9 @@ pub struct ToolRegistry {
     db: std::sync::RwLock<Option<std::sync::Arc<koda_state::db::Database>>>,
     /// Current session ID (for RecallContext).
     session_id: std::sync::RwLock<Option<String>>,
+    /// The model provider's own web search, set each turn from the
+    /// provider and model ([`Self::set_web_searcher`]).
+    web_searcher: std::sync::RwLock<Option<Arc<dyn crate::providers::WebSearcher>>>,
     /// Context-scaled output caps for all tools.
     pub caps: OutputCaps,
     /// Background process registry — tracks processes spawned with `background: true`.
@@ -338,6 +341,7 @@ impl ToolRegistry {
             max_goal_token_budget: None,
             db: std::sync::RwLock::new(None),
             session_id: std::sync::RwLock::new(None),
+            web_searcher: std::sync::RwLock::new(None),
             caps: OutputCaps::for_context(max_context_tokens),
             bg_registry: bg_process::BgRegistry::new(),
             // Phase 5 PR-2 of #934: seed with strict_default(). Callers
@@ -414,6 +418,15 @@ impl ToolRegistry {
         }
         if let Ok(mut guard) = self.session_id.write() {
             *guard = Some(session_id);
+        }
+    }
+
+    /// Use the model provider's own web search for `WebSearch`, or (with
+    /// `None`) Brave or DuckDuckGo. Set at the start of each turn, since
+    /// the model can change between turns.
+    pub fn set_web_searcher(&self, searcher: Option<Arc<dyn crate::providers::WebSearcher>>) {
+        if let Ok(mut guard) = self.web_searcher.write() {
+            *guard = searcher;
         }
     }
 
@@ -683,6 +696,7 @@ impl ToolRegistry {
                 socks5_port,
                 session,
                 skill_registry: &self.skill_registry,
+                web_searcher: self.web_searcher.read().ok().and_then(|g| g.clone()),
                 max_goal_token_budget: self.max_goal_token_budget,
                 takes_images: self.takes_images(),
                 takes_pdfs: self.takes_pdfs(),

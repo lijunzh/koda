@@ -1259,6 +1259,10 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
         sink.emit(EngineEvent::Warn { message });
     }
 
+    // `WebSearch` on a model with its own search (Claude) uses it, as
+    // Claude Code's does; the model can change between turns.
+    tools.set_web_searcher(provider.web_searcher(&config.model_settings.model));
+
     // #1265 item 4 PR-2: collect the per-turn ambient state into a
     // single `TurnContext` so the dispatch helpers don't each take
     // 11–13 explicit args. Reconstructed each turn (`mode` can change

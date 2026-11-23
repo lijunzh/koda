@@ -5,7 +5,11 @@
 //!
 //! ## Where results come from
 //!
-//! - **Brave Search** when `BRAVE_API_KEY` is set, through the Brave Search
+//! - **The model provider's own search** on a model that has one (Claude):
+//!   a separate request to the same model with Anthropic's search tool, as
+//!   Claude Code's `WebSearch` sends it, returning the model's summary and
+//!   the links ([`crate::providers::WebSearcher`]).
+//! - **Brave Search** otherwise, when `BRAVE_API_KEY` is set, through the Brave Search
 //!   API as OpenClaw's Brave provider calls it. Neither Codex nor Claude Code
 //!   searches from the client (their searches run on OpenAI's and Anthropic's
 //!   servers), so on models without a provider search the key is the
@@ -181,9 +185,20 @@ fn domains(value: &Value, name: &str) -> Result<Vec<String>> {
 
 // ── Handler ────────────────────────────────────────────────────────────────
 
-/// Execute a web search and return formatted results.
-pub async fn web_search(args: &Value) -> Result<String> {
+/// Execute a web search and return formatted results: with the model
+/// provider's own search when `provider` is set (Claude), else Brave or
+/// DuckDuckGo.
+pub async fn web_search(
+    args: &Value,
+    provider: Option<&dyn crate::providers::WebSearcher>,
+) -> Result<String> {
     let request = SearchRequest::from_args(args)?;
+    if let Some(searcher) = provider {
+        let parts = searcher
+            .search(&request.query, &request.allowed, &request.blocked)
+            .await?;
+        return Ok(format_provider_results(&request.query, &parts));
+    }
 
     static HTTP_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     let client = HTTP_CLIENT
@@ -207,6 +222,33 @@ fn brave_key() -> Option<String> {
     crate::runtime_env::get(BRAVE_KEY_ENV)
         .map(|k| k.trim().to_string())
         .filter(|k| !k.is_empty())
+}
+
+/// A provider search's answer as Claude Code's `WebSearch` returns it: the
+/// searching model's summary, each search's links as JSON, and a reminder
+/// to cite them.
+fn format_provider_results(query: &str, parts: &[crate::providers::SearchPart]) -> String {
+    use crate::providers::SearchPart;
+    let mut out = format!("Web search results for query: \"{query}\"\n\n");
+    for part in parts {
+        match part {
+            SearchPart::Text(text) => out.push_str(&format!("{text}\n")),
+            SearchPart::Links(links) if links.is_empty() => out.push_str("No links found.\n"),
+            SearchPart::Links(links) => out.push_str(&format!(
+                "Links: {}\n",
+                serde_json::to_string(links).unwrap_or_default()
+            )),
+            SearchPart::Error(code) => out.push_str(&format!("Web search error: {code}\n")),
+        }
+    }
+    if parts.is_empty() {
+        out.push_str("No links found.\n");
+    }
+    out.push_str(
+        "\nREMINDER: You MUST include the sources above in your response to the user using \
+         markdown hyperlinks.",
+    );
+    out
 }
 
 fn format_results(query: &str, results: &[SearchResult]) -> String {
@@ -618,8 +660,8 @@ impl Tool for WebSearchTool {
     fn classify(&self, _args: &serde_json::Value) -> ToolEffect {
         ToolEffect::ReadOnly
     }
-    async fn execute(&self, _ctx: &ToolExecCtx<'_>, args: &serde_json::Value) -> ToolResult {
-        let r = web_search(args).await;
+    async fn execute(&self, ctx: &ToolExecCtx<'_>, args: &serde_json::Value) -> ToolResult {
+        let r = web_search(args, ctx.web_searcher.as_deref()).await;
         crate::tools::wrap_result(r.map(|results| crate::untrusted::wrap("WebSearch", &results)))
     }
 }
@@ -709,14 +751,14 @@ mod tests {
 
     #[tokio::test]
     async fn missing_query_is_error() {
-        let result = web_search(&json!({})).await;
+        let result = web_search(&json!({}), None).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("query"));
     }
 
     #[tokio::test]
     async fn empty_query_is_error() {
-        let result = web_search(&json!({"query": "   "})).await;
+        let result = web_search(&json!({"query": "   "}), None).await;
         assert!(result.is_err());
     }
 
@@ -1090,5 +1132,85 @@ mod tests {
             "{agent}"
         );
         assert!(seen.body.contains("q=tokio+shutdown"), "{}", seen.body);
+    }
+    // ── Provider search (Claude) ──────────────────────────────────────
+
+    /// A query with its allowed and blocked domains.
+    type Asked = (String, Vec<String>, Vec<String>);
+
+    /// A searcher that records what it was asked and answers `parts`.
+    struct FakeSearcher {
+        parts: Vec<crate::providers::SearchPart>,
+        asked: std::sync::Mutex<Vec<Asked>>,
+    }
+
+    #[async_trait]
+    impl crate::providers::WebSearcher for FakeSearcher {
+        async fn search(
+            &self,
+            query: &str,
+            allowed: &[String],
+            blocked: &[String],
+        ) -> Result<Vec<crate::providers::SearchPart>> {
+            self.asked
+                .lock()
+                .unwrap()
+                .push((query.into(), allowed.to_vec(), blocked.to_vec()));
+            Ok(self.parts.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_search_is_used_with_domains_as_given() {
+        use crate::providers::{SearchLink, SearchPart};
+        let fake = FakeSearcher {
+            parts: vec![
+                SearchPart::Links(vec![SearchLink {
+                    title: "Announcing Rust 1.85.0".into(),
+                    url: "https://blog.rust-lang.org/2025/02/20/Rust-1.85.0/".into(),
+                }]),
+                SearchPart::Text("Stable on February 20, 2025.".into()),
+            ],
+            asked: Default::default(),
+        };
+        let out = web_search(
+            &json!({"query": "rust 2024 edition", "allowed_domains": ["https://blog.rust-lang.org/x"]}),
+            Some(&fake),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            fake.asked.lock().unwrap()[0],
+            (
+                "rust 2024 edition".into(),
+                vec!["blog.rust-lang.org".into()],
+                vec![]
+            ),
+            "the query goes without site: operators; the API filters domains itself"
+        );
+        assert_eq!(
+            out,
+            "Web search results for query: \"rust 2024 edition\"\n\n\
+             Links: [{\"title\":\"Announcing Rust 1.85.0\",\"url\":\"https://blog.rust-lang.org/2025/02/20/Rust-1.85.0/\"}]\n\
+             Stable on February 20, 2025.\n\n\
+             REMINDER: You MUST include the sources above in your response to the user using markdown hyperlinks."
+        );
+    }
+
+    #[test]
+    fn provider_results_name_errors_and_empty_searches() {
+        use crate::providers::SearchPart;
+        let out = format_provider_results(
+            "q",
+            &[
+                SearchPart::Error("too_many_requests".into()),
+                SearchPart::Links(vec![]),
+            ],
+        );
+        assert!(
+            out.contains("Web search error: too_many_requests\nNo links found.\n"),
+            "{out}"
+        );
+        assert!(format_provider_results("q", &[]).contains("No links found."));
     }
 }

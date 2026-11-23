@@ -1086,6 +1086,18 @@ impl LlmProvider for AnthropicProvider {
         "anthropic"
     }
 
+    fn web_searcher(&self, model: &str) -> Option<Arc<dyn super::WebSearcher>> {
+        let api_model = resolve_model(model).ok()?;
+        api_model.starts_with("claude-").then(|| {
+            Arc::new(AnthropicWebSearch {
+                client: self.client.clone(),
+                base_url: self.base_url.clone(),
+                api_key: self.api_key.clone(),
+                model: api_model.to_string(),
+            }) as Arc<dyn super::WebSearcher>
+        })
+    }
+
     /// Query the Models API for the context window and output cap.
     ///
     /// `GET /v1/models/{id}` reports them as `max_input_tokens` and
@@ -1395,6 +1407,253 @@ fn output_config(api_model: &str, settings: &crate::ModelSettings) -> Option<ser
         );
     }
     (!config.is_empty()).then_some(serde_json::Value::Object(config))
+}
+
+// ── Web search (Claude Code's WebSearch) ────────────────────────────────
+
+/// Anthropic's server-side search tool, the version Claude Code's
+/// `WebSearch` sends.
+const WEB_SEARCH_TYPE: &str = "web_search_20250305";
+/// Searches the model may run in one request, as in Claude Code.
+const WEB_SEARCH_MAX_USES: u32 = 8;
+/// Room for the searching model's summary.
+const WEB_SEARCH_MAX_TOKENS: u32 = 4096;
+/// What the searching model is told: the model that called `WebSearch` is
+/// waiting, so one search and a short summary.
+const WEB_SEARCH_SYSTEM: &str = "You search the web on behalf of another Claude model, which \
+    is waiting for the results and can search again itself. Run one search, then reply with a \
+    brief summary of what it found.";
+
+/// One `WebSearch` call on Claude: a separate request to the session's
+/// model with Anthropic's search tool forced, thinking off and no prompt
+/// caching, as Claude Code sends it.
+struct AnthropicWebSearch {
+    client: reqwest::Client,
+    base_url: String,
+    api_key: String,
+    model: String,
+}
+
+impl AnthropicWebSearch {
+    fn request_body(
+        &self,
+        query: &str,
+        allowed_domains: &[String],
+        blocked_domains: &[String],
+    ) -> serde_json::Value {
+        let mut tool = serde_json::json!({
+            "type": WEB_SEARCH_TYPE,
+            "name": "web_search",
+            "max_uses": WEB_SEARCH_MAX_USES,
+        });
+        if !allowed_domains.is_empty() {
+            tool["allowed_domains"] = serde_json::json!(allowed_domains);
+        }
+        if !blocked_domains.is_empty() {
+            tool["blocked_domains"] = serde_json::json!(blocked_domains);
+        }
+        serde_json::json!({
+            "model": self.model,
+            "max_tokens": WEB_SEARCH_MAX_TOKENS,
+            "system": WEB_SEARCH_SYSTEM,
+            "messages": [{
+                "role": "user",
+                "content": format!("Perform a web search for the query: {query}"),
+            }],
+            "tools": [tool],
+            "tool_choice": {"type": "tool", "name": "web_search"},
+            "thinking": {"type": "disabled"},
+        })
+    }
+}
+
+#[async_trait]
+impl super::WebSearcher for AnthropicWebSearch {
+    async fn search(
+        &self,
+        query: &str,
+        allowed_domains: &[String],
+        blocked_domains: &[String],
+    ) -> Result<Vec<super::SearchPart>> {
+        let body = self.request_body(query, allowed_domains, blocked_domains);
+        super::trace_request("anthropic web search", &body);
+        let req = self
+            .client
+            .post(format!("{}/v1/messages", self.base_url))
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", ANTHROPIC_API_VERSION)
+            .json(&body);
+        let response: serde_json::Value =
+            super::http::send_and_parse_json(req, "Anthropic web search").await?;
+        Ok(search_parts(&response))
+    }
+}
+
+/// The text, links and errors in a search response, in order; adjacent
+/// text blocks (split at each citation) are joined.
+fn search_parts(response: &serde_json::Value) -> Vec<super::SearchPart> {
+    use super::{SearchLink, SearchPart};
+    let mut parts: Vec<SearchPart> = Vec::new();
+    let blocks = response["content"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    for block in blocks {
+        match block["type"].as_str() {
+            Some("text") => {
+                let text = block["text"].as_str().unwrap_or_default();
+                match parts.last_mut() {
+                    Some(SearchPart::Text(prev)) => prev.push_str(text),
+                    _ => parts.push(SearchPart::Text(text.to_string())),
+                }
+            }
+            Some("web_search_tool_result") => {
+                let content = &block["content"];
+                if let Some(results) = content.as_array() {
+                    let links = results
+                        .iter()
+                        .filter(|r| r["type"] == "web_search_result")
+                        .filter_map(|r| {
+                            Some(SearchLink {
+                                title: r["title"].as_str().unwrap_or_default().to_string(),
+                                url: r["url"].as_str()?.to_string(),
+                            })
+                        })
+                        .collect();
+                    parts.push(SearchPart::Links(links));
+                } else {
+                    let code = content["error_code"].as_str().unwrap_or("unknown_error");
+                    parts.push(SearchPart::Error(code.to_string()));
+                }
+            }
+            _ => {}
+        }
+    }
+    for part in &mut parts {
+        if let SearchPart::Text(text) = part {
+            *text = text.trim().to_string();
+        }
+    }
+    parts.retain(|p| !matches!(p, SearchPart::Text(t) if t.is_empty()));
+    parts
+}
+
+#[cfg(test)]
+mod web_search_tests {
+    use super::*;
+    use crate::{LlmProvider, SearchLink, SearchPart};
+    use axum::{Router, extract::State, http::HeaderMap, routing::post};
+
+    /// A search response in the API's shape: the search, its results, and
+    /// the summary split into two text blocks at a citation.
+    const RESPONSE: &str = r#"{"id":"msg_1","type":"message","role":"assistant","content":[
+        {"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{"query":"rust 2024 edition"}},
+        {"type":"web_search_tool_result","tool_use_id":"srvtoolu_1","content":[
+            {"type":"web_search_result","url":"https://blog.rust-lang.org/2025/02/20/Rust-1.85.0/","title":"Announcing Rust 1.85.0 and Rust 2024","encrypted_content":"abc","page_age":"February 20, 2025"},
+            {"type":"web_search_result","url":"https://doc.rust-lang.org/edition-guide/","title":"The Edition Guide","encrypted_content":"def"}]},
+        {"type":"text","text":"Rust 2024 became stable "},
+        {"type":"text","text":"on February 20, 2025.","citations":[{"type":"web_search_result_location","url":"https://blog.rust-lang.org/2025/02/20/Rust-1.85.0/"}]}
+    ],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":5,"server_tool_use":{"web_search_requests":1}}}"#;
+
+    #[test]
+    fn parts_join_text_and_keep_links_in_order() {
+        let parts = search_parts(&serde_json::from_str(RESPONSE).unwrap());
+        assert_eq!(
+            parts,
+            vec![
+                SearchPart::Links(vec![
+                    SearchLink {
+                        title: "Announcing Rust 1.85.0 and Rust 2024".into(),
+                        url: "https://blog.rust-lang.org/2025/02/20/Rust-1.85.0/".into(),
+                    },
+                    SearchLink {
+                        title: "The Edition Guide".into(),
+                        url: "https://doc.rust-lang.org/edition-guide/".into(),
+                    },
+                ]),
+                SearchPart::Text("Rust 2024 became stable on February 20, 2025.".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn parts_report_a_search_error() {
+        let response = serde_json::json!({"content": [
+            {"type": "web_search_tool_result", "tool_use_id": "s",
+             "content": {"type": "web_search_tool_result_error", "error_code": "max_uses_exceeded"}},
+            {"type": "text", "text": "  "}
+        ]});
+        assert_eq!(
+            search_parts(&response),
+            vec![SearchPart::Error("max_uses_exceeded".into())]
+        );
+        assert!(search_parts(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn only_claude_models_get_a_searcher() {
+        let provider = AnthropicProvider::new("k".into(), None);
+        assert!(provider.web_searcher("claude-haiku-5-5").is_some());
+        assert!(provider.web_searcher("claude-sonnet-5-5-1m").is_none());
+        assert!(provider.web_searcher("MiniMax-M2").is_none());
+    }
+
+    type Seen = std::sync::Arc<std::sync::Mutex<Vec<(HeaderMap, serde_json::Value)>>>;
+
+    async fn messages(
+        State(seen): State<Seen>,
+        headers: HeaderMap,
+        body: String,
+    ) -> ([(&'static str, &'static str); 1], &'static str) {
+        let body = serde_json::from_str(&body).unwrap();
+        seen.lock().unwrap().push((headers, body));
+        ([("content-type", "application/json")], RESPONSE)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn search_sends_claude_codes_request() {
+        let seen: Seen = Default::default();
+        let app = Router::new()
+            .route("/v1/messages", post(messages))
+            .with_state(seen.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.ok() });
+
+        let provider = AnthropicProvider::new("sk-ant-test".into(), Some(&url));
+        let searcher = provider.web_searcher("claude-haiku-5-5").unwrap();
+        let parts = searcher
+            .search("rust 2024 edition", &["rust-lang.org".into()], &[])
+            .await
+            .unwrap();
+        assert_eq!(parts.len(), 2);
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "one request per search");
+        let (headers, body) = &seen[0];
+        assert_eq!(headers["x-api-key"], "sk-ant-test");
+        assert_eq!(headers["anthropic-version"], ANTHROPIC_API_VERSION);
+        assert_eq!(body["model"], "claude-haiku-5-5");
+        assert_eq!(
+            body["messages"][0]["content"],
+            "Perform a web search for the query: rust 2024 edition"
+        );
+        assert_eq!(
+            body["tool_choice"],
+            serde_json::json!({"type": "tool", "name": "web_search"})
+        );
+        assert_eq!(body["thinking"], serde_json::json!({"type": "disabled"}));
+        let tool = &body["tools"][0];
+        assert_eq!(tool["type"], "web_search_20250305");
+        assert_eq!(tool["max_uses"], 8);
+        assert_eq!(
+            tool["allowed_domains"],
+            serde_json::json!(["rust-lang.org"])
+        );
+        assert!(tool.get("blocked_domains").is_none());
+        assert_eq!(body["tools"].as_array().unwrap().len(), 1, "no other tools");
+        assert!(body.get("cache_control").is_none());
+    }
 }
 
 #[cfg(test)]
