@@ -12,6 +12,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **`TaskStop`, as in Claude Code:** stops a monitor, a `Bash{background: true}` command or a background agent by its ID (`task_id`, or the deprecated `shell_id`). Before, the model stopped background work with `kill` through `Bash`.
 - **Background sub-agents, as in Claude Code.** `InvokeAgent` (and `SpawnAgent`) take `run_in_background: true`: the sub-agent starts and its ID comes back at once, and its final answer reaches the model as a notice when it finishes; an idle session starts a turn for it, and `koda exec` waits for it. The new `SendMessage` tool gives a running agent more instructions at its next step, or continues a finished one with its whole conversation. At most 6 run at once and sub-agents can't start any, as in Codex. The background overlay lists them, `/stop` and `session/backgroundTerminals/terminate` stop them, and `session/backgroundTerminals/list` returns them in a new `agents` field. Koda removed background sub-agents in May (#1366); they return in Claude Code's shape, on the path `Monitor` built, with no mailbox.
 
+### Fixed
+
+- **On Claude models, a streamed `SpawnAgent` or `AskUser` call no longer gets a stub answer.** Read-only tools run while the reply still streams, and these two, handled by the loop rather than the tool registry, answered "... is handled by the inference loop." They now wait for the normal dispatch, as `InvokeAgent` did.
+
 ## [0.7.10] - 2026-11-23
 
 ### Added
