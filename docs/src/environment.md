@@ -24,7 +24,7 @@ lists what replaced each.
 | Together AI | `TOGETHER_API_KEY` |
 | Fireworks AI | `FIREWORKS_API_KEY` |
 | LM Studio, Ollama, vLLM, llama.cpp | `KODA_API_KEY`, only for a server that requires one (vLLM started with `--api-key`, say) |
-| Brave Search, for `WebSearch` | `BRAVE_API_KEY`. Without it `WebSearch` uses DuckDuckGo, which often answers with a bot check. Set it in your shell: `/key` saves model providers' keys only |
+| Brave Search, for `WebSearch` on models other than Claude | `BRAVE_API_KEY`. Without it `WebSearch` uses DuckDuckGo, which often answers with a bot check. Set it in your shell: `/key` saves model providers' keys only |
 
 You don't need to set these: `/key` in the TUI saves a key in Koda's
 database, and Koda loads it at startup. **A variable you set wins over a

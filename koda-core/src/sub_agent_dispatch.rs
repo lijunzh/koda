@@ -664,10 +664,13 @@ fn run_sub_agent<'a>(
                 effective_root_ref,
             );
             let registry = registry.with_sandbox_policy(composed_policy);
-            match parent_cache {
+            let registry = match parent_cache {
                 Some(cache) => registry.with_shared_cache(cache),
                 None => registry,
-            }
+            };
+            // `WebSearch` on a Claude model searches with Anthropic's tool.
+            registry.set_web_searcher(provider.web_searcher(&sub_config.model_settings.model));
+            registry
         };
         let tool_defs = {
             let mut denied = sub_config.disallowed_tools.clone();

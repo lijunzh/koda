@@ -243,6 +243,11 @@ pub struct ToolExecCtx<'a> {
     /// Skill registry for `ListSkills` / `ActivateSkill`. Other
     /// tools ignore this. Added in PR-8 of #1265 item 5.
     pub skill_registry: &'a crate::skills::SkillRegistry,
+
+    /// The model provider's own web search, for `WebSearch` on a model
+    /// that has one (Claude); `None` sends `WebSearch` to Brave or
+    /// DuckDuckGo. Other tools ignore this.
+    pub web_searcher: Option<std::sync::Arc<dyn crate::providers::WebSearcher>>,
 }
 
 /// A self-contained built-in tool.
@@ -461,6 +466,7 @@ impl<'a> ToolExecCtx<'a> {
             socks5_port: None,
             session: None,
             skill_registry,
+            web_searcher: None,
         }
     }
 }
@@ -602,6 +608,7 @@ mod tests {
             takes_images: false,
             takes_pdfs: false,
             max_goal_token_budget: None,
+            web_searcher: None,
         }
     }
 
