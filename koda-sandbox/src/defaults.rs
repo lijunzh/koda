@@ -69,13 +69,15 @@ pub const CREDENTIAL_CONFIG_FULL_DENY: &[&str] = &[
 /// `$XDG_CONFIG_HOME` when it names another, where Koda then keeps its own.
 pub(crate) fn config_folders(home: &str) -> Vec<std::path::PathBuf> {
     let mut folders = vec![std::path::Path::new(home).join(".config")];
-    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from)
-        && xdg.is_absolute()
-        && !folders.contains(&xdg)
-    {
-        folders.push(xdg);
-    }
+    folders.extend(xdg_config_home().filter(|xdg| *xdg != folders[0]));
     folders
+}
+
+/// `$XDG_CONFIG_HOME`, where it counts: set, and an absolute path.
+pub(crate) fn xdg_config_home() -> Option<std::path::PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|xdg| xdg.is_absolute())
 }
 
 /// Individual credential *files* under `$HOME` that are **write-protected**.
