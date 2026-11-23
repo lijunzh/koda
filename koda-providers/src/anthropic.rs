@@ -436,7 +436,7 @@ struct MessagesResponse {
     stop_reason: Option<String>,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug, Clone, Default)]
 struct AnthropicUsage {
     /// Absent on a `message_delta`, which may report output tokens alone.
     #[serde(default)]
@@ -1474,7 +1474,7 @@ impl super::WebSearcher for AnthropicWebSearch {
         query: &str,
         allowed_domains: &[String],
         blocked_domains: &[String],
-    ) -> Result<Vec<super::SearchPart>> {
+    ) -> Result<super::SearchAnswer> {
         let body = self.request_body(query, allowed_domains, blocked_domains);
         super::trace_request("anthropic web search", &body);
         let req = self
@@ -1485,7 +1485,37 @@ impl super::WebSearcher for AnthropicWebSearch {
             .json(&body);
         let response: serde_json::Value =
             super::http::send_and_parse_json(req, "Anthropic web search").await?;
-        Ok(search_parts(&response))
+        Ok(search_answer(&response))
+    }
+}
+
+/// A search response's parts and usage. The usage is read as any call's
+/// is, so the search counts toward the session's tokens, and its searches
+/// (`server_tool_use.web_search_requests`) are counted too, as Claude Code
+/// counts them.
+fn search_answer(response: &serde_json::Value) -> super::SearchAnswer {
+    let usage: AnthropicUsage =
+        serde_json::from_value(response["usage"].clone()).unwrap_or_default();
+    let tokens = TokenUsage {
+        prompt_tokens: usage.input_tokens,
+        completion_tokens: usage.output_tokens,
+        cache_read_tokens: usage.cache_read_input_tokens,
+        cache_creation_tokens: usage.cache_creation_input_tokens,
+        stop_reason: response["stop_reason"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+        ..Default::default()
+    };
+    super::SearchAnswer {
+        parts: search_parts(response),
+        context_tokens: tokens.prompt_tokens
+            + tokens.cache_read_tokens
+            + tokens.cache_creation_tokens,
+        usage: tokens,
+        web_search_requests: response["usage"]["server_tool_use"]["web_search_requests"]
+            .as_i64()
+            .unwrap_or(0),
     }
 }
 
@@ -1577,6 +1607,27 @@ mod web_search_tests {
     }
 
     #[test]
+    fn answer_reads_the_usage_and_the_searches() {
+        let response = serde_json::json!({"content": [], "stop_reason": "end_turn", "usage": {
+            "input_tokens": 2100, "output_tokens": 240,
+            "cache_read_input_tokens": 30, "cache_creation_input_tokens": 7,
+            "server_tool_use": {"web_search_requests": 3}}});
+        let answer = search_answer(&response);
+        assert_eq!(answer.usage.prompt_tokens, 2100);
+        assert_eq!(answer.usage.completion_tokens, 240);
+        assert_eq!(answer.usage.cache_read_tokens, 30);
+        assert_eq!(answer.usage.cache_creation_tokens, 7);
+        assert_eq!(answer.usage.stop_reason, "end_turn");
+        // The provider's rule: cached input counts toward the context.
+        assert_eq!(answer.context_tokens, 2137);
+        assert_eq!(answer.web_search_requests, 3);
+        // A response without usage counts for nothing.
+        let empty = search_answer(&serde_json::json!({"content": []}));
+        assert_eq!(empty.usage.prompt_tokens, 0);
+        assert_eq!(empty.web_search_requests, 0);
+    }
+
+    #[test]
     fn parts_report_a_search_error() {
         let response = serde_json::json!({"content": [
             {"type": "web_search_tool_result", "tool_use_id": "s",
@@ -1622,11 +1673,14 @@ mod web_search_tests {
 
         let provider = AnthropicProvider::new("sk-ant-test".into(), Some(&url));
         let searcher = provider.web_searcher("claude-haiku-5-5").unwrap();
-        let parts = searcher
+        let answer = searcher
             .search("rust 2024 edition", &["rust-lang.org".into()], &[])
             .await
             .unwrap();
-        assert_eq!(parts.len(), 2);
+        assert_eq!(answer.parts.len(), 2);
+        assert_eq!(answer.usage.prompt_tokens, 10);
+        assert_eq!(answer.usage.completion_tokens, 5);
+        assert_eq!(answer.web_search_requests, 1);
 
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 1, "one request per search");

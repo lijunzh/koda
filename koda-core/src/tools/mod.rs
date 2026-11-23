@@ -265,6 +265,9 @@ pub struct ToolRegistry {
     /// The model provider's own web search, set each turn from the
     /// provider and model ([`Self::set_web_searcher`]).
     web_searcher: std::sync::RwLock<Option<Arc<dyn crate::providers::WebSearcher>>>,
+    /// The session's `WebSearch` budget, which its sub-agents' registries
+    /// share ([`Self::with_web_search_budget`]).
+    web_search_budget: Arc<web_search::WebSearchBudget>,
     /// Context-scaled output caps for all tools.
     pub caps: OutputCaps,
     /// Background process registry — tracks processes spawned with `background: true`.
@@ -342,6 +345,7 @@ impl ToolRegistry {
             db: std::sync::RwLock::new(None),
             session_id: std::sync::RwLock::new(None),
             web_searcher: std::sync::RwLock::new(None),
+            web_search_budget: Default::default(),
             caps: OutputCaps::for_context(max_context_tokens),
             bg_registry: bg_process::BgRegistry::new(),
             // Phase 5 PR-2 of #934: seed with strict_default(). Callers
@@ -419,6 +423,18 @@ impl ToolRegistry {
         if let Ok(mut guard) = self.session_id.write() {
             *guard = Some(session_id);
         }
+    }
+
+    /// Use `budget` for `WebSearch`: the session's own, or its parent's
+    /// for a sub-agent, so every agent in a session draws on one budget.
+    pub fn with_web_search_budget(mut self, budget: Arc<web_search::WebSearchBudget>) -> Self {
+        self.web_search_budget = budget;
+        self
+    }
+
+    /// The `WebSearch` budget this registry draws on.
+    pub fn web_search_budget(&self) -> Arc<web_search::WebSearchBudget> {
+        Arc::clone(&self.web_search_budget)
     }
 
     /// Use the model provider's own web search for `WebSearch`, or (with
@@ -697,6 +713,7 @@ impl ToolRegistry {
                 session,
                 skill_registry: &self.skill_registry,
                 web_searcher: self.web_searcher.read().ok().and_then(|g| g.clone()),
+                web_search_budget: Some(&self.web_search_budget),
                 max_goal_token_budget: self.max_goal_token_budget,
                 takes_images: self.takes_images(),
                 takes_pdfs: self.takes_pdfs(),

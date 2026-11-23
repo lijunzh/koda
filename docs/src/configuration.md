@@ -83,6 +83,8 @@ Every key, in Codex's names where Codex has one:
 | `review_model` | The model [`/review`](./commands.md#review) runs on, on the session's provider, as Codex's `review_model`. The session's own model when unset |
 | `developer_instructions` | Text added to the end of the system prompt, as Codex's `developer_instructions`. Most useful per session through `session/start`'s `config`, which is how a [side conversation](./tui.md#side-conversations) gets its rules |
 | `turn_token_budget` | Tokens one turn may spend, sub-agents and compaction included, counted as Codex counts a goal's (input not read from the cache, plus output). At least 20,000; no limit when unset. See [Limiting what a turn spends](#limiting-what-a-turn-spends) |
+| `max_web_searches_per_session` | `WebSearch` calls a session may make, shared by its sub-agents, as Claude Code's `CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION`. 200 by default (see [Web search budget](./tools.md#web-search-budget)) |
+| `web_search_refills_per_hour` | `WebSearch` calls the budget gets back per hour, as Claude Code's `CLAUDE_CODE_WEB_SEARCH_REFILLS_PER_HOUR`. Unset: 100 in a session you attend, 0 in one nobody does (`koda exec`) |
 | `approval_wait_timeout_secs` | How long an approval, a question or the loop cap waits for a client on the [shared server](./serve.md#the-shared-server) before Koda answers no (default 86400, a day) |
 | `model_input_modalities` | What the model takes besides text, over what a local server reports and Koda's table: `["text", "image"]` for a vision model the server doesn't report; `pdf` is the third value (see [File & image attachments](./attachments.md#images)) |
 | `mode` | The [trust mode](./approval.md) a new session starts in: `auto`, `safe` or `plan` |

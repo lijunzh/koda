@@ -497,6 +497,7 @@ fn exec_summary(outcome: RunOutcome<'_>) -> ExecSummary {
         usage.output_tokens += agent.output_tokens;
         usage.reasoning_tokens += agent.reasoning_tokens;
         usage.model_calls += agent.model_calls;
+        usage.web_search_requests += agent.web_search_requests;
     }
     ExecSummary {
         session_id: outcome.session_id.to_string(),

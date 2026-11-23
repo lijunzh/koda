@@ -342,7 +342,9 @@ pub(crate) async fn execute_one_tool(
         if tools.catalog().is_mutating_call(&tc.function_name, &args) {
             sub_agent_cache.invalidate();
         }
-        let streaming = if tc.function_name == "Bash" {
+        // `Bash` streams its output; `WebSearch` reports what its search
+        // request used.
+        let streaming = if matches!(tc.function_name.as_str(), "Bash" | "WebSearch") {
             Some((sink, tc.id.as_str()))
         } else {
             None
