@@ -656,6 +656,11 @@ pub struct UsageTotals {
     ///
     /// [`LlmProvider::context_tokens`]: crate::providers::LlmProvider::context_tokens
     pub context_tokens: i64,
+    /// Searches run on the provider's servers, which it bills apart from
+    /// tokens: a `WebSearch` call's on a Claude model, as Claude Code
+    /// counts `webSearchRequests`.
+    #[serde(default)]
+    pub web_search_requests: i64,
 }
 
 impl UsageTotals {
@@ -689,6 +694,7 @@ impl UsageTotals {
         self.thinking_tokens += other.thinking_tokens;
         self.api_calls += other.api_calls;
         self.context_tokens += other.context_tokens;
+        self.web_search_requests += other.web_search_requests;
     }
 }
 
@@ -703,6 +709,7 @@ impl From<&crate::providers::TokenUsage> for UsageTotals {
             thinking_tokens: usage.thinking_tokens,
             api_calls: 1,
             context_tokens: 0,
+            web_search_requests: 0,
         }
     }
 }
@@ -717,6 +724,7 @@ impl From<&koda_state::session_store::SessionUsage> for UsageTotals {
             thinking_tokens: usage.thinking_tokens,
             api_calls: usage.api_calls,
             context_tokens: 0,
+            web_search_requests: 0,
         }
     }
 }

@@ -528,7 +528,22 @@ pub trait WebSearcher: Send + Sync {
         query: &str,
         allowed_domains: &[String],
         blocked_domains: &[String],
-    ) -> Result<Vec<SearchPart>>;
+    ) -> Result<SearchAnswer>;
+}
+
+/// What a provider search found, and what the request for it used.
+#[derive(Debug, Clone, Default)]
+pub struct SearchAnswer {
+    /// The answer's text, links and errors, in order.
+    pub parts: Vec<SearchPart>,
+    /// The tokens the search request used, as for any model call.
+    pub usage: TokenUsage,
+    /// Input tokens with the cached ones, by the provider's rule
+    /// ([`LlmProvider::context_tokens`]).
+    pub context_tokens: i64,
+    /// Searches the provider ran for the request, which it bills apart from
+    /// tokens (Anthropic's `usage.server_tool_use.web_search_requests`).
+    pub web_search_requests: i64,
 }
 
 /// A piece of a provider search's answer, in the order it came.

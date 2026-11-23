@@ -267,6 +267,9 @@ fn run_sub_agent<'a>(
             ..
         } = *parent_tx.turn;
         let cancel = parent_tx.turn.cancel.clone();
+        // Every agent in the session draws on one `WebSearch` budget, as
+        // in Claude Code.
+        let web_search_budget = parent_tx.turn.tools.web_search_budget();
         let parent_spawner = parent_tx.caller_spawner;
 
         // A turn that spent its token budget starts no sub-agent, as Claude
@@ -663,7 +666,9 @@ fn run_sub_agent<'a>(
                 sub_config.trust,
                 effective_root_ref,
             );
-            let registry = registry.with_sandbox_policy(composed_policy);
+            let registry = registry
+                .with_sandbox_policy(composed_policy)
+                .with_web_search_budget(web_search_budget);
             let registry = match parent_cache {
                 Some(cache) => registry.with_shared_cache(cache),
                 None => registry,

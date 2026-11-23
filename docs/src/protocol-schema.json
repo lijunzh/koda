@@ -4756,6 +4756,13 @@
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
+        },
+        "webSearchRequests": {
+          "default": 0,
+          "description": "Web searches run on the provider's servers (a Claude model's\n`WebSearch`), which it bills apart from tokens, as Claude Code\nreports `webSearchRequests`. Koda's own.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
         }
       },
       "required": [

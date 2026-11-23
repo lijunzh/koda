@@ -1017,6 +1017,7 @@ pub fn usage_of(usage: &UsageTotals) -> Usage {
         output_tokens: n(usage.completion_tokens),
         reasoning_tokens: n(usage.thinking_tokens),
         model_calls: n(usage.api_calls),
+        web_search_requests: n(usage.web_search_requests),
     }
 }
 
@@ -1097,6 +1098,7 @@ fn add_usage(total: &mut Usage, call: &Usage) {
     total.output_tokens += call.output_tokens;
     total.reasoning_tokens += call.reasoning_tokens;
     total.model_calls += call.model_calls;
+    total.web_search_requests += call.web_search_requests;
 }
 
 fn add(total: &mut TokenUsageBreakdown, call: &TokenUsageBreakdown) {

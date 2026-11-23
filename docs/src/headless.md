@@ -262,7 +262,9 @@ refused call completes as `declined`.
 ### Usage
 
 `turn/completed`'s `usage` counts this turn alone, however it ended, and
-includes sub-agents, compaction and retries. A model call cut off before the
+includes sub-agents, compaction, retries and the requests `WebSearch` sends
+on a Claude model; `webSearchRequests` counts that model's searches, billed
+apart from tokens. A model call cut off before the
 provider reported usage counts for nothing, so a cancelled or failed turn
 reports the calls that finished. `exec/summary`'s `usage` covers the whole
 session, earlier turns of a resumed one included, and `usageByAgent` splits it

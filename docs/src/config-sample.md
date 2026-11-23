@@ -136,6 +136,14 @@ unknown key in `-c` stops the run instead.
 # stops. At least 20000. Unset: no limit.
 # turn_token_budget = 200000
 
+# WebSearch calls a session may make, shared by its sub-agents, as Claude
+# Code caps them. Unset: 200.
+# max_web_searches_per_session = 200
+
+# WebSearch calls the budget gets back per hour. Unset: 100 in a session
+# you attend, 0 in one nobody does (koda exec).
+# web_search_refills_per_hour = 100
+
 # How long a request (an approval, a question, the loop cap) waits for a
 # client on the shared server (`koda serve`) before Koda answers no.
 # Unset: 86400, a day.

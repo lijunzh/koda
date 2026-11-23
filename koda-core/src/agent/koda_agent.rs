@@ -142,6 +142,21 @@ impl KodaAgent {
             config.trust,
         );
         tools.max_goal_token_budget = config.max_goal_token_budget;
+        // The session's `WebSearch` budget, as Claude Code's: it refills in
+        // a session a person attends and not in one nobody does.
+        let refills = config
+            .web_search_refills_per_hour
+            .unwrap_or(if interactive {
+                crate::tools::web_search::DEFAULT_WEB_SEARCH_REFILLS_PER_HOUR
+            } else {
+                0
+            });
+        let tools = tools.with_web_search_budget(std::sync::Arc::new(
+            crate::tools::web_search::WebSearchBudget::new(
+                config.max_web_searches_per_session,
+                refills,
+            ),
+        ));
         let mut tool_defs = tools.get_definitions(&config.allowed_tools, &config.disallowed_tools);
         // Built-ins only: `turn_tool_defs` adds the MCP tools each turn.
         tool_defs.retain(|d| !crate::mcp::is_mcp_tool_name(&d.name));
@@ -252,6 +267,48 @@ mod tests {
             semantic_memory: String::new(),
             interactive: false,
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_web_search_budget_refills_only_where_someone_attends() {
+        use crate::config::{KodaConfig, ProviderType};
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = KodaConfig::default_for_testing(ProviderType::Anthropic);
+        let refusal = |agent: &KodaAgent| agent.tools.web_search_budget().refusal();
+
+        let attended = KodaAgent::new(&config, dir.path().into(), true)
+            .await
+            .unwrap();
+        assert!(
+            refusal(&attended).contains(
+                "limit: 200 WebSearch calls shared by every agent in \
+                 this session; the budget refills at about 100 calls per hour"
+            ),
+            "{}",
+            refusal(&attended)
+        );
+        let headless = KodaAgent::new(&config, dir.path().into(), false)
+            .await
+            .unwrap();
+        assert!(
+            refusal(&headless).contains("it does not refill"),
+            "{}",
+            refusal(&headless)
+        );
+
+        config.max_web_searches_per_session = 5;
+        config.web_search_refills_per_hour = Some(7);
+        let set = KodaAgent::new(&config, dir.path().into(), false)
+            .await
+            .unwrap();
+        assert!(
+            refusal(&set).contains(
+                "limit: 5 WebSearch calls shared by every agent in this \
+                 session; the budget refills at about 7 calls per hour"
+            ),
+            "{}",
+            refusal(&set)
+        );
     }
 
     #[test]
