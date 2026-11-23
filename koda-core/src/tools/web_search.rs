@@ -9,7 +9,7 @@
 //!   a separate request to the same model with Anthropic's search tool, as
 //!   Claude Code's `WebSearch` sends it, returning the model's summary and
 //!   the links ([`crate::providers::WebSearcher`]).
-//! - **Brave Search** otherwise, when `BRAVE_API_KEY` is set, through the Brave Search
+//! - **Brave Search** otherwise, when `BRAVE_API_KEY` is set (or saved with `/key`), through the Brave Search
 //!   API as OpenClaw's Brave provider calls it. Neither Codex nor Claude Code
 //!   searches from the client (their searches run on OpenAI's and Anthropic's
 //!   servers), so on models without a provider search the key is the
@@ -45,9 +45,9 @@ pub const BRAVE_KEY_ENV: &str = "BRAVE_API_KEY";
 const BRAVE_MAX_QUERY: usize = 400;
 
 /// Added to every DuckDuckGo failure: the way to search dependably.
-const BRAVE_REMINDER: &str = "For dependable search, the user can set the BRAVE_API_KEY \
-    environment variable to a Brave Search API key (https://brave.com/search/api/) and \
-    restart Koda.";
+const BRAVE_REMINDER: &str = "For dependable search, the user can save a Brave Search API \
+    key (https://brave.com/search/api/) with /key in Koda's TUI, or set the BRAVE_API_KEY \
+    environment variable and restart Koda.";
 
 // ── Tool definition ────────────────────────────────────────────────────────
 
@@ -1281,7 +1281,10 @@ mod tests {
                 .unwrap_err()
                 .to_string();
             assert!(err.contains(expect), "{err}");
-            assert!(err.contains("BRAVE_API_KEY"), "{err}");
+            assert!(
+                err.contains("BRAVE_API_KEY") && err.contains("/key"),
+                "{err}"
+            );
         }
     }
 

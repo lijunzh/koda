@@ -4844,6 +4844,57 @@
       ],
       "type": "object"
     },
+    "WebSearchApiKeyReadParams": {
+      "additionalProperties": false,
+      "description": "`webSearch/apiKey/read`: whether `WebSearch` has a key for its keyed\nbackend, Brave Search. Codex has no counterpart: its web search runs at\nOpenAI and takes no key of its own.",
+      "type": "object"
+    },
+    "WebSearchApiKeyReadResponse": {
+      "description": "The answer to `webSearch/apiKey/read`. Never the key itself.",
+      "properties": {
+        "envKey": {
+          "description": "The environment variable the key comes from, `BRAVE_API_KEY`.",
+          "type": "string"
+        },
+        "hasApiKey": {
+          "description": "Whether a key is set, saved or from the environment.",
+          "type": "boolean"
+        },
+        "name": {
+          "description": "The name a person reads, such as `Brave Search`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "envKey",
+        "hasApiKey"
+      ],
+      "type": "object"
+    },
+    "WebSearchApiKeyRemoveParams": {
+      "additionalProperties": false,
+      "description": "`webSearch/apiKey/remove`: forget the stored Brave Search key. One set\nin the environment Koda was started with stays.",
+      "type": "object"
+    },
+    "WebSearchApiKeyResponse": {
+      "description": "The answer to `webSearch/apiKey/set` and `.../remove`.",
+      "type": "object"
+    },
+    "WebSearchApiKeySetParams": {
+      "additionalProperties": false,
+      "description": "`webSearch/apiKey/set`: store the Brave Search key `WebSearch` uses on\nmodels without a search of their own. The key never comes back in any\nresponse.",
+      "properties": {
+        "apiKey": {
+          "description": "The key.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "apiKey"
+      ],
+      "type": "object"
+    },
     "WriteStatus": {
       "description": "How a write went.",
       "oneOf": [
@@ -5167,6 +5218,30 @@
       },
       "result": {
         "$ref": "#/$defs/TurnSteerResponse"
+      }
+    },
+    "webSearch/apiKey/read": {
+      "params": {
+        "$ref": "#/$defs/WebSearchApiKeyReadParams"
+      },
+      "result": {
+        "$ref": "#/$defs/WebSearchApiKeyReadResponse"
+      }
+    },
+    "webSearch/apiKey/remove": {
+      "params": {
+        "$ref": "#/$defs/WebSearchApiKeyRemoveParams"
+      },
+      "result": {
+        "$ref": "#/$defs/WebSearchApiKeyResponse"
+      }
+    },
+    "webSearch/apiKey/set": {
+      "params": {
+        "$ref": "#/$defs/WebSearchApiKeySetParams"
+      },
+      "result": {
+        "$ref": "#/$defs/WebSearchApiKeyResponse"
       }
     }
   },

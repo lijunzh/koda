@@ -347,3 +347,51 @@ pub struct ModelProviderApiKeyRemoveParams {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelProviderApiKeyResponse {}
+
+/// `webSearch/apiKey/read`: whether `WebSearch` has a key for its keyed
+/// backend, Brave Search. Codex has no counterpart: its web search runs at
+/// OpenAI and takes no key of its own.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WebSearchApiKeyReadParams {}
+
+/// The answer to `webSearch/apiKey/read`. Never the key itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WebSearchApiKeyReadResponse {
+    /// The name a person reads, such as `Brave Search`.
+    pub name: String,
+    /// The environment variable the key comes from, `BRAVE_API_KEY`.
+    pub env_key: String,
+    /// Whether a key is set, saved or from the environment.
+    pub has_api_key: bool,
+}
+
+/// `webSearch/apiKey/set`: store the Brave Search key `WebSearch` uses on
+/// models without a search of their own. The key never comes back in any
+/// response.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WebSearchApiKeySetParams {
+    /// The key.
+    pub api_key: String,
+}
+
+impl std::fmt::Debug for WebSearchApiKeySetParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebSearchApiKeySetParams")
+            .field("api_key", &"<redacted>")
+            .finish()
+    }
+}
+
+/// `webSearch/apiKey/remove`: forget the stored Brave Search key. One set
+/// in the environment Koda was started with stays.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WebSearchApiKeyRemoveParams {}
+
+/// The answer to `webSearch/apiKey/set` and `.../remove`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WebSearchApiKeyResponse {}

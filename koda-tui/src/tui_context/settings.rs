@@ -366,3 +366,34 @@ pub(crate) async fn set_api_key(
         .map(|_| ())
         .map_err(host_error)
 }
+
+/// Whether `WebSearch` has a Brave Search key, from the host
+/// (`webSearch/apiKey/read`). `None` when the host can't answer: `/key`
+/// then leaves Brave out rather than guess.
+pub(crate) async fn web_search_key(
+    client: &koda_client::InProcessClient,
+) -> Option<koda_client::protocol::config::WebSearchApiKeyReadResponse> {
+    use koda_client::protocol::config::WebSearchApiKeyReadParams;
+    client
+        .request::<methods::WebSearchApiKeyRead>(WebSearchApiKeyReadParams {})
+        .await
+        .inspect_err(|e| tracing::warn!("webSearch/apiKey/read: {e}"))
+        .ok()
+}
+
+/// Store the Brave Search key through the host (`webSearch/apiKey/set`),
+/// which also makes it the one this run's searches use. Returns the
+/// host's error.
+pub(crate) async fn set_web_search_key(
+    client: &koda_client::InProcessClient,
+    key: &str,
+) -> anyhow::Result<()> {
+    use koda_client::protocol::config::WebSearchApiKeySetParams;
+    client
+        .request::<methods::WebSearchApiKeySet>(WebSearchApiKeySetParams {
+            api_key: key.to_string(),
+        })
+        .await
+        .map(|_| ())
+        .map_err(host_error)
+}

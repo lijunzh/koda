@@ -165,6 +165,10 @@ pub(crate) enum ProviderWizard {
     ApiKeyOnly {
         provider: koda_client::protocol::model::ModelProviderSummary,
     },
+    /// `/key`'s Brave Search entry: the key `WebSearch` uses.
+    WebSearchKey {
+        key: koda_client::protocol::config::WebSearchApiKeyReadResponse,
+    },
     /// Step 1 (local): provider selected, now need URL.
     Url {
         provider: koda_client::protocol::model::ModelProviderSummary,

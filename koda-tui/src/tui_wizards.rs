@@ -119,14 +119,23 @@ pub(crate) fn handle_diff(buffer: &mut ScrollBuffer) {
 // ── API key management (/key) ─────────────────────────
 
 /// `/key`'s table: each provider that takes a key, its variable, and
-/// whether the host has a key for it (`modelProvider/list`).
-pub(crate) fn handle_keys(buffer: &mut ScrollBuffer, providers: &crate::providers::Providers) {
+/// whether the host has a key for it (`modelProvider/list`), then Brave
+/// Search's for `WebSearch` (`webSearch/apiKey/read`).
+pub(crate) fn handle_keys(
+    buffer: &mut ScrollBuffer,
+    providers: &crate::providers::Providers,
+    web_search: Option<&koda_client::protocol::config::WebSearchApiKeyReadResponse>,
+) {
     tui_output::emit_line(buffer, Line::styled("  \u{1f511} API Keys", BOLD));
     tui_output::blank(buffer);
 
-    for provider in providers.all().iter().filter(|p| p.requires_api_key) {
-        let (name, env_var) = (&provider.name, &provider.env_key);
-        let is_set = provider.has_api_key;
+    let providers = providers
+        .all()
+        .iter()
+        .filter(|p| p.requires_api_key)
+        .map(|p| (&p.name, &p.env_key, p.has_api_key));
+    let web_search = web_search.map(|k| (&k.name, &k.env_key, k.has_api_key));
+    for (name, env_var, is_set) in providers.chain(web_search) {
         let status = if is_set {
             Span::styled("\u{2714} set", tui_output::GREEN)
         } else {
@@ -145,7 +154,9 @@ pub(crate) fn handle_keys(buffer: &mut ScrollBuffer, providers: &crate::provider
     tui_output::blank(buffer);
     tui_output::dim_msg(
         buffer,
-        "Pick a provider below to set or update its key.".into(),
+        "Pick one below to set or update its key. Brave Search is for WebSearch on models \
+         other than Claude."
+            .into(),
     );
 }
 

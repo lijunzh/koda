@@ -59,7 +59,8 @@ apply to that run only and are never saved, as Codex's aren't; headless runs
 
 ## `/key`
 
-Opens the API key manager. Select a provider, then type or paste your key.
+Opens the API key manager. Select a provider, or Brave Search for
+`WebSearch` on models other than Claude, then type or paste your key.
 Keys are stored in the local SQLite keystore (file mode 0600) and injected
 as environment variables at every startup.
 

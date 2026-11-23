@@ -12,7 +12,9 @@ use std::time::Duration;
 
 use koda_core::config::{KodaConfig, ProviderType};
 use koda_core::model_alias;
-use koda_protocol::config::{KodaConfigValues, ModelProviderConfigValue};
+use koda_protocol::config::{
+    KodaConfigValues, ModelProviderConfigValue, WebSearchApiKeyReadResponse,
+};
 use koda_protocol::model::{
     Model, ModelListParams, ModelListResponse, ModelProviderListResponse, ModelProviderSummary,
 };
@@ -359,10 +361,14 @@ pub(crate) async fn set_api_key(
     if !ptype.requires_api_key() {
         return Err(invalid(format!("{ptype} takes no API key")));
     }
+    store_key(db, ptype.env_key_name(), key).await
+}
+
+/// Store `key` under `env` and make it this run's.
+async fn store_key(db: &koda_state::db::Database, env: &str, key: &str) -> Result<(), ErrorObject> {
     if key.trim().is_empty() {
         return Err(invalid("the key is empty"));
     }
-    let env = ptype.env_key_name();
     koda_core::keystore::set_key(db, env, key.trim())
         .await
         .map_err(|e| internal(format!("couldn't store the key: {e:#}")))?;
@@ -378,7 +384,12 @@ pub(crate) async fn remove_api_key(
     provider_id: &str,
 ) -> Result<(), ErrorObject> {
     let ptype = provider(provider_id)?;
-    let env = ptype.env_key_name();
+    forget_key(db, ptype.env_key_name()).await
+}
+
+/// Forget the key stored under `env`, and take it out of this run's
+/// environment when it came from the store.
+async fn forget_key(db: &koda_state::db::Database, env: &str) -> Result<(), ErrorObject> {
     let stored = koda_core::keystore::get_key(db, env)
         .await
         .map_err(|e| internal(format!("couldn't read the key: {e:#}")))?;
@@ -389,6 +400,35 @@ pub(crate) async fn remove_api_key(
         koda_core::runtime_env::remove(env);
     }
     Ok(())
+}
+
+/// `webSearch/apiKey/read`: whether `WebSearch` has a Brave Search key,
+/// from the environment, where stored keys are put at start.
+pub(crate) fn web_search_key() -> WebSearchApiKeyReadResponse {
+    let env = koda_core::tools::web_search::BRAVE_KEY_ENV;
+    WebSearchApiKeyReadResponse {
+        name: "Brave Search".to_string(),
+        env_key: env.to_string(),
+        has_api_key: koda_core::runtime_env::get(env).is_some_and(|k| !k.is_empty()),
+    }
+}
+
+/// `webSearch/apiKey/set`: store the Brave Search key, as a provider's
+/// key is stored. `WebSearch` reads it at each search, so open sessions
+/// use it from their next one.
+pub(crate) async fn set_web_search_key(
+    db: &koda_state::db::Database,
+    key: &str,
+) -> Result<(), ErrorObject> {
+    store_key(db, koda_core::tools::web_search::BRAVE_KEY_ENV, key).await
+}
+
+/// `webSearch/apiKey/remove`: forget the stored Brave Search key. One
+/// from the shell Koda started in stays.
+pub(crate) async fn remove_web_search_key(
+    db: &koda_state::db::Database,
+) -> Result<(), ErrorObject> {
+    forget_key(db, koda_core::tools::web_search::BRAVE_KEY_ENV).await
 }
 
 /// A local server's model when the choice is `auto-detect`: its first
