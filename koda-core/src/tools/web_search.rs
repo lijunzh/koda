@@ -1,28 +1,49 @@
-//! WebSearch tool — query the web via DuckDuckGo.
+//! WebSearch tool — search the web and return the top results.
 //!
-//! Returns the top N results (title, URL, snippet) with no API key required.
-//! Uses the DuckDuckGo HTML endpoint.
+//! The tool has Claude Code's shape: a query, plus either domains to keep
+//! (`allowed_domains`) or domains to leave out (`blocked_domains`).
 //!
-//! ## Parameters
+//! ## Where results come from
 //!
-//! - **`query`** (required) — The search query
-//! - **`num_results`** (optional, default 5) — Number of results to return
+//! - **Brave Search** when `BRAVE_API_KEY` is set, through the Brave Search
+//!   API as OpenClaw's Brave provider calls it. Neither Codex nor Claude Code
+//!   searches from the client (their searches run on OpenAI's and Anthropic's
+//!   servers), so on models without a provider search the key is the
+//!   dependable route.
+//! - **DuckDuckGo's HTML page** otherwise, which needs no key but often
+//!   answers with a bot check; that failure tells the model to suggest a
+//!   Brave key.
+//!
+//! Domain filters go into the query as `site:` operators, which both engines
+//! honour, and are checked again on the results.
 //!
 //! ## Usage patterns
 //!
 //! - Research a library or API: `"rust tokio graceful shutdown"`
-//! - Find documentation: `"fastapi middleware docs"`
+//! - Find documentation: `"fastapi middleware"` with `allowed_domains: ["fastapi.tiangolo.com"]`
 //! - Combine with WebFetch: search → pick best URL → fetch full page
 
 use crate::providers::ToolDefinition;
 use anyhow::Result;
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::time::Duration;
 
-const DEFAULT_RESULTS: usize = 5;
-const MAX_RESULTS: usize = 10;
+const RESULTS: usize = 5;
+/// Results asked of the engine, so domain filtering still leaves `RESULTS`.
+const FETCHED: usize = 10;
 const TIMEOUT_SECS: u64 = 15;
 const DDG_HTML_URL: &str = "https://html.duckduckgo.com/html/";
+const BRAVE_URL: &str = "https://api.search.brave.com/res/v1/web/search";
+/// The environment variable holding a Brave Search API key, as OpenClaw names it.
+pub const BRAVE_KEY_ENV: &str = "BRAVE_API_KEY";
+/// Brave rejects queries longer than this many characters.
+const BRAVE_MAX_QUERY: usize = 400;
+
+/// Added to every DuckDuckGo failure: the way to search dependably.
+const BRAVE_REMINDER: &str = "For dependable search, the user can set the BRAVE_API_KEY \
+    environment variable to a Brave Search API key (https://brave.com/search/api/) and \
+    restart Koda.";
 
 // ── Tool definition ────────────────────────────────────────────────────────
 
@@ -30,20 +51,29 @@ const DDG_HTML_URL: &str = "https://html.duckduckgo.com/html/";
 pub fn definitions() -> Vec<ToolDefinition> {
     vec![ToolDefinition {
         name: "WebSearch".to_string(),
-        description: "Search the web via DuckDuckGo and return the top results (title, URL, \
-            snippet). Use when you need current information, documentation, or facts not in \
-            your training data. For a full page, follow up with WebFetch on a result URL."
+        description: "Search the web and return the top results (title, URL, snippet, and \
+            the date when known). Use it for current information, documentation, or facts \
+            not in your training data. Results can be limited to some domains or exclude \
+            others. For a full page, follow up with WebFetch on a result URL. When results \
+            inform your answer, list the URLs you used as sources."
             .to_string(),
         parameters: json!({
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "The search query"
+                    "minLength": 2,
+                    "description": "The search query to use"
                 },
-                "num_results": {
-                    "type": "integer",
-                    "description": "Number of results to return (default: 5, max: 10)"
+                "allowed_domains": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Only include results from these domains"
+                },
+                "blocked_domains": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Never include results from these domains"
                 }
             },
             "required": ["query"]
@@ -51,94 +81,313 @@ pub fn definitions() -> Vec<ToolDefinition> {
     }]
 }
 
+// ── Request ────────────────────────────────────────────────────────────────
+
+/// A validated search: the model's query and its domain filter.
+#[derive(Debug, PartialEq)]
+struct SearchRequest {
+    query: String,
+    allowed: Vec<String>,
+    blocked: Vec<String>,
+}
+
+impl SearchRequest {
+    fn from_args(args: &Value) -> Result<Self> {
+        let query = args["query"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing 'query' argument"))?
+            .trim();
+        if query.chars().count() < 2 {
+            anyhow::bail!("'query' must be at least 2 characters");
+        }
+        let allowed = domains(&args["allowed_domains"], "allowed_domains")?;
+        let blocked = domains(&args["blocked_domains"], "blocked_domains")?;
+        if !allowed.is_empty() && !blocked.is_empty() {
+            anyhow::bail!("Use allowed_domains or blocked_domains, not both");
+        }
+        Ok(Self {
+            query: query.to_string(),
+            allowed,
+            blocked,
+        })
+    }
+
+    /// The query sent to the engine: the model's words plus `site:` operators.
+    fn engine_query(&self) -> String {
+        let mut q = self.query.clone();
+        if !self.allowed.is_empty() {
+            let sites: Vec<String> = self.allowed.iter().map(|d| format!("site:{d}")).collect();
+            if sites.len() == 1 {
+                q.push_str(&format!(" {}", sites[0]));
+            } else {
+                q.push_str(&format!(" ({})", sites.join(" OR ")));
+            }
+        }
+        for d in &self.blocked {
+            q.push_str(&format!(" -site:{d}"));
+        }
+        q
+    }
+
+    /// Whether a result's URL passes the domain filter.
+    fn keeps(&self, url: &str) -> bool {
+        let Some(host) = url::Url::parse(url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+        else {
+            return false;
+        };
+        let matches = |d: &String| host == *d || host.ends_with(&format!(".{d}"));
+        (self.allowed.is_empty() || self.allowed.iter().any(matches))
+            && !self.blocked.iter().any(matches)
+    }
+}
+
+/// A domain list from the arguments, each reduced to a lowercase host
+/// (`https://Docs.rs/tokio` → `docs.rs`).
+fn domains(value: &Value, name: &str) -> Result<Vec<String>> {
+    let items = match value {
+        Value::Null => return Ok(Vec::new()),
+        Value::Array(items) => items,
+        _ => anyhow::bail!("'{name}' must be a list of domains"),
+    };
+    let mut out = Vec::new();
+    for item in items {
+        let raw = item
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("'{name}' must be a list of domains"))?
+            .trim();
+        let host = if raw.contains("://") {
+            url::Url::parse(raw)
+                .ok()
+                .and_then(|u| u.host_str().map(String::from))
+        } else {
+            raw.split('/').next().map(String::from)
+        }
+        .map(|h| {
+            h.trim_start_matches("www.")
+                .trim_matches('.')
+                .to_ascii_lowercase()
+        })
+        .filter(|h| !h.is_empty() && !h.contains(char::is_whitespace));
+        match host {
+            Some(h) if !out.contains(&h) => out.push(h),
+            Some(_) => {}
+            None => anyhow::bail!("'{name}' has an entry that isn't a domain: {raw:?}"),
+        }
+    }
+    Ok(out)
+}
+
 // ── Handler ────────────────────────────────────────────────────────────────
 
 /// Execute a web search and return formatted results.
 pub async fn web_search(args: &Value) -> Result<String> {
-    let query = args["query"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("Missing 'query' argument"))?;
-    if query.trim().is_empty() {
-        anyhow::bail!("'query' must not be empty");
-    }
-
-    let num_results = args["num_results"]
-        .as_u64()
-        .map(|n| n as usize)
-        .unwrap_or(DEFAULT_RESULTS)
-        .clamp(1, MAX_RESULTS);
-
-    let form_body: String = url::form_urlencoded::Serializer::new(String::new())
-        .append_pair("q", query)
-        .append_pair("kl", "wt-wt") // worldwide locale, avoids regional results
-        .finish();
+    let request = SearchRequest::from_args(args)?;
 
     static HTTP_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     let client = HTTP_CLIENT
         .get_or_init(|| crate::providers::build_http_client(None))
         .clone();
 
-    let response = tokio::time::timeout(
-        Duration::from_secs(TIMEOUT_SECS),
-        client
-            .post(DDG_HTML_URL)
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            // Identify as a browser so DDG returns the full HTML result page.
-            .header(
-                "User-Agent",
-                "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0",
-            )
-            .body(form_body)
-            .send(),
-    )
-    .await
-    .map_err(|_| anyhow::anyhow!("Search timed out after {TIMEOUT_SECS}s"))?
-    .map_err(|e| anyhow::anyhow!("Search request failed: {e}"))?;
+    let found = match brave_key() {
+        Some(key) => brave_search(&client, BRAVE_URL, &key, &request.engine_query()).await?,
+        None => duckduckgo_search(&client, DDG_HTML_URL, &request.engine_query()).await?,
+    };
+    let results: Vec<SearchResult> = found
+        .into_iter()
+        .filter(|r| request.keeps(&r.url))
+        .take(RESULTS)
+        .collect();
+    Ok(format_results(&request.query, &results))
+}
 
-    let status = response.status();
-    let html = response
-        .text()
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to read search response: {e}"))?;
+/// The Brave Search API key, from the environment or Koda's key store.
+fn brave_key() -> Option<String> {
+    crate::runtime_env::get(BRAVE_KEY_ENV)
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+}
 
-    let results = parse_results(&html, num_results);
-
+fn format_results(query: &str, results: &[SearchResult]) -> String {
     if results.is_empty() {
-        if is_bot_check(&html) {
-            anyhow::bail!(
-                "DuckDuckGo answered with a bot check instead of results, so this search \
-                 failed; it does not mean nothing matches. Searching again soon will likely \
-                 get the same check. Tell the user, or read a known URL with WebFetch."
-            );
-        }
-        // A bot check comes as 202; anything but 200 without results is a failure.
-        if status != reqwest::StatusCode::OK {
-            anyhow::bail!("DuckDuckGo returned HTTP {status} and no results");
-        }
-        return Ok(format!(
+        return format!(
             "No results found for: \"{query}\"\n\
              Tip: try a more specific query, or use WebFetch to read a known URL directly."
-        ));
+        );
     }
-
     let mut out = format!("Web search results for \"{query}\":\n\n");
     for (i, r) in results.iter().enumerate() {
         out.push_str(&format!("{}. {}\n   {}\n", i + 1, r.title, r.url));
+        if let Some(age) = &r.age {
+            out.push_str(&format!("   Published: {age}\n"));
+        }
         if !r.snippet.is_empty() {
             out.push_str(&format!("   {}\n", r.snippet));
         }
         out.push('\n');
     }
+    out
+}
 
-    Ok(out)
+// ── Brave ──────────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct BraveResponse {
+    web: Option<BraveWeb>,
+}
+
+#[derive(Deserialize)]
+struct BraveWeb {
+    #[serde(default)]
+    results: Vec<BraveResult>,
+}
+
+#[derive(Deserialize)]
+struct BraveResult {
+    title: String,
+    url: String,
+    #[serde(default)]
+    description: String,
+    age: Option<String>,
+}
+
+/// Search with the Brave Search API at `endpoint`.
+async fn brave_search(
+    client: &reqwest::Client,
+    endpoint: &str,
+    key: &str,
+    query: &str,
+) -> Result<Vec<SearchResult>> {
+    if query.chars().count() > BRAVE_MAX_QUERY {
+        anyhow::bail!(
+            "The query is too long for Brave Search (at most {BRAVE_MAX_QUERY} characters, \
+             domain filters included); shorten it"
+        );
+    }
+    let mut url = url::Url::parse(endpoint)
+        .map_err(|e| anyhow::anyhow!("Bad Brave Search endpoint {endpoint}: {e}"))?;
+    url.query_pairs_mut()
+        .append_pair("q", query)
+        .append_pair("count", &FETCHED.to_string())
+        .append_pair("text_decorations", "false");
+    let response = tokio::time::timeout(
+        Duration::from_secs(TIMEOUT_SECS),
+        client
+            .get(url)
+            .header("Accept", "application/json")
+            .header("User-Agent", crate::tools::USER_AGENT)
+            .header("X-Subscription-Token", key)
+            .send(),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("Brave Search timed out after {TIMEOUT_SECS}s"))?
+    .map_err(|e| anyhow::anyhow!("Brave Search request failed: {e}"))?;
+
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to read the Brave Search response: {e}"))?;
+    match status.as_u16() {
+        200 => {}
+        401 | 403 => anyhow::bail!(
+            "Brave Search rejected the key in {BRAVE_KEY_ENV} (HTTP {status}). Tell the user \
+             to check the key."
+        ),
+        429 => anyhow::bail!(
+            "Brave Search refused the request (HTTP 429): too many searches at once, or the \
+             account's credit is used up. Searching again right away will likely fail too; \
+             tell the user, or read a known URL with WebFetch."
+        ),
+        _ => {
+            let detail: String = body.chars().take(300).collect();
+            anyhow::bail!("Brave Search returned HTTP {status}: {detail}");
+        }
+    }
+    parse_brave(&body)
+}
+
+/// The web results in a Brave Search API response.
+fn parse_brave(body: &str) -> Result<Vec<SearchResult>> {
+    let parsed: BraveResponse = serde_json::from_str(body)
+        .map_err(|e| anyhow::anyhow!("Brave Search sent a response Koda can't read: {e}"))?;
+    Ok(parsed
+        .web
+        .map(|w| w.results)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|r| url::Url::parse(&r.url).is_ok_and(|u| matches!(u.scheme(), "http" | "https")))
+        .map(|r| SearchResult {
+            title: strip_inline(&r.title),
+            url: r.url,
+            snippet: shorten(strip_inline(&r.description)),
+            age: r.age.map(|a| strip_inline(&a)).filter(|a| !a.is_empty()),
+        })
+        .filter(|r| !r.title.is_empty())
+        .collect())
+}
+
+// ── DuckDuckGo ─────────────────────────────────────────────────────────────
+
+/// Search DuckDuckGo's HTML page at `endpoint`. Every failure ends with
+/// [`BRAVE_REMINDER`], since this runs only when no Brave key is set.
+async fn duckduckgo_search(
+    client: &reqwest::Client,
+    endpoint: &str,
+    query: &str,
+) -> Result<Vec<SearchResult>> {
+    let form_body: String = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("q", query)
+        .append_pair("kl", "wt-wt") // worldwide locale, avoids regional results
+        .finish();
+
+    let response = tokio::time::timeout(
+        Duration::from_secs(TIMEOUT_SECS),
+        client
+            .post(endpoint)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .header("User-Agent", crate::tools::USER_AGENT)
+            .body(form_body)
+            .send(),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("Search timed out after {TIMEOUT_SECS}s. {BRAVE_REMINDER}"))?
+    .map_err(|e| anyhow::anyhow!("Search request failed: {e}. {BRAVE_REMINDER}"))?;
+
+    let status = response.status();
+    let html = response
+        .text()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to read search response: {e}. {BRAVE_REMINDER}"))?;
+
+    let results = parse_results(&html, FETCHED);
+    if results.is_empty() {
+        if is_bot_check(&html) {
+            anyhow::bail!(
+                "DuckDuckGo answered with a bot check instead of results, so this search \
+                 failed; it does not mean nothing matches. Searching again soon will likely \
+                 get the same check. Tell the user, or read a known URL with WebFetch. \
+                 {BRAVE_REMINDER}"
+            );
+        }
+        // A bot check comes as 202; anything but 200 without results is a failure.
+        if status != reqwest::StatusCode::OK {
+            anyhow::bail!("DuckDuckGo returned HTTP {status} and no results. {BRAVE_REMINDER}");
+        }
+    }
+    Ok(results)
 }
 
 // ── HTML parsing ───────────────────────────────────────────────────────────
 
+#[derive(Debug)]
 struct SearchResult {
     title: String,
     url: String,
     snippet: String,
+    /// When the page was published, as the engine words it ("March 6, 2025").
+    age: Option<String>,
 }
 
 /// Parse DuckDuckGo HTML results.
@@ -181,6 +430,7 @@ fn parse_results(html: &str, max: usize) -> Vec<SearchResult> {
             title,
             url,
             snippet,
+            age: None,
         });
     }
 
@@ -270,7 +520,11 @@ fn extract_snippet(html: &str) -> String {
         .filter_map(|close| text_region.find(close))
         .min()
         .unwrap_or_else(|| text_region.floor_char_boundary(600));
-    let raw = strip_inline(&text_region[..end]);
+    shorten(strip_inline(&text_region[..end]))
+}
+
+/// A snippet cut to about 300 bytes on a character boundary.
+fn shorten(raw: String) -> String {
     if raw.len() > 300 {
         format!("{}…", raw[..raw.floor_char_boundary(297)].trim_end())
     } else {
@@ -484,9 +738,22 @@ mod tests {
             .iter()
             .map(|v| v.as_str().unwrap())
             .collect();
-        assert!(required.contains(&"query"));
-        // num_results is optional
-        assert!(!required.contains(&"num_results"));
+        assert_eq!(required, ["query"]);
+    }
+
+    #[test]
+    fn definitions_have_claude_codes_shape() {
+        let props = &definitions()[0].parameters["properties"];
+        let mut names: Vec<&str> = props
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|k| k.as_str())
+            .collect();
+        names.sort_unstable();
+        assert_eq!(names, ["allowed_domains", "blocked_domains", "query"]);
+        assert_eq!(props["query"]["minLength"], 2);
+        assert!(!definitions()[0].description.contains("DuckDuckGo"));
     }
 
     // ── strip_inline edge cases ──────────────────────────────────────
@@ -603,5 +870,225 @@ mod tests {
             "AT&T &bogus; &#xZZ; &"
         );
         assert_eq!(strip_inline("&#128512;"), "\u{1F600}");
+    }
+    // ── Request and domain filters ───────────────────────────────────
+
+    #[test]
+    fn short_query_is_error() {
+        let err = SearchRequest::from_args(&json!({"query": " a "})).unwrap_err();
+        assert!(err.to_string().contains("at least 2"), "{err}");
+    }
+
+    #[test]
+    fn domains_are_reduced_to_hosts() {
+        let r = SearchRequest::from_args(&json!({
+            "query": "tokio",
+            "allowed_domains": ["https://Docs.rs/tokio", "www.tokio.rs", "docs.rs", "crates.io/"]
+        }))
+        .unwrap();
+        assert_eq!(r.allowed, ["docs.rs", "tokio.rs", "crates.io"]);
+    }
+
+    #[test]
+    fn both_domain_lists_is_error() {
+        let err = SearchRequest::from_args(&json!({
+            "query": "tokio", "allowed_domains": ["a.com"], "blocked_domains": ["b.com"]
+        }))
+        .unwrap_err();
+        assert!(err.to_string().contains("not both"), "{err}");
+    }
+
+    #[test]
+    fn bad_domain_entries_are_errors() {
+        for bad in [
+            json!("docs.rs"),
+            json!([3]),
+            json!(["two words"]),
+            json!([""]),
+        ] {
+            let args = json!({"query": "tokio", "blocked_domains": bad});
+            assert!(SearchRequest::from_args(&args).is_err(), "{args}");
+        }
+    }
+
+    #[test]
+    fn engine_query_adds_site_operators() {
+        let one = SearchRequest::from_args(&json!({"query": "q x", "allowed_domains": ["a.com"]}));
+        assert_eq!(one.unwrap().engine_query(), "q x site:a.com");
+        let two = SearchRequest::from_args(
+            &json!({"query": "qq", "allowed_domains": ["a.com", "b.org"]}),
+        );
+        assert_eq!(two.unwrap().engine_query(), "qq (site:a.com OR site:b.org)");
+        let blocked = SearchRequest::from_args(
+            &json!({"query": "qq", "blocked_domains": ["a.com", "b.org"]}),
+        );
+        assert_eq!(
+            blocked.unwrap().engine_query(),
+            "qq -site:a.com -site:b.org"
+        );
+        let none = SearchRequest::from_args(&json!({"query": "plain"}));
+        assert_eq!(none.unwrap().engine_query(), "plain");
+    }
+
+    #[test]
+    fn filter_keeps_subdomains_and_drops_lookalikes() {
+        let allowed =
+            SearchRequest::from_args(&json!({"query": "qq", "allowed_domains": ["docs.rs"]}))
+                .unwrap();
+        assert!(allowed.keeps("https://docs.rs/tokio"));
+        assert!(allowed.keeps("https://api.Docs.rs/x"));
+        assert!(!allowed.keeps("https://notdocs.rs/x"));
+        assert!(!allowed.keeps("https://docs.rs.evil.com/x"));
+        assert!(!allowed.keeps("not a url"));
+        let blocked =
+            SearchRequest::from_args(&json!({"query": "qq", "blocked_domains": ["github.com"]}))
+                .unwrap();
+        assert!(!blocked.keeps("https://gist.github.com/x"));
+        assert!(blocked.keeps("https://gitlab.com/x"));
+    }
+
+    // ── Brave ─────────────────────────────────────────────────────────
+
+    const BRAVE_FIXTURE: &str = r#"{
+        "type": "search",
+        "web": {"results": [
+            {"title": "Graceful Shutdown | Tokio", "url": "https://tokio.rs/tokio/topics/shutdown",
+             "description": "How to <strong>shut down</strong> &amp; clean up.", "age": "March 6, 2025"},
+            {"title": "tokio-graceful", "url": "https://docs.rs/tokio-graceful"},
+            {"title": "Not the web", "url": "ftp://example.org/file"}
+        ]}
+    }"#;
+
+    #[test]
+    fn parse_brave_results() {
+        let results = parse_brave(BRAVE_FIXTURE).unwrap();
+        assert_eq!(results.len(), 2, "the ftp result is dropped");
+        assert_eq!(results[0].title, "Graceful Shutdown | Tokio");
+        assert_eq!(results[0].snippet, "How to shut down & clean up.");
+        assert_eq!(results[0].age.as_deref(), Some("March 6, 2025"));
+        assert_eq!(results[1].snippet, "");
+        assert_eq!(results[1].age, None);
+        assert!(parse_brave(r#"{"type":"search"}"#).unwrap().is_empty());
+        assert!(parse_brave("not json").is_err());
+    }
+
+    #[test]
+    fn format_shows_the_date_when_known() {
+        let out = format_results("tokio", &parse_brave(BRAVE_FIXTURE).unwrap());
+        assert!(out.contains("1. Graceful Shutdown | Tokio\n   https://tokio.rs/tokio/topics/shutdown\n   Published: March 6, 2025\n"), "{out}");
+        assert!(format_results("x", &[]).starts_with("No results found"));
+    }
+
+    /// What the stub server saw of one request.
+    #[derive(Clone, Default)]
+    struct Seen {
+        query: Option<String>,
+        body: String,
+        headers: axum::http::HeaderMap,
+    }
+
+    /// A server answering every request with `status` and `body`, keeping
+    /// the last request it saw.
+    async fn stub(
+        status: u16,
+        body: &'static str,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Seen>>) {
+        use axum::{
+            extract::State,
+            http::{HeaderMap, StatusCode, Uri},
+            routing::any,
+        };
+        type Shared = std::sync::Arc<std::sync::Mutex<Seen>>;
+        let seen: Shared = Default::default();
+        async fn handle(
+            State((seen, status, body)): State<(Shared, u16, &'static str)>,
+            uri: Uri,
+            headers: HeaderMap,
+            text: String,
+        ) -> (StatusCode, &'static str) {
+            *seen.lock().unwrap() = Seen {
+                query: uri.query().map(String::from),
+                body: text,
+                headers,
+            };
+            (StatusCode::from_u16(status).unwrap(), body)
+        }
+        let app = axum::Router::new()
+            .route("/{*path}", any(handle))
+            .with_state((seen.clone(), status, body));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/search", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.ok() });
+        (url, seen)
+    }
+
+    #[tokio::test]
+    async fn brave_sends_key_query_and_honest_agent() {
+        let (url, seen) = stub(200, BRAVE_FIXTURE).await;
+        let results = brave_search(&reqwest::Client::new(), &url, "k3y", "tokio site:tokio.rs")
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 2);
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(seen.headers["x-subscription-token"], "k3y");
+        let agent = seen.headers["user-agent"].to_str().unwrap();
+        assert!(agent.starts_with("Koda/"), "{agent}");
+        assert!(!agent.contains("Mozilla"), "{agent}");
+        let query = seen.query.unwrap();
+        assert!(query.contains("q=tokio+site%3Atokio.rs"), "{query}");
+        assert!(query.contains("count=10"), "{query}");
+        assert!(query.contains("text_decorations=false"), "{query}");
+    }
+
+    #[tokio::test]
+    async fn brave_errors_say_what_to_do() {
+        for (status, expect) in [(401, "check the key"), (429, "credit"), (500, "HTTP 500")] {
+            let (url, _) = stub(status, r#"{"error":"x"}"#).await;
+            let err = brave_search(&reqwest::Client::new(), &url, "SECRET-KEY-123", "tokio")
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(expect), "{status}: {err}");
+            assert!(
+                !err.contains("SECRET-KEY-123"),
+                "the key is never echoed: {err}"
+            );
+        }
+        let long = "x".repeat(BRAVE_MAX_QUERY + 1);
+        let err = brave_search(&reqwest::Client::new(), "http://127.0.0.1:9", "k", &long).await;
+        assert!(err.unwrap_err().to_string().contains("too long"));
+    }
+
+    // ── DuckDuckGo ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn duckduckgo_failures_suggest_a_brave_key() {
+        let page =
+            r#"<form id="challenge-form"><div class="anomaly-modal__modal">duck</div></form>"#;
+        for (status, body, expect) in [(202, page, "bot check"), (503, "busy", "HTTP 503")] {
+            let (url, _) = stub(status, body).await;
+            let err = duckduckgo_search(&reqwest::Client::new(), &url, "tokio")
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(expect), "{err}");
+            assert!(err.contains("BRAVE_API_KEY"), "{err}");
+        }
+    }
+
+    #[tokio::test]
+    async fn duckduckgo_sends_honest_agent() {
+        let (url, seen) = stub(200, DIRECT_FIXTURE).await;
+        let results = duckduckgo_search(&reqwest::Client::new(), &url, "tokio shutdown")
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 2);
+        let seen = seen.lock().unwrap().clone();
+        let agent = seen.headers["user-agent"].to_str().unwrap();
+        assert!(
+            agent.starts_with("Koda/") && !agent.contains("Firefox"),
+            "{agent}"
+        );
+        assert!(seen.body.contains("q=tokio+shutdown"), "{}", seen.body);
     }
 }

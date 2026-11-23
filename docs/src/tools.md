@@ -16,7 +16,7 @@ prompt. See [Trust modes](./approval.md) for the canonical matrix.
 | `Grep` | Read-only | Search file contents with a regex: matching files (the default), matching lines with optional context, or counts; filter by glob or file type; results in pages |
 | `Glob` | Read-only | List files matching a glob pattern |
 | `WebFetch` | Read-only | Fetch a URL and return its text content, marked as external content |
-| `WebSearch` | Read-only | Search the web via DuckDuckGo; results are marked as external content. When DuckDuckGo answers with a bot check instead of results, the search fails with that reason |
+| `WebSearch` | Read-only | Search the web and return the top five results (title, URL, snippet, date when known), marked as external content. Claude Code's shape: a `query`, plus `allowed_domains` or `blocked_domains` (not both). With `BRAVE_API_KEY` set, results come from the [Brave Search API](https://brave.com/search/api/); without it, from DuckDuckGo, which often answers with a bot check: the search then fails with that reason and suggests a Brave key |
 | `MemoryRead` | Read-only | Read from project or global memory |
 | `MemoryWrite` | Mutating | Save a fact to Koda's notes, outside the project |
 | `TodoWrite` | Read-only | Update the session task list (Koda-owned state, no FS impact) |
