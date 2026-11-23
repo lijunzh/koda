@@ -749,14 +749,14 @@ mod tests {
         assert_eq!(extract_snippet("<div>no snippet here</div>"), "");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn missing_query_is_error() {
         let result = web_search(&json!({}), None).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("query"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn empty_query_is_error() {
         let result = web_search(&json!({"query": "   "}), None).await;
         assert!(result.is_err());
@@ -1064,7 +1064,7 @@ mod tests {
         (url, seen)
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn brave_sends_key_query_and_honest_agent() {
         let (url, seen) = stub(200, BRAVE_FIXTURE).await;
         let results = brave_search(&reqwest::Client::new(), &url, "k3y", "tokio site:tokio.rs")
@@ -1082,7 +1082,7 @@ mod tests {
         assert!(query.contains("text_decorations=false"), "{query}");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn brave_errors_say_what_to_do() {
         for (status, expect) in [(401, "check the key"), (429, "credit"), (500, "HTTP 500")] {
             let (url, _) = stub(status, r#"{"error":"x"}"#).await;
@@ -1103,7 +1103,7 @@ mod tests {
 
     // ── DuckDuckGo ────────────────────────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn duckduckgo_failures_suggest_a_brave_key() {
         let page =
             r#"<form id="challenge-form"><div class="anomaly-modal__modal">duck</div></form>"#;
@@ -1118,7 +1118,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn duckduckgo_sends_honest_agent() {
         let (url, seen) = stub(200, DIRECT_FIXTURE).await;
         let results = duckduckgo_search(&reqwest::Client::new(), &url, "tokio shutdown")
