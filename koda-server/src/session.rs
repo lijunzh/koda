@@ -2485,7 +2485,7 @@ mod tests {
 
     /// A turn dropped where it stood after a cancel ends `interrupted`, and
     /// says on `turn/completed` that it didn't stop cleanly.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_turn_that_returns_an_error_says_so_on_turn_completed() {
         let (sink, mut events) = sink(None);
         sink.emit(EngineEvent::TurnStart {
