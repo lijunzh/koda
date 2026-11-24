@@ -13,7 +13,8 @@ are collected or transmitted anywhere.
   keys
 - Koda sends data only to the provider you chose, and to the sites and MCP
   servers its tools reach when the model calls `WebFetch`, `WebSearch` or an
-  MCP tool
+  MCP tool. A page `WebFetch` fetches goes to the provider too, for a
+  separate model call to read (Haiku on a Claude model)
 - Version checks query crates.io only (no Koda-specific server)
 - With an Anthropic key, the Claude aliases ask Anthropic's Models API for the
   newest model ids

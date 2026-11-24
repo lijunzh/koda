@@ -269,6 +269,9 @@ pub struct ToolRegistry {
     /// The model provider's own web search, set each turn from the
     /// provider and model ([`Self::set_web_searcher`]).
     web_searcher: std::sync::RwLock<Option<Arc<dyn crate::providers::WebSearcher>>>,
+    /// The model call that answers `WebFetch`'s questions
+    /// ([`Self::set_page_reader`]).
+    page_reader: std::sync::RwLock<Option<Arc<dyn web_fetch::PageReader>>>,
     /// Where sub-agents' approvals go ([`Self::set_approver`]).
     approver: std::sync::RwLock<Option<Arc<dyn crate::approval_flow::Approver>>>,
     /// The session's event sink, which outlives a turn
@@ -354,6 +357,7 @@ impl ToolRegistry {
             db: std::sync::RwLock::new(None),
             session_id: std::sync::RwLock::new(None),
             web_searcher: std::sync::RwLock::new(None),
+            page_reader: std::sync::RwLock::new(None),
             approver: std::sync::RwLock::new(None),
             session_sink: std::sync::RwLock::new(None),
             web_search_budget: Default::default(),
@@ -446,6 +450,15 @@ impl ToolRegistry {
     /// The `WebSearch` budget this registry draws on.
     pub fn web_search_budget(&self) -> Arc<web_search::WebSearchBudget> {
         Arc::clone(&self.web_search_budget)
+    }
+
+    /// Answer `WebFetch`'s questions with `reader`: Haiku on a Claude model,
+    /// the session's model on any other. Set at the start of each turn, as
+    /// the model can change between turns.
+    pub fn set_page_reader(&self, reader: Option<Arc<dyn web_fetch::PageReader>>) {
+        if let Ok(mut guard) = self.page_reader.write() {
+            *guard = reader;
+        }
     }
 
     /// Use the model provider's own web search for `WebSearch`, or (with
@@ -753,6 +766,7 @@ impl ToolRegistry {
                 session,
                 skill_registry: &self.skill_registry,
                 web_searcher: self.web_searcher.read().ok().and_then(|g| g.clone()),
+                page_reader: self.page_reader.read().ok().and_then(|g| g.clone()),
                 web_search_budget: Some(&self.web_search_budget),
                 max_goal_token_budget: self.max_goal_token_budget,
                 takes_images: self.takes_images(),

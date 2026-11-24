@@ -14,12 +14,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- **`WebFetch` works as Claude Code's.** It takes a `url` and a `prompt`, and a separate model call reads the page and answers (Haiku on a Claude model, the session's model elsewhere), so the page no longer fills the conversation; up to 100,000 characters a call, with `offset` to read on. HTML becomes Markdown (Markdown is asked for first), pages are kept for 15 minutes, a download may take five minutes, a redirect to another site returns its URL, and PDFs and other binaries aren't read as text. It now asks in Safe and Plan before fetching from a site, except about 90 documentation sites (Claude Code's list); "allow for session" covers the site. `raw` is gone.
 - **Sub-agents ask you in the main session, as in Claude Code and Codex.** A sub-agent's call that would ask for the main agent now asks for the sub-agent too, blocking or in the background, with the agent named (`🤖 task asks`) and a background agent's ID. Esc refuses that one call and the agent goes on. "Allow for session" covers the whole session. A background agent can ask after its turn has ended; requests that arrive together are shown one at a time. Clients get the request as `item/toolCall/requestApproval` with a new `agent` field. In `koda exec`, Koda answers as it does for the main agent.
 - **Sub-agents follow the session's rules, and Safe no longer moves writers to a worktree.** Before, sub-agents couldn't ask: their edits ran without asking in Safe and Auto, destructive actions were blocked, and in Safe a writing sub-agent worked in a git worktree, its changes left on a branch. Now a Safe sub-agent's edit asks, as the main agent's does, and lands in the project; an agent that wants a worktree sets `"isolation": "worktree"`.
 
 ### Fixed
 
 - **On Claude models, a streamed `SpawnAgent` or `AskUser` call no longer gets a stub answer.** Read-only tools run while the reply still streams, and these two, handled by the loop rather than the tool registry, answered "... is handled by the inference loop." They now wait for the normal dispatch, as `InvokeAgent` did.
+- **On Claude models, `WebSearch`'s request is counted when it runs while the reply streams.** Read-only tools run early on Claude models, and that path didn't report what a tool's own model request used, so a search's tokens could be left out of the session's usage and `turn_token_budget`.
+- **`WebFetch` no longer crashes on a long page of non-ASCII text.** It cut the page at a byte count, which could fall inside a character (Chinese or Japanese text, many symbols); it now reads on character boundaries. Downloads also stop at 10 MB.
 
 ## [0.7.10] - 2026-11-23
 

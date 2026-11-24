@@ -17,7 +17,7 @@ prompt. See [Trust modes](./approval.md) for the canonical matrix.
 | `Cargo` | Mutating | `cargo check`, `clippy`, `test` or `build` from the project root, with one line per compiler diagnostic and, for `test`, the failing tests with panic locations |
 | `Grep` | Read-only | Search file contents with a regex: matching files (the default), matching lines with optional context, or counts; filter by glob or file type; results in pages |
 | `Glob` | Read-only | List files matching a glob pattern |
-| `WebFetch` | Read-only | Fetch a URL and return its text content, marked as external content |
+| `WebFetch` | Asks, except documentation sites | Fetch a page and answer a question about it, as Claude Code's ([Fetching pages](#fetching-pages)) |
 | `WebSearch` | Read-only | Search the web and return the top five results (title, URL, snippet, date when known), marked as external content. Claude Code's shape: a `query`, plus `allowed_domains` or `blocked_domains` (not both). On a Claude model it searches as Claude Code's `WebSearch` does: a separate request to the same model with Anthropic's web search tool, which returns the model's summary and the links (billed to your Anthropic account: Anthropic's per-search price plus the tokens). On other models, with `BRAVE_API_KEY` set (or a key saved with `/key`), results come from the [Brave Search API](https://brave.com/search/api/); without it, from DuckDuckGo, which often answers with a bot check: the search then fails with that reason and suggests a Brave key. A session may make 200 calls, as in Claude Code (see [Web search budget](#web-search-budget)) |
 | `MemoryRead` | Read-only | Read from project or global memory |
 | `MemoryWrite` | Mutating | Save a fact to Koda's notes, outside the project |
@@ -120,6 +120,38 @@ project's instructions ask for delegation, as with any sub-agent.
   session. Esc stops the turn, not background agents. A stopped agent sends
   no report; its session keeps what it did, and `SendMessage` continues it.
 
+### Fetching pages
+
+`WebFetch` is Claude Code's tool of the same name. The model gives it a
+`url` and a `prompt`, what it wants to find out; Koda fetches the page and a
+separate model call reads it and answers, so the page itself doesn't fill
+the conversation.
+
+- **Who reads it:** Haiku on a Claude model, as Claude Code uses its small
+  model; on any other model, the session's own model. Its tokens count in the
+  session's usage. A short Markdown page from a documentation site comes back
+  as it is.
+- **How much:** one call reads up to 100,000 characters of the page (less
+  for a model with a small window). On a longer page the result says where
+  it stopped, and `offset` reads on from there.
+- **The page:** Koda asks for Markdown first and turns HTML into Markdown,
+  keeping headings, links and code. PDFs and other binary files aren't read
+  as text: download them with `curl` and open them with `Read`. Pages are
+  kept for 15 minutes; a download gives up after five minutes or 10 MB.
+- **Redirects:** on the same site they're followed, each checked against the
+  rules below; a redirect to another site returns its URL, and the model
+  decides whether to fetch it.
+- **Where it can't go:** `localhost`, private addresses and cloud metadata
+  endpoints, on the first request and on every redirect.
+- **Asking:** a fetch from a site can carry data out in its URL, so Safe and
+  Plan ask first and Auto doesn't, as in Claude Code. About 90 documentation
+  sites (Claude Code's list: docs.python.org, doc.rust-lang.org, MDN, React,
+  Django, the AWS docs and others) never ask. "Allow for session" covers the
+  site.
+- **What the reader is told:** the page is fenced as untrusted text, to be
+  described, never obeyed, and the answer flags any instructions aimed at an
+  AI found in it.
+
 ### Web search budget
 
 A session may make 200 `WebSearch` calls, shared by every agent in it, as
@@ -183,7 +215,8 @@ prompts and the sandbox ([Approval](approval.md), [Sandbox](sandbox.md)).
 
 | Category | Tools | Plan | Safe | Auto |
 |----------|-------|------|------|------|
-| Read-only | Read, Grep, Glob, List, ListAgents, WebFetch, WebSearch, RecallContext, TodoWrite, GetGoal, CreateGoal, UpdateGoal | ✅ Auto | ✅ Auto | ✅ Auto |
+| Read-only | Read, Grep, Glob, List, ListAgents, WebSearch, RecallContext, TodoWrite, GetGoal, CreateGoal, UpdateGoal, WebFetch on a documentation site | ✅ Auto | ✅ Auto | ✅ Auto |
+| Fetching a page | WebFetch on any other site | ⏸ Prompt | ⏸ Prompt | ✅ Auto |
 | Internal | ActivateSkill | ✅ Auto | ✅ Auto | ✅ Auto |
 | Mutations | Write, Edit, MemoryWrite, Cargo | ❌ Deny | ⏸ Prompt | ✅ Auto |
 | Agent calls | InvokeAgent, SpawnAgent | ✅ Auto | ✅ Auto | ✅ Auto |

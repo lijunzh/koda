@@ -515,8 +515,13 @@ fn check_tool_inner(
         return ToolApproval::AutoApprove;
     }
 
-    // Plan mode: deny everything except read-only (in both contexts)
+    // Plan mode: deny everything except read-only, but ask before fetching
+    // a page from a site that isn't a preapproved documentation site, as
+    // Claude Code does: reading the web is part of planning.
     if mode == TrustMode::Plan {
+        if tool_name == "WebFetch" {
+            return ToolApproval::NeedsConfirmation;
+        }
         return ToolApproval::Blocked;
     }
 
@@ -725,6 +730,13 @@ pub fn session_allow_key(
     effect: ToolEffect,
     project_root: &Path,
 ) -> Option<String> {
+    // A fetch from a site: "allow for session" covers the site, as Claude
+    // Code's allow covers a domain.
+    if tool_name == "WebFetch" && effect == ToolEffect::RemoteAction {
+        let url = args.get("url").and_then(|v| v.as_str())?;
+        let host = crate::tools::web_fetch::host_of(url)?;
+        return Some(format!("WebFetch\0{host}"));
+    }
     if effect != ToolEffect::LocalMutation || reaches_outside_project(tool_name, args, project_root)
     {
         return None;
@@ -929,7 +941,6 @@ mod tests {
         "MemoryRead",
         "ListAgents",
         "InvokeAgent",
-        "WebFetch",
         "WebSearch",
         "ListSkills",
         "ActivateSkill",
@@ -991,9 +1002,54 @@ mod tests {
         }
         // Read-only tools always auto-approve regardless of sandbox.
         assert_eq!(
-            check_tool("WebFetch", &serde_json::json!({}), TrustMode::Auto, None),
+            check_tool("WebSearch", &serde_json::json!({}), TrustMode::Auto, None),
             ToolApproval::AutoApprove,
         );
+    }
+
+    /// `WebFetch` asks, as Claude Code's does, except for a preapproved
+    /// documentation site: Safe and Plan ask, Auto doesn't, and "allow for
+    /// session" covers the site.
+    #[test]
+    fn web_fetch_asks_except_for_documentation_sites() {
+        let site = serde_json::json!({"url": "https://example.com/a", "prompt": "q"});
+        let docs = serde_json::json!({"url": "https://doc.rust-lang.org/std/", "prompt": "q"});
+        for mode in [TrustMode::Safe, TrustMode::Plan] {
+            assert_eq!(
+                check_tool("WebFetch", &site, mode, None),
+                ToolApproval::NeedsConfirmation,
+                "{mode:?}"
+            );
+        }
+        if crate::sandbox::is_available() {
+            assert_eq!(
+                check_tool("WebFetch", &site, TrustMode::Auto, None),
+                ToolApproval::AutoApprove
+            );
+        }
+        for mode in [TrustMode::Safe, TrustMode::Plan, TrustMode::Auto] {
+            assert_eq!(
+                check_tool("WebFetch", &docs, mode, None),
+                ToolApproval::AutoApprove,
+                "{mode:?}"
+            );
+        }
+        let root = Path::new("/project");
+        let key = |url: &str| {
+            let args = serde_json::json!({"url": url, "prompt": "q"});
+            session_allow_key(
+                "WebFetch",
+                &args,
+                resolve_tool_effect("WebFetch", &args),
+                root,
+            )
+        };
+        assert_eq!(
+            key("https://Example.com/a"),
+            key("http://example.com/b?x=1")
+        );
+        assert_ne!(key("https://example.com/a"), key("https://example.org/a"));
+        assert!(key("https://example.com/a").is_some());
     }
 
     #[test]

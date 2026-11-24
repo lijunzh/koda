@@ -733,6 +733,9 @@ fn run_sub_agent<'a>(
             };
             // `WebSearch` on a Claude model searches with Anthropic's tool.
             registry.set_web_searcher(provider.web_searcher(&sub_config.model_settings.model));
+            registry.set_page_reader(Some(std::sync::Arc::new(
+                crate::tools::web_fetch::ModelPageReader::new(&sub_config),
+            )));
             registry
         };
         let tool_defs = {
