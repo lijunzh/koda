@@ -887,8 +887,11 @@ async fn collect_stream(
                     // Eager dispatch only fires for read-only tools (filtered
                     // above). Bash is never read-only, so `caller_spawner=None`
                     // is correct here — there is no Bash path to mis-tag.
+                    // With the sink, so `WebSearch` and `WebFetch` report
+                    // what their model requests used, as when dispatched
+                    // later.
                     let r = tools
-                        .execute(&tc.function_name, &tc.arguments, None, None)
+                        .execute(&tc.function_name, &tc.arguments, Some((sink, &tc.id)), None)
                         .await;
                     eager_results.push((
                         tc.id.clone(),
