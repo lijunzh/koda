@@ -21,6 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Fixed
 
 - **On Claude models, a streamed `SpawnAgent` or `AskUser` call no longer gets a stub answer.** Read-only tools run while the reply still streams, and these two, handled by the loop rather than the tool registry, answered "... is handled by the inference loop." They now wait for the normal dispatch, as `InvokeAgent` did.
+- **On Claude models, `WebSearch`'s request is counted when it runs while the reply streams.** Read-only tools run early on Claude models, and that path didn't report what a tool's own model request used, so a search's tokens could be left out of the session's usage and `turn_token_budget`.
 - **`WebFetch` no longer crashes on a long page of non-ASCII text.** It cut the page at a byte count, which could fall inside a character (Chinese or Japanese text, many symbols); it now reads on character boundaries. Downloads also stop at 10 MB.
 
 ## [0.7.10] - 2026-11-23
