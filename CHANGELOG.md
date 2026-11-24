@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.7.11] - 2026-11-23
+
 ### Added
 
 - **`Monitor`, as in Claude Code: watch a command's output as events.** The model starts a command in the background, in the `Bash` sandbox, and each line it prints to stdout reaches the model while the conversation goes on; lines within 200 ms come together, and an idle session starts a turn for them, as for a background command's exit. The watch ends at its deadline (5 minutes by default, at most 30, at most 10 in `koda exec`), when the command exits, or after 1,000 events, with one last notice. Stderr goes to a file, named when a watch ends silent. Lines are cut at 4,096 bytes, and past a burst of 5 a monitor gets 1 line a second, the rest dropped and counted; at most 16 run at once (qwen-code's limits, since Claude Code documents none). The same approval rules as `Bash`; not available to sub-agents.
