@@ -47,10 +47,13 @@ fn agent_id(output: &str) -> String {
         .to_string()
 }
 
-async fn wait_for_notice(env: &Env) {
+/// Wait until no background agent runs. Its notice may already be in the
+/// conversation: a fast agent finishes before the parent's next step, which
+/// then takes it.
+async fn wait_idle(env: &Env) {
     let agents = env.tools.bg_registry.agents();
-    for _ in 0..200 {
-        if agents.has_notices() {
+    for _ in 0..400 {
+        if agents.running() == 0 {
             return;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
@@ -59,6 +62,21 @@ async fn wait_for_notice(env: &Env) {
         "the background agent never finished: {:?}",
         agents.snapshot()
     );
+}
+
+/// One more step, which delivers a notice still pending.
+async fn next_step(env: &Env) {
+    let provider = MockProvider::new(vec![MockResponse::Text("noted".into())]);
+    env.run_inference(&provider).await;
+}
+
+/// The agent notices in the conversation.
+async fn notices_in(env: &Env) -> Vec<String> {
+    messages(env)
+        .await
+        .into_iter()
+        .filter(|m| m.contains("<agent_notification"))
+        .collect()
 }
 
 async fn messages(env: &Env) -> Vec<String> {
@@ -100,21 +118,15 @@ async fn a_background_agent_returns_at_once_and_reports_by_notice() {
     assert!(started.contains("in the background"), "{started}");
     let id = agent_id(&started);
 
-    wait_for_notice(&env).await;
-    assert!(
-        env.tools.bg_registry.has_notices(),
-        "an idle session wakes for it"
-    );
+    wait_idle(&env).await;
     assert!(!env.tools.bg_registry.any_working());
 
-    // The next step tells the model, once.
-    let provider = MockProvider::new(vec![MockResponse::Text("It says auth is fine.".into())]);
-    env.run_inference(&provider).await;
-    let all = messages(&env).await;
-    let notice = all
-        .iter()
-        .find(|m| m.contains("<agent_notification"))
-        .expect("the notice is in the conversation");
+    // A step tells the model, once.
+    next_step(&env).await;
+    next_step(&env).await;
+    let all = notices_in(&env).await;
+    assert_eq!(all.len(), 1, "told once: {all:#?}");
+    let notice = &all[0];
     assert!(notice.contains(&format!("id=\"{id}\"")), "{notice}");
     assert!(notice.contains("status=\"completed\""), "{notice}");
     assert!(notice.contains("Echo: the auth module is fine"), "{notice}");
@@ -147,7 +159,7 @@ async fn send_message_continues_a_finished_agent_with_its_conversation() {
         &env.run_inference(&provider).await,
         "InvokeAgent",
     ));
-    wait_for_notice(&env).await;
+    wait_idle(&env).await;
 
     let provider = MockProvider::new(vec![
         MockResponse::tool_call(
@@ -161,11 +173,23 @@ async fn send_message_continues_a_finished_agent_with_its_conversation() {
         result_of(&events, "SendMessage").contains("continues in the background"),
         "{events:#?}"
     );
-    wait_for_notice(&env).await;
-    let notices = env.tools.bg_registry.agents().take_notices();
-    assert_eq!(notices.len(), 1);
-    assert_eq!(notices[0].id, id);
-    assert_eq!(notices[0].result, "second answer");
+    wait_idle(&env).await;
+    next_step(&env).await;
+    let all = notices_in(&env).await;
+    // One notice per run. (The test's small window may compact the
+    // conversation, so they aren't checked in order.)
+    assert_eq!(all.len(), 2, "one notice per run: {all:#?}");
+    assert!(
+        all.iter().all(|n| n.contains(&format!("id=\"{id}\""))),
+        "{all:#?}"
+    );
+    for answer in ["first answer", "second answer"] {
+        assert_eq!(
+            all.iter().filter(|n| n.contains(answer)).count(),
+            1,
+            "{answer}: {all:#?}"
+        );
+    }
 
     // The second run saw the first: its request carries both prompts and
     // the first answer.

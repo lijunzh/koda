@@ -6,7 +6,7 @@
 //! idle session starts a turn for it, as for a background command's exit
 //! or a monitor's events). `SendMessage` reaches a running agent at its
 //! next step, or runs a finished one again with its whole conversation;
-//! `TaskStop` stops one. Codex's limits apply: at most [`MAX_RUNNING`] at
+//! `TaskStop` stops one. Codex's limits apply: at most [`MAX_RUNNING`](crate::tools::bg_agents::MAX_RUNNING) at
 //! once, and sub-agents can't start sub-agents.
 //!
 //! This table only keeps the state; `sub_agent_dispatch` runs the agents.
