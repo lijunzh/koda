@@ -508,7 +508,20 @@ fn check_tool_inner(
     project_root: Option<&Path>,
     registry: Option<&crate::tools::ToolRegistry>,
 ) -> ToolApproval {
-    let effect = resolve_tool_effect_inner(tool_name, args, registry);
+    let mut effect = resolve_tool_effect_inner(tool_name, args, registry);
+
+    // `cd` is read-only, but one that may leave the project makes the
+    // command a change again, so `cd /etc && ls` asks as it always has
+    // and Plan still blocks it.
+    if effect == ToolEffect::ReadOnly
+        && matches!(tool_name, "Bash" | "Monitor")
+        && args
+            .get("command")
+            .and_then(|v| v.as_str())
+            .is_some_and(|cmd| crate::bash_path_lint::cd_leaves_project(cmd, project_root))
+    {
+        effect = ToolEffect::LocalMutation;
+    }
 
     // Read-only tools always auto-approve in every mode and context
     if effect == ToolEffect::ReadOnly {
@@ -1264,6 +1277,54 @@ mod tests {
         let args = serde_json::json!({"command": "cd /etc && ls"});
         assert_eq!(
             check_tool("Bash", &args, TrustMode::Auto, Some(root)),
+            ToolApproval::NeedsConfirmation,
+        );
+    }
+
+    /// The shell-search A/B's searches, which asked in Safe only for the
+    /// `cd` in front: a `cd` inside the project leaves them read-only.
+    #[test]
+    fn test_bash_cd_inside_then_read_only_runs_in_safe() {
+        let root = Path::new("/home/user/project");
+        for cmd in [
+            "cd /home/user/project && grep -rn fmt_money --include='*.rs' . | head -50",
+            "cd /home/user/project && ls && cat Cargo.toml",
+            "cd src && find . -name '*.rs'",
+        ] {
+            let args = serde_json::json!({ "command": cmd });
+            assert_eq!(
+                check_tool("Bash", &args, TrustMode::Safe, Some(root)),
+                ToolApproval::AutoApprove,
+                "{cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_bash_cd_that_may_leave_still_asks_in_safe_and_blocks_in_plan() {
+        let root = Path::new("/home/user/project");
+        for cmd in [
+            "cd /etc && ls",
+            "cd ~ && ls",
+            "cd $DIR && ls",
+            "cd .. && ls",
+        ] {
+            let args = serde_json::json!({ "command": cmd });
+            assert_eq!(
+                check_tool("Bash", &args, TrustMode::Safe, Some(root)),
+                ToolApproval::NeedsConfirmation,
+                "{cmd}"
+            );
+            assert_eq!(
+                check_tool("Bash", &args, TrustMode::Plan, Some(root)),
+                ToolApproval::Blocked,
+                "{cmd}"
+            );
+        }
+        // `cd` with `git` asks in Safe, as in Claude Code.
+        let args = serde_json::json!({ "command": "cd src && git status" });
+        assert_eq!(
+            check_tool("Bash", &args, TrustMode::Safe, Some(root)),
             ToolApproval::NeedsConfirmation,
         );
     }

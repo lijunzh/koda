@@ -350,6 +350,72 @@ fn test_sed_stdout_vs_in_place() {
     );
 }
 
+/// `cd` changes nothing, so a read-only command after it stays read-only.
+/// These asked in Safe mode in the shell-search A/B (2026-11-24) only
+/// because of the `cd` the model put in front.
+#[test]
+fn test_cd_then_read_only_is_read_only() {
+    let dir = "/Users/me/project";
+    for cmd in [
+        "ls && cat Cargo.toml",
+        r#"grep -rn "fmt_money" --include="*.rs" . | head -50"#,
+        r#"grep -rn "fmt_money" . --exclude-dir=target --exclude-dir=.git || echo "none""#,
+        r#"find . -name "*.rs" -not -path "./target/*""#,
+        "find . -path ./target -prune -o -name '*.rs' -print | head -50",
+        "sed -n 1,20p src/lib.rs",
+    ] {
+        let full = format!("cd {dir} && {cmd}");
+        assert_eq!(
+            classify_bash_command(&full),
+            ToolEffect::ReadOnly,
+            "expected ReadOnly: {full}"
+        );
+    }
+    assert_eq!(classify_bash_command("cd src"), ToolEffect::ReadOnly);
+    assert_eq!(classify_bash_command("cd"), ToolEffect::ReadOnly);
+    assert_eq!(classify_bash_command("cd src; ls"), ToolEffect::ReadOnly);
+}
+
+/// As in Claude Code, `cd` and `git` in one command is a change: a
+/// repository in another folder brings config and hooks that git runs.
+#[test]
+fn test_cd_with_git_is_not_read_only() {
+    for cmd in [
+        "cd /Users/me/project && git status --short && git diff",
+        "cd sub && git log --oneline -5",
+        "git status && cd sub",
+        "(cd sub && git status)",
+        "cd sub && FOO=1 git status",
+    ] {
+        assert_eq!(
+            classify_bash_command(cmd),
+            ToolEffect::LocalMutation,
+            "expected LocalMutation: {cmd}"
+        );
+    }
+}
+
+/// `cd` doesn't lower what follows it.
+#[test]
+fn test_cd_keeps_the_effect_of_what_follows() {
+    assert_eq!(
+        classify_bash_command("cd src && cargo build"),
+        ToolEffect::LocalMutation
+    );
+    assert_eq!(
+        classify_bash_command("cd src && rm -rf build"),
+        ToolEffect::Destructive
+    );
+    assert_eq!(
+        classify_bash_command("cd src && ls > out"),
+        ToolEffect::LocalMutation
+    );
+    assert_eq!(
+        classify_bash_command("cd $(rm -rf x) && ls"),
+        ToolEffect::Destructive
+    );
+}
+
 // ── False-positive regression tests (#802, #807) ─────────────────────────────
 
 /// Dangerous-looking text inside quoted arguments must NOT trigger Destructive.
