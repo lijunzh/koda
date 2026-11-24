@@ -5,10 +5,9 @@
 //! Each sub-agent gets its own session, provider, and (optionally) worktree
 //! for isolation. Results are cached by `(agent_name, prompt_hash)`.
 
-use crate::approval_flow::{CommandInbox, request_approval};
 use crate::config::AgentIsolation;
 use crate::engine::event::ToolOutcome;
-use crate::engine::{ApprovalDecision, EngineCommand, EngineEvent};
+use crate::engine::{ApprovalDecision, EngineEvent};
 use crate::memory;
 use crate::preview;
 use crate::prompt::build_system_prompt;
@@ -24,7 +23,6 @@ use anyhow::{Context, Result};
 use koda_sandbox::{CwdProvider, GitWorktreeProvider, WorkspaceProvider};
 
 use std::sync::atomic::{AtomicU32, Ordering};
-use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 /// Process-wide allocator for sub-agent invocation IDs.
@@ -198,6 +196,8 @@ pub(crate) struct Parent<'a> {
     /// Claude Code.
     pub web_search_budget: std::sync::Arc<crate::tools::web_search::WebSearchBudget>,
     pub caller_spawner: Option<u32>,
+    /// Where its approvals go: the session's client.
+    pub approver: Option<std::sync::Arc<dyn crate::approval_flow::Approver>>,
 }
 
 impl<'a> Parent<'a> {
@@ -217,6 +217,7 @@ impl<'a> Parent<'a> {
             session_allows: turn.session_allows,
             web_search_budget: turn.tools.web_search_budget(),
             caller_spawner: tx.caller_spawner,
+            approver: turn.tools.approver(),
         }
     }
 }
@@ -224,6 +225,8 @@ impl<'a> Parent<'a> {
 /// A background run's links to its entry in
 /// [`crate::tools::bg_agents::BgAgents`].
 pub(crate) struct Background {
+    /// The agent's id, which its approval requests name.
+    pub id: String,
     /// Messages from `SendMessage`, read at each step.
     pub inbox: crate::tools::bg_agents::Inbox,
     /// The agent's session: filled to continue one, and filled by a new
@@ -234,7 +237,6 @@ pub(crate) struct Background {
 pub(crate) fn execute_sub_agent<'a>(
     parent: Parent<'a>,
     arguments: &'a str,
-    cmd_rx: &'a mut mpsc::Receiver<EngineCommand>,
     parent_cache: Option<crate::tools::FileReadCache>,
     parent_sandbox_policy: &'a koda_sandbox::SandboxPolicy,
     parent_tool_call_id: Option<&'a str>,
@@ -249,7 +251,6 @@ pub(crate) fn execute_sub_agent<'a>(
     let run = run_sub_agent(
         parent,
         arguments,
-        cmd_rx,
         parent_cache,
         parent_sandbox_policy,
         parent_tool_call_id,
@@ -287,7 +288,6 @@ const ENDED_SUMMARY_CHARS: usize = 200;
 fn run_sub_agent<'a>(
     parent: Parent<'a>,
     arguments: &'a str,
-    cmd_rx: &'a mut mpsc::Receiver<EngineCommand>,
     parent_cache: Option<crate::tools::FileReadCache>,
     // Phase 5 PR-4 of #934: parent's effective sandbox policy. The
     // child policy is composed onto this so the child can only narrow,
@@ -322,6 +322,7 @@ fn run_sub_agent<'a>(
             session_allows,
             web_search_budget,
             caller_spawner: parent_spawner,
+            approver,
         } = parent;
         // A background agent being continued works in its own session again.
         let resume_session = background.and_then(|b| b.session.lock().clone());
@@ -618,17 +619,11 @@ fn run_sub_agent<'a>(
         let provider = crate::providers::create_provider(&sub_config.provider_settings());
         // A sub-agent writes in the project, like the main agent and like
         // Claude Code's and Codex's sub-agents, so its edits land where the user
-        // expects. Two cases get a git worktree instead: an agent that asks for
-        // one, and any writer in Safe mode. Safe promises that nothing changes
-        // without the user's OK and a sub-agent can't ask, so its work waits on
-        // a branch for the user to merge. Where a worktree is needed and can't
-        // be had, the sub-agent doesn't start: the project is no substitute.
-        let needs_isolation = needs_worktree(
-            sub_config.trust,
-            edits_files(&sub_config.allowed_tools, &sub_config.disallowed_tools),
-            isolation,
-            mode,
-        );
+        // expects; in Safe mode it asks for them as the main agent does. An
+        // agent that asks for a worktree (`isolation`) gets one instead. Where a
+        // worktree is needed and can't be had, the sub-agent doesn't start: the
+        // project is no substitute.
+        let needs_isolation = needs_worktree(sub_config.trust, isolation);
         // Phase 1 of #1022: explicit `+ Send + Sync` on the trait object.
         // The supertrait bound `WorkspaceProvider: Send + Sync` constrains
         // *implementors*, but Rust trait objects don't auto-inherit those
@@ -1315,22 +1310,22 @@ fn run_sub_agent<'a>(
                     let (output, outcome) = if let Some(error) = validation_error {
                         (format!("Validation error: {error}"), ToolOutcome::Error)
                     } else {
-                        // #1250: sub-agent context. The dead approval channel
-                        // (line 173) means `NeedsConfirmation` is meaningless
-                        // here. `check_tool_for_sub_agent` resolves it per the
-                        // safe-side rule: mutating ops auto-approve (the agent
-                        // was invoked to do work), destructive ops block.
-                        let mut approval = trust::check_tool_for_sub_agent_with_registry(
+                        // The main agent's rules, as Claude Code's sub-agents
+                        // inherit the session's mode and rules: what would ask
+                        // the main agent asks for a sub-agent too, in the main
+                        // session, naming it.
+                        let mut approval = trust::check_tool_with_registry(
                             &tc.function_name,
                             &parsed_args,
                             mode,
                             Some(effective_root_ref),
                             &tools,
                         );
-                        // A sub-agent may stop the background processes it
-                        // started; `kill` alone would be blocked as destructive.
-                        if approval == ToolApproval::Blocked
-                            && mode != crate::trust::TrustMode::Plan
+                        // Stopping a background process it started is a local
+                        // mutation, not the destructive `kill` it reads as:
+                        // Auto doesn't ask, as for the main agent.
+                        if mode == TrustMode::Auto
+                            && approval == ToolApproval::NeedsConfirmation
                             && tc.function_name == "Bash"
                             && crate::tools::shell::signals_only_own_background(
                                 &parsed_args,
@@ -1343,7 +1338,7 @@ fn run_sub_agent<'a>(
 
                         // A `kill` of the agent's own processes inside a longer
                         // command can't work in the sandbox: say how instead.
-                        let own_kill_hint = (mode != crate::trust::TrustMode::Plan
+                        let own_kill_hint = (mode != TrustMode::Plan
                             && tc.function_name == "Bash")
                             .then(|| {
                                 crate::tools::shell::own_kill_in_longer_command(
@@ -1353,127 +1348,125 @@ fn run_sub_agent<'a>(
                                 )
                             })
                             .flatten();
+
+                        // A yes "for this session" covers the same command or
+                        // file again, whichever agent it was given to.
+                        let effect = (approval == ToolApproval::NeedsConfirmation).then(|| {
+                            crate::trust::resolve_tool_effect_with_registry(
+                                &tc.function_name,
+                                &parsed_args,
+                                &tools,
+                            )
+                        });
+                        let session_key = effect.and_then(|effect| {
+                            trust::session_allow_key(
+                                &tc.function_name,
+                                &parsed_args,
+                                effect,
+                                effective_root_ref,
+                            )
+                        });
+                        if session_key
+                            .as_deref()
+                            .is_some_and(|key| session_allows.contains(key))
+                        {
+                            approval = ToolApproval::AutoApprove;
+                        }
+
                         if let Some(hint) = own_kill_hint {
                             (hint, ToolOutcome::Error)
                         } else {
-                        match approval {
-                            ToolApproval::AutoApprove => {
-                                // #1022 B6 + B7: route through `execute_one_tool`
-                                // (instead of calling `tools.execute()` directly)
-                                // so that:
-                                //   - mutating tool calls invalidate the
-                                //     `SubAgentCache` (B6) — otherwise an
-                                //     identical follow-up `InvokeAgent` returns
-                                //     a stale cached result.
-                                //   - nested `InvokeAgent` from inside this
-                                //     sub-agent dispatches recursively into
-                                //     `execute_sub_agent` (B7), instead of
-                                //     hitting the registry stub that returns
-                                //     "InvokeAgent is handled by the inference
-                                //     loop." with success=false.
-                                //   - Bash output streams through the parent
-                                //     sink (free visibility win).
-                                tool_output(tc, sub_tx, &cancel, &mut images).await
-                            }
-                            ToolApproval::Blocked => {
-                                let detail =
-                                    tools::describe_action(&tc.function_name, &parsed_args);
-                                let diff_preview = preview::compute(
-                                    &tc.function_name,
-                                    &parsed_args,
-                                    effective_root_ref,
-                                )
-                                .await;
-                                sink.emit(EngineEvent::ActionBlocked {
-                                    tool_call_id: tc.id.clone(),
-                                    tool_name: tc.function_name.clone(),
-                                    detail,
-                                    preview: diff_preview,
-                                });
-                                (
-                                    "[safe mode] Action blocked.".to_string(),
-                                    ToolOutcome::Declined,
-                                )
-                            }
-                            ToolApproval::NeedsConfirmation => {
-                                let detail =
-                                    tools::describe_action(&tc.function_name, &parsed_args);
-                                let diff_preview = preview::compute(
-                                    &tc.function_name,
-                                    &parsed_args,
-                                    effective_root_ref,
-                                )
-                                .await;
-                                let effect = crate::trust::resolve_tool_effect_with_registry(
-                                    &tc.function_name,
-                                    &parsed_args,
-                                    &tools,
-                                );
-                                // Sub-agents read a closed channel, so nothing
-                                // can be queued here.
-                                let mut no_steers = Vec::new();
-                                match request_approval(
-                                    sink,
-                                    &mut CommandInbox::new(cmd_rx, &mut no_steers),
-                                    &cancel,
-                                    &tc.id,
-                                    &tc.function_name,
-                                    &detail,
-                                    diff_preview,
-                                    effect,
-                                    false,
-                                )
-                                .await
-                                {
-                                    Some(
-                                        ApprovalDecision::Approve
-                                        | ApprovalDecision::ApproveForSession,
-                                    ) => tool_output(tc, sub_tx, &cancel, &mut images).await,
-                                    Some(ApprovalDecision::Reject) => (
-                                        "[rejected by user]".to_string(),
+                            match approval {
+                                ToolApproval::AutoApprove => {
+                                    // Through `execute_one_tool`, so mutating
+                                    // calls invalidate the sub-agent cache and
+                                    // Bash output streams (#1022 B6, B7).
+                                    tool_output(tc, sub_tx, &cancel, &mut images).await
+                                }
+                                ToolApproval::Blocked => {
+                                    let detail =
+                                        tools::describe_action(&tc.function_name, &parsed_args);
+                                    let diff_preview = preview::compute(
+                                        &tc.function_name,
+                                        &parsed_args,
+                                        effective_root_ref,
+                                    )
+                                    .await;
+                                    sink.emit(EngineEvent::ActionBlocked {
+                                        tool_call_id: tc.id.clone(),
+                                        tool_name: tc.function_name.clone(),
+                                        detail,
+                                        preview: diff_preview,
+                                    });
+                                    (
+                                        crate::trust::PLAN_BLOCKED_MESSAGE.to_string(),
                                         ToolOutcome::Declined,
-                                    ),
-                                    Some(ApprovalDecision::RejectWithFeedback { feedback }) => (
-                                        format!("[rejected: {feedback}]"),
-                                        ToolOutcome::Declined,
-                                    ),
-                                    Some(ApprovalDecision::RejectAuto { reason }) => {
-                                        // #1022 B15: same shape as the existing
-                                        // sub-agent auto-reject below, so the model
-                                        // sees a uniform "no human, here's why"
-                                        // signal regardless of whether the auto-
-                                        // rejection came from headless policy or
-                                        // from a closed approval channel.
-                                        (
+                                    )
+                                }
+                                ToolApproval::NeedsConfirmation => {
+                                    let request = crate::approval_flow::AgentApproval {
+                                        agent_name: agent_name.to_string(),
+                                        agent_id: background.map(|b| b.id.clone()),
+                                        tool_call_id: tc.id.clone(),
+                                        tool_name: tc.function_name.clone(),
+                                        detail: tools::describe_action(
+                                            &tc.function_name,
+                                            &parsed_args,
+                                        ),
+                                        preview: preview::compute(
+                                            &tc.function_name,
+                                            &parsed_args,
+                                            effective_root_ref,
+                                        )
+                                        .await,
+                                        effect: effect.expect("computed for every NeedsConfirmation"),
+                                        allow_for_session: session_key.is_some(),
+                                    };
+                                    let answer = match &approver {
+                                        Some(approver) => tokio::select! {
+                                            biased;
+                                            () = cancel.cancelled() => Err(()),
+                                            decision = approver.approve(request) => Ok(decision),
+                                        },
+                                        None => Ok(None),
+                                    };
+                                    match answer {
+                                        Err(()) => ("[cancelled]".to_string(), ToolOutcome::Cancelled),
+                                        Ok(Some(ApprovalDecision::Approve)) => {
+                                            tool_output(tc, sub_tx, &cancel, &mut images).await
+                                        }
+                                        Ok(Some(ApprovalDecision::ApproveForSession)) => {
+                                            if let Some(key) = session_key {
+                                                session_allows.insert(key);
+                                            }
+                                            tool_output(tc, sub_tx, &cancel, &mut images).await
+                                        }
+                                        Ok(Some(ApprovalDecision::Reject)) => (
+                                            "User rejected this action.".to_string(),
+                                            ToolOutcome::Declined,
+                                        ),
+                                        Ok(Some(ApprovalDecision::RejectWithFeedback { feedback })) => (
+                                            format!(
+                                                "User rejected this action with feedback: {feedback}"
+                                            ),
+                                            ToolOutcome::Declined,
+                                        ),
+                                        Ok(Some(ApprovalDecision::RejectAuto { reason })) => (
                                             format!("[auto-rejected: {reason}]"),
                                             ToolOutcome::Declined,
-                                        )
-                                    }
-                                    None => {
-                                        // #1022 B10: `request_approval` returns `None`
-                                        // when the command channel is closed (sub-agents
-                                        // don't have a live channel to the user) or
-                                        // cancelled. Distinguish the two so the model
-                                        // gets actionable signal instead of a generic
-                                        // "[cancelled]" that looked like the user
-                                        // hit Ctrl+C.
-                                        if cancel.is_cancelled() {
-                                            ("[cancelled]".to_string(), ToolOutcome::Cancelled)
-                                        } else {
-                                            let text = format!(
-                                                "[auto-rejected: '{tool}' requires user \
-                                                 confirmation but this sub-agent has no \
-                                                 channel to the user. The parent agent \
-                                                 must pre-approve destructive operations \
-                                                 or run the tool itself.]",
+                                        ),
+                                        Ok(None) => (
+                                            format!(
+                                                "[auto-rejected: '{tool}' needs the user's approval, \
+                                                 and nobody could be asked. Do without it, or leave \
+                                                 it to the agent that started you.]",
                                                 tool = tc.function_name,
-                                            );
-                                            (text, ToolOutcome::Declined)
-                                        }
+                                            ),
+                                            ToolOutcome::Declined,
+                                        ),
                                     }
                                 }
                             }
-                        }
                         }
                     };
 
@@ -1564,29 +1557,13 @@ fn instructions_for(instructions: &str, in_worktree: bool) -> String {
     }
 }
 
-/// Whether an agent's tool lists leave it any of the file-writing tools. An empty
-/// allow list means every tool, as in `get_definitions`.
-fn edits_files(allowed: &[String], disallowed: &[String]) -> bool {
-    ["Write", "Edit"].iter().any(|tool| {
-        let allowed = allowed.is_empty() || allowed.iter().any(|t| t == tool);
-        allowed && !disallowed.iter().any(|t| t == tool)
-    })
-}
-
-/// Whether a sub-agent gets a git worktree rather than the project itself.
-///
-/// `trust` is the sub-agent's own, and in Plan it can't change anything. An agent
-/// that asks for a worktree gets one whatever its tools, since Bash can write too.
-/// Safe only moves agents with file tools: one that only runs commands stays in
-/// the project, since a worktree has no build output to test against.
-fn needs_worktree(
-    trust: TrustMode,
-    edits_files: bool,
-    isolation: AgentIsolation,
-    mode: TrustMode,
-) -> bool {
-    trust != TrustMode::Plan
-        && (isolation == AgentIsolation::Worktree || (mode == TrustMode::Safe && edits_files))
+/// Whether a sub-agent gets a git worktree rather than the project itself: when
+/// its agent asks for one (`isolation: worktree`), as in Claude Code, whatever
+/// its tools, since Bash can write too. `trust` is the sub-agent's own, and in
+/// Plan it can't change anything. Safe no longer moves writers to a worktree:
+/// they ask for their changes, as the main agent does.
+fn needs_worktree(trust: TrustMode, isolation: AgentIsolation) -> bool {
+    trust != TrustMode::Plan && isolation == AgentIsolation::Worktree
 }
 
 /// A sub-agent's answer, with where its work went if that isn't the project.
@@ -1803,7 +1780,11 @@ fn spawn_run(
     let parent_cache = turn.tools.file_read_cache();
     let policy = turn.tools.sandbox_policy().clone();
     let table = std::sync::Arc::downgrade(agents);
+    let approver = turn.tools.approver();
+    // The session's "allow for session" set, shared.
+    let allows = turn.session_allows.clone();
     let background = Background {
+        id: run.id.clone(),
         inbox: std::sync::Arc::clone(&run.inbox),
         session: std::sync::Arc::clone(&run.session),
     };
@@ -1813,10 +1794,6 @@ fn spawn_run(
         // A background agent is never answered from the result cache:
         // continued or messaged, it isn't the same call twice.
         let cache = crate::sub_agent_cache::SubAgentCache::new();
-        // Nobody can approve for it (PR 2 routes its approvals to the
-        // session), so it starts with no session approvals.
-        let allows = crate::trust::SessionAllows::default();
-        let (_, mut no_answers) = mpsc::channel(1);
         let parent = Parent {
             project_root: &project_root,
             config: &config,
@@ -1830,11 +1807,11 @@ fn spawn_run(
             session_allows: &allows,
             web_search_budget,
             caller_spawner,
+            approver,
         };
         let result = execute_sub_agent(
             parent,
             &arguments,
-            &mut no_answers,
             Some(parent_cache),
             &policy,
             None,
@@ -2016,8 +1993,7 @@ mod recover_last_assistant_text_tests {
 #[cfg(test)]
 mod release_workspace_tests {
     use super::{
-        WORKTREE_NOTE, edits_files, instructions_for, needs_worktree, release_workspace,
-        with_workspace_hint,
+        WORKTREE_NOTE, instructions_for, needs_worktree, release_workspace, with_workspace_hint,
     };
     use crate::config::AgentIsolation;
     use crate::engine::EngineEvent;
@@ -2084,61 +2060,13 @@ mod release_workspace_tests {
     }
 
     #[test]
-    fn writers_stay_in_the_project_unless_safe_or_asked() {
+    fn only_an_agent_that_asks_gets_a_worktree() {
         use TrustMode::{Auto, Plan, Safe};
-        let none = AgentIsolation::None;
-        let worktree = AgentIsolation::Worktree;
-        assert!(!needs_worktree(Safe, true, none, Auto));
-        assert!(!needs_worktree(Plan, true, none, Plan));
-        assert!(needs_worktree(Safe, true, none, Safe));
-        assert!(needs_worktree(Safe, true, worktree, Auto));
-    }
-
-    #[test]
-    fn safe_leaves_an_agent_without_file_tools_in_the_project() {
-        let none = AgentIsolation::None;
-        assert!(!needs_worktree(
-            TrustMode::Safe,
-            false,
-            none,
-            TrustMode::Safe
-        ));
-    }
-
-    #[test]
-    fn asking_for_a_worktree_holds_without_file_tools_but_not_in_plan() {
-        let worktree = AgentIsolation::Worktree;
-        assert!(needs_worktree(
-            TrustMode::Safe,
-            false,
-            worktree,
-            TrustMode::Auto
-        ));
-        assert!(!needs_worktree(
-            TrustMode::Plan,
-            false,
-            worktree,
-            TrustMode::Auto
-        ));
-    }
-
-    fn names(tools: &[&str]) -> Vec<String> {
-        tools.iter().map(|t| t.to_string()).collect()
-    }
-
-    #[test]
-    fn denying_one_file_tool_leaves_the_others() {
-        assert!(edits_files(&[], &names(&["Edit"])));
-        assert!(edits_files(&[], &names(&["Write"])));
-        assert!(!edits_files(&[], &names(&["Write", "Edit"])));
-    }
-
-    #[test]
-    fn an_allow_list_decides_what_is_left() {
-        assert!(edits_files(&[], &[]));
-        assert!(edits_files(&names(&["Read", "Write"]), &[]));
-        assert!(!edits_files(&names(&["Read", "Grep"]), &[]));
-        assert!(!edits_files(&names(&["Write"]), &names(&["Write"])));
+        assert!(!needs_worktree(Safe, AgentIsolation::None));
+        assert!(!needs_worktree(Auto, AgentIsolation::None));
+        assert!(needs_worktree(Safe, AgentIsolation::Worktree));
+        assert!(needs_worktree(Auto, AgentIsolation::Worktree));
+        assert!(!needs_worktree(Plan, AgentIsolation::Worktree));
     }
 }
 

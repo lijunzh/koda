@@ -13,6 +13,7 @@ mod mcp;
 mod memory;
 mod menus;
 mod plan;
+mod requests;
 mod review;
 mod session_cmds;
 pub(crate) mod settings;
@@ -60,6 +61,9 @@ pub(crate) struct TuiContext {
     pub prompt_mode: PromptMode,
     pub provider_wizard: Option<ProviderWizard>,
     pub pending_approval_id: Option<koda_client::protocol::rpc::RequestId>,
+    /// The host's requests waiting for the one on screen to be answered:
+    /// several sub-agents may ask at once.
+    pub queued_requests: std::collections::VecDeque<koda_client::protocol::ServerRequest>,
 
     // ── Control flow ──────────────────────────────────────────
     /// Text pasted into the input box as `[Pasted text #N]` markers.
@@ -527,6 +531,7 @@ impl TuiContext {
             prompt_mode: PromptMode::Chat,
             provider_wizard: None,
             pending_approval_id: None,
+            queued_requests: Default::default(),
             pastes: input::Pastes::default(),
             pasted_images: Vec::new(),
             image_count: 0,
@@ -782,6 +787,7 @@ impl TuiContext {
                 }
             }
 
+            self.show_next_request();
             // Redraw viewport (resize if textarea grew/shrank)
             self.draw()?;
 
@@ -827,6 +833,10 @@ impl TuiContext {
                     }
                     if self.mcp.observe(&self.session.id, &message) {
                         self.mcp_stale = true;
+                    }
+                    // A background agent may ask while no turn runs.
+                    if self.take_request(&message) {
+                        continue;
                     }
                     // A warning about no session, such as a Claude model
                     // this Koda doesn't support yet, which the host says

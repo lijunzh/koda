@@ -101,6 +101,11 @@ impl TuiContext {
             self.flush_paste_burst_before_modified_input();
         }
 
+        // A background agent's request, while no turn runs.
+        if matches!(self.menu, MenuContent::Approval { .. }) && self.answer_idle_approval(key).await
+        {
+            return Ok(true);
+        }
         if !self.menu.is_none()
             && let Some(consumed) = self.handle_menu_key(key).await
         {

@@ -93,6 +93,12 @@ pub enum MenuContent {
         detail: String,
         /// Whether `s` (yes for the rest of the session) is offered.
         allow_for_session: bool,
+        /// The sub-agent asking (`explore` or `explore a1b2…`), when it isn't
+        /// the main agent: Esc then refuses only this call, as in Claude Code.
+        agent: Option<String>,
+        /// A background agent asks: answered without the turn's feedback and
+        /// Auto keys, since it may ask while no turn runs.
+        background: bool,
     },
     /// AskUser input bar — the model is asking a clarifying question.
     AskUser {

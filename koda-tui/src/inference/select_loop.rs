@@ -354,6 +354,7 @@ impl TuiContext {
         let host_stopped = tracker.completed().is_none()
             && loop {
                 prefer_input = !prefer_input;
+                self.show_next_request();
 
                 // Maximum number of host messages to drain in one iteration.
                 // The original drain loop was unbounded, which under sustained
@@ -642,17 +643,11 @@ impl TuiContext {
         }
         self.note_session(&message);
         tracker.observe_message(&message);
+        if self.take_request(&message) {
+            return;
+        }
         let notification = match &message {
-            Outgoing::Request(request) => {
-                super::ui_handler::show_request(
-                    request,
-                    &mut self.scroll_buffer,
-                    &mut self.menu,
-                    &mut self.prompt_mode,
-                    &mut self.renderer,
-                );
-                return;
-            }
+            Outgoing::Request(_) => return,
             Outgoing::Notification(notification) => notification,
         };
         match notification {

@@ -138,7 +138,7 @@ async fn stub_with_a_sub_agent(first: ResponseTemplate, then: ResponseTemplate) 
                 if delegated.swap(true, Ordering::SeqCst) {
                     return stream_text("Done.");
                 }
-                let task = json!({"agent_name": "task", "prompt": "do the work"});
+                let task = json!({"agent_name": "isolated", "prompt": "do the work"});
                 return stream_call("InvokeAgent", task);
             }
             let replied = request["messages"]
@@ -152,8 +152,8 @@ async fn stub_with_a_sub_agent(first: ResponseTemplate, then: ResponseTemplate) 
     server
 }
 
-/// A project in a git repo, with `HOME` beside it, in Safe mode, where a
-/// sub-agent gets a worktree that a stopped turn has to give back.
+/// A project in a git repo, with `HOME` beside it, where the `isolated`
+/// sub-agent asks for a worktree that a stopped turn has to give back.
 struct Project {
     tmp: tempfile::TempDir,
 }
@@ -165,6 +165,18 @@ impl Project {
         std::fs::create_dir_all(project.root()).unwrap();
         std::fs::create_dir_all(project.home()).unwrap();
         std::fs::write(project.root().join("a.txt"), "a").unwrap();
+        let agents = project.root().join(".koda/agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(
+            agents.join("isolated.json"),
+            json!({
+                "name": "isolated",
+                "system_prompt": "You are a worker.",
+                "isolation": "worktree",
+            })
+            .to_string(),
+        )
+        .unwrap();
         for args in [
             &["init", "-q"][..],
             &["add", "."],
@@ -305,7 +317,7 @@ fn assert_work_is_on_a_branch(project: &Project, name: &str) {
         .output()
         .unwrap();
     let log = String::from_utf8_lossy(&log.stdout);
-    assert!(log.contains("koda: sub-agent 'task' changes"), "{log}");
+    assert!(log.contains("koda: sub-agent 'isolated' changes"), "{log}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

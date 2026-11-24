@@ -336,6 +336,23 @@ pub struct ToolCallApprovalParams {
     /// Whether `approveForSession` may be answered: only for local changes
     /// inside the project.
     pub allow_for_session: bool,
+    /// The sub-agent asking, when it isn't the main agent. Koda's own: Codex
+    /// heads a sub-agent's request with its thread, and Claude Code names the
+    /// sub-agent. A background agent may ask while no turn runs; `turnId` is
+    /// then empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<ApprovalAgent>,
+}
+
+/// The sub-agent behind an approval request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalAgent {
+    /// Which agent it is (`explore`, `task`, ...).
+    pub name: String,
+    /// A background agent's id; absent for one a turn is waiting on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
 }
 
 /// The answer to `item/toolCall/requestApproval`.

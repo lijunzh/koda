@@ -1,20 +1,52 @@
 //! Where a writing sub-agent's work ends up.
 //!
-//! Each test runs a real sub-agent in a real git repo. On macOS its writes used
-//! to go to a copy of the project that was deleted when it finished, so what
-//! matters here is that the work is still somewhere afterwards.
+//! Each test runs a real sub-agent in a real git repo. A sub-agent writes in
+//! the project and, where the main agent would ask, asks in the main session;
+//! only an agent that asks for one (`isolation: worktree`) gets a worktree.
 //!
 //! Run with:
 //!   cargo test -p koda-core \
 //!              --test e2e_sub_agent_workspace_test
 
+use koda_core::approval_flow::{AgentApproval, Approver};
+use koda_core::engine::ApprovalDecision;
 use koda_core::{engine::EngineEvent, trust::TrustMode};
 use koda_test_utils::network::FakeLlmServer;
 use koda_test_utils::{ENV_MUTEX, Env, MockProvider, MockResponse};
 use std::path::Path;
 use std::process::Command;
+use std::sync::{Arc, Mutex};
 
 const WRITTEN: &str = "sub_agent_wrote_this.txt";
+
+/// Answers every sub-agent request with `decision`, and keeps the requests.
+struct Answering {
+    decision: ApprovalDecision,
+    asked: Mutex<Vec<AgentApproval>>,
+}
+
+impl Answering {
+    fn on(env: &Env, decision: ApprovalDecision) -> Arc<Self> {
+        let approver = Arc::new(Self {
+            decision,
+            asked: Mutex::new(Vec::new()),
+        });
+        env.tools.set_approver(approver.clone());
+        approver
+    }
+
+    fn asked(&self) -> Vec<AgentApproval> {
+        self.asked.lock().unwrap().clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl Approver for Answering {
+    async fn approve(&self, request: AgentApproval) -> Option<ApprovalDecision> {
+        self.asked.lock().unwrap().push(request);
+        Some(self.decision.clone())
+    }
+}
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
@@ -115,27 +147,6 @@ async fn in_auto_the_edit_lands_in_the_project() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn in_safe_the_work_waits_on_a_branch_the_parent_hears_about() {
-    let _lock = ENV_MUTEX.lock().await;
-    let env = Env::builder().trust(TrustMode::Safe).build().await;
-    let server = FakeLlmServer::spawn().await;
-    init_repo(&env.root);
-    write_agent(&env, &server, None);
-
-    let told = delegate_a_write(&env, &server).await;
-
-    assert!(
-        !env.root.join(WRITTEN).exists(),
-        "Safe: nothing reaches the project without the user's OK"
-    );
-    let branches = branches(&env);
-    assert_eq!(branches.len(), 1, "{branches:?}");
-    let on_branch = git(&env.root, &["show", &format!("{}:{WRITTEN}", branches[0])]);
-    assert_eq!(on_branch, "from the sub-agent");
-    assert!(told.contains(&branches[0]), "parent must hear: {told}");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_agent_can_ask_for_a_worktree_in_auto() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::builder().trust(TrustMode::Auto).build().await;
@@ -149,19 +160,6 @@ async fn an_agent_can_ask_for_a_worktree_in_auto() {
     let branches = branches(&env);
     assert_eq!(branches.len(), 1, "{branches:?}");
     assert!(told.contains(&branches[0]), "parent must hear: {told}");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn in_safe_outside_git_the_writer_does_not_start() {
-    let _lock = ENV_MUTEX.lock().await;
-    let env = Env::builder().trust(TrustMode::Safe).build().await;
-    let server = FakeLlmServer::spawn().await;
-    write_agent(&env, &server, None);
-
-    let told = delegate_a_write(&env, &server).await;
-
-    assert!(!env.root.join(WRITTEN).exists(), "Safe's promise broke");
-    assert!(told.contains("not a git repository"), "{told}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -189,50 +187,99 @@ async fn in_auto_outside_git_the_edit_still_lands_in_the_project() {
     assert!(env.root.join(WRITTEN).exists());
 }
 
+/// In Safe a sub-agent asks for its edit in the main session, as the main
+/// agent does (Claude Code), and an approved edit lands in the project.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn one_denied_file_tool_does_not_hide_a_writer() {
-    let _lock = ENV_MUTEX.lock().await;
-    for (mode, isolation) in [(TrustMode::Safe, None), (TrustMode::Auto, Some("worktree"))] {
-        let env = Env::builder().trust(mode).build().await;
-        let server = FakeLlmServer::spawn().await;
-        init_repo(&env.root);
-        write_agent_denying(&env, &server, isolation, &["Edit"]);
-
-        let told = delegate_a_write(&env, &server).await;
-
-        assert!(!env.root.join(WRITTEN).exists(), "{mode:?}: {told}");
-        assert_eq!(branches(&env).len(), 1, "{mode:?}: {told}");
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_edit_only_agent_gets_a_worktree_in_safe() {
+async fn in_safe_the_sub_agent_asks_and_an_approved_edit_lands_in_the_project() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::builder().trust(TrustMode::Safe).build().await;
     let server = FakeLlmServer::spawn().await;
     init_repo(&env.root);
-    write_agent_denying(&env, &server, None, &["Write"]);
-    let sub_responses = serde_json::json!([
-        // Edit needs a Read of the file first.
-        { "tool": "Read", "args": { "file_path": "README.md" } },
-        {
-            "tool": "Edit",
-            "args": { "file_path": "README.md", "old_str": "hello", "new_str": "edited" }
-        },
-        { "text": "Done editing." }
-    ]);
-    server.mount_script_json(&sub_responses.to_string()).await;
-    env.insert_user_message("delegate an edit").await;
-    let provider = MockProvider::new(vec![
+    write_agent(&env, &server, None);
+    let approver = Answering::on(&env, ApprovalDecision::Approve);
+
+    let told = delegate_a_write(&env, &server).await;
+
+    let content = std::fs::read_to_string(env.root.join(WRITTEN))
+        .expect("the approved edit must reach the project");
+    assert_eq!(content, "from the sub-agent");
+    assert!(
+        branches(&env).is_empty(),
+        "no worktree unless the agent asks"
+    );
+    let asked = approver.asked();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert_eq!(asked[0].agent_name, "writer");
+    assert_eq!(asked[0].tool_name, "Write");
+    assert_eq!(asked[0].agent_id, None, "a blocking sub-agent has no id");
+    assert!(told.contains("Done writing."), "{told}");
+}
+
+/// A refused edit isn't made, and the sub-agent hears the person said no.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_safe_a_refused_edit_leaves_the_project_as_it_was() {
+    let _lock = ENV_MUTEX.lock().await;
+    let env = Env::builder().trust(TrustMode::Safe).build().await;
+    let server = FakeLlmServer::spawn().await;
+    init_repo(&env.root);
+    write_agent(&env, &server, None);
+    Answering::on(&env, ApprovalDecision::Reject);
+
+    delegate_a_write(&env, &server).await;
+
+    assert!(!env.root.join(WRITTEN).exists());
+    let calls = server.chat_messages().await;
+    let second = serde_json::to_string(&calls[1]).unwrap();
+    assert!(second.contains("User rejected this action."), "{second}");
+}
+
+/// With nobody to ask, the edit is refused and the sub-agent is told why.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_safe_with_nobody_to_ask_the_edit_is_refused() {
+    let _lock = ENV_MUTEX.lock().await;
+    let env = Env::builder().trust(TrustMode::Safe).build().await;
+    let server = FakeLlmServer::spawn().await;
+    init_repo(&env.root);
+    write_agent(&env, &server, None);
+
+    delegate_a_write(&env, &server).await;
+
+    assert!(!env.root.join(WRITTEN).exists());
+    let calls = server.chat_messages().await;
+    let second = serde_json::to_string(&calls[1]).unwrap();
+    assert!(second.contains("nobody could be asked"), "{second}");
+}
+
+/// "Allow for session" given to a sub-agent covers the main agent's same
+/// call, and the reverse: one set for the session, as in Claude Code.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sub_agents_allow_for_session_is_the_sessions() {
+    let _lock = ENV_MUTEX.lock().await;
+    let env = Env::builder().trust(TrustMode::Safe).build().await;
+    let server = FakeLlmServer::spawn().await;
+    init_repo(&env.root);
+    write_agent(&env, &server, None);
+    let approver = Answering::on(&env, ApprovalDecision::ApproveForSession);
+    // Two sub-agents, one after the other, each writing the same file.
+    let write =
+        serde_json::json!({ "tool": "Write", "args": { "file_path": WRITTEN, "content": "x" } });
+    let script = serde_json::json!([write, { "text": "one" }, write, { "text": "two" }]);
+    server.mount_script_json(&script.to_string()).await;
+    env.insert_user_message("delegate twice").await;
+    let invoke = |prompt: &str| {
         MockResponse::tool_call(
             "InvokeAgent",
-            serde_json::json!({ "agent_name": "writer", "prompt": "edit the file" }),
-        ),
+            serde_json::json!({ "agent_name": "writer", "prompt": prompt }),
+        )
+    };
+    let provider = MockProvider::new(vec![
+        invoke("write it"),
+        invoke("write it again"),
         MockResponse::Text("All done.".into()),
     ]);
     env.run_inference(&provider).await;
 
-    let readme = std::fs::read_to_string(env.root.join("README.md")).unwrap();
-    assert_eq!(readme, "hello", "the project must stay as it was");
-    assert_eq!(branches(&env).len(), 1);
+    assert!(env.root.join(WRITTEN).exists());
+    // The second agent's write wasn't asked about.
+    assert_eq!(approver.asked().len(), 1);
 }

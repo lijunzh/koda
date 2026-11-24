@@ -226,14 +226,13 @@ TUI design.
 All providers implement the `LlmProvider` trait (`chat_stream` returning
 `Receiver<StreamChunk>`). Tools use PascalCase names.
 
-## Sub-agent approval matrix
+## Sub-agent approvals
 
-`check_tool_for_sub_agent` is context-sensitive (#1251). Sub-agents have no live
-human approval channel by design, so what the master matrix would treat as
-`⏸ confirm` resolves to **auto-approve for mutations, block for destructive
-ops**. The asymmetry pins the bug fix from #1249: before #1251 every Write from
-a Safe-trust sub-agent was auto-rejected with "requires user confirmation but
-this sub-agent has no channel to the user".
+Sub-agents use `check_tool` like the main agent. A call that needs a yes goes
+to the session's `approval_flow::Approver` (the server's `HostApprover`), which
+asks the client with the agent named and answers on a reply of its own, so
+several sub-agents can ask at once and a background agent can ask outside a
+turn. Without an approver the call is refused.
 
 In Auto mode destructive ops still confirm because the user said YOLO for normal
 work, not for `rm -rf` (#1251).

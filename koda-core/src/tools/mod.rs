@@ -269,6 +269,8 @@ pub struct ToolRegistry {
     /// The model provider's own web search, set each turn from the
     /// provider and model ([`Self::set_web_searcher`]).
     web_searcher: std::sync::RwLock<Option<Arc<dyn crate::providers::WebSearcher>>>,
+    /// Where sub-agents' approvals go ([`Self::set_approver`]).
+    approver: std::sync::RwLock<Option<Arc<dyn crate::approval_flow::Approver>>>,
     /// The session's `WebSearch` budget, which its sub-agents' registries
     /// share ([`Self::with_web_search_budget`]).
     web_search_budget: Arc<web_search::WebSearchBudget>,
@@ -349,6 +351,7 @@ impl ToolRegistry {
             db: std::sync::RwLock::new(None),
             session_id: std::sync::RwLock::new(None),
             web_searcher: std::sync::RwLock::new(None),
+            approver: std::sync::RwLock::new(None),
             web_search_budget: Default::default(),
             caps: OutputCaps::for_context(max_context_tokens),
             bg_registry: bg_process::BgRegistry::new(),
@@ -448,6 +451,19 @@ impl ToolRegistry {
         if let Ok(mut guard) = self.web_searcher.write() {
             *guard = searcher;
         }
+    }
+
+    /// Send sub-agents' approvals to `approver`, the session's client. Without
+    /// one, a sub-agent's call that needs a yes is refused.
+    pub fn set_approver(&self, approver: Arc<dyn crate::approval_flow::Approver>) {
+        if let Ok(mut guard) = self.approver.write() {
+            *guard = Some(approver);
+        }
+    }
+
+    /// Where sub-agents' approvals go, if anywhere.
+    pub fn approver(&self) -> Option<Arc<dyn crate::approval_flow::Approver>> {
+        self.approver.read().ok().and_then(|g| g.clone())
     }
 
     /// Attach an MCP connection manager and register its tools (#662).

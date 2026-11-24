@@ -1,19 +1,11 @@
-//! E2E pin for the bug fix in #1250: a sub-agent declared with
-//! `trust: "safe"` (the new task-style declaration that replaces
-//! `write_access: true`) can actually write files.
+//! A sub-agent declared with `trust: "safe"` can write, and can't run a
+//! destructive command nobody approved.
 //!
-//! Pre-#1250 this scenario silently failed: the sub-agent dispatch
-//! loop creates a dead approval channel by design (no human watches
-//! it), so any tool that returned `NeedsConfirmation` from the trust
-//! matrix auto-rejected with *"requires user confirmation but this
-//! sub-agent has no channel to the user."*  At Safe trust that
-//! included Write/Edit/Delete — so a `task` agent invoked at Safe
-//! could not write at all, even though its purpose is to write.
-//!
-//! Post-#1250: `check_tool_for_sub_agent` resolves `NeedsConfirmation`
-//! via the safe-side rule (mutating → AutoApprove, destructive →
-//! Blocked), so a Safe-trust sub-agent's Write succeeds without
-//! confirmation while `rm -rf` is still rejected.
+//! A sub-agent's calls are judged by the session's mode and rules, as Claude
+//! Code's sub-agents inherit the session's mode. What would ask the main agent
+//! asks in the main session (`approval_flow::Approver`); with nobody to ask, as
+//! in these tests, it is refused. (#1250 had sub-agents auto-approve edits and
+//! block destructive commands instead, since they couldn't ask.)
 //!
 //! Run with:
 //!   cargo test -p koda-core \
@@ -46,15 +38,10 @@ fn write_safe_trust_sub_agent(env: &Env, server: &FakeLlmServer, name: &str) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn safe_trust_sub_agent_can_write_files() {
-    // **Bug fix pin for #1250 / #1249**: pre-fix this would auto-reject
-    // the Write tool with "requires user confirmation but this sub-agent
-    // has no channel to the user." Post-fix the safe-side rule auto-
-    // approves the Write because mutating ops at Safe in sub-agent
-    // context default to AutoApprove.
+    // The session is in Auto, so the sub-agent's Write runs without asking,
+    // whatever the agent declares (Claude Code applies an agent's own mode
+    // only when the session is in its default mode).
     let _lock = ENV_MUTEX.lock().await;
-    // Parent at Auto, so the agent's declared Safe is what's under test. A
-    // parent at Safe sends the write to a worktree, which needs a git repo:
-    // `e2e_sub_agent_workspace_test.rs` covers that.
     let env = Env::builder().trust(TrustMode::Auto).build().await;
     let server = FakeLlmServer::spawn().await;
     write_safe_trust_sub_agent(&env, &server, "writer");
@@ -102,7 +89,7 @@ async fn safe_trust_sub_agent_can_write_files() {
     assert!(
         target_path.exists(),
         "sub-agent's Write must produce the file at {target_str:?} \
-         (pre-#1250 this would have auto-rejected with no-channel error)"
+         in an Auto session"
     );
     let written = std::fs::read_to_string(&target_path).unwrap();
     assert_eq!(written, "hello from sub-agent");
@@ -127,25 +114,15 @@ async fn safe_trust_sub_agent_can_write_files() {
     assert!(
         !invoke_output.contains("requires user confirmation"),
         "sub-agent must NOT see a confirmation-required error \
-         (the safe-side rule should auto-approve). Got: {invoke_output}"
+         (Auto runs it without asking). Got: {invoke_output}"
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn safe_trust_sub_agent_destructive_bash_is_still_blocked() {
-    // Companion to the bug-fix test above: even though Safe-trust
-    // sub-agents can now write, **destructive** operations remain
-    // blocked at all trust levels in the sub-agent context. This
-    // pins the asymmetry that's the whole point of the safe-side
-    // rule: "default to safe" means yes for mutating, no for
-    // destructive.
-    //
-    // Detection strategy: have the sub-agent try to `rm -rf` a file
-    // we just created. If the trust matrix is doing its job, the
-    // file survives — regardless of what the sub-agent's final
-    // narrative says (the InvokeAgent result is the sub-agent's last
-    // text reply, not a per-tool-error log, so we can't sniff for
-    // refusal strings). Filesystem state is the unforgeable proof.
+    // A destructive command asks even in Safe; with nobody to ask it is
+    // refused, and the file survives. Filesystem state is the proof: the
+    // sub-agent's last reply says nothing about each call.
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::builder().trust(TrustMode::Safe).build().await;
     let server = FakeLlmServer::spawn().await;
@@ -192,13 +169,12 @@ async fn safe_trust_sub_agent_destructive_bash_is_still_blocked() {
     // wait is no longer needed.
 
     // The destructive op MUST have been blocked. Filesystem state
-    // is the unforgeable proof: if the matrix had auto-approved,
+    // is the unforgeable proof: had it run,
     // `rm -rf` would have removed the file.
     assert!(
         target.exists(),
-        "destructive Bash from a Safe-trust sub-agent MUST be blocked. \
-         The target file was deleted, which means the safe-side rule \
-         failed to refuse a destructive op. This is the #1250 invariant."
+        "an unapproved destructive Bash from a sub-agent must not run; \
+         the target file was deleted"
     );
     let surviving = std::fs::read_to_string(&target).unwrap();
     assert_eq!(surviving, "survive me", "file content must be intact");

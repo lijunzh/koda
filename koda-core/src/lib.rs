@@ -62,7 +62,7 @@
 /// Sub-agent configuration, discovery, and invocation.
 pub mod agent;
 /// Approval flow and user interaction during tool execution.
-pub(crate) mod approval_flow;
+pub mod approval_flow;
 /// A turn's token budget (`turn_token_budget`).
 pub mod budget;
 /// Registry of the sub-agents running inside the current turn, for live status.

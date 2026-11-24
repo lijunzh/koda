@@ -413,7 +413,7 @@ impl KodaConfig {
         // **Back-compat rule**: only apply the legacy default-deny
         // (inject Write/Edit into disallowed_tools) when the
         // agent JSON did NOT declare `trust` explicitly. If it did,
-        // the new trust matrix (`check_tool_for_sub_agent`) is the
+        // the trust matrix (`check_tool`) is the
         // single mechanism — we don't want an explicit `trust: "safe"`
         // declaration to silently get Writes denied because the loader
         // injected the old default-deny on top.

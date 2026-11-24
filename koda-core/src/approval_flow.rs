@@ -2,13 +2,45 @@
 //!
 //! Extracted from `tool_dispatch.rs` — handles the async request/response
 //! dance for tool approvals and the `AskUser` tool. Both functions emit
-//! an event via [`EngineSink`] and `select!` on the command channel,
+//! an event via [`EngineSink`](crate::engine::EngineSink) and `select!` on the command channel,
 //! respecting cancellation tokens for graceful shutdown.
 
 use crate::engine::{ApprovalDecision, EngineCommand, EngineEvent};
 
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+
+/// A sub-agent's tool call that needs the person's yes, as Claude Code and
+/// Codex ask in the main session for a sub-agent, naming it.
+#[derive(Debug, Clone)]
+pub struct AgentApproval {
+    /// Which agent asks (`explore`, `task`, ...).
+    pub agent_name: String,
+    /// A background agent's id; `None` for one its turn is waiting on.
+    pub agent_id: Option<String>,
+    /// The sub-agent's tool call.
+    pub tool_call_id: String,
+    /// The tool.
+    pub tool_name: String,
+    /// What the call would do, in a line.
+    pub detail: String,
+    /// The file changes it would make.
+    pub preview: Option<crate::preview::DiffPreview>,
+    /// Why it needs a yes.
+    pub effect: crate::tools::ToolEffect,
+    /// Whether "allow for session" may be answered.
+    pub allow_for_session: bool,
+}
+
+/// Where a sub-agent's approval goes: the session's client. Answered on a
+/// reply of its own rather than the turn's inbox, so several sub-agents can
+/// ask at once, and a background agent can ask while no turn runs.
+#[async_trait::async_trait]
+pub trait Approver: Send + Sync {
+    /// The answer, or `None` when it can't be asked or got no answer (the
+    /// client went away, or the request was withdrawn).
+    async fn approve(&self, request: AgentApproval) -> Option<ApprovalDecision>;
+}
 
 /// The engine's end of the command channel for one turn.
 ///

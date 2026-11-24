@@ -73,6 +73,26 @@
         }
       ]
     },
+    "ApprovalAgent": {
+      "description": "The sub-agent behind an approval request.",
+      "properties": {
+        "id": {
+          "description": "A background agent's id; absent for one a turn is waiting on.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Which agent it is (`explore`, `task`, ...).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
     "ApprovalDecision": {
       "description": "Yes or no to a tool call.",
       "oneOf": [
@@ -4163,6 +4183,17 @@
     "ToolCallApprovalParams": {
       "description": "`item/toolCall/requestApproval`: a tool call needs a yes before it runs.",
       "properties": {
+        "agent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApprovalAgent"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The sub-agent asking, when it isn't the main agent. Koda's own: Codex\nheads a sub-agent's request with its thread, and Claude Code names the\nsub-agent. A background agent may ask while no turn runs; `turnId` is\nthen empty."
+        },
         "allowForSession": {
           "description": "Whether `approveForSession` may be answered: only for local changes\ninside the project.",
           "type": "boolean"

@@ -91,32 +91,39 @@ for good: `git reset --hard`, `git clean -f`, `git push --force`,
 `find -delete`, `kill` or an interpreter's `-c` changes files in the
 project, so in Auto it runs inside the sandbox without asking.
 
-## Sub-agent matrix (context-sensitive resolution)
+## Sub-agents ask in the main session
 
-Sub-agents (anything dispatched via `InvokeAgent`) have **no live
-human approval channel** — by design. The master agent's TUI is the
-only confirm-prompt surface; sub-agents run headlessly and can't
-"ask" anyone. So the sub-agent matrix resolves what the master would
-treat as `⏸ confirm` using a **safe-side rule**:
+A sub-agent's tool calls go through the same rules as the main agent's, in
+the session's mode, as Claude Code's sub-agents inherit the session's mode and
+rules. What would ask for the main agent asks for a sub-agent too, blocking or
+[in the background](./tools.md#background-agents), in the main session:
 
-| Tool effect              | Sub-agent in Plan | Sub-agent in Safe | Sub-agent in Auto |
-|--------------------------|-------------------|-------------------|-------------------|
-| `ReadOnly`               | ✅ auto           | ✅ auto           | ✅ auto           |
-| `LocalMutation`          | ❌ deny           | ✅ auto           | ✅ auto           |
-| `RemoteAction`           | ❌ deny           | ✅ auto           | ✅ auto           |
-| `Destructive`            | ❌ deny           | ❌ block          | ❌ block          |
-| Outside-project write    | ❌ deny           | ❌ block          | ❌ block          |
+```
+  🤖 task a1b2c3d4e5f6 asks
+  Write  a.txt
+  [y] approve  [s] this session  [n] reject  [esc] reject
+```
 
-**The asymmetry on the "ask" cells**: in Safe mode, mutating ops
-**auto-approve** (the user already trusted this sub-agent enough to
-spawn it; nagging would be useless without a UI to nag in), but
-destructive ops **block** (we still want a backstop on the worst
-ops, even when no one's home to confirm).
+- The request names the agent, as Codex heads one with its thread; a
+  background agent's also gives its id.
+- **Esc refuses that one call**, and the agent goes on (Claude Code). Esc on
+  the main agent's own request still stops the turn.
+- **"Allow for session"** covers the whole session: a yes given to a sub-agent
+  covers the main agent's same call, and the reverse.
+- A background agent can ask after the turn that started it has ended; the
+  request waits at the prompt. Several requests at once are shown one after
+  another.
+- With nobody to ask (`koda exec`), Koda answers as it does for the main
+  agent: changes go ahead, destructive actions and leaving the sandbox are
+  refused.
 
-The sub-agent matrix is implemented in
-`koda_core::trust::check_tool_for_sub_agent`; the master matrix is
-`check_tool`. Both are pure functions with the same signature
-otherwise.
+Clients see a sub-agent's request as `item/toolCall/requestApproval` with an
+`agent` field (`name`, and a background agent's `id`); outside a turn its
+`turnId` is empty.
+
+Until 0.7.11 sub-agents couldn't ask: in Safe and Auto their edits ran without
+asking, destructive actions were blocked, and in Safe a writing sub-agent
+worked in a worktree of its own.
 
 ## Always-on safety floors
 
@@ -207,7 +214,7 @@ start.
 ## Reference
 
 - Master matrix: `koda_core::trust::check_tool`
-- Sub-agent matrix: `koda_core::trust::check_tool_for_sub_agent`
+- Sub-agent approvals: `koda_core::approval_flow::Approver`, answered by `koda-server`'s `HostApprover`
 - Sandbox-unavailable Auto refusal: `koda_core::trust::require_sandbox_for_auto`
   + setup hints from `koda_core::sandbox::setup_hint`
 - Per-agent loader & deprecation warning: `koda_core::config::KodaConfig::load`
