@@ -229,6 +229,8 @@ pub(crate) struct Background {
     pub id: String,
     /// Messages from `SendMessage`, read at each step.
     pub inbox: crate::tools::bg_agents::Inbox,
+    /// Set while it waits for an approval, for the background list.
+    pub waiting: crate::tools::bg_agents::Waiting,
     /// The agent's session: filled to continue one, and filled by a new
     /// agent once its session exists.
     pub session: crate::tools::bg_agents::SessionSlot,
@@ -1422,6 +1424,13 @@ fn run_sub_agent<'a>(
                                         effect: effect.expect("computed for every NeedsConfirmation"),
                                         allow_for_session: session_key.is_some(),
                                     };
+                                    let waiting = background.map(|b| &b.waiting);
+                                    let set_waiting = |on: bool| {
+                                        if let Some(flag) = waiting {
+                                            flag.store(on, std::sync::atomic::Ordering::Relaxed);
+                                        }
+                                    };
+                                    set_waiting(true);
                                     let answer = match &approver {
                                         Some(approver) => tokio::select! {
                                             biased;
@@ -1430,6 +1439,7 @@ fn run_sub_agent<'a>(
                                         },
                                         None => Ok(None),
                                     };
+                                    set_waiting(false);
                                     match answer {
                                         Err(()) => ("[cancelled]".to_string(), ToolOutcome::Cancelled),
                                         Ok(Some(ApprovalDecision::Approve)) => {
@@ -1759,6 +1769,37 @@ pub(crate) fn send_message(tx: &ToolExecutionContext<'_>, arguments: &str) -> Re
     }
 }
 
+/// A background agent's sink: of its events only which agent it is and the
+/// tokens each model call used reach the session's sink, as a sub-agent's of
+/// `parent`, so the session's usage and its breakdown by agent count them, as
+/// Claude Code counts a background agent's. The rest is dropped: its report
+/// arrives as a notice.
+struct UsageSink {
+    session: Option<std::sync::Arc<dyn crate::engine::EngineSink>>,
+    parent: String,
+}
+
+impl crate::engine::EngineSink for UsageSink {
+    fn emit(&self, event: EngineEvent) {
+        if matches!(
+            event,
+            EngineEvent::SubAgentStart { .. } | EngineEvent::ModelUsage { .. }
+        ) && let Some(session) = &self.session
+        {
+            session.emit_child(&self.parent, event);
+        }
+    }
+
+    fn emit_child(&self, _parent: &str, event: EngineEvent) {
+        self.emit(event);
+    }
+
+    /// It asks through the session's approver, not the sink.
+    fn can_ask(&self) -> bool {
+        false
+    }
+}
+
 /// Run `run` of a background agent on its own task, with owned copies of
 /// what the turn lends a blocking call. It sends nothing to the session's
 /// event stream, whose turns it outlives: its answer arrives as a notice.
@@ -1781,16 +1822,23 @@ fn spawn_run(
     let policy = turn.tools.sandbox_policy().clone();
     let table = std::sync::Arc::downgrade(agents);
     let approver = turn.tools.approver();
+    let session_sink = turn.tools.session_sink();
     // The session's "allow for session" set, shared.
     let allows = turn.session_allows.clone();
     let background = Background {
         id: run.id.clone(),
         inbox: std::sync::Arc::clone(&run.inbox),
         session: std::sync::Arc::clone(&run.session),
+        waiting: std::sync::Arc::clone(&run.waiting),
     };
     let finished = run.clone();
     let task = async move {
-        let sink = crate::engine::sink::NullSink;
+        // Its steps don't go to the conversation, whose turns it outlives;
+        // what it spends does, to the session's totals under its name.
+        let sink = UsageSink {
+            session: session_sink,
+            parent: format!("agent-{}", finished.id),
+        };
         // A background agent is never answered from the result cache:
         // continued or messaged, it isn't the same call twice.
         let cache = crate::sub_agent_cache::SubAgentCache::new();

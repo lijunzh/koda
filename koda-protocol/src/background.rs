@@ -68,6 +68,9 @@ pub struct BackgroundAgent {
     pub prompt: String,
     /// When its latest run started, in Unix milliseconds.
     pub started_at: i64,
+    /// Whether it waits for the person to approve one of its calls.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub waiting_for_approval: bool,
 }
 
 /// `session/backgroundTerminals/terminate`: stop one, and whatever it

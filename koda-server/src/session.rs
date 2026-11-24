@@ -413,6 +413,12 @@ pub(crate) async fn open(
     session.agent.tools.set_approver(Arc::new(HostApprover {
         sink: Arc::downgrade(&sink),
     }));
+    // Background agents' token usage reaches the session through it too.
+    let session_sink: Arc<dyn EngineSink> = sink.clone();
+    session
+        .agent
+        .tools
+        .set_session_sink(Arc::downgrade(&session_sink));
     // The session's MCP servers ask the client for input through the sink.
     if let Some(mcp) = session.mcp() {
         mcp.read().await.set_elicitor(Arc::new(HostElicitor {

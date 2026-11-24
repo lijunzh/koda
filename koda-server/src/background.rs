@@ -55,6 +55,7 @@ pub(crate) fn list(agent: &KodaAgent) -> BackgroundTerminalsListResponse {
         .into_iter()
         .filter(|a| a.state == koda_core::tools::bg_agents::AgentState::Running)
         .map(|a| BackgroundAgent {
+            waiting_for_approval: a.waiting,
             agent_id: a.id,
             agent_name: a.agent_name,
             prompt: a.prompt,

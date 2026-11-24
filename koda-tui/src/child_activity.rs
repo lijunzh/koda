@@ -160,8 +160,12 @@ impl ChildActivityTracker {
             age: format_age(Duration::from_millis(
                 now_ms.saturating_sub(a.started_at).max(0) as u64,
             )),
-            // Its task tells two `explore`s apart.
-            activity: Some(a.prompt.lines().next().unwrap_or_default().to_string()),
+            // Its task tells two `explore`s apart, unless it waits for you.
+            activity: Some(if a.waiting_for_approval {
+                "\u{23f8} waiting for your approval".to_string()
+            } else {
+                a.prompt.lines().next().unwrap_or_default().to_string()
+            }),
             status: ActivityStatus::Running,
         });
         let mut all: Vec<ActivityRow> = agents.chain(background_agents).chain(processes).collect();
@@ -310,6 +314,7 @@ mod tests {
                 agent_name: "task".into(),
                 prompt: "write the tests\nand run them".into(),
                 started_at: 0,
+                waiting_for_approval: false,
             }],
         );
         let (rows, total) = t.build_rows();
@@ -317,6 +322,21 @@ mod tests {
         assert_eq!(rows[1].label, "task a1b2");
         assert_eq!(rows[1].activity.as_deref(), Some("write the tests"));
         assert!(rows[2].label.starts_with("process:"));
+        t.set_background(
+            Vec::new(),
+            vec![BackgroundAgent {
+                agent_id: "a1b2".into(),
+                agent_name: "task".into(),
+                prompt: "write the tests".into(),
+                started_at: 0,
+                waiting_for_approval: true,
+            }],
+        );
+        let (rows, _) = t.build_rows();
+        assert_eq!(
+            rows[1].activity.as_deref(),
+            Some("\u{23f8} waiting for your approval")
+        );
         t.clear_agents();
         assert!(
             t.has_processes(),
