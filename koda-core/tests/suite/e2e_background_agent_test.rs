@@ -266,3 +266,75 @@ async fn send_message_to_an_unknown_agent_says_so() {
     let out = result_of(&events, "SendMessage");
     assert!(out.contains("No background agent a0123456789ab"), "{out}");
 }
+
+/// What a background agent spends reaches the session's sink, as one of its
+/// sub-agents', so the session's usage and its breakdown by agent count it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_background_agents_usage_reaches_the_session() {
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct Recording(Mutex<Vec<(Option<String>, EngineEvent)>>);
+    impl koda_core::engine::EngineSink for Recording {
+        fn emit(&self, event: EngineEvent) {
+            self.0.lock().unwrap().push((None, event));
+        }
+        fn emit_child(&self, parent: &str, event: EngineEvent) {
+            self.0
+                .lock()
+                .unwrap()
+                .push((Some(parent.to_string()), event));
+        }
+    }
+
+    let _lock = ENV_MUTEX.lock().await;
+    let env = Env::new().await;
+    let server = FakeLlmServer::spawn().await;
+    write_agent_config(&env, &server, "echo-agent");
+    server.mount_script_json(r#"[{"text": "done"}]"#).await;
+    let recording = Arc::new(Recording::default());
+    let session: Arc<dyn koda_core::engine::EngineSink> = recording.clone();
+    env.tools.set_session_sink(Arc::downgrade(&session));
+
+    env.insert_user_message("go").await;
+    let provider = MockProvider::new(vec![
+        MockResponse::tool_call(
+            "InvokeAgent",
+            serde_json::json!({
+                "agent_name": "echo-agent",
+                "prompt": "look",
+                "run_in_background": true,
+            }),
+        ),
+        MockResponse::Text("started".into()),
+    ]);
+    let id = agent_id(&result_of(
+        &env.run_inference(&provider).await,
+        "InvokeAgent",
+    ));
+    wait_idle(&env).await;
+
+    let seen = recording.0.lock().unwrap();
+    let parent = format!("agent-{id}");
+    assert!(
+        seen.iter()
+            .all(|(p, _)| p.as_deref() == Some(parent.as_str())),
+        "all under the agent: {seen:?}"
+    );
+    assert!(
+        seen.iter().any(|(_, e)| matches!(
+            e,
+            EngineEvent::SubAgentStart { agent_name } if agent_name == "echo-agent"
+        )),
+        "names the agent: {seen:?}"
+    );
+    assert_eq!(
+        seen.iter()
+            .filter(|(_, e)| matches!(e, EngineEvent::ModelUsage { .. }))
+            .count(),
+        1,
+        "one model call, one usage: {seen:?}"
+    );
+    assert_eq!(seen.len(), 2, "nothing else of its steps: {seen:?}");
+    drop(session);
+}

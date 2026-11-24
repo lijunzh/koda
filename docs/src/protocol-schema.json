@@ -189,6 +189,10 @@
           "description": "When its latest run started, in Unix milliseconds.",
           "format": "int64",
           "type": "integer"
+        },
+        "waitingForApproval": {
+          "description": "Whether it waits for the person to approve one of its calls.",
+          "type": "boolean"
         }
       },
       "required": [

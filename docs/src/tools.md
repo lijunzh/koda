@@ -111,7 +111,11 @@ project's instructions ask for delegation, as with any sub-agent.
   session](./approval.md#sub-agents-ask-in-the-main-session), naming the
   agent and its ID, even after the turn that started it has ended.
 - **Where you see it:** the background overlay lists it, with its task,
-  until it finishes. Its own steps don't stream into the conversation.
+  until it finishes, and says when it waits for your approval. Its own steps
+  don't stream into the conversation.
+- **What it spends** counts in the session's token usage, under the agent's
+  name, as Claude Code counts a background agent's. It isn't held to the
+  starting turn's `turn_token_budget`, since it outlives that turn.
 - **Stopping it:** `TaskStop` with its ID, `/stop`, or the end of the
   session. Esc stops the turn, not background agents. A stopped agent sends
   no report; its session keeps what it did, and `SendMessage` continues it.

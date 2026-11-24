@@ -1536,6 +1536,36 @@ mod tests {
         );
     }
 
+    /// A background agent's calls, sent after its turn has ended, count in
+    /// the session's total and under the agent's name.
+    #[test]
+    fn a_background_agents_usage_counts_under_its_name_outside_a_turn() {
+        let mut p = EventProjector::new("s1");
+        let usage = UsageTotals {
+            prompt_tokens: 70,
+            completion_tokens: 7,
+            ..Default::default()
+        };
+        let lines = run(
+            &mut p,
+            vec![
+                (
+                    Some("agent-a1"),
+                    EngineEvent::SubAgentStart {
+                        agent_name: "explore".into(),
+                    },
+                ),
+                (Some("agent-a1"), EngineEvent::ModelUsage { usage }),
+            ],
+        );
+        assert_eq!(methods(&lines), ["session/tokenUsage/updated"]);
+        assert_eq!(p.tokens.total.input_tokens, 70);
+        let explore = p.tokens.by_agent.get("explore").expect("under its name");
+        assert_eq!(explore.input_tokens, 70);
+        assert_eq!(explore.model_calls, 1);
+        assert!(!p.tokens.by_agent.contains_key("main"));
+    }
+
     /// Token counts go out after each call: the session's own calls as
     /// `last`, every call in `total`, a sub-agent's included.
     #[test]

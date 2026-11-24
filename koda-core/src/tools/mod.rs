@@ -271,6 +271,9 @@ pub struct ToolRegistry {
     web_searcher: std::sync::RwLock<Option<Arc<dyn crate::providers::WebSearcher>>>,
     /// Where sub-agents' approvals go ([`Self::set_approver`]).
     approver: std::sync::RwLock<Option<Arc<dyn crate::approval_flow::Approver>>>,
+    /// The session's event sink, which outlives a turn
+    /// ([`Self::set_session_sink`]).
+    session_sink: std::sync::RwLock<Option<std::sync::Weak<dyn crate::engine::EngineSink>>>,
     /// The session's `WebSearch` budget, which its sub-agents' registries
     /// share ([`Self::with_web_search_budget`]).
     web_search_budget: Arc<web_search::WebSearchBudget>,
@@ -352,6 +355,7 @@ impl ToolRegistry {
             session_id: std::sync::RwLock::new(None),
             web_searcher: std::sync::RwLock::new(None),
             approver: std::sync::RwLock::new(None),
+            session_sink: std::sync::RwLock::new(None),
             web_search_budget: Default::default(),
             caps: OutputCaps::for_context(max_context_tokens),
             bg_registry: bg_process::BgRegistry::new(),
@@ -459,6 +463,22 @@ impl ToolRegistry {
         if let Ok(mut guard) = self.approver.write() {
             *guard = Some(approver);
         }
+    }
+
+    /// Where a background agent reports what outlives its turn, such as the
+    /// tokens it spends: the session's own sink, not a turn's.
+    pub fn set_session_sink(&self, sink: std::sync::Weak<dyn crate::engine::EngineSink>) {
+        if let Ok(mut guard) = self.session_sink.write() {
+            *guard = Some(sink);
+        }
+    }
+
+    /// The session's event sink, if one is set and still there.
+    pub fn session_sink(&self) -> Option<Arc<dyn crate::engine::EngineSink>> {
+        self.session_sink
+            .read()
+            .ok()
+            .and_then(|g| g.as_ref().and_then(std::sync::Weak::upgrade))
     }
 
     /// Where sub-agents' approvals go, if anywhere.

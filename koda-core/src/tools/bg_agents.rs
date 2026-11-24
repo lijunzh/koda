@@ -33,6 +33,9 @@ pub type Inbox = Arc<Mutex<Vec<String>>>;
 /// continue it.
 pub type SessionSlot = Arc<Mutex<Option<String>>>;
 
+/// Set while a run waits for the person to approve one of its calls.
+pub type Waiting = Arc<std::sync::atomic::AtomicBool>;
+
 /// How a background agent stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentState {
@@ -84,6 +87,8 @@ pub struct AgentSnapshot {
     pub state: AgentState,
     /// When its latest run started.
     pub started: SystemTime,
+    /// Whether it waits for the person to approve a call.
+    pub waiting: bool,
 }
 
 struct Entry {
@@ -93,6 +98,7 @@ struct Entry {
     started: SystemTime,
     session: SessionSlot,
     inbox: Inbox,
+    waiting: Waiting,
     cancel: CancellationToken,
     /// Which run is current: a stopped run still winding down mustn't
     /// report as a later one.
@@ -115,6 +121,8 @@ pub struct Run {
     /// The session it works in: empty for a new agent, filled for one
     /// that continues.
     pub session: SessionSlot,
+    /// Set while it waits for an approval.
+    pub waiting: Waiting,
 }
 
 /// What `SendMessage` found.
@@ -207,6 +215,7 @@ impl BgAgents {
             cancel: CancellationToken::new(),
             inbox: Inbox::default(),
             session: SessionSlot::default(),
+            waiting: Waiting::default(),
         };
         inner.insert(
             id,
@@ -217,6 +226,7 @@ impl BgAgents {
                 started: SystemTime::now(),
                 session: Arc::clone(&run.session),
                 inbox: Arc::clone(&run.inbox),
+                waiting: Arc::clone(&run.waiting),
                 cancel: run.cancel.clone(),
                 generation: 0,
                 task: None,
@@ -296,11 +306,13 @@ impl BgAgents {
             cancel: CancellationToken::new(),
             inbox: Inbox::default(),
             session: Arc::clone(&entry.session),
+            waiting: Waiting::default(),
         };
         entry.state = AgentState::Running;
         entry.prompt = message.to_string();
         entry.started = SystemTime::now();
         entry.inbox = Arc::clone(&run.inbox);
+        entry.waiting = Arc::clone(&run.waiting);
         entry.cancel = run.cancel.clone();
         // A notice not yet read is superseded by the new run's.
         entry.notice = None;
@@ -372,6 +384,8 @@ impl BgAgents {
                 prompt: e.prompt.clone(),
                 state: e.state,
                 started: e.started,
+                waiting: e.state == AgentState::Running
+                    && e.waiting.load(std::sync::atomic::Ordering::Relaxed),
             })
             .collect();
         all.sort_by_key(|a| std::cmp::Reverse(a.started));
@@ -601,6 +615,21 @@ mod tests {
         let run = table.start("explore", "look").unwrap();
         drop(table);
         assert!(run.cancel.is_cancelled());
+    }
+
+    #[test]
+    fn the_list_says_when_an_agent_waits_for_an_approval() {
+        use std::sync::atomic::Ordering;
+        let table = BgAgents::new();
+        let run = table.start("task", "write").unwrap();
+        assert!(!table.snapshot()[0].waiting);
+        run.waiting.store(true, Ordering::Relaxed);
+        assert!(table.snapshot()[0].waiting);
+        table.finish(&run, Ok("done".into()));
+        assert!(
+            !table.snapshot()[0].waiting,
+            "a finished agent waits for nothing"
+        );
     }
 
     #[test]
