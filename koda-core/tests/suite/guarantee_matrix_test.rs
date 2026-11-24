@@ -171,11 +171,18 @@ fn matrix_memory_write() {
 }
 
 // ── Row 12: WebFetch (GET) ──
+//
+// A remote action, as Claude Code asks before a fetch: Safe asks, Auto
+// doesn't. A preapproved documentation site is read-only.
 
 #[test]
 fn matrix_web_fetch() {
-    let args = serde_json::json!({"url": "https://example.com"});
+    let args = serde_json::json!({"url": "https://example.com", "prompt": "q"});
     let (auto, confirm) = check_both("WebFetch", &args);
+    assert_eq!(auto, auto_mutation_expected());
+    assert_eq!(confirm, ToolApproval::NeedsConfirmation);
+    let docs = serde_json::json!({"url": "https://docs.python.org/3/", "prompt": "q"});
+    let (auto, confirm) = check_both("WebFetch", &docs);
     assert_eq!(auto, ToolApproval::AutoApprove);
     assert_eq!(confirm, ToolApproval::AutoApprove);
 }

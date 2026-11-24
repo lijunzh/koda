@@ -105,6 +105,9 @@ async fn a_length_finish_before_usage_logs_max_tokens() {
         &["stop_reason=max_tokens", "prompt_tokens=11"],
     );
     // The stub cuts off every reply, and the run still has to end.
-    let calls = log.lines().filter(|l| l.contains("model call")).count();
+    let calls = log
+        .lines()
+        .filter(|l| l.contains("model call purpose="))
+        .count();
     assert_eq!(calls as u32, MAX_TRUNCATED_REPLIES, "{log}");
 }

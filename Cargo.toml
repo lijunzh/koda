@@ -84,6 +84,7 @@ shlex = "2"
 time = "0.3"
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "macros"] }
 uuid = { version = "1", features = ["v4"] }
+htmd = "0.6.1"
 
 # Dev-only deps shared across crates.
 tempfile = "3"

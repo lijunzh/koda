@@ -115,7 +115,8 @@ fn test_classify_tool_covers_all_tools_explicitly() {
         ("ActivateSkill", ToolEffect::ReadOnly),
         ("RecallContext", ToolEffect::ReadOnly),
         ("AskUser", ToolEffect::ReadOnly),
-        ("WebFetch", ToolEffect::ReadOnly),
+        // WebFetch without a preapproved documentation URL reaches out.
+        ("WebFetch", ToolEffect::RemoteAction),
         ("WebSearch", ToolEffect::ReadOnly),
         ("InvokeAgent", ToolEffect::ReadOnly),
         // TodoWrite mutates Koda-owned session state (the in-memory todo

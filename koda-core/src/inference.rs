@@ -1268,6 +1268,10 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
     // `WebSearch` on a model with its own search (Claude) uses it, as
     // Claude Code's does; the model can change between turns.
     tools.set_web_searcher(provider.web_searcher(&config.model_settings.model));
+    // `WebFetch`'s question goes to a model call of its own, as in Claude Code.
+    tools.set_page_reader(Some(std::sync::Arc::new(
+        crate::tools::web_fetch::ModelPageReader::new(config),
+    )));
 
     // #1265 item 4 PR-2: collect the per-turn ambient state into a
     // single `TurnContext` so the dispatch helpers don't each take
