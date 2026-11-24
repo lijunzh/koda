@@ -42,8 +42,9 @@ use crate::skills::SkillRegistry;
 /// restricted tool set.
 ///
 /// Pre-#1325 Phase 5b this list also included `ListBackgroundTasks` /
-/// `CancelTask` / `WaitTask`, and later `SendMessage` / `WaitForMail`;
-/// all five were retired (the last two with the mailbox).
+/// `CancelTask` / `WaitTask`, and later the mailbox's `SendMessage` and
+/// `WaitForMail`; all five were retired. `SendMessage` returned for
+/// background agents, with no mailbox.
 const META_TOOLS: &[&str] = &[
     "ActivateSkill",
     "ListSkills",
@@ -53,6 +54,8 @@ const META_TOOLS: &[&str] = &[
     // always available so skill-scoped agents can spawn sub-agents
     // without listing it in every manifest (same rationale as InvokeAgent).
     "SpawnAgent",
+    // Reaches the background agents InvokeAgent started.
+    "SendMessage",
     "AskUser",
 ];
 

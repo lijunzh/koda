@@ -442,8 +442,9 @@ impl Tool for TaskStopTool {
         ToolDefinition {
             name: "TaskStop".to_string(),
             description: "Stop a running background task by its ID: a monitor started with \
-                Monitor, or a command started with Bash{background: true} (its PID). Returns \
-                whether it was stopped. You aren't told again about a task you stop."
+                Monitor, a command started with Bash{background: true} (its PID), or an agent \
+                started with InvokeAgent{run_in_background: true}. Returns whether it was \
+                stopped. You aren't told again about a task you stop."
                 .to_string(),
             parameters: json!({
                 "type": "object",
@@ -483,9 +484,15 @@ fn stop(ctx: &ToolExecCtx<'_>, args: &Value) -> anyhow::Result<String> {
         })
         .filter(|s| !s.is_empty())
         .ok_or_else(|| anyhow::anyhow!("Missing 'task_id' argument"))?;
-    let pid: u32 = id
-        .parse()
-        .map_err(|_| anyhow::anyhow!("No background task {id:?}: an ID is a number"))?;
+    if crate::tools::bg_agents::BgAgents::is_agent_id(&id) {
+        return stop_agent(ctx, &id);
+    }
+    let pid: u32 = id.parse().map_err(|_| {
+        anyhow::anyhow!(
+            "No background task {id:?}: a command's or monitor's ID is a number, an agent's \
+                 starts with 'a'"
+        )
+    })?;
     let bg = ctx.bg_registry;
     let running = bg.status(pid) == Some(crate::tools::bg_process::BgProcessStatus::Running);
     match bg.kill_as_caller(pid, ctx.caller_spawner) {
@@ -497,6 +504,28 @@ fn stop(ctx: &ToolExecCtx<'_>, args: &Value) -> anyhow::Result<String> {
         }
         _ if !running => Ok(format!("Background task {pid} had already ended.")),
         _ => Ok(format!("Stopped background task {pid}.")),
+    }
+}
+
+/// Stop the background agent `id`, as Claude Code's `TaskStop` stops a
+/// background agent by its id.
+fn stop_agent(ctx: &ToolExecCtx<'_>, id: &str) -> anyhow::Result<String> {
+    use crate::tools::bg_agents::Stop;
+    if ctx.caller_spawner.is_some() {
+        anyhow::bail!(
+            "Background agent {id} belongs to the main agent; it can't be stopped from here."
+        );
+    }
+    match ctx.bg_registry.agents().stop(id) {
+        Stop::Stopped => Ok(format!(
+            "Stopped background agent {id}. Its session keeps what it did; SendMessage to {id} \
+             continues it."
+        )),
+        Stop::NotRunning(state) => Ok(format!(
+            "Background agent {id} had already ended ({}).",
+            state.as_str()
+        )),
+        Stop::Unknown => anyhow::bail!("No background task {id}."),
     }
 }
 

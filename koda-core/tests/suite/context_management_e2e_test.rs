@@ -278,8 +278,11 @@ async fn preflight_compact_skipped_below_85pct_threshold() {
 async fn overflow_recovery_compacts_and_retries_successfully() {
     // Need ≥4 messages for compaction to do anything. Pad enough that
     // the partial-compact path has work to do without forcing
-    // HistoryTooLarge (which would short-circuit recovery).
-    let env = Env::builder().max_context_tokens(8_000).build().await;
+    // HistoryTooLarge (which would short-circuit recovery). The window
+    // leaves room for the system prompt and every built-in tool (8,000 was
+    // outgrown when `SendMessage` joined them): the history must fit before
+    // the provider's overflow, or the window compaction drops it first.
+    let env = Env::builder().max_context_tokens(9_000).build().await;
     let padding = "y".repeat(80);
     fill_history_with_pairs(&env, 4, &padding).await;
     env.insert_user_message("trigger overflow").await;

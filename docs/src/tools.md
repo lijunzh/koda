@@ -13,7 +13,7 @@ prompt. See [Trust modes](./approval.md) for the canonical matrix.
 | `Bash` | Varies | Run a shell command in the sandbox; with `outside_sandbox` and a `reason`, run one command outside it once you approve. With `background`, it runs on and its output goes to a log, and the model is told when it exits (an idle session wakes for it; in [`koda exec`](./headless.md#background-commands) it has a time limit, 10 minutes or its `timeout`, up to 2 hours); with `tty`, it runs in the background with a terminal of its own, for a program that waits for typed input |
 | `WriteStdin` | Mutating (Read-only with no `chars`) | Type into a command started with `tty` and read what it printed since the last read: answer a prompt, drive a REPL or a debugger, send Ctrl+C (`\u0003`). With no `chars`, it only waits for output. See [Typing into a command](#typing-into-a-command) |
 | `Monitor` | As `Bash` judges its command | Run a command in the background and receive each line it prints to stdout as an event while the conversation goes on ([Watching a command](#watching-a-command)) |
-| `TaskStop` | Mutating | Stop a background command or a monitor by its ID |
+| `TaskStop` | Mutating | Stop a background command, a monitor or a background agent by its ID |
 | `Cargo` | Mutating | `cargo check`, `clippy`, `test` or `build` from the project root, with one line per compiler diagnostic and, for `test`, the failing tests with panic locations |
 | `Grep` | Read-only | Search file contents with a regex: matching files (the default), matching lines with optional context, or counts; filter by glob or file type; results in pages |
 | `Glob` | Read-only | List files matching a glob pattern |
@@ -28,8 +28,9 @@ prompt. See [Trust modes](./approval.md) for the canonical matrix.
 | `RecallContext` | Read-only | Search session history for past context |
 | `ListSkills` | Read-only | List available skills |
 | `ActivateSkill` | Internal | Load a skill's instructions into context |
-| `InvokeAgent` | Varies | Delegate a task to a named sub-agent; blocks until it finishes and returns its final answer as the result |
-| `SpawnAgent` | Read-only | Alias for `InvokeAgent` with the codex-style arguments (`task_name`, `message`); same synchronous behavior |
+| `InvokeAgent` | Varies | Delegate a task to a named sub-agent; blocks until it finishes and returns its final answer as the result, or with `run_in_background` returns its ID at once ([Background agents](#background-agents)) |
+| `SendMessage` | Read-only | Message a background agent: a running one reads it at its next step, a finished one continues with its whole conversation |
+| `SpawnAgent` | Read-only | Alias for `InvokeAgent` with the codex-style arguments (`task_name`, `message`); same behavior, `run_in_background` included |
 | `ListAgents` | Read-only | List the available sub-agents (`detail=true` adds their system prompts) |
 | `List` | Read-only | List directory contents |
 | `AskUser` | Interactive | Ask the user a clarifying question |
@@ -88,6 +89,32 @@ finished deploy without polling.
 - **Stopping it:** `TaskStop` with its ID, `/stop`, or the end of the
   session. A watch that you or the model stopped sends no further notice.
   `TaskStop` also stops a command started with `Bash{background: true}`.
+
+### Background agents
+
+As in Claude Code, `InvokeAgent` with `run_in_background: true` starts a
+sub-agent and returns its ID at once; the model goes on working and is told
+when the agent finishes. The model starts one only when you, a skill or the
+project's instructions ask for delegation, as with any sub-agent.
+
+- **The report:** when the agent finishes, its final answer (up to 32,000
+  characters; the rest stays in its session) reaches the model at the start of
+  its next step, quoted as data. A session waiting for you starts a turn for
+  it, and `koda exec` waits for running agents before it exits.
+- **`SendMessage`** to the agent's ID: a running agent reads the message at
+  its next step; a finished one continues in the background with its whole
+  conversation plus the message, and reports again.
+- **Limits, Codex's:** at most 6 run at once; sub-agents can't start
+  sub-agents, nor message background agents.
+- **What it may do:** the same as a blocking sub-agent: its mode is clamped
+  to the session's, and the [sub-agent
+  matrix](./approval.md#sub-agent-matrix-context-sensitive-resolution)
+  decides what would need your approval, since it can't ask.
+- **Where you see it:** the background overlay lists it, with its task,
+  until it finishes. Its own steps don't stream into the conversation.
+- **Stopping it:** `TaskStop` with its ID, `/stop`, or the end of the
+  session. Esc stops the turn, not background agents. A stopped agent sends
+  no report; its session keeps what it did, and `SendMessage` continues it.
 
 ### Web search budget
 

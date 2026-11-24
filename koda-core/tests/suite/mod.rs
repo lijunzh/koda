@@ -13,6 +13,7 @@ mod compact_reasoning_test;
 mod config_capabilities_test;
 mod context_management_e2e_test;
 mod e2e_agent_test;
+mod e2e_background_agent_test;
 mod e2e_safety_test;
 mod e2e_skills_test;
 mod e2e_sub_agent_trust_test;

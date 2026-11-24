@@ -8,8 +8,8 @@ use koda_core::agent::KodaAgent;
 use koda_core::tools::bg_process::BgProcessStatus;
 use koda_protocol::agent::{AgentInfo, AgentListResponse, AgentSource};
 use koda_protocol::background::{
-    BackgroundTerminal, BackgroundTerminalsCleanResponse, BackgroundTerminalsListResponse,
-    BackgroundTerminalsTerminateResponse,
+    BackgroundAgent, BackgroundTerminal, BackgroundTerminalsCleanResponse,
+    BackgroundTerminalsListResponse, BackgroundTerminalsTerminateResponse,
 };
 use koda_protocol::rpc::ErrorObject;
 
@@ -49,9 +49,27 @@ pub(crate) fn list(agent: &KodaAgent) -> BackgroundTerminalsListResponse {
         .collect();
     data.sort_by_key(|(age, _)| std::cmp::Reverse(*age));
     let registry = &agent.tools.bg_registry;
+    let mut agents: Vec<BackgroundAgent> = registry
+        .agents()
+        .snapshot()
+        .into_iter()
+        .filter(|a| a.state == koda_core::tools::bg_agents::AgentState::Running)
+        .map(|a| BackgroundAgent {
+            agent_id: a.id,
+            agent_name: a.agent_name,
+            prompt: a.prompt,
+            started_at: a
+                .started
+                .duration_since(UNIX_EPOCH)
+                .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+                .unwrap_or(0),
+        })
+        .collect();
+    agents.sort_by_key(|a| a.started_at);
     BackgroundTerminalsListResponse {
         data: data.into_iter().map(|(_, terminal)| terminal).collect(),
-        waiting: registry.any_running() || registry.has_exits() || registry.has_monitor_notices(),
+        waiting: registry.any_working() || registry.has_notices(),
+        agents,
     }
 }
 
@@ -60,6 +78,12 @@ pub(crate) fn terminate(
     agent: &KodaAgent,
     process_id: &str,
 ) -> Result<BackgroundTerminalsTerminateResponse, ErrorObject> {
+    if koda_core::tools::bg_agents::BgAgents::is_agent_id(process_id) {
+        let stopped = agent.tools.bg_registry.agents().stop(process_id);
+        return Ok(BackgroundTerminalsTerminateResponse {
+            terminated: stopped == koda_core::tools::bg_agents::Stop::Stopped,
+        });
+    }
     let pid: u32 = process_id
         .parse()
         .map_err(|_| invalid(format!("no background process {process_id:?}")))?;
@@ -81,7 +105,8 @@ pub(crate) fn clean(agent: &KodaAgent) -> BackgroundTerminalsCleanResponse {
         .iter()
         .filter(|p| p.status == BgProcessStatus::Running)
         .filter(|p| registry.kill(p.pid))
-        .count();
+        .count()
+        + registry.agents().stop_all();
     BackgroundTerminalsCleanResponse {
         terminated: u32::try_from(terminated).unwrap_or(u32::MAX),
     }

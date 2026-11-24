@@ -874,7 +874,13 @@ async fn collect_stream(
                         | crate::trust::ToolApproval::Blocked
                 );
 
-                if is_read_only && is_auto_approved && tc.function_name != "InvokeAgent" {
+                // Tools the dispatcher handles itself (sub-agents, `SendMessage`,
+                // `AskUser`) have only a stub in the registry, so they wait
+                // for the normal dispatch.
+                if is_read_only
+                    && is_auto_approved
+                    && !crate::tool_dispatch::handled_by_dispatch(&tc.function_name)
+                {
                     // Execute eagerly — read-only tools are fast (10–50ms),
                     // the channel buffers incoming chunks while we run.
                     tracing::debug!("Eager dispatch: {} (id={})", tc.function_name, tc.id);
@@ -1469,6 +1475,24 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
                     if monitor_notices.len() == 1 { "" } else { "s" },
                 ),
             });
+        }
+        // Background agents that finished, as Claude Code tells Claude in
+        // a later turn.
+        let agent_notices = tools.bg_registry.agents().take_notices();
+        if !agent_notices.is_empty() {
+            let notice = crate::tools::bg_agents::notice_text(&agent_notices);
+            db.insert_message(session_id, &Role::User, Some(&notice), None, None, None)
+                .await?;
+            for agent in &agent_notices {
+                sink.emit(EngineEvent::Info {
+                    message: format!(
+                        "  Agent {} ({}) {}",
+                        agent.id,
+                        agent.agent_name,
+                        agent.state.as_str()
+                    ),
+                });
+            }
         }
         let next_texts = cmd_rx.take_steers();
         if !next_texts.is_empty() {
@@ -2603,6 +2627,43 @@ mod tests {
         assert_eq!(id, "tc_eager");
         assert!(output.contains("file content"), "eager result: {output}");
         assert!(success);
+    }
+
+    /// Read-only tools the dispatcher handles itself would reach only their
+    /// registry stub if run early: on Claude models a streamed `SendMessage`
+    /// answered "SendMessage is handled by the inference loop."
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn collect_stream_leaves_dispatcher_tools_to_the_dispatcher() {
+        for name in ["SendMessage", "SpawnAgent", "InvokeAgent", "AskUser"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let tc = ToolCall {
+                id: format!("tc_{name}"),
+                function_name: name.into(),
+                arguments: serde_json::json!({"to": "a1", "message": "hi"}).to_string(),
+                thought_signature: None,
+            };
+            let (tx, mut rx) = mpsc::channel(32);
+            let sink = TestSink::new();
+            let cancel = CancellationToken::new();
+            let tools = test_tools(tmp.path());
+            tokio::spawn(async move {
+                let _ = tx.send(StreamChunk::ToolCallReady(tc)).await;
+                let _ = tx.send(StreamChunk::ToolCalls(vec![])).await;
+                let _ = tx.send(StreamChunk::Done(TokenUsage::default())).await;
+            });
+            let result = collect_stream(
+                &mut rx,
+                &sink,
+                &cancel,
+                &tools,
+                TrustMode::Auto,
+                tmp.path(),
+                true,
+            )
+            .await;
+            assert_eq!(result.tool_calls.len(), 1, "{name} is recorded");
+            assert!(result.eager_results.is_empty(), "{name} ran early");
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

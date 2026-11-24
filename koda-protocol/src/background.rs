@@ -48,6 +48,26 @@ pub struct BackgroundTerminalsListResponse {
     /// for background work.
     #[serde(default)]
     pub waiting: bool,
+    /// The model's background agents still running, oldest first. Koda's
+    /// own; Claude Code lists its background agents beside its background
+    /// commands. `terminate` stops one by its `agentId`, and `clean` stops
+    /// them with the processes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agents: Vec<BackgroundAgent>,
+}
+
+/// A background agent that is still running.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BackgroundAgent {
+    /// Its id, as the model has it.
+    pub agent_id: String,
+    /// Which agent it is (`explore`, `task`, ...).
+    pub agent_name: String,
+    /// The task it was last given.
+    pub prompt: String,
+    /// When its latest run started, in Unix milliseconds.
+    pub started_at: i64,
 }
 
 /// `session/backgroundTerminals/terminate`: stop one, and whatever it
@@ -57,7 +77,7 @@ pub struct BackgroundTerminalsListResponse {
 pub struct BackgroundTerminalsTerminateParams {
     /// An open session.
     pub session_id: String,
-    /// From the list.
+    /// From the list: a process's `processId`, or an agent's `agentId`.
     pub process_id: String,
 }
 

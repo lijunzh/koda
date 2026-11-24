@@ -274,6 +274,8 @@ pub struct BgRegistry {
     /// The time limit for background commands, in a session nobody
     /// attends ([`Self::set_time_limit`]).
     time_limit: Mutex<Option<Duration>>,
+    /// The model's background sub-agents.
+    agents: Arc<crate::tools::bg_agents::BgAgents>,
 }
 
 impl BgRegistry {
@@ -282,7 +284,13 @@ impl BgRegistry {
         Self {
             inner: Mutex::new(HashMap::new()),
             time_limit: Mutex::new(None),
+            agents: Arc::default(),
         }
+    }
+
+    /// The model's background sub-agents.
+    pub fn agents(&self) -> &Arc<crate::tools::bg_agents::BgAgents> {
+        &self.agents
     }
 
     /// Register a spawned child. `spawner` is the sub-agent invocation
@@ -786,6 +794,19 @@ impl BgRegistry {
         if let Some(entry) = self.inner.lock().unwrap().get_mut(&pid) {
             entry.limit = Some(limit.min(MAX_BACKGROUND_LIMIT));
         }
+    }
+
+    /// Whether the model's background work is still going: its own
+    /// commands, or its background agents.
+    pub fn any_working(&self) -> bool {
+        self.any_running() || self.agents.running() > 0
+    }
+
+    /// Whether something is due to be told to the model: a command's exit,
+    /// a monitor's events, or a background agent's finish. What an idle
+    /// session starts a turn for.
+    pub fn has_notices(&self) -> bool {
+        self.has_exits() || self.has_monitor_notices() || self.agents.has_notices()
     }
 
     /// Whether any of the model's own background commands (not a

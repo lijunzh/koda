@@ -150,6 +150,35 @@
         }
       ]
     },
+    "BackgroundAgent": {
+      "description": "A background agent that is still running.",
+      "properties": {
+        "agentId": {
+          "description": "Its id, as the model has it.",
+          "type": "string"
+        },
+        "agentName": {
+          "description": "Which agent it is (`explore`, `task`, ...).",
+          "type": "string"
+        },
+        "prompt": {
+          "description": "The task it was last given.",
+          "type": "string"
+        },
+        "startedAt": {
+          "description": "When its latest run started, in Unix milliseconds.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "agentId",
+        "agentName",
+        "prompt",
+        "startedAt"
+      ],
+      "type": "object"
+    },
     "BackgroundTerminal": {
       "description": "A background process that is still running.",
       "properties": {
@@ -284,6 +313,13 @@
     "BackgroundTerminalsListResponse": {
       "description": "The answer to `session/backgroundTerminals/list`: the running ones,\noldest first.",
       "properties": {
+        "agents": {
+          "description": "The model's background agents still running, oldest first. Koda's\nown; Claude Code lists its background agents beside its background\ncommands. `terminate` stops one by its `agentId`, and `clean` stops\nthem with the processes.",
+          "items": {
+            "$ref": "#/$defs/BackgroundAgent"
+          },
+          "type": "array"
+        },
         "data": {
           "description": "The running processes.",
           "items": {
@@ -307,7 +343,7 @@
       "description": "`session/backgroundTerminals/terminate`: stop one, and whatever it\nstarted.",
       "properties": {
         "processId": {
-          "description": "From the list.",
+          "description": "From the list: a process's `processId`, or an agent's `agentId`.",
           "type": "string"
         },
         "sessionId": {

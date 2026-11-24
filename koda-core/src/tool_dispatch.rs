@@ -186,6 +186,29 @@ pub(crate) fn has_file_conflict(tool_calls: &[ToolCall]) -> bool {
     })
 }
 
+/// Whether `name` is a tool this module runs itself, not the registry,
+/// whose entry for it is only a stub. Such a tool must never be run straight
+/// from the registry, as the inference loop runs read-only tools early.
+pub(crate) fn handled_by_dispatch(name: &str) -> bool {
+    matches!(
+        name,
+        "InvokeAgent" | "SpawnAgent" | "SendMessage" | "AskUser"
+    )
+}
+
+/// Whether an `InvokeAgent` or `SpawnAgent` call asks to run in the
+/// background. Anything but a JSON `true` (or `"true"`) runs it blocking.
+fn runs_in_background(arguments: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(arguments)
+        .ok()
+        .and_then(|args| match args.get("run_in_background")? {
+            serde_json::Value::Bool(b) => Some(*b),
+            serde_json::Value::String(s) => Some(s.eq_ignore_ascii_case("true")),
+            _ => None,
+        })
+        .unwrap_or(false)
+}
+
 /// Execute a single tool call, returning (tool_call_id, result_output, success).
 #[tracing::instrument(skip_all, fields(tool = %tc.function_name))]
 pub(crate) async fn execute_one_tool(
@@ -208,7 +231,22 @@ pub(crate) async fn execute_one_tool(
     } = *tx.turn;
     let caller_spawner = tx.caller_spawner;
     let _session_id = session_id; // mirror the existing `_session_id` arg name
-    let (result, success, full_output, images) = if tc.function_name == "InvokeAgent" {
+    let (result, success, full_output, images) = if tc.function_name == "SendMessage" {
+        match sub_agent_dispatch::send_message(&tx, &tc.arguments) {
+            Ok(output) => (output, true, None, Vec::new()),
+            Err(e) => (format!("SendMessage: {e:#}"), false, None, Vec::new()),
+        }
+    } else if tc.function_name == "InvokeAgent" && runs_in_background(&tc.arguments) {
+        match sub_agent_dispatch::start_background(&tx, &tc.arguments) {
+            Ok(output) => (output, true, None, Vec::new()),
+            Err(e) => (
+                format!("Error invoking sub-agent: {e:#}"),
+                false,
+                None,
+                Vec::new(),
+            ),
+        }
+    } else if tc.function_name == "InvokeAgent" {
         // Sub-agents inherit the parent's approval mode.
         //
         // Runtime invariant: the sub-agent dispatch loop short-circuits
@@ -239,7 +277,7 @@ pub(crate) async fn execute_one_tool(
         let policy = tools.sandbox_policy().clone();
         let read_cache = tools.file_read_cache();
         let fut = sub_agent_dispatch::execute_sub_agent(
-            tx,
+            sub_agent_dispatch::Parent::of(&tx),
             &tc.arguments,
             // Sub-agents get a fresh command channel (they auto-approve in all modes)
             &mut dummy_rx,
@@ -251,6 +289,7 @@ pub(crate) async fn execute_one_tool(
             // narrative trace rows are folded under the parent's
             // `InvokeAgent` tool result in the persisted transcript.
             Some(&tc.id),
+            None,
         );
         match Box::pin(fut).await {
             Ok(output) => (output, true, None, Vec::new()),
@@ -312,16 +351,29 @@ pub(crate) async fn execute_one_tool(
             id: tc.id.clone(),
             thought_signature: tc.thought_signature.clone(),
         };
+        if runs_in_background(&remapped_tc.arguments) {
+            return match sub_agent_dispatch::start_background(&tx, &remapped_tc.arguments) {
+                Ok(output) => (tc.id.clone(), output, true, None, Vec::new()),
+                Err(e) => (
+                    tc.id.clone(),
+                    format!("Error spawning agent: {e:#}"),
+                    false,
+                    None,
+                    Vec::new(),
+                ),
+            };
+        }
         let (_, mut dummy_rx) = mpsc::channel(1);
         let policy = tools.sandbox_policy().clone();
         let read_cache = tools.file_read_cache();
         let fut = sub_agent_dispatch::execute_sub_agent(
-            tx,
+            sub_agent_dispatch::Parent::of(&tx),
             &remapped_tc.arguments,
             &mut dummy_rx,
             Some(read_cache),
             &policy,
             Some(&remapped_tc.id),
+            None,
         );
         match Box::pin(fut).await {
             Ok(output) => (output, true, None, Vec::new()),
