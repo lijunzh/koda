@@ -106,10 +106,10 @@ project's instructions ask for delegation, as with any sub-agent.
   conversation plus the message, and reports again.
 - **Limits, Codex's:** at most 6 run at once; sub-agents can't start
   sub-agents, nor message background agents.
-- **What it may do:** the same as a blocking sub-agent: its mode is clamped
-  to the session's, and the [sub-agent
-  matrix](./approval.md#sub-agent-matrix-context-sensitive-resolution)
-  decides what would need your approval, since it can't ask.
+- **What it may do:** the same as a blocking sub-agent: the session's rules,
+  and what would need your approval [asks in the main
+  session](./approval.md#sub-agents-ask-in-the-main-session), naming the
+  agent and its ID, even after the turn that started it has ended.
 - **Where you see it:** the background overlay lists it, with its task,
   until it finishes. Its own steps don't stream into the conversation.
 - **Stopping it:** `TaskStop` with its ID, `/stop`, or the end of the

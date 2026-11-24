@@ -30,7 +30,7 @@ mod crossterm_handler;
 mod post_turn;
 mod select_loop;
 mod turn_tracker;
-mod ui_handler;
+pub(crate) mod ui_handler;
 
 use koda_client::protocol::rpc::RequestId;
 

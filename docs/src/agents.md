@@ -25,7 +25,7 @@ read for one more release, with a warning in the log, so move its files to
 | `name` | ✓ | Identifier used with `--agent <name>` and `InvokeAgent` |
 | `system_prompt` | ✓ | The agent's persona and instructions |
 | `trust` | | `"plan"` (read-only), `"safe"` (write-capable, default), or `"auto"` (auto-approve mutations within sandbox). See [Trust modes](./approval.md). |
-| `isolation` | | `"worktree"` to work in a git worktree of its own and leave the work on a branch. It needs a git repository: without one, the agent doesn't start. By default it writes in the project, or in a worktree in Safe mode. See [Where sub-agents write](sandbox.md#where-sub-agents-write). |
+| `isolation` | | `"worktree"` to work in a git worktree of its own and leave the work on a branch. It needs a git repository: without one, the agent doesn't start. By default it writes in the project, asking first in Safe mode, as the main agent does. See [Where sub-agents write](sandbox.md#where-sub-agents-write). |
 | `model` | | Model alias or ID (defaults to current saved model) |
 | `allowed_tools` | | Subset of tools the agent can call (defaults to all) |
 | `disallowed_tools` | | Tools to deny even if `allowed_tools` is empty |
@@ -69,10 +69,9 @@ The default shape for agents that need to make changes:
 }
 ```
 
-In Safe trust, the [sub-agent matrix](./approval.md#sub-agent-matrix-context-sensitive-resolution)
-auto-approves mutating ops (Write/Edit/MemoryWrite) and blocks
-destructive ops (`rm -rf`, `git reset --hard`). No human
-prompt needed because there's no UI for the sub-agent to prompt into.
+Its calls go through the session's rules: in a Safe session its edits ask
+first, in the main session, naming the agent; see
+[Sub-agents ask in the main session](./approval.md#sub-agents-ask-in-the-main-session).
 
 ### Read-only with execution escape valve (Safe trust + denied writes)
 

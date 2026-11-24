@@ -24,13 +24,22 @@ impl TuiContext {
         self.inference_start = None;
 
         // A dialog that reached the screen as the turn stopped has no one
-        // waiting for its answer.
-        super::crossterm_handler::close_dialog(
-            &mut self.menu,
-            &mut self.prompt_mode,
-            &mut self.pending_approval_id,
-            &mut self.textarea,
-        );
+        // waiting for its answer, except a background agent's request: the
+        // agent outlives the turn and still waits.
+        if !matches!(
+            self.menu,
+            crate::tui_types::MenuContent::Approval {
+                background: true,
+                ..
+            }
+        ) {
+            super::crossterm_handler::close_dialog(
+                &mut self.menu,
+                &mut self.prompt_mode,
+                &mut self.pending_approval_id,
+                &mut self.textarea,
+            );
+        }
 
         // Steering text the turn didn't deliver goes back in the composer, so
         // it isn't lost and doesn't go out behind the next prompt. Nothing

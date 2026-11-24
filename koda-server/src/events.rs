@@ -525,6 +525,7 @@ impl EventProjector {
                         changes,
                         effect: effect_of(effect),
                         allow_for_session,
+                        agent: None,
                     },
                 }));
             }
@@ -764,6 +765,30 @@ impl EventProjector {
 
     fn turn(&self) -> String {
         self.turn_id.clone().unwrap_or_default()
+    }
+
+    /// A sub-agent's approval request, with an id of the host's own: it is
+    /// answered on its own reply, not through the turn.
+    pub(crate) fn agent_approval(
+        &mut self,
+        request: koda_core::approval_flow::AgentApproval,
+    ) -> (RequestId, ToolCallApprovalParams) {
+        let id = self.new_request_id();
+        let params = ToolCallApprovalParams {
+            session_id: self.session_id.clone(),
+            turn_id: self.turn(),
+            item_id: request.tool_call_id,
+            tool: request.tool_name,
+            detail: request.detail,
+            changes: changes_of(request.preview.as_ref()),
+            effect: effect_of(request.effect),
+            allow_for_session: request.allow_for_session,
+            agent: Some(koda_protocol::item::ApprovalAgent {
+                name: request.agent_name,
+                id: request.agent_id,
+            }),
+        };
+        (id, params)
     }
 
     /// A request id for a request of the host's own, not the engine's: an

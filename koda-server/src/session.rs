@@ -406,8 +406,13 @@ pub(crate) async fn open(
             goal_turn: crate::goal::TurnActivity::default(),
             goal_budget: None,
             elicitations: HashMap::new(),
+            agent_approvals: HashMap::new(),
         }),
     });
+    // Sub-agents ask the client through the sink too.
+    session.agent.tools.set_approver(Arc::new(HostApprover {
+        sink: Arc::downgrade(&sink),
+    }));
     // The session's MCP servers ask the client for input through the sink.
     if let Some(mcp) = session.mcp() {
         mcp.read().await.set_elicitor(Arc::new(HostElicitor {
@@ -1594,6 +1599,10 @@ struct SinkState {
     /// MCP servers' requests for input waiting on the client, each with
     /// where its answer goes.
     elicitations: HashMap<RequestId, oneshot::Sender<Answer>>,
+    /// Sub-agents' approval requests waiting on the client, each with where
+    /// its answer goes. Not withdrawn when a turn ends: a background agent
+    /// outlives it.
+    agent_approvals: HashMap<RequestId, oneshot::Sender<Answer>>,
 }
 
 /// The session's [`EngineSink`]: engine events become protocol messages on
@@ -1719,7 +1728,9 @@ impl HostSink {
     /// open, such as one whose turn has ended.
     fn answer(&self, id: &RequestId, result: Answer) -> Option<EngineCommand> {
         let mut state = self.lock();
-        if let Some(reply) = state.elicitations.remove(id) {
+        let own = state.elicitations.remove(id);
+        let own = own.or_else(|| state.agent_approvals.remove(id));
+        if let Some(reply) = own {
             state.kinds.remove(id);
             let resolved = self.resolved_notice(id);
             self.send(&mut state, vec![resolved]);
@@ -1877,6 +1888,100 @@ impl HostSink {
             })],
         );
         Some(answer)
+    }
+}
+
+impl HostSink {
+    /// Ask the client to approve a sub-agent's call: the decision itself when
+    /// Koda answers its own requests ([`ApprovalPolicy::Never`]), otherwise
+    /// the request's id and where its answer arrives.
+    fn ask_for_agent(
+        &self,
+        request: koda_core::approval_flow::AgentApproval,
+    ) -> Result<ApprovalDecision, (RequestId, oneshot::Receiver<Answer>)> {
+        if self.answers.is_some() {
+            let event = EngineEvent::ApprovalRequest {
+                id: String::new(),
+                tool_call_id: request.tool_call_id,
+                tool_name: request.tool_name,
+                detail: request.detail,
+                preview: None,
+                effect: request.effect,
+                allow_for_session: false,
+            };
+            return Ok(match policy_answer(&event) {
+                Some((_, EngineCommand::ApprovalResponse { decision, .. })) => decision,
+                _ => ApprovalDecision::Reject,
+            });
+        }
+        let (reply, answer) = oneshot::channel();
+        let mut state = self.lock();
+        let (id, params) = state.projector.agent_approval(request);
+        state.agent_approvals.insert(id.clone(), reply);
+        self.send(
+            &mut state,
+            vec![Outgoing::Request(ServerRequest::ToolCallApproval {
+                id: id.clone(),
+                params,
+            })],
+        );
+        Err((id, answer))
+    }
+
+    /// Withdraw a sub-agent's request that is no longer waited on: the agent
+    /// was stopped.
+    fn withdraw(&self, id: &RequestId) {
+        let mut state = self.lock();
+        if state.agent_approvals.remove(id).is_some() {
+            state.kinds.remove(id);
+            let resolved = self.resolved_notice(id);
+            self.send(&mut state, vec![resolved]);
+        }
+    }
+}
+
+/// Sub-agents' approvals, asked of the session's client through the sink, as
+/// Claude Code and Codex ask for a sub-agent in the main session.
+struct HostApprover {
+    sink: std::sync::Weak<HostSink>,
+}
+
+/// Withdraws a request when its sub-agent stops waiting for it.
+struct Asked {
+    sink: Arc<HostSink>,
+    id: Option<RequestId>,
+}
+
+impl Drop for Asked {
+    fn drop(&mut self) {
+        if let Some(id) = self.id.take() {
+            self.sink.withdraw(&id);
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl koda_core::approval_flow::Approver for HostApprover {
+    async fn approve(
+        &self,
+        request: koda_core::approval_flow::AgentApproval,
+    ) -> Option<ApprovalDecision> {
+        let sink = self.sink.upgrade()?;
+        let (id, answer) = match sink.ask_for_agent(request) {
+            Ok(decision) => return Some(decision),
+            Err(asked) => asked,
+        };
+        let mut asked = Asked {
+            sink,
+            id: Some(id.clone()),
+        };
+        let result = answer.await.ok()?;
+        // Answered: nothing to withdraw.
+        asked.id = None;
+        match engine_command(RequestKind::Approval, String::new(), result) {
+            EngineCommand::ApprovalResponse { decision, .. } => Some(decision),
+            _ => None,
+        }
     }
 }
 
@@ -2157,6 +2262,7 @@ mod tests {
                 goal_turn: crate::goal::TurnActivity::default(),
                 goal_budget: None,
                 elicitations: HashMap::new(),
+                agent_approvals: HashMap::new(),
             }),
         };
         (sink, rx)
@@ -2176,6 +2282,131 @@ mod tests {
 
     fn drain(rx: &mut mpsc::UnboundedReceiver<Outgoing>) -> Vec<Outgoing> {
         std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    fn agent_request(
+        id: Option<&str>,
+        effect: ToolEffect,
+    ) -> koda_core::approval_flow::AgentApproval {
+        koda_core::approval_flow::AgentApproval {
+            agent_name: "task".into(),
+            agent_id: id.map(str::to_string),
+            tool_call_id: "sub-call".into(),
+            tool_name: "Write".into(),
+            detail: "write a.txt".into(),
+            preview: None,
+            effect,
+            allow_for_session: true,
+        }
+    }
+
+    /// A sub-agent's request names it, and its answer goes to it alone,
+    /// not to the turn: it survives the turn's end.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_sub_agents_request_names_it_and_gets_its_answer() {
+        use koda_core::approval_flow::Approver;
+        let (sink, mut events) = sink(None);
+        let sink = Arc::new(sink);
+        let approver = HostApprover {
+            sink: Arc::downgrade(&sink),
+        };
+        let asked = tokio::spawn(async move {
+            approver
+                .approve(agent_request(Some("a1b2"), ToolEffect::LocalMutation))
+                .await
+        });
+        let request = loop {
+            if let Some(Outgoing::Request(ServerRequest::ToolCallApproval { id, params })) =
+                drain(&mut events).into_iter().next()
+            {
+                break (id, params);
+            }
+            tokio::task::yield_now().await;
+        };
+        let (id, params) = request;
+        let agent = params.agent.expect("names the agent");
+        assert_eq!(agent.name, "task");
+        assert_eq!(agent.id.as_deref(), Some("a1b2"));
+        assert_eq!(params.item_id, "sub-call");
+        // A turn ending doesn't withdraw it.
+        sink.lock().pending_end = None;
+        sink.end_turn(None).await;
+        let answer = serde_json::json!({"decision": {"type": "approveForSession"}});
+        assert!(
+            sink.answer(&id, Ok(answer)).is_none(),
+            "nothing goes to the turn"
+        );
+        assert_eq!(
+            asked.await.unwrap(),
+            Some(ApprovalDecision::ApproveForSession)
+        );
+        assert!(
+            drain(&mut events).iter().any(|m| matches!(
+                m,
+                Outgoing::Notification(ServerNotification::ServerRequestResolved(r))
+                    if r.request_id == id
+            )),
+            "the request is resolved for every client"
+        );
+    }
+
+    /// A sub-agent stopped while it waits withdraws its request.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stopped_sub_agent_withdraws_its_request() {
+        use koda_core::approval_flow::Approver;
+        let (sink, mut events) = sink(None);
+        let sink = Arc::new(sink);
+        let approver = HostApprover {
+            sink: Arc::downgrade(&sink),
+        };
+        let asking = tokio::spawn(async move {
+            approver
+                .approve(agent_request(None, ToolEffect::LocalMutation))
+                .await
+        });
+        let id = loop {
+            if let Some(Outgoing::Request(request)) = drain(&mut events).into_iter().next() {
+                break request.id().clone();
+            }
+            tokio::task::yield_now().await;
+        };
+        asking.abort();
+        let _ = asking.await;
+        let resolved = drain(&mut events);
+        assert!(
+            resolved.iter().any(|m| matches!(
+                m,
+                Outgoing::Notification(ServerNotification::ServerRequestResolved(r))
+                    if r.request_id == id
+            )),
+            "{resolved:?}"
+        );
+        assert!(sink.lock().agent_approvals.is_empty());
+    }
+
+    /// With nobody to ask (`koda exec`), Koda answers a sub-agent as it does
+    /// the main agent: changes go ahead, destructive actions are refused.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn with_nobody_to_ask_a_sub_agent_gets_the_policy_answer() {
+        use koda_core::approval_flow::Approver;
+        let (sink, mut events) = sink(Some(mpsc::channel(8).0));
+        let sink = Arc::new(sink);
+        let approver = HostApprover {
+            sink: Arc::downgrade(&sink),
+        };
+        assert_eq!(
+            approver
+                .approve(agent_request(None, ToolEffect::LocalMutation))
+                .await,
+            Some(ApprovalDecision::Approve)
+        );
+        assert!(matches!(
+            approver
+                .approve(agent_request(None, ToolEffect::Destructive))
+                .await,
+            Some(ApprovalDecision::RejectAuto { .. })
+        ));
+        assert!(drain(&mut events).is_empty(), "nothing asked of a client");
     }
 
     /// What `koda exec` has always answered, now answered by the host.

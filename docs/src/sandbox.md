@@ -158,12 +158,9 @@ Child agents inherit the parent's trust mode and sandbox via
 its caller. If the parent runs in Safe mode, the child runs in Safe mode
 even if the agent JSON specifies `"trust": "auto"`.
 
-Within that clamp, sub-agents resolve permission decisions through a
-**context-sensitive matrix** (`koda_core::trust::check_tool_for_sub_agent`)
-that differs from the master matrix on the "ask" cells: mutating ops
-auto-approve and destructive ops block, since sub-agents have no live
-human approval channel by design. See
-[Trust modes § sub-agent matrix](./approval.md#sub-agent-matrix-context-sensitive-resolution).
+Within that clamp, a sub-agent's calls go through the same rules as the main
+agent's, and what would ask asks in the main session, naming the agent. See
+[Sub-agents ask in the main session](./approval.md#sub-agents-ask-in-the-main-session).
 
 ## Platform backends
 
@@ -259,8 +256,8 @@ the reason and waits for you, in Auto as in Safe:
 ```
 
 The command then runs as it would in your own shell, with no sandbox and no
-proxy. Each such call asks again; `a` and `s` don't change that. Sub-agents and
-headless runs have no one to ask, so they're refused, and after a denial
+proxy. Each such call asks again; `a` and `s` don't change that. A sub-agent
+asks in the main session; headless runs have no one to ask, so they're refused, and after a denial
 they're told the command can't leave the sandbox in that run. Codex
 (`require_escalated`) and Claude Code (`dangerouslyDisableSandbox`) do the
 same.
@@ -268,15 +265,12 @@ same.
 ## Where sub-agents write
 
 The **sandbox backend** (above) restricts what a sub-agent's commands can
-do. Where its writes land is a separate choice, and it follows your mode:
+do. Its writes land in the project, like the main agent's and like Claude
+Code's and Codex's sub-agents; in Safe it asks for them first, in the main
+session. In Plan sub-agents are read-only, and the kernel sandbox keeps the
+project read-only for their commands.
 
-| Session | Writes go to |
-|---------|--------------|
-| Auto | The project, like the main agent's. |
-| Safe | A git worktree of its own. A sub-agent can't ask for approval, so its file edits don't reach the project until you merge its branch. |
-| Plan | Nowhere. Sub-agents are read-only, and the kernel sandbox keeps the project read-only for their commands. |
-
-An agent can ask for a worktree in any mode with `"isolation": "worktree"`
+An agent can ask for a worktree of its own with `"isolation": "worktree"`
 in its JSON. When a worktree holds work at the end, Koda commits what isn't
 committed, removes the worktree and keeps the branch. It tells you the
 branch name, and tells the main agent too. A worktree with no new work is

@@ -18,7 +18,7 @@ use ratatui::{
 };
 
 /// Show `request` as its dialog (field-level borrows).
-pub(super) fn show_request(
+pub(crate) fn show_request(
     request: &ServerRequest,
     buffer: &mut ScrollBuffer,
     menu: &mut MenuContent,
@@ -58,8 +58,13 @@ pub(super) fn show_request(
             };
         }
         ServerRequest::ToolCallApproval { id, params } => {
+            let asker = params
+                .agent
+                .as_ref()
+                .map(|agent| format!("{} asks: ", agent.name))
+                .unwrap_or_default();
             crate::notifications::notify(Notification::ApprovalRequested {
-                subject: format!("{}: {}", params.tool, params.detail),
+                subject: format!("{asker}{}: {}", params.tool, params.detail),
             });
             renderer.approval(&params.item_id, &params.changes, buffer);
             *menu = MenuContent::Approval {
@@ -67,6 +72,14 @@ pub(super) fn show_request(
                 tool_name: params.tool.clone(),
                 detail: params.detail.clone(),
                 allow_for_session: params.allow_for_session,
+                agent: params.agent.as_ref().map(|agent| match &agent.id {
+                    Some(id) => format!("{} {id}", agent.name),
+                    None => agent.name.clone(),
+                }),
+                background: params
+                    .agent
+                    .as_ref()
+                    .is_some_and(|agent| agent.id.is_some()),
             };
         }
         ServerRequest::LoopCap { id, params } => {

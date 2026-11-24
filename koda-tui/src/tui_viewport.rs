@@ -66,8 +66,10 @@ pub(crate) fn draw_viewport(
     // Determine menu height (only when active)
     let menu_height = match menu {
         MenuContent::None => 0u16,
-        MenuContent::Approval { detail, .. } if outside_sandbox_request(detail).is_some() => 3,
-        MenuContent::Approval { .. } | MenuContent::LoopCap { .. } => 2,
+        MenuContent::Approval { detail, agent, .. } => {
+            2 + u16::from(outside_sandbox_request(detail).is_some()) + u16::from(agent.is_some())
+        }
+        MenuContent::LoopCap { .. } => 2,
         MenuContent::AskUser {
             question,
             options,
@@ -429,6 +431,8 @@ fn render_menu(frame: &mut ratatui::Frame, menu: &MenuContent, menu_area: ratatu
             tool_name,
             detail,
             allow_for_session,
+            agent,
+            background,
             ..
         } => {
             // A request to leave the sandbox gets the warning and the
@@ -481,13 +485,38 @@ fn render_menu(frame: &mut ratatui::Frame, menu: &MenuContent, menu_area: ratatu
             keys.extend([
                 Span::styled("[n]", Style::default().fg(Color::Red)),
                 Span::styled(" reject  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("[f]", Style::default().fg(Color::Yellow)),
-                Span::styled(" feedback  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("[a]", Style::default().fg(Color::Rgb(124, 111, 100))),
-                Span::styled(" auto  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("[esc]", Style::default().fg(Color::Rgb(124, 111, 100))),
-                Span::styled(" stop", Style::default().fg(Color::DarkGray)),
             ]);
+            if !*background {
+                keys.extend([
+                    Span::styled("[f]", Style::default().fg(Color::Yellow)),
+                    Span::styled(" feedback  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[a]", Style::default().fg(Color::Rgb(124, 111, 100))),
+                    Span::styled(" auto  ", Style::default().fg(Color::DarkGray)),
+                ]);
+            }
+            keys.extend([
+                Span::styled("[esc]", Style::default().fg(Color::Rgb(124, 111, 100))),
+                Span::styled(
+                    if agent.is_some() { " reject" } else { " stop" },
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]);
+            // A sub-agent's request says which agent asks, as Codex heads
+            // one with its thread.
+            if let Some(agent) = agent {
+                lines.insert(
+                    0,
+                    Line::from(vec![
+                        Span::styled("  \u{1f916} ", Style::default()),
+                        Span::styled(
+                            format!("{agent} asks"),
+                            Style::default()
+                                .fg(Color::Magenta)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ]),
+                );
+            }
             lines.push(Line::from(keys));
             frame.render_widget(Paragraph::new(lines), menu_area);
         }

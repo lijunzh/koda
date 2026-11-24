@@ -3487,3 +3487,144 @@ async fn rewind_takes_the_last_turn_out() {
     assert!(sent.contains("second prompt"), "{sent}");
     assert!(!sent.contains("Old reply."), "{sent}");
 }
+
+/// A sub-agent's reply, which doesn't stream, that calls one tool.
+fn sub_agent_call(name: &str, args: Value) -> ResponseTemplate {
+    let call = json!({
+        "id": "sub_call",
+        "type": "function",
+        "function": {"name": name, "arguments": args.to_string()},
+    });
+    ResponseTemplate::new(200).set_body_json(json!({
+        "choices": [{
+            "message": {"role": "assistant", "tool_calls": [call]},
+            "finish_reason": "stop",
+        }],
+    }))
+}
+
+/// The main agent's streamed replies in order, then text; a sub-agent's
+/// replies (which don't stream) in order, then "Sub-agent done.".
+async fn model_with_a_sub_agent(
+    main: Vec<ResponseTemplate>,
+    sub: Vec<ResponseTemplate>,
+) -> FakeLlmServer {
+    let server = FakeLlmServer::spawn().await;
+    let (main_next, sub_next) = (AtomicUsize::new(0), AtomicUsize::new(0));
+    server
+        .mount_fn("POST", r".*/chat/completions$", move |request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap_or_default();
+            if body["stream"] == json!(true) {
+                return main
+                    .get(main_next.fetch_add(1, Ordering::SeqCst))
+                    .cloned()
+                    .unwrap_or_else(final_text);
+            }
+            sub.get(sub_next.fetch_add(1, Ordering::SeqCst))
+                .cloned()
+                .unwrap_or_else(|| {
+                    ResponseTemplate::new(200).set_body_json(json!({
+                        "choices": [{
+                            "message": {"role": "assistant", "content": "Sub-agent done."},
+                            "finish_reason": "stop",
+                        }],
+                    }))
+                })
+        })
+        .await;
+    server
+}
+
+fn delegate(args: Value) -> ResponseTemplate {
+    tool_calls(&[("InvokeAgent", args)])
+}
+
+/// A sub-agent asks in the main session, as in Claude Code and Codex: the
+/// request names it, and `y` lets its write run.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sub_agents_request_names_it_and_y_approves_it() {
+    let (_, write) = write_file("a.txt");
+    let server = model_with_a_sub_agent(
+        vec![delegate(
+            json!({"agent_name": "task", "prompt": "write a.txt"}),
+        )],
+        vec![sub_agent_call("Write", write)],
+    )
+    .await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.submit("first prompt");
+    tui.wait_for_screen("task asks");
+    assert!(tui.screen().contains("[esc] reject"), "{}", tui.screen());
+    tui.type_text("y");
+    tui.wait_for_screen("All done.");
+    assert!(
+        home.path().join("a.txt").exists(),
+        "the approved write didn't run"
+    );
+}
+
+/// Esc on a sub-agent's request refuses that one call; the sub-agent and the
+/// turn go on (Claude Code).
+#[tokio::test(flavor = "multi_thread")]
+async fn esc_refuses_a_sub_agents_call_and_the_turn_goes_on() {
+    let (_, write) = write_file("a.txt");
+    let server = model_with_a_sub_agent(
+        vec![delegate(
+            json!({"agent_name": "task", "prompt": "write a.txt"}),
+        )],
+        vec![sub_agent_call("Write", write)],
+    )
+    .await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.submit("first prompt");
+    tui.wait_for_screen("task asks");
+    tui.type_text(ESC);
+    tui.wait_for_screen("All done.");
+    assert!(!home.path().join("a.txt").exists(), "the refused write ran");
+    let sub_agent_heard = wait_for_model_call(&server, 3).await;
+    assert!(
+        sub_agent_heard.contains("User rejected this action."),
+        "{sub_agent_heard}"
+    );
+}
+
+/// A background agent may ask after the turn that started it has ended: the
+/// idle TUI shows its request, and `y` answers it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_background_agent_asks_while_the_tui_is_idle() {
+    let (_, write) = write_file("a.txt");
+    let server = model_with_a_sub_agent(
+        vec![delegate(json!({
+            "agent_name": "task",
+            "prompt": "write a.txt",
+            "run_in_background": true,
+        }))],
+        vec![sub_agent_call("Write", write)],
+    )
+    .await;
+    let home = home();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.submit("first prompt");
+    tui.wait_for_screen("asks");
+    let screen = tui.screen();
+    assert!(
+        screen.contains("task a"),
+        "names the agent and its id: {screen}"
+    );
+    assert!(!screen.contains("[f] feedback"), "{screen}");
+    tui.type_text("y");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !home.path().join("a.txt").exists() {
+        assert!(
+            Instant::now() < deadline,
+            "the approved write didn't run:\n{}",
+            tui.screen()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}

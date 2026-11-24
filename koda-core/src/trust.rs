@@ -54,25 +54,12 @@
 //! "legal" inside the project root), so Auto keeps the prompt as a
 //! deliberate speed-bump.
 //!
-//! ## Sub-agent (no-human-channel) decision matrix
+//! ## Sub-agents
 //!
-//! Used by [`check_tool_for_sub_agent()`](crate::trust::check_tool_for_sub_agent) when an agent dispatched
-//! via `InvokeAgent` is making the call. Sub-agents have no live
-//! human approval channel by design (#1022 B10), so the matrix
-//! resolves what the top-level matrix would treat as `⚠️ confirm`
-//! using a **safe-side rule**: mutating ops auto-approve, destructive
-//! ops block.
-//!
-//! | Behavior | Sub-agent in Plan | Sub-agent in Safe | Sub-agent in Auto |
-//! |---|---|---|---|
-//! | ReadOnly | ✅ auto | ✅ auto | ✅ auto |
-//! | RemoteAction | ❌ deny | ✅ auto | ✅ auto |
-//! | LocalMutation | ❌ deny | ✅ auto | ✅ auto |
-//! | Destructive | ❌ deny | ❌ block | ❌ block |
-//! | Outside project | ❌ deny | ❌ block | ❌ block |
-//!
-//! See [`check_tool_for_sub_agent()`](crate::trust::check_tool_for_sub_agent) for the rationale and the bug-fix
-//! reference (#1249).
+//! A sub-agent's calls go through the same matrix, as Claude Code's
+//! sub-agents inherit the session's mode and rules. What would ask for the
+//! main agent asks for a sub-agent too, in the main session, naming it
+//! (`approval_flow::Approver`); with nobody to ask it is refused.
 //!
 //! ## Always-on safety floors
 //!
@@ -446,7 +433,7 @@ pub fn cycle_trust(shared: &SharedTrustMode) -> TrustMode {
 
 /// What the trust system decides for a given tool call.
 ///
-/// Returned by [`check_tool`] and [`check_tool_for_sub_agent`].
+/// Returned by [`check_tool`], for the main agent and sub-agents alike.
 /// The engine dispatch loop maps each variant to a concrete action:
 ///
 /// - [`AutoApprove`](Self::AutoApprove) — dispatch the tool immediately.
@@ -459,15 +446,10 @@ pub fn cycle_trust(shared: &SharedTrustMode) -> TrustMode {
 pub enum ToolApproval {
     /// Execute without asking.
     AutoApprove,
-    /// Show confirmation dialog (top-level only). In sub-agent contexts
-    /// this variant is never returned — [`check_tool_for_sub_agent`]
-    /// resolves it to either `AutoApprove` (mutating ops) or `Blocked`
-    /// (destructive ops) per the safe-side rule.
+    /// Ask the person; for a sub-agent, in the main session.
     NeedsConfirmation,
     /// Blocked. Reasons include:
     /// - Plan trust mode (denies all non-read effects)
-    /// - Sub-agent destructive op in Safe/Auto trust (#1251 — no
-    ///   human channel to confirm `rm -rf`)
     /// - Delegation scope violation (sub-agent trying to use a tool
     ///   not in its `allowed_tools`)
     Blocked,
@@ -489,8 +471,6 @@ pub enum ToolApproval {
 /// file inside the project root, so Auto keeps the prompt as a
 /// deliberate speed-bump for ops that would otherwise be irreversible.
 ///
-/// For sub-agent contexts, see [`check_tool_for_sub_agent`].
-///
 /// Additional hardcoded floors:
 /// - Writes outside project root → NeedsConfirmation (even in Auto) (#218)
 /// - Bash path escapes → NeedsConfirmation
@@ -502,7 +482,7 @@ pub fn check_tool(
     mode: TrustMode,
     project_root: Option<&Path>,
 ) -> ToolApproval {
-    check_tool_inner(tool_name, args, mode, project_root, false, None)
+    check_tool_inner(tool_name, args, mode, project_root, None)
 }
 
 /// [`check_tool`], classifying with `registry`'s catalog, which knows the
@@ -517,68 +497,15 @@ pub fn check_tool_with_registry(
     project_root: Option<&Path>,
     registry: &crate::tools::ToolRegistry,
 ) -> ToolApproval {
-    check_tool_inner(tool_name, args, mode, project_root, false, Some(registry))
+    check_tool_inner(tool_name, args, mode, project_root, Some(registry))
 }
 
-/// Like [`check_tool`] but for sub-agent contexts (no human at the keyboard).
-///
-/// **Sub-agent decision matrix:**
-///
-/// | ToolEffect     | Plan    | Safe          | Auto          |
-/// |----------------|---------|---------------|---------------|
-/// | ReadOnly       | ✅ auto  | ✅ auto        | ✅ auto        |
-/// | RemoteAction   | ❌ block | ✅ auto        | ✅ auto        |
-/// | LocalMutation  | ❌ block | ✅ auto        | ✅ auto        |
-/// | Destructive    | ❌ block | ❌ block       | ❌ block       |
-///
-/// **Why the matrix differs from top-level**: sub-agents have no live approval
-/// channel to a human (`sub_agent_dispatch.rs:173` creates a dead `cmd_rx` by
-/// design — #1022 B10). So `NeedsConfirmation` is meaningless: there's no one
-/// to confirm. The single rule is: **"ask" means "default to safe-side."**
-///
-/// - Top-level *"ask"* (Safe × mutating): prompt the human.
-/// - Sub-agent *"ask"* (Safe × mutating): approve — the agent was invoked to
-///   do work; only ask because a human is watching.
-/// - Sub-agent *"ask"* (Auto × destructive): block — user said YOLO but with
-///   no human to confirm `rm -rf /`, refuse on safety grounds.
-///
-/// This resolves the #1249 dead-channel discovery: today, sub-agents at Safe
-/// trust auto-reject every Write/Edit with *"requires user confirmation
-/// but this sub-agent has no channel to the user."* After this change, `task`
-/// and `default` sub-agents become functional writers.
-pub fn check_tool_for_sub_agent(
-    tool_name: &str,
-    args: &serde_json::Value,
-    mode: TrustMode,
-    project_root: Option<&Path>,
-) -> ToolApproval {
-    check_tool_inner(tool_name, args, mode, project_root, true, None)
-}
-
-/// [`check_tool_for_sub_agent`] with `registry`'s MCP-aware catalog; see
-/// [`check_tool_with_registry`].
-pub fn check_tool_for_sub_agent_with_registry(
-    tool_name: &str,
-    args: &serde_json::Value,
-    mode: TrustMode,
-    project_root: Option<&Path>,
-    registry: &crate::tools::ToolRegistry,
-) -> ToolApproval {
-    check_tool_inner(tool_name, args, mode, project_root, true, Some(registry))
-}
-
-/// Shared implementation for [`check_tool`] and [`check_tool_for_sub_agent`].
-///
-/// The `is_sub_agent` flag controls how `NeedsConfirmation` decisions get
-/// resolved when no human is in the loop:
-/// - Mutating ops (LocalMutation/RemoteAction) → AutoApprove (do the work)
-/// - Destructive ops → Blocked (refuse to act without consent)
+/// Shared implementation of [`check_tool`] and [`check_tool_with_registry`].
 fn check_tool_inner(
     tool_name: &str,
     args: &serde_json::Value,
     mode: TrustMode,
     project_root: Option<&Path>,
-    is_sub_agent: bool,
     registry: Option<&crate::tools::ToolRegistry>,
 ) -> ToolApproval {
     let effect = resolve_tool_effect_inner(tool_name, args, registry);
@@ -594,15 +521,14 @@ fn check_tool_inner(
     }
 
     // Hardcoded floor: writes outside project root always need confirmation (#218).
-    // For sub-agents, this becomes Blocked via the resolution at the bottom.
     if let Some(root) = project_root
         && reaches_outside_project(tool_name, args, root)
     {
-        return resolve_confirmation(effect, is_sub_agent);
+        return ToolApproval::NeedsConfirmation;
     }
 
     // Apply the ToolEffect × TrustMode × Context matrix
-    let raw_decision = match mode {
+    match mode {
         TrustMode::Plan => unreachable!(), // handled above
         TrustMode::Safe => match effect {
             ToolEffect::ReadOnly => ToolApproval::AutoApprove,
@@ -629,32 +555,6 @@ fn check_tool_inner(
                 }
             }
         },
-    };
-
-    // For sub-agents, resolve any NeedsConfirmation per the safe-side rule.
-    // For top-level, pass through to the human.
-    if is_sub_agent && raw_decision == ToolApproval::NeedsConfirmation {
-        resolve_confirmation(effect, true)
-    } else {
-        raw_decision
-    }
-}
-
-/// Resolve a `NeedsConfirmation` decision for sub-agents (where there's no
-/// human in the loop). The rule: **"ask" means "default to safe-side."**
-///
-/// - Destructive ops → Blocked (refuse to do dangerous things without consent)
-/// - Everything else → AutoApprove (the agent was invoked to do work)
-///
-/// For top-level callers (`is_sub_agent == false`), this returns
-/// `NeedsConfirmation` unchanged so the human can decide.
-fn resolve_confirmation(effect: ToolEffect, is_sub_agent: bool) -> ToolApproval {
-    if !is_sub_agent {
-        return ToolApproval::NeedsConfirmation;
-    }
-    match effect {
-        ToolEffect::Destructive => ToolApproval::Blocked,
-        _ => ToolApproval::AutoApprove,
     }
 }
 
@@ -666,8 +566,8 @@ fn resolve_confirmation(effect: ToolEffect, is_sub_agent: bool) -> ToolApproval 
 /// For MCP tools, falls back to `RemoteAction` unless a ToolRegistry
 /// is provided via [`resolve_tool_effect_with_registry`].
 ///
-/// Typically called immediately before [`check_tool`] /
-/// [`check_tool_for_sub_agent`] in the engine dispatch loop — the
+/// Typically called immediately before [`check_tool`] in the engine
+/// dispatch loop — the
 /// resolved effect is the matrix row, the trust mode is the matrix
 /// column.
 pub fn resolve_tool_effect(tool_name: &str, args: &serde_json::Value) -> ToolEffect {
@@ -788,9 +688,11 @@ fn reaches_outside_project(tool_name: &str, args: &serde_json::Value, project_ro
 /// session and never written to config or the database, so Koda behaves the
 /// same on every machine and a new session asks again. It doesn't add a
 /// second gating mechanism beside [`TrustMode`]; it only remembers a yes the
-/// mode asked for.
-#[derive(Debug, Default)]
-pub struct SessionAllows(std::sync::Mutex<std::collections::HashSet<String>>);
+/// mode asked for. A clone shares the set, so the main agent and every
+/// sub-agent, background ones included, read and add to one set, as Claude
+/// Code applies a sub-agent's "allow for session" to the whole session.
+#[derive(Debug, Default, Clone)]
+pub struct SessionAllows(std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>);
 
 impl SessionAllows {
     /// Whether `key` (from [`session_allow_key`]) was allowed.
@@ -1156,13 +1058,6 @@ mod tests {
             check_tool("Bash", &args, TrustMode::Plan, None),
             ToolApproval::Blocked
         );
-        for mode in [TrustMode::Safe, TrustMode::Auto] {
-            assert_eq!(
-                check_tool_for_sub_agent("Bash", &args, mode, None),
-                ToolApproval::Blocked,
-                "{mode:?}"
-            );
-        }
         // The same command in the sandbox is read-only and runs freely.
         let sandboxed = serde_json::json!({"command": "git ls-remote origin"});
         assert_eq!(
@@ -1595,195 +1490,6 @@ mod tests {
             result.is_err(),
             "Auto + unavailable must Err; silent coerce-to-Safe is the bug we're preventing. Got: {result:?}"
         );
-    }
-
-    // ─────────────────────────────────────────────────────────────────
-    // #1250: Sub-agent context (no human in the loop)
-    //
-    // The dead approval channel (`sub_agent_dispatch.rs:173`) means
-    // `NeedsConfirmation` is meaningless for sub-agents. The single rule
-    // applied by `check_tool_for_sub_agent` is: "ask" → default to safe-side.
-    //   - mutating ops → AutoApprove (the agent was invoked to do work)
-    //   - destructive ops → Blocked (refuse without consent)
-    //
-    // Critical bug fix: pre-#1250, `task` and `default` sub-agents at Safe
-    // trust auto-rejected every Write/Edit. After #1250 they work.
-    // ─────────────────────────────────────────────────────────────────
-
-    /// Sub-agent at Plan: same as top-level Plan. Read auto, everything else block.
-    #[test]
-    fn sub_agent_plan_blocks_writes() {
-        for tool in ["Write", "Edit", "Bash"] {
-            let args = if tool == "Bash" {
-                serde_json::json!({"command": "cargo build"})
-            } else {
-                serde_json::json!({"path": "foo.rs", "content": "x"})
-            };
-            assert_eq!(
-                check_tool_for_sub_agent(tool, &args, TrustMode::Plan, None),
-                ToolApproval::Blocked,
-                "sub-agent at Plan must block {tool}"
-            );
-        }
-    }
-
-    #[test]
-    fn sub_agent_plan_allows_reads() {
-        // Read-only tools and read-only Bash always work, even at Plan.
-        for tool in ["Read", "Grep", "Glob"] {
-            assert_eq!(
-                check_tool_for_sub_agent(tool, &serde_json::json!({}), TrustMode::Plan, None),
-                ToolApproval::AutoApprove,
-                "sub-agent at Plan must allow read tool {tool}"
-            );
-        }
-        assert_eq!(
-            check_tool_for_sub_agent(
-                "Bash",
-                &serde_json::json!({"command": "git status"}),
-                TrustMode::Plan,
-                None
-            ),
-            ToolApproval::AutoApprove,
-            "sub-agent at Plan must allow read-only Bash"
-        );
-    }
-
-    /// THE BUG FIX: sub-agent at Safe can now write. Pre-#1250 these all
-    /// auto-rejected because `NeedsConfirmation` had no human to consult.
-    #[test]
-    fn sub_agent_safe_auto_approves_writes() {
-        let args = serde_json::json!({"path": "foo.rs", "content": "x"});
-        for tool in ["Write", "Edit"] {
-            assert_eq!(
-                check_tool_for_sub_agent(tool, &args, TrustMode::Safe, None),
-                ToolApproval::AutoApprove,
-                "sub-agent at Safe must auto-approve {tool} (was the #1250 bug)"
-            );
-        }
-    }
-
-    #[test]
-    fn sub_agent_safe_auto_approves_mutating_bash() {
-        // `cargo build` etc. — the bread and butter of worker agents.
-        for cmd in ["cargo build", "npm install", "pytest", "git commit -m wip"] {
-            let args = serde_json::json!({"command": cmd});
-            assert_eq!(
-                check_tool_for_sub_agent("Bash", &args, TrustMode::Safe, None),
-                ToolApproval::AutoApprove,
-                "sub-agent at Safe must auto-approve mutating Bash: {cmd}"
-            );
-        }
-    }
-
-    #[test]
-    fn sub_agent_safe_blocks_destructive_bash() {
-        // Even a worker agent must not silently `rm -rf /`. With no human
-        // to confirm, refuse on safety grounds.
-        for cmd in [
-            "rm -rf /",
-            "git reset --hard origin/main",
-            "git push --force",
-        ] {
-            let args = serde_json::json!({"command": cmd});
-            assert_eq!(
-                check_tool_for_sub_agent("Bash", &args, TrustMode::Safe, None),
-                ToolApproval::Blocked,
-                "sub-agent at Safe must BLOCK destructive Bash: {cmd}"
-            );
-        }
-    }
-
-    #[test]
-    fn sub_agent_auto_auto_approves_writes() {
-        // Non-destructive mutations work in Auto, same as Safe (sub-agent context).
-        let args = serde_json::json!({"path": "foo.rs", "content": "x"});
-        for tool in ["Write", "Edit"] {
-            // Sub-agent dispatch always provides project_root; pass /tmp
-            // to satisfy the outside-project guardrail (path is inside).
-            assert_eq!(
-                check_tool_for_sub_agent(tool, &args, TrustMode::Auto, None),
-                ToolApproval::AutoApprove,
-                "sub-agent at Auto must auto-approve {tool}"
-            );
-        }
-    }
-
-    #[test]
-    fn sub_agent_auto_blocks_destructive() {
-        // The user said YOLO at top-level, but the sub-agent has no human
-        // to escalate the destructive prompt to. Block.
-        for cmd in [
-            "rm -rf /",
-            "git reset --hard origin/main",
-            "git push --force",
-        ] {
-            let args = serde_json::json!({"command": cmd});
-            assert_eq!(
-                check_tool_for_sub_agent("Bash", &args, TrustMode::Auto, None),
-                ToolApproval::Blocked,
-                "sub-agent at Auto must STILL BLOCK destructive Bash: {cmd}"
-            );
-        }
-    }
-
-    #[test]
-    fn sub_agent_safe_auto_approves_remote_action() {
-        // curl, WebFetch, gh CLI etc. — work at Safe in sub-agents.
-        for cmd in ["curl https://example.com", "gh pr create -t x -b y"] {
-            let args = serde_json::json!({"command": cmd});
-            assert_eq!(
-                check_tool_for_sub_agent("Bash", &args, TrustMode::Safe, None),
-                ToolApproval::AutoApprove,
-                "sub-agent at Safe must auto-approve remote action: {cmd}"
-            );
-        }
-    }
-
-    /// Top-level vs sub-agent divergence: same tool call, same mode, different
-    /// approval based on context. This is the core of the #1250 design.
-    #[test]
-    fn top_level_vs_sub_agent_safe_write_diverges() {
-        let args = serde_json::json!({"path": "foo.rs", "content": "x"});
-        assert_eq!(
-            check_tool("Write", &args, TrustMode::Safe, None),
-            ToolApproval::NeedsConfirmation,
-            "top-level Safe × Write must prompt human"
-        );
-        assert_eq!(
-            check_tool_for_sub_agent("Write", &args, TrustMode::Safe, None),
-            ToolApproval::AutoApprove,
-            "sub-agent Safe × Write must auto-approve (no human to ask)"
-        );
-    }
-
-    #[test]
-    fn top_level_vs_sub_agent_auto_destructive_diverges() {
-        let args = serde_json::json!({"command": "rm -rf /"});
-        assert_eq!(
-            check_tool("Bash", &args, TrustMode::Auto, None),
-            ToolApproval::NeedsConfirmation,
-            "top-level Auto × destructive Bash must prompt human (#1250 tightening)"
-        );
-        assert_eq!(
-            check_tool_for_sub_agent("Bash", &args, TrustMode::Auto, None),
-            ToolApproval::Blocked,
-            "sub-agent Auto × destructive Bash must BLOCK (no human to ask)"
-        );
-    }
-
-    #[test]
-    fn sub_agent_read_tools_always_approved() {
-        // Sanity floor: read tools work at every mode and context.
-        for mode in [TrustMode::Plan, TrustMode::Safe, TrustMode::Auto] {
-            for tool in ["Read", "Grep", "Glob"] {
-                assert_eq!(
-                    check_tool_for_sub_agent(tool, &serde_json::json!({}), mode, None),
-                    ToolApproval::AutoApprove,
-                    "sub-agent {mode:?} must allow read tool {tool}"
-                );
-            }
-        }
     }
 
     // ── Allow for this session ──

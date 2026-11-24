@@ -146,6 +146,25 @@ async fn handle_inference_key_inline(
     // Esc and Ctrl+C stop the turn from any dialog, so they close it and fall
     // through to the cascade below. `n` is the way to reject and let the
     // model go on, and `f` the way to tell it why.
+    // A sub-agent's request: Esc refuses that one call and the agent goes
+    // on, as in Claude Code; the turn keeps running.
+    if key.code == KeyCode::Esc
+        && let MenuContent::Approval {
+            id, agent: Some(_), ..
+        } = menu
+    {
+        let id = id.clone();
+        *menu = MenuContent::None;
+        let _ = cmd_tx
+            .send(TurnCommand::answer(
+                id,
+                ToolCallApprovalResponse {
+                    decision: ApprovalDecision::Reject,
+                },
+            ))
+            .await;
+        return false;
+    }
     let stops_turn = key.code == KeyCode::Esc
         || (key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL));
     if stops_turn {
@@ -156,10 +175,12 @@ async fn handle_inference_key_inline(
     if let MenuContent::Approval {
         id,
         allow_for_session,
+        background,
         ..
     } = menu
     {
         let approval_id = id.clone();
+        let background = *background;
         let decision = match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => Some(ApprovalDecision::Approve),
             // Yes, and don't ask again this session for this command or
@@ -168,7 +189,7 @@ async fn handle_inference_key_inline(
                 Some(ApprovalDecision::ApproveForSession)
             }
             KeyCode::Char('n') | KeyCode::Char('N') => Some(ApprovalDecision::Reject),
-            KeyCode::Char('a') | KeyCode::Char('A') => {
+            KeyCode::Char('a') | KeyCode::Char('A') if !background => {
                 // Sandbox-aware Auto switch (#860 hard refusal). If the
                 // kernel sandbox is unavailable we skip the trust flip
                 // but still honor the approval as a one-shot — graceful
@@ -190,7 +211,7 @@ async fn handle_inference_key_inline(
                 }
                 Some(ApprovalDecision::Approve)
             }
-            KeyCode::Char('f') | KeyCode::Char('F') => {
+            KeyCode::Char('f') | KeyCode::Char('F') if !background => {
                 *prompt_mode = PromptMode::WizardInput {
                     label: "Feedback".into(),
                     mask: false,

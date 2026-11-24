@@ -41,7 +41,6 @@ use koda_state::session_store::SessionStore;
 
 use anyhow::Result;
 use std::path::Path;
-use tokio::sync::mpsc;
 
 /// Post-execution recording: emit result event and persist to DB. Called after every successful tool execution regardless
 /// of execution strategy (parallel, split-batch, or sequential).
@@ -273,14 +272,11 @@ pub(crate) async fn execute_one_tool(
         // the sub-agent dispatch loop maps that to a clean auto-reject
         // tool result the model can act on. Sub-agents have no path to
         // the user's prompt by design.
-        let (_, mut dummy_rx) = mpsc::channel(1);
         let policy = tools.sandbox_policy().clone();
         let read_cache = tools.file_read_cache();
         let fut = sub_agent_dispatch::execute_sub_agent(
             sub_agent_dispatch::Parent::of(&tx),
             &tc.arguments,
-            // Sub-agents get a fresh command channel (they auto-approve in all modes)
-            &mut dummy_rx,
             Some(read_cache),
             // Phase 5 PR-4 of #934: hand the parent's effective policy
             // to the child so `compose()` can stack restrictions.
@@ -363,13 +359,11 @@ pub(crate) async fn execute_one_tool(
                 ),
             };
         }
-        let (_, mut dummy_rx) = mpsc::channel(1);
         let policy = tools.sandbox_policy().clone();
         let read_cache = tools.file_read_cache();
         let fut = sub_agent_dispatch::execute_sub_agent(
             sub_agent_dispatch::Parent::of(&tx),
             &remapped_tc.arguments,
-            &mut dummy_rx,
             Some(read_cache),
             &policy,
             Some(&remapped_tc.id),
