@@ -19,6 +19,7 @@ mod plan_mode_headless_test;
 mod prompt_text_test;
 mod regression_test;
 mod sandbox_helper_test;
+mod search_programs_test;
 mod serve_test;
 mod skill_agent_e2e_test;
 mod smoke_test;
