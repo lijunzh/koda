@@ -163,6 +163,7 @@ pub type LastBashCache = Arc<std::sync::Mutex<Option<(String, std::time::Instant
 ///     success: true,
 ///     full_output: None,
 ///     images: Vec::new(),
+///     exit_code: None,
 /// };
 /// assert!(ok.success);
 /// ```
