@@ -154,6 +154,7 @@ impl McpCli {
             client_info: ClientInfo {
                 name: "koda-mcp".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
+                title: None,
             },
         })
         .await?;

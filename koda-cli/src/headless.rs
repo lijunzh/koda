@@ -125,6 +125,7 @@ pub async fn run_headless(
         client_info: ClientInfo {
             name: "koda-exec".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
+            title: None,
         },
     })
     .await?;

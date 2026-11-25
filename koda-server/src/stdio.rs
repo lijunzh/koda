@@ -212,6 +212,14 @@ async fn take_line(
             // Codex's server takes them.
             let initialize = request.method
                 == <koda_protocol::methods::Initialize as koda_protocol::Method>::NAME;
+            if initialize {
+                outbox.take_capabilities(request.params.as_ref());
+            } else if let Some(error) = outbox.refuses(&request.method) {
+                if let Ok(line) = error_line(Some(id), error) {
+                    outbox.push(line);
+                }
+                return true;
+            }
             let (reply, answer) = oneshot::channel();
             let sent = commands
                 .send(HostCommand::Request { request, reply })
@@ -387,6 +395,16 @@ pub(crate) struct Outbox {
     /// The client fell [`Outbox::limit`] lines behind: what waited is
     /// dropped and nothing more is queued.
     overflowed: AtomicBool,
+    /// What the client said it takes in `initialize`.
+    taking: std::sync::OnceLock<Taking>,
+}
+
+/// A connection's `initialize` capabilities, as Codex keeps them per
+/// connection.
+#[derive(Default)]
+struct Taking {
+    experimental: bool,
+    opted_out: std::collections::HashSet<String>,
 }
 
 impl Outbox {
@@ -404,9 +422,68 @@ impl Outbox {
         self.queue.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Keep what the client's `initialize` (its `params`) says it takes.
+    /// A later one changes nothing: a connection initializes once.
+    pub(crate) fn take_capabilities(&self, params: Option<&serde_json::Value>) {
+        let capabilities: koda_protocol::initialize::InitializeCapabilities = params
+            .and_then(|params| params.get("capabilities"))
+            .and_then(|capabilities| serde_json::from_value(capabilities.clone()).ok())
+            .unwrap_or_default();
+        let _ = self.taking.set(Taking {
+            experimental: capabilities.experimental_api,
+            opted_out: capabilities
+                .opt_out_notification_methods
+                .unwrap_or_default()
+                .into_iter()
+                .collect(),
+        });
+    }
+
+    /// The refusal of `method` to this client, if it is experimental and
+    /// the client didn't opt in, as Codex refuses it.
+    pub(crate) fn refuses(&self, method: &str) -> Option<ErrorObject> {
+        let reason = koda_protocol::initialize::experimental_reason(method)?;
+        let experimental = self.taking.get().is_some_and(|taking| taking.experimental);
+        (!experimental).then(|| {
+            ErrorObject::new(
+                codes::INVALID_REQUEST,
+                koda_protocol::initialize::experimental_required_message(reason),
+            )
+        })
+    }
+
+    /// Whether `line` is a notification this client opted out of, or an
+    /// experimental one it didn't opt into: it isn't sent, as Codex skips
+    /// them per connection. Requests and responses always go.
+    fn skips(&self, line: &str) -> bool {
+        let Some(taking) = self.taking.get() else {
+            return false;
+        };
+        let experimental_ones = !taking.experimental
+            && !koda_protocol::initialize::EXPERIMENTAL_NOTIFICATIONS.is_empty();
+        if taking.opted_out.is_empty() && !experimental_ones {
+            return false;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            return false;
+        };
+        if value.get("id").is_some() {
+            return false;
+        }
+        let Some(method) = value.get("method").and_then(serde_json::Value::as_str) else {
+            return false;
+        };
+        taking.opted_out.contains(method)
+            || (experimental_ones
+                && koda_protocol::initialize::EXPERIMENTAL_NOTIFICATIONS.contains(&method))
+    }
+
     /// Queue a line. With a limit, a full queue drops everything waiting and
     /// ends the connection instead.
     pub(crate) fn push(&self, line: String) {
+        if self.skips(&line) {
+            return;
+        }
         let mut queue = self.lock();
         if self.overflowed.load(Ordering::Acquire) {
             return;
@@ -469,6 +546,32 @@ pub(crate) async fn write_lines<W: AsyncWrite + Unpin>(outbox: Arc<Outbox>, mut 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only notifications are dropped for a connection that opted out of
+    /// them; a request or response under that name still goes, and a
+    /// connection that said nothing gets everything.
+    #[test]
+    fn opting_out_drops_only_the_named_notifications() {
+        let outbox = Outbox::default();
+        outbox.take_capabilities(Some(&serde_json::json!({
+            "clientInfo": {"name": "t", "version": "0"},
+            "capabilities": {"optOutNotificationMethods": ["item/agentMessage/delta"]},
+        })));
+        let delta = r#"{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{}}"#;
+        let other = r#"{"jsonrpc":"2.0","method":"item/completed","params":{}}"#;
+        let request = r#"{"jsonrpc":"2.0","id":1,"method":"item/agentMessage/delta"}"#;
+        assert!(outbox.skips(delta));
+        assert!(!outbox.skips(other));
+        assert!(!outbox.skips(request));
+
+        let plain = Outbox::default();
+        plain.take_capabilities(Some(&serde_json::json!({
+            "clientInfo": {"name": "t", "version": "0"},
+        })));
+        assert!(!plain.skips(delta));
+        // Nothing is experimental yet, so nothing is refused.
+        assert!(plain.refuses("session/start").is_none());
+    }
 
     fn error_of(line: &str) -> Value {
         let line = parse(line.as_bytes()).unwrap_err();

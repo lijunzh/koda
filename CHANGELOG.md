@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **`initialize` takes `capabilities`, as Codex's does.** A client can opt out of notifications it doesn't draw (`optOutNotificationMethods`, by exact method name) and opt into experimental methods and notifications (`experimentalApi`), for its connection only; `clientInfo` takes an optional `title`. Nothing is experimental yet: new methods and fields can start there. Koda's own TUI and `koda exec` opt in, as Codex's TUI and `codex exec` do.
+
 ### Fixed
 
 - **A session is written by one Koda process at a time, as Codex keeps one writer per thread.** Two processes on the same database (the shared server and a `koda exec resume`, or a TUI started with `--no-daemon` or `--oss`) could both open one session and add turns the other never saw. The first now holds a lock on it while it is open; the second is refused with "session … already has an active writer" when it opens, renames or deletes the session, and can still read it. The TUI says the session is open in another Koda process and to close it there.

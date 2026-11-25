@@ -213,11 +213,19 @@ impl Client {
 
     /// Connected and initialized.
     async fn ready(server: &Server) -> Self {
+        Self::ready_with(server, json!({})).await
+    }
+
+    /// Connected and initialized, saying it takes `capabilities`.
+    async fn ready_with(server: &Server, capabilities: Value) -> Self {
         let mut client = Self::connect(server).await;
         let init = client
             .send_request(
                 "initialize",
-                json!({"clientInfo": {"name": "socket-test", "version": "0"}}),
+                json!({
+                    "clientInfo": {"name": "socket-test", "version": "0"},
+                    "capabilities": capabilities,
+                }),
             )
             .await;
         client.response(init).await.unwrap();
@@ -358,6 +366,51 @@ async fn each_client_hears_its_own_sessions() {
             .any(|l| l["method"] == "session/started"
                 && session_of(l) == Some(beta_session.as_str())),
         "the new session's first message reaches its client: {beta_heard:?}"
+    );
+    koda.stop().await;
+}
+
+/// A notification a connection opted out of in `initialize` never reaches
+/// it, as Codex's `optOutNotificationMethods`; another connection, and
+/// requests and responses, are unaffected.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_connection_opts_out_of_notifications_it_names() {
+    let server = model(vec![text("streamed reply"), text("again")]).await;
+    let koda = Server::start(config(&server), Duration::from_secs(60)).await;
+    let mut quiet = Client::ready_with(
+        &koda,
+        json!({"optOutNotificationMethods": ["item/agentMessage/delta"]}),
+    )
+    .await;
+    let mut loud = Client::ready(&koda).await;
+
+    let mut heard = Vec::new();
+    for client in [&mut quiet, &mut loud] {
+        let session = client.start_session().await;
+        client
+            .request("turn/start", json!({"sessionId": session, "input": "hi"}))
+            .await
+            .unwrap();
+        let mut lines = client.seen();
+        lines.extend(client.until_method("turn/completed").await);
+        heard.push(lines);
+    }
+    let deltas = |lines: &[Value]| {
+        lines
+            .iter()
+            .filter(|l| l["method"] == "item/agentMessage/delta")
+            .count()
+    };
+    assert_eq!(deltas(&heard[0]), 0, "{:?}", heard[0]);
+    assert!(deltas(&heard[1]) > 0, "{:?}", heard[1]);
+    // The reply still arrives whole on the item that completes it.
+    assert!(
+        heard[0]
+            .iter()
+            .any(|l| l["method"] == "item/completed"
+                && l["params"]["item"]["text"] == "streamed reply"),
+        "{:?}",
+        heard[0]
     );
     koda.stop().await;
 }
@@ -711,7 +764,9 @@ async fn a_client_runs_a_turn_over_the_socket() {
             client_info: koda_server::protocol::initialize::ClientInfo {
                 name: "socket-client".into(),
                 version: "0".into(),
+                title: None,
             },
+            capabilities: None,
         })
         .await
         .unwrap();

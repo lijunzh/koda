@@ -38,6 +38,7 @@ async fn the_client_connects_to_the_shared_server() {
     let info = ClientInfo {
         name: "connect-test".into(),
         version: "0".into(),
+        title: None,
     };
     let deadline = Instant::now() + Duration::from_secs(30);
     let client = loop {

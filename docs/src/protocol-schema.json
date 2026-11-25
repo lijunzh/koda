@@ -401,6 +401,13 @@
           "description": "The client's name.",
           "type": "string"
         },
+        "title": {
+          "description": "A name to show people, such as \"Koda Desktop\", as Codex's\n`clientInfo.title`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "version": {
           "description": "The client's version.",
           "type": "string"
@@ -1085,9 +1092,41 @@
       ],
       "type": "object"
     },
+    "InitializeCapabilities": {
+      "description": "What a client takes, said in `initialize`: Codex's\n`InitializeCapabilities`, the two Koda has a use for.",
+      "properties": {
+        "experimentalApi": {
+          "default": false,
+          "description": "Opt into the methods and notifications still marked experimental\n([`EXPERIMENTAL_METHODS`], [`EXPERIMENTAL_NOTIFICATIONS`]). Without\nit, such a method is refused and such a notification isn't sent.",
+          "type": "boolean"
+        },
+        "optOutNotificationMethods": {
+          "description": "Notifications this connection never wants, by exact method name\n(such as `item/agentMessage/delta`). Requests and responses are\nalways sent.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "InitializeParams": {
       "description": "The client says who it is.",
       "properties": {
+        "capabilities": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InitializeCapabilities"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What the client takes. Without them, nothing experimental and every\nnotification."
+        },
         "clientInfo": {
           "$ref": "#/$defs/ClientInfo",
           "description": "The client's name and version."
