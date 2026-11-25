@@ -41,3 +41,9 @@ updates:
     labels:
       - dependencies
       - ci
+    groups:
+      # CodeQL refuses to run when its steps are at different versions, so
+      # init and analyze move together (as its own error message advises).
+      codeql-action:
+        patterns:
+          - "github/codeql-action*"
