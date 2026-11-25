@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **A session is written by one Koda process at a time, as Codex keeps one writer per thread.** Two processes on the same database (the shared server and a `koda exec resume`, or a TUI started with `--no-daemon` or `--oss`) could both open one session and add turns the other never saw. The first now holds a lock on it while it is open; the second is refused with "session … already has an active writer" when it opens, renames or deletes the session, and can still read it. The TUI says the session is open in another Koda process and to close it there.
 - **`session/list` finds a folder's sessions when its path has `.` or `..` in it, or is relative.** Such a `cwd` listed nothing, because the server compared the path text as given. It now resolves the path as Codex's `thread/list` does: `~` as the home folder, a relative path from the server's folder, then `.` and `..` by the text. Symlinks are not followed, as in Codex; list a folder by the `cwd` its sessions report.
 - **An approval answered in the wrong shape is refused as a failed request, not as the user's no.** `{"decision": "approve"}` (instead of `{"decision": {"type": "approve"}}`) used to reach the model as "User rejected this action." It is still refused, now as "approval request failed", as Codex refuses it, so the model and the client can tell a client bug from a person's no; the server logs it as an error.
 

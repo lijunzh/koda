@@ -1264,6 +1264,80 @@ async fn unsubscribe_closes_a_session_and_it_opens_again() {
     assert_eq!(reopened.session.id, koda.session);
 }
 
+/// One process writes a session at a time, as Codex keeps one writer per
+/// thread: a second host on the same database (another process, such as
+/// `koda exec resume` beside the shared server) can read the session but
+/// can't open, rename or delete it until the first lets it go.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_session_has_one_writer_across_hosts() {
+    let server = model(vec![text("Hello.")]).await;
+    let mut koda = Koda::start(config(&server)).await;
+    koda.turn("hi").await;
+    koda.until("turn/completed").await;
+    let other = client(config(&server), &koda._dir).await;
+    let refusal = format!("session {} already has an active writer", koda.session);
+
+    let resumed = other
+        .request::<methods::SessionStart>(SessionStartParams {
+            session_id: Some(koda.session.clone()),
+            ..Default::default()
+        })
+        .await;
+    let refused = server_error(resumed);
+    assert_eq!(refused.code, codes::INVALID_REQUEST);
+    assert_eq!(refused.message, refusal);
+
+    let read = other
+        .request::<methods::SessionRead>(koda_client::protocol::session::SessionReadParams {
+            session_id: koda.session.clone(),
+            include_turns: true,
+        })
+        .await
+        .unwrap();
+    assert_eq!(read.session.id, koda.session);
+
+    let renamed = other
+        .request::<methods::SessionNameSet>(koda_client::protocol::session::SessionNameSetParams {
+            session_id: koda.session.clone(),
+            name: "elsewhere".to_string(),
+        })
+        .await;
+    assert_eq!(server_error(renamed).message, refusal);
+    let deleted = other
+        .request::<methods::SessionDelete>(SessionDeleteParams {
+            session_id: koda.session.clone(),
+        })
+        .await;
+    assert_eq!(server_error(deleted).message, refusal);
+
+    // Closed in the first host, it opens in the second.
+    assert_eq!(
+        koda.unsubscribe().await,
+        SessionUnsubscribeStatus::Unsubscribed
+    );
+    let deadline = Instant::now() + WAIT;
+    let reopened = loop {
+        let started = other
+            .request::<methods::SessionStart>(SessionStartParams {
+                session_id: Some(koda.session.clone()),
+                ..Default::default()
+            })
+            .await;
+        match started {
+            Ok(started) => break started,
+            Err(RequestError::Server { error, .. })
+                if error.message == refusal && Instant::now() < deadline =>
+            {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            other => panic!("expected the session to open, got {other:?}"),
+        }
+    };
+    assert_eq!(reopened.session.id, koda.session);
+    other.shutdown().await;
+    koda.client.shutdown().await;
+}
+
 /// Unsubscribing stops the session's running turn, which still ends with
 /// its `turn/completed`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

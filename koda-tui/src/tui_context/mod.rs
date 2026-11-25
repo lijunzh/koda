@@ -221,7 +221,7 @@ pub(crate) async fn open_host_session(
             ..Default::default()
         })
         .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        .map_err(|e| anyhow::anyhow!("{}", opening_refused(e)))?;
     let instruction_sources = started.session.instruction_sources.unwrap_or_default();
     Ok((
         TuiSession {
@@ -231,6 +231,24 @@ pub(crate) async fn open_host_session(
         started.session.turns,
         started.session.mode,
     ))
+}
+
+/// Why the host didn't open a session, in words for the person: a session
+/// another Koda process writes is said as Codex's TUI says it ("open in
+/// another app"), with what to do.
+fn opening_refused(e: koda_client::RequestError) -> String {
+    match e {
+        koda_client::RequestError::Server { error, .. }
+            if koda_state::writer_lock::is_active_writer(&error.message) =>
+        {
+            format!(
+                "This session is open in another Koda process (a `koda exec` run, or a TUI \
+                 started with --no-daemon or --oss). Close it there, then try again. ({})",
+                error.message
+            )
+        }
+        other => other.to_string(),
+    }
 }
 
 /// Fork session `source` on the host (`session/fork`) and open the copy,
@@ -1119,4 +1137,34 @@ impl TuiContext {
     // ═══════════════════════════════════════════════════════════
     // Idle-mode event handling (keyboard, paste, menu, wizard, history)
     // ═══════════════════════════════════════════════════════════
+}
+
+#[cfg(test)]
+mod opening_tests {
+    use super::opening_refused;
+    use koda_client::RequestError;
+    use koda_client::protocol::rpc::{ErrorObject, codes};
+
+    fn refused(message: &str) -> RequestError {
+        RequestError::Server {
+            method: "session/start",
+            error: ErrorObject::new(codes::INVALID_REQUEST, message),
+        }
+    }
+
+    #[test]
+    fn a_session_written_elsewhere_says_where_and_what_to_do() {
+        let said = opening_refused(refused("session abc already has an active writer"));
+        assert!(
+            said.starts_with("This session is open in another Koda process"),
+            "{said}"
+        );
+        assert!(said.contains("Close it there"), "{said}");
+    }
+
+    #[test]
+    fn other_refusals_read_as_before() {
+        let said = opening_refused(refused("no session 'abc'"));
+        assert_eq!(said, "session/start failed: no session 'abc' (code -32600)");
+    }
 }

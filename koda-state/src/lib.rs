@@ -27,3 +27,4 @@ pub mod db;
 pub mod log_db;
 pub mod session_store;
 pub mod sqlite;
+pub mod writer_lock;

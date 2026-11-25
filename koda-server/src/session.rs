@@ -192,6 +192,9 @@ pub(crate) async fn open(
     // A resumed session keeps its own provider, endpoint, model choice and
     // mode unless the client names others, as Codex's `thread/resume` does.
     let mut mode = config.trust;
+    // The session's writer lock, held while it is open (taken below for a
+    // new one).
+    let mut writer = None;
     if let Some(id) = &resume {
         // By its full id, as Codex's `thread/resume` takes one: a client
         // matches a shorter one over `session/list`.
@@ -205,6 +208,9 @@ pub(crate) async fn open(
                     format!("no session '{id}'. Run `koda` and type /sessions to list them."),
                 )
             })?;
+        // Before anything is written: one process writes a session at a
+        // time, as Codex's `thread/resume` takes the thread's writer lock.
+        writer = Some(take_writer(&db, id).await?);
         let overridden = choice.provider.is_some() || choice.model.is_some();
         if !overridden {
             choice.provider = stored.provider;
@@ -254,6 +260,16 @@ pub(crate) async fn open(
             .create_session(&config.agent_name, &project_root)
             .await
             .map_err(|e| internal(format!("couldn't create the session: {e:#}")))?,
+    };
+    let writer = match writer {
+        Some(writer) => writer,
+        None => match take_writer(&db, &id).await {
+            Ok(writer) => writer,
+            Err(e) => {
+                let _ = db.delete_session(&id).await;
+                return Err(e);
+            }
+        },
     };
     db.set_session_model(
         &id,
@@ -455,6 +471,7 @@ pub(crate) async fn open(
             folder_instructions: std::collections::HashSet::new(),
             check: None,
             checkin: crate::goal::CheckIn::default(),
+            _writer: writer,
         },
         restored_usage,
     })
@@ -498,6 +515,9 @@ pub(crate) struct SessionTask {
     check: Option<String>,
     /// The goal waiting on background commands, and when to check in.
     checkin: crate::goal::CheckIn,
+    /// This process's hold on the session, released once the task has
+    /// ended and its turns are stored.
+    _writer: koda_state::writer_lock::WriterLockGuard,
 }
 
 impl SessionTask {
@@ -511,6 +531,9 @@ impl SessionTask {
         if let Some(mcp) = &self.mcp {
             mcp.write().await.shutdown().await;
         }
+        // Everything sent is stored before the writer lock goes with `self`,
+        // as Codex keeps a thread owned until its file work has finished.
+        self.sink.flush_history().await;
     }
 
     async fn serve(&mut self) {
@@ -2252,6 +2275,22 @@ fn core_mode(mode: koda_protocol::state::TrustMode) -> koda_core::trust::TrustMo
         P::Safe => C::Safe,
         P::Auto => C::Auto,
     }
+}
+
+/// Take session `id`'s writer lock for this process. Another process
+/// writing it is refused with Codex's wording and error code: "session {id}
+/// already has an active writer", `-32600`.
+pub(crate) async fn take_writer(
+    db: &Database,
+    id: &str,
+) -> Result<koda_state::writer_lock::WriterLockGuard, ErrorObject> {
+    db.acquire_writer(id).await.map_err(|e| {
+        if e.kind() == std::io::ErrorKind::WouldBlock {
+            invalid(e.to_string())
+        } else {
+            internal(format!("couldn't take the session's writer lock: {e}"))
+        }
+    })
 }
 
 pub(crate) fn invalid(message: impl Into<String>) -> ErrorObject {
