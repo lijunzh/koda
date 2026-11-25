@@ -84,6 +84,17 @@ pub enum Item {
         /// What the model reads: the tool's output, or why it didn't run.
         /// Set on completion.
         output: Option<String>,
+        /// The exit code of the command a `Bash` or `Cargo` call ran, on
+        /// completion, as Codex's `commandExecution` item has its
+        /// `exitCode`. Absent for other tools and for a command that never
+        /// exited (it timed out, was stopped or went to the background).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i32>,
+        /// How long the tool ran, in milliseconds, on completion, not
+        /// counting a wait for approval, as Codex's items have
+        /// `durationMs`. Absent for a call that never ran.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
         /// What the call would do, in a line, when Koda asked about it or
         /// blocked it.
         detail: Option<String>,

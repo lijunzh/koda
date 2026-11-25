@@ -73,6 +73,9 @@ pub struct ShellOutput {
     pub full_output: Option<String>,
     /// The command exited zero, or was started in the background.
     pub success: bool,
+    /// The command's exit code, once it has exited: `None` in the
+    /// background or after a timeout.
+    pub exit_code: Option<i32>,
 }
 
 /// What the Bash description says about localhost. With a kernel sandbox a
@@ -295,6 +298,7 @@ pub async fn run_shell_command(
             summary: msg,
             full_output: None,
             success: true,
+            exit_code: None,
         });
     }
 
@@ -448,6 +452,7 @@ pub async fn run_shell_command(
                 summary,
                 full_output: Some(full),
                 success: exit_code == 0,
+                exit_code: Some(exit_code),
             })
         }
         Ok(Err(e)) => Err(e),
@@ -460,6 +465,7 @@ pub async fn run_shell_command(
                 summary: msg.clone(),
                 full_output: Some(msg),
                 success: false,
+                exit_code: None,
             })
         }
     }
@@ -1338,6 +1344,8 @@ fn signal_own_background(
         summary: format_summary(i32::from(!success), &lines, &[], 0),
         full_output: None,
         success,
+        // As the summary reports it.
+        exit_code: Some(i32::from(!success)),
     })
 }
 
@@ -1712,12 +1720,14 @@ impl Tool for BashTool {
                 success: so.success,
                 full_output: so.full_output,
                 images: Vec::new(),
+                exit_code: so.exit_code,
             },
             Err(e) => ToolResult {
                 output: format!("Error: {e:#}"),
                 success: false,
                 full_output: None,
                 images: Vec::new(),
+                exit_code: None,
             },
         }
     }
@@ -2793,6 +2803,7 @@ mod tests {
             summary: "Exit code: 0".into(),
             full_output: Some("full output here".into()),
             success: true,
+            exit_code: Some(0),
         };
         assert_eq!(so.summary, "Exit code: 0");
         assert_eq!(so.full_output.unwrap(), "full output here");

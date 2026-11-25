@@ -88,6 +88,15 @@ pub enum EngineEvent {
         output: String,
         /// How the call ended.
         outcome: ToolOutcome,
+        /// The exit code of the command a `Bash` or `Cargo` call ran, once
+        /// it exited, as Codex's `commandExecution` item has its `exitCode`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i32>,
+        /// How long the tool ran, in milliseconds, not counting a wait for
+        /// approval, as Codex's items have `durationMs`. `None` for a call
+        /// that never ran.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
     },
 
     /// A line of streaming output from a tool (currently Bash only).

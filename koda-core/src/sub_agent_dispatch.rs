@@ -1243,6 +1243,8 @@ fn run_sub_agent<'a>(
                             name: tc.function_name.clone(),
                             output: refusal.to_string(),
                             outcome: ToolOutcome::Declined,
+                            exit_code: None,
+                            duration_ms: None,
                         });
                         db.insert_message(
                             &sub_session,
@@ -1273,6 +1275,8 @@ fn run_sub_agent<'a>(
                             name: tc.function_name.clone(),
                             output: refusal.to_string(),
                             outcome: ToolOutcome::Declined,
+                            exit_code: None,
+                            duration_ms: None,
                         });
                         db.insert_message(
                             &sub_session,
@@ -1296,6 +1300,8 @@ fn run_sub_agent<'a>(
                             name: tc.function_name.clone(),
                             output: refusal.to_string(),
                             outcome: ToolOutcome::Declined,
+                            exit_code: None,
+                            duration_ms: None,
                         });
                         db.insert_message(
                             &sub_session,
@@ -1325,6 +1331,7 @@ fn run_sub_agent<'a>(
 
                     // Images the tool returns (Read's for an image file).
                     let mut images = Vec::new();
+                    let mut ran = crate::tool_dispatch::Ran::default();
                     let (output, outcome) = if let Some(error) = validation_error {
                         (format!("Validation error: {error}"), ToolOutcome::Error)
                     } else {
@@ -1399,7 +1406,7 @@ fn run_sub_agent<'a>(
                                     // Through `execute_one_tool`, so mutating
                                     // calls invalidate the sub-agent cache and
                                     // Bash output streams (#1022 B6, B7).
-                                    tool_output(tc, sub_tx, &cancel, &mut images).await
+                                    tool_output(tc, sub_tx, &cancel, &mut images, &mut ran).await
                                 }
                                 ToolApproval::Blocked => {
                                     let detail =
@@ -1448,13 +1455,13 @@ fn run_sub_agent<'a>(
                                     match answer {
                                         Err(()) => ("[cancelled]".to_string(), ToolOutcome::Cancelled),
                                         Ok(Some(ApprovalDecision::Approve)) => {
-                                            tool_output(tc, sub_tx, &cancel, &mut images).await
+                                            tool_output(tc, sub_tx, &cancel, &mut images, &mut ran).await
                                         }
                                         Ok(Some(ApprovalDecision::ApproveForSession)) => {
                                             if let Some(key) = session_key {
                                                 session_allows.insert(key);
                                             }
-                                            tool_output(tc, sub_tx, &cancel, &mut images).await
+                                            tool_output(tc, sub_tx, &cancel, &mut images, &mut ran).await
                                         }
                                         Ok(Some(ApprovalDecision::Reject)) => (
                                             "User rejected this action.".to_string(),
@@ -1490,6 +1497,8 @@ fn run_sub_agent<'a>(
                         name: tc.function_name.clone(),
                         output: output.clone(),
                         outcome,
+                        exit_code: ran.exit_code,
+                        duration_ms: ran.duration_ms,
                     });
                     let message_id = db
                         .insert_message(
@@ -1613,10 +1622,12 @@ async fn tool_output(
     tx: crate::turn_context::ToolExecutionContext<'_>,
     cancel: &CancellationToken,
     images: &mut Vec<crate::providers::ImageData>,
+    ran: &mut crate::tool_dispatch::Ran,
 ) -> (String, ToolOutcome) {
     match unless_cancelled(cancel, execute_one_tool(tc, tx)).await {
-        Some((_id, result, success, _full, returned)) => {
+        Some((_id, result, success, _full, returned, how)) => {
             *images = returned;
+            *ran = how;
             (result, success.into())
         }
         None => ("[cancelled]".to_string(), ToolOutcome::Cancelled),

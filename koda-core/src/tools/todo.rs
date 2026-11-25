@@ -446,6 +446,7 @@ impl Tool for TodoWriteTool {
                 success: true,
                 full_output: None,
                 images: Vec::new(),
+                exit_code: None,
             };
         };
         match todo_write(db, sid, args).await {
@@ -465,6 +466,7 @@ impl Tool for TodoWriteTool {
                     success: true,
                     full_output: None,
                     images: Vec::new(),
+                    exit_code: None,
                 }
             }
             Err(e) => ToolResult {
@@ -472,6 +474,7 @@ impl Tool for TodoWriteTool {
                 success: false,
                 full_output: None,
                 images: Vec::new(),
+                exit_code: None,
             },
         }
     }

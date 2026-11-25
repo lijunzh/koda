@@ -111,6 +111,7 @@ type EagerResult = (
     bool,
     Option<String>,
     Vec<crate::providers::ImageData>,
+    crate::tool_dispatch::Ran,
 );
 
 struct StreamResult {
@@ -890,15 +891,23 @@ async fn collect_stream(
                     // With the sink, so `WebSearch` and `WebFetch` report
                     // what their model requests used, as when dispatched
                     // later.
+                    let started = std::time::Instant::now();
                     let r = tools
                         .execute(&tc.function_name, &tc.arguments, Some((sink, &tc.id)), None)
                         .await;
+                    let ran = crate::tool_dispatch::Ran {
+                        exit_code: r.exit_code,
+                        duration_ms: Some(
+                            u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                        ),
+                    };
                     eager_results.push((
                         tc.id.clone(),
                         r.output,
                         r.success,
                         r.full_output,
                         r.images,
+                        ran,
                     ));
                 }
                 // Always add to tool_calls for persistence and normal flow
@@ -2199,7 +2208,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
                 "{} tool(s) executed eagerly during streaming",
                 eager_ids.len()
             );
-            for (tc_id, result, success, full_output, images) in &stream_result.eager_results {
+            for (tc_id, result, success, full_output, images, ran) in &stream_result.eager_results {
                 // Find the matching ToolCall for metadata
                 if let Some(tc) = tool_calls.iter().find(|tc| tc.id == *tc_id) {
                     sink.emit(EngineEvent::ToolCallStart {
@@ -2215,6 +2224,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
                         *success,
                         full_output.as_deref(),
                         images,
+                        *ran,
                         &turn_ctx,
                     )
                     .await?;
@@ -2250,6 +2260,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
                         false,
                         None,
                         &[],
+                        crate::tool_dispatch::Ran::default(),
                         &turn_ctx,
                     )
                     .await?;

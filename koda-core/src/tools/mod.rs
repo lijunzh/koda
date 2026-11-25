@@ -163,6 +163,7 @@ pub type LastBashCache = Arc<std::sync::Mutex<Option<(String, std::time::Instant
 ///     success: true,
 ///     full_output: None,
 ///     images: Vec::new(),
+///     exit_code: None,
 /// };
 /// assert!(ok.success);
 /// ```
@@ -186,6 +187,11 @@ pub struct ToolResult {
     /// Images the tool returns, such as Read's for an image file: sent to
     /// the model with the result where the model takes images.
     pub images: Vec<crate::providers::ImageData>,
+    /// The exit code of the command a `Bash` or `Cargo` call ran, for the
+    /// client's command card, as Codex's `commandExecution` item has its
+    /// `exitCode`. `None` for other tools and for a command that never
+    /// exited (it timed out, was stopped or went to the background).
+    pub exit_code: Option<i32>,
 }
 
 /// Convert a `Result<String>` (the legacy free-function return shape)
@@ -208,12 +214,14 @@ pub fn wrap_result(r: anyhow::Result<String>) -> ToolResult {
             success: true,
             full_output: None,
             images: Vec::new(),
+            exit_code: None,
         },
         Err(e) => ToolResult {
             output: format!("Error: {e:#}"),
             success: false,
             full_output: None,
             images: Vec::new(),
+            exit_code: None,
         },
     }
 }
@@ -723,6 +731,7 @@ impl ToolRegistry {
                     success: false,
                     full_output: None,
                     images: Vec::new(),
+                    exit_code: None,
                 };
             }
         };
@@ -858,6 +867,7 @@ impl ToolRegistry {
                     success: false,
                     full_output: None,
                     images: Vec::new(),
+                    exit_code: None,
                 };
             };
             let result = {
@@ -873,6 +883,7 @@ impl ToolRegistry {
                     .into_iter()
                     .map(|(media_type, base64)| crate::providers::ImageData { media_type, base64 })
                     .collect(),
+                exit_code: None,
             };
         }
 
@@ -890,6 +901,7 @@ impl ToolRegistry {
                         success: true,
                         full_output: None,
                         images: Vec::new(),
+                        exit_code: None,
                     },
                     Err(e) => ToolResult {
                         // #1232 §4: `{:#}` walks the anyhow context
@@ -898,6 +910,7 @@ impl ToolRegistry {
                         success: false,
                         full_output: None,
                         images: Vec::new(),
+                        exit_code: None,
                     },
                 };
             }
@@ -909,6 +922,7 @@ impl ToolRegistry {
                 success: false,
                 full_output: None,
                 images: Vec::new(),
+                exit_code: None,
             };
         }
 
@@ -933,6 +947,7 @@ impl ToolRegistry {
             success: false,
             full_output: None,
             images: Vec::new(),
+            exit_code: None,
         }
     }
 }

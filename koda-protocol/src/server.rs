@@ -359,6 +359,8 @@ mod tests {
                 detail: None,
                 changes: Vec::new(),
                 progress: Vec::new(),
+                exit_code: None,
+                duration_ms: None,
             },
             started_at_ms: 1_700_000_000_000,
         });

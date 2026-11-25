@@ -103,6 +103,7 @@ impl Tool for WriteStdinTool {
             success: false,
             full_output: None,
             images: Vec::new(),
+            exit_code: None,
         };
         let Some(pid) = args
             .get("pid")
@@ -151,6 +152,7 @@ impl Tool for WriteStdinTool {
             success: true,
             full_output: None,
             images: Vec::new(),
+            exit_code: None,
         }
     }
 }

@@ -1063,6 +1063,8 @@ mod tests {
             detail: None,
             changes: Vec::new(),
             progress: Vec::new(),
+            exit_code: None,
+            duration_ms: None,
         }
     }
 
@@ -1088,6 +1090,8 @@ mod tests {
                 detail,
                 changes,
                 progress,
+                exit_code: None,
+                duration_ms: None,
             },
             other => other,
         }
@@ -1367,6 +1371,8 @@ mod tests {
                 arguments,
                 effect: None,
                 kind: None,
+                exit_code: None,
+                duration_ms: None,
                 status,
                 output: Some(output.into()),
                 detail: Some("Write a.txt".into()),
@@ -1406,6 +1412,8 @@ mod tests {
             arguments,
             effect: None,
             kind: None,
+            exit_code: None,
+            duration_ms: None,
             status: ToolCallStatus::Declined,
             output: Some("[plan mode] Not run: this session is read-only".into()),
             detail: Some("Write a.txt".into()),
@@ -1627,6 +1635,8 @@ mod tests {
             arguments: json!({"file_path": "a.rs"}),
             effect: None,
             kind: None,
+            exit_code: None,
+            duration_ms: None,
             status: ToolCallStatus::Declined,
             output: Some("User rejected this action.".into()),
             detail: Some("Edit a.rs".into()),

@@ -979,6 +979,7 @@ impl Tool for ReadTool {
                         success: true,
                         full_output: None,
                         images: rendered.images,
+                        exit_code: None,
                     },
                     Err(e) => crate::tools::wrap_result(Err(e)),
                 }
@@ -999,6 +1000,7 @@ impl Tool for ReadTool {
                         success: true,
                         full_output: None,
                         images: media,
+                        exit_code: None,
                     },
                     Err(e) => crate::tools::wrap_result(Err(e)),
                 }
@@ -1050,6 +1052,7 @@ fn read_image(path: &str, media_type: &str, bytes: Vec<u8>, takes_images: bool) 
             success: true,
             full_output: None,
             images: vec![prepared.image],
+            exit_code: None,
         },
         Err(e) => crate::tools::wrap_result(Err(anyhow::anyhow!(
             "{path} looks like an image but can't be read as one: {e}"

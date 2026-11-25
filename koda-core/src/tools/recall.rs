@@ -204,6 +204,7 @@ impl Tool for RecallContextTool {
                 success: true,
                 full_output: None,
                 images: Vec::new(),
+                exit_code: None,
             };
         };
         // recall_context returns a `String` (not Result) — always success.
@@ -212,6 +213,7 @@ impl Tool for RecallContextTool {
             success: true,
             full_output: None,
             images: Vec::new(),
+            exit_code: None,
         }
     }
 }

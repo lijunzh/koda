@@ -481,6 +481,7 @@ impl crate::tools::Tool for SendMessageTool {
             success: false,
             full_output: None,
             images: Vec::new(),
+            exit_code: None,
         }
     }
 }
