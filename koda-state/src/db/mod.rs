@@ -61,6 +61,16 @@ pub struct Database {
     /// Monotonic counter bumped on every `compact_session` call.
     /// Snapshot mismatch invalidates a `ContextCacheEntry`.
     pub(crate) compaction_gen: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Which process writes each session, beside the database file
+    /// ([`crate::writer_lock`]).
+    writer_locks: std::sync::Arc<crate::writer_lock::WriterLocks>,
+}
+
+/// The folder holding the database file at `path`.
+fn folder_of(path: &Path) -> &Path {
+    path.parent()
+        .filter(|folder| !folder.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
 }
 
 impl Database {
@@ -90,23 +100,40 @@ impl Database {
         // Owner-only: it holds API keys and conversations that may include
         // secrets (#693).
         let pool = sqlite::SESSIONS_DB.open_in(koda_config_dir).await?;
-        Self::with_pool(pool).await
+        let path = sqlite::SESSIONS_DB.path(koda_config_dir);
+        Self::with_pool(pool, folder_of(&path)).await
     }
 
     /// Open a database at a specific path (used by tests and init).
     pub async fn open(db_path: &Path) -> Result<Self> {
         let pool = sqlite::SESSIONS_DB.open(db_path).await?;
-        Self::with_pool(pool).await
+        Self::with_pool(pool, folder_of(db_path)).await
     }
 
-    /// Apply the schema to `pool` and wrap it.
-    async fn with_pool(pool: SqlitePool) -> Result<Self> {
+    /// Apply the schema to `pool` and wrap it; `folder` holds the file.
+    async fn with_pool(pool: SqlitePool, folder: &Path) -> Result<Self> {
         crate::busy_retry::retry_on_busy(|| Self::migrate(&pool)).await?;
         Ok(Self {
             pool,
             context_cache: std::sync::Arc::new(ContextCache::new()),
             compaction_gen: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            writer_locks: std::sync::Arc::new(crate::writer_lock::WriterLocks::new(folder)),
         })
+    }
+
+    /// Take session `session_id` for this process until the guard drops,
+    /// as Codex takes a thread's writer lock: another process holding it
+    /// gives "session {id} already has an active writer". Runs off the
+    /// async runtime's threads, since file locks block.
+    pub async fn acquire_writer(
+        &self,
+        session_id: &str,
+    ) -> std::io::Result<crate::writer_lock::WriterLockGuard> {
+        let locks = std::sync::Arc::clone(&self.writer_locks);
+        let id = session_id.to_string();
+        tokio::task::spawn_blocking(move || locks.acquire(&id))
+            .await
+            .map_err(std::io::Error::other)?
     }
 
     /// Apply the schema (idempotent).

@@ -74,7 +74,9 @@ pub struct Session {
 pub struct SessionStartParams {
     /// An earlier session to resume, by its full id, as Codex's
     /// `thread/resume` takes one; a client matches a shorter one over
-    /// `session/list`. Without one, a new session starts.
+    /// `session/list`. Without one, a new session starts. A session another
+    /// Koda process has open is refused (`-32600`, "session … already has an
+    /// active writer"), as Codex refuses a thread with another writer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     /// Who answers the session's requests. Without one, the client does.

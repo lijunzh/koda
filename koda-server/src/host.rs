@@ -774,12 +774,16 @@ impl Host {
             Some((true, stored)) => stored
                 .await
                 .unwrap_or_else(|_| Err("the session stopped".to_string())),
-            _ => self
-                .context
-                .db
-                .set_session_title(&id, &name)
-                .await
-                .map_err(|e| format!("{e:#}")),
+            _ => {
+                // Not while another process writes it, as Codex takes the
+                // writer lock to change a thread's stored name.
+                let _writer = session::take_writer(&self.context.db, &id).await?;
+                self.context
+                    .db
+                    .set_session_title(&id, &name)
+                    .await
+                    .map_err(|e| format!("{e:#}"))
+            }
         };
         stored.map_err(|e| internal(format!("couldn't name the session: {e}")))?;
         let _ = self.context.events.send(Outgoing::Notification(
@@ -806,6 +810,13 @@ impl Host {
             // Dropped once the session's task has ended, its turn stopped.
             let _ = tokio::time::timeout(SESSION_STOP, stopped).await;
         }
+        // Not while another process writes it, as Codex's `thread/delete`
+        // takes the thread's writer lock. An id that names no session is
+        // left to the lookup below.
+        let _writer = match session::take_writer(&self.context.db, &id).await {
+            Err(e) if e.code == codes::INVALID_REQUEST => return Err(e),
+            held => held.ok(),
+        };
         let deleted = self
             .context
             .db

@@ -236,6 +236,14 @@ and `nc -U ~/.config/koda/serve/koda.sock` is enough to try it.)
   attaches the client to it, as Codex's `thread/resume` subscribes to a loaded
   thread: the answer is the session as it runs, with its turns, and nothing
   starts again.
+- **One writer per session.** One process writes a session at a time, as
+  Codex keeps one writer per thread. While a session is open in one Koda
+  process (this server, a `koda exec` run, or a TUI started with
+  `--no-daemon` or `--oss`), opening, renaming or deleting it from another
+  is refused with `-32600` and "session … already has an active writer";
+  `session/read` and `session/turns/list` still read it. The lock files live
+  in `session-writer-locks/` beside Koda's database, and a process that ends
+  lets its sessions go.
 - **Requests wait for a client.** An approval, a question or the loop cap goes
   to every client attached to its session; the first answer counts, and the
   others get `serverRequest/resolved`, so they can drop their prompt. A client

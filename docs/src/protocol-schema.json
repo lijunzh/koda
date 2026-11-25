@@ -3671,7 +3671,7 @@
           ]
         },
         "sessionId": {
-          "description": "An earlier session to resume, by its full id, as Codex's\n`thread/resume` takes one; a client matches a shorter one over\n`session/list`. Without one, a new session starts.",
+          "description": "An earlier session to resume, by its full id, as Codex's\n`thread/resume` takes one; a client matches a shorter one over\n`session/list`. Without one, a new session starts. A session another\nKoda process has open is refused (`-32600`, \"session … already has an\nactive writer\"), as Codex refuses a thread with another writer.",
           "type": [
             "string",
             "null"
