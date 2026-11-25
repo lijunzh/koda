@@ -3305,7 +3305,7 @@
           ]
         },
         "cwd": {
-          "description": "The project whose sessions to list; without one, the host's.",
+          "description": "The project whose sessions to list; without one, the host's. `~` is\nthe home folder, a relative path is taken from the host's folder, and\n`.` and `..` are\nresolved by the path's text, as Codex's `thread/list` does; symlinks\nare not followed, so list a folder by the `cwd` its sessions report.",
           "type": [
             "string",
             "null"

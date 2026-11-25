@@ -236,7 +236,11 @@ pub enum SessionUnsubscribeStatus {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionListParams {
-    /// The project whose sessions to list; without one, the host's.
+    /// The project whose sessions to list; without one, the host's. `~` is
+    /// the home folder, a relative path is taken from the host's folder, and
+    /// `.` and `..` are
+    /// resolved by the path's text, as Codex's `thread/list` does; symlinks
+    /// are not followed, so list a folder by the `cwd` its sessions report.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
     /// How many at most; without one, 50.

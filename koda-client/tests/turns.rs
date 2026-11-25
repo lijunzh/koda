@@ -569,6 +569,42 @@ async fn approvals_are_answered_through_the_client() {
     koda.client.shutdown().await;
 }
 
+/// An approval answered in the wrong shape is refused, but as a failed
+/// request, not as the user's no, as Codex refuses it with "approval request
+/// failed": the model is told why, and the client sees it on the tool call.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_malformed_approval_is_refused_as_a_failed_request() {
+    let server = model(vec![
+        tool_call(
+            "call_1",
+            "Write",
+            json!({"file_path": "maybe.txt", "content": "hi"}),
+        ),
+        text("Done."),
+    ])
+    .await;
+    let mut config = config(&server);
+    config.trust = koda_core::trust::TrustMode::Safe;
+    let mut koda = Koda::start(config).await;
+    koda.turn("Write a file").await;
+
+    let request = koda.request().await;
+    let ServerRequest::ToolCallApproval { id, .. } = &request else {
+        panic!("expected an approval, got {request:?}");
+    };
+    // `decision` must be an object with a `type`; a bare string doesn't decode.
+    koda.answer(id, json!({"decision": "approve"})).await;
+
+    let messages = koda.until("turn/completed").await;
+    assert_eq!(turn_completed(&messages).status, TurnStatus::Completed);
+    assert!(!koda.project.join("maybe.txt").exists());
+    let requests = chat_requests(&server).await;
+    let told = requests[1]["messages"].to_string();
+    assert!(told.contains("approval request failed"), "{told}");
+    assert!(!told.contains("User rejected"), "{told}");
+    koda.client.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_question_gets_the_clients_answer() {
     let server = model(vec![
@@ -1365,6 +1401,45 @@ async fn sessions_are_listed_newest_first_with_their_first_prompt() {
     assert_eq!(next.data.len(), 1);
     assert_eq!(next.data[0].id, first);
     assert_eq!(next.next_cursor, None);
+    // `..` in the folder still lists its sessions: the filter is resolved by
+    // the path's text, as Codex's `thread/list` resolves its `cwd`.
+    let folder = std::path::PathBuf::from(stored.cwd.clone().unwrap());
+    let roundabout = folder
+        .join("..")
+        .join(folder.file_name().unwrap())
+        .display()
+        .to_string();
+    let by_another_name = koda
+        .client
+        .request::<methods::SessionList>(SessionListParams {
+            cwd: Some(roundabout),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let ids: Vec<&str> = by_another_name.data.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(ids, [second.id.as_str(), first.as_str()]);
+    // A relative path is taken from the host's folder, as Codex's
+    // `thread/list` takes it from the server's.
+    let here = koda
+        .client
+        .request::<methods::SessionList>(SessionListParams {
+            cwd: Some(".".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(here.data.len(), 2, "{here:?}");
+    let gone = koda
+        .client
+        .request::<methods::SessionList>(SessionListParams {
+            cwd: Some("/no/such/folder/anywhere".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(gone.data.is_empty(), "{gone:?}");
+
     let bad = server_error(
         koda.client
             .request::<methods::SessionList>(SessionListParams {
