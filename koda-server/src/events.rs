@@ -24,6 +24,7 @@ use koda_core::engine::event::{
 };
 use koda_core::engine::{EngineEvent, TurnEndReason};
 use koda_core::preview::DiffPreview;
+use koda_core::turn_diff::TurnDiff;
 use koda_protocol::item::{
     CompactionStatus, CompactionTrigger, FileUpdateChange, Item, ItemCompletedNotification,
     ItemStartedNotification, OutputStream, PatchChangeKind, TextDeltaNotification,
@@ -39,8 +40,8 @@ use koda_protocol::session::{
 };
 use koda_protocol::turn::{
     LoopCapParams, LoopGuardAction, PlanStep, PlanStepStatus, Turn, TurnCompletedNotification,
-    TurnError, TurnLoopGuardNotification, TurnPlanUpdatedNotification, TurnStartedNotification,
-    TurnStatus, Usage,
+    TurnDiffUpdatedNotification, TurnError, TurnLoopGuardNotification, TurnPlanUpdatedNotification,
+    TurnStartedNotification, TurnStatus, Usage,
 };
 use koda_protocol::{ServerNotification, ServerRequest};
 use serde_json::Value;
@@ -90,6 +91,23 @@ struct OpenCall {
     changes: Vec<FileUpdateChange>,
     /// The notices sent about it.
     progress: Vec<String>,
+    /// The file change it makes, for the turn's diff: set for the session's
+    /// own `Edit` and `Write` calls when Koda could preview them.
+    applied: Option<AppliedEdit>,
+}
+
+/// An edit's file before and after, from its preview.
+#[derive(Debug)]
+struct AppliedEdit {
+    path: String,
+    /// `None` if the file didn't exist.
+    before: Option<String>,
+    after: String,
+}
+
+/// Whether a tool's calls change files the turn's diff tracks.
+fn edits_files(tool: &str) -> bool {
+    matches!(tool, "Edit" | "Write")
 }
 
 /// An open message or reasoning item.
@@ -133,6 +151,8 @@ pub struct EventProjector {
     /// The session's agent, whose tools (MCP ones included) classify each
     /// call's effect; without one, the built-in tools'.
     agent: Option<SessionAgent>,
+    /// The turn's edits so far, for `turn/diff/updated`.
+    turn_diff: TurnDiff,
 }
 
 /// The session's agent, for classifying its calls. Shown by name only.
@@ -163,6 +183,7 @@ impl EventProjector {
             tokens: TokenUsage::default(),
             agent_names: HashMap::new(),
             agent: None,
+            turn_diff: TurnDiff::new(),
         }
     }
 
@@ -316,6 +337,7 @@ impl EventProjector {
             EngineEvent::TurnStart { turn_id } => {
                 self.turn_id = Some(turn_id.clone());
                 self.usage = None;
+                self.turn_diff = TurnDiff::new();
                 out.push(notification(ServerNotification::TurnStarted(
                     TurnStartedNotification {
                         session_id: self.session_id.clone(),
@@ -359,6 +381,12 @@ impl EventProjector {
                     Some((usage, ms)) => (Some(usage), Some(ms)),
                     None => (None, None),
                 };
+                // The turn's whole diff once more as it completes, as Codex.
+                if status == TurnStatus::Completed
+                    && let Some(diff) = self.turn_diff.diff()
+                {
+                    out.push(self.turn_diff_updated(diff.to_string()));
+                }
                 out.push(notification(ServerNotification::TurnCompleted(
                     TurnCompletedNotification {
                         session_id: self.session_id.clone(),
@@ -414,6 +442,13 @@ impl EventProjector {
                 // An edit's changes from its start, asked about or not, as
                 // Codex's `fileChange` item carries them.
                 let changes = changes_of(preview.as_ref());
+                // A sub-agent's edits are its own, as a Codex sub-agent's
+                // are its thread's.
+                let applied = if parent.is_none() && edits_files(&name) {
+                    self.applied_of(preview.as_ref())
+                } else {
+                    None
+                };
                 let item = Item::ToolCall {
                     id: id.clone(),
                     tool: name.clone(),
@@ -438,6 +473,7 @@ impl EventProjector {
                         detail: None,
                         changes,
                         progress: Vec::new(),
+                        applied,
                     },
                 );
                 out.push(self.item_started(parent, item));
@@ -469,26 +505,31 @@ impl EventProjector {
             } => {
                 self.agent_names.remove(&id);
                 let call = self.calls.remove(&id);
-                let (tool, arguments, effect, call_parent, detail, changes, progress) = match call {
-                    Some(c) => (
-                        c.tool,
-                        c.arguments,
-                        Some(c.effect),
-                        c.parent,
-                        c.detail,
-                        c.changes,
-                        c.progress,
-                    ),
-                    None => (
-                        name,
-                        Value::Null,
-                        None,
-                        parent,
-                        None,
-                        Vec::new(),
-                        Vec::new(),
-                    ),
-                };
+                let (tool, arguments, effect, call_parent, detail, changes, progress, applied) =
+                    match call {
+                        Some(c) => (
+                            c.tool,
+                            c.arguments,
+                            Some(c.effect),
+                            c.parent,
+                            c.detail,
+                            c.changes,
+                            c.progress,
+                            c.applied,
+                        ),
+                        None => (
+                            name,
+                            Value::Null,
+                            None,
+                            parent,
+                            None,
+                            Vec::new(),
+                            Vec::new(),
+                            None,
+                        ),
+                    };
+                let tracked =
+                    call_parent.is_none() && outcome == ToolOutcome::Success && edits_files(&tool);
                 let item = Item::ToolCall {
                     id,
                     kind: Some(ToolKind::of(&tool)),
@@ -504,6 +545,9 @@ impl EventProjector {
                     progress,
                 };
                 out.push(self.item_completed(call_parent, item));
+                if tracked {
+                    self.track_edit(&mut out, applied);
+                }
             }
             EngineEvent::ActionBlocked {
                 tool_call_id,
@@ -782,6 +826,70 @@ impl EventProjector {
 
     fn turn(&self) -> String {
         self.turn_id.clone().unwrap_or_default()
+    }
+
+    /// The file change an edit's preview shows, its path as the turn's diff
+    /// names it.
+    fn applied_of(&self, preview: Option<&DiffPreview>) -> Option<AppliedEdit> {
+        match preview? {
+            DiffPreview::UnifiedDiff(diff) => Some(AppliedEdit {
+                path: self.diff_path(&diff.path),
+                before: Some(diff.old_content.clone()),
+                after: diff.new_content.clone(),
+            }),
+            DiffPreview::WriteNew(new) => Some(AppliedEdit {
+                path: self.diff_path(&new.path),
+                before: None,
+                after: new.content.clone(),
+            }),
+            DiffPreview::FileNotYetExists => None,
+        }
+    }
+
+    /// `path` relative to the session's folder with `/` between parts, as
+    /// git names it; a path outside the folder stays as given.
+    fn diff_path(&self, path: &str) -> String {
+        let path = std::path::Path::new(path);
+        let relative = match &self.agent {
+            Some(SessionAgent(agent)) => path.strip_prefix(&agent.project_root).unwrap_or(path),
+            None => path,
+        };
+        if relative.is_absolute() {
+            return relative.to_string_lossy().replace('\\', "/");
+        }
+        relative
+            .components()
+            .filter(|part| !matches!(part, std::path::Component::CurDir))
+            .map(|part| part.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/")
+    }
+
+    /// Adds an applied edit to the turn's diff and sends the diff when it
+    /// changed, as Codex: an edit Koda couldn't preview ends the diff.
+    fn track_edit(&mut self, out: &mut Vec<Outgoing>, applied: Option<AppliedEdit>) {
+        let had_diff = self.turn_diff.diff().is_some();
+        match applied {
+            Some(edit) => {
+                self.turn_diff
+                    .record(&edit.path, edit.before.as_deref(), Some(&edit.after))
+            }
+            None => self.turn_diff.invalidate(),
+        }
+        let diff = self.turn_diff.diff().map(str::to_string);
+        if had_diff || diff.is_some() {
+            out.push(self.turn_diff_updated(diff.unwrap_or_default()));
+        }
+    }
+
+    fn turn_diff_updated(&self, diff: String) -> Outgoing {
+        notification(ServerNotification::TurnDiffUpdated(
+            TurnDiffUpdatedNotification {
+                session_id: self.session_id.clone(),
+                turn_id: self.turn(),
+                diff,
+            },
+        ))
     }
 
     /// A sub-agent's approval request, with an id of the host's own: it is
@@ -1713,5 +1821,162 @@ mod tests {
         assert_eq!(usage["total"]["inputTokens"], 150);
         assert_eq!(usage["total"]["outputTokens"], 15);
         assert_eq!(lines[2]["params"]["turnId"], "t1");
+    }
+
+    fn edit_start(id: &str, path: &str, before: Option<&str>, after: &str) -> EngineEvent {
+        use koda_core::preview::{UnifiedDiffPreview, WriteNewPreview};
+        let preview = match before {
+            Some(before) => DiffPreview::UnifiedDiff(UnifiedDiffPreview {
+                path: path.into(),
+                old_content: before.into(),
+                new_content: after.into(),
+                hunks: Vec::new(),
+                truncated: false,
+            }),
+            None => DiffPreview::WriteNew(WriteNewPreview {
+                path: path.into(),
+                line_count: after.lines().count(),
+                byte_count: after.len(),
+                first_lines: Vec::new(),
+                truncated: false,
+                content: after.into(),
+            }),
+        };
+        EngineEvent::ToolCallStart {
+            id: id.into(),
+            name: if before.is_some() { "Edit" } else { "Write" }.into(),
+            args: json!({"file_path": path}),
+            is_sub_agent: false,
+            preview: Some(preview),
+        }
+    }
+
+    fn edit_result(id: &str, outcome: ToolOutcome) -> EngineEvent {
+        EngineEvent::ToolCallResult {
+            id: id.into(),
+            name: "Edit".into(),
+            output: String::new(),
+            outcome,
+            exit_code: None,
+            duration_ms: None,
+        }
+    }
+
+    fn turn_start() -> EngineEvent {
+        EngineEvent::TurnStart {
+            turn_id: "t1".into(),
+        }
+    }
+
+    fn diffs(lines: &[Value]) -> Vec<String> {
+        lines
+            .iter()
+            .filter(|l| l["method"] == "turn/diff/updated")
+            .map(|l| {
+                assert_eq!(l["params"]["sessionId"], "s1");
+                assert_eq!(l["params"]["turnId"], "t1");
+                l["params"]["diff"].as_str().unwrap().to_string()
+            })
+            .collect()
+    }
+
+    /// Each applied edit sends the turn's whole diff, each file against its
+    /// content when the turn first edited it, and the turn sends it once
+    /// more before it completes, as Codex's `turn/diff/updated`.
+    #[test]
+    fn the_turns_edits_are_sent_as_one_diff() {
+        let mut p = EventProjector::new("s1");
+        let lines = run(
+            &mut p,
+            vec![
+                (None, turn_start()),
+                (None, edit_start("e1", "a.txt", Some("one\n"), "two\n")),
+                (None, edit_result("e1", ToolOutcome::Success)),
+                (None, edit_start("e2", "a.txt", Some("two\n"), "three\n")),
+                (None, edit_result("e2", ToolOutcome::Success)),
+                (None, edit_start("w1", "./new.txt", None, "hi\n")),
+                (None, edit_result("w1", ToolOutcome::Success)),
+                (
+                    None,
+                    EngineEvent::TurnEnd {
+                        turn_id: "t1".into(),
+                        reason: TurnEndReason::Complete,
+                    },
+                ),
+            ],
+        );
+        let sent = diffs(&lines);
+        assert_eq!(sent.len(), 4, "{sent:?}");
+        let last = &sent[3];
+        assert_eq!(last, &sent[2]);
+        assert_eq!(last.matches("diff --git a/a.txt b/a.txt").count(), 1);
+        assert!(last.contains("-one\n+three\n"), "{last}");
+        assert!(last.contains("--- /dev/null\n+++ b/new.txt\n"), "{last}");
+        let methods = methods(&lines);
+        assert_eq!(methods[methods.len() - 2], "turn/diff/updated");
+        assert_eq!(methods[methods.len() - 1], "turn/completed");
+    }
+
+    /// Edits that didn't apply, a sub-agent's edits and a new turn's start
+    /// leave the diff alone; an edit that undoes the turn's change sends it
+    /// empty.
+    #[test]
+    fn only_the_sessions_applied_edits_are_in_the_diff() {
+        let mut p = EventProjector::new("s1");
+        let lines = run(
+            &mut p,
+            vec![
+                (None, turn_start()),
+                (None, edit_start("e1", "a.txt", Some("a\n"), "b\n")),
+                (None, edit_result("e1", ToolOutcome::Error)),
+                (None, edit_start("e2", "a.txt", Some("a\n"), "b\n")),
+                (None, edit_result("e2", ToolOutcome::Declined)),
+                (
+                    Some("agent1"),
+                    edit_start("e3", "a.txt", Some("a\n"), "b\n"),
+                ),
+                (Some("agent1"), edit_result("e3", ToolOutcome::Success)),
+            ],
+        );
+        assert!(diffs(&lines).is_empty(), "{lines:?}");
+
+        let lines = run(
+            &mut p,
+            vec![
+                (None, edit_start("e4", "a.txt", Some("a\n"), "b\n")),
+                (None, edit_result("e4", ToolOutcome::Success)),
+                (None, edit_start("e5", "a.txt", Some("b\n"), "a\n")),
+                (None, edit_result("e5", ToolOutcome::Success)),
+            ],
+        );
+        let sent = diffs(&lines);
+        assert_eq!(sent.len(), 2);
+        assert!(sent[0].contains("-a\n+b\n"));
+        assert_eq!(sent[1], "");
+    }
+
+    /// An applied edit Koda couldn't preview would make the diff wrong, so
+    /// the turn has none from then on, as Codex's.
+    #[test]
+    fn an_edit_without_a_preview_ends_the_turns_diff() {
+        let mut p = EventProjector::new("s1");
+        let mut blind = start("e2", "Edit");
+        if let EngineEvent::ToolCallStart { args, .. } = &mut blind {
+            *args = json!({"file_path": "a.txt"});
+        }
+        let lines = run(
+            &mut p,
+            vec![
+                (None, turn_start()),
+                (None, edit_start("e1", "a.txt", Some("a\n"), "b\n")),
+                (None, edit_result("e1", ToolOutcome::Success)),
+                (None, blind),
+                (None, edit_result("e2", ToolOutcome::Success)),
+                (None, edit_start("e3", "b.txt", Some("a\n"), "b\n")),
+                (None, edit_result("e3", ToolOutcome::Success)),
+            ],
+        );
+        assert_eq!(diffs(&lines).len(), 2);
+        assert_eq!(diffs(&lines)[1], "");
     }
 }

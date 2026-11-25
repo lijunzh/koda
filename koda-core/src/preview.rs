@@ -234,12 +234,16 @@ async fn preview_edit(args: &serde_json::Value, project_root: &Path) -> Option<D
         return Some(DiffPreview::FileNotYetExists);
     }
     let old_content = tokio::fs::read_to_string(&resolved).await.ok()?;
+    let replace_all = inner
+        .get("replace_all")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
-    // Replace first occurrence only (matches Edit tool behavior)
-    let mut new_content = old_content.clone();
-    if let Some(pos) = new_content.find(old_str) {
-        new_content.replace_range(pos..pos + old_str.len(), new_str);
-    }
+    // The Edit tool's own replacement, `replace_all` and the fuzzy match
+    // included. An edit that will fail changes nothing.
+    let new_content =
+        crate::tools::file_tools::apply_edit(&old_content, old_str, new_str, replace_all, path_str)
+            .map_or_else(|_| old_content.clone(), |(content, _)| content);
 
     let preview = build_unified_diff(path_str, &old_content, &new_content);
     Some(DiffPreview::UnifiedDiff(preview))
@@ -288,6 +292,37 @@ mod tests {
     use super::*;
     use serde_json::json;
     use tempfile::TempDir;
+
+    /// The preview's new content is what Edit writes, for `replace_all` and
+    /// the whitespace-tolerant match as for one exact match.
+    #[tokio::test]
+    async fn an_edit_preview_matches_what_the_edit_writes() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("a.txt");
+        let new_content = |args: serde_json::Value| {
+            let root = tmp.path().to_path_buf();
+            async move {
+                match compute("Edit", &args, &root).await.unwrap() {
+                    DiffPreview::UnifiedDiff(diff) => diff.new_content,
+                    other => panic!("expected a diff, got {other:?}"),
+                }
+            }
+        };
+
+        std::fs::write(&file, "a\nb\na\n").unwrap();
+        let all =
+            json!({"file_path": "a.txt", "old_str": "a", "new_str": "z", "replace_all": true});
+        assert_eq!(new_content(all).await, "z\nb\nz\n");
+
+        std::fs::write(&file, "keep  \nend\n").unwrap();
+        let fuzzy = json!({"file_path": "a.txt", "old_str": "keep\nend", "new_str": "done"});
+        assert_eq!(new_content(fuzzy).await, "done\n");
+
+        // Ambiguous without `replace_all`: Edit refuses, so nothing changes.
+        std::fs::write(&file, "a\na\n").unwrap();
+        let ambiguous = json!({"file_path": "a.txt", "old_str": "a", "new_str": "z"});
+        assert_eq!(new_content(ambiguous).await, "a\na\n");
+    }
 
     #[tokio::test]
     async fn test_edit_produces_unified_diff() {

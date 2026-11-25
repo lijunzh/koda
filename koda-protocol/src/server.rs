@@ -139,6 +139,8 @@ server_notifications! {
     TurnCompleted => "turn/completed" (crate::turn::TurnCompletedNotification),
     /// The model rewrote its plan.
     TurnPlanUpdated => "turn/plan/updated" (crate::turn::TurnPlanUpdatedNotification),
+    /// What the turn's edits have changed so far, as one unified diff.
+    TurnDiffUpdated => "turn/diff/updated" (crate::turn::TurnDiffUpdatedNotification),
     /// The model kept repeating itself.
     TurnLoopGuard => "turn/loopGuard" (crate::turn::TurnLoopGuardNotification),
     /// An item began.

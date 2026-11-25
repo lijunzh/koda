@@ -494,6 +494,21 @@ async fn validate_then_execute_one_tool(
     execute_one_tool(tc, tx).await
 }
 
+/// What each call will change, worked out before any of them runs. A batch
+/// that runs together reports its calls once they have finished, when the
+/// files no longer show what an edit changed.
+async fn previews_of<'a>(
+    tool_calls: impl Iterator<Item = &'a ToolCall>,
+    project_root: &Path,
+) -> Vec<Option<preview::DiffPreview>> {
+    let mut previews = Vec::new();
+    for tc in tool_calls {
+        let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
+        previews.push(preview::compute(&tc.function_name, &args, project_root).await);
+    }
+    previews
+}
+
 /// Run multiple tool calls concurrently and store results.
 pub(crate) async fn execute_tools_parallel(
     tool_calls: &[ToolCall],
@@ -504,6 +519,8 @@ pub(crate) async fn execute_tools_parallel(
     ctx.sink.emit(EngineEvent::Info {
         message: format!("Running {count} tools in parallel..."),
     });
+
+    let previews = previews_of(tool_calls.iter(), ctx.project_root).await;
 
     // Launch all tool calls concurrently
     let futures: Vec<_> = tool_calls
@@ -528,7 +545,7 @@ pub(crate) async fn execute_tools_parallel(
             name: tool_calls[i].function_name.clone(),
             args: serde_json::from_str(&tool_calls[i].arguments).unwrap_or_default(),
             is_sub_agent: false,
-            preview: None,
+            preview: previews[i].clone(),
         });
         record_tool_result(
             &tool_calls[i],
@@ -571,6 +588,7 @@ pub(crate) async fn execute_tools_split_batch(
             message: format!("Running {} tools in parallel...", parallel.len()),
         });
 
+        let previews = previews_of(parallel.iter().copied(), ctx.project_root).await;
         let futures: Vec<_> = parallel
             .iter()
             .map(|tc| {
@@ -593,7 +611,7 @@ pub(crate) async fn execute_tools_split_batch(
                 name: parallel[j].function_name.clone(),
                 args: serde_json::from_str(&parallel[j].arguments).unwrap_or_default(),
                 is_sub_agent: false,
-                preview: None,
+                preview: previews[j].clone(),
             });
             record_tool_result(
                 parallel[j],

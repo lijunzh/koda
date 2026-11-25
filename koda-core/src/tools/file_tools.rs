@@ -611,72 +611,18 @@ fn match_line_numbers(haystack: &str, needle: &str) -> Vec<usize> {
 pub(super) const MISSING_OLD_STR: &str = "Missing 'old_str' argument. Edit takes 'file_path', \
      'old_str' and 'new_str' as plain top-level strings, one change per call.";
 
-/// Apply targeted find-and-replace edits to an existing file.
-///
-/// Staleness check: if the model previously read this file (full read) the
-/// cached SHA-256 is compared against the current on-disk hash before any
-/// write.  A mismatch means an external process (bash, the user, another
-/// agent) changed the file since the model last saw it — the edit is
-/// rejected so the model can re-read and retry with fresh text.
-pub async fn edit_file(
-    project_root: &Path,
-    args: &Value,
-    cache: &super::FileReadCache,
-    fs: &dyn FileSystem,
-) -> Result<String> {
-    let path_str = args["file_path"]
-        .as_str()
-        .or_else(|| args["path"].as_str())
-        .ok_or_else(|| anyhow::anyhow!("Missing 'file_path' argument"))?;
-    let old_str = args["old_str"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!(MISSING_OLD_STR))?;
-    let new_str = args["new_str"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("Missing 'new_str' argument"))?;
-    if old_str.is_empty() {
-        anyhow::bail!("'old_str' cannot be empty");
-    }
-    let replace_all = args["replace_all"].as_bool().unwrap_or(false);
-
-    let resolved = safe_resolve_path(project_root, path_str)?;
-
-    // #1281: symlink-aware re-check (see write_file for why).
-    koda_sandbox::fs::verify_mutation_safe(&resolved, &allowed_mutation_roots(project_root))
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-
-    // Read through the FileSystem abstraction so the sandbox can gate it.
-    let raw_bytes = fs
-        .read(&resolved, None)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", resolved.display(), e))?;
-    let mut content = String::from_utf8(raw_bytes)
-        .map_err(|e| anyhow::anyhow!("File '{}' is not valid UTF-8: {}", path_str, e))?;
-
-    // ── Staleness check (SHA-256, Gemini CLI strategy) ────────────────────
-    //
-    // The full-read cache key matches what read_file stores for a whole-file
-    // read (start_line=None, num_lines=None).  If we have a cached hash for
-    // this file and the on-disk content matches neither that read nor Koda's
-    // own last Write/Edit (`record_own_write`), an external change (bash, the
-    // user, another agent) happened since the model last saw it.  Reject the
-    // edit so the model re-reads instead of clobbering changes.
-    let full_key = format!("{}:None:None", resolved.display());
-    let has_full_read_hash = cache
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&full_key)
-        .is_some_and(|(_, _, hash)| !hash.is_empty());
-    if has_full_read_hash && !content_is_known(cache, &resolved, &content) {
-        anyhow::bail!(
-            "File '{}' has changed on disk since you last read it \
-             (SHA-256 mismatch). Re-read the file to get the current \
-             content before editing.",
-            path_str
-        );
-    }
-    // ──────────────────────────────────────────────────────────────────────
-
+/// `content` with Edit's replacement made, and the lines Edit reports about
+/// it: an exact match (every one with `replace_all`), else one match that
+/// ignores trailing whitespace. The Edit tool and its preview both call this,
+/// so what Koda shows before an edit is what the edit writes.
+pub(crate) fn apply_edit(
+    content: &str,
+    old_str: &str,
+    new_str: &str,
+    replace_all: bool,
+    path_str: &str,
+) -> Result<(String, Vec<String>)> {
+    let mut content = content.to_string();
     let mut changes = Vec::new();
 
     // ── Exact match path ─────────────────────────────────────────────────────────────
@@ -757,6 +703,77 @@ pub async fn edit_file(
             ),
         }
     }
+
+    Ok((content, changes))
+}
+
+/// Apply targeted find-and-replace edits to an existing file.
+///
+/// Staleness check: if the model previously read this file (full read) the
+/// cached SHA-256 is compared against the current on-disk hash before any
+/// write.  A mismatch means an external process (bash, the user, another
+/// agent) changed the file since the model last saw it — the edit is
+/// rejected so the model can re-read and retry with fresh text.
+pub async fn edit_file(
+    project_root: &Path,
+    args: &Value,
+    cache: &super::FileReadCache,
+    fs: &dyn FileSystem,
+) -> Result<String> {
+    let path_str = args["file_path"]
+        .as_str()
+        .or_else(|| args["path"].as_str())
+        .ok_or_else(|| anyhow::anyhow!("Missing 'file_path' argument"))?;
+    let old_str = args["old_str"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!(MISSING_OLD_STR))?;
+    let new_str = args["new_str"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Missing 'new_str' argument"))?;
+    if old_str.is_empty() {
+        anyhow::bail!("'old_str' cannot be empty");
+    }
+    let replace_all = args["replace_all"].as_bool().unwrap_or(false);
+
+    let resolved = safe_resolve_path(project_root, path_str)?;
+
+    // #1281: symlink-aware re-check (see write_file for why).
+    koda_sandbox::fs::verify_mutation_safe(&resolved, &allowed_mutation_roots(project_root))
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    // Read through the FileSystem abstraction so the sandbox can gate it.
+    let raw_bytes = fs
+        .read(&resolved, None)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", resolved.display(), e))?;
+    let content = String::from_utf8(raw_bytes)
+        .map_err(|e| anyhow::anyhow!("File '{}' is not valid UTF-8: {}", path_str, e))?;
+
+    // ── Staleness check (SHA-256, Gemini CLI strategy) ────────────────────
+    //
+    // The full-read cache key matches what read_file stores for a whole-file
+    // read (start_line=None, num_lines=None).  If we have a cached hash for
+    // this file and the on-disk content matches neither that read nor Koda's
+    // own last Write/Edit (`record_own_write`), an external change (bash, the
+    // user, another agent) happened since the model last saw it.  Reject the
+    // edit so the model re-reads instead of clobbering changes.
+    let full_key = format!("{}:None:None", resolved.display());
+    let has_full_read_hash = cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&full_key)
+        .is_some_and(|(_, _, hash)| !hash.is_empty());
+    if has_full_read_hash && !content_is_known(cache, &resolved, &content) {
+        anyhow::bail!(
+            "File '{}' has changed on disk since you last read it \
+             (SHA-256 mismatch). Re-read the file to get the current \
+             content before editing.",
+            path_str
+        );
+    }
+    // ──────────────────────────────────────────────────────────────────────
+
+    let (content, changes) = apply_edit(&content, old_str, new_str, replace_all, path_str)?;
 
     fs.write(&resolved, content.as_bytes())
         .await

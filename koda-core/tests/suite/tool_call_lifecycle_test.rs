@@ -231,6 +231,40 @@ async fn an_edit_nobody_is_asked_about_starts_with_its_changes() {
     }
 }
 
+/// Edits that run together in one batch still start with their changes,
+/// worked out before any of them ran: by the time a batch reports its calls
+/// the files no longer show what changed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn edits_run_together_start_with_their_changes() {
+    let call = |id: &str, path: &str| koda_core::providers::ToolCall {
+        id: id.into(),
+        function_name: "Write".into(),
+        arguments: json!({"file_path": path, "content": "x"}).to_string(),
+        thought_signature: None,
+    };
+    let events = run(
+        TrustMode::Auto,
+        vec![
+            MockResponse::ToolCalls(vec![call("w1", "a.txt"), call("w2", "b.txt")]),
+            MockResponse::Text("done".into()),
+        ],
+        vec![],
+    )
+    .await;
+
+    for path in ["a.txt", "b.txt"] {
+        let preview = events.iter().find_map(|e| match e {
+            EngineEvent::ToolCallStart {
+                preview: Some(koda_core::preview::DiffPreview::WriteNew(new)),
+                ..
+            } if new.path == path => Some(new.clone()),
+            _ => None,
+        });
+        let new = preview.unwrap_or_else(|| panic!("{path} started without its changes"));
+        assert_eq!(new.content, "x");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_call_plan_mode_blocks_ends_declined_and_the_block_names_it() {
     let events = run(

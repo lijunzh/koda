@@ -142,6 +142,8 @@ pub mod trust;
 /// Per-turn ambient context (`TurnContext`, `ToolExecutionContext`)
 /// — see #1265 item 4.
 pub mod turn_context;
+/// The turn's edits as one diff (`turn/diff/updated`).
+pub mod turn_diff;
 /// Content the agent reads but the user didn't write: `koda-providers`'s,
 /// under its old path.
 pub use koda_providers::untrusted;
