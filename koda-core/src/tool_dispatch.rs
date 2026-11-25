@@ -493,6 +493,7 @@ pub(crate) async fn execute_tools_parallel(
             name: tool_calls[i].function_name.clone(),
             args: serde_json::from_str(&tool_calls[i].arguments).unwrap_or_default(),
             is_sub_agent: false,
+            preview: None,
         });
         record_tool_result(
             &tool_calls[i],
@@ -554,6 +555,7 @@ pub(crate) async fn execute_tools_split_batch(
                 name: parallel[j].function_name.clone(),
                 args: serde_json::from_str(&parallel[j].arguments).unwrap_or_default(),
                 is_sub_agent: false,
+                preview: None,
             });
             record_tool_result(
                 parallel[j],
@@ -669,12 +671,17 @@ pub(crate) async fn execute_tools_sequential(
 
         let parsed_args: serde_json::Value =
             serde_json::from_str(&tc.arguments).unwrap_or_default();
+        // What an edit will change, worked out once before it runs: the
+        // client is told from the start, as Codex's `fileChange` item is,
+        // and an approval or a block shows the same.
+        let diff_preview = preview::compute(&tc.function_name, &parsed_args, project_root).await;
 
         sink.emit(EngineEvent::ToolCallStart {
             id: tc.id.clone(),
             name: tc.function_name.clone(),
             args: parsed_args.clone(),
             is_sub_agent: false,
+            preview: diff_preview.clone(),
         });
 
         // AskUser: pause inference, show question in TUI, wait for typed answer.
@@ -767,8 +774,6 @@ pub(crate) async fn execute_tools_sequential(
             ToolApproval::Blocked => {
                 // Plan mode: emit ActionBlocked event, let the client render it
                 let detail = tools::describe_action(&tc.function_name, &parsed_args);
-                let diff_preview =
-                    preview::compute(&tc.function_name, &parsed_args, project_root).await;
                 sink.emit(EngineEvent::ActionBlocked {
                     tool_call_id: tc.id.clone(),
                     tool_name: tc.function_name.clone(),
@@ -786,8 +791,6 @@ pub(crate) async fn execute_tools_sequential(
             }
             ToolApproval::NeedsConfirmation => {
                 let detail = tools::describe_action(&tc.function_name, &parsed_args);
-                let diff_preview =
-                    preview::compute(&tc.function_name, &parsed_args, project_root).await;
                 let effect = effect.expect("computed for every NeedsConfirmation");
 
                 match request_approval(

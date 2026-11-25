@@ -1207,16 +1207,21 @@ fn run_sub_agent<'a>(
                 }
 
                 for tc in &response.tool_calls {
-                    sink.emit(EngineEvent::ToolCallStart {
-                        id: tc.id.clone(),
-                        name: tc.function_name.clone(),
-                        args: serde_json::from_str(&tc.arguments).unwrap_or_default(),
-                        is_sub_agent: true,
-                    });
-
                     // Sub-agents inherit the parent's approval mode
                     let parsed_args: serde_json::Value =
                         serde_json::from_str(&tc.arguments).unwrap_or_default();
+                    // What an edit will change, once, before it runs, as
+                    // the main agent's calls carry it.
+                    let diff_preview =
+                        preview::compute(&tc.function_name, &parsed_args, effective_root_ref)
+                            .await;
+                    sink.emit(EngineEvent::ToolCallStart {
+                        id: tc.id.clone(),
+                        name: tc.function_name.clone(),
+                        args: parsed_args.clone(),
+                        is_sub_agent: true,
+                        preview: diff_preview.clone(),
+                    });
 
                     // #1022 B7 (revised): defense-in-depth refusal of
                     // `InvokeAgent` and `AskUser`. Both are filtered from
@@ -1399,17 +1404,11 @@ fn run_sub_agent<'a>(
                                 ToolApproval::Blocked => {
                                     let detail =
                                         tools::describe_action(&tc.function_name, &parsed_args);
-                                    let diff_preview = preview::compute(
-                                        &tc.function_name,
-                                        &parsed_args,
-                                        effective_root_ref,
-                                    )
-                                    .await;
                                     sink.emit(EngineEvent::ActionBlocked {
                                         tool_call_id: tc.id.clone(),
                                         tool_name: tc.function_name.clone(),
                                         detail,
-                                        preview: diff_preview,
+                                        preview: diff_preview.clone(),
                                     });
                                     (
                                         crate::trust::PLAN_BLOCKED_MESSAGE.to_string(),
@@ -1426,12 +1425,7 @@ fn run_sub_agent<'a>(
                                             &tc.function_name,
                                             &parsed_args,
                                         ),
-                                        preview: preview::compute(
-                                            &tc.function_name,
-                                            &parsed_args,
-                                            effective_root_ref,
-                                        )
-                                        .await,
+                                        preview: diff_preview.clone(),
                                         effect: effect.expect("computed for every NeedsConfirmation"),
                                         allow_for_session: session_key.is_some(),
                                     };

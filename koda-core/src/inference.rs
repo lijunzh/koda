@@ -2207,6 +2207,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
                         name: tc.function_name.clone(),
                         args: serde_json::from_str(&tc.arguments).unwrap_or_default(),
                         is_sub_agent: false,
+                        preview: None,
                     });
                     crate::tool_dispatch::record_tool_result(
                         tc,
@@ -2241,6 +2242,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
                         name: tc.function_name.clone(),
                         args: parsed_args,
                         is_sub_agent: false,
+                        preview: None,
                     });
                     crate::tool_dispatch::record_tool_result(
                         &tc,

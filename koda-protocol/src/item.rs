@@ -74,6 +74,11 @@ pub enum Item {
         /// before Koda sent it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         effect: Option<ToolEffect>,
+        /// What sort of tool it is, from ACP's list, so a client can pick
+        /// a card or an icon without knowing every tool's name. Absent in
+        /// turns stored before Koda sent it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<ToolKind>,
         /// Where it stands.
         status: ToolCallStatus,
         /// What the model reads: the tool's output, or why it didn't run.
@@ -82,9 +87,9 @@ pub enum Item {
         /// What the call would do, in a line, when Koda asked about it or
         /// blocked it.
         detail: Option<String>,
-        /// The file changes it would make, when Koda asked about it or
-        /// blocked it: Codex's `fileChange` item's `changes`, carried on
-        /// Koda's one tool-call item.
+        /// The file changes an `Edit` or `Write` makes, from its start,
+        /// whether or not anyone was asked about it: Codex's `fileChange`
+        /// item's `changes`, carried on Koda's one tool-call item.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         changes: Vec<FileUpdateChange>,
         /// The notices sent about it as `item/toolCall/progress` while it
@@ -381,6 +386,54 @@ pub enum ApprovalDecision {
     },
 }
 
+/// What sort of tool a call is: the Agent Client Protocol's `ToolKind`,
+/// whose values ACP clients such as Zed draw tool calls by. Codex has an
+/// item type per kind instead; Koda keeps one tool-call item and says its
+/// kind, which maps straight onto ACP.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolKind {
+    /// Reads files or data.
+    Read,
+    /// Changes files or content.
+    Edit,
+    /// Removes files or data.
+    Delete,
+    /// Moves or renames files.
+    Move,
+    /// Searches for information.
+    Search,
+    /// Runs a command or code.
+    Execute,
+    /// Thinks or plans: a to-do list, a question to the user.
+    Think,
+    /// Fetches from the network.
+    Fetch,
+    /// Changes the session's mode.
+    SwitchMode,
+    /// Anything else: sub-agents, MCP tools, skills.
+    Other,
+}
+
+impl ToolKind {
+    /// The kind of Koda's tool `name`, after the mapping Qwen Code gives
+    /// its own tools onto ACP's kinds. A tool Koda doesn't know (an MCP
+    /// server's) is `Other`, as ACP's MCP bridges send it.
+    pub fn of(name: &str) -> Self {
+        match name {
+            "Read" | "List" | "ListAgents" | "ListSkills" | "ActivateSkill" | "MemoryRead" => {
+                Self::Read
+            }
+            "Edit" | "Write" | "MemoryWrite" => Self::Edit,
+            "Grep" | "Glob" | "RecallContext" | "WebSearch" => Self::Search,
+            "Bash" | "Cargo" | "WriteStdin" | "Monitor" => Self::Execute,
+            "TodoWrite" | "AskUser" => Self::Think,
+            "WebFetch" => Self::Fetch,
+            _ => Self::Other,
+        }
+    }
+}
+
 /// What a tool call does, and so whether it needs a yes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -417,4 +470,22 @@ pub struct UserInputParams {
 pub struct UserInputResponse {
     /// The answer; empty for none.
     pub answer: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_tool_kind_is_named_as_acp_names_it() {
+        assert_eq!(ToolKind::of("Bash"), ToolKind::Execute);
+        assert_eq!(ToolKind::of("Edit"), ToolKind::Edit);
+        assert_eq!(ToolKind::of("WebFetch"), ToolKind::Fetch);
+        assert_eq!(ToolKind::of("mcp__mail__send"), ToolKind::Other);
+        assert_eq!(
+            serde_json::to_value(ToolKind::SwitchMode).unwrap(),
+            "switch_mode"
+        );
+        assert_eq!(serde_json::to_value(ToolKind::Execute).unwrap(), "execute");
+    }
 }

@@ -782,6 +782,7 @@ mod tests {
             name: "Read".into(),
             args: serde_json::json!({"path": "foo.txt"}),
             is_sub_agent: false,
+            preview: None,
         });
         sink.emit(EngineEvent::Info {
             message: "  \u{26a1} cache hit".into(),
@@ -791,6 +792,7 @@ mod tests {
             name: "Bash".into(),
             args: serde_json::json!({"command": "ls"}),
             is_sub_agent: false,
+            preview: None,
         });
 
         let lines = sink.take_lines();
@@ -910,6 +912,7 @@ mod tests {
             name: "Read".into(),
             args: serde_json::json!({"path": "src/auth.rs"}),
             is_sub_agent: false,
+            preview: None,
         });
         sink.emit(EngineEvent::ToolCallResult {
             id: "t1".into(),
@@ -1065,6 +1068,7 @@ mod tests {
             name: "Read".into(),
             args: serde_json::json!({"path": "foo"}),
             is_sub_agent: false,
+            preview: None,
         });
         sink.emit(EngineEvent::Info {
             message: "  \u{26a1} cache hit".into(),
@@ -1112,6 +1116,7 @@ mod tests {
             name: "Bash".into(),
             args: serde_json::json!({"command": "cargo test"}),
             is_sub_agent: false,
+            preview: None,
         });
         // Grep: pattern + path
         sink.emit(EngineEvent::ToolCallStart {
@@ -1119,6 +1124,7 @@ mod tests {
             name: "Grep".into(),
             args: serde_json::json!({"pattern": "TODO", "path": "src/"}),
             is_sub_agent: false,
+            preview: None,
         });
         // InvokeAgent: agent name
         sink.emit(EngineEvent::ToolCallStart {
@@ -1126,6 +1132,7 @@ mod tests {
             name: "InvokeAgent".into(),
             args: serde_json::json!({"agent": "reviewer", "prompt": "x"}),
             is_sub_agent: false,
+            preview: None,
         });
 
         let drained = registry.drain_status_events();
@@ -1190,6 +1197,7 @@ mod tests {
                 name: name.to_string(),
                 args,
                 is_sub_agent: false,
+                preview: None,
             });
             let drained = registry.drain_status_events();
             let summary = drained
@@ -1222,6 +1230,7 @@ mod tests {
             name: "Read".into(),
             args: serde_json::json!({"path": "legacy/key.rs"}),
             is_sub_agent: false,
+            preview: None,
         });
         let drained = registry.drain_status_events();
         let summary = drained
@@ -1254,6 +1263,7 @@ mod tests {
             name: "Bash".into(),
             args: serde_json::json!({"command": long_cmd}),
             is_sub_agent: false,
+            preview: None,
         });
 
         let drained = registry.drain_status_events();
@@ -1487,6 +1497,7 @@ mod tests {
                 name: "Read".into(),
                 args: serde_json::json!({"path": "f.txt"}),
                 is_sub_agent: false,
+                preview: None,
             },
         ];
         for event in cases {
@@ -1517,6 +1528,7 @@ mod tests {
             name: "Read".into(),
             args: serde_json::json!({}),
             is_sub_agent: false,
+            preview: None,
         };
         let (kind, payload) = classify_for_persist(&event, Some("parent-call"))
             .expect("ToolCallStart must persist on sub-agent path");

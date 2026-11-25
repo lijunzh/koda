@@ -70,6 +70,11 @@ pub enum EngineEvent {
         args: Value,
         /// Whether this is a sub-agent's tool call.
         is_sub_agent: bool,
+        /// What an `Edit` or `Write` will change, worked out before it
+        /// runs, whether or not anyone is asked about it, as Codex's
+        /// `fileChange` item carries its changes from the start.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        preview: Option<crate::preview::DiffPreview>,
     },
 
     /// A tool call ended, however it ended: every [`Self::ToolCallStart`]
@@ -995,6 +1000,7 @@ mod tests {
             name: "Bash".into(),
             args: serde_json::json!({"command": "cargo test"}),
             is_sub_agent: false,
+            preview: None,
         };
         let json = serde_json::to_string(&event).unwrap();
         let deserialized: EngineEvent = serde_json::from_str(&json).unwrap();

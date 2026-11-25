@@ -353,6 +353,7 @@ mod tests {
                 tool: "Read".into(),
                 arguments: json!({"filePath": "a"}),
                 effect: None,
+                kind: None,
                 status: ToolCallStatus::InProgress,
                 output: None,
                 detail: None,

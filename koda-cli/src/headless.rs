@@ -1017,6 +1017,7 @@ mod tests {
                 tool: name.into(),
                 arguments: serde_json::json!({}),
                 effect: None,
+                kind: None,
                 status: ToolCallStatus::InProgress,
                 output: None,
                 detail: None,
