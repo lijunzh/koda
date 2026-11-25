@@ -167,7 +167,14 @@ jobs:
         run: |
           mkdir koda-${{ matrix.target }}
           cp target/${{ matrix.target }}/release/koda target/${{ matrix.target }}/release/koda-logs koda-${{ matrix.target }}/
-          cp README.md LICENSE koda-${{ matrix.target }}/
+          cp README.md LICENSE NOTICE koda-${{ matrix.target }}/
+          # The licenses of the programs built into koda (koda-search, NOTICE).
+          mkdir koda-${{ matrix.target }}/licenses
+          for d in koda-search/vendor/*/; do
+            for f in "$d"LICEN* "$d"COPYING; do
+              [ -f "$f" ] && cp "$f" "koda-${{ matrix.target }}/licenses/$(basename "$d")-$(basename "$f")"
+            done
+          done
           tar czf koda-${{ matrix.target }}.tar.gz koda-${{ matrix.target }}
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

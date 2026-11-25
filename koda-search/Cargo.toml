@@ -1,0 +1,23 @@
+[package]
+name = "koda-search"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "ugrep and bfs built into the Koda AI coding agent's binary, behind its shell's grep and find, as Claude Code builds them into its own"
+readme = "README.md"
+license = "MIT AND BSD-3-Clause AND BSD-2-Clause AND 0BSD"
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords = ["ai", "coding-agent", "grep", "find", "search"]
+categories = ["development-tools", "command-line-utilities"]
+links = "koda_search"
+
+[dependencies]
+libz-sys = { version = "1", default-features = false, features = ["static"] }
+bzip2-sys = { version = "0.1", features = ["static"] }
+zstd-sys = { version = "2", default-features = false }
+libc = { workspace = true }
+
+[build-dependencies]
+cc = { version = "1", features = ["parallel"] }

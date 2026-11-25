@@ -17,6 +17,7 @@ members = [
     "koda-memory",
     "koda-command",
     "koda-mcp",
+    "koda-search",
 ]
 resolver = "3"
 default-members = ["koda-cli"]
@@ -58,6 +59,7 @@ koda-client = { path = "koda-client", version = "=0.7.11" }
 koda-tui = { path = "koda-tui", version = "=0.7.11" }
 koda-oss = { path = "koda-oss", version = "=0.7.11" }
 koda-git = { path = "koda-git", version = "=0.7.11" }
+koda-search = { path = "koda-search", version = "=0.7.11" }
 base64 = "0.23"
 anyhow = "1"
 async-trait = "0.1"

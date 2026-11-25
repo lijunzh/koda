@@ -35,6 +35,9 @@ koda-git = { workspace = true }
 # Only for `dispatch_helpers` in `main`: `koda` also runs the Linux
 # sandbox's stage 2, as Codex's binary runs its sandbox helpers.
 koda-sandbox = { workspace = true }
+# ugrep and bfs, which `koda` runs when started under their names, as
+# Claude Code's executable does.
+koda-search = { workspace = true }
 # Shared crates: the config file, and the log database.
 koda-config = { workspace = true }
 koda-state = { workspace = true }

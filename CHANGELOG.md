@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **ugrep and bfs are built into `koda`, as Claude Code builds them into its executable.** Started under the name `ugrep` or `bfs` (a link of that name), `koda` runs that program: ugrep 7.8.5 with PCRE2 (`-P`) and archive search (`-z`: zlib, bzip2, zstd, brotli, 7z, tar and zip), and bfs 4.1.7 with Oniguruma, configured as Claude Code's are. Nothing uses them yet; they're for searching through the shell's `grep` and `find`. Their C and C++ sources are vendored in the new `koda-search` crate, so building Koda from source (`cargo install koda-cli`) now needs a C and C++ compiler, and the release archives carry their licenses in `licenses/`.
+
 ### Fixed
 
 - **A read-only command after `cd` no longer asks in Safe mode.** `cd src && grep -rn foo .` or `cd <project> && ls` counted as a change, because `cd` wasn't on the read-only list, so every search the model started with a `cd` asked. `cd` is now read-only. As in Claude Code, `cd` together with `git` still asks, since a repository in another folder can run its own hooks, and a `cd` that may leave the project (home, `..`, another folder, `$VAR`) still asks and is still blocked in Plan, now also inside parentheses (`(cd /etc && ls)`) and for `cd ~/…`, which the path check missed.

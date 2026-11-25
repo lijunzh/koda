@@ -63,3 +63,32 @@ Upstream license text:
 Source repository: https://github.com/openai/codex
 
 ================================================================================
+
+================================================================================
+Search programs built into the koda binary (koda-search)
+================================================================================
+
+The koda binary contains ugrep and bfs, compiled from their sources, as
+Claude Code's executable contains them. The sources are vendored unchanged
+under koda-search/vendor/, each folder with its upstream license file and a
+.commit file naming the release:
+
+  ugrep 7.8.5 (with RE/flex and 7-Zip's decoder)
+      koda-search/vendor/ugrep, BSD 3-Clause License,
+      https://github.com/Genivia/ugrep
+  bfs 4.1.7
+      koda-search/vendor/bfs, BSD Zero Clause License (0BSD),
+      https://github.com/tavianator/bfs
+  PCRE2 10.49 (with SLJIT)
+      koda-search/vendor/pcre2, BSD 3-Clause License with the PCRE2
+      exception, https://github.com/PCRE2Project/pcre2
+  Oniguruma 6.9.10
+      koda-search/vendor/oniguruma, BSD 2-Clause License,
+      https://github.com/kkos/oniguruma
+  Brotli 1.2.1 (decoder)
+      koda-search/vendor/brotli, MIT License,
+      https://github.com/google/brotli
+
+zlib, bzip2 and zstd are linked from the libz-sys, bzip2-sys and zstd-sys
+crates, under the zlib, bzip2 and BSD 3-Clause licenses. The release archives
+carry these license texts in licenses/.
