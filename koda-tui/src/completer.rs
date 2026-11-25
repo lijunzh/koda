@@ -3,13 +3,14 @@
 //! Handles two completion modes:
 //! - **Slash commands**: `/d` → `/diff`, `/diff commit`, `/diff review`
 //!   (data + matching live in [`crate::composer::slash_popup`])
-//! - **@file paths**: `explain @src/m` → `explain @src/main.rs`
+//! - **@file paths**: `explain @src/m` → `explain @src/main.rs`, found by
+//!   the server's `fuzzyFileSearch` ([`crate::file_search`])
 //!
 //! Both modes share the same `InputCompleter` cycling state machine
 //! (matches/idx/token) so Tab cycles through candidates regardless of
 //! mode.
 
-use std::path::{Path, PathBuf};
+use crate::file_search::FileSearch;
 
 /// Re-export so existing call sites (and external doc-tests) can keep
 /// referring to `crate::completer::SLASH_COMMANDS`. The canonical
@@ -17,6 +18,7 @@ use std::path::{Path, PathBuf};
 pub use crate::composer::slash_popup::SLASH_COMMANDS;
 
 /// Unified Tab-completion for slash commands and @file paths.
+#[derive(Default)]
 pub struct InputCompleter {
     /// Current completion matches.
     matches: Vec<String>,
@@ -24,20 +26,22 @@ pub struct InputCompleter {
     idx: usize,
     /// The token being completed (to detect changes).
     token: String,
-    /// Project root for @file path resolution.
-    project_root: PathBuf,
+    /// The project's file search, for @file paths; none, none offered.
+    files: Option<FileSearch>,
     /// Cached model names for `/model` completion.
     model_names: Vec<String>,
 }
 
 impl InputCompleter {
-    pub fn new(project_root: PathBuf) -> Self {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Complete @file paths with `files`.
+    pub(crate) fn with_file_search(files: FileSearch) -> Self {
         Self {
-            matches: Vec::new(),
-            idx: 0,
-            token: String::new(),
-            project_root,
-            model_names: Vec::new(),
+            files: Some(files),
+            ..Self::new()
         }
     }
 
@@ -50,8 +54,9 @@ impl InputCompleter {
     ///
     /// Returns `Some(replacement_text)` with the full input line replaced,
     /// or `None` if no completion is available.
-    /// Repeated calls cycle through matches.
-    pub fn complete(&mut self, current_text: &str) -> Option<String> {
+    /// Repeated calls cycle through matches. An @file path waits for the
+    /// server's search.
+    pub async fn complete(&mut self, current_text: &str) -> Option<String> {
         let trimmed = current_text.trim_end();
 
         // Slash command completion: input starts with /
@@ -67,7 +72,7 @@ impl InputCompleter {
         if let Some(at_pos) = find_last_at_token(trimmed) {
             let partial = &trimmed[at_pos + 1..]; // after @
             let prefix = &trimmed[..at_pos]; // everything before @
-            return self.complete_file(prefix, partial);
+            return self.complete_file(prefix, partial).await;
         }
 
         self.reset();
@@ -132,13 +137,16 @@ impl InputCompleter {
 
     // ── @file path completion ────────────────────────────────
 
-    fn complete_file(&mut self, prefix: &str, partial: &str) -> Option<String> {
+    async fn complete_file(&mut self, prefix: &str, partial: &str) -> Option<String> {
         // Check if the partial is already one of our matches (user is cycling)
         let is_cycling = !self.matches.is_empty() && self.matches.iter().any(|m| m == partial);
 
         if !is_cycling {
             self.token = format!("@{partial}");
-            self.matches = list_path_matches(&self.project_root, partial);
+            self.matches = match &self.files {
+                Some(files) => files.search(partial).await,
+                None => Vec::new(),
+            };
             self.idx = 0;
         }
 
@@ -224,79 +232,6 @@ pub fn find_last_at_token(text: &str) -> Option<usize> {
     None
 }
 
-/// List filesystem paths matching a partial path relative to project_root.
-/// Public wrapper for the `@` auto-dropdown in `tui_app.rs`.
-pub fn list_path_matches_public(project_root: &Path, partial: &str) -> Vec<String> {
-    list_path_matches(project_root, partial)
-}
-
-/// List filesystem paths matching a partial path relative to project_root.
-///
-/// Uses fuzzy subsequence matching: `@mrs` matches `main.rs`, `@ctml` matches `Cargo.toml`.
-/// Prefix matches rank higher than fuzzy matches.
-/// Directories get a trailing `/` to encourage further completion.
-fn list_path_matches(project_root: &Path, partial: &str) -> Vec<String> {
-    let (dir_part, file_prefix) = match partial.rfind('/') {
-        Some(pos) => (&partial[..=pos], &partial[pos + 1..]),
-        None => ("", partial),
-    };
-
-    let search_dir = if dir_part.is_empty() {
-        project_root.to_path_buf()
-    } else {
-        // Security: reject paths with traversal components
-        if dir_part.contains("..") {
-            return Vec::new();
-        }
-        project_root.join(dir_part)
-    };
-
-    let entries = match std::fs::read_dir(&search_dir) {
-        Ok(entries) => entries,
-        Err(_) => return Vec::new(),
-    };
-
-    let lower_prefix = file_prefix.to_lowercase();
-
-    let mut scored: Vec<(i32, String)> = entries
-        .filter_map(|e| e.ok())
-        .filter_map(|entry| {
-            let name = entry.file_name().to_string_lossy().to_string();
-
-            // Skip hidden files and common noise
-            if name.starts_with('.') {
-                return None;
-            }
-
-            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-
-            // Skip build artifacts / deps
-            if is_dir
-                && matches!(
-                    name.as_str(),
-                    "target" | "node_modules" | "__pycache__" | ".git"
-                )
-            {
-                return None;
-            }
-
-            // query is lowered; target keeps original case for camelCase detection
-            let score = fuzzy_score(&lower_prefix, &name)?;
-
-            let path = if is_dir {
-                format!("{dir_part}{name}/")
-            } else {
-                format!("{dir_part}{name}")
-            };
-            Some((score, path))
-        })
-        .collect();
-
-    // Sort by score (higher = better match), then alphabetically
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-    scored.into_iter().map(|(_, path)| path).collect()
-}
-
 /// Fuzzy subsequence scoring.
 ///
 /// Returns `Some(score)` if all chars of `query` appear in `target` in order.
@@ -372,60 +307,63 @@ fn fuzzy_score(query: &str, target: &str) -> Option<i32> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::Path;
     use tempfile::tempdir;
+
+    /// A completer whose @file paths come from a Koda host for `root`;
+    /// the host runs while the returned guard lives.
+    async fn with_files(root: &Path) -> (InputCompleter, crate::file_search::tests::Host) {
+        let host = crate::file_search::tests::Host::start(root).await;
+        (InputCompleter::with_file_search(host.files(root)), host)
+    }
 
     // ── Slash command tests ─────────────────────────────────
 
-    #[test]
-    fn test_complete_slash_d() {
-        let tmp = tempdir().unwrap();
-        let mut c = InputCompleter::new(tmp.path().to_path_buf());
-        let first = c.complete("/d");
+    #[tokio::test]
+    async fn test_complete_slash_d() {
+        let mut c = InputCompleter::new();
+        let first = c.complete("/d").await;
         assert!(first.is_some());
         assert!(first.unwrap().starts_with("/d"));
     }
 
-    #[test]
-    fn test_complete_cycles() {
-        let tmp = tempdir().unwrap();
-        let mut c = InputCompleter::new(tmp.path().to_path_buf());
-        let a = c.complete("/d");
-        let b = c.complete("/d");
+    #[tokio::test]
+    async fn test_complete_cycles() {
+        let mut c = InputCompleter::new();
+        let a = c.complete("/d").await;
+        let b = c.complete("/d").await;
         assert!(a.is_some());
         assert!(b.is_some());
     }
 
-    #[test]
-    fn test_no_match() {
-        let tmp = tempdir().unwrap();
-        let mut c = InputCompleter::new(tmp.path().to_path_buf());
-        assert!(c.complete("/zzz").is_none());
+    #[tokio::test]
+    async fn test_no_match() {
+        let mut c = InputCompleter::new();
+        assert!(c.complete("/zzz").await.is_none());
     }
 
-    #[test]
-    fn test_non_slash_no_at_returns_none() {
-        let tmp = tempdir().unwrap();
-        let mut c = InputCompleter::new(tmp.path().to_path_buf());
-        assert!(c.complete("hello").is_none());
+    #[tokio::test]
+    async fn test_non_slash_no_at_returns_none() {
+        let mut c = InputCompleter::new();
+        assert!(c.complete("hello").await.is_none());
     }
 
-    #[test]
-    fn test_exact_match_no_complete() {
-        let tmp = tempdir().unwrap();
-        let mut c = InputCompleter::new(tmp.path().to_path_buf());
-        assert!(c.complete("/exit").is_none());
+    #[tokio::test]
+    async fn test_exact_match_no_complete() {
+        let mut c = InputCompleter::new();
+        assert!(c.complete("/exit").await.is_none());
     }
 
     // ── @file completion tests ───────────────────────────────
 
-    #[test]
-    fn test_at_file_completes() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_at_file_completes() {
         let tmp = tempdir().unwrap();
         fs::write(tmp.path().join("main.rs"), "fn main() {}").unwrap();
         fs::write(tmp.path().join("mod.rs"), "").unwrap();
 
-        let mut c = InputCompleter::new(tmp.path().to_path_buf());
-        let result = c.complete("explain @m");
+        let (mut c, _host) = with_files(tmp.path()).await;
+        let result = c.complete("explain @m").await;
         assert!(result.is_some());
         let text = result.unwrap();
         assert!(text.starts_with("explain @m"), "got: {text}");
@@ -435,137 +373,165 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_at_file_in_subdir() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_at_file_in_subdir() {
         let tmp = tempdir().unwrap();
         fs::create_dir_all(tmp.path().join("src")).unwrap();
         fs::write(tmp.path().join("src/lib.rs"), "").unwrap();
         fs::write(tmp.path().join("src/main.rs"), "").unwrap();
 
-        let mut c = InputCompleter::new(tmp.path().to_path_buf());
-        let result = c.complete("@src/l");
+        let (mut c, _host) = with_files(tmp.path()).await;
+        let result = c.complete("@src/l").await;
         assert_eq!(result, Some("@src/lib.rs".to_string()));
     }
 
-    #[test]
-    fn test_at_file_dir_gets_trailing_slash() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_at_file_dir_gets_trailing_slash() {
         let tmp = tempdir().unwrap();
         fs::create_dir_all(tmp.path().join("src")).unwrap();
 
-        let mut c = InputCompleter::new(tmp.path().to_path_buf());
-        let result = c.complete("@s");
+        let (mut c, _host) = with_files(tmp.path()).await;
+        let result = c.complete("@s").await;
         assert_eq!(result, Some("@src/".to_string()));
     }
 
-    #[test]
-    fn test_at_file_cycles() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_at_file_cycles() {
         let tmp = tempdir().unwrap();
         fs::write(tmp.path().join("alpha.rs"), "").unwrap();
         fs::write(tmp.path().join("beta.rs"), "").unwrap();
 
-        let mut c = InputCompleter::new(tmp.path().to_path_buf());
-        // First Tab: input is "@" → returns first match
-        let a = c.complete("@").unwrap();
+        let (mut c, _host) = with_files(tmp.path()).await;
+        // First Tab: input is "@rs" → returns first match
+        let a = c.complete("@rs").await.unwrap();
         // Second Tab: input is now the completed text (e.g., "@alpha.rs")
-        let b = c.complete(&a).unwrap();
+        let b = c.complete(&a).await.unwrap();
         assert_ne!(a, b, "should cycle through different files");
         // Third Tab: should cycle back
-        let c_result = c.complete(&b).unwrap();
+        let c_result = c.complete(&b).await.unwrap();
         assert_eq!(c_result, a, "should cycle back to first");
         assert_eq!(c_result, a, "should cycle back to first");
     }
 
-    #[test]
-    fn test_at_file_skips_hidden() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_at_file_offers_hidden_files() {
+        // As Codex's search: hidden files too; a repository's `.gitignore`
+        // decides what's left out.
         let tmp = tempdir().unwrap();
         fs::write(tmp.path().join(".hidden"), "").unwrap();
         fs::write(tmp.path().join("visible.rs"), "").unwrap();
 
-        let mut c = InputCompleter::new(tmp.path().to_path_buf());
-        let result = c.complete("@");
-        assert_eq!(result, Some("@visible.rs".to_string()));
+        let (mut c, _host) = with_files(tmp.path()).await;
+        assert_eq!(c.complete("@hid").await, Some("@.hidden".to_string()));
+        c.reset();
+        assert_eq!(c.complete("@vis").await, Some("@visible.rs".to_string()));
     }
 
-    #[test]
-    fn test_at_file_case_insensitive() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_at_file_ignores_what_git_ignores() {
+        let tmp = tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        fs::create_dir_all(tmp.path().join("target/debug")).unwrap();
+        fs::write(tmp.path().join(".gitignore"), "target/\n").unwrap();
+        fs::write(tmp.path().join("target/debug/build.log"), "").unwrap();
+        fs::write(tmp.path().join("build.rs"), "").unwrap();
+
+        let (mut c, _host) = with_files(tmp.path()).await;
+        assert_eq!(c.complete("@build").await, Some("@build.rs".to_string()));
+        let again = c.complete("@build.rs").await;
+        assert_eq!(again, Some("@build.rs".to_string()), "the only match");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_at_file_empty_query_offers_nothing() {
+        // As Codex's: an empty query searches nothing.
+        let tmp = tempdir().unwrap();
+        fs::write(tmp.path().join("main.rs"), "").unwrap();
+        let (mut c, _host) = with_files(tmp.path()).await;
+        assert_eq!(c.complete("@").await, None);
+    }
+
+    #[tokio::test]
+    async fn test_at_file_without_a_search_offers_nothing() {
+        let mut c = InputCompleter::new();
+        assert_eq!(c.complete("@main").await, None);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_at_file_case_insensitive() {
         let tmp = tempdir().unwrap();
         fs::write(tmp.path().join("Makefile"), "").unwrap();
         fs::write(tmp.path().join("README.md"), "").unwrap();
 
-        let mut c = InputCompleter::new(tmp.path().to_path_buf());
-        let result = c.complete("@make");
+        let (mut c, _host) = with_files(tmp.path()).await;
+        let result = c.complete("@make").await;
         assert_eq!(result, Some("@Makefile".to_string()));
 
         c.reset();
-        let result = c.complete("@read");
+        let result = c.complete("@read").await;
         assert_eq!(result, Some("@README.md".to_string()));
     }
 
-    #[test]
-    fn test_at_file_preserves_prefix_text() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_at_file_preserves_prefix_text() {
         let tmp = tempdir().unwrap();
         fs::write(tmp.path().join("config.toml"), "").unwrap();
 
-        let mut c = InputCompleter::new(tmp.path().to_path_buf());
-        let result = c.complete("review this @c");
+        let (mut c, _host) = with_files(tmp.path()).await;
+        let result = c.complete("review this @c").await;
         assert_eq!(result, Some("review this @config.toml".to_string()));
     }
 
     // ── /model completion tests ──────────────────────────────
 
-    #[test]
-    fn test_model_complete() {
-        let tmp = tempdir().unwrap();
-        let mut c = InputCompleter::new(tmp.path().to_path_buf());
+    #[tokio::test]
+    async fn test_model_complete() {
+        let mut c = InputCompleter::new();
         c.set_model_names(vec![
             "gpt-4o".into(),
             "gpt-4o-mini".into(),
             "gpt-3.5-turbo".into(),
         ]);
-        let result = c.complete("/model gpt-4");
+        let result = c.complete("/model gpt-4").await;
         assert!(result.is_some());
         let text = result.unwrap();
         assert!(text.starts_with("/model gpt-4"), "got: {text}");
     }
 
-    #[test]
-    fn test_model_complete_cycles() {
-        let tmp = tempdir().unwrap();
-        let mut c = InputCompleter::new(tmp.path().to_path_buf());
+    #[tokio::test]
+    async fn test_model_complete_cycles() {
+        let mut c = InputCompleter::new();
         c.set_model_names(vec!["gpt-4o".into(), "gpt-4o-mini".into()]);
-        let a = c.complete("/model gpt");
-        let b = c.complete("/model gpt");
+        let a = c.complete("/model gpt").await;
+        let b = c.complete("/model gpt").await;
         assert!(a.is_some());
         assert!(b.is_some());
         assert_ne!(a, b, "should cycle through models");
     }
 
-    #[test]
-    fn test_model_no_names_returns_none() {
-        let tmp = tempdir().unwrap();
-        let mut c = InputCompleter::new(tmp.path().to_path_buf());
+    #[tokio::test]
+    async fn test_model_no_names_returns_none() {
+        let mut c = InputCompleter::new();
         // No model names from the host yet: nothing to complete.
-        assert!(c.complete("/model gpt").is_none());
+        assert!(c.complete("/model gpt").await.is_none());
     }
 
-    #[test]
-    fn test_model_no_match_returns_none() {
-        let tmp = tempdir().unwrap();
-        let mut c = InputCompleter::new(tmp.path().to_path_buf());
+    #[tokio::test]
+    async fn test_model_no_match_returns_none() {
+        let mut c = InputCompleter::new();
         // "zzz" matches no model names
-        assert!(c.complete("/model zzz").is_none());
+        assert!(c.complete("/model zzz").await.is_none());
     }
 
-    #[test]
-    fn test_model_substring_match() {
-        let tmp = tempdir().unwrap();
-        let mut c = InputCompleter::new(tmp.path().to_path_buf());
+    #[tokio::test]
+    async fn test_model_substring_match() {
+        let mut c = InputCompleter::new();
         c.set_model_names(vec![
             "claude-opus".into(),
             "claude-sonnet-5".into(),
             "claude-opus-5".into(),
         ]);
-        let result = c.complete("/model opus");
+        let result = c.complete("/model opus").await;
         // "opus" matches the alias "claude-opus" and the id "claude-opus-5",
         // both from `model/list`
         assert!(result.is_some());
@@ -587,25 +553,25 @@ mod tests {
         assert_eq!(find_last_at_token("a\nb\n@c"), Some(4));
     }
 
-    #[test]
-    fn test_at_file_after_newline() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_at_file_after_newline() {
         let tmp = tempdir().unwrap();
         fs::write(tmp.path().join("config.toml"), "").unwrap();
 
-        let mut c = InputCompleter::new(tmp.path().to_path_buf());
+        let (mut c, _host) = with_files(tmp.path()).await;
         // Simulate multi-line input: first line + newline + @partial
-        let result = c.complete("explain this\n@c");
+        let result = c.complete("explain this\n@c").await;
         assert_eq!(result, Some("explain this\n@config.toml".to_string()));
     }
 
-    #[test]
-    fn test_at_file_traversal_blocked() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_at_file_traversal_blocked() {
         let tmp = tempdir().unwrap();
         fs::write(tmp.path().join("safe.rs"), "").unwrap();
 
-        let mut c = InputCompleter::new(tmp.path().to_path_buf());
-        // Attempt path traversal — should return no matches
-        let result = c.complete("@../../etc/");
+        let (mut c, _host) = with_files(tmp.path()).await;
+        // Only the project is searched: nothing above it
+        let result = c.complete("@../../etc/").await;
         assert!(result.is_none(), "traversal should be blocked");
     }
 
@@ -628,40 +594,40 @@ mod tests {
         assert!(prefix > fuzzy, "prefix {prefix} should beat fuzzy {fuzzy}");
     }
 
-    #[test]
-    fn test_fuzzy_at_file() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_fuzzy_at_file() {
         let tmp = tempdir().unwrap();
         fs::write(tmp.path().join("main.rs"), "").unwrap();
         fs::write(tmp.path().join("Cargo.toml"), "").unwrap();
         fs::write(tmp.path().join("config.rs"), "").unwrap();
 
-        let mut c = InputCompleter::new(tmp.path().to_path_buf());
+        let (mut c, _host) = with_files(tmp.path()).await;
         // "mrs" → should fuzzy-match main.rs (m...r.s)
-        let result = c.complete("@mrs");
+        let result = c.complete("@mrs").await;
         assert_eq!(result, Some("@main.rs".to_string()));
     }
 
-    #[test]
-    fn test_fuzzy_cargo_toml() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_fuzzy_cargo_toml() {
         let tmp = tempdir().unwrap();
         fs::write(tmp.path().join("Cargo.toml"), "").unwrap();
         fs::write(tmp.path().join("config.rs"), "").unwrap();
 
-        let mut c = InputCompleter::new(tmp.path().to_path_buf());
+        let (mut c, _host) = with_files(tmp.path()).await;
         // "ctml" → fuzzy-match Cargo.toml (c...t..m.l)
-        let result = c.complete("@ctml");
+        let result = c.complete("@ctml").await;
         assert_eq!(result, Some("@Cargo.toml".to_string()));
     }
 
-    #[test]
-    fn test_fuzzy_prefix_ranked_first() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_fuzzy_prefix_ranked_first() {
         let tmp = tempdir().unwrap();
         fs::write(tmp.path().join("main.rs"), "").unwrap();
         fs::write(tmp.path().join("format.rs"), "").unwrap();
 
-        let mut c = InputCompleter::new(tmp.path().to_path_buf());
+        let (mut c, _host) = with_files(tmp.path()).await;
         // "m" → main.rs should come before format.rs (prefix match wins)
-        let result = c.complete("@m");
+        let result = c.complete("@m").await;
         assert_eq!(result, Some("@main.rs".to_string()));
     }
 

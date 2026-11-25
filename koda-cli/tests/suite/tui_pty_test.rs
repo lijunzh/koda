@@ -3431,7 +3431,7 @@ async fn a_skill_picked_with_dollar_reaches_the_model() {
     assert!(sent.contains("Run every test first."), "{sent}");
 }
 
-/// `@` lists skills after files, as Codex's `@` does, and picking one puts
+/// `@` lists skills before files, as Codex's `@` does, and picking one puts
 /// `$name` in the message.
 #[tokio::test(flavor = "multi_thread")]
 async fn at_lists_skills_too() {
@@ -3455,6 +3455,23 @@ async fn at_lists_skills_too() {
     tui.wait_for_screen("Checked.");
     let sent = wait_for_model_call(&server, 1).await;
     assert!(sent.contains("Run every test first."), "{sent}");
+}
+
+/// `@` lists the files the server's `fuzzyFileSearch` finds anywhere in
+/// the project, folders and all, and picking one puts its path in the
+/// message.
+#[tokio::test(flavor = "multi_thread")]
+async fn at_lists_files_the_server_finds() {
+    let server = scripted_model(vec![]).await;
+    let home = home();
+    std::fs::create_dir_all(home.path().join("deep/nested/dir")).unwrap();
+    std::fs::write(home.path().join("deep/nested/dir/needle_file.rs"), "").unwrap();
+    let mut tui = Tui::start_with_model(home.path(), &server.url());
+
+    tui.type_text("look at @needlef");
+    tui.wait_for_screen("deep/nested/dir/needle_file.rs");
+    tui.type_text("\r");
+    tui.wait_for_screen("look at @deep/nested/dir/needle_file.rs");
 }
 
 /// `/rewind` takes the last turn out of the conversation and puts its

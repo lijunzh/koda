@@ -488,7 +488,7 @@ async fn handle_inference_key_inline(
         }
         (KeyCode::Tab, KeyModifiers::NONE) => {
             let current = textarea.text().to_string();
-            if let Some(completed) = completer.complete(&current) {
+            if let Some(completed) = completer.complete(&current).await {
                 textarea.set_text_clearing_elements("");
                 textarea.insert_str(&completed);
             } else if !current.trim().is_empty() {

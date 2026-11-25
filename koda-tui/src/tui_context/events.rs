@@ -271,7 +271,7 @@ impl TuiContext {
             }
             (KeyCode::Tab, KeyModifiers::NONE) => {
                 let current = self.textarea.text().to_string();
-                if let Some(completed) = self.completer.complete(&current) {
+                if let Some(completed) = self.completer.complete(&current).await {
                     // Detect @-mention completion (PR 5 of #1178). The
                     // completer's `find_last_at_token` rule matches an `@`
                     // at start-of-input or after whitespace, and the
@@ -522,6 +522,14 @@ impl TuiContext {
 
     // ── Reactive menu updates ───────────────────────────────────
 
+    /// Show the host's answer to an `@` search, if the mention dropdown is
+    /// what the input shows.
+    pub(crate) fn refresh_mention_menu(&mut self) {
+        if matches!(self.menu, MenuContent::None | MenuContent::File { .. }) {
+            self.update_reactive_menu();
+        }
+    }
+
     fn update_reactive_menu(&mut self) {
         let after_input = self.textarea.text().to_string();
         let trimmed = after_input.trim_end();
@@ -552,7 +560,7 @@ impl TuiContext {
     }
 
     /// What the mention being typed at the end of `input` offers, as Codex's
-    /// pickers do: `$` lists skills; `@` lists files, then skills. With the
+    /// pickers do: `$` lists skills; `@` lists skills, then files. With the
     /// dropdown's title and the text before the mention. `None` when no
     /// mention is being typed.
     fn mention_items(
@@ -581,20 +589,25 @@ impl TuiContext {
             )),
             (Some(start), _) => {
                 let partial = &text[start + 1..];
-                let mut items: Vec<FileItem> =
-                    crate::completer::list_path_matches_public(&self.project_root, partial)
+                // Skills before files, as Codex's `@` list orders them, so
+                // a skill isn't buried under its own folder's files. A path
+                // being typed (`@src/`) isn't a skill's name.
+                let mut items: Vec<FileItem> = if partial.contains('/') {
+                    Vec::new()
+                } else {
+                    skills(partial).collect()
+                };
+                items.extend(
+                    self.file_search
+                        .matches(partial)
                         .into_iter()
                         .map(|path| FileItem {
                             is_dir: path.ends_with('/'),
                             path,
                             skill: None,
                             resource: None,
-                        })
-                        .collect();
-                // A path being typed (`@src/`) isn't a skill's name.
-                if !partial.contains('/') {
-                    items.extend(skills(partial));
-                }
+                        }),
+                );
                 // The servers' resources, as Claude Code lists them with files.
                 items.extend(
                     self.mcp

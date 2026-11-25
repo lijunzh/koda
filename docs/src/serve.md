@@ -79,6 +79,27 @@ the text (see [File & image attachments](./attachments.md#mentioning-files)). Th
 `userMessage` item keeps the text as the user wrote it and lists the paths under
 `mentions`.
 
+## Finding files to mention
+
+`fuzzyFileSearch`, Codex's method, finds the files and folders a client offers
+for an `@` mention, so the client never walks the project itself:
+
+```json
+{"jsonrpc":"2.0","id":7,"method":"fuzzyFileSearch","params":{"query":"auth","roots":["/home/me/app"],"cancellationToken":"composer"}}
+{"jsonrpc":"2.0","id":7,"result":{"files":[{"root":"/home/me/app","path":"src/auth.rs","match_type":"file","file_name":"auth.rs","score":65645,"indices":[4,5,6,7]}]}}
+```
+
+Only the `roots` are searched, and they must be absolute paths. Hidden files
+are included and links followed; inside a git repository, what `.gitignore`
+ignores is left out. A file whose own name matches ranks above one that matches
+only by its folders. At most 50 matches come back, best first, equal scores by
+path, with `match_type` `file` or `directory` and `indices`, the matched
+characters in `path`, for highlighting. The result fields keep Codex's
+snake_case names. An empty `query` or no `roots` finds nothing. A request with
+the same `cancellationToken` as one still running cancels it, and the earlier
+one answers with no files: send one token per text box, a request per
+keystroke. Koda's TUI fills its `@` list this way.
+
 ## Named skills
 
 A `$name` in `input` that names a skill loads it, as Codex reads `$` mentions:

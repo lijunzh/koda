@@ -294,6 +294,13 @@ client_requests! {
         params: crate::skills::SkillsListParams,
         response: crate::skills::SkillsListResponse,
     },
+    /// Files and folders under some roots whose paths fuzzily match a
+    /// query, best first, as Codex's `fuzzyFileSearch` finds them. A later
+    /// request with the same cancellation token cancels an earlier one.
+    FuzzyFileSearch => "fuzzyFileSearch" {
+        params: crate::search::FuzzyFileSearchParams,
+        response: crate::search::FuzzyFileSearchResponse,
+    },
     /// Write a feedback report, and with consent the session's logs and
     /// history, to a ZIP on the host, as Codex's does.
     FeedbackSave => "feedback/save" {

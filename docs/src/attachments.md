@@ -10,8 +10,10 @@ Type `@` anywhere in your message to mention a file or directory:
 > what's in @src/components?
 ```
 
-As you type after `@`, a fuzzy file picker appears. Press `Tab` to cycle
-through matches or select with `Enter`. Your message keeps the `@path` as you
+As you type after `@`, a fuzzy file picker appears, searching the whole
+project as Codex's does: hidden files included and, in a git repository, what
+`.gitignore` ignores left out, files whose own name matches first. Press `Tab`
+to cycle through matches or select with `Enter`. Your message keeps the `@path` as you
 typed it, and Koda's host reads the file and sends the model its contents
 after your text, as Claude Code does:
 

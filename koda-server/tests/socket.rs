@@ -495,6 +495,60 @@ async fn a_connection_initializes_once_before_anything_else() {
     koda.stop().await;
 }
 
+/// `fuzzyFileSearch` over the socket: the client's roots, searched by the
+/// server, in Codex's shape; nothing outside them.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_searches_its_folder_for_files() {
+    let server = model(vec![]).await;
+    let koda = Server::start(config(&server), Duration::from_secs(60)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("app");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/main.rs"), "").unwrap();
+    std::fs::write(root.join("README.md"), "").unwrap();
+    std::fs::write(dir.path().join("main-outside.rs"), "").unwrap();
+    let root = root.display().to_string();
+    let mut client = Client::ready(&koda).await;
+
+    let found = client
+        .request(
+            "fuzzyFileSearch",
+            json!({"query": "main", "roots": [root], "cancellationToken": "composer"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        found,
+        json!({"files": [{
+            "root": root,
+            "path": "src/main.rs",
+            "match_type": "file",
+            "file_name": "main.rs",
+            "score": found["files"][0]["score"],
+            "indices": [4, 5, 6, 7],
+        }]})
+    );
+    let folder = client
+        .request("fuzzyFileSearch", json!({"query": "src", "roots": [root]}))
+        .await
+        .unwrap();
+    assert_eq!(folder["files"][0]["path"], "src");
+    assert_eq!(folder["files"][0]["match_type"], "directory");
+    let empty = client
+        .request("fuzzyFileSearch", json!({"query": "", "roots": [root]}))
+        .await
+        .unwrap();
+    assert_eq!(empty, json!({"files": []}));
+    let relative = client
+        .request(
+            "fuzzyFileSearch",
+            json!({"query": "main", "roots": ["app"]}),
+        )
+        .await;
+    assert!(relative.is_err(), "a relative root is refused");
+    koda.stop().await;
+}
+
 /// One server per socket: a second is refused while the first runs, and a
 /// socket a crashed server left behind is replaced.
 #[tokio::test(flavor = "multi_thread")]
