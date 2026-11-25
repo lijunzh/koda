@@ -431,6 +431,8 @@ fn rebuild_from(messages: &[Message], progress: &mut HashMap<String, Vec<String>
                         status: status_of(&output),
                         progress: progress.remove(&id).unwrap_or_default(),
                         id,
+                        // Known from the tool's name, unlike its effect.
+                        kind: Some(koda_protocol::item::ToolKind::of(&tool)),
                         tool,
                         arguments,
                         // Not stored with sessions from before turns were.

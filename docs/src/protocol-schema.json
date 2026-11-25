@@ -1251,7 +1251,7 @@
               "description": "The arguments the model gave."
             },
             "changes": {
-              "description": "The file changes it would make, when Koda asked about it or\nblocked it: Codex's `fileChange` item's `changes`, carried on\nKoda's one tool-call item.",
+              "description": "The file changes an `Edit` or `Write` makes, from its start,\nwhether or not anyone was asked about it: Codex's `fileChange`\nitem's `changes`, carried on Koda's one tool-call item.",
               "items": {
                 "$ref": "#/$defs/FileUpdateChange"
               },
@@ -1278,6 +1278,17 @@
             "id": {
               "description": "The call's id, from the model.",
               "type": "string"
+            },
+            "kind": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ToolKind"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What sort of tool it is, from ACP's list, so a client can pick\na card or an icon without knowing every tool's name. Absent in\nturns stored before Koda sent it."
             },
             "output": {
               "description": "What the model reads: the tool's output, or why it didn't run.\nSet on completion.",
@@ -4409,6 +4420,61 @@
         {
           "const": "destructive",
           "description": "Irreversible or far-reaching: `rm -rf`, `git push --force`.",
+          "type": "string"
+        }
+      ]
+    },
+    "ToolKind": {
+      "description": "What sort of tool a call is: the Agent Client Protocol's `ToolKind`,\nwhose values ACP clients such as Zed draw tool calls by. Codex has an\nitem type per kind instead; Koda keeps one tool-call item and says its\nkind, which maps straight onto ACP.",
+      "oneOf": [
+        {
+          "const": "read",
+          "description": "Reads files or data.",
+          "type": "string"
+        },
+        {
+          "const": "edit",
+          "description": "Changes files or content.",
+          "type": "string"
+        },
+        {
+          "const": "delete",
+          "description": "Removes files or data.",
+          "type": "string"
+        },
+        {
+          "const": "move",
+          "description": "Moves or renames files.",
+          "type": "string"
+        },
+        {
+          "const": "search",
+          "description": "Searches for information.",
+          "type": "string"
+        },
+        {
+          "const": "execute",
+          "description": "Runs a command or code.",
+          "type": "string"
+        },
+        {
+          "const": "think",
+          "description": "Thinks or plans: a to-do list, a question to the user.",
+          "type": "string"
+        },
+        {
+          "const": "fetch",
+          "description": "Fetches from the network.",
+          "type": "string"
+        },
+        {
+          "const": "switch_mode",
+          "description": "Changes the session's mode.",
+          "type": "string"
+        },
+        {
+          "const": "other",
+          "description": "Anything else: sub-agents, MCP tools, skills.",
           "type": "string"
         }
       ]

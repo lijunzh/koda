@@ -253,6 +253,7 @@ async fn top_level_forwards_non_persistable_events_unconditionally() {
         name: "Read".into(),
         args: serde_json::json!({"path": "f.txt"}),
         is_sub_agent: false,
+        preview: None,
     });
 
     // Forwarding still works for every event, persisted or not.
@@ -317,6 +318,7 @@ async fn sub_agent_tool_call_start_persists_with_tool_name_payload() {
         name: "Glob".into(),
         args: serde_json::json!({"pattern": "**/*.rs"}),
         is_sub_agent: true,
+        preview: None,
     });
 
     let events = wait_for_events(&db, &session_id, 1).await;
@@ -456,12 +458,14 @@ async fn sub_agent_multi_event_sequence_preserves_order_and_parent_id() {
         name: "Glob".into(),
         args: serde_json::json!({"pattern": "*.rs"}),
         is_sub_agent: true,
+        preview: None,
     });
     sink.emit(EngineEvent::ToolCallStart {
         id: "t2".into(),
         name: "Read".into(),
         args: serde_json::json!({"path": "src/main.rs"}),
         is_sub_agent: true,
+        preview: None,
     });
     sink.emit(EngineEvent::Info {
         message: "  ✅ done".into(),

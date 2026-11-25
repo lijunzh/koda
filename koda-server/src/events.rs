@@ -28,7 +28,7 @@ use koda_protocol::item::{
     CompactionStatus, CompactionTrigger, FileUpdateChange, Item, ItemCompletedNotification,
     ItemStartedNotification, OutputStream, PatchChangeKind, TextDeltaNotification,
     ToolCallApprovalParams, ToolCallOutputDeltaNotification, ToolCallProgressNotification,
-    ToolCallStatus, ToolEffect, UserInputParams,
+    ToolCallStatus, ToolEffect, ToolKind, UserInputParams,
 };
 use koda_protocol::rpc::RequestId;
 use koda_protocol::server::{
@@ -400,20 +400,30 @@ impl EventProjector {
             }
             EngineEvent::ThinkingDone => self.close_text(&mut out, &parent, TextKind::Reasoning),
 
-            EngineEvent::ToolCallStart { id, name, args, .. } => {
+            EngineEvent::ToolCallStart {
+                id,
+                name,
+                args,
+                preview,
+                ..
+            } => {
                 // Text before a call is finished when the call starts.
                 self.close_text(&mut out, &parent, TextKind::Reasoning);
                 self.close_text(&mut out, &parent, TextKind::Message);
                 let effect = self.effect_of_call(&name, &args);
+                // An edit's changes from its start, asked about or not, as
+                // Codex's `fileChange` item carries them.
+                let changes = changes_of(preview.as_ref());
                 let item = Item::ToolCall {
                     id: id.clone(),
                     tool: name.clone(),
                     arguments: args.clone(),
                     effect: Some(effect),
+                    kind: Some(ToolKind::of(&name)),
                     status: ToolCallStatus::InProgress,
                     output: None,
                     detail: None,
-                    changes: Vec::new(),
+                    changes: changes.clone(),
                     progress: Vec::new(),
                 };
                 self.calls.insert(
@@ -424,7 +434,7 @@ impl EventProjector {
                         effect,
                         parent: parent.clone(),
                         detail: None,
-                        changes: Vec::new(),
+                        changes,
                         progress: Vec::new(),
                     },
                 );
@@ -477,6 +487,7 @@ impl EventProjector {
                 };
                 let item = Item::ToolCall {
                     id,
+                    kind: Some(ToolKind::of(&tool)),
                     tool,
                     arguments,
                     effect,
@@ -978,6 +989,7 @@ impl EventProjector {
         for (id, call) in open {
             let item = Item::ToolCall {
                 id,
+                kind: Some(ToolKind::of(&call.tool)),
                 tool: call.tool,
                 arguments: call.arguments,
                 effect: Some(call.effect),
@@ -1182,6 +1194,7 @@ mod tests {
             name: name.into(),
             args: json!({"command": "cargo test"}),
             is_sub_agent: false,
+            preview: None,
         }
     }
 
@@ -1284,12 +1297,68 @@ mod tests {
         assert_eq!(call["status"], "completed");
         assert_eq!(call["arguments"]["command"], "cargo test");
         assert_eq!(call["output"], "Exit code: 0");
+        assert_eq!(call["kind"], "execute");
         let turn = &lines[14]["params"]["turn"];
         assert_eq!(turn["status"], "completed");
         assert_eq!(turn["usage"]["inputTokens"], 100);
         assert_eq!(turn["usage"]["modelCalls"], 2);
         assert_eq!(turn["durationMs"], 1500);
         assert!(lines.iter().all(|l| l["params"]["sessionId"] == "s1"));
+    }
+
+    /// An edit nobody was asked about carries its changes from its start
+    /// to its end, as Codex's `fileChange` item does, and says it is an
+    /// edit.
+    #[test]
+    fn an_edit_carries_its_changes_whether_or_not_anyone_was_asked() {
+        use koda_core::preview::{DiffPreview, UnifiedDiffPreview};
+        let mut p = EventProjector::new("s1");
+        let preview = DiffPreview::UnifiedDiff(UnifiedDiffPreview {
+            path: "notes.txt".into(),
+            old_content: "one\ntwo\n".into(),
+            new_content: "one\nthree\n".into(),
+            hunks: Vec::new(),
+            truncated: true,
+        });
+        let lines = run(
+            &mut p,
+            vec![
+                (
+                    None,
+                    EngineEvent::TurnStart {
+                        turn_id: "t1".into(),
+                    },
+                ),
+                (
+                    None,
+                    EngineEvent::ToolCallStart {
+                        id: "e1".into(),
+                        name: "Edit".into(),
+                        args: json!({"file_path": "notes.txt"}),
+                        is_sub_agent: false,
+                        preview: Some(preview),
+                    },
+                ),
+                (
+                    None,
+                    EngineEvent::ToolCallResult {
+                        id: "e1".into(),
+                        name: "Edit".into(),
+                        output: "Edited notes.txt".into(),
+                        outcome: ToolOutcome::Success,
+                    },
+                ),
+            ],
+        );
+        for line in &lines[1..3] {
+            let call = &line["params"]["item"];
+            assert_eq!(call["kind"], "edit", "{line}");
+            let change = &call["changes"][0];
+            assert_eq!(change["path"], "notes.txt");
+            // The whole diff, not the preview's shortened hunks.
+            let diff = change["diff"].as_str().unwrap();
+            assert!(diff.contains("-two") && diff.contains("+three"), "{diff}");
+        }
     }
 
     #[test]

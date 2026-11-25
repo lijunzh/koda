@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **Every `Edit` and `Write` call carries its changes from the start, as Codex's `fileChange` item does,** on `item/started` and `item/completed`, whether or not anyone was asked about it. Before, `changes` came only with an approval or a Plan-mode block, so an edit made in Auto mode sent no diff a client could show.
+- **A tool call says what `kind` of tool it is,** from the Agent Client Protocol's list (`read`, `edit`, `search`, `execute`, `think`, `fetch`, `other`…), so a client can draw a call without knowing every tool's name. The mapping follows Qwen Code's; an MCP tool is `other`.
+
 - **`initialize` takes `capabilities`, as Codex's does.** A client can opt out of notifications it doesn't draw (`optOutNotificationMethods`, by exact method name) and opt into experimental methods and notifications (`experimentalApi`), for its connection only; `clientInfo` takes an optional `title`. Nothing is experimental yet: new methods and fields can start there. Koda's own TUI and `koda exec` opt in, as Codex's TUI and `codex exec` do.
 
 ### Fixed

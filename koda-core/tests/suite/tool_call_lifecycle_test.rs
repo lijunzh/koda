@@ -163,6 +163,38 @@ async fn a_refused_call_ends_declined_and_its_approval_names_it() {
     assert_eq!(asked[0], write_id);
 }
 
+/// An edit that runs without asking still says what it changes when it
+/// starts, as Codex's `fileChange` item does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_edit_nobody_is_asked_about_starts_with_its_changes() {
+    let events = run(
+        TrustMode::Auto,
+        vec![write("a.txt"), MockResponse::Text("done".into())],
+        vec![],
+    )
+    .await;
+
+    let (_, outcome, _) = ended_once(&events, "Write");
+    assert_eq!(outcome, ToolOutcome::Success);
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, EngineEvent::ApprovalRequest { .. })),
+        "nobody was asked"
+    );
+    let preview = events.iter().find_map(|e| match e {
+        EngineEvent::ToolCallStart { name, preview, .. } if name == "Write" => preview.clone(),
+        _ => None,
+    });
+    match preview {
+        Some(koda_core::preview::DiffPreview::WriteNew(new)) => {
+            assert_eq!(new.path, "a.txt");
+            assert_eq!(new.content, "x");
+        }
+        other => panic!("expected a new file's preview, got {other:?}"),
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_call_plan_mode_blocks_ends_declined_and_the_block_names_it() {
     let events = run(
