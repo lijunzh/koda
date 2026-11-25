@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.7.12] - 2026-11-24
+
 ### Changed
 
 - **The model searches through the shell, as in Claude Code.** `Grep`, `Glob` and `List` are no longer offered; the model searches with `grep` and `find` through `Bash`, and every command gets Claude Code's two shell functions: `grep` runs the ugrep built into `koda` (skipping what `.gitignore` ignores, binary files and version-control folders, searching hidden files), and `find` runs its bfs with GNU find's regexes. The system prompt's search guidance and `Bash`'s description are Claude Code's, including its line to read and edit with `Read` and `Edit`, not `cat`, `head`, `tail`, `sed`, `awk` or `echo`; sub-agents get the same. The functions start `koda` with a first argument (`--koda-run-as-ugrep`, `--koda-run-as-bfs`), as Codex starts its own for `apply_patch`, so they also work under dash, Debian's and Ubuntu's `sh`, which has no `exec -a`; they fall back to the system's `grep` and `find` when that executable is gone. `shell_search = false` in `config.toml` brings the tools back. Tested against today's tools on 19 tasks: as many passes on Haiku (55 of 57 each) with 8% fewer tokens, and on the local model 18 of 19 against 19 of 19 (a time limit, not a search) in 13% less time.
