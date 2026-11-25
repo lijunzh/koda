@@ -61,6 +61,10 @@ const READ_ONLY_PREFIXES: &[&str] = &[
     "du ",
     "df",
     "pwd",
+    // Changing directory reads nothing and changes nothing. Leaving the
+    // project is `bash_path_lint`'s to catch; with `git` in the same
+    // command it is a change (see `cd_with_git`), as in Claude Code.
+    "cd",
     // Search
     "grep ",
     "rg ",
@@ -578,6 +582,12 @@ pub fn classify_bash_command(command: &str) -> ToolEffect {
         }
     }
 
+    // Claude Code asks for `cd` and `git` in one command: a repository in
+    // another folder brings its own config and hooks, which git runs.
+    if worst == ToolEffect::ReadOnly && cd_with_git(&segments) {
+        worst = ToolEffect::LocalMutation;
+    }
+
     // Phase 3 — ReadOnly must be proven. `ls > out`, `ls\nrm x` or
     // `ls & cargo build` have read-only heads but are not read-only. Checked
     // on the original text, so a command with a substitution never is.
@@ -586,6 +596,18 @@ pub fn classify_bash_command(command: &str) -> ToolEffect {
     }
 
     worst
+}
+
+/// Whether `segments` change directory and run `git`: Claude Code's
+/// "Compound commands with cd and git require permission checks".
+fn cd_with_git(segments: &[&str]) -> bool {
+    let head = |seg: &&str| -> Option<String> {
+        let seg = strip_env_vars(seg.trim());
+        let seg = seg.trim_start_matches(['(', '{']).trim();
+        shlex::split(seg)?.into_iter().next()
+    };
+    let heads: Vec<String> = segments.iter().filter_map(head).collect();
+    heads.iter().any(|h| h == "cd") && heads.iter().any(|h| h == "git")
 }
 
 /// Phase −1 of [`classify_bash_command`]: a command with heredoc bodies is

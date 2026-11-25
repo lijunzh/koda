@@ -191,6 +191,49 @@ pub fn lint_bash_paths(command: &str, project_root: &Path) -> BashPathLint {
     lint
 }
 
+/// Whether a `cd` in `command` may leave `project_root`: to home, to a
+/// target it can't resolve (`$VAR`, `cd -`), or to a folder outside the
+/// project that isn't a safe external path such as `/tmp`. With no root,
+/// any `cd` may.
+///
+/// `cd` is read-only to the classifier, so this is what keeps
+/// `cd /etc && ls` asking, as it did before `cd` was read-only.
+///
+/// ```
+/// use std::path::Path;
+/// use koda_command::bash_path_lint::cd_leaves_project;
+///
+/// let root = Some(Path::new("/project"));
+/// assert!(!cd_leaves_project("cd src && ls", root));
+/// assert!(cd_leaves_project("cd /etc && ls", root));
+/// assert!(cd_leaves_project("(cd ~/.ssh && ls)", root));
+/// ```
+pub fn cd_leaves_project(command: &str, project_root: Option<&Path>) -> bool {
+    split_command_segments(command.trim()).iter().any(|seg| {
+        let seg = seg.trim().trim_start_matches(['(', '{']);
+        match extract_cd_target(seg) {
+            None => false,
+            Some(CdTarget::Home | CdTarget::Dynamic) => true,
+            Some(CdTarget::Path(p)) => {
+                let Some(root) = project_root else {
+                    return true;
+                };
+                let p = p.trim_matches(['"', '\'']);
+                if p.starts_with('~') || p == "-" {
+                    return true;
+                }
+                let path = Path::new(p);
+                let resolved = if path.is_absolute() {
+                    path.to_path_buf().clean()
+                } else {
+                    root.join(p).clean()
+                };
+                !resolved.starts_with(root) && !is_safe_external_path(&resolved)
+            }
+        }
+    })
+}
+
 #[derive(Debug)]
 enum CdTarget {
     Home,
@@ -241,6 +284,38 @@ mod tests {
     fn test_lint_safe_command() {
         let lint = lint_bash_paths("cargo test", &project());
         assert!(!lint.has_warnings());
+    }
+
+    #[test]
+    fn test_cd_leaves_project() {
+        let root = project();
+        let root = Some(root.as_path());
+        for cmd in [
+            "cd src && ls",
+            "cd ./a/../b; cat x",
+            "cd /tmp && ls",
+            "ls",
+            "cd /home/user/project/src",
+        ] {
+            assert!(!cd_leaves_project(cmd, root), "{cmd}");
+        }
+        for cmd in [
+            "cd /etc && ls",
+            "cd .. && ls",
+            "cd",
+            "cd ~",
+            "cd ~/.ssh && cat id_rsa",
+            "cd \"/etc\" && ls",
+            "cd $HOME && ls",
+            "cd - && ls",
+            "(cd /etc && ls)",
+            "ls && cd /etc",
+            "FOO=1 cd /etc && ls",
+        ] {
+            assert!(cd_leaves_project(cmd, root), "{cmd}");
+        }
+        assert!(cd_leaves_project("cd src && ls", None));
+        assert!(!cd_leaves_project("ls", None));
     }
 
     #[test]

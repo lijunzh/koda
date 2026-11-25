@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A read-only command after `cd` no longer asks in Safe mode.** `cd src && grep -rn foo .` or `cd <project> && ls` counted as a change, because `cd` wasn't on the read-only list, so every search the model started with a `cd` asked. `cd` is now read-only. As in Claude Code, `cd` together with `git` still asks, since a repository in another folder can run its own hooks, and a `cd` that may leave the project (home, `..`, another folder, `$VAR`) still asks and is still blocked in Plan, now also inside parentheses (`(cd /etc && ls)`) and for `cd ~/…`, which the path check missed.
+
 ## [0.7.11] - 2026-11-23
 
 ### Added
