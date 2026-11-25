@@ -2044,7 +2044,10 @@ impl EngineSink for HostSink {
 
 /// The engine command for the client's answer to a request of `kind`. An
 /// error, or an answer that doesn't decode, counts as no: the approval is
-/// refused, the question gets an empty answer, the loop stops.
+/// refused, the question gets an empty answer, the loop stops. An approval
+/// whose answer doesn't decode is refused as a failed request, not as the
+/// user's no, as Codex answers it with `ReviewDecision::denied("approval
+/// request failed")`, so the model and the client can tell them apart.
 fn engine_command(kind: RequestKind, id: String, result: Answer) -> EngineCommand {
     fn decode<T: serde::de::DeserializeOwned>(result: Answer) -> Option<T> {
         match result {
@@ -2064,15 +2067,30 @@ fn engine_command(kind: RequestKind, id: String, result: Answer) -> EngineComman
         },
         RequestKind::Approval => EngineCommand::ApprovalResponse {
             id,
-            decision: match decode::<ToolCallApprovalResponse>(result).map(|r| r.decision) {
-                Some(item::ApprovalDecision::Approve) => ApprovalDecision::Approve,
-                Some(item::ApprovalDecision::ApproveForSession) => {
-                    ApprovalDecision::ApproveForSession
+            decision: match result.map(serde_json::from_value::<ToolCallApprovalResponse>) {
+                Ok(Ok(answer)) => match answer.decision {
+                    item::ApprovalDecision::Approve => ApprovalDecision::Approve,
+                    item::ApprovalDecision::ApproveForSession => {
+                        ApprovalDecision::ApproveForSession
+                    }
+                    item::ApprovalDecision::RejectWithFeedback { feedback } => {
+                        ApprovalDecision::RejectWithFeedback { feedback }
+                    }
+                    item::ApprovalDecision::Reject => ApprovalDecision::Reject,
+                },
+                Ok(Err(error)) => {
+                    tracing::error!("an approval's answer didn't decode: {error}");
+                    ApprovalDecision::RejectAuto {
+                        reason: format!(
+                            "approval request failed: the client's answer didn't decode \
+                             ({error})"
+                        ),
+                    }
                 }
-                Some(item::ApprovalDecision::RejectWithFeedback { feedback }) => {
-                    ApprovalDecision::RejectWithFeedback { feedback }
+                Err(error) => {
+                    tracing::debug!("the client refused an approval: {error}");
+                    ApprovalDecision::Reject
                 }
-                Some(item::ApprovalDecision::Reject) | None => ApprovalDecision::Reject,
             },
         },
         RequestKind::Question => EngineCommand::AskUserResponse {

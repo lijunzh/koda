@@ -559,10 +559,10 @@ impl Host {
         params: SessionListParams,
     ) -> Result<SessionListResponse, ErrorObject> {
         use koda_state::session_store::SessionStore;
-        let root = params
-            .cwd
-            .map(PathBuf::from)
-            .unwrap_or_else(|| self.context.project_root.clone());
+        let root = match params.cwd.as_deref() {
+            Some(cwd) => listed_folder(cwd, &self.context.project_root),
+            None => self.context.project_root.clone(),
+        };
         let limit = i64::from(params.limit.unwrap_or(DEFAULT_LIST_LIMIT));
         // The cursor is how many came before; opaque to clients.
         let offset = match params.cursor.as_deref() {
@@ -1005,6 +1005,26 @@ fn session_folder(cwd: &str) -> Result<PathBuf, ErrorObject> {
     Ok(folder)
 }
 
+/// The folder `session/list` filters on, as Codex resolves `thread/list`'s
+/// `cwd`: a relative path against the host's folder, then `.` and `..`
+/// removed by the path's text, without touching the disk. So `/a/../a/b`
+/// lists the sessions of `/a/b`, and a folder that no longer exists still
+/// lists its sessions.
+fn listed_folder(cwd: &str, host_folder: &std::path::Path) -> PathBuf {
+    use std::path::Component;
+    let mut folder = PathBuf::new();
+    for part in host_folder.join(cwd).components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                folder.pop();
+            }
+            other => folder.push(other),
+        }
+    }
+    folder
+}
+
 fn fork_name(source: Option<&str>) -> String {
     let Some(source) = source.map(str::trim).filter(|s| !s.is_empty()) else {
         return "Fork".to_string();
@@ -1045,6 +1065,19 @@ mod fork_name_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_listed_folder_is_resolved_by_its_text() {
+        let host = std::path::Path::new("/work/app");
+        let folder = |cwd: &str| listed_folder(cwd, host);
+        assert_eq!(folder("/work/app"), PathBuf::from("/work/app"));
+        assert_eq!(folder("/work/app/"), PathBuf::from("/work/app"));
+        assert_eq!(folder("/work/../work/app"), PathBuf::from("/work/app"));
+        assert_eq!(folder("/work/./app/."), PathBuf::from("/work/app"));
+        assert_eq!(folder("."), PathBuf::from("/work/app"));
+        assert_eq!(folder("../lib"), PathBuf::from("/work/lib"));
+        assert_eq!(folder("/../../x"), PathBuf::from("/x"));
+    }
     use koda_core::config::ProviderType;
 
     /// A host on a scratch database. Keep the directory while it runs.
