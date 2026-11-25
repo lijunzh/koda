@@ -2052,7 +2052,10 @@ fn engine_command(kind: RequestKind, id: String, result: Answer) -> EngineComman
     fn decode<T: serde::de::DeserializeOwned>(result: Answer) -> Option<T> {
         match result {
             Ok(value) => serde_json::from_value::<T>(value)
-                .inspect_err(|e| tracing::warn!("a server request's answer didn't decode: {e}"))
+                // An error, as Codex logs `failed to deserialize
+                // ToolRequestUserInputResponse`: a client sent the wrong shape,
+                // and the person's answer was lost.
+                .inspect_err(|e| tracing::error!("a server request's answer didn't decode: {e}"))
                 .ok(),
             Err(error) => {
                 tracing::debug!("the client refused a server request: {error}");
