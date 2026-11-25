@@ -558,6 +558,7 @@ impl KodaSession {
         self.agent
             .tools
             .set_takes_pdfs(takes.contains(&koda_config::InputModality::Pdf));
+        self.agent.tools.set_shell_search(config.shell_search);
         let started = std::time::Instant::now();
         let meter = crate::engine::sink::TurnMeter::with_budget(sink, config.turn_token_budget);
         let sink: &dyn EngineSink = &meter;

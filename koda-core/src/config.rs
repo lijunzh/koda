@@ -253,6 +253,11 @@ pub struct KodaConfig {
     /// Whether the model has its goal tools and Koda keeps an active goal
     /// going (`goals`, on by default, as in Codex).
     pub goals: bool,
+    /// Whether the model searches through the shell instead of `Grep`,
+    /// `Glob` and `List` (`shell_search`), as in Claude Code: on wherever
+    /// the programs are ([`crate::shell_search::available`]), unless the
+    /// config file turns it off.
+    pub shell_search: bool,
     /// Who decides a goal is achieved (`goal_judge`): the working model, as
     /// in Codex, unless set to Claude Code's evaluator.
     pub goal_judge: koda_config::GoalJudge,
@@ -462,6 +467,7 @@ impl KodaConfig {
             file_mentions: true,
             commit_attribution: true,
             goals: true,
+            shell_search: crate::shell_search::available(),
             goal_judge: koda_config::GoalJudge::Model,
             goal_checkin: Some(std::time::Duration::from_secs(30 * 60)),
             max_goal_token_budget: None,
@@ -769,6 +775,7 @@ impl KodaConfig {
             file_mentions: true,
             commit_attribution: true,
             goals: true,
+            shell_search: crate::shell_search::available(),
             goal_judge: koda_config::GoalJudge::Model,
             goal_checkin: Some(std::time::Duration::from_secs(30 * 60)),
             max_goal_token_budget: None,

@@ -104,6 +104,11 @@ unknown key in `-c` stops the run instead.
 # model, and no turns Koda starts on a goal by itself (/goal). Unset: true.
 # goals = false
 
+# false brings back the Grep, Glob and List tools; on by default, the model
+# searches with grep and find through Bash, which run the ugrep and bfs
+# built into koda, as in Claude Code. Unset: true.
+# shell_search = false
+
 # Who decides a goal is achieved: "self", the working model after its
 # completion audit, as in Codex, or "evaluator", a check after each turn
 # that reads the conversation, as in Claude Code. Unset: "self".

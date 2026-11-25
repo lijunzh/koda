@@ -4,11 +4,14 @@
 //! Claude Code's shell gives the model `grep` and `find` functions that run
 //! its own executable under the name `ugrep` or `bfs`; the executable sees
 //! that name and becomes that program. [`dispatch`] does the same for
-//! `koda`: started as `ugrep` or `bfs` (a link of that name, or
-//! `exec -a`), it runs that program and exits. The programs are ugrep 7.8.5
-//! and bfs 4.1.7, built with the features Claude Code's have (see
-//! `build.rs`); their sources are vendored unchanged under `vendor/`, with
-//! their licences.
+//! `koda`, which runs a program when it is started under its name (a link
+//! named `ugrep` or `bfs`) or with its flag as the first argument
+//! ([`Program::flag`], as Codex's binary runs `apply_patch` when started
+//! with `--codex-run-as-apply-patch`). The flag works from any shell, dash
+//! included, which has no `exec -a`. The programs are ugrep 7.8.5 and bfs
+//! 4.1.7, built with the features Claude Code's have (see `build.rs`);
+//! their sources are vendored unchanged under `vendor/`, with their
+//! licences.
 
 // The compression libraries ugrep's `-z` calls into, linked from their
 // `-sys` crates.
@@ -18,7 +21,8 @@ use zstd_sys as _;
 
 use std::ffi::{CString, OsStr, c_char, c_int};
 use std::os::unix::ffi::OsStrExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 unsafe extern "C" {
     fn koda_search_ugrep(argc: c_int, argv: *const *const c_char) -> c_int;
@@ -44,6 +48,14 @@ impl Program {
         }
     }
 
+    /// The first argument that makes `koda` run this program.
+    pub fn flag(self) -> &'static str {
+        match self {
+            Program::Ugrep => "--koda-run-as-ugrep",
+            Program::Bfs => "--koda-run-as-bfs",
+        }
+    }
+
     /// The program `argv0` names: its last path component, exactly
     /// `ugrep` or `bfs`.
     pub fn from_argv0(argv0: &OsStr) -> Option<Program> {
@@ -52,19 +64,46 @@ impl Program {
     }
 }
 
-/// If this process was started as `ugrep` or `bfs`, run that program with
-/// the process's arguments and exit with its status; otherwise return.
+/// The executable [`dispatch`] recorded: the running `koda`, which runs
+/// the programs when given their [`Program::flag`]. `None` in a process
+/// whose `main` didn't call [`dispatch`], such as a test binary, which
+/// has no programs to run.
+static EXE: OnceLock<PathBuf> = OnceLock::new();
+
+/// The executable that runs the programs, if this process is one
+/// ([`dispatch`] was called and found its own path).
+pub fn exe() -> Option<&'static Path> {
+    EXE.get().map(PathBuf::as_path)
+}
+
+/// If this process was started as `ugrep` or `bfs`, or with one's flag as
+/// its first argument, run that program with the remaining arguments and
+/// exit with its status. Otherwise record this executable for [`exe`] and
+/// return.
 ///
 /// Call it first in `main`, before any thread starts.
 pub fn dispatch() {
-    let mut args = std::env::args_os();
-    let Some(program) = args.next().as_deref().and_then(Program::from_argv0) else {
-        return;
-    };
-    let argv: Vec<CString> = std::env::args_os()
-        .map(|a| CString::new(a.as_bytes()).unwrap_or_default())
-        .collect();
-    std::process::exit(run(program, &argv));
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let Some(argv0) = args.first() else { return };
+    let to_c = |a: &std::ffi::OsString| CString::new(a.as_bytes()).unwrap_or_default();
+    if let Some(program) = Program::from_argv0(argv0) {
+        let argv: Vec<CString> = args.iter().map(to_c).collect();
+        std::process::exit(run(program, &argv));
+    }
+    if let Some(program) = args
+        .get(1)
+        .and_then(|a| Program::ALL.into_iter().find(|p| a == p.flag()))
+    {
+        // The program sees its own name as `argv[0]`, as under Claude
+        // Code's `exec -a`.
+        let argv: Vec<CString> = std::iter::once(CString::new(program.name()).unwrap())
+            .chain(args[2..].iter().map(to_c))
+            .collect();
+        std::process::exit(run(program, &argv));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = EXE.set(exe);
+    }
 }
 
 /// Run `program` with `argv` (`argv[0]` included) in this process and

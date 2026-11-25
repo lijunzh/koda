@@ -149,6 +149,10 @@ pub(crate) fn apply_settings(config: &mut KodaConfig, loaded: &Loaded) {
     if let Some(on) = file.goals {
         config.goals = on;
     }
+    if let Some(on) = file.shell_search {
+        // Only where `koda` carries the programs.
+        config.shell_search = on && koda_core::shell_search::available();
+    }
     if let Some(judge) = file.goal_judge {
         config.goal_judge = judge;
     }

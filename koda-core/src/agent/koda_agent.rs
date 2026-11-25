@@ -117,6 +117,9 @@ fn system_prompt_for(
 ) -> String {
     let mut prompt =
         crate::prompt::build_system_prompt(&config.system_prompt, env, interactive, skills);
+    if config.shell_search {
+        prompt = crate::shell_search::adapt_prompt(&prompt);
+    }
     if let Some(text) = &config.developer_instructions {
         prompt.push_str("\n\n## Developer instructions\n\n");
         prompt.push_str(text);
@@ -238,6 +241,9 @@ impl KodaAgent {
     /// lists.
     pub fn turn_tool_defs(&self, config: &KodaConfig) -> Vec<ToolDefinition> {
         let mut defs = self.tool_defs.clone();
+        if config.shell_search {
+            crate::shell_search::adapt_tool_defs(&mut defs);
+        }
         if !config.goals {
             defs.retain(|d| !crate::goal::GOAL_TOOL_NAMES.contains(&d.name.as_str()));
         } else if config.goal_judge == koda_config::GoalJudge::Evaluator {

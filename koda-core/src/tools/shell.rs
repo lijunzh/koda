@@ -210,10 +210,19 @@ pub async fn run_shell_command(
     // Top-level callers pass `None` and the entry is also tagged
     // with `None` — the existing top-level happy path is preserved.
     caller_spawner: Option<u32>,
+    // Search through the shell ([`crate::shell_search`]): the process runs
+    // the command behind Claude Code's `grep` and `find`, while every
+    // message names the model's own command.
+    shell_search: bool,
 ) -> Result<ShellOutput> {
     let command = args["command"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Missing 'command' argument"))?;
+    let spawned = if shell_search {
+        std::borrow::Cow::Owned(crate::shell_search::wrap(command))
+    } else {
+        std::borrow::Cow::Borrowed(command)
+    };
     let tty = args["tty"].as_bool().unwrap_or(false);
     let background = tty || args["background"].as_bool().unwrap_or(false);
     let outside_sandbox = wants_outside_sandbox(args);
@@ -235,6 +244,7 @@ pub async fn run_shell_command(
         let (mut msg, pid, terminal) = spawn_background(
             project_root,
             command,
+            &spawned,
             tty,
             bg,
             trust,
@@ -317,7 +327,7 @@ pub async fn run_shell_command(
     // agent). PR-3 will start populating the policy with non-default
     // values via [`crate::sandbox::policy_for_agent`].
     let mut cmd = command_for(
-        command,
+        &spawned,
         project_root,
         trust,
         policy,
@@ -730,6 +740,9 @@ type StartedTerminal = (u32, Arc<Terminal>);
 fn spawn_background(
     project_root: &Path,
     command: &str,
+    // What the process runs: `command`, behind the shell-search prelude
+    // when that's on. Messages and the registry keep `command`.
+    spawned: &str,
     tty: bool,
     bg: &BgRegistry,
     trust: &crate::trust::TrustMode,
@@ -765,9 +778,9 @@ fn spawn_background(
         Some((_, device)) => {
             let mut own = policy.clone();
             own.fs.terminal = Some(device.clone());
-            command_for(command, project_root, trust, &own, egress)?
+            command_for(spawned, project_root, trust, &own, egress)?
         }
-        None => command_for(command, project_root, trust, policy, egress)?,
+        None => command_for(spawned, project_root, trust, policy, egress)?,
     };
     let controller = if let Some((pty, _)) = pty {
         drop(stderr_log);
@@ -1690,6 +1703,7 @@ impl Tool for BashTool {
             ctx.proxy_port,
             ctx.socks5_port,
             ctx.caller_spawner,
+            ctx.shell_search,
         )
         .await
         {
@@ -1733,6 +1747,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .await
         .unwrap();
@@ -1758,6 +1773,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .await
         .unwrap();
@@ -1783,6 +1799,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .await
         .unwrap();
@@ -1825,6 +1842,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .await
         .expect("shell command must succeed");
@@ -1858,6 +1876,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .await
     }
@@ -1920,6 +1939,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .await
         .unwrap()
@@ -2330,6 +2350,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .await
         .unwrap();
@@ -2377,6 +2398,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .await
         .unwrap();
@@ -2440,6 +2462,7 @@ mod tests {
             None,
             None,
             Some(42), // sub-agent invocation id
+            false,
         )
         .await
         .unwrap();
@@ -2469,6 +2492,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .await
         .unwrap();
@@ -2612,6 +2636,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .await
         .unwrap();
@@ -2792,6 +2817,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .await
         .unwrap();
@@ -2941,6 +2967,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .await
         .unwrap();
@@ -3055,6 +3082,7 @@ mod tests {
                     Some(31415),
                     Some(31416),
                     None,
+                    false,
                 )
                 .await
                 .unwrap()
@@ -3098,6 +3126,7 @@ mod tests {
             Some(9),
             None,
             None,
+            false,
         )
         .await
         .unwrap()
@@ -3337,6 +3366,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .await
         .unwrap();
@@ -3355,6 +3385,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .await
         .unwrap()
@@ -3480,6 +3511,7 @@ mod tests {
                     None,
                     None,
                     caller,
+                    false,
                 )
                 .await
                 .unwrap();
@@ -3520,6 +3552,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .await
         .expect("run_shell_command should succeed even when child fails");

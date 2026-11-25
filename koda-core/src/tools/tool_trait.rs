@@ -164,6 +164,9 @@ pub struct ToolExecCtx<'a> {
     /// Whether the model takes PDFs: Read returns a short PDF whole.
     pub takes_pdfs: bool,
 
+    /// Whether Bash commands get the shell functions of [`crate::shell_search::prelude`](fn@crate::shell_search::prelude).
+    pub shell_search: bool,
+
     /// The most tokens a goal may use (`max_goal_token_budget`).
     pub max_goal_token_budget: Option<i64>,
 
@@ -463,6 +466,7 @@ impl<'a> ToolExecCtx<'a> {
             caps,
             takes_images: false,
             takes_pdfs: false,
+            shell_search: false,
             max_goal_token_budget: None,
             sink: None,
             caller_spawner: None,
@@ -617,6 +621,7 @@ mod tests {
             skill_registry: skills,
             takes_images: false,
             takes_pdfs: false,
+            shell_search: false,
             max_goal_token_budget: None,
             web_searcher: None,
             page_reader: None,
