@@ -11,7 +11,7 @@
 //! and answers the requests about them.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicI64;
 use std::sync::{Arc, OnceLock, PoisonError};
 use std::time::Duration;
@@ -560,7 +560,10 @@ impl Host {
     ) -> Result<SessionListResponse, ErrorObject> {
         use koda_state::session_store::SessionStore;
         let root = match params.cwd.as_deref() {
-            Some(cwd) => listed_folder(cwd, &self.context.project_root),
+            Some(cwd) => {
+                let home = koda_config::runtime_env::get("HOME").map(PathBuf::from);
+                listed_folder(cwd, &self.context.project_root, home.as_deref())
+            }
             None => self.context.project_root.clone(),
         };
         let limit = i64::from(params.limit.unwrap_or(DEFAULT_LIST_LIMIT));
@@ -1006,14 +1009,20 @@ fn session_folder(cwd: &str) -> Result<PathBuf, ErrorObject> {
 }
 
 /// The folder `session/list` filters on, as Codex resolves `thread/list`'s
-/// `cwd`: a relative path against the host's folder, then `.` and `..`
-/// removed by the path's text, without touching the disk. So `/a/../a/b`
-/// lists the sessions of `/a/b`, and a folder that no longer exists still
-/// lists its sessions.
-fn listed_folder(cwd: &str, host_folder: &std::path::Path) -> PathBuf {
+/// `cwd`: `~` for the home folder, a relative path against the host's folder,
+/// then `.` and `..` removed by the path's text, without touching the disk.
+/// So `/a/../a/b` lists the sessions of `/a/b`, and a folder that no longer
+/// exists still lists its sessions.
+fn listed_folder(cwd: &str, host_folder: &Path, home: Option<&Path>) -> PathBuf {
     use std::path::Component;
+    let written = match (cwd.strip_prefix('~'), home) {
+        (Some(rest), Some(home)) if rest.is_empty() || rest.starts_with('/') => {
+            home.join(rest.trim_start_matches('/'))
+        }
+        _ => PathBuf::from(cwd),
+    };
     let mut folder = PathBuf::new();
-    for part in host_folder.join(cwd).components() {
+    for part in host_folder.join(written).components() {
         match part {
             Component::CurDir => {}
             Component::ParentDir => {
@@ -1065,11 +1074,13 @@ mod fork_name_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use koda_core::config::ProviderType;
 
     #[test]
     fn a_listed_folder_is_resolved_by_its_text() {
-        let host = std::path::Path::new("/work/app");
-        let folder = |cwd: &str| listed_folder(cwd, host);
+        let host = Path::new("/work/app");
+        let home = Path::new("/home/me");
+        let folder = |cwd: &str| listed_folder(cwd, host, Some(home));
         assert_eq!(folder("/work/app"), PathBuf::from("/work/app"));
         assert_eq!(folder("/work/app/"), PathBuf::from("/work/app"));
         assert_eq!(folder("/work/../work/app"), PathBuf::from("/work/app"));
@@ -1077,8 +1088,15 @@ mod tests {
         assert_eq!(folder("."), PathBuf::from("/work/app"));
         assert_eq!(folder("../lib"), PathBuf::from("/work/lib"));
         assert_eq!(folder("/../../x"), PathBuf::from("/x"));
+        assert_eq!(folder("~"), PathBuf::from("/home/me"));
+        assert_eq!(folder("~/src/../repo"), PathBuf::from("/home/me/repo"));
+        // `~name` isn't this user's home; it stays a folder name.
+        assert_eq!(folder("~other"), PathBuf::from("/work/app/~other"));
+        assert_eq!(
+            listed_folder("~/repo", host, None),
+            PathBuf::from("/work/app/~/repo")
+        );
     }
-    use koda_core::config::ProviderType;
 
     /// A host on a scratch database. Keep the directory while it runs.
     async fn host() -> (mpsc::Sender<HostCommand>, JoinHandle<()>, tempfile::TempDir) {
