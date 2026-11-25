@@ -54,6 +54,7 @@ pub(crate) async fn record_tool_result(
     success: bool,
     full_output: Option<&str>,
     images: &[crate::providers::ImageData],
+    ran: Ran,
     ctx: &TurnContext<'_>,
 ) -> Result<()> {
     let TurnContext {
@@ -69,6 +70,8 @@ pub(crate) async fn record_tool_result(
         name: tc.function_name.clone(),
         output: result.to_string(),
         outcome: success.into(),
+        exit_code: ran.exit_code,
+        duration_ms: ran.duration_ms,
     });
 
     // If we have separate full output (Bash smart summary), use the dedicated
@@ -208,7 +211,20 @@ fn runs_in_background(arguments: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Execute a single tool call, returning (tool_call_id, result_output, success).
+/// How a tool call ran, for the client: the command's exit code and how
+/// long it took, as Codex's items carry `exitCode` and `durationMs`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Ran {
+    /// The exit code of the command a `Bash` or `Cargo` call ran.
+    pub exit_code: Option<i32>,
+    /// Milliseconds from the start of the run to its end, not counting a
+    /// wait for approval, which comes before it. `None` for a call that
+    /// never ran.
+    pub duration_ms: Option<u64>,
+}
+
+/// Execute a single tool call, returning (tool_call_id, result_output,
+/// success, full output, images, how it ran).
 #[tracing::instrument(skip_all, fields(tool = %tc.function_name))]
 pub(crate) async fn execute_one_tool(
     tc: &ToolCall,
@@ -219,7 +235,14 @@ pub(crate) async fn execute_one_tool(
     bool,
     Option<String>,
     Vec<crate::providers::ImageData>,
+    Ran,
 ) {
+    let started = std::time::Instant::now();
+    let ran = |exit_code: Option<i32>| Ran {
+        exit_code,
+        duration_ms: Some(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)),
+    };
+    let mut exit_code = None;
     let TurnContext {
         session_id,
         tools,
@@ -329,6 +352,7 @@ pub(crate) async fn execute_one_tool(
                     false,
                     None,
                     Vec::new(),
+                    ran(None),
                 );
             }
         };
@@ -349,13 +373,14 @@ pub(crate) async fn execute_one_tool(
         };
         if runs_in_background(&remapped_tc.arguments) {
             return match sub_agent_dispatch::start_background(&tx, &remapped_tc.arguments) {
-                Ok(output) => (tc.id.clone(), output, true, None, Vec::new()),
+                Ok(output) => (tc.id.clone(), output, true, None, Vec::new(), ran(None)),
                 Err(e) => (
                     tc.id.clone(),
                     format!("Error spawning agent: {e:#}"),
                     false,
                     None,
                     Vec::new(),
+                    ran(None),
                 ),
             };
         }
@@ -407,10 +432,18 @@ pub(crate) async fn execute_one_tool(
                 mode,
             )
             .await;
+        exit_code = r.exit_code;
         (r.output, r.success, r.full_output, r.images)
     };
 
-    (tc.id.clone(), result, success, full_output, images)
+    (
+        tc.id.clone(),
+        result,
+        success,
+        full_output,
+        images,
+        ran(exit_code),
+    )
 }
 
 /// Pre-flight validate a tool call, then execute it.
@@ -430,6 +463,7 @@ async fn validate_then_execute_one_tool(
     bool,
     Option<String>,
     Vec<crate::providers::ImageData>,
+    Ran,
 ) {
     let TurnContext {
         project_root,
@@ -453,6 +487,7 @@ async fn validate_then_execute_one_tool(
             false,
             None,
             Vec::new(),
+            Ran::default(),
         );
     }
 
@@ -487,7 +522,7 @@ pub(crate) async fn execute_tools_parallel(
     };
 
     // Emit banner + result together so each tool's output is visually grouped
-    for (i, (tc_id, result, success, full_output, images)) in results.into_iter().enumerate() {
+    for (i, (tc_id, result, success, full_output, images, ran)) in results.into_iter().enumerate() {
         ctx.sink.emit(EngineEvent::ToolCallStart {
             id: tc_id.clone(),
             name: tool_calls[i].function_name.clone(),
@@ -501,6 +536,7 @@ pub(crate) async fn execute_tools_parallel(
             success,
             full_output.as_deref(),
             &images,
+            ran,
             ctx,
         )
         .await?;
@@ -549,7 +585,9 @@ pub(crate) async fn execute_tools_split_batch(
             return record_stopped_calls(tool_calls, ctx).await;
         };
 
-        for (j, (tc_id, result, success, full_output, images)) in results.into_iter().enumerate() {
+        for (j, (tc_id, result, success, full_output, images, ran)) in
+            results.into_iter().enumerate()
+        {
             ctx.sink.emit(EngineEvent::ToolCallStart {
                 id: tc_id.clone(),
                 name: parallel[j].function_name.clone(),
@@ -563,6 +601,7 @@ pub(crate) async fn execute_tools_split_batch(
                 success,
                 full_output.as_deref(),
                 &images,
+                ran,
                 ctx,
             )
             .await?;
@@ -620,6 +659,8 @@ async fn record_unrun_call(
         name: tc.function_name.clone(),
         output: text.to_string(),
         outcome,
+        exit_code: None,
+        duration_ms: None,
     });
     ctx.db
         .insert_message(
@@ -693,7 +734,7 @@ pub(crate) async fn execute_tools_sequential(
                 Some(_) => "User did not provide an answer.".into(),
                 None => return record_stopped_after_start(&tool_calls[i..], ctx).await,
             };
-            record_tool_result(tc, &result, true, None, &[], ctx).await?;
+            record_tool_result(tc, &result, true, None, &[], Ran::default(), ctx).await?;
             continue;
         }
 
@@ -713,6 +754,7 @@ pub(crate) async fn execute_tools_sequential(
                 false,
                 None,
                 &[],
+                Ran::default(),
                 ctx,
             )
             .await?;
@@ -749,7 +791,7 @@ pub(crate) async fn execute_tools_sequential(
                 tx.caller_spawner,
             )
         {
-            record_tool_result(tc, &hint, false, None, &[], ctx).await?;
+            record_tool_result(tc, &hint, false, None, &[], Ran::default(), ctx).await?;
             continue;
         }
 
@@ -841,7 +883,7 @@ pub(crate) async fn execute_tools_sequential(
             }
         }
 
-        let (_, result, success, full_output, images) = if stops_on_cancel(&tc.function_name) {
+        let (_, result, success, full_output, images, ran) = if stops_on_cancel(&tc.function_name) {
             tokio::select! {
                 biased;
                 () = cancel.cancelled() => {
@@ -852,7 +894,16 @@ pub(crate) async fn execute_tools_sequential(
         } else {
             execute_one_tool(tc, tx).await
         };
-        record_tool_result(tc, &result, success, full_output.as_deref(), &images, ctx).await?;
+        record_tool_result(
+            tc,
+            &result,
+            success,
+            full_output.as_deref(),
+            &images,
+            ran,
+            ctx,
+        )
+        .await?;
     }
     Ok(())
 }

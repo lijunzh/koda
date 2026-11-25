@@ -398,6 +398,7 @@ impl Tool for ListAgentsTool {
             success: true,
             full_output: None,
             images: Vec::new(),
+            exit_code: None,
         }
     }
 }
@@ -430,6 +431,7 @@ impl Tool for InvokeAgentTool {
             success: false,
             full_output: None,
             images: Vec::new(),
+            exit_code: None,
         }
     }
 }

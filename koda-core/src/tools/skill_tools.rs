@@ -179,6 +179,7 @@ impl Tool for ListSkillsTool {
             success: true,
             full_output: None,
             images: Vec::new(),
+            exit_code: None,
         }
     }
 }
@@ -206,6 +207,7 @@ impl Tool for ActivateSkillTool {
             success: true,
             full_output: None,
             images: Vec::new(),
+            exit_code: None,
         }
     }
 }

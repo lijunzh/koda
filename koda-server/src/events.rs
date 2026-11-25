@@ -422,6 +422,8 @@ impl EventProjector {
                     kind: Some(ToolKind::of(&name)),
                     status: ToolCallStatus::InProgress,
                     output: None,
+                    exit_code: None,
+                    duration_ms: None,
                     detail: None,
                     changes: changes.clone(),
                     progress: Vec::new(),
@@ -462,6 +464,8 @@ impl EventProjector {
                 name,
                 output,
                 outcome,
+                exit_code,
+                duration_ms,
             } => {
                 self.agent_names.remove(&id);
                 let call = self.calls.remove(&id);
@@ -493,6 +497,8 @@ impl EventProjector {
                     effect,
                     status: status_of(outcome),
                     output: Some(output),
+                    exit_code,
+                    duration_ms,
                     detail,
                     changes,
                     progress,
@@ -995,6 +1001,8 @@ impl EventProjector {
                 effect: Some(call.effect),
                 status: ToolCallStatus::Cancelled,
                 output: None,
+                exit_code: None,
+                duration_ms: None,
                 detail: call.detail,
                 changes: call.changes,
                 progress: call.progress,
@@ -1204,6 +1212,8 @@ mod tests {
             name: "Bash".into(),
             output: "Exit code: 0".into(),
             outcome,
+            exit_code: Some(0),
+            duration_ms: Some(12),
         }
     }
 
@@ -1298,6 +1308,8 @@ mod tests {
         assert_eq!(call["arguments"]["command"], "cargo test");
         assert_eq!(call["output"], "Exit code: 0");
         assert_eq!(call["kind"], "execute");
+        assert_eq!(call["exitCode"], 0);
+        assert_eq!(call["durationMs"], 12);
         let turn = &lines[14]["params"]["turn"];
         assert_eq!(turn["status"], "completed");
         assert_eq!(turn["usage"]["inputTokens"], 100);
@@ -1346,6 +1358,8 @@ mod tests {
                         name: "Edit".into(),
                         output: "Edited notes.txt".into(),
                         outcome: ToolOutcome::Success,
+                        exit_code: None,
+                        duration_ms: None,
                     },
                 ),
             ],

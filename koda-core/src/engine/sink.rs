@@ -919,6 +919,8 @@ mod tests {
             name: "Read".into(),
             output: "<file contents>".into(),
             outcome: crate::engine::ToolOutcome::Success,
+            exit_code: None,
+            duration_ms: None,
         });
 
         let drained = registry.drain_status_events();
@@ -954,6 +956,8 @@ mod tests {
             name: "Bash".into(),
             output: "Error: command not found".into(),
             outcome: crate::engine::ToolOutcome::Success,
+            exit_code: None,
+            duration_ms: None,
         });
         let drained = registry.drain_status_events();
         assert!(matches!(

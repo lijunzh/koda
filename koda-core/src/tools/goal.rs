@@ -279,6 +279,7 @@ fn answer(goal: Option<&Goal>, completed: bool) -> ToolResult {
         success: true,
         full_output: None,
         images: Vec::new(),
+        exit_code: None,
     }
 }
 
@@ -288,6 +289,7 @@ fn failed(why: impl Into<String>) -> ToolResult {
         success: false,
         full_output: None,
         images: Vec::new(),
+        exit_code: None,
     }
 }
 

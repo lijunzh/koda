@@ -102,6 +102,7 @@ impl Tool for SpawnAgentTool {
             success: false,
             full_output: None,
             images: Vec::new(),
+            exit_code: None,
         }
     }
 }

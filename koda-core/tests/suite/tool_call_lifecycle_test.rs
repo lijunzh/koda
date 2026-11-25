@@ -163,6 +163,42 @@ async fn a_refused_call_ends_declined_and_its_approval_names_it() {
     assert_eq!(asked[0], write_id);
 }
 
+/// A command's result says its exit code and how long it ran, as Codex's
+/// `commandExecution` item does; a call refused at its approval never ran,
+/// so it has neither.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_command_reports_its_exit_code_and_duration() {
+    let events = run(
+        TrustMode::Safe,
+        vec![
+            write("a.txt"),
+            MockResponse::tool_call("Bash", json!({"command": "exit 3"})),
+            MockResponse::Text("done".into()),
+        ],
+        vec![ApprovalDecision::Reject, ApprovalDecision::Approve],
+    )
+    .await;
+    let ran = |tool: &str| {
+        events.iter().find_map(|e| match e {
+            EngineEvent::ToolCallResult {
+                name,
+                exit_code,
+                duration_ms,
+                ..
+            } if name == tool => Some((*exit_code, *duration_ms)),
+            _ => None,
+        })
+    };
+    let (exit_code, duration_ms) = ran("Bash").expect("Bash ended");
+    assert_eq!(exit_code, Some(3));
+    assert!(duration_ms.is_some());
+    assert_eq!(
+        ran("Write"),
+        Some((None, None)),
+        "the refused Write never ran"
+    );
+}
+
 /// An edit that runs without asking still says what it changes when it
 /// starts, as Codex's `fileChange` item does.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

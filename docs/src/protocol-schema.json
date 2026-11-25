@@ -1370,6 +1370,15 @@
                 "null"
               ]
             },
+            "durationMs": {
+              "description": "How long the tool ran, in milliseconds, on completion, not\ncounting a wait for approval, as Codex's items have\n`durationMs`. Absent for a call that never ran.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "effect": {
               "anyOf": [
                 {
@@ -1380,6 +1389,14 @@
                 }
               ],
               "description": "What it does, as Koda classifies the call, the effect an approval\nnames, so a client can colour or group it. Absent in turns stored\nbefore Koda sent it."
+            },
+            "exitCode": {
+              "description": "The exit code of the command a `Bash` or `Cargo` call ran, on\ncompletion, as Codex's `commandExecution` item has its\n`exitCode`. Absent for other tools and for a command that never\nexited (it timed out, was stopped or went to the background).",
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
             },
             "id": {
               "description": "The call's id, from the model.",

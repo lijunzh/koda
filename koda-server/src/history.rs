@@ -440,6 +440,8 @@ fn rebuild_from(messages: &[Message], progress: &mut HashMap<String, Vec<String>
                         output: Some(output),
                         detail: None,
                         changes: Vec::new(),
+                        exit_code: None,
+                        duration_ms: None,
                     },
                 );
             }

@@ -89,6 +89,7 @@ impl Tool for AskUserTool {
             success: false,
             full_output: None,
             images: Vec::new(),
+            exit_code: None,
         }
     }
 }

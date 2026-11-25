@@ -963,6 +963,8 @@ pub struct CargoOutput {
     pub full_output: Option<String>,
     /// Cargo exited zero.
     pub success: bool,
+    /// Cargo's exit code, once it has exited: `None` after a timeout.
+    pub exit_code: Option<i32>,
 }
 
 /// What the stream reader accumulates while cargo runs.
@@ -1172,6 +1174,7 @@ async fn run_cargo_with_env(
                 summary: report.summary(),
                 full_output: Some(report.full_output(max_bytes)),
                 success: exit_code == 0,
+                exit_code: Some(exit_code),
             })
         }
         Ok(Err(e)) => Err(e),
@@ -1183,6 +1186,7 @@ async fn run_cargo_with_env(
                 summary: msg.clone(),
                 full_output: Some(msg),
                 success: false,
+                exit_code: None,
             })
         }
     }
@@ -1232,12 +1236,14 @@ impl Tool for CargoTool {
                 success: o.success,
                 full_output: o.full_output,
                 images: Vec::new(),
+                exit_code: o.exit_code,
             },
             Err(e) => ToolResult {
                 output: format!("Error: {e:#}"),
                 success: false,
                 full_output: None,
                 images: Vec::new(),
+                exit_code: None,
             },
         }
     }
