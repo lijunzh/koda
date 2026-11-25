@@ -103,6 +103,8 @@ pub(crate) struct TuiContext {
     /// keeps `history.jsonl`.
     pub input_history: crate::input_history::InputHistory,
     pub completer: crate::completer::InputCompleter,
+    /// The files `@` mentions offer, found by the host.
+    pub(crate) file_search: crate::file_search::FileSearch,
     pub mouse_selection: Option<crate::mouse_select::Selection>,
     /// Y-coordinate of the history area top edge (for mouse mapping).
     pub history_area_y: u16,
@@ -510,8 +512,6 @@ impl TuiContext {
         let mut renderer = TuiRenderer::new();
         renderer.model = session_settings.model.clone();
 
-        let completer = crate::completer::InputCompleter::new(project_root.clone());
-
         // A model alias picks its own provider, so it skips onboarding too;
         // the session says it chose by one.
         let by_alias = named.model.is_some() && session_settings.alias == named.model;
@@ -531,6 +531,12 @@ impl TuiContext {
         // select consumes from `draw_rx`; everywhere else holds clones of
         // `frame_requester` to fire-and-forget redraw requests.
         let (frame_requester, draw_rx) = crate::frame_requester::spawn_frame_scheduler();
+        // `@` mentions' files, found by the host; an answer wakes the loop
+        // so the dropdown shows it.
+        let file_search =
+            crate::file_search::FileSearch::new(client.request_handle(), &project_root)
+                .waking(frame_requester.clone());
+        let completer = crate::completer::InputCompleter::with_file_search(file_search.clone());
 
         let mut scroll_buffer = ScrollBuffer::new(2500);
         scroll_buffer.push_lines(startup_lines);
@@ -565,6 +571,7 @@ impl TuiContext {
             input_history,
             history_idx: None,
             completer,
+            file_search,
             mouse_selection: None,
             history_area_y: 0,
             history_area_height: 0,
@@ -806,6 +813,10 @@ impl TuiContext {
             }
 
             self.show_next_request();
+            // The host answered an `@` search: the dropdown shows it.
+            if self.file_search.take_fresh() {
+                self.refresh_mention_menu();
+            }
             // Redraw viewport (resize if textarea grew/shrank)
             self.draw()?;
 

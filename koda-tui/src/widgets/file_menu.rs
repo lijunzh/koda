@@ -1,6 +1,6 @@
 //! File and skill picker dropdown — thin wrapper around the generic dropdown.
 //!
-//! Appears when the user types `@` (files, then skills, as Codex's `@`
+//! Appears when the user types `@` (skills, then files, as Codex's `@`
 //! lists both) or `$` (skills) in the input. Filters live as the user
 //! continues typing.
 

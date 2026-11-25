@@ -17,7 +17,7 @@ review this diff with $review-checklist
 ```
 
 Typing `$` opens a list of skills to pick from, filtered as you type; `@`
-lists skills too, after the files. Picking one puts `$name` in the message.
+lists skills too, before the files, as Codex's does. Picking one puts `$name` in the message.
 `$name` typed anywhere in a message works the same way, in `koda exec` too
 (quote the prompt with `'…'` so the shell leaves the `$` alone). The model
 gets the skill's `SKILL.md` with your message, in a `<skill>` block that names

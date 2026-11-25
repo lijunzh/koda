@@ -28,6 +28,9 @@ uuid = { workspace = true }
 tempfile = { workspace = true }
 zip = { version = "9", default-features = false, features = ["deflate"] }
 anyhow = { workspace = true }
+# fuzzyFileSearch: the walk and the matcher Codex's file search uses.
+ignore = { workspace = true }
+nucleo = "0.5"
 
 # `koda serve`'s socket: the user's own id, for its folder and its peers.
 [target.'cfg(unix)'.dependencies]

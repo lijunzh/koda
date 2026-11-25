@@ -115,6 +115,7 @@ koda/
 │   │   ├── ansi_parse.rs   # ANSI escape code → ratatui Span conversion
 │   │   ├── md_render.rs    # Streaming markdown → ratatui renderer
 │   │   ├── completer.rs    # Tab completion (/commands, @files, /model names)
+│   │   ├── file_search.rs  # @ mentions' files, through the server's fuzzyFileSearch
 │   │   ├── diff_render.rs  # Diff preview → ratatui renderer (syntax highlighted)
 │   │   ├── highlight.rs    # Syntax highlighting via syntect
 │   │   ├── startup.rs      # Startup banner rendering
@@ -140,7 +141,7 @@ koda/
 ├── koda-git/               # One hardened way to run git: no hooks, fsmonitor, filters, external diff or textconv
 ├── koda-protocol/          # The client protocol: JSON-RPC messages and their types
 ├── koda-client/            # The client API: Koda in-process, typed requests, the event queue
-├── koda-server/            # Koda's host: sessions, config, MCP, koda serve --stdio
+├── koda-server/            # Koda's host: sessions, config, MCP, koda serve --stdio, fuzzyFileSearch
 ├── koda-config/            # config.toml: reading, checking and editing it, keeping comments
 ├── koda-providers/         # Model providers (Anthropic, Gemini, OpenAI-compatible) and the model tables
 │   ├── src/

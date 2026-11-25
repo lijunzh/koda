@@ -25,6 +25,10 @@ Vendored modules (see per-file headers for upstream paths and local diffs):
       from codex-rs/tui/src/wrapping.rs
   koda-state/src/writer_lock.rs
       from codex-rs/rollout/src/writer_lock.rs (at 06f334aa4b)
+  koda-server/src/fuzzy_file_search.rs
+      from codex-rs/file-search/src/lib.rs, codex-rs/file-search/src/snapshot.rs,
+      codex-rs/app-server/src/fuzzy_file_search.rs and
+      codex-rs/app-server/src/request_processors/search.rs (at 06f334aa4b)
 
 Prompt text (at upstream commit 05ae1b0fdd5ab412d24248acc76c5d9f6f275440):
 

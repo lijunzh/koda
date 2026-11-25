@@ -106,6 +106,7 @@ pub(crate) fn spawn(args: HostArgs) -> (mpsc::Sender<HostCommand>, JoinHandle<()
         config_warnings: std::sync::Mutex::new(args.config_warnings),
         sessions: Mutex::new(HashMap::new()),
         tasks: Mutex::new(JoinSet::new()),
+        searches: crate::fuzzy_file_search::PendingSearches::default(),
     });
     (tx, tokio::spawn(run(host, rx)))
 }
@@ -123,6 +124,8 @@ struct Host {
     handles: HandleMap,
     /// Their tasks. Dropping the host stops them.
     tasks: Mutex<JoinSet<()>>,
+    /// `fuzzyFileSearch` requests in flight, by cancellation token.
+    searches: crate::fuzzy_file_search::PendingSearches,
 }
 
 async fn run(host: Arc<Host>, mut commands: mpsc::Receiver<HostCommand>) {
@@ -395,6 +398,12 @@ impl Host {
             ClientRequest::SkillsList { params, .. } => {
                 let listed = crate::skills::list(params, &self.context.project_root);
                 let _ = reply.send(to_json(listed));
+                return;
+            }
+            ClientRequest::FuzzyFileSearch { params, .. } => {
+                let found =
+                    crate::fuzzy_file_search::fuzzy_file_search(&self.searches, params).await;
+                let _ = reply.send(found.and_then(to_json));
                 return;
             }
             ClientRequest::SessionList { params, .. } => {

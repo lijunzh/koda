@@ -149,7 +149,7 @@ your message:
 > compare @postgres:schema://users with @docs:file://database/user-model
 ```
 
-Typing `@` lists the connected servers' resources after files and skills,
+Typing `@` lists the connected servers' resources after skills and files,
 matched on the URI and the resource's name. A resource's text is sent marked
 as data, as a tool's result is, cut at 100,000 characters; an image is sent
 as an image; other binary content is named, not sent. MCP Apps pages

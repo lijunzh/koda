@@ -969,6 +969,112 @@
       ],
       "type": "object"
     },
+    "FuzzyFileSearchMatchType": {
+      "description": "Whether a match is a file or a folder. A link counts as what it points\nto.",
+      "oneOf": [
+        {
+          "const": "file",
+          "description": "A file.",
+          "type": "string"
+        },
+        {
+          "const": "directory",
+          "description": "A folder.",
+          "type": "string"
+        }
+      ]
+    },
+    "FuzzyFileSearchParams": {
+      "description": "`fuzzyFileSearch`. An empty query or no roots finds nothing.",
+      "properties": {
+        "cancellationToken": {
+          "description": "A later request with the same token cancels this one, which then\nanswers with no files: a client sends one per text box as its user\ntypes.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "query": {
+          "description": "What to match, fuzzily, against each path below a root.",
+          "type": "string"
+        },
+        "roots": {
+          "description": "The folders to search, as absolute paths. Nothing outside them is\nsearched.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "query",
+        "roots"
+      ],
+      "type": "object"
+    },
+    "FuzzyFileSearchResponse": {
+      "description": "The answer to `fuzzyFileSearch`.",
+      "properties": {
+        "files": {
+          "description": "At most 50 matches, best first; equal scores by path.",
+          "items": {
+            "$ref": "#/$defs/FuzzyFileSearchResult"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "files"
+      ],
+      "type": "object"
+    },
+    "FuzzyFileSearchResult": {
+      "description": "One match. The field names are Codex's, snake_case.",
+      "properties": {
+        "file_name": {
+          "description": "The path's last component.",
+          "type": "string"
+        },
+        "indices": {
+          "description": "The positions in `path`, in characters, that match the query, sorted\nand without repeats, for highlighting.",
+          "items": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "match_type": {
+          "$ref": "#/$defs/FuzzyFileSearchMatchType",
+          "description": "A file or a folder."
+        },
+        "path": {
+          "description": "Its path, relative to `root`.",
+          "type": "string"
+        },
+        "root": {
+          "description": "The root it was found under, as the request gave it.",
+          "type": "string"
+        },
+        "score": {
+          "description": "How well it matches; higher is better.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "root",
+        "path",
+        "match_type",
+        "file_name",
+        "score"
+      ],
+      "type": "object"
+    },
     "Goal": {
       "description": "A session's goal.",
       "properties": {
@@ -5064,6 +5170,14 @@
       },
       "result": {
         "$ref": "#/$defs/FeedbackSaveResponse"
+      }
+    },
+    "fuzzyFileSearch": {
+      "params": {
+        "$ref": "#/$defs/FuzzyFileSearchParams"
+      },
+      "result": {
+        "$ref": "#/$defs/FuzzyFileSearchResponse"
       }
     },
     "initialize": {
