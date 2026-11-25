@@ -14,7 +14,7 @@
 //! `Glob` and `List` leave the tool list (Claude Code has no `List`; Codex
 //! has none of the three), the prompt's search guidance and Bash's
 //! description become Claude Code's, and every Bash command starts with
-//! [`prelude`]. Where Claude Code's functions start its executable under
+//! [`prelude`](fn@crate::shell_search::prelude). Where Claude Code's functions start its executable under
 //! another name with `exec -a`, Koda's pass a first argument
 //! ([`koda_search::Program::flag`]), as Codex starts its own for
 //! `apply_patch`: Koda runs commands with `sh`, which on Debian and Ubuntu
@@ -71,7 +71,7 @@ find() {{
     )
 }
 
-/// `command` with [`prelude`] in front, when this process carries the
+/// `command` with [`prelude`](fn@crate::shell_search::prelude) in front, when this process carries the
 /// programs; otherwise `command` as it is.
 pub fn wrap(command: &str) -> String {
     match koda_search::exe() {
@@ -100,7 +100,7 @@ const BASH_EDITS: &[(&str, &str)] = &[
 ];
 
 /// The tool list for search through the shell: without [`REPLACED_TOOLS`],
-/// and with Bash's description as [`BASH_EDITS`] makes it.
+/// and with Bash's description as Claude Code words it.
 pub fn adapt_tool_defs(defs: &mut Vec<crate::providers::ToolDefinition>) {
     defs.retain(|d| !replaces(&d.name));
     for d in defs.iter_mut().filter(|d| d.name == "Bash") {

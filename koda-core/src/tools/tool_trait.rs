@@ -164,7 +164,7 @@ pub struct ToolExecCtx<'a> {
     /// Whether the model takes PDFs: Read returns a short PDF whole.
     pub takes_pdfs: bool,
 
-    /// Whether Bash commands get [`crate::shell_search::PRELUDE`].
+    /// Whether Bash commands get the shell functions of [`crate::shell_search::prelude`](fn@crate::shell_search::prelude).
     pub shell_search: bool,
 
     /// The most tokens a goal may use (`max_goal_token_budget`).
