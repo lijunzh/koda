@@ -79,6 +79,19 @@ pub struct InProcessClient {
     project_root: PathBuf,
 }
 
+/// The `initialize` Koda's own clients send: everything, experimental
+/// methods and notifications included, as Codex's TUI and `codex exec`
+/// declare `experimentalApi`. A client ships with the Koda it talks to.
+fn first_party(client_info: ClientInfo) -> InitializeParams {
+    InitializeParams {
+        client_info,
+        capabilities: Some(koda_protocol::initialize::InitializeCapabilities {
+            experimental_api: true,
+            opt_out_notification_methods: None,
+        }),
+    }
+}
+
 impl InProcessClient {
     /// Start the host and run the `initialize` handshake. A config file
     /// that can't be read or isn't valid stops it here, naming the line;
@@ -153,7 +166,7 @@ impl InProcessClient {
             },
         };
         client.server = client
-            .request::<methods::Initialize>(InitializeParams { client_info })
+            .request::<methods::Initialize>(first_party(client_info))
             .await?;
         Ok(client)
     }
@@ -185,7 +198,7 @@ impl InProcessClient {
             },
         };
         client.server = client
-            .request::<methods::Initialize>(InitializeParams { client_info })
+            .request::<methods::Initialize>(first_party(client_info))
             .await?;
         Ok(client)
     }
@@ -268,6 +281,7 @@ mod tests {
             client_info: ClientInfo {
                 name: "koda-client-test".to_string(),
                 version: "0".to_string(),
+                title: None,
             },
         };
         (args, dir)

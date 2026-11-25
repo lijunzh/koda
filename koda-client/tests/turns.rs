@@ -126,6 +126,7 @@ async fn client(config: KodaConfig, dir: &tempfile::TempDir) -> InProcessClient 
             client_info: ClientInfo {
                 name: "turns-test".to_string(),
                 version: "0".to_string(),
+                title: None,
             },
         },
         config,
@@ -392,6 +393,7 @@ async fn a_host_starts_from_the_config_and_this_runs_values() {
         client_info: ClientInfo {
             name: "turns-test".to_string(),
             version: "0".to_string(),
+            title: None,
         },
     })
     .await
@@ -444,6 +446,7 @@ async fn only_the_first_session_refuses_the_runs_effort() {
             client_info: ClientInfo {
                 name: "turns-test".to_string(),
                 version: "0".to_string(),
+                title: None,
             },
         },
         config(&server),
@@ -483,6 +486,7 @@ async fn an_unknown_agent_stops_the_start() {
         client_info: ClientInfo {
             name: "turns-test".to_string(),
             version: "0".to_string(),
+            title: None,
         },
     })
     .await
@@ -1561,6 +1565,7 @@ async fn the_host_enforces_the_mode_rules() {
                 client_info: ClientInfo {
                     name: "turns-test".to_string(),
                     version: "0".to_string(),
+                    title: None,
                 },
             },
             config,

@@ -205,7 +205,9 @@ async fn serve_on(
             client_info: koda_protocol::initialize::ClientInfo {
                 name: "koda-serve".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
+                title: None,
             },
+            capabilities: None,
         })
         .await
         .map_err(ServeError::Start)?;
@@ -786,6 +788,7 @@ async fn connection(id: u64, stream: UnixStream, router: Arc<Router>, initialize
                         continue;
                     }
                     ready = true;
+                    outbox.take_capabilities(request.params.as_ref());
                     let answer =
                         serde_json::to_string(&rpc::Response::new(request_id, initialized.clone()))
                             .unwrap_or_default();
@@ -799,6 +802,10 @@ async fn connection(id: u64, stream: UnixStream, router: Arc<Router>, initialize
                 }
                 if !ready {
                     outbox.push(refuse("Not initialized"));
+                    continue;
+                }
+                if let Some(error) = outbox.refuses(&method) {
+                    outbox.push(error_line(Some(request_id), error).unwrap_or_default());
                     continue;
                 }
                 if method == methods::ServeStop::NAME {

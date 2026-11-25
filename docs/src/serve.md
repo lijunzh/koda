@@ -43,6 +43,20 @@ its requests on its own, apart from the client's. Koda reads the answer
 while the turn runs, then sends `serverRequest/resolved`. An answer to a
 request that is already closed, or that Koda never sent, changes nothing.
 
+`initialize` may also say what the client takes, as Codex's does, for that
+connection only. `capabilities.optOutNotificationMethods` names notifications
+it never wants, by exact method, such as a client that draws a reply only once
+it completes and skips `item/agentMessage/delta`; requests and responses are
+always sent. `capabilities.experimentalApi` opts into methods and
+notifications still marked experimental: without it, such a method is
+refused with `-32600` and "… requires experimentalApi capability", and such a
+notification isn't sent. None is experimental yet. `clientInfo.title` is an
+optional name to show people.
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"my-app","title":"My App","version":"1.0"},"capabilities":{"experimentalApi":true,"optOutNotificationMethods":["item/agentMessage/delta"]}}}
+```
+
 `session/start` takes the model, provider and endpoint (`model`,
 `modelProvider`, `baseUrl`), so `koda serve` doesn't take `--model`,
 `--provider`, `--base-url` or `--resume`. `-c` and the other config flags set
@@ -175,6 +189,7 @@ the model, which can start it again with a longer `timeout`.
 | A line that isn't JSON, or isn't UTF-8 | `-32700`, with `"id": null` |
 | JSON that isn't a JSON-RPC message, or a batch (an array) | `-32600`, with the message's `id` when it has one |
 | A request before `initialize`, or a second `initialize` | `-32600`, `Not initialized` or `Already initialized` |
+| An experimental method without `experimentalApi` | `-32600`, `… requires experimentalApi capability` |
 | A method Koda doesn't have | `-32601` |
 | Parameters that don't fit | `-32602` |
 | A request about a session that isn't open, or a turn that isn't running | an error that says so; nothing else is affected |

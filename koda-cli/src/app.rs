@@ -1232,6 +1232,7 @@ async fn stop_server(socket: &Path) -> Result<(), String> {
         koda_client::protocol::initialize::ClientInfo {
             name: "koda-serve-stop".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
+            title: None,
         },
     )
     .await

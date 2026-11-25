@@ -104,6 +104,7 @@ fn client_info() -> ClientInfo {
     ClientInfo {
         name: "koda-tui".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
+        title: None,
     }
 }
 

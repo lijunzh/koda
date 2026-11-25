@@ -423,7 +423,9 @@ mod tests {
             client_info: initialize::ClientInfo {
                 name: "test".into(),
                 version: "1".into(),
+                title: None,
             },
+            capabilities: None,
         };
         let wire = encode::<methods::Initialize>(RequestId::Integer(1), &params).unwrap();
         assert_eq!(wire.method, "initialize");
