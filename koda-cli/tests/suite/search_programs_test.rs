@@ -194,3 +194,147 @@ fn only_those_names_dispatch() {
     assert!(stdout(&o).contains("koda"), "{o:?}");
     assert!(!stdout(&o).contains("ugrep"), "{o:?}");
 }
+
+// ── Search through the shell, end to end ─────────────────────────────
+
+use koda_test_utils::network::{FakeLlmServer, ResponseTemplate};
+use serde_json::{Value, json};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
+
+fn sse(chunks: &[Value]) -> ResponseTemplate {
+    let mut body: String = chunks.iter().map(|c| format!("data: {c}\n\n")).collect();
+    body.push_str("data: [DONE]\n\n");
+    ResponseTemplate::new(200)
+        .insert_header("content-type", "text/event-stream")
+        .set_body_string(body)
+}
+
+/// One headless turn in `project` whose model runs `command` through Bash
+/// once. `config` is written to config.toml first. Returns the chat
+/// request bodies.
+async fn bash_turn(project: &Path, command: &str, config: &str) -> Vec<String> {
+    let server = FakeLlmServer::spawn().await;
+    let turns = AtomicUsize::new(0);
+    let call = json!({"command": command}).to_string();
+    server
+        .mount_fn("POST", r".*/chat/completions$", move |_| {
+            if turns.fetch_add(1, Ordering::SeqCst) == 0 {
+                sse(&[
+                    json!({"choices": [{"delta": {"tool_calls": [{
+                        "index": 0, "id": "call_1", "type": "function",
+                        "function": {"name": "Bash", "arguments": call},
+                    }]}}]}),
+                    json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+                ])
+            } else {
+                sse(&[
+                    json!({"choices": [{"delta": {"content": "Done."}}]}),
+                    json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+                ])
+            }
+        })
+        .await;
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join("koda")).unwrap();
+    std::fs::write(home.path().join("koda/config.toml"), config).unwrap();
+    let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_koda"));
+    cmd.args(["exec", "Search"])
+        .args(["--provider", "lmstudio", "--model", "stub"])
+        .args(["--base-url", &server.url()])
+        .arg("--project-root")
+        .arg(project)
+        .env("XDG_CONFIG_HOME", home.path())
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(Duration::from_secs(120), cmd.output())
+        .await
+        .expect("koda hung")
+        .expect("failed to run koda");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    server
+        .received_requests()
+        .await
+        .into_iter()
+        .filter(|r| r.url.path().ends_with("/chat/completions"))
+        .map(|r| String::from_utf8_lossy(&r.body).into_owned())
+        .collect()
+}
+
+/// `type grep` said it's a function (bash: "a function", dash: "a shell
+/// function").
+fn is_function(body: &str) -> bool {
+    body.contains("grep is a function") || body.contains("grep is a shell function")
+}
+
+fn tool_names(body: &str) -> Vec<String> {
+    let v: Value = serde_json::from_str(body).unwrap();
+    v["tools"]
+        .as_array()
+        .map(|tools| {
+            tools
+                .iter()
+                .filter_map(|t| t["function"]["name"].as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_model_searches_with_the_built_in_grep_by_default() {
+    let p = project();
+    let bodies = bash_turn(
+        p.path(),
+        "type grep | head -1; grep -rn needle .; find . -name '*.rs' -not -path './.git/*' | sort",
+        "",
+    )
+    .await;
+    assert!(bodies.len() >= 2, "{} model call(s)", bodies.len());
+    let tools = tool_names(&bodies[0]);
+    for gone in ["Grep", "Glob", "List"] {
+        assert!(
+            !tools.iter().any(|t| t == gone),
+            "{gone} offered: {tools:?}"
+        );
+    }
+    assert!(tools.iter().any(|t| t == "Bash"), "{tools:?}");
+    assert!(
+        bodies[0].contains(
+            "Avoid using this tool to run `cat`, `head`, `tail`, `sed`, `awk`, or `echo` commands"
+        ),
+        "Bash's description isn't Claude Code's"
+    );
+    assert!(
+        bodies[0].contains("`grep` via `Bash`"),
+        "prompt not adapted"
+    );
+    // The tool result: ugrep through the sandbox, .gitignore honoured, and
+    // the command shown as the model wrote it.
+    let result = &bodies[1];
+    assert!(
+        is_function(result),
+        "grep isn't the shell function: {result}"
+    );
+    assert!(result.contains("src/lib.rs:1:fn needle"), "{result}");
+    assert!(result.contains(".hidden.rs:1:fn needle"), "{result}");
+    assert!(!result.contains("ignored.rs:1"), "{result}");
+    assert!(
+        result.contains("./ignored.rs"),
+        "find lists every file: {result}"
+    );
+    assert!(!result.contains("unalias"), "the prelude leaked: {result}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shell_search_false_brings_the_tools_back() {
+    let p = project();
+    let bodies = bash_turn(p.path(), "type grep | head -1", "shell_search = false\n").await;
+    let tools = tool_names(&bodies[0]);
+    for back in ["Grep", "Glob", "List"] {
+        assert!(tools.iter().any(|t| t == back), "{back} missing: {tools:?}");
+    }
+    assert!(!is_function(&bodies[1]), "{}", bodies[1]);
+}

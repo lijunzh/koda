@@ -132,6 +132,12 @@ pub struct ConfigToml {
     /// feature. On when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goals: Option<bool>,
+    /// Search through the shell as Claude Code does: `grep` and `find` run
+    /// the ugrep and bfs built into `koda`, and the `Grep`, `Glob` and
+    /// `List` tools are left out. On when unset; `false` brings the tools
+    /// back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell_search: Option<bool>,
     /// Who decides a goal is achieved: the working model (`self`, Codex's
     /// way, when unset) or a check after each turn (`evaluator`, Claude
     /// Code's way).

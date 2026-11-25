@@ -2155,6 +2155,7 @@ dependencies = [
  "koda-protocol",
  "koda-providers",
  "koda-sandbox",
+ "koda-search",
  "koda-skills",
  "koda-state",
  "koda-test-utils",

@@ -303,6 +303,9 @@ pub struct ToolRegistry {
     /// Whether the session's model takes images, so Read returns an
     /// image as one (Read v2). Set per turn by the session.
     takes_images: std::sync::atomic::AtomicBool,
+    /// Whether Bash searches stand in for `Grep`, `Glob` and `List`
+    /// ([`crate::shell_search`]).
+    shell_search: std::sync::atomic::AtomicBool,
     /// Whether the session's model takes PDFs, so Read returns a short PDF
     /// whole (Read v2). Set per turn by the session.
     takes_pdfs: std::sync::atomic::AtomicBool,
@@ -373,6 +376,7 @@ impl ToolRegistry {
             trust,
             proxy_port: std::sync::RwLock::new(None),
             takes_images: std::sync::atomic::AtomicBool::new(false),
+            shell_search: std::sync::atomic::AtomicBool::new(false),
             takes_pdfs: std::sync::atomic::AtomicBool::new(false),
             socks5_port: std::sync::RwLock::new(None),
         }
@@ -525,6 +529,19 @@ impl ToolRegistry {
     /// Whether the model takes images, as last set.
     pub fn takes_images(&self) -> bool {
         self.takes_images.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Whether the model searches through the shell
+    /// ([`crate::shell_search`]): Bash commands get its `grep` and `find`,
+    /// and `Grep`, `Glob` and `List` answer as unknown tools.
+    pub fn set_shell_search(&self, on: bool) {
+        self.shell_search
+            .store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether the model searches through the shell, as last set.
+    pub fn shell_search(&self) -> bool {
+        self.shell_search.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Whether the model takes PDFs: Read then returns a short PDF whole.
@@ -728,7 +745,8 @@ impl ToolRegistry {
         // per-tool struct. Same logic the legacy `match result`
         // block below applies; centralized here so it fires for
         // both migrated and not-yet-migrated tools.
-        if let Some(tool) = self.catalog.get_tool(name) {
+        let replaced = self.shell_search() && crate::shell_search::replaces(name);
+        if !replaced && let Some(tool) = self.catalog.get_tool(name) {
             // Trait-dispatch fast path. Reads sink + caller_spawner
             // from the call's parameters (not `None`) so trait-
             // migrated streaming tools (`Bash` from PR-6 onward)
@@ -771,6 +789,7 @@ impl ToolRegistry {
                 max_goal_token_budget: self.max_goal_token_budget,
                 takes_images: self.takes_images(),
                 takes_pdfs: self.takes_pdfs(),
+                shell_search: self.shell_search(),
             };
             let result = tool.execute(&ctx, &args).await;
             // Post-execution registry-level recording. Lives here

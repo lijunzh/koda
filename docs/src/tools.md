@@ -5,6 +5,14 @@ be prompted before each mutating call. In **Auto** mode, mutating ops
 within the project sandbox auto-approve, but **destructive** ops still
 prompt. See [Trust modes](./approval.md) for the canonical matrix.
 
+**Search goes through the shell, as in Claude Code.** The model searches
+with `grep` and `find` in `Bash`, which run the ugrep and bfs built into
+`koda`: `grep` skips what `.gitignore` ignores, binary files and
+version-control folders, and searches hidden files; `find` runs bfs, with
+`-regextype findutils-default`. `Grep`, `Glob` and `List` (marked *with
+`shell_search = false`* below) are offered only when `shell_search = false`
+is in `config.toml`. See [Searching through the shell](#searching-through-the-shell).
+
 | Tool | Effect | Description |
 |------|--------|-------------|
 | `Read` | Read-only | Read a file (with optional line range). An image (PNG, JPEG, GIF, WebP) comes back as an image the model sees, if the model takes images ([which do](./attachments.md#images)), scaled to 1,568 pixels on its long edge if larger; an image file over 128 MB is refused. A Jupyter notebook (`.ipynb`) comes back as its cells with their outputs, output images as images where the model takes them ([details](./attachments.md#notebooks)); with `start_line` or `num_lines`, as its JSON. A PDF comes back as the model takes it: whole (up to 10 pages), as page images, or as its text; a longer one is read with `pages` ("1-5", at most 20) ([details](./attachments.md#pdfs)). Another binary file (an archive, a program) is refused with what it is |
@@ -15,8 +23,8 @@ prompt. See [Trust modes](./approval.md) for the canonical matrix.
 | `Monitor` | As `Bash` judges its command | Run a command in the background and receive each line it prints to stdout as an event while the conversation goes on ([Watching a command](#watching-a-command)) |
 | `TaskStop` | Mutating | Stop a background command, a monitor or a background agent by its ID |
 | `Cargo` | Mutating | `cargo check`, `clippy`, `test` or `build` from the project root, with one line per compiler diagnostic and, for `test`, the failing tests with panic locations |
-| `Grep` | Read-only | Search file contents with a regex: matching files (the default), matching lines with optional context, or counts; filter by glob or file type; results in pages |
-| `Glob` | Read-only | List files matching a glob pattern |
+| `Grep` | Read-only | *With `shell_search = false`.* Search file contents with a regex: matching files (the default), matching lines with optional context, or counts; filter by glob or file type; results in pages |
+| `Glob` | Read-only | *With `shell_search = false`.* List files matching a glob pattern |
 | `WebFetch` | Asks, except documentation sites | Fetch a page and answer a question about it, as Claude Code's ([Fetching pages](#fetching-pages)) |
 | `WebSearch` | Read-only | Search the web and return the top five results (title, URL, snippet, date when known), marked as external content. Claude Code's shape: a `query`, plus `allowed_domains` or `blocked_domains` (not both). On a Claude model it searches as Claude Code's `WebSearch` does: a separate request to the same model with Anthropic's web search tool, which returns the model's summary and the links (billed to your Anthropic account: Anthropic's per-search price plus the tokens). On other models, with `BRAVE_API_KEY` set (or a key saved with `/key`), results come from the [Brave Search API](https://brave.com/search/api/); without it, from DuckDuckGo, which often answers with a bot check: the search then fails with that reason and suggests a Brave key. A session may make 200 calls, as in Claude Code (see [Web search budget](#web-search-budget)) |
 | `MemoryRead` | Read-only | Read from project or global memory |
@@ -32,11 +40,34 @@ prompt. See [Trust modes](./approval.md) for the canonical matrix.
 | `SendMessage` | Read-only | Message a background agent: a running one reads it at its next step, a finished one continues with its whole conversation |
 | `SpawnAgent` | Read-only | Alias for `InvokeAgent` with the codex-style arguments (`task_name`, `message`); same behavior, `run_in_background` included |
 | `ListAgents` | Read-only | List the available sub-agents (`detail=true` adds their system prompts) |
-| `List` | Read-only | List directory contents |
+| `List` | Read-only | *With `shell_search = false`.* List directory contents |
 | `AskUser` | Interactive | Ask the user a clarifying question |
 | `ListMcpResources` | Read-only | List the resources the session's MCP servers offer (offered with any MCP server, as Codex's `list_mcp_resources`) |
 | `ListMcpResourceTemplates` | Read-only | List the servers' resource templates, URIs that take parameters |
 | `ReadMcpResource` | Read-only | Read one resource by server and URI; its text comes back marked as external content, an image as an image |
+
+### Searching through the shell
+
+As Claude Code does, Koda gives every `Bash` command two shell functions,
+`grep` and `find`, and leaves the `Grep`, `Glob` and `List` tools out:
+
+- **`grep`** runs ugrep 7.8.5 as `grep -G --ignore-files --hidden -I`,
+  skipping `.git`, `.svn`, `.hg`, `.bzr`, `.jj` and `.sl`. So `grep -rn foo .`
+  doesn't search what `.gitignore` ignores. `-P` (Perl regexes) and `-z`
+  (inside `.gz`, `.bz2`, `.zst`, `.br`, `.7z`, `.zip` and tar files) work.
+  Options ugrep reads differently (`-Z`, `--null`, filters and pagers) go to
+  the system's `grep`.
+- **`find`** runs bfs 4.1.7 as `find -S dfs -regextype findutils-default`:
+  GNU find's options and regexes, on macOS too.
+
+The programs are inside the `koda` executable (`koda --koda-run-as-ugrep`
+and `--koda-run-as-bfs` run them), so every install has them, and they run in
+the sandbox like any command. If that executable is gone, for instance
+after an upgrade while Koda runs, the functions fall back to the system's
+`grep` and `find`. A search is read-only, so it doesn't ask in Safe mode.
+
+`shell_search = false` in `config.toml` brings back `Grep`, `Glob` and
+`List` and runs `grep` and `find` as the system has them.
 
 ### Typing into a command
 

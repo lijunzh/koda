@@ -29,7 +29,7 @@ The model works through [tools](./tools.md):
 
 | What | Tools |
 |---|---|
-| Read and find | `Read` (text, images, PDFs, notebooks), `List`, `Glob`, `Grep` |
+| Read and find | `Read` (text, images, PDFs, notebooks); search with `grep` and `find` through `Bash`, as Claude Code does ([details](./tools.md#searching-through-the-shell)) |
 | Change files | `Edit`, `Write` |
 | Run commands | `Bash`, and `Cargo` for Rust projects |
 | The web | `WebFetch`, `WebSearch` |

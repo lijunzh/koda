@@ -40,7 +40,7 @@ better ([Memory](./memory.md) explains why).
 > how does a request get from the HTTP handler to the database?
 ```
 
-You see the model work: each tool call (a `Grep`, a `Read`) appears as it
+You see the model work: each tool call (a `grep` through `Bash`, a `Read`) appears as it
 runs, then the answer. Reads never ask for approval. Mention a file with `@`
 to hand it over directly: `@src/db.rs why is this query slow?`
 

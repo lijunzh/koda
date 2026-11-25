@@ -120,6 +120,8 @@ pub use koda_providers::{model_alias, model_context, model_effort, provider_cata
 pub mod sandbox;
 /// Session lifecycle — create, resume, list, delete.
 pub mod session;
+/// Search through the shell, as Claude Code does (an experiment).
+pub mod shell_search;
 /// Skill-scoped tool filtering — hard enforcement of `allowed_tools`.
 pub mod skill_scope;
 /// Skill discovery and activation (project, user, built-in): the

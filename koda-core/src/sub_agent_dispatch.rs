@@ -805,22 +805,30 @@ fn run_sub_agent<'a>(
             // sub-agent's own invocation id — a sub-agent only sees
             // bg work *it* spawned. The earlier blanket denylist that
             // hid these tools from sub-agents has been removed.
+            tools.set_shell_search(sub_config.shell_search);
             let takes = sub_config.input_modalities();
             tools.set_takes_images(takes.contains(&koda_config::InputModality::Image));
             tools.set_takes_pdfs(takes.contains(&koda_config::InputModality::Pdf));
-            tools.get_definitions(&sub_config.allowed_tools, &denied)
+            let mut defs = tools.get_definitions(&sub_config.allowed_tools, &denied);
+            if sub_config.shell_search {
+                crate::shell_search::adapt_tool_defs(&mut defs);
+            }
+            defs
         };
         let env = crate::prompt::EnvironmentInfo {
             project_root: effective_root_ref,
             model: &sub_config.model,
             platform: std::env::consts::OS,
         };
-        let system_prompt = build_system_prompt(
+        let mut system_prompt = build_system_prompt(
             &instructions_for(&sub_config.system_prompt, effective_root != project_root),
             &env,
             false, // no person answers a sub-agent
             &tools.skill_registry,
         );
+        if sub_config.shell_search {
+            system_prompt = crate::shell_search::adapt_prompt(&system_prompt);
+        }
         // What this run uses, stored in the sub-agent's own session, as a
         // Codex sub-agent's thread records its own context: its model,
         // provider and tools can differ from the parent's, and its trust

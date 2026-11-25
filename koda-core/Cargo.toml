@@ -19,6 +19,9 @@ name = "koda_core"
 path = "src/lib.rs"
 
 [dependencies]
+# ugrep and bfs, which `koda` carries; search through the shell runs them
+# (`shell_search`).
+koda-search = { workspace = true }
 # The git context at session start runs git outside the sandbox, hardened.
 koda-git = { workspace = true }
 # `@` mentions of images, read by the host.
