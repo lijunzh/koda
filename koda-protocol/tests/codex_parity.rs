@@ -6,7 +6,9 @@
 //! and results down through the types they reach: each field Koda has must
 //! be one Codex has under the same name, each value a string enum of Koda's
 //! can take must be one Codex's takes, spelled the same, or a deviation
-//! recorded in `codex-deviations.toml` with its reason. A recorded deviation that no
+//! recorded in `codex-deviations.toml` with its reason. A method's answer
+//! is paired with Codex's by name; one Codex's schema doesn't name is a
+//! difference too, so a result isn't skipped unseen. A recorded deviation that no
 //! longer differs is reported too, so the file stays true. What Codex has
 //! and Koda lacks isn't checked: Koda doesn't aim to have all of it.
 //!
@@ -42,6 +44,8 @@ struct Deviations {
     variants: BTreeMap<String, String>,
     #[serde(default)]
     values: BTreeMap<String, String>,
+    #[serde(default)]
+    results: BTreeMap<String, String>,
 }
 
 /// One schema's definitions, by name.
@@ -364,6 +368,20 @@ fn codex_methods(codex: &Defs, kind: &str) -> BTreeMap<String, Value> {
     out
 }
 
+/// The name of Codex's answer to a method Koda answers with `result`: its
+/// params' type with `Response` for `Params`, or else Koda's result type
+/// under Codex's name (`config/batchWrite` answers with
+/// `ConfigWriteResponse`; Codex's `config/mcpServer/reload` takes no
+/// params). `None` when Codex has neither.
+fn codex_response(codex: &Defs, params: &Value, result: &Value) -> Option<String> {
+    let from_params = type_name(params).map(|name| name.replace("Params", "Response"));
+    let from_result = type_name(result).map(|name| codex_name(&name));
+    [from_params, from_result]
+        .into_iter()
+        .flatten()
+        .find(|name| codex.get(name).is_some())
+}
+
 /// Every difference between Koda's protocol and Codex's in `codex_dir`.
 fn differences(codex_dir: &Path) -> BTreeMap<(String, String), String> {
     let bundle: Value = serde_json::from_str(
@@ -410,12 +428,17 @@ fn differences_between(koda_schema: &Value, bundle: &Value) -> BTreeMap<(String,
                 continue;
             };
             walk.compare(&koda, &codex, &spec["params"], params, method, 0);
-            // A response is the params' type with `Response` for `Params`.
-            if let (Some(result), Some(params_type)) = (spec.get("result"), type_name(params)) {
-                let response = params_type.replace("Params", "Response");
-                if codex.get(&response).is_some() {
-                    let theirs = serde_json::json!({ "$ref": format!("#/definitions/{response}") });
-                    walk.compare(&koda, &codex, result, &theirs, method, 0);
+            if let Some(result) = spec.get("result") {
+                match codex_response(&codex, params, result) {
+                    Some(response) => {
+                        let theirs =
+                            serde_json::json!({ "$ref": format!("#/definitions/{response}") });
+                        walk.compare(&koda, &codex, result, &theirs, method, 0);
+                    }
+                    None => {
+                        walk.differences
+                            .insert(("results".into(), method.clone()), String::new());
+                    }
                 }
             }
         }
@@ -442,6 +465,7 @@ fn koda_s_protocol_is_codex_s_or_a_recorded_deviation() {
         "methods" => &deviations.methods,
         "fields" => &deviations.fields,
         "values" => &deviations.values,
+        "results" => &deviations.results,
         _ => &deviations.variants,
     };
     let unexplained: Vec<String> = found
@@ -458,6 +482,7 @@ fn koda_s_protocol_is_codex_s_or_a_recorded_deviation() {
         ("fields", &deviations.fields),
         ("variants", &deviations.variants),
         ("values", &deviations.values),
+        ("results", &deviations.results),
     ] {
         for at in table.keys() {
             if !found.contains_key(&(kind.to_string(), at.clone())) {
@@ -588,5 +613,64 @@ fn an_enum_value_spelled_differently_is_a_difference() {
         found,
         ["values: MessagePhase.finalAnswer \
              (Koda: commentary, finalAnswer; Codex: commentary, final_answer, partial_answer)"]
+    );
+}
+
+/// A method's answer is paired with Codex's by its params' name
+/// (`XParams`, `XResponse`) or else by its own (`config/batchWrite` answers
+/// with `ConfigWriteResponse`), and compared: a field Codex's answer lacks
+/// is a difference. An answer Codex has under neither name is reported.
+#[test]
+fn an_answer_is_paired_by_its_own_name_when_not_by_its_params() {
+    let koda = serde_json::json!({
+        "methods": {
+            "config/batchWrite": {
+                "params": {"$ref": "#/$defs/ConfigBatchWriteParams"},
+                "result": {"$ref": "#/$defs/ConfigWriteResponse"}
+            },
+            "config/read": {
+                "params": {"$ref": "#/$defs/ConfigReadParams"},
+                "result": {"$ref": "#/$defs/KodaConfig"}
+            }
+        },
+        "notifications": {},
+        "serverRequests": {},
+        "$defs": {
+            "ConfigBatchWriteParams": {"properties": {}},
+            "ConfigReadParams": {"properties": {}},
+            "ConfigWriteResponse": {"properties": {
+                "status": {"type": "string", "enum": ["ok"]},
+                "written": {"type": "boolean"}
+            }},
+            "KodaConfig": {"properties": {"config": {"type": "object"}}}
+        }
+    });
+    let codex = serde_json::json!({"definitions": {
+        "ClientRequest": {"oneOf": [
+            {"properties": {
+                "method": {"enum": ["config/batchWrite"]},
+                "params": {"$ref": "#/definitions/v2/ConfigBatchWriteParams"}
+            }},
+            {"properties": {
+                "method": {"enum": ["config/read"]},
+                "params": {"$ref": "#/definitions/v2/ConfigReadParams"}
+            }}
+        ]},
+        "v2": {
+            "ConfigBatchWriteParams": {"properties": {}},
+            "ConfigReadParams": {"properties": {}},
+            "ConfigWriteResponse": {"properties": {
+                "status": {"type": "string", "enum": ["ok", "okOverridden"]}
+            }}
+        }
+    }});
+    let found = differences_between(&koda, &codex);
+    let found: Vec<String> = found.keys().map(|(k, at)| format!("{k}: {at}")).collect();
+    assert_eq!(
+        found,
+        [
+            "fields: ConfigWriteResponse.written",
+            "results: config/read"
+        ]
     );
 }
