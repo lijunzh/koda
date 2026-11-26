@@ -220,6 +220,23 @@ pub struct TurnCompletedNotification {
     pub turn: Turn,
 }
 
+/// `turn/diff/updated`: what the turn's edits have changed so far, as one
+/// unified diff (git's format, paths relative to the session's folder), as
+/// Codex's. Sent after each edit that changes it and again when the turn
+/// completes. Each file is compared with its content when the turn first
+/// edited it, so a file edited twice shows once; changes made by commands
+/// (`Bash`) and by sub-agents aren't in it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnDiffUpdatedNotification {
+    /// The session.
+    pub session_id: String,
+    /// The turn.
+    pub turn_id: String,
+    /// The whole diff so far. Empty when the turn's edits have been undone.
+    pub diff: String,
+}
+
 /// `turn/plan/updated`: the model rewrote its plan (its todo list).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]

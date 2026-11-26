@@ -4709,6 +4709,29 @@
       ],
       "type": "object"
     },
+    "TurnDiffUpdatedNotification": {
+      "description": "`turn/diff/updated`: what the turn's edits have changed so far, as one\nunified diff (git's format, paths relative to the session's folder), as\nCodex's. Sent after each edit that changes it and again when the turn\ncompletes. Each file is compared with its content when the turn first\nedited it, so a file edited twice shows once; changes made by commands\n(`Bash`) and by sub-agents aren't in it.",
+      "properties": {
+        "diff": {
+          "description": "The whole diff so far. Empty when the turn's edits have been undone.",
+          "type": "string"
+        },
+        "sessionId": {
+          "description": "The session.",
+          "type": "string"
+        },
+        "turnId": {
+          "description": "The turn.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "turnId",
+        "diff"
+      ],
+      "type": "object"
+    },
     "TurnError": {
       "description": "What went wrong.",
       "properties": {
@@ -5666,6 +5689,11 @@
     "turn/completed": {
       "params": {
         "$ref": "#/$defs/TurnCompletedNotification"
+      }
+    },
+    "turn/diff/updated": {
+      "params": {
+        "$ref": "#/$defs/TurnDiffUpdatedNotification"
       }
     },
     "turn/loopGuard": {
