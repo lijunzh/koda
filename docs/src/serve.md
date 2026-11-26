@@ -197,7 +197,9 @@ with `session/turns/list`, as Codex's `thread/turns/list` does:
 ```
 
 The answer's `data` has up to `limit` turns (25 without one, at most 100),
-newest first, each with its items; a turn still running is `inProgress`, with
+newest first, each with its items. An item is flat, as Codex's `ThreadItem`:
+the item's own fields (`type`, `id`, …) with `startedAtMs` and `completedAtMs`
+beside them, and `parentItemId` on a sub-agent's. A turn still running is `inProgress`, with
 the items it has so far as its clients were told of them: those that
 completed, and those still open, a message with its text so far and a tool
 call still running, as a client joining the session gets it and as Codex's
