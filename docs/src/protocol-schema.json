@@ -141,10 +141,10 @@
       ]
     },
     "ApprovalPolicy": {
-      "description": "Who answers a session's approvals, questions and loop-cap decisions.\nCodex's `approvalPolicy` names the same choice.",
+      "description": "Who answers a session's approvals, questions and loop-cap decisions.\nCodex's `approvalPolicy` names the same choice, spelled as Codex's\n`AskForApproval` (`on-request`).",
       "oneOf": [
         {
-          "const": "onRequest",
+          "const": "on-request",
           "description": "The client answers each request.",
           "type": "string"
         },

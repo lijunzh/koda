@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Compare Koda's protocol with Codex's app-server protocol, field by field
-# (koda-protocol/tests/codex_parity.rs). A difference must be renamed to
-# Codex's name or recorded, with its reason, in
+# and enum value by enum value (koda-protocol/tests/codex_parity.rs). A
+# difference must be renamed to Codex's name or spelling, or recorded, with
+# its reason, in
 # koda-protocol/codex-deviations.toml.
 #
 # Codex's schema comes from `codex app-server generate-json-schema

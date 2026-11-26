@@ -202,9 +202,10 @@ pub struct SessionSettingsUpdatedNotification {
 }
 
 /// Who answers a session's approvals, questions and loop-cap decisions.
-/// Codex's `approvalPolicy` names the same choice.
+/// Codex's `approvalPolicy` names the same choice, spelled as Codex's
+/// `AskForApproval` (`on-request`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "kebab-case")]
 pub enum ApprovalPolicy {
     /// The client answers each request.
     #[default]
