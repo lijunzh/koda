@@ -138,6 +138,10 @@ pub struct EventProjector {
     /// Engine request id to protocol request id, until answered.
     requests: HashMap<String, RequestId>,
     next_item: u64,
+    /// What sets this projector's item ids apart from those of the
+    /// session's earlier openings, whose stored items a client still
+    /// holds: the count alone starts over each time a session is opened.
+    item_scope: String,
     next_request: i64,
     /// Request ids shared with the host's other sessions, so a response
     /// names one session's request. `None` numbers them per projector.
@@ -178,6 +182,7 @@ impl EventProjector {
             compaction: None,
             requests: HashMap::new(),
             next_item: 0,
+            item_scope: String::new(),
             next_request: 0,
             shared_request_ids: None,
             tokens: TokenUsage::default(),
@@ -190,8 +195,10 @@ impl EventProjector {
     /// A projector whose server requests take their ids from `ids`, which
     /// the host's other sessions share.
     pub fn with_request_ids(session_id: &str, ids: Arc<AtomicI64>) -> Self {
+        let opening = uuid::Uuid::new_v4().simple().to_string();
         Self {
             shared_request_ids: Some(ids),
+            item_scope: opening[..8].to_string(),
             ..Self::new(session_id)
         }
     }
@@ -940,9 +947,16 @@ impl EventProjector {
         id
     }
 
+    /// An id no other item of the session has, as Codex's item ids are
+    /// unique in a thread: a host's projector adds its opening's scope,
+    /// since a session opened again counts from one again.
     fn new_item_id(&mut self, prefix: &str) -> String {
         self.next_item += 1;
-        format!("{prefix}-{}", self.next_item)
+        if self.item_scope.is_empty() {
+            format!("{prefix}-{}", self.next_item)
+        } else {
+            format!("{prefix}-{}-{}", self.item_scope, self.next_item)
+        }
     }
 
     fn text_delta(&self, item_id: String, delta: String) -> TextDeltaNotification {
@@ -1821,6 +1835,30 @@ mod tests {
         assert_eq!(usage["total"]["inputTokens"], 150);
         assert_eq!(usage["total"]["outputTokens"], 15);
         assert_eq!(lines[2]["params"]["turnId"], "t1");
+    }
+
+    /// A session opened twice doesn't give two items one id: a client
+    /// holds the first opening's stored items beside the second's new ones.
+    #[test]
+    fn item_ids_dont_repeat_across_a_sessions_openings() {
+        let ids = Arc::new(AtomicI64::new(0));
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..2 {
+            let mut p = EventProjector::with_request_ids("s1", Arc::clone(&ids));
+            let lines = run(
+                &mut p,
+                vec![
+                    (None, turn_start()),
+                    (None, text("hello")),
+                    (None, EngineEvent::TextDone),
+                ],
+            );
+            for line in lines.iter().filter(|l| l["method"] == "item/completed") {
+                let id = line["params"]["item"]["id"].as_str().unwrap().to_string();
+                assert!(seen.insert(id.clone()), "{id} was given twice");
+            }
+        }
+        assert_eq!(seen.len(), 2);
     }
 
     fn edit_start(id: &str, path: &str, before: Option<&str>, after: &str) -> EngineEvent {

@@ -328,8 +328,10 @@ it was waiting for is still there.
   own server again when nothing answers (not one given with `--remote`). The
   session opens again where it was, and an approval it was waiting for comes
   back. A turn the server kept running is followed again; a turn that was
-  running when the server itself stopped ended with it. Ctrl+C quits while it
-  tries. If it gives up, your next prompt tries again.
+  running when the server itself stopped ended with it, and the TUI says so.
+  A side conversation or `/review` ends with the connection: the TUI returns
+  to the main session. Ctrl+C quits while it tries. If it gives up, your next
+  prompt tries again.
 - **After an update,** a server of another version is replaced if nothing is
   in use, as Claude Code's supervisor restarts onto a new version; if it's
   busy, this run uses its own process and says so. `koda serve --stop` stops

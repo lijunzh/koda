@@ -185,12 +185,12 @@ generated from the protocol's types, and CI fails if the two differ.
 ```json
 {"jsonrpc":"2.0","method":"session/started","params":{"session":{"id":"a3f8bc12-…","preview":"","createdAt":1794700000,"updatedAt":1794700000,"cwd":"/home/me/project","model":"claude-haiku-5-5","provider":"anthropic","contextWindow":200000,"mode":"auto","tools":["Read","Bash","…"]},"kodaVersion":"0.7.12","protocolVersion":2}}
 {"jsonrpc":"2.0","method":"turn/started","params":{"sessionId":"a3f8bc12-…","turn":{"id":"7d1e…","status":"inProgress","error":null,"usage":null,"durationMs":null}}}
-{"jsonrpc":"2.0","method":"item/started","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"userMessage","id":"user-1","text":"Why does the test fail?","clientMessageIds":[]}}}
-{"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"userMessage","id":"user-1","text":"Why does the test fail?","clientMessageIds":[]}}}
+{"jsonrpc":"2.0","method":"item/started","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"userMessage","id":"user-3f9a2c1e-1","text":"Why does the test fail?","clientMessageIds":[]}}}
+{"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"userMessage","id":"user-3f9a2c1e-1","text":"Why does the test fail?","clientMessageIds":[]}}}
 {"jsonrpc":"2.0","method":"item/started","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"toolCall","id":"call_1","tool":"Bash","arguments":{"command":"cargo test"},"status":"inProgress","output":null,"detail":null}}}
 {"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"toolCall","id":"call_1","tool":"Bash","arguments":{"command":"cargo test"},"status":"failed","output":"Exit code: 101 | …","detail":null}}}
-{"jsonrpc":"2.0","method":"item/started","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"agentMessage","id":"msg-1","text":""}}}
-{"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"agentMessage","id":"msg-1","text":"The test fails because …"}}}
+{"jsonrpc":"2.0","method":"item/started","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"agentMessage","id":"msg-3f9a2c1e-2","text":""}}}
+{"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"agentMessage","id":"msg-3f9a2c1e-2","text":"The test fails because …"}}}
 {"jsonrpc":"2.0","method":"turn/completed","params":{"sessionId":"a3f8bc12-…","turn":{"id":"7d1e…","status":"completed","error":null,"usage":{"inputTokens":18234,"cachedInputTokens":15012,"cacheCreationTokens":0,"outputTokens":912,"reasoningTokens":0,"modelCalls":3},"durationMs":8421}}}
 {"jsonrpc":"2.0","method":"exec/summary","params":{"sessionId":"a3f8bc12-…","success":true,"…":"…"}}
 ```

@@ -545,22 +545,30 @@ impl Router {
         }
     }
 
-    /// Subscribe `connection` to `session`, sending it what the session held.
-    fn subscribe(&self, connection: u64, session: &str) {
-        let mut state = self.lock();
-        state
-            .subscribers
-            .entry(session.to_string())
-            .or_default()
-            .insert(connection);
-        state.open.insert(session.to_string());
-        *state.activity.entry(session.to_string()).or_default() += 1;
-        let held = state.held.remove(session).unwrap_or_default();
-        if let Some(outbox) = state.connections.get(&connection) {
-            for line in held {
-                outbox.push(line);
+    /// Subscribe `connection` to `session`, sending it what the session
+    /// held. A connection that ended while the session was opening for it
+    /// can't subscribe: the session is open with nobody, and closes by the
+    /// idle rule, where it would otherwise count as in use for good.
+    fn subscribe(self: &Arc<Self>, connection: u64, session: &str) {
+        {
+            let mut state = self.lock();
+            state.open.insert(session.to_string());
+            *state.activity.entry(session.to_string()).or_default() += 1;
+            let held = state.held.remove(session).unwrap_or_default();
+            if let Some(outbox) = state.connections.get(&connection).cloned() {
+                state
+                    .subscribers
+                    .entry(session.to_string())
+                    .or_default()
+                    .insert(connection);
+                for line in held {
+                    outbox.push(line);
+                }
+                return;
             }
         }
+        tracing::info!("koda serve: session {session} opened for a client that has left");
+        self.unload_if_idle(session);
     }
 
     /// Why stopping now would lose something, if it would: a session with a
@@ -591,7 +599,7 @@ impl Router {
     /// Attach `connection` to `session` if the host has it open, as Codex
     /// subscribes a client that resumes a loaded thread: the requests still
     /// waiting in it, to send the client once it has the session.
-    fn attach(&self, connection: u64, session: &str) -> Option<Attached> {
+    fn attach(self: &Arc<Self>, connection: u64, session: &str) -> Option<Attached> {
         let attached = {
             let state = self.lock();
             if !state.open.contains(session) {
@@ -972,7 +980,10 @@ async fn connection(id: u64, stream: UnixStream, router: Arc<Router>, initialize
             "koda serve: a client stopped reading ({SLOW_CLIENT_LIMIT} messages waiting); \
              closing it"
         );
-        answering.abort_all();
+        // Its requests still finish: a session one of them opens has to
+        // reach the router, or the host would hold it with nobody able to
+        // open it again.
+        answering.detach_all();
         writer.abort();
         return;
     }
@@ -980,6 +991,8 @@ async fn connection(id: u64, stream: UnixStream, router: Arc<Router>, initialize
         while answering.join_next().await.is_some() {}
     })
     .await;
+    // As above, for a request that takes longer than the wait.
+    answering.detach_all();
     outbox.close();
     let _ = writer.await;
     if too_long {

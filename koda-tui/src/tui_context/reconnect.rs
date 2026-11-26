@@ -44,6 +44,20 @@ impl TuiContext {
         );
         let _ = self.draw();
 
+        // The requests on screen and queued came over the lost connection:
+        // the host sends again what it still waits on.
+        self.drop_requests();
+        // A side conversation or review goes with the connection: the
+        // session to get back is the main one, where its turn and its
+        // approvals are.
+        let left_side = self.side.take().map(|side| {
+            let left = std::mem::replace(&mut self.session, side.main);
+            self.host_session = self.session.id.clone();
+            self.leave_side_requested = false;
+            self.side_from_turn = None;
+            left.id
+        });
+
         let backend = self.backend.clone();
         let root = self.project_root.clone();
         let session_id = self.session.id.clone();
@@ -93,6 +107,24 @@ impl TuiContext {
                 self.offline = false;
                 self.file_search.reconnected(self.client.request_handle());
                 self.mcp_stale = true;
+                if let Some(side) = left_side {
+                    // Best-effort, as leaving it does: it may be gone already.
+                    let _ = self
+                        .client
+                        .request::<methods::SessionDelete>(
+                            koda_client::protocol::session::SessionDeleteParams {
+                                session_id: side,
+                            },
+                        )
+                        .await;
+                    self.redraw_main().await;
+                    dim_msg(
+                        &mut self.scroll_buffer,
+                        "The side conversation ended with the connection. Back in the main \
+                         session."
+                            .into(),
+                    );
+                }
                 dim_msg(
                     &mut self.scroll_buffer,
                     "Reconnected to Koda's server.".into(),
@@ -100,12 +132,21 @@ impl TuiContext {
                 if let Some(note) = note {
                     warn_msg(&mut self.scroll_buffer, note);
                 }
-                started
+                let running = started
                     .session
                     .turns
                     .last()
                     .filter(|turn| turn.status == TurnStatus::InProgress)
-                    .map(|turn| turn.id.clone())
+                    .map(|turn| turn.id.clone());
+                if std::mem::take(&mut self.turn_cut) && running.is_none() {
+                    warn_msg(
+                        &mut self.scroll_buffer,
+                        "The turn that was running ended with the server. What it had done is \
+                         saved; send a prompt to go on."
+                            .into(),
+                    );
+                }
+                running
             }
             Some(Err(gave_up)) => {
                 self.offline = true;

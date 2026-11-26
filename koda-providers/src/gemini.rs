@@ -145,7 +145,8 @@ impl GeminiProvider {
         let fingerprint = format!(
             "{}:{}:{}",
             model,
-            &sys_text[..sys_text.len().min(100)],
+            // By characters: a byte slice can split one and panic.
+            sys_text.chars().take(100).collect::<String>(),
             tools.len()
         );
 
