@@ -1280,6 +1280,13 @@
               "description": "The item's id.",
               "type": "string"
             },
+            "images": {
+              "description": "The images sent with it, as `turn/start` took them, so a client\nthat opens the session later shows them, as Codex's\n`userMessage` keeps its images in `content`. Images read from\nmentioned files aren't here: `mentions` names those.",
+              "items": {
+                "$ref": "#/$defs/ImageInput"
+              },
+              "type": "array"
+            },
             "mentions": {
               "description": "The files and directories it mentioned. The model was sent their\ncontents after the text; the item carries only the paths.",
               "items": {
@@ -2452,9 +2459,27 @@
             "null"
           ]
         },
+        "defaultReasoningEffort": {
+          "description": "The effort sent when none is chosen, as Codex's\n`defaultReasoningEffort`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "id": {
           "description": "The id to send, or `auto-detect` for `local`, whose model the server\nnames.",
           "type": "string"
+        },
+        "isDefault": {
+          "description": "The model a new session of this provider gets without one, as\nCodex's `isDefault`.",
+          "type": "boolean"
+        },
+        "supportedReasoningEfforts": {
+          "description": "The reasoning efforts it takes (`low` … `max`), as Codex's\n`supportedReasoningEfforts`; empty where Koda doesn't set one.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -3133,6 +3158,17 @@
             "string",
             "null"
           ]
+        },
+        "settings": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionSettings"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What an open session's turns run with: the model and the alias it\nwas chosen by, the provider and its endpoint, the reasoning effort\nand the mode, as Codex's `thread/start` answers with them.\n`session/settings/updated` follows each change."
         },
         "source": {
           "anyOf": [

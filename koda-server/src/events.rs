@@ -65,6 +65,11 @@ pub enum Outgoing {
         token: u64,
         /// The session as it stands, its running turn included.
         session: Box<koda_protocol::session::Session>,
+        /// What the joiner is sent after the answer, since it wasn't there
+        /// to hear it: the session's token counts, its plan and its turn's
+        /// diff as last sent, as Codex replays a thread's usage to a client
+        /// that rejoins.
+        replay: Vec<Outgoing>,
     },
 }
 
@@ -227,6 +232,7 @@ impl EventProjector {
         &mut self,
         by_agent: std::collections::BTreeMap<String, Usage>,
         context_window: Option<u64>,
+        last: Option<TokenUsageBreakdown>,
     ) -> TokenUsage {
         let mut total = TokenUsageBreakdown::default();
         for usage in by_agent.values() {
@@ -244,11 +250,19 @@ impl EventProjector {
         }
         self.tokens = TokenUsage {
             total,
-            last: TokenUsageBreakdown::default(),
+            // The session's latest call, as stored: how full its context
+            // was, so a meter is right before the next call, as Codex
+            // restores a thread's last token count.
+            last: last.unwrap_or_default(),
             model_context_window: context_window,
             by_agent,
         };
         self.tokens.clone()
+    }
+
+    /// The session's token counts so far.
+    pub fn token_usage(&self) -> &TokenUsage {
+        &self.tokens
     }
 
     /// Whose model call this is: `main` for the session's own, else the
@@ -316,12 +330,14 @@ impl EventProjector {
         text: String,
         client_message_ids: Vec<String>,
         mentions: Vec<koda_protocol::turn::Mention>,
+        images: Vec<koda_protocol::turn::ImageInput>,
     ) -> Vec<Outgoing> {
         let item = Item::UserMessage {
             id: self.new_item_id("user"),
             text,
             client_message_ids,
             mentions,
+            images,
         };
         vec![
             self.item_started(None, item.clone()),
@@ -1260,7 +1276,7 @@ pub fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-fn breakdown_of(usage: &UsageTotals) -> TokenUsageBreakdown {
+pub(crate) fn breakdown_of(usage: &UsageTotals) -> TokenUsageBreakdown {
     let count = |n: i64| n.max(0) as u64;
     let input = count(usage.input_tokens());
     let output = count(usage.completion_tokens);

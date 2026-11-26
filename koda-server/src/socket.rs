@@ -228,8 +228,17 @@ async fn serve_on(
             while let Some(message) = events.recv().await {
                 // A session's answer to a join, in its place among the
                 // session's messages.
-                if let crate::events::Outgoing::Joined { token, session } = message {
-                    router.joined(token, *session);
+                if let crate::events::Outgoing::Joined {
+                    token,
+                    session,
+                    replay,
+                } = message
+                {
+                    let replay = replay
+                        .iter()
+                        .filter_map(|message| message.to_json().ok())
+                        .collect();
+                    router.joined(token, *session, replay);
                     continue;
                 }
                 match message.to_json() {
@@ -651,11 +660,18 @@ impl Router {
 
     /// The session's answer to the join `token`, reached in the order of
     /// its messages: subscribe the client here and answer it with `session`
-    /// as it stands, then the requests still waiting in it. What the
+    /// as it stands, then what it missed that isn't in the session (its
+    /// token counts, plan and turn's diff, in `replay`), then the requests
+    /// still waiting in it. What the
     /// session sent before this is in `session`; what it sends after, the
     /// client hears. Codex composes the answer and subscribes in one step
     /// the same way.
-    fn joined(self: &Arc<Self>, token: u64, session: koda_protocol::session::Session) {
+    fn joined(
+        self: &Arc<Self>,
+        token: u64,
+        session: koda_protocol::session::Session,
+        replay: Vec<String>,
+    ) {
         let session_id = session.id.clone();
         {
             let mut state = self.lock();
@@ -676,6 +692,9 @@ impl Router {
                     joining.request,
                     serde_json::json!({ "session": described }),
                 )) {
+                    outbox.push(line);
+                }
+                for line in replay {
                     outbox.push(line);
                 }
                 for (_, request) in state.pending.get(&session_id).into_iter().flatten() {

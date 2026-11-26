@@ -1582,6 +1582,7 @@ mod tests {
                     text: "look around".into(),
                     client_message_ids: Vec::new(),
                     mentions: Vec::new(),
+                    images: Vec::new(),
                 },
                 None,
             ),
