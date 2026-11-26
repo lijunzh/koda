@@ -226,6 +226,12 @@ async fn serve_on(
         let mut events = launched.events;
         tokio::spawn(async move {
             while let Some(message) = events.recv().await {
+                // A session's answer to a join, in its place among the
+                // session's messages.
+                if let crate::events::Outgoing::Joined { token, session } = message {
+                    router.joined(token, *session);
+                    continue;
+                }
                 match message.to_json() {
                     Ok(line) => router.deliver(line),
                     Err(e) => tracing::error!("koda serve: a message didn't encode: {e}"),
@@ -389,12 +395,11 @@ fn session_of(message: &Value) -> Option<&str> {
         .or_else(|| params["session"]["id"].as_str())
 }
 
-/// What a client attaching to an open session is told.
-struct Attached {
-    /// The requests still waiting in it.
-    waiting: Vec<String>,
-    /// The session as it runs.
-    live: Option<Value>,
+/// A client waiting to join an open session: who, and the request to
+/// answer.
+struct Joining {
+    connection: u64,
+    request: RequestId,
 }
 
 /// The stored session `stored` (with its turns) as it runs now: what
@@ -454,6 +459,10 @@ struct RouterState {
     /// Each open session as it runs (`session/started`, then its settings
     /// as they change), for a client that attaches.
     live: HashMap<String, Value>,
+    /// Clients waiting for an open session's answer to join it, by token.
+    joining: HashMap<u64, Joining>,
+    /// The last join token given.
+    next_join: u64,
 }
 
 impl Router {
@@ -517,11 +526,15 @@ impl Router {
             _ => {}
         }
         // What changes the list of sessions goes to every client, as Codex
-        // sends a thread's start, rename and delete to every connection: a
-        // client that lists sessions hears of ones another client makes.
+        // sends a thread's start, rename, delete and status to every
+        // connection: a client that lists sessions hears of ones another
+        // client makes, and of what each is doing.
         if matches!(
             method,
-            "session/started" | "session/name/updated" | "session/deleted"
+            "session/started"
+                | "session/name/updated"
+                | "session/deleted"
+                | "session/status/changed"
         ) {
             for outbox in state.connections.values() {
                 outbox.push(line.clone());
@@ -608,26 +621,71 @@ impl Router {
         (others > 0).then(|| format!("{others} other client(s) connected"))
     }
 
-    /// Attach `connection` to `session` if the host has it open, as Codex
-    /// subscribes a client that resumes a loaded thread: the requests still
-    /// waiting in it, to send the client once it has the session.
-    fn attach(self: &Arc<Self>, connection: u64, session: &str) -> Option<Attached> {
-        let attached = {
-            let state = self.lock();
-            if !state.open.contains(session) {
-                return None;
+    /// Start joining `connection` to `session` if the host has it open, as
+    /// Codex subscribes a client that resumes a loaded thread: the token
+    /// the session's answer will carry ([`Self::joined`]).
+    fn begin_join(&self, connection: u64, session: &str, request: RequestId) -> Option<u64> {
+        let mut state = self.lock();
+        if !state.open.contains(session) {
+            return None;
+        }
+        // Someone wants it: a pending unload is stale.
+        *state.activity.entry(session.to_string()).or_default() += 1;
+        state.next_join += 1;
+        let token = state.next_join;
+        state.joining.insert(
+            token,
+            Joining {
+                connection,
+                request,
+            },
+        );
+        Some(token)
+    }
+
+    /// A join that the session couldn't answer.
+    fn end_join(self: &Arc<Self>, token: u64, session: &str) {
+        self.lock().joining.remove(&token);
+        self.unload_if_idle(session);
+    }
+
+    /// The session's answer to the join `token`, reached in the order of
+    /// its messages: subscribe the client here and answer it with `session`
+    /// as it stands, then the requests still waiting in it. What the
+    /// session sent before this is in `session`; what it sends after, the
+    /// client hears. Codex composes the answer and subscribes in one step
+    /// the same way.
+    fn joined(self: &Arc<Self>, token: u64, session: koda_protocol::session::Session) {
+        let session_id = session.id.clone();
+        {
+            let mut state = self.lock();
+            let Some(joining) = state.joining.remove(&token) else {
+                return;
+            };
+            if let Some(outbox) = state.connections.get(&joining.connection).cloned() {
+                state
+                    .subscribers
+                    .entry(session_id.clone())
+                    .or_default()
+                    .insert(joining.connection);
+                let described = with_live(
+                    serde_json::to_value(&session).unwrap_or_default(),
+                    state.live.get(&session_id),
+                );
+                if let Ok(line) = serde_json::to_string(&rpc::Response::new(
+                    joining.request,
+                    serde_json::json!({ "session": described }),
+                )) {
+                    outbox.push(line);
+                }
+                for (_, request) in state.pending.get(&session_id).into_iter().flatten() {
+                    outbox.push(request.clone());
+                }
+                return;
             }
-            Attached {
-                waiting: state
-                    .pending
-                    .get(session)
-                    .map(|pending| pending.iter().map(|(_, line)| line.clone()).collect())
-                    .unwrap_or_default(),
-                live: state.live.get(session).cloned(),
-            }
-        };
-        self.subscribe(connection, session);
-        Some(attached)
+        }
+        // The client left while it waited.
+        self.unload_if_idle(&session_id);
     }
 
     /// Answer request `id` of `session` no once [`Router::approval_wait`]
@@ -885,38 +943,38 @@ async fn connection(id: u64, stream: UnixStream, router: Arc<Router>, initialize
                     })
                     .flatten();
                 if let Some(session) = resuming
-                    && let Some(Attached { waiting, live }) = router.attach(id, &session)
+                    && let Some(token) = router.begin_join(id, &session, request_id.clone())
                 {
+                    // The session answers on its own message queue, at the
+                    // point this client joins it ([`Router::joined`]).
+                    let (reply, answer) = oneshot::channel();
+                    if router
+                        .handle
+                        .commands
+                        .send(HostCommand::Join {
+                            session_id: session.clone(),
+                            token,
+                            reply,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
                     let outbox = Arc::clone(&outbox);
                     let router = Arc::clone(&router);
                     answering.spawn(async move {
-                        let read = router
-                            .handle
-                            .request::<methods::SessionRead>(
-                                koda_protocol::session::SessionReadParams {
-                                    session_id: session,
-                                    include_turns: true,
-                                },
-                            )
-                            .await;
-                        let line = match read {
-                            Ok(read) => serde_json::to_string(&rpc::Response::new(
-                                request_id,
-                                serde_json::json!({ "session": with_live(
-                                    serde_json::to_value(read.session).unwrap_or_default(),
-                                    live.as_ref(),
-                                ) }),
-                            )),
-                            Err(e) => error_line(
-                                Some(request_id),
-                                ErrorObject::new(codes::INTERNAL_ERROR, e.to_string()),
+                        let refused = match answer.await {
+                            Ok(Ok(())) => return,
+                            Ok(Err(error)) => error,
+                            Err(_) => ErrorObject::new(
+                                codes::INTERNAL_ERROR,
+                                format!("session {session} closed before it answered"),
                             ),
                         };
-                        if let Ok(line) = line {
+                        router.end_join(token, &session);
+                        if let Ok(line) = error_line(Some(request_id), refused) {
                             outbox.push(line);
-                        }
-                        for request in waiting {
-                            outbox.push(request);
                         }
                     });
                     continue;
@@ -1060,6 +1118,14 @@ pub async fn connect(socket: &Path) -> Result<crate::in_process::Launched, Reque
                             let _ = output.shutdown().await;
                             let _ = done.send(());
                             break;
+                        }
+                        // Only the server's own router joins a session.
+                        Some(HostCommand::Join { reply, .. }) => {
+                            let _ = reply.send(Err(ErrorObject::new(
+                                codes::INVALID_REQUEST,
+                                "a client joins a session with session/start",
+                            )));
+                            continue;
                         }
                         None => break,
                     };

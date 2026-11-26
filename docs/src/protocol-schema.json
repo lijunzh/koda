@@ -3145,6 +3145,17 @@
           ],
           "description": "How it came to be, as Codex's `Thread.source`: started in the\nterminal UI, by `koda exec`, by another client of the server, or by a\nsession for a sub-agent. Absent for a session from before this was\nrecorded."
         },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What it is doing now, as Codex's `Thread.status`;\n`session/status/changed` follows each change."
+        },
         "tools": {
           "description": "The tools the model is offered.",
           "items": {
@@ -3174,6 +3185,21 @@
         "updatedAt"
       ],
       "type": "object"
+    },
+    "SessionActiveFlag": {
+      "description": "What an active session is waiting on. Codex's `ThreadActiveFlag`.",
+      "oneOf": [
+        {
+          "const": "waitingOnApproval",
+          "description": "A yes or no: a tool call's approval, the loop cap, or an MCP\nserver's request.",
+          "type": "string"
+        },
+        {
+          "const": "waitingOnUserInput",
+          "description": "An answer to the model's question.",
+          "type": "string"
+        }
+      ]
     },
     "SessionCompactStartParams": {
       "additionalProperties": false,
@@ -4042,6 +4068,76 @@
         "session",
         "kodaVersion",
         "protocolVersion"
+      ],
+      "type": "object"
+    },
+    "SessionStatus": {
+      "description": "What a session is doing. Codex's `ThreadStatus`.",
+      "oneOf": [
+        {
+          "description": "Stored, and not open on the host.",
+          "properties": {
+            "type": {
+              "const": "notLoaded",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Open, with nothing running and nothing asked.",
+          "properties": {
+            "type": {
+              "const": "idle",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A turn is running, or the session is waiting on an answer.",
+          "properties": {
+            "activeFlags": {
+              "description": "What it is waiting on, if anything.",
+              "items": {
+                "$ref": "#/$defs/SessionActiveFlag"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "active",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "activeFlags"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SessionStatusChangedNotification": {
+      "description": "`session/status/changed`: what a session is doing changed, for every\nclient, as Codex's `thread/status/changed`.",
+      "properties": {
+        "sessionId": {
+          "description": "The session.",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/SessionStatus",
+          "description": "What it is doing now."
+        }
+      },
+      "required": [
+        "sessionId",
+        "status"
       ],
       "type": "object"
     },
@@ -5833,6 +5929,11 @@
     "session/started": {
       "params": {
         "$ref": "#/$defs/SessionStartedNotification"
+      }
+    },
+    "session/status/changed": {
+      "params": {
+        "$ref": "#/$defs/SessionStatusChangedNotification"
       }
     },
     "session/tokenUsage/updated": {

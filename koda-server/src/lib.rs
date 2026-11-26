@@ -26,6 +26,7 @@ mod goal;
 mod history;
 mod host;
 pub mod in_process;
+mod live_turn;
 mod mcp;
 mod memory;
 mod session;

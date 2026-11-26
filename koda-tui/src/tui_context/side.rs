@@ -109,6 +109,7 @@ fn session_of(message: &Outgoing) -> Option<String> {
     let value = match message {
         Outgoing::Request(request) => serde_json::to_value(request).ok()?,
         Outgoing::Notification(notification) => serde_json::to_value(notification).ok()?,
+        _ => return None,
     };
     let params = &value["params"];
     params["sessionId"]
@@ -251,7 +252,7 @@ impl TuiContext {
                 side.waiting
                     .retain(|request| request.id() != &resolved.request_id);
             }
-            Outgoing::Notification(_) => {}
+            _ => {}
         }
         true
     }

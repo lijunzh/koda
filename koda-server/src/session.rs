@@ -48,6 +48,10 @@ use koda_core::mcp::manager::SharedMcpManager;
 /// host, which routes a client's answer, and every session's sink.
 pub(crate) type OpenRequests = Arc<Mutex<HashMap<RequestId, String>>>;
 
+/// What each open session is doing, by id. Shared by the host, which says
+/// it of a listed session, and every session's sink, which keeps its own.
+pub(crate) type Statuses = Arc<Mutex<HashMap<String, koda_protocol::session::SessionStatus>>>;
+
 /// What a session's task is asked to do.
 pub(crate) enum SessionCommand {
     /// `turn/start`.
@@ -94,6 +98,13 @@ pub(crate) enum SessionCommand {
     /// Store the session's turns sent so far: `done` is dropped once they
     /// are, so a read of the store that follows sees all of them.
     FlushHistory { done: oneshot::Sender<()> },
+    /// A client asked to join the open session: put the session as it
+    /// stands on its message queue, marked with `token`
+    /// ([`Outgoing::Joined`]), and say on `reply` whether that worked.
+    Join {
+        token: u64,
+        reply: oneshot::Sender<Result<(), ErrorObject>>,
+    },
     /// `session/name/set`: store the name, after anything queued before
     /// it, so a first prompt sent earlier can't title the session over it;
     /// a later one no longer does.
@@ -114,6 +125,9 @@ impl SessionCommand {
             | Self::Rewind { reply, .. }
             | Self::Goal { reply, .. }
             | Self::UpdateSettings { reply, .. } => {
+                let _ = reply.send(Err(error));
+            }
+            Self::Join { reply, .. } => {
                 let _ = reply.send(Err(error));
             }
             Self::Respond { .. }
@@ -145,6 +159,7 @@ pub(crate) struct SessionContext {
     pub events: mpsc::UnboundedSender<Outgoing>,
     pub request_ids: Arc<AtomicI64>,
     pub open_requests: OpenRequests,
+    pub statuses: Statuses,
     /// Set once the first session has checked this run's effort and
     /// thinking budget against its model ([`crate::settings::check_run_reasoning`]).
     pub run_checked: Arc<std::sync::atomic::AtomicBool>,
@@ -178,6 +193,7 @@ pub(crate) async fn open(
         events,
         request_ids,
         open_requests,
+        statuses,
         run_checked,
     } = context;
     // The modes this session may run in, which the host enforces.
@@ -326,7 +342,13 @@ pub(crate) async fn open(
         .await
         .map_err(|e| internal(format!("couldn't read the session: {e:#}")))?
         .ok_or_else(|| internal(format!("session {id} isn't stored")))?;
+    // Open, and doing nothing yet.
+    statuses
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(id.clone(), koda_protocol::session::SessionStatus::Idle);
     let described = Session {
+        status: Some(koda_protocol::session::SessionStatus::Idle),
         model: Some(config.model.clone()),
         provider: Some(config.provider_type.meta().name.to_string()),
         context_window: Some(config.max_context_tokens as u64),
@@ -409,6 +431,7 @@ pub(crate) async fn open(
         session_id: id.clone(),
         events,
         open_requests,
+        statuses: Arc::clone(&statuses),
         history: Some(history),
         // Koda answers itself only when nobody is there to ask.
         answers: (policy == ApprovalPolicy::Never).then(|| engine_tx.clone()),
@@ -424,6 +447,9 @@ pub(crate) async fn open(
             goal_budget: None,
             elicitations: HashMap::new(),
             agent_approvals: HashMap::new(),
+            live_turn: None,
+            turn_running: false,
+            status: koda_protocol::session::SessionStatus::Idle,
         }),
     });
     // Sub-agents ask the client through the sink too.
@@ -598,6 +624,11 @@ impl SessionTask {
                 SessionCommand::FlushHistory { done } => {
                     self.sink.flush_history().await;
                     drop(done);
+                    Next::Idle
+                }
+                SessionCommand::Join { token, reply } => {
+                    let joined = join(&self.sink, &self.session.db, &self.session.id, token).await;
+                    let _ = reply.send(joined);
                     Next::Idle
                 }
                 SessionCommand::Named { name, done } => {
@@ -1452,6 +1483,11 @@ impl SessionTask {
                             sink.flush_history().await;
                             drop(done);
                         }
+                        // The turn pauses only while its stored turns are
+                        // read; the joiner then follows it from here.
+                        Some(SessionCommand::Join { token, reply }) => {
+                            let _ = reply.send(join(sink, &db, &session_id, token).await);
+                        }
                         // This turn's prompt has titled the session already.
                         Some(SessionCommand::Named { name, done }) => {
                             let stored = db.set_session_title(&session_id, &name).await;
@@ -1597,6 +1633,7 @@ pub(crate) fn describe(stored: &koda_state::session_store::SessionInfo) -> Sessi
             .and_then(koda_core::trust::TrustMode::parse),
         tools: None,
         instruction_sources: None,
+        status: None,
         source: Some(source_kind(stored.source.as_deref())),
         originator: stored.originator.clone(),
         forked_from_id: stored.forked_from_id.clone(),
@@ -1617,6 +1654,32 @@ fn source_kind(stored: Option<&str>) -> koda_protocol::session::SessionSourceKin
         Some(source::SUB_AGENT) => SessionSourceKind::SubAgent,
         _ => SessionSourceKind::Unknown,
     }
+}
+
+/// Answer a client that asked to join the open session `session_id`: the
+/// stored session with its turns, and over them the latest turn as it
+/// stands, put on the session's message queue under `token`.
+async fn join(
+    sink: &HostSink,
+    db: &Database,
+    session_id: &str,
+    token: u64,
+) -> Result<(), ErrorObject> {
+    use koda_state::session_store::SessionStore;
+    // Earlier turns are complete in the store once it has caught up; the
+    // latest comes from memory, so nothing depends on when this read lands.
+    sink.flush_history().await;
+    let stored = db
+        .get_session(session_id)
+        .await
+        .map_err(|e| internal(format!("couldn't read the session: {e:#}")))?
+        .ok_or_else(|| internal(format!("session {session_id} isn't stored")))?;
+    let mut session = describe(&stored);
+    session.turns = crate::history::turns(db, session_id, false)
+        .await
+        .map_err(|e| internal(format!("couldn't read the session's turns: {e:#}")))?;
+    sink.joined(token, session);
+    Ok(())
 }
 
 /// What kind of server request is open, to read the client's answer.
@@ -1653,6 +1716,13 @@ struct SinkState {
     /// its answer goes. Not withdrawn when a turn ends: a background agent
     /// outlives it.
     agent_approvals: HashMap<RequestId, oneshot::Sender<Answer>>,
+    /// The latest turn as the clients have been told of it, for one that
+    /// joins.
+    live_turn: Option<crate::live_turn::LiveTurn>,
+    /// Whether a turn is running, by the clients' account of it.
+    turn_running: bool,
+    /// What the session was last said to be doing.
+    status: koda_protocol::session::SessionStatus,
 }
 
 /// The session's [`EngineSink`]: engine events become protocol messages on
@@ -1661,6 +1731,7 @@ pub(crate) struct HostSink {
     session_id: String,
     events: mpsc::UnboundedSender<Outgoing>,
     open_requests: OpenRequests,
+    statuses: Statuses,
     /// Where the session's turns are stored as they are sent, for resuming
     /// it. `None` in tests that need no database.
     history: Option<crate::history::HistoryWriter>,
@@ -1863,7 +1934,25 @@ impl HostSink {
         if let Some(history) = &self.history {
             history.record(&out);
         }
+        for message in &out {
+            crate::live_turn::LiveTurn::observe(&mut state.live_turn, message);
+        }
         self.deliver(state, out);
+    }
+
+    /// Answer a join: put `session`, with its latest turn as it stands, on
+    /// the message queue under `token`. With the lock held, so it sits
+    /// between the messages it accounts for and the ones that follow.
+    fn joined(&self, token: u64, mut session: koda_protocol::session::Session) {
+        let state = self.lock();
+        if let Some(live) = &state.live_turn {
+            live.over(&mut session.turns);
+        }
+        session.status = Some(state.status.clone());
+        let _ = self.events.send(Outgoing::Joined {
+            token,
+            session: Box::new(session),
+        });
     }
 
     /// Put `out` on the client's queue, keeping the open-request tables in
@@ -1891,11 +1980,62 @@ impl HostSink {
                         .unwrap_or_else(PoisonError::into_inner)
                         .remove(&resolved.request_id);
                 }
-                Outgoing::Notification(_) => {}
+                Outgoing::Notification(_) | Outgoing::Joined { .. } => {}
+            }
+            match &message {
+                Outgoing::Notification(ServerNotification::TurnStarted(_)) => {
+                    state.turn_running = true;
+                }
+                Outgoing::Notification(ServerNotification::TurnCompleted(_)) => {
+                    state.turn_running = false;
+                }
+                _ => {}
             }
             // A client that has gone just stops reading.
             let _ = self.events.send(message);
         }
+        self.say_status(state);
+    }
+
+    /// What the session is doing now: a turn running, or an answer waited
+    /// on (a background agent may ask with no turn running).
+    fn status(state: &SinkState) -> koda_protocol::session::SessionStatus {
+        use koda_protocol::session::{SessionActiveFlag, SessionStatus};
+        let waits = |on: fn(&RequestKind) -> bool| state.kinds.values().any(on);
+        let mut active_flags = Vec::new();
+        if waits(|kind| !matches!(kind, RequestKind::Question)) {
+            active_flags.push(SessionActiveFlag::WaitingOnApproval);
+        }
+        if waits(|kind| matches!(kind, RequestKind::Question)) {
+            active_flags.push(SessionActiveFlag::WaitingOnUserInput);
+        }
+        if state.turn_running || !active_flags.is_empty() {
+            SessionStatus::Active { active_flags }
+        } else {
+            SessionStatus::Idle
+        }
+    }
+
+    /// Send `session/status/changed` if what the session is doing changed,
+    /// after the messages that changed it, as Codex sends a thread's.
+    fn say_status(&self, state: &mut SinkState) {
+        let status = Self::status(state);
+        if status == state.status {
+            return;
+        }
+        state.status = status.clone();
+        self.statuses
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(self.session_id.clone(), status.clone());
+        let _ = self.events.send(Outgoing::Notification(
+            ServerNotification::SessionStatusChanged(
+                koda_protocol::session::SessionStatusChangedNotification {
+                    session_id: self.session_id.clone(),
+                    status,
+                },
+            ),
+        ));
     }
 }
 
@@ -2336,6 +2476,7 @@ mod tests {
             session_id: "s1".to_string(),
             events,
             open_requests: OpenRequests::default(),
+            statuses: Statuses::default(),
             history: None,
             answers,
             notices: mpsc::channel(8).0,
@@ -2350,6 +2491,9 @@ mod tests {
                 goal_budget: None,
                 elicitations: HashMap::new(),
                 agent_approvals: HashMap::new(),
+                live_turn: None,
+                turn_running: false,
+                status: koda_protocol::session::SessionStatus::Idle,
             }),
         };
         (sink, rx)
@@ -2367,8 +2511,17 @@ mod tests {
         }
     }
 
+    /// What the sink sent, without `session/status/changed`, which the
+    /// socket tests follow.
     fn drain(rx: &mut mpsc::UnboundedReceiver<Outgoing>) -> Vec<Outgoing> {
-        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+        std::iter::from_fn(|| rx.try_recv().ok())
+            .filter(|message| {
+                !matches!(
+                    message,
+                    Outgoing::Notification(ServerNotification::SessionStatusChanged(_))
+                )
+            })
+            .collect()
     }
 
     fn agent_request(
@@ -2549,6 +2702,7 @@ mod tests {
             .map(|m| match m {
                 Outgoing::Request(r) => r.method(),
                 Outgoing::Notification(n) => n.method(),
+                Outgoing::Joined { .. } => "joined",
             })
             .collect();
         let pairs = ["item/toolCall/requestApproval", "serverRequest/resolved"];

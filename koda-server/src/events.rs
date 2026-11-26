@@ -46,13 +46,26 @@ use koda_protocol::turn::{
 use koda_protocol::{ServerNotification, ServerRequest};
 use serde_json::Value;
 
-/// One message for the client.
+/// One message for the client. Not exhaustive: a client ignores a kind it
+/// doesn't know, as it ignores a notification it doesn't know.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum Outgoing {
     /// Something happened.
     Notification(ServerNotification),
     /// Koda needs an answer.
     Request(ServerRequest),
+    /// Koda's own, never sent to a client: a session's answer to a client
+    /// that asked to join it while it was open. It travels with the
+    /// session's messages, so the client is subscribed at exactly this
+    /// point: what came before is in `session`, what comes after it hears.
+    #[doc(hidden)]
+    Joined {
+        /// The join it answers.
+        token: u64,
+        /// The session as it stands, its running turn included.
+        session: Box<koda_protocol::session::Session>,
+    },
 }
 
 impl Outgoing {
@@ -61,6 +74,9 @@ impl Outgoing {
         match self {
             Self::Notification(n) => serde_json::to_string(&n.to_rpc()?),
             Self::Request(r) => serde_json::to_string(&r.to_rpc()?),
+            Self::Joined { .. } => Err(serde::ser::Error::custom(
+                "a join's answer isn't a message for a client",
+            )),
         }
     }
 

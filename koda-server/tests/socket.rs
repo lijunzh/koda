@@ -351,7 +351,12 @@ async fn each_client_hears_its_own_sessions() {
     let lists = |l: &Value| {
         matches!(
             l["method"].as_str(),
-            Some("session/started" | "session/name/updated" | "session/deleted")
+            Some(
+                "session/started"
+                    | "session/name/updated"
+                    | "session/deleted"
+                    | "session/status/changed"
+            )
         )
     };
     assert!(
@@ -682,6 +687,159 @@ async fn an_approval_waits_for_a_client_that_attaches() {
     // The other client is told it was answered, so it can drop its prompt.
     let heard = third.until_method("serverRequest/resolved").await;
     assert_eq!(heard.last().unwrap()["params"]["requestId"], request_id);
+    koda.stop().await;
+}
+
+/// A client that joins a session mid-turn is told the turn as it stands,
+/// with the tool call still open in it, then the approval it waits on, then
+/// everything after, each once, as Codex merges a thread's active turn into
+/// `thread/resume`'s answer.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_that_joins_mid_turn_gets_the_turn_as_it_stands() {
+    let server = model(vec![write_file("w1", "a.txt"), text("Written.")]).await;
+    let koda = Server::start(safe(&server), Duration::from_secs(60)).await;
+    let mut first = Client::ready(&koda).await;
+    let session = first.start_session().await;
+    first
+        .request(
+            "turn/start",
+            json!({"sessionId": session, "input": "write it"}),
+        )
+        .await
+        .unwrap();
+    let asked = first.until_method("item/toolCall/requestApproval").await;
+    let request_id = asked.last().unwrap()["id"].clone();
+
+    // The first client stays: the session is open and its turn running.
+    let mut second = Client::connect(&koda).await;
+    let init = second
+        .send_request(
+            "initialize",
+            json!({"clientInfo": {"name": "joiner", "version": "0"}}),
+        )
+        .await;
+    second.response(init).await.unwrap();
+    let join = second
+        .send_request("session/start", json!({"sessionId": session}))
+        .await;
+    // Nothing of the session reaches it before the answer.
+    let mut before = Vec::new();
+    let joined = loop {
+        let line = second.read().await.expect("the join is answered");
+        if line["id"] == join {
+            break line["result"].clone();
+        }
+        before.push(line);
+    };
+    assert!(
+        before
+            .iter()
+            .all(|l| session_of(l) != Some(session.as_str()) || l["method"] == "session/started"),
+        "{before:?}"
+    );
+
+    let turns = joined["session"]["turns"].as_array().unwrap();
+    let turn = turns.last().unwrap();
+    assert_eq!(turn["status"], "inProgress", "{turn}");
+    let items = turn["items"].as_array().unwrap();
+    let kinds: Vec<&str> = items
+        .iter()
+        .map(|i| i["item"]["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["userMessage", "toolCall"], "{turn}");
+    let call = &items[1];
+    assert_eq!(call["item"]["status"], "inProgress", "{call}");
+    assert_eq!(call["item"]["id"], "w1");
+    assert!(call["completedAtMs"].is_null(), "{call}");
+    assert_eq!(joined["session"]["model"], "stub", "as it runs: {joined}");
+    assert_eq!(
+        joined["session"]["status"],
+        json!({"type": "active", "activeFlags": ["waitingOnApproval"]}),
+        "{joined}"
+    );
+
+    // Then the approval still waiting, and once it is answered, the call's
+    // end and the rest of the turn, the call's start not again.
+    let resent = second.until_method("item/toolCall/requestApproval").await;
+    assert_eq!(resent.last().unwrap()["id"], request_id);
+    first
+        .answer(&request_id, json!({"decision": {"type": "approve"}}))
+        .await;
+    let rest = second.until_method("turn/completed").await;
+    let of_the_call: Vec<&str> = rest
+        .iter()
+        .filter(|l| l["params"]["item"]["id"] == "w1")
+        .map(|l| l["method"].as_str().unwrap())
+        .collect();
+    assert_eq!(of_the_call, ["item/completed"], "{rest:?}");
+    assert!(
+        rest.iter()
+            .any(|l| l["method"] == "serverRequest/resolved"
+                && l["params"]["requestId"] == request_id),
+        "{rest:?}"
+    );
+    koda.stop().await;
+}
+
+/// Every client hears what a session is doing as it changes, the ones that
+/// never opened it too, and a list says it, as Codex's `thread/status/changed`
+/// and `Thread.status` do.
+#[tokio::test(flavor = "multi_thread")]
+async fn every_client_hears_what_a_session_is_doing() {
+    let server = model(vec![write_file("w1", "a.txt"), text("Written.")]).await;
+    let koda = Server::start(safe(&server), Duration::from_millis(300)).await;
+    let mut owner = Client::ready(&koda).await;
+    let mut watcher = Client::ready(&koda).await;
+    let session = owner.start_session().await;
+    let status_of = |listed: &Value| listed["data"][0]["status"].clone();
+    let listed = watcher.request("session/list", json!({})).await.unwrap();
+    assert_eq!(status_of(&listed), json!({"type": "idle"}), "{listed}");
+
+    owner
+        .request(
+            "turn/start",
+            json!({"sessionId": session, "input": "write it"}),
+        )
+        .await
+        .unwrap();
+    let asked = owner.until_method("item/toolCall/requestApproval").await;
+    let request_id = asked.last().unwrap()["id"].clone();
+    // It reaches the watcher after the request that caused it reached the
+    // owner; a list then says the same.
+    let waiting = json!({"type": "active", "activeFlags": ["waitingOnApproval"]});
+    let mut seen = Vec::new();
+    while seen.last() != Some(&waiting) {
+        let heard = watcher.until_method("session/status/changed").await;
+        let last = heard.last().unwrap();
+        assert_eq!(session_of(last), Some(session.as_str()), "{last}");
+        seen.push(last["params"]["status"].clone());
+    }
+    let listed = watcher.request("session/list", json!({})).await.unwrap();
+    assert_eq!(status_of(&listed), waiting, "{listed}");
+
+    owner
+        .answer(&request_id, json!({"decision": {"type": "approve"}}))
+        .await;
+    owner.until_method("turn/completed").await;
+    drop(owner);
+    // Answered, the turn runs on and ends; with no client it then closes.
+    let gone = json!({"type": "notLoaded"});
+    while seen.last() != Some(&gone) {
+        let heard = watcher.until_method("session/status/changed").await;
+        seen.push(heard.last().unwrap()["params"]["status"].clone());
+    }
+    assert_eq!(
+        seen,
+        [
+            json!({"type": "active", "activeFlags": []}),
+            waiting,
+            json!({"type": "active", "activeFlags": []}),
+            json!({"type": "idle"}),
+            gone,
+        ]
+    );
+    let listed = watcher.request("session/list", json!({})).await.unwrap();
+    assert_eq!(status_of(&listed), json!({"type": "notLoaded"}), "{listed}");
     koda.stop().await;
 }
 
