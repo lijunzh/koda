@@ -24,6 +24,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **Tool calls run together say they start before they run, as Codex sends each call's begin as it starts.** A batch of calls (sub-agents, or edits to different files in Auto mode) announced each call only after the whole batch had finished, so a client showed nothing running, and a sub-agent's progress arrived before its own call had started. The TUI draws each call's header with its result, so results still land under their own headers.
 - **A session's requests take effect in the order they were sent, as Codex queues a thread's.** Each request ran on its own task, so a `session/settings/update` followed at once by a `turn/start`, or two updates in a row, could take effect in the other order. Requests that change a session or its turns now wait for that session's earlier ones; reads, and other sessions' requests, don't wait.
 - **A command's streamed output is capped as Codex caps it:** at most 10,000 lines per call, each at most 8 KiB (a longer line is cut and ends with `…`). A command that prints without end no longer floods a client until the server drops it. The model's copy of the output is unchanged.
+- **A session says what its turns run with when it opens or a client joins it,** in `settings` (model and alias, provider and endpoint, effort, mode), as Codex's `thread/start` answers with them. A client joining an open session is then sent its token counts, plan and turn's diff, which it wasn't there to hear, as Codex replays a thread's usage. Before, a client learned a session's settings only by changing them, which waited behind a running turn.
+- **A resumed session's context meter is right before its next model call.** Its token counts' `last`, how full the context was, came back as zero; it is now the session's latest stored call.
+- **`model/list` says what each model takes, as Codex's does:** `supportedReasoningEfforts`, `defaultReasoningEffort` and `isDefault`, so a client can offer a model's efforts without a table of its own.
+- **A prompt's images are kept on its `userMessage` item (`images`),** so a client that opens the session later shows them, as Codex's `userMessage` keeps its images.
+- **A mode changed with `turn/start` is said with `session/settings/updated`,** like any other change of settings.
 
 ### Changed
 

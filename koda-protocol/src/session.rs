@@ -73,6 +73,12 @@ pub struct Session {
     /// `session/status/changed` follows each change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<SessionStatus>,
+    /// What an open session's turns run with: the model and the alias it
+    /// was chosen by, the provider and its endpoint, the reasoning effort
+    /// and the mode, as Codex's `thread/start` answers with them.
+    /// `session/settings/updated` follows each change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<Box<SessionSettings>>,
     /// Its turns, oldest first, each with its items. Filled only by
     /// `session/start` resuming a session and by `session/read` with
     /// `includeTurns`, as Codex's `Thread.turns` is.

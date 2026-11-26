@@ -758,10 +758,25 @@ async fn a_client_that_joins_mid_turn_gets_the_turn_as_it_stands() {
         "{joined}"
     );
 
-    // Then the approval still waiting, and once it is answered, the call's
+    // What its turns run with, as `session/settings/updated` says it.
+    let settings = &joined["session"]["settings"];
+    assert_eq!(settings["model"], "stub", "{joined}");
+    assert_eq!(settings["mode"], "safe", "{joined}");
+
+    // Then what it wasn't there to hear (the token counts, on this turn),
+    // the approval still waiting, and once that is answered, the call's
     // end and the rest of the turn, the call's start not again.
     let resent = second.until_method("item/toolCall/requestApproval").await;
     assert_eq!(resent.last().unwrap()["id"], request_id);
+    let usage = resent
+        .iter()
+        .find(|l| l["method"] == "session/tokenUsage/updated")
+        .expect("the token counts follow the answer");
+    assert_eq!(usage["params"]["turnId"], turn["id"], "{usage}");
+    assert!(
+        usage["params"]["tokenUsage"]["total"]["totalTokens"].as_u64() > Some(0),
+        "{usage}"
+    );
     first
         .answer(&request_id, json!({"decision": {"type": "approve"}}))
         .await;
@@ -880,6 +895,30 @@ async fn a_sessions_requests_take_effect_in_the_order_sent() {
         })
         .collect();
     assert_eq!(said, modes, "each said in the order sent");
+    koda.stop().await;
+}
+
+/// Changing the mode with `turn/start` is a change of settings like any
+/// other: the session's clients hear it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mode_change_on_turn_start_is_said() {
+    let server = model(vec![text("ok")]).await;
+    let koda = Server::start(safe(&server), Duration::from_secs(60)).await;
+    let mut client = Client::ready(&koda).await;
+    let session = client.start_session().await;
+    client
+        .request(
+            "turn/start",
+            json!({"sessionId": session, "input": "hi", "mode": "plan"}),
+        )
+        .await
+        .unwrap();
+    let heard = client.until_method("turn/completed").await;
+    let updated = heard
+        .iter()
+        .find(|l| l["method"] == "session/settings/updated")
+        .expect("the new mode is said");
+    assert_eq!(updated["params"]["settings"]["mode"], "plan", "{updated}");
     koda.stop().await;
 }
 

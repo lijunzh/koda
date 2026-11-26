@@ -404,6 +404,7 @@ fn rebuild_from(messages: &[Message], progress: &mut HashMap<String, Vec<String>
                         text: msg.content.clone().unwrap_or_default(),
                         client_message_ids: Vec::new(),
                         mentions: Vec::new(),
+                        images: Vec::new(),
                     },
                 );
                 mid_turn = false;

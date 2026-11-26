@@ -316,10 +316,14 @@ and `nc -U ~/.config/koda/serve/koda.sock` is enough to try it.)
   starts again. A turn that is running comes as it stands, `inProgress`, with
   its completed items and then the ones still open: a message with its text
   so far, a tool call `inProgress` with the notices sent about it (an open
-  item has no `completedAtMs`). The client hears nothing of the session
-  before the answer, and after it everything that follows, once: the
-  session answers at one point in its own stream of messages, and the
-  client is subscribed there.
+  item has no `completedAtMs`). The answer's `settings` say what the
+  session's turns run with (model and alias, provider and endpoint, effort,
+  mode), as `session/settings/updated` does. After it come what the client
+  wasn't there to hear: the token counts, the plan and the turn's diff as
+  last sent, then the requests still waiting. The client hears nothing of
+  the session before the answer, and after it everything that follows,
+  once: the session answers at one point in its own stream of messages,
+  and the client is subscribed there.
 - **One writer per session.** One process writes a session at a time, as
   Codex keeps one writer per thread. While a session is open in one Koda
   process (this server, a `koda exec` run, or a TUI started with

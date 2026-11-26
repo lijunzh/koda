@@ -43,6 +43,12 @@ pub enum Item {
         /// contents after the text; the item carries only the paths.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         mentions: Vec<crate::turn::Mention>,
+        /// The images sent with it, as `turn/start` took them, so a client
+        /// that opens the session later shows them, as Codex's
+        /// `userMessage` keeps its images in `content`. Images read from
+        /// mentioned files aren't here: `mentions` names those.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<crate::turn::ImageInput>,
     },
     /// Text from the model. Complete text on `item/completed`.
     #[serde(rename_all = "camelCase")]
