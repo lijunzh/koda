@@ -363,6 +363,11 @@ security-boundary tests ran rather than being skipped, look for each name in
   directly, not the ones those pull in, which otherwise drift until an
   advisory fails the audit on release day (`rustix` in 0.6.3).
 - Run the release check on that commit, and release the commit it checked.
+- Record koda-evals' wire fixture from that commit
+  (`bin/capture-koda-wire <koda> <protocol>`, no model, about a minute) and run
+  koda-evals' `cargo test`: the same scripted run must grade alike through every
+  protocol. A difference is a change in what `koda exec --json` says; in 0.7.13
+  it found a sub-agent refusal that had carried no `detail` since 0.7.11.
 - Run `scripts/check_codex_parity.sh`: Koda's protocol against Codex's, field by
   field, Codex's experimental methods included (it uses the installed `codex`).
   A difference is renamed to Codex's name or recorded, with its reason, in

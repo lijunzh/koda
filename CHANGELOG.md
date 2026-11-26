@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- **A stored turn's items are flat, as Codex's `ThreadItem`:** `session/read`, `session/turns/list` and `session/resume` give each item's own fields (`type`, `id`, …) with `startedAtMs`, `completedAtMs` and, on a sub-agent's, `parentItemId` beside them, where the item was nested under `item`. Notifications are unchanged. The protocol is version 4; sessions stored before still read. Found by the new check of Koda's protocol against Codex's (`scripts/check_codex_parity.sh`), which compares every method and field and records each deliberate difference with its reason in `koda-protocol/codex-deviations.toml`.
+
+## [0.7.13] - 2026-11-26
+
 ### Added
 
 - **Every `Edit` and `Write` call carries its changes from the start, as Codex's `fileChange` item does,** on `item/started` and `item/completed`, whether or not anyone was asked about it. Before, `changes` came only with an approval or a Plan-mode block, so an edit made in Auto mode sent no diff a client could show.
