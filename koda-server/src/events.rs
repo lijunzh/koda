@@ -27,9 +27,10 @@ use koda_core::preview::DiffPreview;
 use koda_core::turn_diff::TurnDiff;
 use koda_protocol::item::{
     CommandAction, CompactionStatus, CompactionTrigger, FileUpdateChange, Item,
-    ItemCompletedNotification, ItemStartedNotification, OutputStream, PatchChangeKind,
-    TextDeltaNotification, ToolCallApprovalParams, ToolCallOutputDeltaNotification,
-    ToolCallProgressNotification, ToolCallStatus, ToolEffect, ToolKind, UserInputParams,
+    ItemCompletedNotification, ItemStartedNotification, MessagePhase, OutputStream,
+    PatchChangeKind, TextDeltaNotification, ToolCallApprovalParams,
+    ToolCallOutputDeltaNotification, ToolCallProgressNotification, ToolCallStatus, ToolEffect,
+    ToolKind, UserInputParams,
 };
 use koda_protocol::rpc::RequestId;
 use koda_protocol::server::{
@@ -497,7 +498,18 @@ impl EventProjector {
                     self.text_delta(item_id, text),
                 )));
             }
-            EngineEvent::TextDone => self.close_text(&mut out, &parent, TextKind::Message),
+            // Text in a response that also asked for tools was a note on the
+            // way; in one that didn't, the answer.
+            EngineEvent::TextDone { tools_follow } => {
+                let phase = tools_follow.map(|tools| {
+                    if tools {
+                        MessagePhase::Commentary
+                    } else {
+                        MessagePhase::FinalAnswer
+                    }
+                });
+                self.close_text(&mut out, &parent, TextKind::Message, phase)
+            }
             EngineEvent::ThinkingStart => {
                 self.open_text(&mut out, &parent, TextKind::Reasoning);
             }
@@ -509,7 +521,9 @@ impl EventProjector {
                     self.text_delta(item_id, text),
                 )));
             }
-            EngineEvent::ThinkingDone => self.close_text(&mut out, &parent, TextKind::Reasoning),
+            EngineEvent::ThinkingDone => {
+                self.close_text(&mut out, &parent, TextKind::Reasoning, None)
+            }
 
             EngineEvent::ToolCallStart {
                 id,
@@ -518,9 +532,11 @@ impl EventProjector {
                 preview,
                 ..
             } => {
-                // Text before a call is finished when the call starts.
-                self.close_text(&mut out, &parent, TextKind::Reasoning);
-                self.close_text(&mut out, &parent, TextKind::Message);
+                // Text before a call is finished when the call starts: a note
+                // on the way.
+                self.close_text(&mut out, &parent, TextKind::Reasoning, None);
+                let commentary = Some(MessagePhase::Commentary);
+                self.close_text(&mut out, &parent, TextKind::Message, commentary);
                 let effect = self.effect_of_call(&name, &args);
                 // An edit's changes from its start, asked about or not, as
                 // Codex's `fileChange` item carries them.
@@ -818,8 +834,8 @@ impl EventProjector {
             } => {
                 // What was shown of a failed reply is gone; its item ends.
                 if reason == EngineRetryReason::StreamFailed {
-                    self.close_text(&mut out, &parent, TextKind::Reasoning);
-                    self.close_text(&mut out, &parent, TextKind::Message);
+                    self.close_text(&mut out, &parent, TextKind::Reasoning, None);
+                    self.close_text(&mut out, &parent, TextKind::Message, None);
                 }
                 let message = match notice {
                     Some(Notice::Info(text) | Notice::Warn(text)) => text,
@@ -1123,7 +1139,7 @@ impl EventProjector {
             return open.id.clone();
         }
         let id = self.new_item_id(kind.prefix());
-        out.push(self.item_started(parent.clone(), kind.item(id.clone(), String::new())));
+        out.push(self.item_started(parent.clone(), kind.item(id.clone(), String::new(), None)));
         self.texts(kind).insert(
             parent.clone(),
             OpenText {
@@ -1134,9 +1150,17 @@ impl EventProjector {
         id
     }
 
-    fn close_text(&mut self, out: &mut Vec<Outgoing>, parent: &Option<String>, kind: TextKind) {
+    /// End the open text of `kind`; a message says what it was to the
+    /// turn, when that is known.
+    fn close_text(
+        &mut self,
+        out: &mut Vec<Outgoing>,
+        parent: &Option<String>,
+        kind: TextKind,
+        phase: Option<MessagePhase>,
+    ) {
         if let Some(open) = self.texts(kind).remove(parent) {
-            out.push(self.item_completed(parent.clone(), kind.item(open.id, open.text)));
+            out.push(self.item_completed(parent.clone(), kind.item(open.id, open.text, phase)));
         }
     }
 
@@ -1231,8 +1255,8 @@ impl EventProjector {
             .cloned()
             .collect();
         for parent in parents {
-            self.close_text(out, &parent, TextKind::Reasoning);
-            self.close_text(out, &parent, TextKind::Message);
+            self.close_text(out, &parent, TextKind::Reasoning, None);
+            self.close_text(out, &parent, TextKind::Message, None);
         }
         let mut open: Vec<(String, OpenCall)> = self.calls.drain().collect();
         open.sort_by(|a, b| a.0.cmp(&b.0));
@@ -1285,9 +1309,9 @@ impl TextKind {
         }
     }
 
-    fn item(self, id: String, text: String) -> Item {
+    fn item(self, id: String, text: String, phase: Option<MessagePhase>) -> Item {
         match self {
-            Self::Message => Item::AgentMessage { id, text },
+            Self::Message => Item::AgentMessage { id, text, phase },
             Self::Reasoning => Item::Reasoning { id, text },
         }
     }
@@ -1525,7 +1549,12 @@ mod tests {
                 (None, EngineEvent::ThinkingDone),
                 (None, text("Let me ")),
                 (None, text("check.")),
-                (None, EngineEvent::TextDone),
+                (
+                    None,
+                    EngineEvent::TextDone {
+                        tools_follow: Some(true),
+                    },
+                ),
                 (None, start("c1", "Bash")),
                 (
                     None,
@@ -1537,7 +1566,12 @@ mod tests {
                 ),
                 (None, result("c1", ToolOutcome::Success)),
                 (None, text("Done.")),
-                (None, EngineEvent::TextDone),
+                (
+                    None,
+                    EngineEvent::TextDone {
+                        tools_follow: Some(false),
+                    },
+                ),
                 (
                     None,
                     EngineEvent::Info {
@@ -1582,6 +1616,11 @@ mod tests {
         );
         balanced(&lines);
         assert_eq!(lines[7]["params"]["item"]["text"], "Let me check.");
+        // A note before a call, then the answer, as Codex's `phase` says;
+        // nothing while the text streams.
+        assert_eq!(lines[7]["params"]["item"]["phase"], "commentary");
+        assert_eq!(lines[13]["params"]["item"]["phase"], "final_answer");
+        assert!(lines[4]["params"]["item"].get("phase").is_none());
         assert_eq!(lines[9]["params"]["delta"], "ok\n");
         let call = &lines[10]["params"]["item"];
         assert_eq!(call["status"], "completed");
@@ -2027,7 +2066,7 @@ mod tests {
                 vec![
                     (None, turn_start()),
                     (None, text("hello")),
-                    (None, EngineEvent::TextDone),
+                    (None, EngineEvent::TextDone { tools_follow: None }),
                 ],
             );
             for line in lines.iter().filter(|l| l["method"] == "item/completed") {

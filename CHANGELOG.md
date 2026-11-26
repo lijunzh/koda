@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **An agent message says what it was to the turn, as Codex's `phase`:** on `item/completed`, `commentary` when the same model response also asked for tools (a note on the way) and `final_answer` when it didn't (the answer), spelled as Codex spells them. Codex's model sets it; Koda's server works it out from the response, so a client knows the answer when it completes rather than when the turn ends. Absent while the text streams and when the response was cut short. The TUI doesn't use it yet; the finished-turn fold will.
 - **One folded row opens on its own:** click a lookup row, a `Thought for` line or a `… +N lines` marker to open it in place, and click it again to close it, as in Claude Code's fullscreen view; a drag still selects and copies. From the keyboard, as Codex's F4: `F4` focuses the last row on screen, `↑`/`↓` move, `Enter` opens or closes, `→`/`←` open and close, `Esc` leaves. A sub-agent's `Done (…)` line opens to its calls.
 - **A working area above the prompt while a turn runs,** as Claude Code's status line and task list: what Koda is doing now and for how long (`Thinking… 12s`, `Reading Cargo.toml… 2s`, `Running a command… 1m 2s`, `Waiting on explore`, `Waiting for your approval`), and the turn's plan from `turn/plan/updated` under it while a step is left, with each step's mark, at most five steps at a time. **`Ctrl+T` hides or shows the plan,** as in Claude Code.
 

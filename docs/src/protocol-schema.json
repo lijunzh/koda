@@ -1404,6 +1404,17 @@
               "description": "The item's id.",
               "type": "string"
             },
+            "phase": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/MessagePhase"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What the text is to the turn, as Codex's agent message says:\na note on the way (`commentary`), as when tool calls follow it,\nor the turn's answer (`final_answer`). Codex's model says so\nitself; Koda's server sets it on completion from whether the\nsame response asked for tools. Absent while it streams, and\nwhen the response was cut short."
+            },
             "text": {
               "description": "The text so far: empty when it starts.",
               "type": "string"
@@ -2528,6 +2539,26 @@
         }
       ],
       "description": "Any message on the wire, in either direction.\n\nThe variants are told apart by their members, as the specification\ndoes: a request has `id` and `method`, a notification `method` only, a\nresponse `result`, an error `error`."
+    },
+    "MessagePhase": {
+      "description": "What an agent message is to its turn, Codex's `MessagePhase`, spelled as\nCodex spells it on the wire (`final_answer`, unlike Koda's other enums).",
+      "oneOf": [
+        {
+          "const": "commentary",
+          "description": "Text on the way: more tool calls or text may follow.",
+          "type": "string"
+        },
+        {
+          "const": "partial_answer",
+          "description": "Answer text more may follow. Codex's; Koda doesn't send it.",
+          "type": "string"
+        },
+        {
+          "const": "final_answer",
+          "description": "The turn's answer.",
+          "type": "string"
+        }
+      ]
     },
     "Model": {
       "description": "One model a provider offers.",
@@ -5354,6 +5385,17 @@
             "id": {
               "description": "The item's id.",
               "type": "string"
+            },
+            "phase": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/MessagePhase"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What the text is to the turn, as Codex's agent message says:\na note on the way (`commentary`), as when tool calls follow it,\nor the turn's answer (`final_answer`). Codex's model says so\nitself; Koda's server sets it on completion from whether the\nsame response asked for tools. Absent while it streams, and\nwhen the response was cut short."
             },
             "text": {
               "description": "The text so far: empty when it starts.",

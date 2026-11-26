@@ -42,7 +42,14 @@ pub enum EngineEvent {
     },
 
     /// The LLM finished streaming text. Flush any buffered output.
-    TextDone,
+    TextDone {
+        /// Whether the same response asked for tool calls, when its stream
+        /// ended as it should: the text was then a note on the way
+        /// (Codex's `commentary`) rather than the answer (`final_answer`).
+        /// `None` when the stream was cut short.
+        #[serde(default)]
+        tools_follow: Option<bool>,
+    },
 
     /// The LLM started a thinking/reasoning block.
     ThinkingStart,
@@ -1068,7 +1075,7 @@ mod tests {
     #[test]
     fn test_engine_event_simple_variants_roundtrip() {
         let variants = vec![
-            EngineEvent::TextDone,
+            EngineEvent::TextDone { tools_follow: None },
             EngineEvent::ThinkingStart,
             EngineEvent::ThinkingDone,
             EngineEvent::ResponseStart,

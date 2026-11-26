@@ -749,13 +749,13 @@ mod tests {
         sink.emit(EngineEvent::TextDelta {
             text: "hello".into(),
         });
-        sink.emit(EngineEvent::TextDone);
+        sink.emit(EngineEvent::TextDone { tools_follow: None });
 
         assert_eq!(sink.len(), 3);
         let events = sink.events();
         assert!(matches!(events[0], EngineEvent::ResponseStart));
         assert!(matches!(&events[1], EngineEvent::TextDelta { text } if text == "hello"));
-        assert!(matches!(events[2], EngineEvent::TextDone));
+        assert!(matches!(events[2], EngineEvent::TextDone { .. }));
     }
 
     #[test]
@@ -811,7 +811,7 @@ mod tests {
         sink.emit(EngineEvent::TextDelta {
             text: " world".into(),
         });
-        sink.emit(EngineEvent::TextDone);
+        sink.emit(EngineEvent::TextDone { tools_follow: None });
         sink.emit(EngineEvent::ThinkingDelta {
             text: "reasoning".into(),
         });
@@ -1100,7 +1100,7 @@ mod tests {
         sink.emit(EngineEvent::ThinkingDelta {
             text: "reasoning".into(),
         });
-        sink.emit(EngineEvent::TextDone);
+        sink.emit(EngineEvent::TextDone { tools_follow: None });
 
         assert!(registry.drain_status_events().is_empty());
         assert!(sink.take_lines().is_empty());
@@ -1496,7 +1496,7 @@ mod tests {
         let cases = [
             EngineEvent::ResponseStart,
             EngineEvent::TextDelta { text: "a".into() },
-            EngineEvent::TextDone,
+            EngineEvent::TextDone { tools_follow: None },
             EngineEvent::ToolCallStart {
                 id: "call-1".into(),
                 name: "Read".into(),
@@ -1601,7 +1601,7 @@ mod tests {
         let cases = [
             EngineEvent::ResponseStart,
             EngineEvent::TextDelta { text: "a".into() },
-            EngineEvent::TextDone,
+            EngineEvent::TextDone { tools_follow: None },
         ];
         for event in cases {
             assert_eq!(

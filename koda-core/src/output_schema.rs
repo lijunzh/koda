@@ -140,7 +140,10 @@ pub(crate) async fn conform(
     db.mark_message_complete(msg_id).await?;
     sink.emit(EngineEvent::ResponseStart);
     sink.emit(EngineEvent::TextDelta { text: text.clone() });
-    sink.emit(EngineEvent::TextDone);
+    // The schema's reply is the turn's answer.
+    sink.emit(EngineEvent::TextDone {
+        tools_follow: Some(false),
+    });
     if let Some(why) = mismatch(schema, &text) {
         sink.emit(EngineEvent::Warn {
             message: format!("The final reply doesn't match the output schema: {why}."),
