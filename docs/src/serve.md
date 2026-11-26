@@ -137,7 +137,7 @@ text.
   doesn't shift the next page.
 
 Each session has its `id`, `name`, `preview` (the start of its first prompt),
-`createdAt` and `updatedAt` in Unix seconds, `cwd`, the `model` and `provider`
+`createdAt` and `updatedAt` in Unix seconds, `cwd`, the `model` and `modelProvider`
 it last ran with, `mode`, where it came from (`source`, `originator`, the
 name its client gave in `initialize`, `forkedFromId` and `parentSessionId`),
 and its `status`, as Codex's `Thread.status`: `{"type": "notLoaded"}` for a

@@ -239,7 +239,7 @@ async fn a_run_opens_with_its_session_and_closes_with_the_summary() {
     assert_eq!(started["protocolVersion"], 2);
     assert_eq!(started["kodaVersion"], env!("CARGO_PKG_VERSION"));
     let session = &started["session"];
-    assert_eq!(session["provider"], "lm-studio");
+    assert_eq!(session["modelProvider"], "lm-studio");
     assert_eq!(session["model"], "stub");
     assert!(session["contextWindow"].as_u64().unwrap() > 0, "{session}");
     assert_eq!(session["mode"], "auto");
@@ -688,8 +688,8 @@ async fn turn_completed_adds_up_the_turn() {
     assert_eq!(turn["usage"]["modelCalls"], 2, "{turn}");
     for field in [
         "cachedInputTokens",
-        "cacheCreationTokens",
-        "reasoningTokens",
+        "cacheWriteInputTokens",
+        "reasoningOutputTokens",
     ] {
         assert_eq!(turn["usage"][field], 0, "{turn}");
     }

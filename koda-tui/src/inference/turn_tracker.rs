@@ -58,11 +58,12 @@ impl TurnTracker {
                     self.last_reply = Some(text.clone());
                 }
                 if let Item::UserMessage {
-                    client_message_ids, ..
+                    client_user_message_ids,
+                    ..
                 } = &done.item
                 {
                     self.steers
-                        .retain(|(id, _)| !client_message_ids.contains(id));
+                        .retain(|(id, _)| !client_user_message_ids.contains(id));
                 }
             }
             Outgoing::Notification(ServerNotification::TurnCompleted(done))
@@ -124,7 +125,7 @@ mod tests {
                 item: Item::UserMessage {
                     id: "user-2".into(),
                     text: "joined".into(),
-                    client_message_ids: ids.iter().map(|id| id.to_string()).collect(),
+                    client_user_message_ids: ids.iter().map(|id| id.to_string()).collect(),
                     mentions: Vec::new(),
                     images: Vec::new(),
                 },

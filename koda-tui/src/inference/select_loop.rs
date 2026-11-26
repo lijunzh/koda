@@ -268,7 +268,7 @@ impl TuiContext {
                         .map(|path| koda_client::protocol::turn::Mention { path })
                         .collect(),
                     skills: Vec::new(),
-                    client_message_id: None,
+                    client_user_message_id: None,
                     mode: None,
                     output_schema: None,
                 })
@@ -604,7 +604,7 @@ impl TuiContext {
                 session_id: self.session.id.clone(),
                 expected_turn_id: turn_id.to_string(),
                 input,
-                client_message_id: None,
+                client_user_message_id: None,
             })
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -765,7 +765,7 @@ impl TuiContext {
         };
         // Kept until the model receives it. If the turn has just ended the
         // host refuses it, and it comes back to the input box with the rest.
-        let client_message_id = tracker.steer_sent(text.clone());
+        let client_user_message_id = tracker.steer_sent(text.clone());
         let turn = tracker.turn_id().to_string();
         let steered = self
             .client
@@ -773,7 +773,7 @@ impl TuiContext {
                 session_id: self.session.id.clone(),
                 expected_turn_id: turn,
                 input: text,
-                client_message_id: Some(client_message_id),
+                client_user_message_id: Some(client_user_message_id),
             })
             .await;
         if let Err(e) = steered {

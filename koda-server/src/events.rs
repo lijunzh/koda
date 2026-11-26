@@ -254,9 +254,9 @@ impl EventProjector {
                     total_tokens: usage.input_tokens + usage.output_tokens,
                     input_tokens: usage.input_tokens,
                     cached_input_tokens: usage.cached_input_tokens,
-                    cache_write_input_tokens: usage.cache_creation_tokens,
+                    cache_write_input_tokens: usage.cache_write_input_tokens,
                     output_tokens: usage.output_tokens,
-                    reasoning_output_tokens: usage.reasoning_tokens,
+                    reasoning_output_tokens: usage.reasoning_output_tokens,
                 },
             );
         }
@@ -340,14 +340,14 @@ impl EventProjector {
     pub fn user_message(
         &mut self,
         text: String,
-        client_message_ids: Vec<String>,
+        client_user_message_ids: Vec<String>,
         mentions: Vec<koda_protocol::turn::Mention>,
         images: Vec<koda_protocol::turn::ImageInput>,
     ) -> Vec<Outgoing> {
         let item = Item::UserMessage {
             id: self.new_item_id("user"),
             text,
-            client_message_ids,
+            client_user_message_ids,
             mentions,
             images,
         };
@@ -1265,9 +1265,9 @@ pub fn usage_of(usage: &UsageTotals) -> Usage {
     Usage {
         input_tokens: n(usage.input_tokens()),
         cached_input_tokens: n(usage.cache_read_tokens),
-        cache_creation_tokens: n(usage.cache_creation_tokens),
+        cache_write_input_tokens: n(usage.cache_creation_tokens),
         output_tokens: n(usage.completion_tokens),
-        reasoning_tokens: n(usage.thinking_tokens),
+        reasoning_output_tokens: n(usage.thinking_tokens),
         model_calls: n(usage.api_calls),
         web_search_requests: n(usage.web_search_requests),
     }
@@ -1361,9 +1361,9 @@ pub(crate) fn breakdown_of(usage: &UsageTotals) -> TokenUsageBreakdown {
 fn add_usage(total: &mut Usage, call: &Usage) {
     total.input_tokens += call.input_tokens;
     total.cached_input_tokens += call.cached_input_tokens;
-    total.cache_creation_tokens += call.cache_creation_tokens;
+    total.cache_write_input_tokens += call.cache_write_input_tokens;
     total.output_tokens += call.output_tokens;
-    total.reasoning_tokens += call.reasoning_tokens;
+    total.reasoning_output_tokens += call.reasoning_output_tokens;
     total.model_calls += call.model_calls;
     total.web_search_requests += call.web_search_requests;
 }

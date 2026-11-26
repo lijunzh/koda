@@ -406,7 +406,7 @@ fn rebuild_from(messages: &[Message], progress: &mut HashMap<String, Vec<String>
                     Item::UserMessage {
                         id: format!("user-m{}", msg.id),
                         text: msg.content.clone().unwrap_or_default(),
-                        client_message_ids: Vec::new(),
+                        client_user_message_ids: Vec::new(),
                         mentions: Vec::new(),
                         images: Vec::new(),
                     },

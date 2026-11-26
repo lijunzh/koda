@@ -469,7 +469,7 @@ async fn a_prompt_while_busy_is_refused_and_a_steer_is_taken() {
         .call(
             "turn/steer",
             json!({"sessionId": session, "expectedTurnId": turn,
-                   "input": "STEER-MARKER", "clientMessageId": "s1"}),
+                   "input": "STEER-MARKER", "clientUserMessageId": "s1"}),
         )
         .await
         .unwrap();

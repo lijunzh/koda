@@ -37,8 +37,12 @@ pub enum Item {
         id: String,
         /// The text, as the user wrote it.
         text: String,
-        /// The client's ids for the messages it carries, where it gave them.
-        client_message_ids: Vec<String>,
+        /// The client's ids for the messages it carries, where it gave them
+        /// (`clientUserMessageId` on `turn/start` and `turn/steer`). Codex's
+        /// item carries one, `clientId`; Koda's can carry several, since
+        /// steering texts that reach the model together are one item.
+        #[serde(alias = "clientMessageIds")]
+        client_user_message_ids: Vec<String>,
         /// The files and directories it mentioned. The model was sent their
         /// contents after the text; the item carries only the paths.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -169,10 +173,11 @@ pub enum PatchChangeKind {
     Add,
     /// A file removed.
     Delete,
-    /// A file changed, and moved when `movePath` is set.
-    #[serde(rename_all = "camelCase")]
+    /// A file changed, and moved when `move_path` is set. Codex's spelling,
+    /// in snake case as Codex's is.
     Update {
         /// Where it moves to. Koda's tools never move a file.
+        #[serde(alias = "movePath")]
         move_path: Option<String>,
     },
 }
@@ -525,5 +530,46 @@ mod tests {
             "switch_mode"
         );
         assert_eq!(serde_json::to_value(ToolKind::Execute).unwrap(), "execute");
+    }
+
+    /// Turns stored before the names followed Codex's still read, and are
+    /// sent with Codex's names.
+    #[test]
+    fn turns_stored_under_the_old_names_still_read() {
+        let item: TurnItem = serde_json::from_value(serde_json::json!({
+            "item": {"type": "userMessage", "id": "u1", "text": "hi", "clientMessageIds": ["m1"]},
+        }))
+        .unwrap();
+        let Item::UserMessage {
+            client_user_message_ids,
+            ..
+        } = &item.item
+        else {
+            panic!("{item:?}");
+        };
+        assert_eq!(client_user_message_ids, &["m1".to_string()]);
+        let sent = serde_json::to_value(&item).unwrap();
+        assert_eq!(
+            sent["item"]["clientUserMessageIds"],
+            serde_json::json!(["m1"])
+        );
+
+        let moved: PatchChangeKind =
+            serde_json::from_value(serde_json::json!({"type": "update", "movePath": "b.rs"}))
+                .unwrap();
+        assert_eq!(
+            serde_json::to_value(&moved).unwrap(),
+            serde_json::json!({"type": "update", "move_path": "b.rs"})
+        );
+
+        let turn: crate::turn::Turn = serde_json::from_value(serde_json::json!({
+            "id": "t1", "status": "completed", "error": null, "durationMs": 5,
+            "usage": {"inputTokens": 10, "cachedInputTokens": 0, "cacheCreationTokens": 3,
+                      "outputTokens": 2, "reasoningTokens": 1, "modelCalls": 1},
+        }))
+        .unwrap();
+        let usage = turn.usage.unwrap();
+        assert_eq!(usage.cache_write_input_tokens, 3);
+        assert_eq!(usage.reasoning_output_tokens, 1);
     }
 }

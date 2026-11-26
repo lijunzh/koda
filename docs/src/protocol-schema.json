@@ -818,8 +818,8 @@
           "description": "The model.",
           "type": "string"
         },
-        "provider": {
-          "description": "The provider.",
+        "modelProvider": {
+          "description": "The provider. Codex's `modelProvider`.",
           "type": "string"
         },
         "response": {
@@ -878,7 +878,7 @@
       "required": [
         "sessionId",
         "success",
-        "provider",
+        "modelProvider",
         "model",
         "response",
         "durationMs",
@@ -1269,8 +1269,8 @@
         {
           "description": "What the user said: a turn's prompt, or steering text added while it\nran. Steering texts that reached the model together are one item.",
           "properties": {
-            "clientMessageIds": {
-              "description": "The client's ids for the messages it carries, where it gave them.",
+            "clientUserMessageIds": {
+              "description": "The client's ids for the messages it carries, where it gave them\n(`clientUserMessageId` on `turn/start` and `turn/steer`). Codex's\nitem carries one, `clientId`; Koda's can carry several, since\nsteering texts that reach the model together are one item.",
               "items": {
                 "type": "string"
               },
@@ -1307,7 +1307,7 @@
             "type",
             "id",
             "text",
-            "clientMessageIds"
+            "clientUserMessageIds"
           ],
           "type": "object"
         },
@@ -2754,9 +2754,9 @@
           "type": "object"
         },
         {
-          "description": "A file changed, and moved when `movePath` is set.",
+          "description": "A file changed, and moved when `move_path` is set. Codex's spelling,\nin snake case as Codex's is.",
           "properties": {
-            "movePath": {
+            "move_path": {
               "description": "Where it moves to. Koda's tools never move a file.",
               "type": [
                 "string",
@@ -3168,6 +3168,13 @@
             "null"
           ]
         },
+        "modelProvider": {
+          "description": "The provider, such as `lm-studio` or `anthropic`. Codex's\n`modelProvider`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "name": {
           "description": "Its title, set from the first prompt.",
           "type": [
@@ -3193,13 +3200,6 @@
           "default": "",
           "description": "The first user message; empty before there is one.",
           "type": "string"
-        },
-        "provider": {
-          "description": "The provider, such as `lm-studio` or `anthropic`.",
-          "type": [
-            "string",
-            "null"
-          ]
         },
         "settings": {
           "anyOf": [
@@ -3818,18 +3818,18 @@
     "SessionNameUpdatedNotification": {
       "description": "`session/name/updated`: a session was named. Codex's\n`thread/name/updated`.",
       "properties": {
-        "name": {
-          "description": "Its name now.",
-          "type": "string"
-        },
         "sessionId": {
           "description": "The session.",
+          "type": "string"
+        },
+        "sessionName": {
+          "description": "Its name now. Codex's `threadName`.",
           "type": "string"
         }
       },
       "required": [
         "sessionId",
-        "name"
+        "sessionName"
       ],
       "type": "object"
     },
@@ -3865,9 +3865,9 @@
       ],
       "type": "object"
     },
-    "SessionRewindParams": {
+    "SessionRevertParams": {
       "additionalProperties": false,
-      "description": "`session/rewind`: take a turn and every turn after it out of an open,\nidle session's history, as Codex's `thread/revert` replaces a thread's\nhistory with the part before one turn. Files the turns changed stay as\nthey are. Refused while a turn runs, for a turn from before Koda\nrecorded where turns start (0.7.8), and across a compaction.",
+      "description": "`session/revert`: take a turn and every turn after it out of an open,\nidle session's history, as Codex's `thread/revert` replaces a thread's\nhistory with the part before one turn. Files the turns changed stay as\nthey are. Refused while a turn runs, for a turn from before Koda\nrecorded where turns start (0.7.8), and across a compaction.",
       "properties": {
         "beforeTurnId": {
           "description": "The first turn taken out, as `session/turns/list` names it.",
@@ -3884,8 +3884,8 @@
       ],
       "type": "object"
     },
-    "SessionRewindResponse": {
-      "description": "The answer to `session/rewind`.",
+    "SessionRevertResponse": {
+      "description": "The answer to `session/revert`.",
       "type": "object"
     },
     "SessionSettings": {
@@ -3987,14 +3987,14 @@
           "description": "The session.",
           "type": "string"
         },
-        "settings": {
+        "sessionSettings": {
           "$ref": "#/$defs/SessionSettings",
-          "description": "All of its settings, as they are now."
+          "description": "All of its settings, as they are now. Codex's `threadSettings`."
         }
       },
       "required": [
         "sessionId",
-        "settings"
+        "sessionSettings"
       ],
       "type": "object"
     },
@@ -4553,8 +4553,8 @@
           "description": "The model id, such as `claude-sonnet-5-5`.",
           "type": "string"
         },
-        "provider": {
-          "description": "The provider, such as `lm-studio` or `anthropic`.",
+        "modelProvider": {
+          "description": "The provider, such as `lm-studio` or `anthropic`. Codex's\n`modelProvider`.",
           "type": "string"
         },
         "sandbox": {
@@ -4564,7 +4564,7 @@
       },
       "required": [
         "model",
-        "provider",
+        "modelProvider",
         "baseUrl",
         "contextWindow",
         "mode",
@@ -5258,7 +5258,7 @@
       "additionalProperties": false,
       "description": "`turn/start`.",
       "properties": {
-        "clientMessageId": {
+        "clientUserMessageId": {
           "description": "The client's id for the message, echoed on its `userMessage` item.",
           "type": [
             "string",
@@ -5375,7 +5375,7 @@
       "additionalProperties": false,
       "description": "`turn/steer`.",
       "properties": {
-        "clientMessageId": {
+        "clientUserMessageId": {
           "description": "The client's id for the text, echoed on the `userMessage` item that\ndelivers it.",
           "type": [
             "string",
@@ -5418,8 +5418,8 @@
     "Usage": {
       "description": "Tokens and model calls.",
       "properties": {
-        "cacheCreationTokens": {
-          "description": "Input tokens written to the provider's cache.",
+        "cacheWriteInputTokens": {
+          "description": "Input tokens written to the provider's cache. Codex's\n`cacheWriteInputTokens`.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
@@ -5448,8 +5448,8 @@
           "minimum": 0,
           "type": "integer"
         },
-        "reasoningTokens": {
-          "description": "Output tokens spent reasoning.",
+        "reasoningOutputTokens": {
+          "description": "Output tokens spent reasoning. Codex's `reasoningOutputTokens`.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
@@ -5465,9 +5465,9 @@
       "required": [
         "inputTokens",
         "cachedInputTokens",
-        "cacheCreationTokens",
+        "cacheWriteInputTokens",
         "outputTokens",
-        "reasoningTokens",
+        "reasoningOutputTokens",
         "modelCalls"
       ],
       "type": "object"
@@ -5845,12 +5845,12 @@
         "$ref": "#/$defs/SessionReadResponse"
       }
     },
-    "session/rewind": {
+    "session/revert": {
       "params": {
-        "$ref": "#/$defs/SessionRewindParams"
+        "$ref": "#/$defs/SessionRevertParams"
       },
       "result": {
-        "$ref": "#/$defs/SessionRewindResponse"
+        "$ref": "#/$defs/SessionRevertResponse"
       }
     },
     "session/settings/update": {

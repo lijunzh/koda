@@ -1635,7 +1635,7 @@ mod tests {
                 Item::UserMessage {
                     id: "u1".into(),
                     text: "look around".into(),
-                    client_message_ids: Vec::new(),
+                    client_user_message_ids: Vec::new(),
                     mentions: Vec::new(),
                     images: Vec::new(),
                 },

@@ -323,8 +323,8 @@ pub struct ExecSummary {
     pub success: bool,
     /// Why it failed.
     pub error: Option<String>,
-    /// The provider.
-    pub provider: String,
+    /// The provider. Codex's `modelProvider`.
+    pub model_provider: String,
     /// The model.
     pub model: String,
     /// The last reply.

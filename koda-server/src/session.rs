@@ -71,7 +71,7 @@ pub(crate) enum SessionCommand {
     },
     /// `session/compact/start`.
     Compact { reply: oneshot::Sender<Answer> },
-    /// `session/rewind`.
+    /// `session/revert`.
     Rewind {
         before_turn_id: String,
         reply: oneshot::Sender<Answer>,
@@ -360,7 +360,7 @@ pub(crate) async fn open(
         status: Some(koda_protocol::session::SessionStatus::Idle),
         settings: Some(Box::new(settings.clone())),
         model: Some(config.model.clone()),
-        provider: Some(config.provider_type.meta().name.to_string()),
+        model_provider: Some(config.provider_type.meta().name.to_string()),
         context_window: Some(config.max_context_tokens as u64),
         mode: Some(mode),
         tools: Some(
@@ -636,7 +636,7 @@ impl SessionTask {
                 } => {
                     let _ =
                         reply.send(self.rewind(&before_turn_id).await.and_then(|()| {
-                            to_json(koda_protocol::session::SessionRewindResponse {})
+                            to_json(koda_protocol::session::SessionRevertResponse {})
                         }));
                     Next::Idle
                 }
@@ -983,13 +983,13 @@ impl SessionTask {
         self.sink.notify(ServerNotification::SessionSettingsUpdated(
             SessionSettingsUpdatedNotification {
                 session_id: self.session.id.clone(),
-                settings,
+                session_settings: settings,
             },
         ));
     }
 
     /// Compact the session as a turn of its own, answering `reply` first.
-    /// `session/rewind`: the turn's starting point, as it stored it, and
+    /// `session/revert`: the turn's starting point, as it stored it, and
     /// everything from there taken out of the history.
     async fn rewind(&mut self, before_turn_id: &str) -> Result<(), ErrorObject> {
         use koda_state::session_store::{MessageBoundary, REWIND_KIND, SessionStore};
@@ -1029,7 +1029,7 @@ impl SessionTask {
     }
 
     /// Store where the session's messages stand as turn `turn_id` starts, so
-    /// it can be rewound to before it (`session/rewind`). `boundary` is the
+    /// it can be rewound to before it (`session/revert`). `boundary` is the
     /// point taken before the prompt's message was stored, for a prompt.
     async fn mark_turn_start(
         &self,
@@ -1075,7 +1075,7 @@ impl SessionTask {
             images,
             mentions,
             skills,
-            client_message_id,
+            client_user_message_id,
             mode,
             output_schema,
             ..
@@ -1127,7 +1127,7 @@ impl SessionTask {
         // The turn reads the conversation back from the database, so a
         // message that wasn't saved would be sent as nothing.
         let session_id = self.session.id.clone();
-        // Where the history stands before the prompt, for `session/rewind`.
+        // Where the history stands before the prompt, for `session/revert`.
         let boundary = {
             use koda_state::session_store::SessionStore;
             self.session.db.message_boundary(&session_id).await.ok()
@@ -1165,7 +1165,7 @@ impl SessionTask {
         }));
         self.sink.begin_turn(
             input,
-            client_message_id.into_iter().collect(),
+            client_user_message_id.into_iter().collect(),
             mentions,
             sent_images,
         );
@@ -1461,7 +1461,7 @@ impl SessionTask {
                             let queued = engine_tx
                                 .try_send(EngineCommand::QueueNext { text: params.input });
                             if queued.is_ok() {
-                                sink.queue_steer(params.client_message_id);
+                                sink.queue_steer(params.client_user_message_id);
                             }
                             let _ = reply.send(match queued {
                                 Ok(()) => to_json(TurnSteerResponse {
@@ -1687,7 +1687,7 @@ pub(crate) fn describe(stored: &koda_state::session_store::SessionInfo) -> Sessi
         // As stored: the choice as made, which may be an alias. An open
         // session says what it resolved to.
         model: stored.model.clone(),
-        provider: stored.provider.clone(),
+        model_provider: stored.provider.clone(),
         context_window: None,
         mode: stored
             .mode
@@ -1822,12 +1822,12 @@ impl HostSink {
     fn begin_turn(
         &self,
         prompt: String,
-        client_message_ids: Vec<String>,
+        client_user_message_ids: Vec<String>,
         mentions: Vec<Mention>,
         images: Vec<ImageInput>,
     ) {
         let mut state = self.lock();
-        state.prompt = Some((prompt, client_message_ids, mentions, images));
+        state.prompt = Some((prompt, client_user_message_ids, mentions, images));
         state.steers.clear();
     }
 
@@ -1911,8 +1911,8 @@ impl HostSink {
         self.send(&mut state, vec![Outgoing::Notification(notification)]);
     }
 
-    fn queue_steer(&self, client_message_id: Option<String>) {
-        self.lock().steers.push_back(client_message_id);
+    fn queue_steer(&self, client_user_message_id: Option<String>) {
+        self.lock().steers.push_back(client_user_message_id);
     }
 
     /// The turn has returned: send its `turn/completed`, with `error` on it
@@ -2060,7 +2060,7 @@ impl HostSink {
             crate::live_turn::LiveTurn::observe(&mut state.live_turn, message);
             match message {
                 Outgoing::Notification(ServerNotification::SessionSettingsUpdated(updated)) => {
-                    state.settings = Some(updated.settings.clone());
+                    state.settings = Some(updated.session_settings.clone());
                 }
                 Outgoing::Notification(ServerNotification::TurnPlanUpdated(_)) => {
                     state.last_plan = Some(message.clone());

@@ -179,7 +179,7 @@ impl Koda {
     async fn turn_with(
         &self,
         input: &str,
-        client_message_id: Option<&str>,
+        client_user_message_id: Option<&str>,
     ) -> Result<String, RequestError> {
         let started = self
             .client
@@ -189,7 +189,7 @@ impl Koda {
                 images: Vec::new(),
                 mentions: Vec::new(),
                 skills: Vec::new(),
-                client_message_id: client_message_id.map(str::to_string),
+                client_user_message_id: client_user_message_id.map(str::to_string),
                 mode: None,
                 output_schema: None,
             })
@@ -214,7 +214,7 @@ impl Koda {
                 session_id: self.session.clone(),
                 expected_turn_id: turn_id.to_string(),
                 input: input.to_string(),
-                client_message_id: Some(id.to_string()),
+                client_user_message_id: Some(id.to_string()),
             })
             .await
             .map(|r| r.turn_id)
@@ -338,8 +338,8 @@ async fn a_turn_runs_from_start_to_finish() {
     }
     let items = completed(&messages);
     assert!(
-        matches!(items[0], Item::UserMessage { text, client_message_ids, .. }
-            if text == "Say hi" && client_message_ids == &["m1".to_string()]),
+        matches!(items[0], Item::UserMessage { text, client_user_message_ids, .. }
+            if text == "Say hi" && client_user_message_ids == &["m1".to_string()]),
         "{items:?}"
     );
     assert!(
@@ -403,7 +403,7 @@ async fn a_host_starts_from_the_config_and_this_runs_values() {
         .request::<methods::SessionStart>(SessionStartParams::default())
         .await
         .unwrap();
-    assert_eq!(started.session.provider.as_deref(), Some("lm-studio"));
+    assert_eq!(started.session.model_provider.as_deref(), Some("lm-studio"));
     assert_eq!(started.session.model.as_deref(), Some("stub"));
     assert_eq!(started.session.context_window, Some(100_000));
     assert_eq!(started.session.mode, Some(TrustMode::Safe));
@@ -683,9 +683,9 @@ async fn a_steer_reaches_the_model_as_a_user_message() {
         .filter_map(|item| match item {
             Item::UserMessage {
                 text,
-                client_message_ids,
+                client_user_message_ids,
                 ..
-            } => Some((text.as_str(), client_message_ids.clone())),
+            } => Some((text.as_str(), client_user_message_ids.clone())),
             _ => None,
         })
         .collect();
@@ -790,7 +790,7 @@ async fn requests_without_a_running_turn_or_session_are_refused() {
                 images: Vec::new(),
                 mentions: Vec::new(),
                 skills: Vec::new(),
-                client_message_id: None,
+                client_user_message_id: None,
                 mode: Some(TrustMode::Safe),
                 output_schema: None,
             })
@@ -858,7 +858,7 @@ async fn mentions_are_read_by_the_host() {
                 .map(mention)
                 .to_vec(),
             skills: Vec::new(),
-            client_message_id: None,
+            client_user_message_id: None,
             mode: None,
             output_schema: None,
         })
@@ -901,7 +901,7 @@ async fn mentions_are_read_by_the_host() {
             images: Vec::new(),
             mentions: vec![mention("notes.md")],
             skills: Vec::new(),
-            client_message_id: None,
+            client_user_message_id: None,
             mode: None,
             output_schema: None,
         })
@@ -938,7 +938,7 @@ async fn a_mentioned_files_folder_instructions_come_with_it() {
         images: Vec::new(),
         mentions: vec![Mention { path: path.into() }],
         skills: Vec::new(),
-        client_message_id: None,
+        client_user_message_id: None,
         mode: None,
         output_schema: None,
     };
@@ -1027,7 +1027,7 @@ async fn a_named_skill_is_sent_with_the_text() {
                 name: "deploy".into(),
                 path: None,
             }],
-            client_message_id: None,
+            client_user_message_id: None,
             mode: None,
             output_schema: None,
         })
@@ -1162,7 +1162,7 @@ async fn a_resumed_session_keeps_its_history() {
             images: Vec::new(),
             mentions: Vec::new(),
             skills: Vec::new(),
-            client_message_id: None,
+            client_user_message_id: None,
             mode: None,
             output_schema: None,
         })
@@ -1468,7 +1468,7 @@ async fn sessions_are_listed_newest_first_with_their_first_prompt() {
         "{stored:?}"
     );
     assert_eq!(stored.model.as_deref(), Some("stub"));
-    assert_eq!(stored.provider.as_deref(), Some("lm-studio"));
+    assert_eq!(stored.model_provider.as_deref(), Some("lm-studio"));
     assert_eq!(
         stored.source,
         Some(koda_client::protocol::session::SessionSourceKind::AppServer)
@@ -1663,7 +1663,7 @@ async fn the_host_enforces_the_mode_rules() {
                 panic!("warned: {}", w.message);
             }
             Outgoing::Notification(ServerNotification::SessionSettingsUpdated(n)) => {
-                break n.settings.mode;
+                break n.session_settings.mode;
             }
             _ => {}
         }
@@ -1756,7 +1756,7 @@ async fn a_named_session_keeps_its_name_over_the_first_prompt() {
         .unwrap();
     let seen = koda.until("session/name/updated").await;
     assert!(
-        matches!(seen.last(), Some(Outgoing::Notification(ServerNotification::SessionNameUpdated(n))) if n.name == "Parser work"),
+        matches!(seen.last(), Some(Outgoing::Notification(ServerNotification::SessionNameUpdated(n))) if n.session_name == "Parser work"),
         "{seen:?}"
     );
     koda.turn("fix the parser please").await;
@@ -2129,7 +2129,7 @@ impl Koda {
         match self.until("session/settings/updated").await.pop() {
             Some(Outgoing::Notification(ServerNotification::SessionSettingsUpdated(n))) => {
                 assert_eq!(n.session_id, self.session);
-                n.settings
+                n.session_settings
             }
             other => panic!("expected session/settings/updated, got {other:?}"),
         }
@@ -2387,7 +2387,7 @@ async fn models_and_providers_are_listed() {
         .await
         .unwrap()
         .session;
-    assert_eq!(by_address.provider.as_deref(), Some("deepseek"));
+    assert_eq!(by_address.model_provider.as_deref(), Some("deepseek"));
     koda.client.shutdown().await;
 }
 
@@ -2472,7 +2472,7 @@ async fn a_new_session_starts_from_the_saved_choice() {
             ..Default::default()
         })
         .await;
-    assert_eq!(other.provider.as_deref(), Some("ollama"));
+    assert_eq!(other.model_provider.as_deref(), Some("ollama"));
     assert_ne!(other.model.as_deref(), Some("saved-model"));
     koda.client.shutdown().await;
 }
@@ -3814,7 +3814,7 @@ async fn a_mentioned_mcp_resource_is_read_and_sent() {
         images: Vec::new(),
         mentions: vec![Mention { path: path.into() }],
         skills: Vec::new(),
-        client_message_id: None,
+        client_user_message_id: None,
         mode: None,
         output_schema: None,
     };
@@ -4035,12 +4035,12 @@ async fn the_model_lists_and_reads_mcp_resources() {
     koda.client.shutdown().await;
 }
 
-/// `session/rewind` takes a turn and every later one out of the history,
+/// `session/revert` takes a turn and every later one out of the history,
 /// as Codex's `thread/revert` does: the next prompt goes out without them,
 /// and the stored turns end before them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_rewind_takes_turns_out_of_the_history() {
-    use koda_client::protocol::session::{SessionRewindParams, SessionTurnsListParams};
+    use koda_client::protocol::session::{SessionRevertParams, SessionTurnsListParams};
     let server = model(vec![text("One."), text("Two."), text("Three.")]).await;
     let mut koda = Koda::start(config(&server)).await;
     koda.turn("first prompt").await;
@@ -4050,7 +4050,7 @@ async fn a_rewind_takes_turns_out_of_the_history() {
 
     let rewind = |turn: &str| {
         koda.client
-            .request::<methods::SessionRewind>(SessionRewindParams {
+            .request::<methods::SessionRevert>(SessionRevertParams {
                 session_id: koda.session.clone(),
                 before_turn_id: turn.to_string(),
             })

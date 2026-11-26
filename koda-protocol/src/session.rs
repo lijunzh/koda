@@ -30,9 +30,10 @@ pub struct Session {
     /// The model id, such as `claude-sonnet-5-5`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// The provider, such as `lm-studio` or `anthropic`.
+    /// The provider, such as `lm-studio` or `anthropic`. Codex's
+    /// `modelProvider`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
+    pub model_provider: Option<String>,
     /// The context window in tokens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
@@ -202,8 +203,8 @@ pub struct SessionSettings {
 pub struct SessionSettingsUpdatedNotification {
     /// The session.
     pub session_id: String,
-    /// All of its settings, as they are now.
-    pub settings: SessionSettings,
+    /// All of its settings, as they are now. Codex's `threadSettings`.
+    pub session_settings: SessionSettings,
 }
 
 /// Who answers a session's approvals, questions and loop-cap decisions.
@@ -402,24 +403,24 @@ pub struct SessionCompactStartParams {
 #[serde(rename_all = "camelCase")]
 pub struct SessionCompactStartResponse {}
 
-/// `session/rewind`: take a turn and every turn after it out of an open,
+/// `session/revert`: take a turn and every turn after it out of an open,
 /// idle session's history, as Codex's `thread/revert` replaces a thread's
 /// history with the part before one turn. Files the turns changed stay as
 /// they are. Refused while a turn runs, for a turn from before Koda
 /// recorded where turns start (0.7.8), and across a compaction.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SessionRewindParams {
+pub struct SessionRevertParams {
     /// The session.
     pub session_id: String,
     /// The first turn taken out, as `session/turns/list` names it.
     pub before_turn_id: String,
 }
 
-/// The answer to `session/rewind`.
+/// The answer to `session/revert`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct SessionRewindResponse {}
+pub struct SessionRevertResponse {}
 
 /// `session/read`: a stored session, without opening it. Codex's
 /// `thread/read`.
@@ -613,8 +614,8 @@ pub struct SessionNameSetResponse {}
 pub struct SessionNameUpdatedNotification {
     /// The session.
     pub session_id: String,
-    /// Its name now.
-    pub name: String,
+    /// Its name now. Codex's `threadName`.
+    pub session_name: String,
 }
 
 /// What a session is doing. Codex's `ThreadStatus`.
