@@ -1109,7 +1109,7 @@ async fn connection(id: u64, stream: UnixStream, router: Arc<Router>, initialize
                 // Resuming a session the host already has open attaches to
                 // it, with the requests still waiting in it sent after the
                 // answer, as Codex replays them to a client that resumes.
-                let resuming = (method == methods::SessionStart::NAME)
+                let resuming = (method == methods::SessionResume::NAME)
                     .then(|| {
                         request.params.as_ref()?["sessionId"]
                             .as_str()
@@ -1175,6 +1175,7 @@ async fn connection(id: u64, stream: UnixStream, router: Arc<Router>, initialize
                             // A connection subscribes to the sessions it
                             // opens, before it hears the answer.
                             if (method == methods::SessionStart::NAME
+                                || method == methods::SessionResume::NAME
                                 || method == methods::SessionFork::NAME)
                                 && let Some(session) = result["session"]["id"].as_str()
                             {
@@ -1299,7 +1300,7 @@ pub async fn connect(socket: &Path) -> Result<crate::in_process::Launched, Reque
                         Some(HostCommand::Join { reply, .. }) => {
                             let _ = reply.send(Err(ErrorObject::new(
                                 codes::INVALID_REQUEST,
-                                "a client joins a session with session/start",
+                                "a client joins a session with session/resume",
                             )));
                             continue;
                         }

@@ -208,6 +208,14 @@ pub(crate) async fn request_approval(
     loop {
         tokio::select! {
             cmd = cmd_rx.recv() => match cmd {
+                // A no that stops the turn, as an interrupt does.
+                Some(EngineCommand::ApprovalResponse {
+                    id,
+                    decision: ApprovalDecision::Cancel,
+                }) if id == approval_id => {
+                    cancel.cancel();
+                    return None;
+                }
                 Some(EngineCommand::ApprovalResponse { id, decision }) if id == approval_id => {
                     return Some(decision);
                 }

@@ -1,6 +1,6 @@
 //! Which session an id typed for `--session` / `--resume` names, as
 //! `codex exec resume` works it out: a full id goes to the host as it is
-//! (`session/start` takes only full ids, as Codex's `thread/resume` does),
+//! (`session/resume` takes only full ids, as Codex's `thread/resume` does),
 //! and anything shorter is matched against this project's sessions, which
 //! `session/list` gives page by page, as Codex looks a name up over
 //! `thread/list`.

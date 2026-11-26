@@ -257,7 +257,7 @@ pub struct ItemCompletedNotification {
     pub completed_at_ms: i64,
 }
 
-/// An item of a stored turn, as `session/start` (resuming) and
+/// An item of a stored turn, as `session/resume` and
 /// `session/read` return it: what `item/completed` sent, with its parent
 /// and its times, as Codex's `ThreadItem` keeps them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -403,19 +403,27 @@ pub struct ToolCallApprovalResponse {
     pub decision: ApprovalDecision,
 }
 
-/// Yes or no to a tool call.
+/// Yes or no to a tool call, as Codex answers a command or file-change
+/// approval: `"accept"`, `"acceptForSession"`, `"decline"`, `"cancel"`, or
+/// Koda's own `{"declineWithFeedback": {"feedback": "..."}}`. Codex's
+/// policy amendments (`acceptWithExecpolicyAmendment`,
+/// `applyNetworkPolicyAmendment`) aren't taken.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(rename_all = "camelCase")]
 pub enum ApprovalDecision {
     /// Run it.
-    Approve,
-    /// Run it, and the same command or file again this session.
-    ApproveForSession,
-    /// Don't run it.
-    Reject,
-    /// Don't run it, and tell the model why.
+    Accept,
+    /// Run it, and the same command or file again this session; only when
+    /// the request says `allowForSession`.
+    AcceptForSession,
+    /// Don't run it; the turn goes on.
+    Decline,
+    /// Don't run it, and stop: the turn is interrupted, or, for a
+    /// sub-agent's request, that sub-agent stops.
+    Cancel,
+    /// Don't run it, and tell the model why. Koda's own.
     #[serde(rename_all = "camelCase")]
-    RejectWithFeedback {
+    DeclineWithFeedback {
         /// What the model is told.
         feedback: String,
     },

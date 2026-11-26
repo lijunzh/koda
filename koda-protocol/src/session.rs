@@ -81,7 +81,7 @@ pub struct Session {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settings: Option<Box<SessionSettings>>,
     /// Its turns, oldest first, each with its items. Filled only by
-    /// `session/start` resuming a session and by `session/read` with
+    /// `session/resume` and by `session/read` with
     /// `includeTurns`, as Codex's `Thread.turns` is.
     ///
     /// Each turn is the one the client saw: its id, status, usage and
@@ -99,17 +99,11 @@ pub struct Session {
     pub turns: Vec<crate::turn::Turn>,
 }
 
-/// `session/start`.
+/// `session/start`: a new session, as Codex's `thread/start`. An earlier
+/// one is opened with `session/resume`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionStartParams {
-    /// An earlier session to resume, by its full id, as Codex's
-    /// `thread/resume` takes one; a client matches a shorter one over
-    /// `session/list`. Without one, a new session starts. A session another
-    /// Koda process has open is refused (`-32600`, "session … already has an
-    /// active writer"), as Codex refuses a thread with another writer.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
     /// Who answers the session's requests. Without one, the client does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval_policy: Option<ApprovalPolicy>,
@@ -231,6 +225,48 @@ pub struct SessionStartResponse {
     pub session: Session,
 }
 
+/// `session/resume`: open an earlier session, as Codex's `thread/resume`,
+/// answered with it and its turns. One this server has open is joined: the
+/// answer has its running turn as it stands, and its notifications follow
+/// from there. A session another Koda process has open is refused
+/// (`-32600`, "session … already has an active writer"), as Codex refuses a
+/// thread with another writer.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionResumeParams {
+    /// The session, by its full id; a client matches a shorter one over
+    /// `session/list`.
+    pub session_id: String,
+    /// Who answers the session's requests. Without one, the client does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_policy: Option<ApprovalPolicy>,
+    /// Ignored: a session keeps the provider it was started with, as
+    /// Codex's `thread/resume` does. Taken for Codex's shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_provider: Option<String>,
+    /// The provider's endpoint. Without one, the session's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    /// The model: an id, or an alias. Without one, the session's own
+    /// choice, an alias resolved again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The folder to open it in. Without one, the host's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Config values for this session only, as on `session/start`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<std::collections::BTreeMap<String, serde_json::Value>>,
+}
+
+/// The answer to `session/resume`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionResumeResponse {
+    /// The session, with its turns, ready for a turn.
+    pub session: Session,
+}
+
 /// `session/started`: a session is ready for its first turn.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -244,7 +280,7 @@ pub struct SessionStartedNotification {
 }
 
 /// `session/unsubscribe`: the client is done with a session. Its running
-/// turn, if any, stops, and the session is closed; `session/start` with its
+/// turn, if any, stops, and the session is closed; `session/resume` with its
 /// id opens it again. Codex's `thread/unsubscribe`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -547,7 +583,7 @@ pub struct TokenUsageBreakdown {
 /// `session/fork`: a new session with a copy of a stored one's history,
 /// opened and ready for a turn, as Codex's `thread/fork` does. The copy
 /// is named "Fork of" the source's name and keeps its provider, endpoint,
-/// model and mode unless others are named, as `session/start` resumes a
+/// model and mode unless others are named, as `session/resume` opens a
 /// session; the source is left as it was. Whatever the source has stored
 /// is copied, so a turn still running there is copied as far as it has
 /// got.
@@ -582,7 +618,7 @@ pub struct SessionForkParams {
 }
 
 /// The answer to `session/fork`: the fork, opened, with its turns, as
-/// `session/start` returns a resumed session.
+/// `session/resume` returns a resumed session.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionForkResponse {

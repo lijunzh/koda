@@ -1480,6 +1480,13 @@ fn run_sub_agent<'a>(
                                             "User rejected this action.".to_string(),
                                             ToolOutcome::Declined,
                                         ),
+                                        // No, and stop this sub-agent, as
+                                        // Codex's `cancel` ends the asking
+                                        // thread's turn.
+                                        Ok(Some(ApprovalDecision::Cancel)) => {
+                                            cancel.cancel();
+                                            ("[cancelled]".to_string(), ToolOutcome::Cancelled)
+                                        }
                                         Ok(Some(ApprovalDecision::RejectWithFeedback { feedback })) => (
                                             format!(
                                                 "User rejected this action with feedback: {feedback}"

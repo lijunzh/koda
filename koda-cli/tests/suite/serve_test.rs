@@ -583,7 +583,7 @@ async fn a_server_killed_mid_turn_leaves_the_session_to_go_on() {
     let _koda = spawn();
     let mut conn = Conn::open(&socket).await;
     let opened = conn
-        .request("session/start", json!({"sessionId": session}))
+        .request("session/resume", json!({"sessionId": session}))
         .await;
     assert_eq!(opened["session"]["id"], session.as_str(), "{opened}");
     conn.request(

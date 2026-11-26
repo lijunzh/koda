@@ -32,7 +32,7 @@ use koda_client::protocol::item::{
 use koda_client::protocol::mcp::{McpServerStartupState, McpServerStatusUpdatedNotification};
 use koda_client::protocol::server::ExecSummary;
 use koda_client::protocol::session::{
-    ApprovalPolicy, SessionForkParams, SessionStartParams, TokenUsage,
+    ApprovalPolicy, SessionForkParams, SessionResumeParams, SessionStartParams, TokenUsage,
 };
 use koda_client::protocol::turn::{
     PlanStep, Turn, TurnInterruptParams, TurnStartParams, TurnStatus, Usage, UserInput,
@@ -159,16 +159,28 @@ pub async fn run_headless(
                 .await?
                 .session
         }
-        (_, resume) => {
+        // `koda exec resume`, Codex's `thread/resume`: given flags win;
+        // without them the session keeps its own model, and always its
+        // provider.
+        (_, Some(session_id)) => {
+            client
+                .request::<methods::SessionResume>(SessionResumeParams {
+                    session_id,
+                    base_url: run.named.base_url.clone(),
+                    model: run.named.model.clone(),
+                    approval_policy: Some(ApprovalPolicy::Never),
+                    ..Default::default()
+                })
+                .await?
+                .session
+        }
+        // A new session starts from the config, flags over it.
+        (_, None) => {
             client
                 .request::<methods::SessionStart>(SessionStartParams {
-                    // Given flags win; without them a resumed session keeps
-                    // its own provider and model. A new session starts from
-                    // the config.
                     model_provider: provider,
                     base_url: run.named.base_url.clone(),
                     model: run.named.model.clone(),
-                    session_id: resume,
                     approval_policy: Some(ApprovalPolicy::Never),
                     ..Default::default()
                 })

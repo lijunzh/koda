@@ -109,9 +109,9 @@ impl TuiContext {
             return false;
         }
         let decision = match key.code {
-            KeyCode::Char('y' | 'Y') => ApprovalDecision::Approve,
-            KeyCode::Char('s' | 'S') if *allow_for_session => ApprovalDecision::ApproveForSession,
-            KeyCode::Char('n' | 'N') | KeyCode::Esc => ApprovalDecision::Reject,
+            KeyCode::Char('y' | 'Y') => ApprovalDecision::Accept,
+            KeyCode::Char('s' | 'S') if *allow_for_session => ApprovalDecision::AcceptForSession,
+            KeyCode::Char('n' | 'N') | KeyCode::Esc => ApprovalDecision::Decline,
             // Anything else is held, so a stray key can't type into the
             // prompt behind the dialog.
             _ => return true,

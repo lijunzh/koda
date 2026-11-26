@@ -159,7 +159,7 @@ async fn handle_inference_key_inline(
             .send(TurnCommand::answer(
                 id,
                 ToolCallApprovalResponse {
-                    decision: ApprovalDecision::Reject,
+                    decision: ApprovalDecision::Decline,
                 },
             ))
             .await;
@@ -182,13 +182,13 @@ async fn handle_inference_key_inline(
         let approval_id = id.clone();
         let background = *background;
         let decision = match key.code {
-            KeyCode::Char('y') | KeyCode::Char('Y') => Some(ApprovalDecision::Approve),
+            KeyCode::Char('y') | KeyCode::Char('Y') => Some(ApprovalDecision::Accept),
             // Yes, and don't ask again this session for this command or
             // file. Offered only for local changes inside the project.
             KeyCode::Char('s') | KeyCode::Char('S') if *allow_for_session => {
-                Some(ApprovalDecision::ApproveForSession)
+                Some(ApprovalDecision::AcceptForSession)
             }
-            KeyCode::Char('n') | KeyCode::Char('N') => Some(ApprovalDecision::Reject),
+            KeyCode::Char('n') | KeyCode::Char('N') => Some(ApprovalDecision::Decline),
             KeyCode::Char('a') | KeyCode::Char('A') if !background => {
                 // Sandbox-aware Auto switch (#860 hard refusal). If the
                 // kernel sandbox is unavailable we skip the trust flip
@@ -209,7 +209,7 @@ async fn handle_inference_key_inline(
                         "Approve+Always pressed but Auto refused: {msg} \u{2014} approving one-shot only"
                     ),
                 }
-                Some(ApprovalDecision::Approve)
+                Some(ApprovalDecision::Accept)
             }
             KeyCode::Char('f') | KeyCode::Char('F') if !background => {
                 *prompt_mode = PromptMode::WizardInput {
@@ -350,9 +350,9 @@ async fn handle_inference_key_inline(
                 *menu = MenuContent::None;
                 if let Some(aid) = pending_approval_id.take() {
                     let decision = if feedback.trim().is_empty() {
-                        ApprovalDecision::Reject
+                        ApprovalDecision::Decline
                     } else {
-                        ApprovalDecision::RejectWithFeedback { feedback }
+                        ApprovalDecision::DeclineWithFeedback { feedback }
                     };
                     let _ = cmd_tx
                         .send(TurnCommand::answer(

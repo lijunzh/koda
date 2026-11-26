@@ -35,7 +35,7 @@ turn waits:
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"item/toolCall/requestApproval","params":{"sessionId":"a3f8bc12-…","itemId":"call_1","tool":"Write","…":"…"}}
-{"jsonrpc":"2.0","id":1,"result":{"decision":{"type":"approve"}}}
+{"jsonrpc":"2.0","id":1,"result":{"decision":"accept"}}
 ```
 
 The second line is the client's answer, with the request's `id`; Koda numbers
@@ -60,7 +60,9 @@ optional name to show people.
 `session/start` takes the model, provider and endpoint (`model`,
 `modelProvider`, `baseUrl`), so `koda serve` doesn't take `--model`,
 `--provider`, `--base-url` or `--resume`. `-c` and the other config flags set
-what new sessions start from, as for `koda`.
+what new sessions start from, as for `koda`. An earlier session is opened
+with `session/resume` and its `sessionId`, as Codex's `thread/resume`; it
+takes the same fields, and keeps its own provider.
 
 `session/start` also takes the session's folder and its own config, as
 Codex's `thread/start` does: `cwd`, an absolute path to an existing folder
@@ -185,7 +187,7 @@ have it open.
 
 ## A session's earlier turns
 
-`session/start` with a stored session's id reopens it and returns all its turns,
+`session/resume`, Codex's `thread/resume`, reopens a stored session and returns all its turns,
 and `session/read` with `includeTurns` reads them without opening it. A client
 that shows only recent turns, such as a phone or a long session, pages them
 with `session/turns/list`, as Codex's `thread/turns/list` does:
@@ -343,7 +345,7 @@ and `nc -U ~/.config/koda/serve/koda.sock` is enough to try it.)
   `session/unsubscribe`, leaves its sessions open, and a running turn goes on.
   A session with no client and no running turn for a minute is closed, as
   Codex unloads an idle thread.
-- **Attaching.** `session/start` with the id of a session that's open
+- **Attaching.** `session/resume` with the id of a session that's open
   attaches the client to it, as Codex's `thread/resume` subscribes to a loaded
   thread: the answer is the session as it runs, with its turns, and nothing
   starts again. A turn that is running comes as it stands, `inProgress`, with

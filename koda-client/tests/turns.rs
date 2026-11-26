@@ -19,9 +19,9 @@ use koda_client::protocol::memory::{MemoryScope, SessionMemoryAddParams, Session
 use koda_client::protocol::model::{ModelListParams, ModelProviderListParams};
 use koda_client::protocol::rpc::{ErrorObject, RequestId, codes};
 use koda_client::protocol::session::{
-    SessionCompactStartParams, SessionDeleteParams, SessionListParams, SessionSettings,
-    SessionSettingsUpdateParams, SessionSettingsUpdateResponse, SessionStartParams,
-    SessionUnsubscribeParams, SessionUnsubscribeStatus,
+    SessionCompactStartParams, SessionDeleteParams, SessionListParams, SessionResumeParams,
+    SessionSettings, SessionSettingsUpdateParams, SessionSettingsUpdateResponse,
+    SessionStartParams, SessionUnsubscribeParams, SessionUnsubscribeStatus,
 };
 use koda_client::protocol::state::TrustMode;
 use koda_client::protocol::turn::{
@@ -547,8 +547,7 @@ async fn approvals_are_answered_through_the_client() {
     };
     assert_eq!(params.tool, "Write");
     assert_eq!(params.session_id, koda.session);
-    koda.answer(id, json!({"decision": {"type": "approve"}}))
-        .await;
+    koda.answer(id, json!({"decision": "accept"})).await;
 
     let second = koda.request().await;
     let ServerRequest::ToolCallApproval { id: second_id, .. } = &second else {
@@ -556,8 +555,7 @@ async fn approvals_are_answered_through_the_client() {
     };
     // Each request has its own id.
     assert_ne!(id, second_id);
-    koda.answer(second_id, json!({"decision": {"type": "reject"}}))
-        .await;
+    koda.answer(second_id, json!({"decision": "decline"})).await;
 
     let messages = koda.until("turn/completed").await;
     assert_eq!(turn_completed(&messages).status, TurnStatus::Completed);
@@ -595,7 +593,8 @@ async fn a_malformed_approval_is_refused_as_a_failed_request() {
     let ServerRequest::ToolCallApproval { id, .. } = &request else {
         panic!("expected an approval, got {request:?}");
     };
-    // `decision` must be an object with a `type`; a bare string doesn't decode.
+    // `approve`, the spelling before Koda took Codex's `accept`, doesn't
+    // decode.
     koda.answer(id, json!({"decision": "approve"})).await;
 
     let messages = koda.until("turn/completed").await;
@@ -605,6 +604,41 @@ async fn a_malformed_approval_is_refused_as_a_failed_request() {
     let told = requests[1]["messages"].to_string();
     assert!(told.contains("approval request failed"), "{told}");
     assert!(!told.contains("User rejected"), "{told}");
+    koda.client.shutdown().await;
+}
+
+/// `cancel`, as Codex's: no, and the turn stops. The call isn't run and
+/// the turn ends interrupted, with no further model call.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelling_an_approval_stops_the_turn() {
+    let server = model(vec![
+        tool_call(
+            "call_1",
+            "Write",
+            json!({"file_path": "maybe.txt", "content": "hi"}),
+        ),
+        text("Never sent."),
+    ])
+    .await;
+    let mut config = config(&server);
+    config.trust = koda_core::trust::TrustMode::Safe;
+    let mut koda = Koda::start(config).await;
+    koda.turn("Write a file").await;
+
+    let request = koda.request().await;
+    let ServerRequest::ToolCallApproval { id, .. } = &request else {
+        panic!("expected an approval, got {request:?}");
+    };
+    koda.answer(id, json!({"decision": "cancel"})).await;
+
+    let messages = koda.until("turn/completed").await;
+    assert_eq!(turn_completed(&messages).status, TurnStatus::Interrupted);
+    assert!(!koda.project.join("maybe.txt").exists());
+    assert_eq!(
+        chat_requests(&server).await.len(),
+        1,
+        "no model call after it"
+    );
     koda.client.shutdown().await;
 }
 
@@ -770,7 +804,7 @@ async fn an_interrupt_at_an_approval_closes_what_the_turn_left_open() {
         names(&messages)
     );
     // A late answer to the closed request is ignored.
-    koda.answer(request.id(), json!({"decision": {"type": "approve"}}))
+    koda.answer(request.id(), json!({"decision": "accept"}))
         .await;
 
     koda.turn("Go on").await;
@@ -1203,7 +1237,7 @@ async fn turns_are_listed_a_page_at_a_time() {
     );
     assert_eq!(error.code, codes::INVALID_REQUEST);
 
-    koda.answer(approval.id(), json!({"decision": {"type": "reject"}}))
+    koda.answer(approval.id(), json!({"decision": "decline"}))
         .await;
     koda.until("turn/completed").await;
     koda.client.shutdown().await;
@@ -1243,8 +1277,8 @@ async fn a_resumed_session_keeps_its_history() {
     // One client can't open the same session twice.
     let error = server_error(
         first
-            .request::<methods::SessionStart>(SessionStartParams {
-                session_id: Some(session.clone()),
+            .request::<methods::SessionResume>(SessionResumeParams {
+                session_id: session.clone(),
                 ..Default::default()
             })
             .await,
@@ -1254,8 +1288,8 @@ async fn a_resumed_session_keeps_its_history() {
 
     let second = client(config(&server), &dir).await;
     let resumed = second
-        .request::<methods::SessionStart>(SessionStartParams {
-            session_id: Some(session.clone()),
+        .request::<methods::SessionResume>(SessionResumeParams {
+            session_id: session.clone(),
             ..Default::default()
         })
         .await
@@ -1275,8 +1309,8 @@ async fn a_resumed_session_keeps_its_history() {
 
     let error = server_error(
         koda.client
-            .request::<methods::SessionStart>(SessionStartParams {
-                session_id: Some("no-such-session".to_string()),
+            .request::<methods::SessionResume>(SessionResumeParams {
+                session_id: "no-such-session".to_string(),
                 ..Default::default()
             })
             .await,
@@ -1335,8 +1369,8 @@ async fn unsubscribe_closes_a_session_and_it_opens_again() {
 
     let reopened = koda
         .client
-        .request::<methods::SessionStart>(SessionStartParams {
-            session_id: Some(koda.session.clone()),
+        .request::<methods::SessionResume>(SessionResumeParams {
+            session_id: koda.session.clone(),
             ..Default::default()
         })
         .await
@@ -1358,8 +1392,8 @@ async fn a_session_has_one_writer_across_hosts() {
     let refusal = format!("session {} already has an active writer", koda.session);
 
     let resumed = other
-        .request::<methods::SessionStart>(SessionStartParams {
-            session_id: Some(koda.session.clone()),
+        .request::<methods::SessionResume>(SessionResumeParams {
+            session_id: koda.session.clone(),
             ..Default::default()
         })
         .await;
@@ -1398,8 +1432,8 @@ async fn a_session_has_one_writer_across_hosts() {
     let deadline = Instant::now() + WAIT;
     let reopened = loop {
         let started = other
-            .request::<methods::SessionStart>(SessionStartParams {
-                session_id: Some(koda.session.clone()),
+            .request::<methods::SessionResume>(SessionResumeParams {
+                session_id: koda.session.clone(),
                 ..Default::default()
             })
             .await;
@@ -1612,12 +1646,12 @@ async fn sessions_are_listed_newest_first_with_their_first_prompt() {
     );
     assert!(bad.message.contains("not a cursor"), "{bad:?}");
 
-    // `session/start` takes a full id only, as Codex's `thread/resume`: a
+    // `session/resume` takes a full id only, as Codex's `thread/resume`: a
     // client matches a shorter one over the list.
     let refused = server_error(
         koda.client
-            .request::<methods::SessionStart>(SessionStartParams {
-                session_id: Some(first[..8].to_string()),
+            .request::<methods::SessionResume>(SessionResumeParams {
+                session_id: first[..8].to_string(),
                 ..Default::default()
             })
             .await,
@@ -2349,8 +2383,8 @@ async fn a_resumed_session_reopens_on_its_own_model() {
 
     let resumed = koda
         .client
-        .request::<methods::SessionStart>(SessionStartParams {
-            session_id: Some(other),
+        .request::<methods::SessionResume>(SessionResumeParams {
+            session_id: other,
             ..Default::default()
         })
         .await
@@ -3007,8 +3041,7 @@ async fn a_reload_during_a_turn_waits_for_it_to_end() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(koda.mcp_status(Some(&koda.session)).await.is_empty());
 
-    koda.answer(&id, json!({"decision": {"type": "reject"}}))
-        .await;
+    koda.answer(&id, json!({"decision": "decline"})).await;
     koda.until("turn/completed").await;
     koda.until_mcp("notes", McpServerStartupState::Ready).await;
     koda.client.shutdown().await;
@@ -3214,8 +3247,7 @@ async fn background_processes_are_listed_and_stopped_through_the_client() {
         let ServerRequest::ToolCallApproval { id, .. } = koda.request().await else {
             panic!("expected an approval");
         };
-        koda.answer(&id, json!({"decision": {"type": "approve"}}))
-            .await;
+        koda.answer(&id, json!({"decision": "accept"})).await;
     }
     let messages = koda.until("turn/completed").await;
     assert_eq!(turn_completed(&messages).status, TurnStatus::Completed);
@@ -3459,8 +3491,7 @@ async fn an_edits_approval_carries_its_diff() {
     );
     assert!(change.diff.contains("\n-two\n+three\n"), "{}", change.diff);
     let edit_changes = params.changes.clone();
-    koda.answer(id, json!({"decision": {"type": "approve"}}))
-        .await;
+    koda.answer(id, json!({"decision": "accept"})).await;
 
     // The edit completes before the write is asked about.
     let mut messages = Vec::new();
@@ -3479,8 +3510,7 @@ async fn an_edits_approval_carries_its_diff() {
     };
     assert_eq!(params.changes[0].kind, PatchChangeKind::Add);
     assert_eq!(params.changes[0].diff, "fresh\n");
-    koda.answer(id, json!({"decision": {"type": "approve"}}))
-        .await;
+    koda.answer(id, json!({"decision": "accept"})).await;
     koda.until("turn/completed").await;
 
     let edited = completed(&messages)
@@ -3630,8 +3660,8 @@ async fn usage_is_split_by_agent_and_restored_on_resume() {
     );
 
     koda.client
-        .request::<methods::SessionStart>(SessionStartParams {
-            session_id: Some(koda.session.clone()),
+        .request::<methods::SessionResume>(SessionResumeParams {
+            session_id: koda.session.clone(),
             ..Default::default()
         })
         .await
@@ -3781,8 +3811,8 @@ async fn a_resumed_session_returns_its_turns_as_they_were_sent() {
 
     let resumed = koda
         .client
-        .request::<methods::SessionStart>(SessionStartParams {
-            session_id: Some(koda.session.clone()),
+        .request::<methods::SessionResume>(SessionResumeParams {
+            session_id: koda.session.clone(),
             ..Default::default()
         })
         .await

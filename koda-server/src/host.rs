@@ -272,6 +272,7 @@ fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
 fn ordered_session(request: &rpc::Request) -> Option<String> {
     const ORDERED: &[&str] = &[
         "session/start",
+        "session/resume",
         "session/fork",
         "session/delete",
         "session/name/set",
@@ -356,7 +357,42 @@ impl Host {
             }
             ClientRequest::SessionStart { params, .. } => {
                 let origin = self.origin(client.as_deref(), params.ephemeral.unwrap_or(false));
-                let _ = reply.send(self.start_session(params, origin).await.and_then(to_json));
+                let _ = reply.send(
+                    self.start_session(None, params, origin)
+                        .await
+                        .and_then(to_json),
+                );
+                return;
+            }
+            // Codex's `thread/resume`: the stored session, with its turns.
+            // One the server has open is joined before it gets here.
+            ClientRequest::SessionResume { params, .. } => {
+                let origin = self.origin(client.as_deref(), false);
+                let koda_protocol::session::SessionResumeParams {
+                    session_id,
+                    approval_policy,
+                    model_provider,
+                    base_url,
+                    model,
+                    cwd,
+                    config,
+                } = params;
+                let start = SessionStartParams {
+                    approval_policy,
+                    model_provider,
+                    base_url,
+                    model,
+                    cwd,
+                    config,
+                    ephemeral: None,
+                };
+                let resumed = self
+                    .start_session(Some(session_id), start, origin)
+                    .await
+                    .map(|started| koda_protocol::session::SessionResumeResponse {
+                        session: started.session,
+                    });
+                let _ = reply.send(resumed.and_then(to_json));
                 return;
             }
             ClientRequest::ModelList { params, .. } => {
@@ -885,7 +921,7 @@ impl Host {
     }
 
     /// `session/fork`: copy the stored session into a new one named "Fork
-    /// of" its name, then open the copy as `session/start` resumes one, as
+    /// of" its name, then open the copy as `session/resume` opens one, as
     /// Codex's `thread/fork` does. An open source first stores what it has
     /// sent, so the copy has everything its client has been told. The copy
     /// belongs to this host's project, where it opens.
@@ -918,8 +954,8 @@ impl Host {
             .map_err(|e| internal(format!("couldn't fork the session: {e:#}")))?;
         let started = self
             .start_session(
+                Some(id.clone()),
                 SessionStartParams {
-                    session_id: Some(id.clone()),
                     approval_policy: params.approval_policy,
                     model_provider: params.model_provider,
                     base_url: params.base_url,
@@ -1209,12 +1245,15 @@ impl Host {
         Ok(context)
     }
 
+    /// Open a session: a new one, or the stored session `resume` names
+    /// (`session/resume`, and a fork's copy).
     async fn start_session(
         &self,
+        resume: Option<String>,
         params: SessionStartParams,
         origin: koda_state::session_store::SessionOrigin,
     ) -> Result<SessionStartResponse, ErrorObject> {
-        if let Some(id) = &params.session_id
+        if let Some(id) = &resume
             && self.sessions.lock().await.contains_key(id)
         {
             return Err(invalid(format!("session {id} is already open")));
@@ -1225,9 +1264,9 @@ impl Host {
             base_url: params.base_url,
             model: params.model,
         };
-        let resuming = params.session_id.is_some();
+        let resuming = resume.is_some();
         let context = self.session_context(params.cwd.as_deref(), params.config.as_ref())?;
-        let mut opened = session::open(context, params.session_id, policy, choice, origin).await?;
+        let mut opened = session::open(context, resume, policy, choice, origin).await?;
         let id = opened.session.id.clone();
         // A resumed session comes back with its turns, as Codex's
         // `thread/resume` does.
@@ -1530,7 +1569,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(read["session"]["status"]["type"], "idle", "{read}");
-        let reopened = ask(&tx, "session/start", json!({"sessionId": failing}))
+        let reopened = ask(&tx, "session/resume", json!({"sessionId": failing}))
             .await
             .unwrap();
         assert_eq!(reopened["session"]["id"], failing.as_str());

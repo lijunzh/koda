@@ -108,7 +108,7 @@ fn serve(
 /// a later one connects and opens the same session.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_client_reconnects_to_a_restarted_server() {
-    use koda_client::protocol::session::SessionStartParams;
+    use koda_client::protocol::session::SessionResumeParams;
     use koda_client::reconnect::{BUDGET, Failure, reconnect, worth_retrying};
 
     let dir = tempfile::tempdir().unwrap();
@@ -172,8 +172,8 @@ async fn a_client_reconnects_to_a_restarted_server() {
                 .await
                 .map_err(sorted)?;
             let opened = client
-                .request::<methods::SessionStart>(SessionStartParams {
-                    session_id: Some(session_id),
+                .request::<methods::SessionResume>(SessionResumeParams {
+                    session_id,
                     ..Default::default()
                 })
                 .await

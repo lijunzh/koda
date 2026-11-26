@@ -339,8 +339,7 @@ async fn an_approval_is_answered_on_stdin_and_the_tool_runs_once() {
 
     let id = wire.approval().await;
     assert!(!wire.project.join("a.txt").exists());
-    wire.answer(&id, json!({"decision": {"type": "approve"}}))
-        .await;
+    wire.answer(&id, json!({"decision": "accept"})).await;
 
     let lines = wire.until_method("turn/completed").await;
     assert_eq!(turn_completed(&lines)["status"], "completed");
@@ -389,8 +388,7 @@ async fn an_interrupt_at_an_approval_settles_the_turn_once() {
 
     // A late answer changes nothing; no second ending follows before the
     // next request's answer.
-    wire.answer(&id, json!({"decision": {"type": "approve"}}))
-        .await;
+    wire.answer(&id, json!({"decision": "accept"})).await;
     let state = wire.send_request("state/read", json!({})).await;
     lines.extend(
         wire.until(|l| l["id"] == state && l.get("method").is_none())
@@ -434,16 +432,15 @@ async fn stale_ids_are_refused_and_unblock_nothing() {
         "{error}"
     );
     // An answer to a request Koda never sent.
-    wire.answer(&json!(9999), json!({"decision": {"type": "approve"}}))
+    wire.answer(&json!(9999), json!({"decision": "accept"}))
         .await;
-    wire.answer(&json!("nope"), json!({"decision": {"type": "approve"}}))
+    wire.answer(&json!("nope"), json!({"decision": "accept"}))
         .await;
     // Still waiting: nothing ran.
     wire.call("state/read", json!({})).await.unwrap();
     assert!(!wire.project.join("a.txt").exists());
 
-    wire.answer(&id, json!({"decision": {"type": "approve"}}))
-        .await;
+    wire.answer(&id, json!({"decision": "accept"})).await;
     let lines = wire.until_method("turn/completed").await;
     assert_eq!(turn_completed(&lines)["status"], "completed");
     assert!(wire.project.join("a.txt").exists());
@@ -478,8 +475,7 @@ async fn a_prompt_while_busy_is_refused_and_a_steer_is_taken() {
         .unwrap();
     assert_eq!(steered["turnId"], turn);
 
-    wire.answer(&id, json!({"decision": {"type": "approve"}}))
-        .await;
+    wire.answer(&id, json!({"decision": "accept"})).await;
     let lines = wire.until_method("turn/completed").await;
     assert_eq!(turn_completed(&lines)["status"], "completed");
     let requests = chat_requests(&server).await;
