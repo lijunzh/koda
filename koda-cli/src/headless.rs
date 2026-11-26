@@ -195,7 +195,7 @@ pub async fn run_headless(
     }
     // An open session always says what it runs.
     let model = opened.model.unwrap_or_default();
-    let provider = opened.provider.unwrap_or_default();
+    let provider = opened.model_provider.unwrap_or_default();
     // What starting the session said: `session/started`, and the context
     // window Koda assumed when the server didn't report one.
     while let Some(message) = client.try_next_event() {
@@ -222,7 +222,7 @@ pub async fn run_headless(
                     images,
                     mentions,
                     skills: Vec::new(),
-                    client_message_id: None,
+                    client_user_message_id: None,
                     mode: None,
                     output_schema: run.output_schema.clone(),
                 })
@@ -498,9 +498,9 @@ fn exec_summary(outcome: RunOutcome<'_>) -> ExecSummary {
     for agent in by_agent.values() {
         usage.input_tokens += agent.input_tokens;
         usage.cached_input_tokens += agent.cached_input_tokens;
-        usage.cache_creation_tokens += agent.cache_creation_tokens;
+        usage.cache_write_input_tokens += agent.cache_write_input_tokens;
         usage.output_tokens += agent.output_tokens;
-        usage.reasoning_tokens += agent.reasoning_tokens;
+        usage.reasoning_output_tokens += agent.reasoning_output_tokens;
         usage.model_calls += agent.model_calls;
         usage.web_search_requests += agent.web_search_requests;
     }
@@ -508,7 +508,7 @@ fn exec_summary(outcome: RunOutcome<'_>) -> ExecSummary {
         session_id: outcome.session_id.to_string(),
         success: failure.is_none(),
         error: failure,
-        provider: outcome.provider.to_string(),
+        model_provider: outcome.provider.to_string(),
         model: outcome.model.to_string(),
         response: outcome.stats.last_reply.clone().unwrap_or_default(),
         turn_status: outcome.stats.turn_end.as_ref().map(|(status, _)| *status),

@@ -78,7 +78,7 @@ Get the session ID from `exec/summary`, or list the newest with
 
 `koda exec --json` prints the [client protocol](headless.md#the-client-protocol)
 as lines, ending with `exec/summary`: `success`, `error`, `sessionId`,
-`provider`, `model`, `response`, `turnStatus`, `durationMs`, `usage`,
+`modelProvider`, `model`, `response`, `turnStatus`, `durationMs`, `usage`,
 `usageByAgent`, `toolCalls` and `subAgentToolCalls`. See
 [Headless mode](./headless.md#output-formats). A run that failed exits with
 code 1.

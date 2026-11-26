@@ -949,7 +949,7 @@ async fn a_sessions_requests_take_effect_in_the_order_sent() {
         .iter()
         .filter(|l| l["method"] == "session/settings/updated")
         .map(|l| {
-            l["params"]["settings"]["mode"]
+            l["params"]["sessionSettings"]["mode"]
                 .as_str()
                 .unwrap()
                 .to_string()
@@ -979,7 +979,10 @@ async fn a_mode_change_on_turn_start_is_said() {
         .iter()
         .find(|l| l["method"] == "session/settings/updated")
         .expect("the new mode is said");
-    assert_eq!(updated["params"]["settings"]["mode"], "plan", "{updated}");
+    assert_eq!(
+        updated["params"]["sessionSettings"]["mode"], "plan",
+        "{updated}"
+    );
     koda.stop().await;
 }
 
@@ -1152,7 +1155,7 @@ async fn a_client_runs_a_turn_over_the_socket() {
             images: Vec::new(),
             mentions: Vec::new(),
             skills: Vec::new(),
-            client_message_id: None,
+            client_user_message_id: None,
             mode: None,
             output_schema: None,
         })

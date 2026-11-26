@@ -36,6 +36,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 - **`session/list` without `cwd` lists every folder's sessions, as Codex's `thread/list` does,** where it listed the server's own folder, which on the shared server was whichever folder the first TUI started in. Koda's own clients always sent `cwd`.
 - **A list of sessions leaves out what a person didn't start, unless asked.** `session/list`, and so the TUI's session list, no longer shows `koda exec` runs, sub-agents' sessions, side conversations or reviews; `sourceKinds` asks for the first two. `koda resume <id>` still opens any of them.
+- **Protocol fields renamed to Codex's names where Codex has the same field (a session is still Codex's thread):** `provider` is `modelProvider` (on a session, `state/read` and `exec/summary`); a turn's usage has `cacheWriteInputTokens` and `reasoningOutputTokens` for `cacheCreationTokens` and `reasoningTokens`; `session/name/updated` carries `sessionName` and `session/settings/updated` carries `sessionSettings` (Codex's `threadName` and `threadSettings`); `turn/start` and `turn/steer` take `clientUserMessageId`, and a `userMessage` item has `clientUserMessageIds`; a moved file's change kind has `move_path`, spelled as Codex spells it; and `session/rewind` is `session/revert`, Codex's `thread/revert` (the TUI's command stays `/rewind`). Old names aren't accepted, since client and server change together; sessions stored before still read.
 
 ### Fixed
 

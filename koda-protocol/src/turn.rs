@@ -79,12 +79,15 @@ pub struct Usage {
     pub input_tokens: u64,
     /// Input tokens read from the provider's cache.
     pub cached_input_tokens: u64,
-    /// Input tokens written to the provider's cache.
-    pub cache_creation_tokens: u64,
+    /// Input tokens written to the provider's cache. Codex's
+    /// `cacheWriteInputTokens`.
+    #[serde(alias = "cacheCreationTokens")]
+    pub cache_write_input_tokens: u64,
     /// Output tokens.
     pub output_tokens: u64,
-    /// Output tokens spent reasoning.
-    pub reasoning_tokens: u64,
+    /// Output tokens spent reasoning. Codex's `reasoningOutputTokens`.
+    #[serde(alias = "reasoningTokens")]
+    pub reasoning_output_tokens: u64,
     /// Model calls that finished.
     pub model_calls: u64,
     /// Web searches run on the provider's servers (a Claude model's
@@ -119,7 +122,7 @@ pub struct TurnStartParams {
     pub skills: Vec<SkillInput>,
     /// The client's id for the message, echoed on its `userMessage` item.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub client_message_id: Option<String>,
+    pub client_user_message_id: Option<String>,
     /// The trust mode from this turn on. Without one, the session keeps
     /// its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -197,7 +200,7 @@ pub struct TurnSteerParams {
     /// The client's id for the text, echoed on the `userMessage` item that
     /// delivers it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub client_message_id: Option<String>,
+    pub client_user_message_id: Option<String>,
 }
 
 /// The answer to `turn/steer`: the text is queued for the turn.

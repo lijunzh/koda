@@ -335,7 +335,7 @@ fn exec_json_prints_the_protocol_from_session_to_summary() {
     );
     let started = &lines[0]["params"];
     assert_eq!(started["protocolVersion"], 2);
-    assert_eq!(started["session"]["provider"], "lm-studio");
+    assert_eq!(started["session"]["modelProvider"], "lm-studio");
     let prompt = &lines[4]["params"]["item"];
     assert_eq!(prompt["text"], "read hello.txt");
     let usage = &lines[5]["params"]["tokenUsage"];

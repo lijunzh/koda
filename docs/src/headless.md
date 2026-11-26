@@ -183,15 +183,15 @@ may stream, and complete. [`protocol-schema.json`](protocol-schema.json) is
 generated from the protocol's types, and CI fails if the two differ.
 
 ```json
-{"jsonrpc":"2.0","method":"session/started","params":{"session":{"id":"a3f8bc12-…","preview":"","createdAt":1794700000,"updatedAt":1794700000,"cwd":"/home/me/project","model":"claude-haiku-5-5","provider":"anthropic","contextWindow":200000,"mode":"auto","tools":["Read","Bash","…"]},"kodaVersion":"0.7.12","protocolVersion":2}}
+{"jsonrpc":"2.0","method":"session/started","params":{"session":{"id":"a3f8bc12-…","preview":"","createdAt":1794700000,"updatedAt":1794700000,"cwd":"/home/me/project","model":"claude-haiku-5-5","modelProvider":"anthropic","contextWindow":200000,"mode":"auto","tools":["Read","Bash","…"]},"kodaVersion":"0.7.12","protocolVersion":2}}
 {"jsonrpc":"2.0","method":"turn/started","params":{"sessionId":"a3f8bc12-…","turn":{"id":"7d1e…","status":"inProgress","error":null,"usage":null,"durationMs":null,"startedAt":1794700001,"completedAt":null}}}
-{"jsonrpc":"2.0","method":"item/started","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"userMessage","id":"user-3f9a2c1e-1","text":"Why does the test fail?","clientMessageIds":[]}}}
-{"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"userMessage","id":"user-3f9a2c1e-1","text":"Why does the test fail?","clientMessageIds":[]}}}
+{"jsonrpc":"2.0","method":"item/started","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"userMessage","id":"user-3f9a2c1e-1","text":"Why does the test fail?","clientUserMessageIds":[]}}}
+{"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"userMessage","id":"user-3f9a2c1e-1","text":"Why does the test fail?","clientUserMessageIds":[]}}}
 {"jsonrpc":"2.0","method":"item/started","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"toolCall","id":"call_1","tool":"Bash","arguments":{"command":"cargo test"},"status":"inProgress","output":null,"detail":null}}}
 {"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"toolCall","id":"call_1","tool":"Bash","arguments":{"command":"cargo test"},"status":"failed","output":"Exit code: 101 | …","detail":null}}}
 {"jsonrpc":"2.0","method":"item/started","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"agentMessage","id":"msg-3f9a2c1e-2","text":""}}}
 {"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"agentMessage","id":"msg-3f9a2c1e-2","text":"The test fails because …"}}}
-{"jsonrpc":"2.0","method":"turn/completed","params":{"sessionId":"a3f8bc12-…","turn":{"id":"7d1e…","status":"completed","error":null,"usage":{"inputTokens":18234,"cachedInputTokens":15012,"cacheCreationTokens":0,"outputTokens":912,"reasoningTokens":0,"modelCalls":3},"durationMs":8421,"startedAt":1794700001,"completedAt":1794700009}}}
+{"jsonrpc":"2.0","method":"turn/completed","params":{"sessionId":"a3f8bc12-…","turn":{"id":"7d1e…","status":"completed","error":null,"usage":{"inputTokens":18234,"cachedInputTokens":15012,"cacheWriteInputTokens":0,"outputTokens":912,"reasoningOutputTokens":0,"modelCalls":3},"durationMs":8421,"startedAt":1794700001,"completedAt":1794700009}}}
 {"jsonrpc":"2.0","method":"exec/summary","params":{"sessionId":"a3f8bc12-…","success":true,"…":"…"}}
 ```
 
@@ -214,7 +214,7 @@ below as described, and Ctrl+C sends `turn/interrupt`.
 
 | Method | Carries | Notes |
 |--------|---------|-------|
-| `session/started` | `session` (`id`, `name`, `preview`, `createdAt`, `updatedAt`, `cwd`, and while open `model`, `provider`, `contextWindow`, `mode`, `tools`), `kodaVersion`, `protocolVersion` | Always first. Stop on a `protocolVersion` you don't support. Times are Unix seconds; `name` is the title, `preview` the first prompt |
+| `session/started` | `session` (`id`, `name`, `preview`, `createdAt`, `updatedAt`, `cwd`, and while open `model`, `modelProvider`, `contextWindow`, `mode`, `tools`), `kodaVersion`, `protocolVersion` | Always first. Stop on a `protocolVersion` you don't support. Times are Unix seconds; `name` is the title, `preview` the first prompt |
 | `turn/started` | `turn`, in progress, with `startedAt` | |
 | `item/started`, `item/completed` | `item`, `parentItemId` on a sub-agent's items, `startedAtMs` or `completedAtMs` | Every item that starts completes, once. The times are Unix milliseconds, as Codex's; a stored turn's items keep both |
 | `item/agentMessage/delta` | `itemId`, `delta` | Only with `--json-deltas` |
@@ -235,7 +235,7 @@ below as described, and Ctrl+C sends `turn/interrupt`.
 
 | `type` | Fields | Notes |
 |--------|--------|-------|
-| `userMessage` | `id`, `text`, `clientMessageIds`, `mentions`, `images` | What the user said, as the model received it; `mentions` are the files and folders it named with `@`, as paths, and `images` the images sent with it (`mediaType`, base64 `data`): a turn's prompt, or steering text sent during it (texts that arrived together are one item) |
+| `userMessage` | `id`, `text`, `clientUserMessageIds`, `mentions`, `images` | What the user said, as the model received it; `mentions` are the files and folders it named with `@`, as paths, and `images` the images sent with it (`mediaType`, base64 `data`): a turn's prompt, or steering text sent during it (texts that arrived together are one item) |
 | `agentMessage` | `id`, `text` | Text is empty when it starts and complete when it completes |
 | `reasoning` | `id`, `text` | Where the provider shows reasoning |
 | `toolCall` | `id`, `tool`, `kind`, `arguments`, `status`, `output`, `exitCode`, `durationMs`, `detail`, `changes`, `progress` | One item for every tool, named by `tool`. `kind` is what sort of tool it is, from the Agent Client Protocol's list (`read`, `edit`, `delete`, `move`, `search`, `execute`, `think`, `fetch`, `switch_mode`, `other`), so a client can draw a call without knowing every tool's name; an MCP tool is `other`. `status` ends as `completed`, `failed` (it ran and failed, or a command exited non-zero), `declined` (refused at an approval, by `--mode plan` or by a sub-agent's limits) or `cancelled`. `output` is what the model read. On completion, `exitCode` is the exit code of the command a `Bash` or `Cargo` call ran (absent for other tools, or when the command timed out, was stopped or went to the background), and `durationMs` how long the tool ran, not counting a wait for approval (absent when it never ran), as Codex's items have them. `detail` is the one-line description Koda showed when it asked about or blocked the call. `changes` is what an `Edit` or `Write` changes, from the call's start whether or not anyone was asked, each `{path, kind, diff}` as Codex's `fileChange` item has them (`kind` is `{"type": "add"}` with the new file as `diff`, or `{"type": "update"}` with a unified diff). `progress` lists the call's notices, on completion. The last three are left out when empty |

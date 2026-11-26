@@ -230,7 +230,7 @@ impl TuiContext {
     pub(crate) async fn rewind_session(&mut self, count: &str) {
         use koda_client::protocol::item::Item;
         use koda_client::protocol::session::{
-            SessionRewindParams, SessionTurnsListParams, SortDirection,
+            SessionRevertParams, SessionTurnsListParams, SortDirection,
         };
         let count = count.trim();
         let n: u32 = if count.is_empty() {
@@ -282,7 +282,7 @@ impl TuiContext {
         });
         if let Err(e) = self
             .client
-            .request::<methods::SessionRewind>(SessionRewindParams {
+            .request::<methods::SessionRevert>(SessionRevertParams {
                 session_id: self.session.id.clone(),
                 before_turn_id: target.id.clone(),
             })

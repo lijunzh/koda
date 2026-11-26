@@ -376,7 +376,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(state.model, "stub-model");
-        assert_eq!(state.provider, "lm-studio");
+        assert_eq!(state.model_provider, "lm-studio");
         assert_eq!(state.base_url, "http://127.0.0.1:9/v1");
         assert_eq!(state.context_window, 32_768);
         assert_eq!(state.mode, state::TrustMode::Safe);

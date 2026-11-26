@@ -277,7 +277,7 @@ fn ordered_session(request: &rpc::Request) -> Option<String> {
         "session/name/set",
         "session/settings/update",
         "session/compact/start",
-        "session/rewind",
+        "session/revert",
         "session/unsubscribe",
         "session/goal/set",
         "session/goal/clear",
@@ -615,7 +615,7 @@ impl Host {
             ClientRequest::SessionCompactStart { params, .. } => {
                 (params.session_id, SessionCommand::Compact { reply })
             }
-            ClientRequest::SessionRewind { params, .. } => (
+            ClientRequest::SessionRevert { params, .. } => (
                 params.session_id,
                 SessionCommand::Rewind {
                     before_turn_id: params.before_turn_id,
@@ -1003,7 +1003,7 @@ impl Host {
             ServerNotification::SessionNameUpdated(
                 koda_protocol::session::SessionNameUpdatedNotification {
                     session_id: id,
-                    name,
+                    session_name: name,
                 },
             ),
         ));
@@ -1324,7 +1324,7 @@ impl Host {
         let config = &self.context.config;
         Ok(StateReadResponse {
             model: config.model.clone(),
-            provider: config.provider_type.to_string(),
+            model_provider: config.provider_type.to_string(),
             base_url: config.base_url.clone(),
             context_window: config.max_context_tokens as u64,
             mode: self.new_session_mode(),

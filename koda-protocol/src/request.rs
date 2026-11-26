@@ -254,9 +254,9 @@ client_requests! {
         response: crate::session::SessionCompactStartResponse,
     },
     /// Take a turn and every later one out of an idle session's history.
-    SessionRewind => "session/rewind" {
-        params: crate::session::SessionRewindParams,
-        response: crate::session::SessionRewindResponse,
+    SessionRevert => "session/revert" {
+        params: crate::session::SessionRevertParams,
+        response: crate::session::SessionRevertResponse,
     },
     /// Koda's notes the session's model reads: its project's and the
     /// global ones.

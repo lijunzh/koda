@@ -245,12 +245,12 @@ backtrack (Esc Esc) and Claude Code's `/rewind` do: the model won't see them
 again, and the stored session ends before them. The earliest one's prompt
 comes back to the input box, to edit and send again.
 
-Files those turns changed stay as they are, as Codex's rewind leaves them;
+Files those turns changed stay as they are, as Codex's leaves them;
 use git to undo the changes. A rewind is refused while a turn runs, for a
 turn from before Koda recorded where turns start (sessions before 0.7.8),
 and across a compaction, whose summary replaced the history it would bring
-back. Over the protocol it is `session/rewind`, with the first turn to take
-out.
+back. Over the protocol it is `session/revert`, Codex's `thread/revert`, with
+the first turn to take out.
 
 ## `/status`
 

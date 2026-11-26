@@ -79,7 +79,7 @@ impl TuiContext {
                 Ok(Some(Outgoing::Notification(ServerNotification::SessionSettingsUpdated(n))))
                     if n.session_id == self.session.id =>
                 {
-                    return Ok(n.settings);
+                    return Ok(n.session_settings);
                 }
                 Ok(Some(Outgoing::Notification(ServerNotification::Warning(w)))) => {
                     if show_warnings {
@@ -291,7 +291,7 @@ pub(crate) async fn fetch_settings(
             Ok(Some(Outgoing::Notification(ServerNotification::SessionSettingsUpdated(n))))
                 if n.session_id == session_id =>
             {
-                return Ok((n.settings, warnings));
+                return Ok((n.session_settings, warnings));
             }
             Ok(Some(Outgoing::Notification(ServerNotification::Warning(w)))) => {
                 warnings.push(w.message);

@@ -424,7 +424,7 @@ fn with_live(mut stored: Value, live: Option<&Value>) -> Value {
     if let Some(live) = live {
         for key in [
             "model",
-            "provider",
+            "modelProvider",
             "contextWindow",
             "mode",
             "tools",
@@ -530,9 +530,9 @@ impl Router {
             }
             "session/settings/updated" => {
                 if let Some(live) = state.live.get_mut(&session) {
-                    let settings = &value["params"]["settings"];
+                    let settings = &value["params"]["sessionSettings"];
                     live["model"] = settings["model"].clone();
-                    live["provider"] = settings["modelProvider"].clone();
+                    live["modelProvider"] = settings["modelProvider"].clone();
                     live["contextWindow"] = settings["contextWindow"].clone();
                     live["mode"] = settings["mode"].clone();
                 }

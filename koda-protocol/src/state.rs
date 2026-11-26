@@ -19,8 +19,9 @@ pub struct StateReadParams {}
 pub struct StateReadResponse {
     /// The model id, such as `claude-sonnet-5-5`.
     pub model: String,
-    /// The provider, such as `lm-studio` or `anthropic`.
-    pub provider: String,
+    /// The provider, such as `lm-studio` or `anthropic`. Codex's
+    /// `modelProvider`.
+    pub model_provider: String,
     /// The address requests go to.
     pub base_url: String,
     /// The context window in tokens.
