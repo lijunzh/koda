@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`koda exec resume --model` keeps the session's provider,** as Codex's `thread/resume` does. Naming a model on resume used to drop the stored provider, so a session on Anthropic with a local `--base-url` resumed on LM Studio and failed. Found by koda-evals' new request comparison against Claude Code.
+- **No `anthropic-beta: prompt-caching-2024-07-31` header:** prompt caching is GA, and a request now names only the betas it uses (thinking binding, task budgets).
+
 ## [0.7.13] - 2026-11-26
 
 ### Added

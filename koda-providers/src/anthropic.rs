@@ -23,7 +23,6 @@ use std::sync::{Arc, Mutex};
 /// is needed to read them. Bumping this for chat would be its own
 /// migration: `2026-10-21` rejects `temperature` / `top_p` / `top_k`.
 const ANTHROPIC_API_VERSION: &str = "2023-06-01";
-const ANTHROPIC_BETA_FEATURES: &str = "prompt-caching-2024-07-31";
 /// Lets a request say what happens to a thinking block whose history changed.
 const THINKING_BINDING_BETA: &str = "thinking-binding-controls-2026-08-01";
 /// Lets a request carry `output_config.task_budget`.
@@ -1010,7 +1009,6 @@ impl LlmProvider for AnthropicProvider {
             .post(format!("{}/v1/messages", self.base_url))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_API_VERSION)
-            .header("anthropic-beta", ANTHROPIC_BETA_FEATURES)
             .json(&request);
 
         let msg_resp: MessagesResponse = super::http::send_and_parse_json(req, "Anthropic").await?;
@@ -1231,22 +1229,24 @@ impl LlmProvider for AnthropicProvider {
         }
         super::trace_request("anthropic", &body);
 
-        let req = self
+        // Only the betas this request uses: prompt caching is GA, and Koda
+        // once sent its old beta name on every request.
+        let betas: Vec<&str> = [
+            binding.then_some(THINKING_BINDING_BETA),
+            task_budget.is_some().then_some(TASK_BUDGET_BETA),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let mut req = self
             .client
             .post(format!("{}/v1/messages", self.base_url))
             .header("x-api-key", &self.api_key)
-            .header("anthropic-version", ANTHROPIC_API_VERSION)
-            .header("anthropic-beta", {
-                let mut betas = ANTHROPIC_BETA_FEATURES.to_string();
-                if binding {
-                    betas = format!("{betas},{THINKING_BINDING_BETA}");
-                }
-                if task_budget.is_some() {
-                    betas = format!("{betas},{TASK_BUDGET_BETA}");
-                }
-                betas
-            })
-            .json(&body);
+            .header("anthropic-version", ANTHROPIC_API_VERSION);
+        if !betas.is_empty() {
+            req = req.header("anthropic-beta", betas.join(","));
+        }
+        let req = req.json(&body);
 
         let resp = super::http::send_or_bail(req, "Anthropic").await?;
 
