@@ -514,6 +514,8 @@ fn rebuild_from(messages: &[Message], progress: &mut HashMap<String, Vec<String>
                         id,
                         // Known from the tool's name, unlike its effect.
                         kind: Some(koda_protocol::item::ToolKind::of(&tool)),
+                        // Read from the command, as it was live.
+                        command_actions: crate::events::command_actions(&tool, &arguments),
                         tool,
                         arguments,
                         // Not stored with sessions from before turns were.

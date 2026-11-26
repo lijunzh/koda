@@ -13,6 +13,7 @@
 
 use crate::theme::{BOLD, DIM, STATUS_INFO, STATUS_SUCCESS};
 use crate::tool_summary::{ToolCallKind, ToolCallSummary};
+use koda_client::protocol::item::CommandAction;
 use koda_client::protocol::turn::{PlanStep, PlanStepStatus};
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
@@ -83,10 +84,16 @@ impl WorkingArea {
     }
 
     /// One of the session's calls started.
-    pub(crate) fn call_started(&mut self, id: &str, tool: &str, arguments: &serde_json::Value) {
+    pub(crate) fn call_started(
+        &mut self,
+        id: &str,
+        tool: &str,
+        arguments: &serde_json::Value,
+        actions: &[CommandAction],
+    ) {
         self.running.push(Running {
             id: id.to_string(),
-            label: call_label(tool, arguments),
+            label: action_label(actions).unwrap_or_else(|| call_label(tool, arguments)),
             since: Instant::now(),
         });
     }
@@ -244,6 +251,24 @@ pub(crate) fn call_label(tool: &str, arguments: &serde_json::Value) -> String {
     truncate_label(label)
 }
 
+/// What a command does, when its first action says: `Reading Cargo.toml`,
+/// `Searching for "GUI"`, `Listing src`, from the host's `commandActions`.
+fn action_label(actions: &[CommandAction]) -> Option<String> {
+    let label = match actions.first()? {
+        CommandAction::Read { name, .. } => format!("Reading {name}"),
+        CommandAction::Search {
+            query: Some(query), ..
+        } => format!("Searching for \"{query}\""),
+        CommandAction::Search { .. } => "Searching".to_string(),
+        CommandAction::ListFiles {
+            path: Some(path), ..
+        } => format!("Listing {path}"),
+        CommandAction::ListFiles { .. } => "Listing files".to_string(),
+        CommandAction::Unknown { .. } => return None,
+    };
+    Some(truncate_label(label))
+}
+
 /// A path's last part: the status line has no room for the rest.
 fn file_name(path: &str) -> &str {
     path.rsplit('/').find(|p| !p.is_empty()).unwrap_or(path)
@@ -323,8 +348,8 @@ mod tests {
         assert_eq!(area.label(), "Working");
         area.set(Step::Thinking);
         assert_eq!(area.label(), "Thinking");
-        area.call_started("r1", "Read", &json!({"file_path": "a.rs"}));
-        area.call_started("b1", "Bash", &json!({"command": "ls"}));
+        area.call_started("r1", "Read", &json!({"file_path": "a.rs"}), &[]);
+        area.call_started("b1", "Bash", &json!({"command": "ls"}), &[]);
         assert_eq!(area.label(), "Running a command");
         area.call_ended("b1");
         assert_eq!(area.label(), "Reading a.rs");

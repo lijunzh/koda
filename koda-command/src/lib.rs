@@ -6,6 +6,8 @@
 //!   token with `shlex`, heredocs and command substitutions included.
 //! - [`bash_path_lint`]: finds paths a command would touch outside the
 //!   project.
+//! - [`parse_command`]: what a command does, in words a person reads
+//!   (Codex's `parse_command`), for clients to show.
 //!
 //! Split out of `koda-core` in 0.7.1, as Codex's first split was its shell
 //! command parsing (`codex-shell-command`); `koda-core` re-exports both
@@ -18,6 +20,8 @@
 pub mod bash_path_lint;
 /// Shell command classification: what a command does.
 pub mod bash_safety;
+/// What a command does, in words: reads a file, lists, searches.
+pub mod parse_command;
 
 /// Effect classification for tool calls.
 ///

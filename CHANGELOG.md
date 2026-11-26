@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **A `Bash` call says what its command does, as Codex's `commandActions`:** each `toolCall` item for `Bash` carries one entry per command in it, from its start: `read` (with the file's `name` and `path`), `listFiles`, `search` (with the `query` and `path`) or `unknown`. The reading is Codex's own parser (`parse_command`), carried in `koda-command` with Koda's scanner in place of tree-sitter; all of Codex's tests for it pass. The TUI uses it: a lookup row counts `cat a.rs && rg GUI` as a read and a search rather than a command, and the status line says `Reading Cargo.toml` or `Searching for "GUI"` rather than `Running a command`. For showing only: approvals still go by Koda's command classification.
+
 ### Changed
 
 - **A turn's steps are folded, as Claude Code folds them, so the answer is easy to find.** Thinking was printed in full and every lookup had its own header and output: a local model's turn put about 190 lines before a 50-line answer. Now, in the folded view:
