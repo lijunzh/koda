@@ -322,6 +322,14 @@ it was waiting for is still there.
   own config. `koda exec` always runs in its own process.
 - **Another server:** `koda --remote unix://PATH` uses the server at that
   socket; it isn't started or replaced.
+- **If the server goes away** (it crashed or was stopped while the TUI was
+  open), the TUI reconnects, as Codex's TUI does: it tries at once, then after
+  1, 2 and 4 seconds, then every 8 seconds, for two minutes, starting Koda's
+  own server again when nothing answers (not one given with `--remote`). The
+  session opens again where it was, and an approval it was waiting for comes
+  back. A turn the server kept running is followed again; a turn that was
+  running when the server itself stopped ended with it. Ctrl+C quits while it
+  tries. If it gives up, your next prompt tries again.
 - **After an update,** a server of another version is replaced if nothing is
   in use, as Claude Code's supervisor restarts onto a new version; if it's
   busy, this run uses its own process and says so. `koda serve --stop` stops

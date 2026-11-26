@@ -13,6 +13,7 @@ mod mcp;
 mod memory;
 mod menus;
 mod plan;
+mod reconnect;
 mod requests;
 mod review;
 mod session_cmds;
@@ -181,6 +182,11 @@ pub(crate) struct TuiContext {
     pub(crate) mcp_stale: bool,
     /// The session's goal as the host last reported it.
     pub(crate) goal: Option<koda_client::protocol::goal::Goal>,
+    /// Where the host is, for reconnecting to it.
+    pub(crate) backend: crate::backend::Backend,
+    /// The connection to the shared server is lost and reconnecting gave
+    /// up: the next prompt tries again first.
+    pub(crate) offline: bool,
 }
 
 /// The TUI's view of its session. The host owns the session and runs its
@@ -598,6 +604,8 @@ impl TuiContext {
             mcp: mcp::McpView::default(),
             mcp_stale: true,
             goal: None,
+            backend,
+            offline: false,
         };
         ctx.refresh_model_names().await;
         Ok(ctx)
@@ -785,6 +793,30 @@ impl TuiContext {
             if self.tui_state == TuiState::Idle
                 && let Some(raw) = self.pending_command.take()
             {
+                // Offline: a prompt reconnects first; a command such as
+                // /quit needs no server. Still offline, the prompt goes
+                // back to the input box.
+                if self.offline && !raw.trim_start().starts_with('/') {
+                    if let Some(turn_id) = self.reconnect().await {
+                        self.run_inference_turn(
+                            TurnRequest::Watch {
+                                turn_id,
+                                waiting: Vec::new(),
+                            },
+                            cmd_tx,
+                            cmd_rx,
+                        )
+                        .await?;
+                    }
+                    if self.offline || self.should_quit {
+                        self.textarea.set_text_clearing_elements(&raw);
+                        if let Some((pastes, images)) = draft.take() {
+                            self.pastes.list.extend(pastes);
+                            self.pasted_images.extend(images);
+                        }
+                        continue;
+                    }
+                }
                 let outcome = self.dispatch_command(&raw).await;
                 if let Some((pastes, images)) = draft.take() {
                     self.pastes.list.extend(pastes);
@@ -836,7 +868,24 @@ impl TuiContext {
                 // The host's notifications while idle: MCP startups move
                 // the status bar; the rest are no turn's business, as a
                 // turn drops them when it starts.
-                Some(message) = self.client.next_event() => {
+                message = self.client.next_event(), if !self.offline => {
+                    // The host is gone: the shared server stopped or the
+                    // connection broke. Reconnect, as Codex's TUI does, and
+                    // follow a turn the server kept running.
+                    let Some(message) = message else {
+                        if let Some(turn_id) = self.reconnect().await {
+                            self.run_inference_turn(
+                                TurnRequest::Watch {
+                                    turn_id,
+                                    waiting: Vec::new(),
+                                },
+                                cmd_tx,
+                                cmd_rx,
+                            )
+                            .await?;
+                        }
+                        continue;
+                    };
                     if self.note_main_session(&message) {
                         continue;
                     }
