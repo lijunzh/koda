@@ -184,14 +184,14 @@ generated from the protocol's types, and CI fails if the two differ.
 
 ```json
 {"jsonrpc":"2.0","method":"session/started","params":{"session":{"id":"a3f8bc12-…","preview":"","createdAt":1794700000,"updatedAt":1794700000,"cwd":"/home/me/project","model":"claude-haiku-5-5","provider":"anthropic","contextWindow":200000,"mode":"auto","tools":["Read","Bash","…"]},"kodaVersion":"0.7.12","protocolVersion":2}}
-{"jsonrpc":"2.0","method":"turn/started","params":{"sessionId":"a3f8bc12-…","turn":{"id":"7d1e…","status":"inProgress","error":null,"usage":null,"durationMs":null}}}
+{"jsonrpc":"2.0","method":"turn/started","params":{"sessionId":"a3f8bc12-…","turn":{"id":"7d1e…","status":"inProgress","error":null,"usage":null,"durationMs":null,"startedAt":1794700001,"completedAt":null}}}
 {"jsonrpc":"2.0","method":"item/started","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"userMessage","id":"user-3f9a2c1e-1","text":"Why does the test fail?","clientMessageIds":[]}}}
 {"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"userMessage","id":"user-3f9a2c1e-1","text":"Why does the test fail?","clientMessageIds":[]}}}
 {"jsonrpc":"2.0","method":"item/started","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"toolCall","id":"call_1","tool":"Bash","arguments":{"command":"cargo test"},"status":"inProgress","output":null,"detail":null}}}
 {"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"toolCall","id":"call_1","tool":"Bash","arguments":{"command":"cargo test"},"status":"failed","output":"Exit code: 101 | …","detail":null}}}
 {"jsonrpc":"2.0","method":"item/started","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"agentMessage","id":"msg-3f9a2c1e-2","text":""}}}
 {"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"agentMessage","id":"msg-3f9a2c1e-2","text":"The test fails because …"}}}
-{"jsonrpc":"2.0","method":"turn/completed","params":{"sessionId":"a3f8bc12-…","turn":{"id":"7d1e…","status":"completed","error":null,"usage":{"inputTokens":18234,"cachedInputTokens":15012,"cacheCreationTokens":0,"outputTokens":912,"reasoningTokens":0,"modelCalls":3},"durationMs":8421}}}
+{"jsonrpc":"2.0","method":"turn/completed","params":{"sessionId":"a3f8bc12-…","turn":{"id":"7d1e…","status":"completed","error":null,"usage":{"inputTokens":18234,"cachedInputTokens":15012,"cacheCreationTokens":0,"outputTokens":912,"reasoningTokens":0,"modelCalls":3},"durationMs":8421,"startedAt":1794700001,"completedAt":1794700009}}}
 {"jsonrpc":"2.0","method":"exec/summary","params":{"sessionId":"a3f8bc12-…","success":true,"…":"…"}}
 ```
 
@@ -215,7 +215,7 @@ below as described, and Ctrl+C sends `turn/interrupt`.
 | Method | Carries | Notes |
 |--------|---------|-------|
 | `session/started` | `session` (`id`, `name`, `preview`, `createdAt`, `updatedAt`, `cwd`, and while open `model`, `provider`, `contextWindow`, `mode`, `tools`), `kodaVersion`, `protocolVersion` | Always first. Stop on a `protocolVersion` you don't support. Times are Unix seconds; `name` is the title, `preview` the first prompt |
-| `turn/started` | `turn`, in progress | |
+| `turn/started` | `turn`, in progress, with `startedAt` | |
 | `item/started`, `item/completed` | `item`, `parentItemId` on a sub-agent's items, `startedAtMs` or `completedAtMs` | Every item that starts completes, once. The times are Unix milliseconds, as Codex's; a stored turn's items keep both |
 | `item/agentMessage/delta` | `itemId`, `delta` | Only with `--json-deltas` |
 | `item/reasoning/textDelta` | `itemId`, `delta` | Only with `--json-deltas` |
@@ -228,7 +228,7 @@ below as described, and Ctrl+C sends `turn/interrupt`.
 | `error` | `error.message`, `willRetry`, `retry` | With `willRetry`, Koda tries the model call again and the turn goes on. `retry` has `reason` (`rateLimit`, `network`, `serverError`, `streamFailed`, `contextOverflow`, `emptyResponse`), `attempt` (the one that failed, from 1), `maxAttempts` and `delayMs` |
 | `warning` | `message` | For people |
 | `serverRequest/resolved` | `requestId` | The request was answered. In `koda exec`, right after each request |
-| `turn/completed` | `turn`: `status`, `error`, `usage`, `durationMs` | Exactly one per turn, after any retries. `status` is `completed`, `interrupted` or `failed`. A failed turn's `error` may carry a `code`: `tokenBudgetSpent` when it spent its [`turn_token_budget`](./configuration.md#limiting-what-a-turn-spends) |
+| `turn/completed` | `turn`: `status`, `error`, `usage`, `durationMs`, `startedAt`, `completedAt` | Exactly one per turn, after any retries. The times are Unix seconds, as Codex's. `status` is `completed`, `interrupted` or `failed`. A failed turn's `error` may carry a `code`: `tokenBudgetSpent` when it spent its [`turn_token_budget`](./configuration.md#limiting-what-a-turn-spends) |
 | `exec/summary` | the run as a whole | `koda exec` only, always last |
 
 ### Items

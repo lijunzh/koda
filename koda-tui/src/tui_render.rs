@@ -1603,6 +1603,8 @@ mod tests {
             error: None,
             usage: None,
             duration_ms,
+            started_at: None,
+            completed_at: None,
             items,
         }
     }

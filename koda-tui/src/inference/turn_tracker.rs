@@ -201,6 +201,8 @@ mod tests {
                         error: None,
                         usage: None,
                         duration_ms: None,
+                        started_at: None,
+                        completed_at: None,
                         items: Vec::new(),
                     },
                 },

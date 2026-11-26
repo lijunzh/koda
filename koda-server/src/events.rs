@@ -160,6 +160,8 @@ struct OpenCompaction {
 pub struct EventProjector {
     session_id: String,
     turn_id: Option<String>,
+    /// When the running turn started, in Unix seconds.
+    turn_started_at: Option<i64>,
     usage: Option<(Usage, u64)>,
     message: HashMap<Option<String>, OpenText>,
     reasoning: HashMap<Option<String>, OpenText>,
@@ -205,6 +207,7 @@ impl EventProjector {
         Self {
             session_id: session_id.to_string(),
             turn_id: None,
+            turn_started_at: None,
             usage: None,
             message: HashMap::new(),
             reasoning: HashMap::new(),
@@ -384,6 +387,8 @@ impl EventProjector {
                 if parent.is_some() => {}
             EngineEvent::TurnStart { turn_id } => {
                 self.turn_id = Some(turn_id.clone());
+                let started_at = now_ms() / 1000;
+                self.turn_started_at = Some(started_at);
                 self.usage = None;
                 self.turn_diff = TurnDiff::new();
                 out.push(notification(ServerNotification::TurnStarted(
@@ -395,6 +400,8 @@ impl EventProjector {
                             error: None,
                             usage: None,
                             duration_ms: None,
+                            started_at: Some(started_at),
+                            completed_at: None,
                             items: Vec::new(),
                         },
                     },
@@ -444,6 +451,8 @@ impl EventProjector {
                             error,
                             usage,
                             duration_ms,
+                            started_at: self.turn_started_at.take(),
+                            completed_at: Some(now_ms() / 1000),
                             items: Vec::new(),
                         },
                     },
@@ -1499,6 +1508,12 @@ mod tests {
         assert_eq!(turn["usage"]["inputTokens"], 100);
         assert_eq!(turn["usage"]["modelCalls"], 2);
         assert_eq!(turn["durationMs"], 1500);
+        // Both ends in Unix seconds, as Codex's; the start as it started.
+        let started = lines[0]["params"]["turn"]["startedAt"].as_i64().unwrap();
+        assert!(started > 1_700_000_000);
+        assert!(lines[0]["params"]["turn"]["completedAt"].is_null());
+        assert_eq!(turn["startedAt"], started);
+        assert!(turn["completedAt"].as_i64().unwrap() >= started);
         assert!(lines.iter().all(|l| l["params"]["sessionId"] == "s1"));
     }
 
