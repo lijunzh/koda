@@ -5438,7 +5438,7 @@
       "type": "object"
     },
     "UserInput": {
-      "description": "One part of what the user sends, Codex's `UserInput`, with its names\n(`text_elements` in snake case, as Codex spells it). A prompt is a list\nof these in the order the user composed it, as Codex's, the Agent Client\nProtocol's and Claude's are.\n\nKoda keeps the order on the `userMessage` item. The model is sent the\ntext parts in order, each mention's contents and each skill's\ninstructions after them, then the images, as before the list.",
+      "description": "One part of what the user sends, Codex's `UserInput`, with its names\n(`text_elements` in snake case, as Codex spells it). A prompt is a list\nof these in the order the user composed it, as Codex's, the Agent Client\nProtocol's and Claude's are.\n\nKoda keeps the order on the `userMessage` item. The model is sent one\nmessage as before the list: the text parts in order with each mention's\ncontents and each skill's instructions after them, and the images, which\ngo before the text for Claude (as Anthropic recommends) and after it for\nan OpenAI-compatible model. Images aren't placed between text parts.",
       "oneOf": [
         {
           "description": "Text the user typed.",

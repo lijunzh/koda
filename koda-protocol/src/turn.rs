@@ -128,9 +128,11 @@ pub struct TurnStartParams {
 /// of these in the order the user composed it, as Codex's, the Agent Client
 /// Protocol's and Claude's are.
 ///
-/// Koda keeps the order on the `userMessage` item. The model is sent the
-/// text parts in order, each mention's contents and each skill's
-/// instructions after them, then the images, as before the list.
+/// Koda keeps the order on the `userMessage` item. The model is sent one
+/// message as before the list: the text parts in order with each mention's
+/// contents and each skill's instructions after them, and the images, which
+/// go before the text for Claude (as Anthropic recommends) and after it for
+/// an OpenAI-compatible model. Images aren't placed between text parts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum UserInput {

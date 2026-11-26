@@ -102,9 +102,12 @@ The parts are Codex's `UserInput`, with its names:
   Code includes an `@` file. This is Koda's meaning: Codex's `mention` names an
   app, plugin or thread, and Codex leaves a file as a path in the text.
 
-The model is sent the text parts in order, a blank line between, then each
-mention's contents and each skill's instructions, then the images; the
-`userMessage` item keeps the parts as sent, in `content`. `turn/steer` takes
+The model is sent one message, as before the list: the text parts in order, a
+blank line between, with each mention's contents and each skill's instructions
+after them, and the images, which go before the text for Claude (as Anthropic
+recommends) and after it for an OpenAI-compatible model. Images aren't placed
+between text parts. The `userMessage` item keeps the parts as sent, in
+`content`. `turn/steer` takes
 the same list, but only `text` parts: steering reaches the model as text.
 
 ## Finding files to mention
