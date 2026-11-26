@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.7.13] - 2026-11-26
+
 ### Added
 
 - **Every `Edit` and `Write` call carries its changes from the start, as Codex's `fileChange` item does,** on `item/started` and `item/completed`, whether or not anyone was asked about it. Before, `changes` came only with an approval or a Plan-mode block, so an edit made in Auto mode sent no diff a client could show.
