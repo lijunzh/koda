@@ -3230,7 +3230,7 @@
           ]
         },
         "turns": {
-          "description": "Its turns, oldest first, each with its items. Filled only by\n`session/start` resuming a session and by `session/read` with\n`includeTurns`, as Codex's `Thread.turns` is.\n\nEach turn is the one the client saw: its id, status, usage and\ncompleted items, a sub-agent's tool calls under its `InvokeAgent`\ncall. A turn that never ended, Koda having stopped mid-way, reads as\ninterrupted.\n\nSessions from before Koda stored turns (0.6.4 and earlier) are\nrebuilt from the messages the model read, which keep less: a turn's id\nis its first message's, an interrupted turn followed by a new prompt\nreads as one turn, a tool call's status is read from its output, its\n`detail` and `changes` are missing, a sub-agent's tool calls and\ncompactions aren't listed, and turns have no usage or duration.",
+          "description": "Its turns, oldest first, each with its items. Filled only by\n`session/resume` and by `session/read` with\n`includeTurns`, as Codex's `Thread.turns` is.\n\nEach turn is the one the client saw: its id, status, usage and\ncompleted items, a sub-agent's tool calls under its `InvokeAgent`\ncall. A turn that never ended, Koda having stopped mid-way, reads as\ninterrupted.\n\nSessions from before Koda stored turns (0.6.4 and earlier) are\nrebuilt from the messages the model read, which keep less: a turn's id\nis its first message's, an interrupted turn followed by a new prompt\nreads as one turn, a tool call's status is read from its output, its\n`detail` and `changes` are missing, a sub-agent's tool calls and\ncompactions aren't listed, and turns have no usage or duration.",
           "items": {
             "$ref": "#/$defs/Turn"
           },
@@ -3315,7 +3315,7 @@
     },
     "SessionForkParams": {
       "additionalProperties": false,
-      "description": "`session/fork`: a new session with a copy of a stored one's history,\nopened and ready for a turn, as Codex's `thread/fork` does. The copy\nis named \"Fork of\" the source's name and keeps its provider, endpoint,\nmodel and mode unless others are named, as `session/start` resumes a\nsession; the source is left as it was. Whatever the source has stored\nis copied, so a turn still running there is copied as far as it has\ngot.",
+      "description": "`session/fork`: a new session with a copy of a stored one's history,\nopened and ready for a turn, as Codex's `thread/fork` does. The copy\nis named \"Fork of\" the source's name and keeps its provider, endpoint,\nmodel and mode unless others are named, as `session/resume` opens a\nsession; the source is left as it was. Whatever the source has stored\nis copied, so a turn still running there is copied as far as it has\ngot.",
       "properties": {
         "approvalPolicy": {
           "anyOf": [
@@ -3379,7 +3379,7 @@
       "type": "object"
     },
     "SessionForkResponse": {
-      "description": "The answer to `session/fork`: the fork, opened, with its turns, as\n`session/start` returns a resumed session.",
+      "description": "The answer to `session/fork`: the fork, opened, with its turns, as\n`session/resume` returns a resumed session.",
       "properties": {
         "session": {
           "$ref": "#/$defs/Session",
@@ -3850,6 +3850,80 @@
       ],
       "type": "object"
     },
+    "SessionResumeParams": {
+      "additionalProperties": false,
+      "description": "`session/resume`: open an earlier session, as Codex's `thread/resume`,\nanswered with it and its turns. One this server has open is joined: the\nanswer has its running turn as it stands, and its notifications follow\nfrom there. A session another Koda process has open is refused\n(`-32600`, \"session … already has an active writer\"), as Codex refuses a\nthread with another writer.",
+      "properties": {
+        "approvalPolicy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApprovalPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Who answers the session's requests. Without one, the client does."
+        },
+        "baseUrl": {
+          "description": "The provider's endpoint. Without one, the session's own.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "config": {
+          "additionalProperties": true,
+          "description": "Config values for this session only, as on `session/start`.",
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "cwd": {
+          "description": "The folder to open it in. Without one, the host's.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "description": "The model: an id, or an alias. Without one, the session's own\nchoice, an alias resolved again.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "modelProvider": {
+          "description": "Ignored: a session keeps the provider it was started with, as\nCodex's `thread/resume` does. Taken for Codex's shape.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sessionId": {
+          "description": "The session, by its full id; a client matches a shorter one over\n`session/list`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "type": "object"
+    },
+    "SessionResumeResponse": {
+      "description": "The answer to `session/resume`.",
+      "properties": {
+        "session": {
+          "$ref": "#/$defs/Session",
+          "description": "The session, with its turns, ready for a turn."
+        }
+      },
+      "required": [
+        "session"
+      ],
+      "type": "object"
+    },
     "SessionRevertParams": {
       "additionalProperties": false,
       "description": "`session/revert`: take a turn and every turn after it out of an open,\nidle session's history, as Codex's `thread/revert` replaces a thread's\nhistory with the part before one turn. Files the turns changed stay as\nthey are. Refused while a turn runs, for a turn from before Koda\nrecorded where turns start (0.7.8), and across a compaction.",
@@ -4030,7 +4104,7 @@
     },
     "SessionStartParams": {
       "additionalProperties": false,
-      "description": "`session/start`.",
+      "description": "`session/start`: a new session, as Codex's `thread/start`. An earlier\none is opened with `session/resume`.",
       "properties": {
         "approvalPolicy": {
           "anyOf": [
@@ -4081,13 +4155,6 @@
         },
         "modelProvider": {
           "description": "The provider, by id (`anthropic`, `lm-studio`, …, as\n`modelProvider/list` gives them). A new session without one uses the\nhost's; a resumed one keeps the provider it was started with, as\nCodex's `thread/resume` does. A session's provider never changes.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "sessionId": {
-          "description": "An earlier session to resume, by its full id, as Codex's\n`thread/resume` takes one; a client matches a shorter one over\n`session/list`. Without one, a new session starts. A session another\nKoda process has open is refused (`-32600`, \"session … already has an\nactive writer\"), as Codex refuses a thread with another writer.",
           "type": [
             "string",
             "null"
@@ -4300,7 +4367,7 @@
     },
     "SessionUnsubscribeParams": {
       "additionalProperties": false,
-      "description": "`session/unsubscribe`: the client is done with a session. Its running\nturn, if any, stops, and the session is closed; `session/start` with its\nid opens it again. Codex's `thread/unsubscribe`.",
+      "description": "`session/unsubscribe`: the client is done with a session. Its running\nturn, if any, stops, and the session is closed; `session/resume` with its\nid opens it again. Codex's `thread/unsubscribe`.",
       "properties": {
         "sessionId": {
           "description": "The session.",
@@ -5014,7 +5081,7 @@
           "type": "string"
         },
         "items": {
-          "description": "Its items, in order. Filled only when a stored session's turns are\nreturned, by `session/start` resuming it, `session/read` or\n`session/turns/list`, as Codex's `Turn.items` is; empty on `turn/started` and\n`turn/completed`, whose items come as notifications.",
+          "description": "Its items, in order. Filled only when a stored session's turns are\nreturned, by `session/resume`, `session/read` or\n`session/turns/list`, as Codex's `Turn.items` is; empty on `turn/started` and\n`turn/completed`, whose items come as notifications.",
           "items": {
             "$ref": "#/$defs/TurnItem"
           },
@@ -5150,7 +5217,7 @@
       "type": "object"
     },
     "TurnItem": {
-      "description": "An item of a stored turn, as `session/start` (resuming) and\n`session/read` return it: what `item/completed` sent, with its parent\nand its times, as Codex's `ThreadItem` keeps them.",
+      "description": "An item of a stored turn, as `session/resume` and\n`session/read` return it: what `item/completed` sent, with its parent\nand its times, as Codex's `ThreadItem` keeps them.",
       "properties": {
         "completedAtMs": {
           "description": "When it completed, in Unix milliseconds; absent when not recorded.",
@@ -5828,6 +5895,14 @@
       },
       "result": {
         "$ref": "#/$defs/SessionReadResponse"
+      }
+    },
+    "session/resume": {
+      "params": {
+        "$ref": "#/$defs/SessionResumeParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionResumeResponse"
       }
     },
     "session/revert": {

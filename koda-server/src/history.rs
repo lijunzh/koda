@@ -1,4 +1,4 @@
-//! A session's turns as a client saw them, for `session/start` resuming it,
+//! A session's turns as a client saw them, for `session/resume`,
 //! `session/read` and `session/turns/list` ([`page`]), as Codex's
 //! `thread/resume`, `thread/read` and `thread/turns/list` return a
 //! thread's turns.

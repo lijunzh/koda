@@ -265,7 +265,7 @@ pub struct ItemCompletedNotification {
     pub completed_at_ms: i64,
 }
 
-/// An item of a stored turn, as `session/start` (resuming) and
+/// An item of a stored turn, as `session/resume` and
 /// `session/read` return it: what `item/completed` sent, with its parent
 /// and its times, as Codex's `ThreadItem` keeps them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

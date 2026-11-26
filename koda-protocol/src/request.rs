@@ -119,11 +119,15 @@ client_requests! {
         params: crate::state::StateReadParams,
         response: crate::state::StateReadResponse,
     },
-    /// Open a session: a new one, or an earlier one by id. `session/started`
-    /// follows.
+    /// Start a new session. `session/started` follows.
     SessionStart => "session/start" {
         params: crate::session::SessionStartParams,
         response: crate::session::SessionStartResponse,
+    },
+    /// Open an earlier session, or join one this server has open.
+    SessionResume => "session/resume" {
+        params: crate::session::SessionResumeParams,
+        response: crate::session::SessionResumeResponse,
     },
     /// Stored sessions, newest first.
     SessionList => "session/list" {

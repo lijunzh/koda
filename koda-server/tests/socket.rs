@@ -452,7 +452,7 @@ async fn a_session_outlives_its_client_until_it_is_idle() {
     // Still open: attaching gives it as it runs, without starting it again.
     let mut second = Client::ready(&koda).await;
     let attached = second
-        .request("session/start", json!({"sessionId": session}))
+        .request("session/resume", json!({"sessionId": session}))
         .await
         .unwrap();
     assert_eq!(attached["session"]["id"], session.as_str());
@@ -481,7 +481,7 @@ async fn a_session_outlives_its_client_until_it_is_idle() {
     // Closed once idle past the delay: opening it starts it again.
     tokio::time::sleep(Duration::from_millis(1500)).await;
     let reopened = second
-        .request("session/start", json!({"sessionId": session}))
+        .request("session/resume", json!({"sessionId": session}))
         .await
         .unwrap();
     assert_eq!(reopened["session"]["id"], session.as_str());
@@ -652,7 +652,7 @@ async fn an_approval_waits_for_a_client_that_attaches() {
     // session.
     let mut second = Client::ready(&koda).await;
     let attached = second
-        .request("session/start", json!({"sessionId": session}))
+        .request("session/resume", json!({"sessionId": session}))
         .await
         .unwrap();
     assert_eq!(attached["session"]["id"], session.as_str());
@@ -660,7 +660,7 @@ async fn an_approval_waits_for_a_client_that_attaches() {
     assert_eq!(resent.last().unwrap()["id"], request_id);
     let mut third = Client::ready(&koda).await;
     third
-        .request("session/start", json!({"sessionId": session}))
+        .request("session/resume", json!({"sessionId": session}))
         .await
         .unwrap();
     third.until_method("item/toolCall/requestApproval").await;
@@ -720,7 +720,7 @@ async fn a_client_that_joins_mid_turn_gets_the_turn_as_it_stands() {
         .await;
     second.response(init).await.unwrap();
     let join = second
-        .send_request("session/start", json!({"sessionId": session}))
+        .send_request("session/resume", json!({"sessionId": session}))
         .await;
     // Nothing of the session reaches it before the answer.
     let mut before = Vec::new();
@@ -1200,7 +1200,7 @@ async fn a_client_runs_a_turn_over_the_socket() {
     handle.shutdown(connected.host).await;
     let mut other = Client::ready(&koda).await;
     let attached = other
-        .request("session/start", json!({"sessionId": session}))
+        .request("session/resume", json!({"sessionId": session}))
         .await
         .unwrap();
     assert_eq!(attached["session"]["id"], session.as_str());
@@ -1436,14 +1436,14 @@ async fn a_client_that_leaves_while_opening_a_session_doesnt_keep_it() {
     // It opens the stored session and hangs up before the answer.
     let mut leaver = Client::ready(&koda).await;
     leaver
-        .send_request("session/start", json!({"sessionId": session}))
+        .send_request("session/resume", json!({"sessionId": session}))
         .await;
     drop(leaver);
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let mut next = Client::ready(&koda).await;
     let opened = next
-        .request("session/start", json!({"sessionId": session}))
+        .request("session/resume", json!({"sessionId": session}))
         .await
         .unwrap_or_else(|e| panic!("the session can't be opened again: {e}"));
     assert_eq!(opened["session"]["id"], session.as_str());
@@ -1683,7 +1683,7 @@ async fn a_client_that_stops_reading_is_let_go_and_its_session_goes_on() {
     // Its session is still open: the next client attaches to it.
     let mut other = Client::ready(&koda).await;
     let attached = other
-        .request("session/start", json!({"sessionId": session}))
+        .request("session/resume", json!({"sessionId": session}))
         .await
         .unwrap();
     assert_eq!(attached["session"]["id"], session.as_str());

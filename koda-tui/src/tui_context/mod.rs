@@ -222,29 +222,43 @@ pub(crate) async fn open_host_session(
     Vec<koda_client::protocol::turn::Turn>,
     Option<koda_client::protocol::state::TrustMode>,
 )> {
-    use koda_client::protocol::{methods, session::SessionStartParams};
-    let started = client
-        .request::<methods::SessionStart>(SessionStartParams {
-            session_id: resume,
-            approval_policy: None,
-            model_provider: named.provider.clone(),
-            base_url: named.base_url.clone(),
-            model: named.model.clone(),
-            // This client's folder: on the shared server, the server's own
-            // is another's. The run's `-c` values keep a run in-process.
-            cwd: Some(client.project_root().display().to_string()),
-            ..Default::default()
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("{}", opening_refused(e)))?;
-    let instruction_sources = started.session.instruction_sources.unwrap_or_default();
+    use koda_client::protocol::methods;
+    use koda_client::protocol::session::{SessionResumeParams, SessionStartParams};
+    // This client's folder: on the shared server, the server's own is
+    // another's. The run's `-c` values keep a run in-process.
+    let cwd = Some(client.project_root().display().to_string());
+    let opened = match resume {
+        // Codex's `thread/resume`: the session keeps its provider.
+        Some(session_id) => client
+            .request::<methods::SessionResume>(SessionResumeParams {
+                session_id,
+                base_url: named.base_url.clone(),
+                model: named.model.clone(),
+                cwd,
+                ..Default::default()
+            })
+            .await
+            .map(|resumed| resumed.session),
+        None => client
+            .request::<methods::SessionStart>(SessionStartParams {
+                model_provider: named.provider.clone(),
+                base_url: named.base_url.clone(),
+                model: named.model.clone(),
+                cwd,
+                ..Default::default()
+            })
+            .await
+            .map(|started| started.session),
+    };
+    let session = opened.map_err(|e| anyhow::anyhow!("{}", opening_refused(e)))?;
+    let instruction_sources = session.instruction_sources.unwrap_or_default();
     Ok((
         TuiSession {
-            id: started.session.id,
+            id: session.id,
             instruction_sources,
         },
-        started.session.turns,
-        started.session.mode,
+        session.turns,
+        session.mode,
     ))
 }
 

@@ -10,7 +10,7 @@ use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use futures_util::StreamExt;
 use koda_client::InProcessClient;
 use koda_client::protocol::methods;
-use koda_client::protocol::session::{SessionStartParams, SessionStartResponse};
+use koda_client::protocol::session::{SessionResumeParams, SessionResumeResponse};
 use koda_client::protocol::turn::TurnStatus;
 use koda_client::reconnect::{BUDGET, Failure, GaveUp, reconnect, worth_retrying};
 
@@ -18,7 +18,7 @@ use super::TuiContext;
 use crate::tui_output::{dim_msg, err_msg, warn_msg};
 
 /// A try that reached the server and opened the session again.
-type Reconnected = (InProcessClient, Option<String>, SessionStartResponse);
+type Reconnected = (InProcessClient, Option<String>, SessionResumeResponse);
 
 impl TuiContext {
     /// Reconnect to the shared server, saying so; Ctrl+C or Ctrl+D while it
@@ -77,8 +77,8 @@ impl TuiContext {
             async move {
                 let (client, note) = crate::backend::reconnect_once(&backend, &root).await?;
                 let started = client
-                    .request::<methods::SessionStart>(SessionStartParams {
-                        session_id: Some(session_id),
+                    .request::<methods::SessionResume>(SessionResumeParams {
+                        session_id,
                         cwd: Some(root.display().to_string()),
                         ..Default::default()
                     })

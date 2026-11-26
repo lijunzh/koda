@@ -19,9 +19,9 @@ use koda_client::protocol::memory::{MemoryScope, SessionMemoryAddParams, Session
 use koda_client::protocol::model::{ModelListParams, ModelProviderListParams};
 use koda_client::protocol::rpc::{ErrorObject, RequestId, codes};
 use koda_client::protocol::session::{
-    SessionCompactStartParams, SessionDeleteParams, SessionListParams, SessionSettings,
-    SessionSettingsUpdateParams, SessionSettingsUpdateResponse, SessionStartParams,
-    SessionUnsubscribeParams, SessionUnsubscribeStatus,
+    SessionCompactStartParams, SessionDeleteParams, SessionListParams, SessionResumeParams,
+    SessionSettings, SessionSettingsUpdateParams, SessionSettingsUpdateResponse,
+    SessionStartParams, SessionUnsubscribeParams, SessionUnsubscribeStatus,
 };
 use koda_client::protocol::state::TrustMode;
 use koda_client::protocol::turn::{
@@ -1214,8 +1214,8 @@ async fn a_resumed_session_keeps_its_history() {
     // One client can't open the same session twice.
     let error = server_error(
         first
-            .request::<methods::SessionStart>(SessionStartParams {
-                session_id: Some(session.clone()),
+            .request::<methods::SessionResume>(SessionResumeParams {
+                session_id: session.clone(),
                 ..Default::default()
             })
             .await,
@@ -1225,8 +1225,8 @@ async fn a_resumed_session_keeps_its_history() {
 
     let second = client(config(&server), &dir).await;
     let resumed = second
-        .request::<methods::SessionStart>(SessionStartParams {
-            session_id: Some(session.clone()),
+        .request::<methods::SessionResume>(SessionResumeParams {
+            session_id: session.clone(),
             ..Default::default()
         })
         .await
@@ -1246,8 +1246,8 @@ async fn a_resumed_session_keeps_its_history() {
 
     let error = server_error(
         koda.client
-            .request::<methods::SessionStart>(SessionStartParams {
-                session_id: Some("no-such-session".to_string()),
+            .request::<methods::SessionResume>(SessionResumeParams {
+                session_id: "no-such-session".to_string(),
                 ..Default::default()
             })
             .await,
@@ -1306,8 +1306,8 @@ async fn unsubscribe_closes_a_session_and_it_opens_again() {
 
     let reopened = koda
         .client
-        .request::<methods::SessionStart>(SessionStartParams {
-            session_id: Some(koda.session.clone()),
+        .request::<methods::SessionResume>(SessionResumeParams {
+            session_id: koda.session.clone(),
             ..Default::default()
         })
         .await
@@ -1329,8 +1329,8 @@ async fn a_session_has_one_writer_across_hosts() {
     let refusal = format!("session {} already has an active writer", koda.session);
 
     let resumed = other
-        .request::<methods::SessionStart>(SessionStartParams {
-            session_id: Some(koda.session.clone()),
+        .request::<methods::SessionResume>(SessionResumeParams {
+            session_id: koda.session.clone(),
             ..Default::default()
         })
         .await;
@@ -1369,8 +1369,8 @@ async fn a_session_has_one_writer_across_hosts() {
     let deadline = Instant::now() + WAIT;
     let reopened = loop {
         let started = other
-            .request::<methods::SessionStart>(SessionStartParams {
-                session_id: Some(koda.session.clone()),
+            .request::<methods::SessionResume>(SessionResumeParams {
+                session_id: koda.session.clone(),
                 ..Default::default()
             })
             .await;
@@ -1583,12 +1583,12 @@ async fn sessions_are_listed_newest_first_with_their_first_prompt() {
     );
     assert!(bad.message.contains("not a cursor"), "{bad:?}");
 
-    // `session/start` takes a full id only, as Codex's `thread/resume`: a
+    // `session/resume` takes a full id only, as Codex's `thread/resume`: a
     // client matches a shorter one over the list.
     let refused = server_error(
         koda.client
-            .request::<methods::SessionStart>(SessionStartParams {
-                session_id: Some(first[..8].to_string()),
+            .request::<methods::SessionResume>(SessionResumeParams {
+                session_id: first[..8].to_string(),
                 ..Default::default()
             })
             .await,
@@ -2320,8 +2320,8 @@ async fn a_resumed_session_reopens_on_its_own_model() {
 
     let resumed = koda
         .client
-        .request::<methods::SessionStart>(SessionStartParams {
-            session_id: Some(other),
+        .request::<methods::SessionResume>(SessionResumeParams {
+            session_id: other,
             ..Default::default()
         })
         .await
@@ -3597,8 +3597,8 @@ async fn usage_is_split_by_agent_and_restored_on_resume() {
     );
 
     koda.client
-        .request::<methods::SessionStart>(SessionStartParams {
-            session_id: Some(koda.session.clone()),
+        .request::<methods::SessionResume>(SessionResumeParams {
+            session_id: koda.session.clone(),
             ..Default::default()
         })
         .await
@@ -3748,8 +3748,8 @@ async fn a_resumed_session_returns_its_turns_as_they_were_sent() {
 
     let resumed = koda
         .client
-        .request::<methods::SessionStart>(SessionStartParams {
-            session_id: Some(koda.session.clone()),
+        .request::<methods::SessionResume>(SessionResumeParams {
+            session_id: koda.session.clone(),
             ..Default::default()
         })
         .await
