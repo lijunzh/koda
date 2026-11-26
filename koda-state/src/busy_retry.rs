@@ -191,17 +191,28 @@ mod tests {
             .unwrap_err();
         assert!(is_busy(&refused), "{refused}");
 
-        // Released within the retries' 300 ms: the write goes through.
-        let release = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            held.commit().await.unwrap();
-        });
-        sqlx::query("INSERT INTO t VALUES (?)")
-            .bind(3)
-            .execute_write(&other)
-            .await
-            .unwrap();
-        release.await.unwrap();
+        // The first attempt meets the lock, which is let go right after it:
+        // the retry finds it free and the write goes through. Released by
+        // the attempt itself, not after a sleep, so a busy machine can't
+        // push the release past the retries (it once did on Linux CI).
+        let held = tokio::sync::Mutex::new(Some(held));
+        let attempts = std::sync::atomic::AtomicUsize::new(0);
+        let (held, attempts, other) = (&held, &attempts, &other);
+        retry_sqlx(move || async move {
+            let attempt = attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let written = sqlx::query("INSERT INTO t VALUES (3)").execute(other).await;
+            if attempt == 0 {
+                assert!(
+                    written.as_ref().is_err_and(is_busy),
+                    "the first attempt meets the lock: {written:?}"
+                );
+                held.lock().await.take().unwrap().commit().await.unwrap();
+            }
+            written
+        })
+        .await
+        .unwrap();
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
         let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM t")
             .fetch_one(&holder)
             .await
