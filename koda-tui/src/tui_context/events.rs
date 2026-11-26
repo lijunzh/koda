@@ -111,6 +111,14 @@ impl TuiContext {
         {
             return Ok(consumed);
         }
+        // F4's focus mode: one folded row opened from the keyboard.
+        if self.menu.is_none() {
+            let (w, _) = self.term_dims();
+            let h = (self.history_area_height as usize).max(1);
+            if crate::fold_keys::handle_key(&mut self.scroll_buffer, key, w, h) {
+                return Ok(true);
+            }
+        }
 
         // Vim insert-mode Escape: route to the textarea so it transitions to
         // NORMAL mode. Without this short-circuit, the bare-Esc match arm
@@ -455,6 +463,12 @@ impl TuiContext {
 
             MouseEventKind::Up(MouseButton::Left) => {
                 if let Some(sel) = self.mouse_selection.take() {
+                    // A click, not a drag: open or close the folded row
+                    // under it, as Claude Code's fullscreen view does.
+                    if sel.anchor == sel.cursor && in_history {
+                        let row = usize::from(mouse.row - hist_y);
+                        crate::fold_keys::click(&mut self.scroll_buffer, row, w, hist_h as usize);
+                    }
                     // Only copy if the selection spans more than a click
                     if sel.anchor != sel.cursor {
                         let lines: Vec<Line<'_>> =

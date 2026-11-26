@@ -93,6 +93,9 @@ struct Call {
     quiet: bool,
     /// The lookup row it counts on, an index into `TuiRenderer::groups`.
     group: Option<usize>,
+    /// The item its lines belong to in the buffer, which opens and closes
+    /// as one: its lookup row's, its sub-agent's, or its own.
+    item: Option<u64>,
 }
 
 impl Call {
@@ -131,7 +134,7 @@ fn lookup(tool: &str, effect: Option<ToolEffect>) -> Option<Lookup> {
 /// Lookups run one after another, drawn as one row.
 #[derive(Default)]
 struct Group {
-    /// The row's key in the buffer ([`ScrollBuffer::push_row`]).
+    /// The row's item in the buffer ([`ScrollBuffer::push_row`]).
     row: u64,
     reads: usize,
     searches: usize,
@@ -211,6 +214,8 @@ struct Thought {
     ms: Option<u64>,
     /// Whether the model sent any text for it, which the full view shows.
     text: bool,
+    /// The item its lines belong to in the buffer.
+    item: u64,
 }
 
 /// A sub-agent at work: its `InvokeAgent` call, for the line that sums it up.
@@ -219,6 +224,8 @@ struct AgentRun {
     started_ms: Option<i64>,
     /// Tool calls it has made.
     calls: usize,
+    /// The item its calls' lines and its summary belong to.
+    item: u64,
 }
 
 /// Draws a turn from the protocol's messages into the scroll buffer.
@@ -260,6 +267,8 @@ pub struct TuiRenderer {
     thinking_since: Option<i64>,
     /// Whether the reasoning being drawn has had any text.
     thinking_text: bool,
+    /// The item the reasoning being drawn belongs to in the buffer.
+    thinking_item: Option<u64>,
     /// A finished thought, not drawn yet.
     thought: Option<Thought>,
     /// The turn's lookup rows.
@@ -294,6 +303,7 @@ impl TuiRenderer {
             working: WorkingArea::new(),
             thinking_since: None,
             thinking_text: false,
+            thinking_item: None,
             thought: None,
             groups: Vec::new(),
             open_group: None,
@@ -362,7 +372,7 @@ impl TuiRenderer {
     /// folded view; the full one has its text.
     fn draw_thought(&mut self, buffer: &mut ScrollBuffer) {
         if let Some(thought) = self.thought.take() {
-            buffer.push_folded(thought_line(&thought), Fold::Folded);
+            buffer.push_in(thought_line(&thought), Fold::Heading, Some(thought.item));
         }
     }
 
@@ -377,12 +387,15 @@ impl TuiRenderer {
     fn join_group(&mut self, lookup: Lookup, buffer: &mut ScrollBuffer) -> usize {
         let index = match self.open_group {
             Some(index) => {
-                self.thought = None;
+                // The thought opens with the row.
+                if let Some(thought) = self.thought.take() {
+                    buffer.retag(thought.item, self.groups[index].row);
+                }
                 index
             }
             None => {
                 self.draw_thought(buffer);
-                let row = buffer.push_row(Line::default(), Fold::Folded);
+                let row = buffer.push_row(Line::default());
                 self.groups.push(Group {
                     row,
                     ..Group::default()
@@ -580,12 +593,15 @@ impl TuiRenderer {
                 self.thinking_since = started_ms;
                 self.thinking_text = false;
                 self.working.set(Step::Thinking);
-                buffer.push_folded(
+                let thinking = buffer.new_item();
+                self.thinking_item = Some(thinking);
+                buffer.push_in(
                     Line::from(vec![
                         Span::raw("  "),
                         Span::styled("\u{1f4ad} Thinking...", DIM),
                     ]),
                     Fold::Full,
+                    Some(thinking),
                 );
             }
             Item::ToolCall {
@@ -603,15 +619,24 @@ impl TuiRenderer {
                 // updates into the plan panel; anything else ends the row.
                 let mut group = None;
                 let mut quiet = false;
+                // The item its lines open and close with: a sub-agent's
+                // call goes with the sub-agent, a lookup with its row, any
+                // other call on its own.
+                let mut line_item = parent
+                    .and_then(|parent| self.agents.get(parent))
+                    .map(|run| run.item);
                 if parent.is_none() {
                     self.working.call_started(id, tool, arguments);
                     if let Some(lookup) = lookup(tool, *effect) {
-                        group = Some(self.join_group(lookup, buffer));
+                        let index = self.join_group(lookup, buffer);
+                        line_item = Some(self.groups[index].row);
+                        group = Some(index);
                         quiet = true;
                     } else if tool == "TodoWrite" {
                         quiet = true;
                     } else {
                         self.break_run(buffer);
+                        line_item = Some(buffer.new_item());
                     }
                 }
                 self.calls.insert(
@@ -624,14 +649,18 @@ impl TuiRenderer {
                         header: None,
                         quiet,
                         group,
+                        item: line_item,
                     },
                 );
-                if tool == "InvokeAgent" {
+                if tool == "InvokeAgent"
+                    && let Some(item) = line_item
+                {
                     self.agents.insert(
                         id.clone(),
                         AgentRun {
                             started_ms,
                             calls: 0,
+                            item,
                         },
                     );
                 }
@@ -645,7 +674,7 @@ impl TuiRenderer {
                         }
                         let line =
                             crate::tool_header::build_header_line("  ", tool, arguments, *effect);
-                        buffer.push_folded(line, Fold::Full);
+                        buffer.push_in(line, Fold::Full, line_item);
                     }
                     None => {
                         let line =
@@ -656,7 +685,7 @@ impl TuiRenderer {
                                 call.header = Some(line);
                             }
                         } else {
-                            buffer.push_folded(line, fold);
+                            buffer.push_in(line, fold, line_item);
                         }
                     }
                 }
@@ -697,18 +726,26 @@ impl TuiRenderer {
                 if !self.think_buf.is_empty() {
                     let rest = std::mem::take(&mut self.think_buf);
                     self.thinking_text |= !rest.trim().is_empty();
-                    buffer.push_folded(thinking_line(rest), Fold::Full);
+                    buffer.push_in(thinking_line(rest), Fold::Full, self.thinking_item);
                 }
                 // Its stub waits for what comes next. Thoughts one after
-                // another add up to one.
+                // another add up to one, which opens to all their text.
                 let ms = self
                     .thinking_since
                     .take()
                     .zip(completed_ms)
                     .map(|(started, done)| done.saturating_sub(started).max(0) as u64);
+                let item = self
+                    .thinking_item
+                    .take()
+                    .unwrap_or_else(|| buffer.new_item());
+                if let Some(earlier) = &self.thought {
+                    buffer.retag(item, earlier.item);
+                }
                 let thought = self.thought.get_or_insert(Thought {
                     ms: Some(0),
                     text: false,
+                    item,
                 });
                 thought.ms = thought.ms.zip(ms).map(|(a, b)| a + b);
                 thought.text |= self.thinking_text;
@@ -742,7 +779,7 @@ impl TuiRenderer {
                 if let Some(call) = call.as_mut()
                     && let Some(header) = call.header.take()
                 {
-                    buffer.push_folded(header, call.fold());
+                    buffer.push_in(header, call.fold(), call.item);
                 }
                 // What happened to it, as both peers show a declined call:
                 // what the model was told says which it was.
@@ -768,7 +805,12 @@ impl TuiRenderer {
                         .started_ms
                         .zip(completed_ms)
                         .map(|(started, done)| done.saturating_sub(started).max(0) as u64);
-                    self.show(buffer, agent_summary(run.calls, ms, failed));
+                    self.break_run(buffer);
+                    buffer.push_in(
+                        agent_summary(run.calls, ms, failed),
+                        Fold::Always,
+                        Some(run.item),
+                    );
                 }
                 let output = output.as_deref().unwrap_or("");
                 self.result(tool, call, output, failed, changes_shown, buffer);
@@ -793,19 +835,21 @@ impl TuiRenderer {
         // A lookup or plan update: everything in the full view, nothing
         // in the folded one, which has its row or the plan panel.
         let quiet = call.as_ref().is_some_and(|c| c.quiet);
+        let item = call.as_ref().and_then(|c| c.item);
         if let Some(start) = call.as_ref().and_then(|c| c.stream_start) {
             if !quiet {
                 let tail = if failed { FOLD_TAIL } else { 0 };
-                buffer.fold_since(start, FOLD_HEAD, tail, fold_marker);
+                buffer.fold_since(start, FOLD_HEAD, tail, fold_marker, item);
                 self.break_run(buffer);
             }
             let exit_line = output.lines().next().unwrap_or("");
-            buffer.push_folded(
+            buffer.push_in(
                 Line::from(vec![
                     Span::styled("  \u{2514} ", DIM),
                     Span::styled(exit_line.to_string(), DIM),
                 ]),
                 if quiet { Fold::Full } else { Fold::Always },
+                item,
             );
             return;
         }
@@ -837,16 +881,17 @@ impl TuiRenderer {
             grep_pattern.as_deref(),
         );
         if quiet {
-            buffer.push_folded_lines(
+            buffer.push_folded_lines_in(
                 view.into_iter()
                     .filter(|(_, fold)| *fold != Fold::Folded)
                     .map(|(line, _)| (line, Fold::Full)),
+                item,
             );
         } else {
             if view.iter().any(|(_, fold)| *fold != Fold::Full) {
                 self.break_run(buffer);
             }
-            buffer.push_folded_lines(view);
+            buffer.push_folded_lines_in(view, item);
         }
     }
 
@@ -874,13 +919,14 @@ impl TuiRenderer {
         // A sub-agent's output and a lookup's are in the full view only.
         let own = call.parent.is_none();
         let fold = if own { call.fold() } else { Fold::Full };
+        let item = call.item;
         if fold == Fold::Always {
             self.break_run(buffer);
         }
         if own && let Some(call) = self.calls.get_mut(item_id) {
             // Its output says whose it is: a held-back header goes first.
             if let Some(header) = call.header.take() {
-                buffer.push_folded(header, fold);
+                buffer.push_in(header, fold, item);
             }
             call.stream_start.get_or_insert_with(|| buffer.next_seq());
         }
@@ -889,7 +935,7 @@ impl TuiRenderer {
                 Span::styled(prefix, TOOL_PREFIX),
                 Span::styled(text.to_string(), style),
             ]);
-            buffer.push_folded(line, fold);
+            buffer.push_in(line, fold, item);
         }
     }
 
@@ -919,7 +965,7 @@ impl TuiRenderer {
             let line = self.think_buf[..pos].to_string();
             self.think_buf.drain(..=pos);
             self.thinking_text |= !line.trim().is_empty();
-            buffer.push_folded(thinking_line(line), Fold::Full);
+            buffer.push_in(thinking_line(line), Fold::Full, self.thinking_item);
         }
     }
 
@@ -2136,6 +2182,89 @@ mod tests {
         let full = text(&buffer);
         assert!(full.iter().any(|l| l.contains("b.rs")), "{full:?}");
         assert!(full.iter().any(|l| l.contains("Exit code: 0")), "{full:?}");
+    }
+
+    /// One folded item opens on its own in the folded view: a lookup row to
+    /// its calls and the thought between them, a thought to its text, a long
+    /// output to all its lines.
+    #[test]
+    fn one_folded_item_opens_on_its_own() {
+        let mut renderer = TuiRenderer::new();
+        let mut buffer = ScrollBuffer::new(256);
+        let done = ToolCallStatus::Completed;
+        renderer.render(&started(None, thinking("r1")), &mut buffer);
+        renderer.render(&reasoning("r1", "First look.\n"), &mut buffer);
+        renderer.render(&completed(None, thinking("r1")), &mut buffer);
+        let read = json!({"file_path": "a.rs"});
+        look(
+            &mut renderer,
+            &mut buffer,
+            "c1",
+            "Read",
+            read,
+            done,
+            "     1\tx",
+        );
+        renderer.render(&started(None, thinking("r2")), &mut buffer);
+        renderer.render(&reasoning("r2", "Now grep.\n"), &mut buffer);
+        renderer.render(&completed(None, thinking("r2")), &mut buffer);
+        let grep = json!({"pattern": "GUI"});
+        look(
+            &mut renderer,
+            &mut buffer,
+            "c2",
+            "Grep",
+            grep,
+            done,
+            "a.rs:1:GUI",
+        );
+        let out: String = (1..=20).map(|i| format!("out {i}\n")).collect();
+        let build = call("c3", "Bash", json!({"command": "cargo build"}));
+        renderer.render(&started(None, build.clone()), &mut buffer);
+        renderer.render(
+            &completed(None, finished(build, ToolCallStatus::Completed, &out)),
+            &mut buffer,
+        );
+        renderer.end_turn(&mut buffer);
+        let folded = text(&buffer);
+        assert!(folded[0].contains("Thought for 2s"), "{folded:?}");
+        assert!(
+            folded[1].contains("Read 1 file, searched 1 pattern"),
+            "{folded:?}"
+        );
+        let rows = folded.len();
+
+        // The row: its calls and the thought between them, under it.
+        let at = |row: usize, buffer: &ScrollBuffer| buffer.item_at(row, 80, 500).expect("an item");
+        let row = at(1, &buffer);
+        buffer.toggle(row, 80, 500);
+        let open = text(&buffer);
+        let under = &open[2..open.len() - (rows - 2)];
+        assert!(
+            under
+                .iter()
+                .any(|l| l.contains("Read") && l.contains("a.rs")),
+            "{open:?}"
+        );
+        assert!(under.iter().any(|l| l.contains("Now grep.")), "{open:?}");
+        assert!(under.iter().any(|l| l.contains("a.rs:1:GUI")), "{open:?}");
+        assert!(!open.iter().any(|l| l.contains("First look.")), "{open:?}");
+        buffer.toggle(row, 80, 500);
+
+        // The first thought opens to its own text.
+        let stub = at(0, &buffer);
+        buffer.toggle(stub, 80, 500);
+        assert!(text(&buffer).iter().any(|l| l.contains("First look.")));
+        buffer.toggle(stub, 80, 500);
+
+        // The command's marker gives way to all 20 lines.
+        let marker = folded.iter().position(|l| l.contains("+15 lines")).unwrap();
+        let output = at(marker, &buffer);
+        buffer.toggle(output, 80, 500);
+        let open = text(&buffer);
+        assert!(open.iter().any(|l| l.ends_with("out 12")), "{open:?}");
+        assert!(!open.iter().any(|l| l.contains("+15 lines")), "{open:?}");
+        assert_eq!(open.len(), rows + 15 - 1);
     }
 
     /// A plan update is the working area's plan, not a row.

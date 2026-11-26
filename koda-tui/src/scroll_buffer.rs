@@ -8,7 +8,7 @@
 //! See #472 for the fullscreen migration RFC.
 
 use ratatui::text::Line;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 /// Maximum lines held in the render cache, folded-away lines included.
 /// A full read keeps its content here for the full view, so this is set
@@ -17,18 +17,24 @@ const MAX_CACHE_LINES: usize = 10_000;
 
 /// Which view a line belongs to.
 ///
-/// Tool output is shown folded by default: a read as one summary line, other
-/// output as its first lines and a "… +N lines" marker. The full view
-/// (Ctrl+O) shows every line instead. Both live in the buffer at once, each
-/// line tagged, so switching is a redraw, not a re-render.
+/// A turn's steps are folded by default: a lookup row, a `Thought for` line,
+/// a "… +N lines" marker. The full view (Ctrl+O) shows every line instead.
+/// Both live in the buffer at once, each line tagged, so switching is a
+/// redraw, not a re-render. One item (a row, a thought, a call's output) can
+/// also be opened on its own in the folded view ([`ScrollBuffer::toggle`]),
+/// which shows its [`Fold::Full`] lines there too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Fold {
-    /// Shown in both views: everything that isn't folded tool output.
+    /// Shown in both views: everything that isn't folded.
     #[default]
     Always,
-    /// Folded view only: a summary or a "… +N lines" marker.
+    /// Folded view only, and gone when its item is opened: a summary or a
+    /// "… +N lines" marker, which the opened lines replace.
     Folded,
-    /// Full view only: the lines folding hides.
+    /// Folded view only, and kept when its item is opened: a lookup row or
+    /// a `Thought for` line, which heads the lines it opens to.
+    Heading,
+    /// Full view only, or its item opened: the lines folding hides.
     Full,
 }
 
@@ -38,8 +44,9 @@ struct Entry {
     /// Columns to skip during NoSelect copy. 0 = no gutter (normal text).
     gutter: u16,
     fold: Fold,
-    /// The key of a row that can be redrawn ([`ScrollBuffer::push_row`]).
-    row: Option<u64>,
+    /// The item it belongs to ([`ScrollBuffer::new_item`]), which opens and
+    /// closes as one.
+    item: Option<u64>,
 }
 
 /// Scrollable buffer of rendered `Line`s with sticky-bottom auto-scroll.
@@ -70,8 +77,14 @@ pub struct ScrollBuffer {
     /// to compute visual height of evicted lines.
     cached_term_width: usize,
 
-    /// The last key [`Self::push_row`] gave out.
-    next_row: u64,
+    /// The last key [`Self::new_item`] gave out.
+    last_item: u64,
+    /// Items with lines the folded view hides: the ones worth opening.
+    foldable: HashSet<u64>,
+    /// Items opened in the folded view.
+    opened: HashSet<u64>,
+    /// The item the keyboard is on, in focus mode (F4).
+    focus: Option<u64>,
 }
 
 impl ScrollBuffer {
@@ -84,23 +97,35 @@ impl ScrollBuffer {
             scroll_offset: 0,
             sticky_bottom: true,
             cached_term_width: 80,
-            next_row: 0,
+            last_item: 0,
+            foldable: HashSet::new(),
+            opened: HashSet::new(),
+            focus: None,
         }
     }
 
-    fn shows(&self, fold: Fold) -> bool {
-        match fold {
-            Fold::Always => true,
-            Fold::Folded => !self.full,
-            Fold::Full => self.full,
+    fn shows(&self, entry: &Entry) -> bool {
+        if self.full {
+            return matches!(entry.fold, Fold::Always | Fold::Full);
+        }
+        let open = entry.item.is_some_and(|item| self.opened.contains(&item));
+        match entry.fold {
+            Fold::Always | Fold::Heading => true,
+            Fold::Folded => !open,
+            Fold::Full => open,
         }
     }
 
     fn visible(&self) -> impl Iterator<Item = &Entry> {
-        self.entries.iter().filter(|e| self.shows(e.fold))
+        self.entries.iter().filter(|e| self.shows(e))
     }
 
     fn push_entry(&mut self, entry: Entry) {
+        if entry.fold == Fold::Full
+            && let Some(item) = entry.item
+        {
+            self.foldable.insert(item);
+        }
         self.entries.push_back(entry);
         self.enforce_capacity();
         // If sticky, keep scroll at bottom
@@ -120,11 +145,16 @@ impl ScrollBuffer {
 
     /// Append a line that only one of the two views shows.
     pub fn push_folded(&mut self, line: Line<'static>, fold: Fold) {
+        self.push_in(line, fold, None);
+    }
+
+    /// Append a line that belongs to `item`, which opens and closes as one.
+    pub fn push_in(&mut self, line: Line<'static>, fold: Fold, item: Option<u64>) {
         self.push_entry(Entry {
             line,
             gutter: 0,
             fold,
-            row: None,
+            item,
         });
     }
 
@@ -134,7 +164,7 @@ impl ScrollBuffer {
             line,
             gutter: gutter_width,
             fold: Fold::Always,
-            row: None,
+            item: None,
         });
     }
 
@@ -145,12 +175,26 @@ impl ScrollBuffer {
 
     /// Append lines, each with the view it belongs to.
     pub fn push_folded_lines(&mut self, lines: impl IntoIterator<Item = (Line<'static>, Fold)>) {
+        self.push_folded_lines_in(lines, None);
+    }
+
+    /// Append lines, each with the view it belongs to, all in `item`.
+    pub fn push_folded_lines_in(
+        &mut self,
+        lines: impl IntoIterator<Item = (Line<'static>, Fold)>,
+        item: Option<u64>,
+    ) {
         for (line, fold) in lines {
+            if fold == Fold::Full
+                && let Some(item) = item
+            {
+                self.foldable.insert(item);
+            }
             self.entries.push_back(Entry {
                 line,
                 gutter: 0,
                 fold,
-                row: None,
+                item,
             });
         }
         self.enforce_capacity();
@@ -168,18 +212,19 @@ impl ScrollBuffer {
     /// Fold the lines pushed since `start` (a [`Self::next_seq`] value) the
     /// way finished tool output is folded: keep the first `head` and last
     /// `tail` in both views, and show the rest only in the full view, with
-    /// `marker(hidden)` in their place in the folded one. For output that
-    /// streamed in line by line before anyone knew how long it would be.
-    /// Does nothing when no more than one line would be hidden. Only lines
-    /// both views show are counted and folded: a line one view already
-    /// keeps to itself, such as a row another call pushed meanwhile, stays
-    /// as it is.
+    /// `marker(hidden)` in their place in the folded one, all in `item`.
+    /// For output that streamed in line by line before anyone knew how long
+    /// it would be. Does nothing when no more than one line would be hidden.
+    /// Only lines both views show are counted and folded: a line one view
+    /// already keeps to itself, such as a row another call pushed meanwhile,
+    /// stays as it is.
     pub fn fold_since(
         &mut self,
         start: u64,
         head: usize,
         tail: usize,
         marker: impl FnOnce(usize) -> Line<'static>,
+        item: Option<u64>,
     ) {
         let from = start.saturating_sub(self.first_seq) as usize;
         let shown: Vec<usize> = (from..self.entries.len())
@@ -192,6 +237,10 @@ impl ScrollBuffer {
         let hidden = count - head - tail;
         for &i in &shown[head..head + hidden] {
             self.entries[i].fold = Fold::Full;
+            self.entries[i].item = item;
+        }
+        if let Some(item) = item {
+            self.foldable.insert(item);
         }
         self.entries.insert(
             shown[head],
@@ -199,7 +248,7 @@ impl ScrollBuffer {
                 line: marker(hidden),
                 gutter: 0,
                 fold: Fold::Folded,
-                row: None,
+                item,
             },
         );
         if self.sticky_bottom {
@@ -207,27 +256,201 @@ impl ScrollBuffer {
         }
     }
 
-    /// Append a line that can be redrawn later with [`Self::set_row`]: a
-    /// row that sums up calls still running. Returns its key, which stays
-    /// good when [`Self::fold_since`] inserts a line before it.
-    pub fn push_row(&mut self, line: Line<'static>, fold: Fold) -> u64 {
-        self.next_row += 1;
-        let key = self.next_row;
-        self.push_entry(Entry {
-            line,
-            gutter: 0,
-            fold,
-            row: Some(key),
-        });
-        key
+    /// A new item's key, for lines that open and close as one.
+    pub fn new_item(&mut self) -> u64 {
+        self.last_item += 1;
+        self.last_item
     }
 
-    /// Redraw the row pushed with `key`, in the same view. Does nothing once
-    /// it has been evicted. Rows are recent, so the search starts at the end.
-    pub fn set_row(&mut self, key: u64, line: Line<'static>) {
-        if let Some(entry) = self.entries.iter_mut().rev().find(|e| e.row == Some(key)) {
+    /// Append a heading that can be redrawn later with [`Self::set_row`]: a
+    /// row that sums up calls still running. Returns its item, which its
+    /// calls' lines join.
+    pub fn push_row(&mut self, line: Line<'static>) -> u64 {
+        let item = self.new_item();
+        self.push_in(line, Fold::Heading, Some(item));
+        item
+    }
+
+    /// Redraw the heading of `item`. Does nothing once it has been evicted.
+    /// Rows are recent, so the search starts at the end.
+    pub fn set_row(&mut self, item: u64, line: Line<'static>) {
+        if let Some(entry) = self
+            .entries
+            .iter_mut()
+            .rev()
+            .find(|e| e.item == Some(item) && e.fold == Fold::Heading)
+        {
             entry.line = line;
         }
+    }
+
+    /// Move the lines of item `from` into item `to`: a thought that turned
+    /// out to be inside a lookup row opens with it.
+    pub fn retag(&mut self, from: u64, to: u64) {
+        for entry in self.entries.iter_mut().rev() {
+            if entry.item == Some(from) {
+                entry.item = Some(to);
+            }
+        }
+        if self.foldable.remove(&from) {
+            self.foldable.insert(to);
+        }
+    }
+
+    // ── Opening one item ─────────────────────────────────
+
+    /// Whether `item` is opened in the folded view.
+    pub fn is_open(&self, item: u64) -> bool {
+        self.opened.contains(&item)
+    }
+
+    /// Open `item` in the folded view, or close it, keeping the rows above
+    /// it where they were on screen. Only an item with something folded
+    /// away opens; nothing happens in the full view, which shows it all.
+    pub fn set_open(&mut self, item: u64, open: bool, term_width: usize, viewport_height: usize) {
+        if self.full || !self.foldable.contains(&item) || self.is_open(item) == open {
+            return;
+        }
+        let from_top = self.top_row(term_width, viewport_height);
+        if open {
+            self.opened.insert(item);
+        } else {
+            self.opened.remove(&item);
+        }
+        self.set_from_top(from_top, term_width, viewport_height);
+    }
+
+    /// Open `item` if it is closed, close it if it is open.
+    pub fn toggle(&mut self, item: u64, term_width: usize, viewport_height: usize) {
+        let open = !self.is_open(item);
+        self.set_open(item, open, term_width, viewport_height);
+    }
+
+    /// The item at visual row `row` of the history panel, counted from its
+    /// top, if that line belongs to one worth opening.
+    pub fn item_at(&self, row: usize, term_width: usize, viewport_height: usize) -> Option<u64> {
+        let target = self.top_row(term_width, viewport_height) + row;
+        let w = term_width.max(1);
+        let mut at = 0;
+        for entry in self.visible() {
+            let height = visual_height(&entry.line, w);
+            if target < at + height {
+                return entry.item.filter(|item| self.foldable.contains(item));
+            }
+            at += height;
+        }
+        None
+    }
+
+    // ── Focus mode (F4) ──────────────────────────────────
+
+    /// The item the keyboard is on, in focus mode.
+    pub fn focus(&self) -> Option<u64> {
+        self.focus.filter(|_| !self.full)
+    }
+
+    /// Leave focus mode.
+    pub fn clear_focus(&mut self) {
+        self.focus = None;
+    }
+
+    /// Put the focus on `item`.
+    pub fn set_focus(&mut self, item: u64) {
+        self.focus = Some(item);
+    }
+
+    /// The items worth opening, in the order they are shown.
+    fn foldable_items(&self) -> Vec<u64> {
+        let mut items: Vec<u64> = Vec::new();
+        for item in self.visible().filter_map(|e| e.item) {
+            if self.foldable.contains(&item) && !items.contains(&item) {
+                items.push(item);
+            }
+        }
+        items
+    }
+
+    /// Enter focus mode on the last item worth opening that is on screen,
+    /// or the last one there is, as Codex's F4 does. Returns whether there
+    /// was one.
+    pub fn focus_last(&mut self, term_width: usize, viewport_height: usize) -> bool {
+        if self.full {
+            return false;
+        }
+        let items = self.foldable_items();
+        let top = self.top_row(term_width, viewport_height);
+        let on_screen = items.iter().rev().find(|&&item| {
+            self.row_of(item, term_width)
+                .is_some_and(|row| row >= top && row < top + viewport_height)
+        });
+        self.focus = on_screen.or(items.last()).copied();
+        if let Some(item) = self.focus {
+            self.show_item(item, term_width, viewport_height);
+        }
+        self.focus.is_some()
+    }
+
+    /// Move the focus `by` items, up when negative, and bring it on screen.
+    pub fn move_focus(&mut self, by: isize, term_width: usize, viewport_height: usize) {
+        let items = self.foldable_items();
+        let Some(at) = self.focus.and_then(|f| items.iter().position(|&i| i == f)) else {
+            return;
+        };
+        let next = (at as isize + by).clamp(0, items.len() as isize - 1) as usize;
+        self.focus = Some(items[next]);
+        self.show_item(items[next], term_width, viewport_height);
+    }
+
+    /// The visual row of the first line of `item` the view shows, from the
+    /// top of the buffer.
+    fn row_of(&self, item: u64, term_width: usize) -> Option<usize> {
+        let w = term_width.max(1);
+        let mut at = 0;
+        for entry in self.visible() {
+            if entry.item == Some(item) {
+                return Some(at);
+            }
+            at += visual_height(&entry.line, w);
+        }
+        None
+    }
+
+    /// Scroll so the start of `item` is on screen, if it isn't.
+    fn show_item(&mut self, item: u64, term_width: usize, viewport_height: usize) {
+        let Some(row) = self.row_of(item, term_width) else {
+            return;
+        };
+        let top = self.top_row(term_width, viewport_height);
+        if row < top || row >= top + viewport_height {
+            let centred = row.saturating_sub(viewport_height / 2);
+            self.set_from_top(centred, term_width, viewport_height);
+        }
+    }
+
+    /// The visual row at the top of the history panel.
+    fn top_row(&self, term_width: usize, viewport_height: usize) -> usize {
+        self.total_visual_lines(term_width)
+            .saturating_sub(viewport_height)
+            .saturating_sub(self.scroll_offset)
+    }
+
+    /// Scroll so visual row `from_top` is at the top of the panel, as far as
+    /// the buffer allows.
+    fn set_from_top(&mut self, from_top: usize, term_width: usize, viewport_height: usize) {
+        self.cached_term_width = term_width;
+        let max = self
+            .total_visual_lines(term_width)
+            .saturating_sub(viewport_height);
+        self.scroll_offset = max.saturating_sub(from_top.min(max));
+        self.sticky_bottom = self.scroll_offset == 0;
+    }
+
+    /// The lines the view shows, each with whether it belongs to the
+    /// focused item, for the panel to mark.
+    pub fn focused_flags(&self) -> impl Iterator<Item = bool> + '_ {
+        let focus = self.focus();
+        self.visible()
+            .map(move |e| focus.is_some() && e.item == focus)
     }
 
     /// Whether the full view is on.
@@ -383,7 +606,7 @@ impl ScrollBuffer {
         while self.entries.len() > MAX_CACHE_LINES {
             if let Some(evicted) = self.entries.pop_front() {
                 self.first_seq += 1;
-                if self.scroll_offset > 0 && self.shows(evicted.fold) {
+                if self.scroll_offset > 0 && self.shows(&evicted) {
                     let vis = visual_height(&evicted.line, w);
                     self.scroll_offset = self.scroll_offset.saturating_sub(vis);
                 }
@@ -404,7 +627,7 @@ impl ScrollBuffer {
                 line,
                 gutter: 0,
                 fold: Fold::Always,
-                row: None,
+                item: None,
             });
         }
         self.first_seq = self.first_seq.saturating_sub(count as u64);
@@ -480,10 +703,10 @@ mod tests {
         for i in 1..=10 {
             buf.push(make_line(&format!("l{i}")));
         }
-        let row = buf.push_row(make_line("Reading 1 file"), Fold::Folded);
+        let row = buf.push_row(make_line("Reading 1 file"));
         buf.push_folded(make_line("its output"), Fold::Full);
         // The streamed output folds; the row, folded view only, stays put.
-        buf.fold_since(start, 2, 0, |n| make_line(&format!("+{n}")));
+        buf.fold_since(start, 2, 0, |n| make_line(&format!("+{n}")), None);
         buf.set_row(row, make_line("Read 2 files"));
         assert_eq!(
             visible_text(&buf, H),
@@ -491,6 +714,73 @@ mod tests {
         );
         buf.set_full(true);
         assert!(!visible_text(&buf, H).contains(&"Read 2 files".to_string()));
+    }
+
+    /// One item opens in the folded view: a heading keeps its place with its
+    /// lines under it, a marker gives way to the lines it stood for. The
+    /// rows above stay where they were on screen.
+    #[test]
+    fn one_item_opens_and_closes_on_its_own() {
+        let mut buf = ScrollBuffer::new(100);
+        for i in 1..=20 {
+            buf.push(make_line(&format!("l{i}")));
+        }
+        let row = buf.push_row(make_line("Read 2 files"));
+        buf.push_in(make_line("a.rs"), Fold::Full, Some(row));
+        buf.push_in(make_line("b.rs"), Fold::Full, Some(row));
+        let out = buf.new_item();
+        buf.push_in(make_line("+3 lines"), Fold::Folded, Some(out));
+        buf.push_in(make_line("hidden"), Fold::Full, Some(out));
+        // At the bottom, "Read 2 files" is the top row.
+        assert_eq!(visible_text(&buf, 2), vec!["Read 2 files", "+3 lines"]);
+
+        buf.toggle(row, W, 2);
+        assert!(buf.is_open(row));
+        assert_eq!(visible_text(&buf, 2), vec!["Read 2 files", "a.rs"]);
+        buf.scroll_to_bottom();
+        assert_eq!(visible_text(&buf, 2), vec!["b.rs", "+3 lines"]);
+
+        buf.toggle(out, W, 2);
+        assert_eq!(visible_text(&buf, 2), vec!["b.rs", "hidden"]);
+        buf.toggle(row, W, 2);
+        buf.toggle(out, W, 2);
+        assert_eq!(visible_text(&buf, 2), vec!["Read 2 files", "+3 lines"]);
+
+        // A line with nothing folded away isn't an item to open.
+        let plain = buf.new_item();
+        buf.push_in(make_line("plain"), Fold::Always, Some(plain));
+        buf.toggle(plain, W, 2);
+        assert!(!buf.is_open(plain));
+        assert_eq!(buf.item_at(1, W, 2), None);
+        assert_eq!(buf.item_at(0, W, 2), Some(out));
+
+        // The full view shows everything: nothing to open there.
+        buf.set_full(true);
+        buf.toggle(row, W, 2);
+        assert!(!buf.is_open(row));
+    }
+
+    /// F4 lands on the last item on screen; arrows move between items.
+    #[test]
+    fn focus_moves_between_items() {
+        let mut buf = ScrollBuffer::new(100);
+        let mut rows = Vec::new();
+        for i in 1..=3 {
+            let row = buf.push_row(make_line(&format!("row {i}")));
+            buf.push_in(make_line(&format!("detail {i}")), Fold::Full, Some(row));
+            buf.push(make_line("text"));
+            rows.push(row);
+        }
+        assert!(buf.focus_last(W, H));
+        assert_eq!(buf.focus(), Some(rows[2]));
+        buf.move_focus(-1, W, H);
+        assert_eq!(buf.focus(), Some(rows[1]));
+        buf.move_focus(-5, W, H);
+        assert_eq!(buf.focus(), Some(rows[0]));
+        let flags: Vec<bool> = buf.focused_flags().collect();
+        assert_eq!(flags, vec![true, false, false, false, false, false]);
+        buf.clear_focus();
+        assert_eq!(buf.focus(), None);
     }
 
     #[test]
@@ -501,7 +791,7 @@ mod tests {
         for i in 1..=10 {
             buf.push(make_line(&format!("l{i}")));
         }
-        buf.fold_since(start, 2, 1, |n| make_line(&format!("+{n}")));
+        buf.fold_since(start, 2, 1, |n| make_line(&format!("+{n}")), None);
         assert_eq!(
             visible_text(&buf, H),
             vec!["before", "l1", "l2", "+7", "l10"]
@@ -515,7 +805,7 @@ mod tests {
         for i in 1..=3 {
             buf.push(make_line(&format!("l{i}")));
         }
-        buf.fold_since(start, 2, 0, |n| make_line(&format!("+{n}")));
+        buf.fold_since(start, 2, 0, |n| make_line(&format!("+{n}")), None);
         assert_eq!(visible_text(&buf, H), vec!["l1", "l2", "l3"]);
     }
 

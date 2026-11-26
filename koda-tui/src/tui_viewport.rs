@@ -343,6 +343,14 @@ fn render_history(
 
     // Collect all lines and let Paragraph handle wrapping + scrolling
     let mut lines: Vec<Line<'_>> = buffer.all_lines().cloned().collect();
+    // Focus mode (F4): the focused item's first line is drawn reversed.
+    if let Some(first) = buffer.focused_flags().position(|focused| focused)
+        && let Some(line) = lines.get_mut(first)
+    {
+        for span in &mut line.spans {
+            span.style = span.style.add_modifier(Modifier::REVERSED);
+        }
+    }
     let scroll_pos = buffer.paragraph_scroll(height, width);
 
     // Apply selection highlighting if active

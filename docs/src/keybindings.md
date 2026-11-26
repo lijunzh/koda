@@ -13,6 +13,7 @@
 | `Ctrl+R` | Reverse history search |
 | `Ctrl+O` | Every step in full (each call, its output, the thinking), or folded again (works mid-turn); see [What a turn shows](./tui.md#what-a-turn-shows) |
 | `Ctrl+T` | During a turn: hide or show the plan under the status line |
+| `F4` | Focus a folded row: then `↑`/`↓` move, `Enter` opens or closes it, `→` opens, `←` closes, `Esc` or `F4` leaves; a click on a row opens or closes it too |
 | `Ctrl+V` / `Alt+V` | Paste the image on the clipboard as an `[Image #N]` marker (`Cmd+V` too in iTerm2); see [Images](./attachments.md#images) |
 
 ## Navigation

@@ -425,8 +425,9 @@ impl TuiContext {
                             self.plan_shown,
                             std::time::Instant::now(),
                         );
+                        let mut history_rect = None;
                         let _ = self.terminal.draw(|f| {
-                            draw_viewport(
+                            history_rect = Some(draw_viewport(
                                 f,
                                 &self.textarea,
                                 &self.settings.model,
@@ -448,8 +449,14 @@ impl TuiContext {
                                 child_activity_hint,
                                 self.side.is_some(),
                                 &working,
-                            );
+                            ));
                         });
+                        // The working area takes rows from the history
+                        // panel: clicks and scrolling go by its new size.
+                        if let Some(rect) = history_rect {
+                            self.history_area_y = rect.y;
+                            self.history_area_height = rect.height;
+                        }
                         // Draw again in a second so the status line's time
                         // and the overlay's ages (#1354) tick.
                         self.frame_requester
@@ -461,7 +468,10 @@ impl TuiContext {
                             &stop,
                             cmd_tx,
                             &mut self.scroll_buffer,
-                            self.history_area_height as usize,
+                            (
+                                self.history_area_y,
+                                (self.history_area_height as usize).max(1),
+                            ),
                             &mut self.menu,
                             &mut self.prompt_mode,
                             &mut self.pending_approval_id,

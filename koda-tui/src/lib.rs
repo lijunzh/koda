@@ -26,6 +26,7 @@ pub(crate) mod composer;
 pub(crate) mod diff_render;
 pub(crate) mod elicitation_form;
 pub(crate) mod file_search;
+pub(crate) mod fold_keys;
 pub(crate) mod frame_requester;
 pub(crate) mod highlight;
 pub(crate) mod hyperlink;
