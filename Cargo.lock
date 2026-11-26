@@ -2342,6 +2342,7 @@ dependencies = [
  "async-trait",
  "futures-util",
  "ignore",
+ "koda-command",
  "koda-config",
  "koda-core",
  "koda-protocol",

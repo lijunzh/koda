@@ -1040,6 +1040,7 @@ mod tests {
                 output: None,
                 detail: None,
                 changes: Vec::new(),
+                command_actions: Vec::new(),
                 progress: Vec::new(),
                 exit_code: None,
                 duration_ms: None,

@@ -32,6 +32,10 @@ Vendored modules (see per-file headers for upstream paths and local diffs):
   koda-core/src/turn_diff.rs
       from codex-rs/core/src/turn_diff_tracker.rs (at 80ea5901ad; without
       renames and environments)
+  koda-command/src/parse_command.rs
+      from codex-rs/shell-command/src/parse_command.rs and
+      codex-rs/protocol/src/parse_command.rs (at f277e313f1; split by
+      Koda's own scanner instead of tree-sitter, without PowerShell)
 
 Prompt text (at upstream commit 05ae1b0fdd5ab412d24248acc76c5d9f6f275440):
 

@@ -26,10 +26,10 @@ use koda_core::engine::{EngineEvent, TurnEndReason};
 use koda_core::preview::DiffPreview;
 use koda_core::turn_diff::TurnDiff;
 use koda_protocol::item::{
-    CompactionStatus, CompactionTrigger, FileUpdateChange, Item, ItemCompletedNotification,
-    ItemStartedNotification, OutputStream, PatchChangeKind, TextDeltaNotification,
-    ToolCallApprovalParams, ToolCallOutputDeltaNotification, ToolCallProgressNotification,
-    ToolCallStatus, ToolEffect, ToolKind, UserInputParams,
+    CommandAction, CompactionStatus, CompactionTrigger, FileUpdateChange, Item,
+    ItemCompletedNotification, ItemStartedNotification, OutputStream, PatchChangeKind,
+    TextDeltaNotification, ToolCallApprovalParams, ToolCallOutputDeltaNotification,
+    ToolCallProgressNotification, ToolCallStatus, ToolEffect, ToolKind, UserInputParams,
 };
 use koda_protocol::rpc::RequestId;
 use koda_protocol::server::{
@@ -133,6 +133,36 @@ struct AppliedEdit {
     /// `None` if the file didn't exist.
     before: Option<String>,
     after: String,
+}
+
+/// What a `Bash` call's command does, as Codex's `commandActions`: one
+/// entry per command in it, read with Codex's `parse_command`. Empty for
+/// other tools.
+pub(crate) fn command_actions(tool: &str, arguments: &Value) -> Vec<CommandAction> {
+    use koda_command::parse_command::{ParsedCommand, parse_command};
+    let Some(command) = arguments["command"].as_str().filter(|_| tool == "Bash") else {
+        return Vec::new();
+    };
+    let argv = ["bash".to_string(), "-lc".to_string(), command.to_string()];
+    parse_command(&argv)
+        .into_iter()
+        .map(|parsed| match parsed {
+            ParsedCommand::Read { cmd, name, path } => CommandAction::Read {
+                command: cmd,
+                name,
+                path: path.to_string_lossy().into_owned(),
+            },
+            ParsedCommand::ListFiles { cmd, path } => {
+                CommandAction::ListFiles { command: cmd, path }
+            }
+            ParsedCommand::Search { cmd, query, path } => CommandAction::Search {
+                command: cmd,
+                query,
+                path,
+            },
+            ParsedCommand::Unknown { cmd } => CommandAction::Unknown { command: cmd },
+        })
+        .collect()
 }
 
 /// Whether a tool's calls change files the turn's diff tracks.
@@ -504,6 +534,7 @@ impl EventProjector {
                 };
                 let item = Item::ToolCall {
                     id: id.clone(),
+                    command_actions: command_actions(&name, &args),
                     tool: name.clone(),
                     arguments: args.clone(),
                     effect: Some(effect),
@@ -607,6 +638,7 @@ impl EventProjector {
                 let item = Item::ToolCall {
                     id,
                     kind: Some(ToolKind::of(&tool)),
+                    command_actions: command_actions(&tool, &arguments),
                     tool,
                     arguments,
                     effect,
@@ -1208,6 +1240,7 @@ impl EventProjector {
             let item = Item::ToolCall {
                 id,
                 kind: Some(ToolKind::of(&call.tool)),
+                command_actions: command_actions(&call.tool, &call.arguments),
                 tool: call.tool,
                 arguments: call.arguments,
                 effect: Some(call.effect),
@@ -1387,6 +1420,26 @@ mod tests {
     use super::*;
     use koda_core::engine::event::{CompactionStatus as CS, CompactionTrigger as CT};
     use serde_json::json;
+
+    /// A `Bash` call says what its command does, one action per command, as
+    /// Codex's `commandActions`; other tools say nothing.
+    #[test]
+    fn a_command_says_what_it_does() {
+        let actions = command_actions("Bash", &json!({"command": "cat Cargo.toml && rg GUI docs"}));
+        assert_eq!(
+            serde_json::to_value(&actions).unwrap(),
+            json!([
+                {"type": "read", "command": "cat Cargo.toml", "name": "Cargo.toml", "path": "Cargo.toml"},
+                {"type": "search", "command": "rg GUI docs", "query": "GUI", "path": "docs"},
+            ])
+        );
+        assert_eq!(
+            serde_json::to_value(command_actions("Bash", &json!({"command": "cargo build"})))
+                .unwrap(),
+            json!([{"type": "unknown", "command": "cargo build"}])
+        );
+        assert!(command_actions("Read", &json!({"command": "ls"})).is_empty());
+    }
 
     fn run(p: &mut EventProjector, events: Vec<(Option<&str>, EngineEvent)>) -> Vec<Value> {
         events

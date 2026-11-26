@@ -64,7 +64,7 @@ use crate::tui_output::{self, CYAN, DIM, RED, TOOL_PREFIX, YELLOW};
 use crate::widgets::working_area::{Step, WorkingArea};
 use koda_client::protocol::ServerNotification;
 use koda_client::protocol::item::{
-    FileUpdateChange, Item, OutputStream, ToolCallStatus, ToolEffect, TurnItem,
+    CommandAction, FileUpdateChange, Item, OutputStream, ToolCallStatus, ToolEffect, TurnItem,
 };
 use koda_client::protocol::turn::{Turn, TurnStatus};
 use ratatui::{
@@ -118,15 +118,41 @@ enum Lookup {
 /// command the host found read-only. They fold into one row, as Claude Code
 /// folds reads and searches. A call stored before Koda sent its effect
 /// keeps its own row.
-fn lookup(tool: &str, effect: Option<ToolEffect>) -> Option<Lookup> {
+///
+/// A command counts as what its `commandActions` say it does, as Codex's
+/// `Explored` cell reads them: `cat a.rs && rg x` is a read and a search.
+/// One it can't read (`Unknown`) counts as a command.
+fn lookup(
+    tool: &str,
+    effect: Option<ToolEffect>,
+    actions: &[CommandAction],
+) -> Option<Vec<Lookup>> {
     if effect != Some(ToolEffect::ReadOnly) {
         return None;
     }
     match tool {
-        "Read" => Some(Lookup::Read),
-        "Grep" | "Glob" => Some(Lookup::Search),
-        "List" => Some(Lookup::List),
-        "Bash" => Some(Lookup::Command),
+        "Read" => Some(vec![Lookup::Read]),
+        "Grep" | "Glob" => Some(vec![Lookup::Search]),
+        "List" => Some(vec![Lookup::List]),
+        "Bash"
+            if actions.is_empty()
+                || actions
+                    .iter()
+                    .any(|a| matches!(a, CommandAction::Unknown { .. })) =>
+        {
+            Some(vec![Lookup::Command])
+        }
+        "Bash" => Some(
+            actions
+                .iter()
+                .map(|action| match action {
+                    CommandAction::Read { .. } => Lookup::Read,
+                    CommandAction::ListFiles { .. } => Lookup::List,
+                    CommandAction::Search { .. } => Lookup::Search,
+                    CommandAction::Unknown { .. } => Lookup::Command,
+                })
+                .collect(),
+        ),
         _ => None,
     }
 }
@@ -384,7 +410,7 @@ impl TuiRenderer {
 
     /// Count a lookup that started on the open row, opening one if none is.
     /// A thought since the row's last call goes into it.
-    fn join_group(&mut self, lookup: Lookup, buffer: &mut ScrollBuffer) -> usize {
+    fn join_group(&mut self, lookups: &[Lookup], buffer: &mut ScrollBuffer) -> usize {
         let index = match self.open_group {
             Some(index) => {
                 // The thought opens with the row.
@@ -406,7 +432,9 @@ impl TuiRenderer {
             }
         };
         let group = &mut self.groups[index];
-        group.count(lookup);
+        for &lookup in lookups {
+            group.count(lookup);
+        }
         group.running += 1;
         buffer.set_row(group.row, group.line());
         index
@@ -609,6 +637,7 @@ impl TuiRenderer {
                 tool,
                 arguments,
                 effect,
+                command_actions,
                 ..
             } => {
                 // Another of the session's own calls is open: this one's
@@ -626,9 +655,10 @@ impl TuiRenderer {
                     .and_then(|parent| self.agents.get(parent))
                     .map(|run| run.item);
                 if parent.is_none() {
-                    self.working.call_started(id, tool, arguments);
-                    if let Some(lookup) = lookup(tool, *effect) {
-                        let index = self.join_group(lookup, buffer);
+                    self.working
+                        .call_started(id, tool, arguments, command_actions);
+                    if let Some(lookups) = lookup(tool, *effect, command_actions) {
+                        let index = self.join_group(&lookups, buffer);
                         line_item = Some(self.groups[index].row);
                         group = Some(index);
                         quiet = true;
@@ -1457,6 +1487,7 @@ mod tests {
             output: None,
             detail: None,
             changes: Vec::new(),
+            command_actions: Vec::new(),
             progress: Vec::new(),
             exit_code: None,
             duration_ms: None,
@@ -1484,6 +1515,7 @@ mod tests {
                 output: Some(output.into()),
                 detail,
                 changes,
+                command_actions: Vec::new(),
                 progress,
                 exit_code: None,
                 duration_ms: None,
@@ -1772,6 +1804,7 @@ mod tests {
                 output: Some(output.into()),
                 detail: Some("Write a.txt".into()),
                 changes: vec![change.clone()],
+                command_actions: Vec::new(),
                 progress: Vec::new(),
             };
             renderer.render(&completed(None, done), &mut buffer);
@@ -1847,6 +1880,7 @@ mod tests {
                 kind: PatchChangeKind::Add,
                 diff: "hello\n".into(),
             }],
+            command_actions: Vec::new(),
             progress: Vec::new(),
         };
         renderer.render(&started(None, blocked.clone()), &mut buffer);
@@ -1963,6 +1997,7 @@ mod tests {
                 output,
                 detail,
                 changes,
+                command_actions: Vec::new(),
                 progress,
                 exit_code,
                 duration_ms,
@@ -2109,6 +2144,86 @@ mod tests {
         assert!(
             !full.iter().any(|l| l.contains("ran 2 commands")),
             "{full:?}"
+        );
+    }
+
+    /// A command counts as what the host says it does: a read and a search
+    /// here, named on the status line; one it can't read is a command.
+    #[test]
+    fn a_command_counts_as_what_it_does() {
+        let mut renderer = TuiRenderer::new();
+        let mut buffer = ScrollBuffer::new(256);
+        let with_actions = |id: &str, command: &str, actions: Vec<CommandAction>| match read_only(
+            call(id, "Bash", json!({"command": command})),
+        ) {
+            Item::ToolCall {
+                id,
+                tool,
+                arguments,
+                effect,
+                kind,
+                status,
+                output,
+                detail,
+                changes,
+                progress,
+                exit_code,
+                duration_ms,
+                ..
+            } => Item::ToolCall {
+                id,
+                tool,
+                arguments,
+                effect,
+                kind,
+                status,
+                output,
+                detail,
+                changes,
+                command_actions: actions,
+                progress,
+                exit_code,
+                duration_ms,
+            },
+            other => other,
+        };
+        let both = with_actions(
+            "c1",
+            "cat Cargo.toml && rg GUI docs",
+            vec![
+                CommandAction::Read {
+                    command: "cat Cargo.toml".into(),
+                    name: "Cargo.toml".into(),
+                    path: "Cargo.toml".into(),
+                },
+                CommandAction::Search {
+                    command: "rg GUI docs".into(),
+                    query: Some("GUI".into()),
+                    path: Some("docs".into()),
+                },
+            ],
+        );
+        renderer.render(&started(None, both.clone()), &mut buffer);
+        assert_eq!(renderer.working.label(), "Reading Cargo.toml");
+        renderer.render(
+            &completed(None, finished(both, ToolCallStatus::Completed, "x")),
+            &mut buffer,
+        );
+        let unknown = with_actions(
+            "c2",
+            "jq . a.json",
+            vec![CommandAction::Unknown {
+                command: "jq . a.json".into(),
+            }],
+        );
+        renderer.render(&started(None, unknown.clone()), &mut buffer);
+        renderer.render(
+            &completed(None, finished(unknown, ToolCallStatus::Completed, "{}")),
+            &mut buffer,
+        );
+        assert_eq!(
+            text(&buffer),
+            vec!["\u{25cf} Read 1 file, searched 1 pattern, ran 1 command (ctrl+o to expand)"]
         );
     }
 
@@ -2487,6 +2602,7 @@ mod tests {
                 kind: PatchChangeKind::Update { move_path: None },
                 diff: "@@ -1,1 +1,1 @@\n-old\n+new\n".into(),
             }],
+            command_actions: Vec::new(),
             progress: Vec::new(),
         };
         let mut failed = turn(vec![stored(None, refused, None)], TurnStatus::Failed, None);

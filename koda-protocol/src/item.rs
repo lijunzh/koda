@@ -105,6 +105,13 @@ pub enum Item {
         /// item's `changes`, carried on Koda's one tool-call item.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         changes: Vec<FileUpdateChange>,
+        /// What a `Bash` call's command does, as far as its words show,
+        /// one entry per command in it: reads a file, lists files, searches,
+        /// or something else. Codex's `commandExecution` item's
+        /// `commandActions`, carried on Koda's one tool-call item, from its
+        /// start. Best effort, for a client to show; empty for other tools.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        command_actions: Vec<CommandAction>,
         /// The notices sent about it as `item/toolCall/progress` while it
         /// ran, in order: a sub-agent's, for an `InvokeAgent` call. Set on
         /// completion. A skill's change of tool scope is sent once its call
@@ -143,6 +150,45 @@ impl Item {
             | Self::ContextCompaction { id, .. } => id,
         }
     }
+}
+
+/// What a command does, in Codex's `CommandAction` shape: a best-effort
+/// reading of its words, for a client to show `Read Cargo.toml` rather
+/// than the command.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum CommandAction {
+    /// It reads a file.
+    Read {
+        /// The command, or the part of it that reads.
+        command: String,
+        /// The file's name.
+        name: String,
+        /// The file, as the command names it.
+        path: String,
+    },
+    /// It lists files.
+    #[serde(rename_all = "camelCase")]
+    ListFiles {
+        /// The command, or the part of it that lists.
+        command: String,
+        /// The directory, when named.
+        path: Option<String>,
+    },
+    /// It searches.
+    Search {
+        /// The command, or the part of it that searches.
+        command: String,
+        /// What it searches for, when it can be told.
+        query: Option<String>,
+        /// Where, when named.
+        path: Option<String>,
+    },
+    /// Anything else.
+    Unknown {
+        /// The whole command.
+        command: String,
+    },
 }
 
 /// A change to one file, in Codex's `FileUpdateChange` shape.

@@ -894,7 +894,7 @@ fn is_assignment(word: &str) -> bool {
 /// One deliberate departure from Codex, which rejects every redirect: the
 /// redirects in [`harmless_redirect_len`] (`2>&1` and output to
 /// `/dev/null`) are allowed, since they write no file.
-fn is_plain_command_sequence(command: &str) -> bool {
+pub(crate) fn is_plain_command_sequence(command: &str) -> bool {
     let mut chars = command.char_indices().peekable();
     let mut prev = ' ';
     while let Some((b, c)) = chars.next() {

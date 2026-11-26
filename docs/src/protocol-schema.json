@@ -426,6 +426,114 @@
       ],
       "type": "object"
     },
+    "CommandAction": {
+      "description": "What a command does, in Codex's `CommandAction` shape: a best-effort\nreading of its words, for a client to show `Read Cargo.toml` rather\nthan the command.",
+      "oneOf": [
+        {
+          "description": "It reads a file.",
+          "properties": {
+            "command": {
+              "description": "The command, or the part of it that reads.",
+              "type": "string"
+            },
+            "name": {
+              "description": "The file's name.",
+              "type": "string"
+            },
+            "path": {
+              "description": "The file, as the command names it.",
+              "type": "string"
+            },
+            "type": {
+              "const": "read",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "command",
+            "name",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "It lists files.",
+          "properties": {
+            "command": {
+              "description": "The command, or the part of it that lists.",
+              "type": "string"
+            },
+            "path": {
+              "description": "The directory, when named.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "listFiles",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "command"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "It searches.",
+          "properties": {
+            "command": {
+              "description": "The command, or the part of it that searches.",
+              "type": "string"
+            },
+            "path": {
+              "description": "Where, when named.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "query": {
+              "description": "What it searches for, when it can be told.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "search",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "command"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Anything else.",
+          "properties": {
+            "command": {
+              "description": "The whole command.",
+              "type": "string"
+            },
+            "type": {
+              "const": "unknown",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "command"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "CompactionStatus": {
       "description": "Where a compaction stands.",
       "oneOf": [
@@ -1345,6 +1453,13 @@
               "description": "The file changes an `Edit` or `Write` makes, from its start,\nwhether or not anyone was asked about it: Codex's `fileChange`\nitem's `changes`, carried on Koda's one tool-call item.",
               "items": {
                 "$ref": "#/$defs/FileUpdateChange"
+              },
+              "type": "array"
+            },
+            "commandActions": {
+              "description": "What a `Bash` call's command does, as far as its words show,\none entry per command in it: reads a file, lists files, searches,\nor something else. Codex's `commandExecution` item's\n`commandActions`, carried on Koda's one tool-call item, from its\nstart. Best effort, for a client to show; empty for other tools.",
+              "items": {
+                "$ref": "#/$defs/CommandAction"
               },
               "type": "array"
             },
@@ -5289,6 +5404,13 @@
               "description": "The file changes an `Edit` or `Write` makes, from its start,\nwhether or not anyone was asked about it: Codex's `fileChange`\nitem's `changes`, carried on Koda's one tool-call item.",
               "items": {
                 "$ref": "#/$defs/FileUpdateChange"
+              },
+              "type": "array"
+            },
+            "commandActions": {
+              "description": "What a `Bash` call's command does, as far as its words show,\none entry per command in it: reads a file, lists files, searches,\nor something else. Codex's `commandExecution` item's\n`commandActions`, carried on Koda's one tool-call item, from its\nstart. Best effort, for a client to show; empty for other tools.",
+              "items": {
+                "$ref": "#/$defs/CommandAction"
               },
               "type": "array"
             },
