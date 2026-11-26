@@ -10,9 +10,9 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "ahash"
-version = "0.8.13"
+version = "0.8.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0fca89247609239eeb6915e6991111866b92d7b31025e69302bbf430cc4d2c38"
+checksum = "54dae3d1d7b8956f3506c4e999a74e77f932a59153ccf38ab8cf96db74bb9dc0"
 dependencies = [
  "cfg-if",
  "getrandom 0.4.3",
@@ -33,9 +33,9 @@ dependencies = [
 
 [[package]]
 name = "allocator-api2"
-version = "0.2.21"
+version = "0.2.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
+checksum = "57b212daf2e827b1ccdd778b7eb48ba433e58cb0e4f27b43cd6b7a608425a014"
 
 [[package]]
 name = "android_system_properties"
@@ -1998,9 +1998,9 @@ dependencies = [
 
 [[package]]
 name = "jsonschema"
-version = "0.63.1"
+version = "0.63.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f048e101172edb2c5f0351d7e3bc3796ac89b7f150e64b0cbd20dd82215b2160"
+checksum = "b0802aebc749a4ef12e76aee083622b100249be0dc6d2103d84bbb2f7936a1ae"
 dependencies = [
  "ahash",
  "bytecount",
@@ -2026,18 +2026,18 @@ dependencies = [
 
 [[package]]
 name = "jsonschema-regex"
-version = "0.63.1"
+version = "0.63.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3ef369677a99a8c7381196491eb4e0a718c337756cf82bdb91303933789f181"
+checksum = "ba1527289dfcb1400df61b5c591218e8e30031376671f611faecb5b9a1ff4987"
 dependencies = [
  "regex-syntax",
 ]
 
 [[package]]
 name = "jsonschema-value"
-version = "0.63.1"
+version = "0.63.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d698d83c2661d1e6f289b567a73e95d5549ec155775260e93165110a583296f4"
+checksum = "a95285ab129d630f01cf2f1345c28662116340fac1a35eb0795e5dbbf0ef990d"
 dependencies = [
  "ahash",
  "bytecount",
@@ -2126,7 +2126,7 @@ dependencies = [
  "serde",
  "serde_ignored",
  "serde_json",
- "sha2 0.11.1",
+ "sha2 0.11.2",
  "tempfile",
  "toml",
  "toml_edit",
@@ -3674,9 +3674,9 @@ dependencies = [
 
 [[package]]
 name = "referencing"
-version = "0.63.1"
+version = "0.63.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f768339da7ef756decd99f3c6ada0c0ffdc0a7522c37032916bed80db94d0b5c"
+checksum = "858eb92e3a3c1d120695a04d5c6e8861915ee4394b8f77c90adbf686d6ddbf6e"
 dependencies = [
  "ahash",
  "fluent-uri",
@@ -3802,7 +3802,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
- "sha2 0.11.1",
+ "sha2 0.11.2",
  "sse-stream",
  "thiserror 2.0.21",
  "tokio",
@@ -4168,9 +4168,9 @@ dependencies = [
 
 [[package]]
 name = "sha2"
-version = "0.11.1"
+version = "0.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47d7069beb7d6ac7b9acd1039986e73443f24234f41074da099d6f994ac9ad19"
+checksum = "5b0e5c7d67bc53f435386b2130fdc900488c5703770f6d8a4633060e34288a27"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.3.1",
@@ -4348,7 +4348,7 @@ dependencies = [
  "percent-encoding",
  "serde",
  "serde_json",
- "sha2 0.11.1",
+ "sha2 0.11.2",
  "smallvec",
  "thiserror 2.0.21",
  "tokio",
@@ -4385,7 +4385,7 @@ dependencies = [
  "quote",
  "serde",
  "serde_json",
- "sha2 0.11.1",
+ "sha2 0.11.2",
  "sqlx-core",
  "sqlx-sqlite",
  "syn 2.0.119",
@@ -4413,7 +4413,7 @@ dependencies = [
  "percent-encoding",
  "serde",
  "sha1",
- "sha2 0.11.1",
+ "sha2 0.11.2",
  "sqlx-core",
  "thiserror 2.0.21",
  "tracing",
@@ -4444,7 +4444,7 @@ dependencies = [
  "rand 0.10.4",
  "serde",
  "serde_json",
- "sha2 0.11.1",
+ "sha2 0.11.2",
  "smallvec",
  "sqlx-core",
  "stringprep",
@@ -5924,18 +5924,18 @@ dependencies = [
 
 [[package]]
 name = "zerocopy"
-version = "0.8.65"
+version = "0.8.66"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32bc8a75f879cd6fe53a6bedf3c28f0e1b914c77424fc2be9e2ec85d7d25aff5"
+checksum = "cba8a86aee14fc8cc6c208af60854b3d4ab7185a9a369a12c648faa2716ff42a"
 dependencies = [
  "zerocopy-derive",
 ]
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.65"
+version = "0.8.66"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8bfd2644ea1681f60cf95029ff18aa8ad1cc3f7b8fe37286f8e473bb29f816b"
+checksum = "f89bca3b96ceb3cfcb4572790402f977442270d252b9a8504ebc258760c55f94"
 dependencies = [
  "proc-macro2",
  "quote",
