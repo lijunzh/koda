@@ -134,7 +134,7 @@ async fn a_client_runs_a_turn_and_eof_ends_the_process() {
     koda.send(
         3,
         "turn/start",
-        json!({"sessionId": session, "input": "Say something"}),
+        json!({"sessionId": session, "input": [{"type": "text", "text": "Say something"}]}),
     )
     .await;
     let lines = koda.until(|l| l["method"] == "turn/completed").await;
@@ -273,7 +273,7 @@ async fn serve_listens_on_a_socket_until_sigterm() {
         }
     };
     let line = json!({"jsonrpc": "2.0", "id": 3, "method": "turn/start",
-        "params": {"sessionId": session, "input": "Say something"}});
+        "params": {"sessionId": session, "input": [{"type": "text", "text": "Say something"}]}});
     input
         .write_all(format!("{line}\n").as_bytes())
         .await
@@ -556,7 +556,7 @@ async fn a_server_killed_mid_turn_leaves_the_session_to_go_on() {
     let session = started["session"]["id"].as_str().unwrap().to_string();
     conn.request(
         "turn/start",
-        json!({"sessionId": session, "input": "First question"}),
+        json!({"sessionId": session, "input": [{"type": "text", "text": "First question"}]}),
     )
     .await;
     conn.until("turn/started").await;
@@ -588,7 +588,7 @@ async fn a_server_killed_mid_turn_leaves_the_session_to_go_on() {
     assert_eq!(opened["session"]["id"], session.as_str(), "{opened}");
     conn.request(
         "turn/start",
-        json!({"sessionId": session, "input": "Second question"}),
+        json!({"sessionId": session, "input": [{"type": "text", "text": "Second question"}]}),
     )
     .await;
     let completed = conn.until("turn/completed").await;

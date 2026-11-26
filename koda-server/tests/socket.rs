@@ -334,7 +334,7 @@ async fn each_client_hears_its_own_sessions() {
     alpha
         .request(
             "turn/start",
-            json!({"sessionId": alpha_session, "input": "hi"}),
+            json!({"sessionId": alpha_session, "input": [{"type": "text", "text": "hi"}]}),
         )
         .await
         .unwrap();
@@ -410,7 +410,10 @@ async fn a_connection_opts_out_of_notifications_it_names() {
     for client in [&mut quiet, &mut loud] {
         let session = client.start_session().await;
         client
-            .request("turn/start", json!({"sessionId": session, "input": "hi"}))
+            .request(
+                "turn/start",
+                json!({"sessionId": session, "input": [{"type": "text", "text": "hi"}]}),
+            )
             .await
             .unwrap();
         let mut lines = client.seen();
@@ -640,7 +643,7 @@ async fn an_approval_waits_for_a_client_that_attaches() {
     first
         .request(
             "turn/start",
-            json!({"sessionId": session, "input": "write it"}),
+            json!({"sessionId": session, "input": [{"type": "text", "text": "write it"}]}),
         )
         .await
         .unwrap();
@@ -703,7 +706,7 @@ async fn a_client_that_joins_mid_turn_gets_the_turn_as_it_stands() {
     first
         .request(
             "turn/start",
-            json!({"sessionId": session, "input": "write it"}),
+            json!({"sessionId": session, "input": [{"type": "text", "text": "write it"}]}),
         )
         .await
         .unwrap();
@@ -809,7 +812,7 @@ async fn reading_a_session_mid_turn_has_its_open_items() {
     first
         .request(
             "turn/start",
-            json!({"sessionId": session, "input": "write it"}),
+            json!({"sessionId": session, "input": [{"type": "text", "text": "write it"}]}),
         )
         .await
         .unwrap();
@@ -874,7 +877,7 @@ async fn every_client_hears_what_a_session_is_doing() {
     owner
         .request(
             "turn/start",
-            json!({"sessionId": session, "input": "write it"}),
+            json!({"sessionId": session, "input": [{"type": "text", "text": "write it"}]}),
         )
         .await
         .unwrap();
@@ -970,7 +973,7 @@ async fn a_mode_change_on_turn_start_is_said() {
     client
         .request(
             "turn/start",
-            json!({"sessionId": session, "input": "hi", "mode": "plan"}),
+            json!({"sessionId": session, "input": [{"type": "text", "text": "hi"}], "mode": "plan"}),
         )
         .await
         .unwrap();
@@ -1002,7 +1005,7 @@ async fn an_approval_nobody_answers_is_refused_after_the_wait() {
     client
         .request(
             "turn/start",
-            json!({"sessionId": session, "input": "write it"}),
+            json!({"sessionId": session, "input": [{"type": "text", "text": "write it"}]}),
         )
         .await
         .unwrap();
@@ -1078,7 +1081,7 @@ async fn a_session_works_in_its_own_folder_with_its_own_config() {
     client
         .request(
             "turn/start",
-            json!({"sessionId": session, "input": "read the notes"}),
+            json!({"sessionId": session, "input": [{"type": "text", "text": "read the notes"}]}),
         )
         .await
         .unwrap();
@@ -1151,10 +1154,7 @@ async fn a_client_runs_a_turn_over_the_socket() {
     handle
         .request::<methods::TurnStart>(koda_server::protocol::turn::TurnStartParams {
             session_id: session.clone(),
-            input: "write it".into(),
-            images: Vec::new(),
-            mentions: Vec::new(),
-            skills: Vec::new(),
+            input: vec![koda_server::protocol::turn::UserInput::text("write it")],
             client_user_message_id: None,
             mode: None,
             output_schema: None,
@@ -1299,7 +1299,7 @@ async fn a_newer_koda_waits_for_running_turns_when_asked() {
     other
         .request(
             "turn/start",
-            json!({"sessionId": session, "input": "write it"}),
+            json!({"sessionId": session, "input": [{"type": "text", "text": "write it"}]}),
         )
         .await
         .unwrap();
@@ -1341,7 +1341,7 @@ async fn a_newer_koda_waits_for_running_turns_when_asked() {
     let refused = other
         .request(
             "turn/start",
-            json!({"sessionId": second, "input": "anything"}),
+            json!({"sessionId": second, "input": [{"type": "text", "text": "anything"}]}),
         )
         .await
         .unwrap_err();
@@ -1387,7 +1387,7 @@ async fn a_newer_koda_can_stop_running_turns() {
     other
         .request(
             "turn/start",
-            json!({"sessionId": session, "input": "write it"}),
+            json!({"sessionId": session, "input": [{"type": "text", "text": "write it"}]}),
         )
         .await
         .unwrap();

@@ -25,7 +25,7 @@ use koda_client::protocol::session::{
 };
 use koda_client::protocol::state::TrustMode;
 use koda_client::protocol::turn::{
-    TurnInterruptParams, TurnStartParams, TurnStatus, TurnSteerParams,
+    TurnInterruptParams, TurnStartParams, TurnStatus, TurnSteerParams, UserInput,
 };
 use koda_client::protocol::{ServerNotification, ServerRequest, methods};
 use koda_client::{InProcessClient, RequestError, StartArgs};
@@ -185,10 +185,7 @@ impl Koda {
             .client
             .request::<methods::TurnStart>(TurnStartParams {
                 session_id: self.session.clone(),
-                input: input.to_string(),
-                images: Vec::new(),
-                mentions: Vec::new(),
-                skills: Vec::new(),
+                input: vec![UserInput::text(input.to_string())],
                 client_user_message_id: client_user_message_id.map(str::to_string),
                 mode: None,
                 output_schema: None,
@@ -213,7 +210,7 @@ impl Koda {
             .request::<methods::TurnSteer>(TurnSteerParams {
                 session_id: self.session.clone(),
                 expected_turn_id: turn_id.to_string(),
-                input: input.to_string(),
+                input: vec![UserInput::text(input)],
                 client_user_message_id: Some(id.to_string()),
             })
             .await
@@ -338,8 +335,9 @@ async fn a_turn_runs_from_start_to_finish() {
     }
     let items = completed(&messages);
     assert!(
-        matches!(items[0], Item::UserMessage { text, client_user_message_ids, .. }
-            if text == "Say hi" && client_user_message_ids == &["m1".to_string()]),
+        matches!(items[0], Item::UserMessage { content, client_user_message_ids, .. }
+            if content == &[UserInput::text("Say hi")]
+                && client_user_message_ids == &["m1".to_string()]),
         "{items:?}"
     );
     assert!(
@@ -673,6 +671,18 @@ async fn a_steer_reaches_the_model_as_a_user_message() {
     let turn_id = koda.turn_with("Read a.txt", Some("m1")).await.unwrap();
     koda.until("turn/started").await;
 
+    // Steering reaches the model as text: other parts go with turn/start.
+    let refused = server_error(
+        koda.client
+            .request::<methods::TurnSteer>(TurnSteerParams {
+                session_id: koda.session.clone(),
+                expected_turn_id: turn_id.clone(),
+                input: vec![UserInput::text("see"), UserInput::mention("a.txt")],
+                client_user_message_id: None,
+            })
+            .await,
+    );
+    assert!(refused.message.contains("text parts only"), "{refused:?}");
     let steered = koda.steer(&turn_id, "Also mention b", "s1").await.unwrap();
     assert_eq!(steered, turn_id);
     let messages = koda.until("turn/completed").await;
@@ -682,18 +692,21 @@ async fn a_steer_reaches_the_model_as_a_user_message() {
         .into_iter()
         .filter_map(|item| match item {
             Item::UserMessage {
-                text,
+                content,
                 client_user_message_ids,
                 ..
-            } => Some((text.as_str(), client_user_message_ids.clone())),
+            } => Some((
+                koda_client::protocol::turn::text_of(content),
+                client_user_message_ids.clone(),
+            )),
             _ => None,
         })
         .collect();
     assert_eq!(
         delivered,
         [
-            ("Read a.txt", vec!["m1".to_string()]),
-            ("Also mention b", vec!["s1".to_string()]),
+            ("Read a.txt".to_string(), vec!["m1".to_string()]),
+            ("Also mention b".to_string(), vec!["s1".to_string()]),
         ]
     );
     let requests = chat_requests(&server).await;
@@ -751,7 +764,8 @@ async fn an_interrupt_at_an_approval_closes_what_the_turn_left_open() {
     assert!(
         !completed(&messages)
             .iter()
-            .any(|i| matches!(i, Item::UserMessage { text, .. } if text == "never delivered")),
+            .any(|i| matches!(i, Item::UserMessage { content, .. }
+                if content == &[UserInput::text("never delivered")])),
         "{}",
         names(&messages)
     );
@@ -786,10 +800,7 @@ async fn requests_without_a_running_turn_or_session_are_refused() {
         koda.client
             .request::<methods::TurnStart>(TurnStartParams {
                 session_id: "no-such-session".to_string(),
-                input: "hi".to_string(),
-                images: Vec::new(),
-                mentions: Vec::new(),
-                skills: Vec::new(),
+                input: vec![UserInput::text("hi".to_string())],
                 client_user_message_id: None,
                 mode: Some(TrustMode::Safe),
                 output_schema: None,
@@ -823,13 +834,78 @@ async fn shutdown_stops_a_turn_that_waits_on_the_client() {
     );
 }
 
+/// An image part is a `data:` URL, as Koda takes Codex's `image`; a
+/// `localImage` is a file the host reads, under the Read tool's rules. The
+/// item keeps the parts as sent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn images_come_as_data_urls_or_local_files() {
+    let server = model(vec![text("Seen.")]).await;
+    let mut takes_images = config(&server);
+    takes_images.input_modalities = Some(vec![
+        koda_config::InputModality::Text,
+        koda_config::InputModality::Image,
+    ]);
+    let mut koda = Koda::start(takes_images).await;
+    std::fs::write(koda.project.join("shot.png"), b"\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90\x77\x53\xde\x00\x00\x00\x0c\x49\x44\x41\x54\x78\x9c\x63\xb8\x23\x22\x02\x00\x02\xd4\x01\x05\x59\x70\xd3\xc2\x00\x00\x00\x00\x49\x45\x4e\x44\xae\x42\x60\x82").unwrap();
+    std::fs::write(koda.project.join("notes.md"), "alpha\n").unwrap();
+    let start = |input: Vec<UserInput>| TurnStartParams {
+        session_id: koda.session.clone(),
+        input,
+        client_user_message_id: None,
+        mode: None,
+        output_schema: None,
+    };
+
+    for (bad, why) in [
+        (
+            UserInput::Image {
+                url: "https://example.com/a.png".into(),
+            },
+            "data: URL",
+        ),
+        (
+            UserInput::LocalImage {
+                path: "notes.md".into(),
+            },
+            "isn't an image",
+        ),
+    ] {
+        let error = server_error(
+            koda.client
+                .request::<methods::TurnStart>(start(vec![UserInput::text("look"), bad]))
+                .await,
+        );
+        assert!(error.message.contains(why), "{error:?}");
+    }
+
+    let input = vec![
+        UserInput::text("compare"),
+        UserInput::LocalImage {
+            path: "shot.png".into(),
+        },
+        UserInput::image("image/png", "aGk="),
+    ];
+    koda.client
+        .request::<methods::TurnStart>(start(input.clone()))
+        .await
+        .unwrap();
+    let messages = koda.until("turn/completed").await;
+    let Item::UserMessage { content, .. } = completed(&messages)[0] else {
+        panic!("no user message first");
+    };
+    assert_eq!(content, &input);
+    let sent = chat_requests(&server).await[0]["messages"].to_string();
+    assert_eq!(sent.matches("image/png").count(), 2, "{sent}");
+    assert!(sent.contains("aGk="), "{sent}");
+    koda.client.shutdown().await;
+}
+
 /// `@` mentions are read by the host under the Read tool's rules: a file's
 /// numbered lines, a directory's listing, an image as an image, and why a
 /// binary file wasn't read. The model gets them after the text; the item
 /// keeps the text as typed, with the paths.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mentions_are_read_by_the_host() {
-    use koda_client::protocol::turn::Mention;
     let server = model(vec![text("Seen."), text("Paths.")]).await;
     // A local model the config says takes images: the table has local
     // models as text only.
@@ -845,19 +921,14 @@ async fn mentions_are_read_by_the_host() {
     std::fs::write(koda.project.join("blob.bin"), b"ab\0cd").unwrap();
     std::fs::write(koda.project.join("shot.png"), b"\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90\x77\x53\xde\x00\x00\x00\x0c\x49\x44\x41\x54\x78\x9c\x63\xb8\x23\x22\x02\x00\x02\xd4\x01\x05\x59\x70\xd3\xc2\x00\x00\x00\x00\x49\x45\x4e\x44\xae\x42\x60\x82").unwrap();
     let typed = "look at @notes.md @src @blob.bin @shot.png";
-    let mention = |path: &str| Mention { path: path.into() };
+    let mention = |path: &str| UserInput::mention(path);
     koda.client
         .request::<methods::TurnStart>(TurnStartParams {
             session_id: koda.session.clone(),
-            input: typed.to_string(),
-            images: vec![koda_client::protocol::turn::ImageInput {
-                media_type: "image/png".into(),
-                data: "aGk=".into(),
-            }],
-            mentions: ["notes.md", "src", "blob.bin", "shot.png"]
-                .map(mention)
-                .to_vec(),
-            skills: Vec::new(),
+            input: std::iter::once(UserInput::text(typed))
+                .chain(["notes.md", "src", "blob.bin", "shot.png"].map(mention))
+                .chain([UserInput::image("image/png", "aGk=")])
+                .collect(),
             client_user_message_id: None,
             mode: None,
             output_schema: None,
@@ -865,20 +936,15 @@ async fn mentions_are_read_by_the_host() {
         .await
         .unwrap();
     let messages = koda.until("turn/completed").await;
-    let Item::UserMessage {
-        text,
-        mentions,
-        images,
-        ..
-    } = completed(&messages)[0]
-    else {
+    let Item::UserMessage { content, .. } = completed(&messages)[0] else {
         panic!("no user message first");
     };
-    assert_eq!(text, typed);
-    assert_eq!(mentions.len(), 4);
-    // The image sent with the prompt, not the one a mention read.
-    assert_eq!(images.len(), 1);
-    assert_eq!(images[0].data, "aGk=");
+    // The parts as sent, in order: the image sent with the prompt, not the
+    // one a mention read.
+    assert_eq!(content[0], UserInput::text(typed));
+    assert_eq!(content[1], UserInput::mention("notes.md"));
+    assert_eq!(content.len(), 6, "{content:?}");
+    assert_eq!(content[5], UserInput::image("image/png", "aGk="));
 
     let sent = chat_requests(&server).await[0]["messages"].to_string();
     assert!(sent.contains("<file path=\\\"notes.md\\\">"), "{sent}");
@@ -897,10 +963,10 @@ async fn mentions_are_read_by_the_host() {
     koda.client
         .request::<methods::TurnStart>(TurnStartParams {
             session_id: koda.session.clone(),
-            input: "look at @notes.md".to_string(),
-            images: Vec::new(),
-            mentions: vec![mention("notes.md")],
-            skills: Vec::new(),
+            input: vec![
+                UserInput::text("look at @notes.md"),
+                UserInput::mention("notes.md"),
+            ],
             client_user_message_id: None,
             mode: None,
             output_schema: None,
@@ -920,7 +986,6 @@ async fn mentions_are_read_by_the_host() {
 /// open. The project's own file is in every prompt already.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_mentioned_files_folder_instructions_come_with_it() {
-    use koda_client::protocol::turn::Mention;
     let server = model(vec![text("One."), text("Two.")]).await;
     let dir = tempfile::tempdir().unwrap();
     let project = dir.path().join("project");
@@ -934,10 +999,7 @@ async fn a_mentioned_files_folder_instructions_come_with_it() {
     let session = koda.session.clone();
     let start = |input: &str, path: &str| TurnStartParams {
         session_id: session.clone(),
-        input: input.to_string(),
-        images: Vec::new(),
-        mentions: vec![Mention { path: path.into() }],
-        skills: Vec::new(),
+        input: vec![UserInput::text(input), UserInput::mention(path)],
         client_user_message_id: None,
         mode: None,
         output_schema: None,
@@ -975,7 +1037,6 @@ async fn a_mentioned_files_folder_instructions_come_with_it() {
 /// model-only skill, an unknown name and a shell variable stay text.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_named_skill_is_sent_with_the_text() {
-    use koda_client::protocol::turn::SkillInput;
     let server = model(vec![text("Checked."), text("Deployed.")]).await;
     let dir = tempfile::tempdir().unwrap();
     let skills = dir.path().join("project/.koda/skills");
@@ -1000,10 +1061,14 @@ async fn a_named_skill_is_sent_with_the_text() {
     let typed = "use $checklist and $internal on $nothing, keep $PATH";
     koda.turn(typed).await;
     let messages = koda.until("turn/completed").await;
-    let Item::UserMessage { text, .. } = completed(&messages)[0] else {
+    let Item::UserMessage { content, .. } = completed(&messages)[0] else {
         panic!("no user message first");
     };
-    assert_eq!(text, typed, "the item keeps the text as typed");
+    assert_eq!(
+        content,
+        &[UserInput::text(typed)],
+        "the item keeps the text as typed"
+    );
     let sent = chat_requests(&server).await[0]["messages"].to_string();
     assert!(
         sent.contains("<skill>\\n<name>checklist</name>\\n<path>"),
@@ -1020,13 +1085,13 @@ async fn a_named_skill_is_sent_with_the_text() {
     koda.client
         .request::<methods::TurnStart>(TurnStartParams {
             session_id: koda.session.clone(),
-            input: "ship it".to_string(),
-            images: Vec::new(),
-            mentions: Vec::new(),
-            skills: vec![SkillInput {
-                name: "deploy".into(),
-                path: None,
-            }],
+            input: vec![
+                UserInput::text("ship it"),
+                UserInput::Skill {
+                    name: "deploy".into(),
+                    path: ".koda/skills/deploy/SKILL.md".into(),
+                },
+            ],
             client_user_message_id: None,
             mode: None,
             output_schema: None,
@@ -1089,7 +1154,8 @@ async fn turns_are_listed_a_page_at_a_time() {
         newest.data[0]
             .items
             .iter()
-            .any(|i| matches!(&i.item, Item::UserMessage { text, .. } if text == "fourth")),
+            .any(|i| matches!(&i.item, Item::UserMessage { content, .. }
+                if content == &[UserInput::text("fourth")])),
         "{:?}",
         newest.data[0]
     );
@@ -1158,10 +1224,7 @@ async fn a_resumed_session_keeps_its_history() {
     first
         .request::<methods::TurnStart>(TurnStartParams {
             session_id: session.clone(),
-            input: "Remember 42".to_string(),
-            images: Vec::new(),
-            mentions: Vec::new(),
-            skills: Vec::new(),
+            input: vec![UserInput::text("Remember 42".to_string())],
             client_user_message_id: None,
             mode: None,
             output_schema: None,
@@ -3786,7 +3849,6 @@ done
 /// resources are listed for a client's `@` menu, MCP Apps pages left out.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_mentioned_mcp_resource_is_read_and_sent() {
-    use koda_client::protocol::turn::Mention;
     let server = model(vec![text("Read."), text("Not there.")]).await;
     let mut koda = Koda::start(config(&server)).await;
     let script = mcp_resource_server(koda._dir.path());
@@ -3810,10 +3872,10 @@ async fn a_mentioned_mcp_resource_is_read_and_sent() {
     let session = koda.session.clone();
     let start = |path: &str| TurnStartParams {
         session_id: session.clone(),
-        input: format!("summarize @{path}"),
-        images: Vec::new(),
-        mentions: vec![Mention { path: path.into() }],
-        skills: Vec::new(),
+        input: vec![
+            UserInput::text(format!("summarize @{path}")),
+            UserInput::mention(path),
+        ],
         client_user_message_id: None,
         mode: None,
         output_schema: None,

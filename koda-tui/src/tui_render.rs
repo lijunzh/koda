@@ -241,7 +241,9 @@ impl TuiRenderer {
             self.replay_start(parent, by_id, started, buffer);
         }
         match &stored.item {
-            Item::UserMessage { text, .. } => buffer.push_lines(prompt_lines(text)),
+            Item::UserMessage { content, .. } => {
+                buffer.push_lines(prompt_lines(&koda_client::protocol::turn::text_of(content)))
+            }
             item => self.item_started(
                 stored.parent_item_id.as_deref(),
                 item,
@@ -1634,10 +1636,8 @@ mod tests {
                 None,
                 Item::UserMessage {
                     id: "u1".into(),
-                    text: "look around".into(),
+                    content: vec![koda_client::protocol::turn::UserInput::text("look around")],
                     client_user_message_ids: Vec::new(),
-                    mentions: Vec::new(),
-                    images: Vec::new(),
                 },
                 None,
             ),

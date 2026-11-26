@@ -38,7 +38,7 @@ use koda_client::protocol::ServerNotification;
 use koda_client::protocol::item::{Item, ToolCallStatus};
 use koda_client::protocol::methods;
 use koda_client::protocol::session::SessionCompactStartParams;
-use koda_client::protocol::turn::{ImageInput, TurnStartParams, TurnSteerParams};
+use koda_client::protocol::turn::{TurnStartParams, TurnSteerParams, UserInput};
 use tokio::sync::mpsc;
 
 /// Outcome of one inner-loop `tokio::select!` poll inside `run_inference_turn`.
@@ -186,109 +186,105 @@ impl TuiContext {
         let watched = watch.as_ref().map(|(turn_id, _)| turn_id.clone());
         // What a goal turn the prompt joined sent before the prompt did.
         let mut joined: Vec<Outgoing> = Vec::new();
-        let started = async {
-            // A turn already running is followed, not started.
-            if let Some(turn_id) = watched {
-                return anyhow::Ok(turn_id);
-            }
-            self.sync_host_session().await?;
-            // Messages from before this turn (session notices, resolved
-            // requests) are no business of it; a main session's, while in a
-            // side conversation, are kept for the return. A turn Koda has
-            // just started on the session's goal is kept, with what it sent:
-            // the prompt joins it.
-            let mut running: Option<(String, Vec<Outgoing>)> = None;
-            while let Some(message) = self.client.try_next_event() {
-                if self.note_main_session(&message) {
-                    continue;
+        let started =
+            async {
+                // A turn already running is followed, not started.
+                if let Some(turn_id) = watched {
+                    return anyhow::Ok(turn_id);
                 }
-                self.note_session(&message);
-                match &message {
-                    Outgoing::Notification(ServerNotification::TurnStarted(started))
-                        if started.session_id == self.session.id =>
-                    {
-                        running = Some((started.turn.id.clone(), Vec::new()));
+                self.sync_host_session().await?;
+                // Messages from before this turn (session notices, resolved
+                // requests) are no business of it; a main session's, while in a
+                // side conversation, are kept for the return. A turn Koda has
+                // just started on the session's goal is kept, with what it sent:
+                // the prompt joins it.
+                let mut running: Option<(String, Vec<Outgoing>)> = None;
+                while let Some(message) = self.client.try_next_event() {
+                    if self.note_main_session(&message) {
+                        continue;
                     }
-                    Outgoing::Notification(ServerNotification::TurnCompleted(done))
-                        if running.as_ref().is_some_and(|(id, _)| *id == done.turn.id) =>
-                    {
-                        running = None;
-                    }
-                    _ => {
-                        if let Some((_, sent)) = &mut running {
-                            sent.push(message);
-                        }
-                    }
-                }
-            }
-            let Some((message, images, mentions)) = prompt else {
-                self.client
-                    .request::<methods::SessionCompactStart>(SessionCompactStartParams {
-                        session_id: self.session.id.clone(),
-                    })
-                    .await
-                    .map_err(host_error)?;
-                // The compaction's turn is named by its `turn/started`,
-                // which comes before anything else of it.
-                loop {
-                    match self.client.next_event().await {
-                        Some(Outgoing::Notification(ServerNotification::TurnStarted(started)))
+                    self.note_session(&message);
+                    match &message {
+                        Outgoing::Notification(ServerNotification::TurnStarted(started))
                             if started.session_id == self.session.id =>
                         {
-                            return anyhow::Ok(started.turn.id);
+                            running = Some((started.turn.id.clone(), Vec::new()));
                         }
-                        Some(_) => {}
-                        None => anyhow::bail!("Koda's host stopped"),
+                        Outgoing::Notification(ServerNotification::TurnCompleted(done))
+                            if running.as_ref().is_some_and(|(id, _)| *id == done.turn.id) =>
+                        {
+                            running = None;
+                        }
+                        _ => {
+                            if let Some((_, sent)) = &mut running {
+                                sent.push(message);
+                            }
+                        }
                     }
                 }
-            };
-            let message = self.with_review_results(message);
-            let input = self.side_boundary(message);
-            // Text alone can join a running turn.
-            let joinable = images.is_empty() && mentions.is_empty();
-            if joinable && let Some((turn_id, sent)) = running {
-                self.steer_goal_turn(&turn_id, input).await?;
-                joined = sent;
-                return anyhow::Ok(turn_id);
-            }
-            let response = self
-                .client
-                .request::<methods::TurnStart>(TurnStartParams {
-                    session_id: self.session.id.clone(),
-                    input: input.clone(),
-                    images: images
-                        .into_iter()
-                        .map(|image| ImageInput {
-                            media_type: image.media_type,
-                            data: image.base64,
+                let Some((message, images, mentions)) = prompt else {
+                    self.client
+                        .request::<methods::SessionCompactStart>(SessionCompactStartParams {
+                            session_id: self.session.id.clone(),
                         })
-                        .collect(),
-                    mentions: mentions
-                        .into_iter()
-                        .map(|path| koda_client::protocol::turn::Mention { path })
-                        .collect(),
-                    skills: Vec::new(),
-                    client_user_message_id: None,
-                    mode: None,
-                    output_schema: None,
-                })
-                .await;
-            match response {
-                Ok(response) => anyhow::Ok(response.turn.id),
-                // Koda started a turn on the goal as the prompt went out:
-                // the prompt joins it once it says which.
-                Err(koda_client::RequestError::Server { error, .. })
-                    if joinable && error.message.contains("a turn is already running") =>
-                {
-                    let (turn_id, sent) = self.next_turn_started().await?;
+                        .await
+                        .map_err(host_error)?;
+                    // The compaction's turn is named by its `turn/started`,
+                    // which comes before anything else of it.
+                    loop {
+                        match self.client.next_event().await {
+                            Some(Outgoing::Notification(ServerNotification::TurnStarted(
+                                started,
+                            ))) if started.session_id == self.session.id => {
+                                return anyhow::Ok(started.turn.id);
+                            }
+                            Some(_) => {}
+                            None => anyhow::bail!("Koda's host stopped"),
+                        }
+                    }
+                };
+                let message = self.with_review_results(message);
+                let input = self.side_boundary(message);
+                // Text alone can join a running turn.
+                let joinable = images.is_empty() && mentions.is_empty();
+                if joinable && let Some((turn_id, sent)) = running {
                     self.steer_goal_turn(&turn_id, input).await?;
                     joined = sent;
-                    anyhow::Ok(turn_id)
+                    return anyhow::Ok(turn_id);
                 }
-                Err(e) => Err(host_error(e)),
+                let response =
+                    self.client
+                        .request::<methods::TurnStart>(TurnStartParams {
+                            session_id: self.session.id.clone(),
+                            // The text, then what it mentioned and pasted, the
+                            // order the model is sent them in.
+                            input: std::iter::once(UserInput::text(input.clone()))
+                                .chain(mentions.into_iter().map(UserInput::mention))
+                                .chain(images.into_iter().map(|image| {
+                                    UserInput::image(&image.media_type, &image.base64)
+                                }))
+                                .collect(),
+                            client_user_message_id: None,
+                            mode: None,
+                            output_schema: None,
+                        })
+                        .await;
+                match response {
+                    Ok(response) => anyhow::Ok(response.turn.id),
+                    // Koda started a turn on the goal as the prompt went out:
+                    // the prompt joins it once it says which.
+                    Err(koda_client::RequestError::Server { error, .. })
+                        if joinable && error.message.contains("a turn is already running") =>
+                    {
+                        let (turn_id, sent) = self.next_turn_started().await?;
+                        self.steer_goal_turn(&turn_id, input).await?;
+                        joined = sent;
+                        anyhow::Ok(turn_id)
+                    }
+                    Err(e) => Err(host_error(e)),
+                }
             }
-        }
-        .await;
+            .await;
         let turn_id = match started {
             Ok(turn_id) => turn_id,
             // Nothing was sent: the text goes back to the input box.
@@ -603,7 +599,7 @@ impl TuiContext {
             .request::<methods::TurnSteer>(TurnSteerParams {
                 session_id: self.session.id.clone(),
                 expected_turn_id: turn_id.to_string(),
-                input,
+                input: vec![UserInput::text(input)],
                 client_user_message_id: None,
             })
             .await
@@ -772,7 +768,7 @@ impl TuiContext {
             .request::<methods::TurnSteer>(TurnSteerParams {
                 session_id: self.session.id.clone(),
                 expected_turn_id: turn,
-                input: text,
+                input: vec![UserInput::text(text)],
                 client_user_message_id: Some(client_user_message_id),
             })
             .await;

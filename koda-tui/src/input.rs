@@ -287,6 +287,30 @@ pub(crate) fn images_by_marker(text: &str, pasted: &[(String, ImageData)]) -> Ve
     found.into_iter().map(|(_, image)| image.clone()).collect()
 }
 
+/// The path an `@` token names: unquoted and unescaped, without the
+/// punctuation that ends a sentence or clause around it (`@a.rs,` or
+/// `(see @a.rs).`). A quoted path is taken as written. Whether it exists is
+/// the host's to say, so nothing here looks.
+fn mention_path(raw: &str) -> String {
+    let quoted = raw.starts_with(['"', '\'']);
+    let mut path = unescape_path(strip_quotes(raw));
+    if quoted {
+        return path;
+    }
+    loop {
+        let trimmed = path.trim_end_matches([',', ';', ':', '!', '?', ')']);
+        // A final `.` ends a sentence, unless it is part of `.` or `..`.
+        let trimmed = match trimmed.strip_suffix('.') {
+            Some(rest) if !rest.is_empty() && !rest.ends_with(['.', '/']) => rest,
+            _ => trimmed,
+        };
+        if trimmed.len() == path.len() || trimmed.is_empty() {
+            return path;
+        }
+        path = trimmed.to_string();
+    }
+}
+
 /// Scan input for `@path` mentions and bare image paths (drag-and-drop):
 /// the mentions are collected for the host, the images loaded here.
 ///
@@ -314,7 +338,7 @@ pub fn process_input(input: &str) -> ProcessedInput {
         // Kept in the text as typed; the host reads the file.
         if let Some(raw_path) = token.strip_prefix('@') {
             if !raw_path.is_empty() {
-                let path = unescape_path(strip_quotes(raw_path));
+                let path = mention_path(raw_path);
                 if !mentions.contains(&path) {
                     mentions.push(path);
                 }
@@ -589,6 +613,27 @@ mod tests {
         let result = process_input("@code.py");
         assert_eq!(result.prompt, "@code.py");
         assert_eq!(result.mentions, ["code.py"]);
+    }
+
+    /// Punctuation that ends a sentence or clause isn't part of the path;
+    /// the text keeps it, and a quoted path is taken as written.
+    #[test]
+    fn a_mentions_trailing_punctuation_is_not_its_path() {
+        let result = process_input("look at @notes.txt, then (see @src/a.rs). And @lib.rs?");
+        assert_eq!(
+            result.prompt,
+            "look at @notes.txt, then (see @src/a.rs). And @lib.rs?"
+        );
+        assert_eq!(result.mentions, ["notes.txt", "src/a.rs", "lib.rs"]);
+        for (typed, path) in [
+            ("@.", "."),
+            ("@..", ".."),
+            ("@../", "../"),
+            ("@src/.", "src/."),
+            ("@\"odd name,.txt\"", "odd name,.txt"),
+        ] {
+            assert_eq!(process_input(typed).mentions, [path], "{typed}");
+        }
     }
 
     #[test]

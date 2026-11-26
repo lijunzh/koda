@@ -277,7 +277,9 @@ impl TuiContext {
             return;
         };
         let prompt = target.items.iter().find_map(|item| match &item.item {
-            Item::UserMessage { text, .. } => Some(text.clone()),
+            Item::UserMessage { content, .. } => {
+                Some(koda_client::protocol::turn::text_of(content))
+            }
             _ => None,
         });
         if let Err(e) = self

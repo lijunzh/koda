@@ -35,24 +35,16 @@ pub enum Item {
     UserMessage {
         /// The item's id.
         id: String,
-        /// The text, as the user wrote it.
-        text: String,
+        /// What the user sent, as `turn/start` or `turn/steer` took it, in
+        /// order, as Codex's `userMessage` keeps its `content`. Images read
+        /// from mentioned files aren't here: the mention names them.
+        content: Vec<crate::turn::UserInput>,
         /// The client's ids for the messages it carries, where it gave them
         /// (`clientUserMessageId` on `turn/start` and `turn/steer`). Codex's
         /// item carries one, `clientId`; Koda's can carry several, since
         /// steering texts that reach the model together are one item.
         #[serde(alias = "clientMessageIds")]
         client_user_message_ids: Vec<String>,
-        /// The files and directories it mentioned. The model was sent their
-        /// contents after the text; the item carries only the paths.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        mentions: Vec<crate::turn::Mention>,
-        /// The images sent with it, as `turn/start` took them, so a client
-        /// that opens the session later shows them, as Codex's
-        /// `userMessage` keeps its images in `content`. Images read from
-        /// mentioned files aren't here: `mentions` names those.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        images: Vec<crate::turn::ImageInput>,
     },
     /// Text from the model. Complete text on `item/completed`.
     #[serde(rename_all = "camelCase")]
@@ -533,27 +525,10 @@ mod tests {
     }
 
     /// Turns stored before the names followed Codex's still read, and are
-    /// sent with Codex's names.
+    /// sent with Codex's names. (A `userMessage` stored before prompts were
+    /// lists is read by the server's history; see `history::stored_item`.)
     #[test]
     fn turns_stored_under_the_old_names_still_read() {
-        let item: TurnItem = serde_json::from_value(serde_json::json!({
-            "item": {"type": "userMessage", "id": "u1", "text": "hi", "clientMessageIds": ["m1"]},
-        }))
-        .unwrap();
-        let Item::UserMessage {
-            client_user_message_ids,
-            ..
-        } = &item.item
-        else {
-            panic!("{item:?}");
-        };
-        assert_eq!(client_user_message_ids, &["m1".to_string()]);
-        let sent = serde_json::to_value(&item).unwrap();
-        assert_eq!(
-            sent["item"]["clientUserMessageIds"],
-            serde_json::json!(["m1"])
-        );
-
         let moved: PatchChangeKind =
             serde_json::from_value(serde_json::json!({"type": "update", "movePath": "b.rs"}))
                 .unwrap();

@@ -31,9 +31,8 @@ use koda_protocol::session::{
     SessionSettingsUpdateResponse, SessionSettingsUpdatedNotification, SessionStartedNotification,
 };
 use koda_protocol::turn::{
-    ImageInput, LoopCapDecision, LoopCapResponse, Mention, SkillInput, Turn, TurnError,
-    TurnInterruptParams, TurnInterruptResponse, TurnStartParams, TurnStartResponse, TurnStatus,
-    TurnSteerParams, TurnSteerResponse,
+    LoopCapDecision, LoopCapResponse, Turn, TurnError, TurnInterruptParams, TurnInterruptResponse,
+    TurnStartParams, TurnStartResponse, TurnStatus, TurnSteerParams, TurnSteerResponse, UserInput,
 };
 use koda_protocol::{PROTOCOL_VERSION, ServerNotification, ServerRequest};
 use koda_state::db::{Database, Role};
@@ -1072,9 +1071,6 @@ impl SessionTask {
     async fn turn(&mut self, params: TurnStartParams, reply: oneshot::Sender<Answer>) -> Next {
         let TurnStartParams {
             input,
-            images,
-            mentions,
-            skills,
             client_user_message_id,
             mode,
             output_schema,
@@ -1090,20 +1086,49 @@ impl SessionTask {
             )));
             return Next::Idle;
         }
-        // As sent, for the prompt's item.
-        let sent_images = images.clone();
-        let mut images: Vec<ImageData> = images
-            .into_iter()
-            .map(|image| ImageData {
-                media_type: image.media_type,
-                base64: image.data,
-            })
-            .collect();
+        // The model is sent the text parts in order, then what the other
+        // parts add; the item keeps the parts as sent.
+        let text = koda_protocol::turn::text_of(&input);
+        let mut images: Vec<ImageData> = Vec::new();
+        let mut mentions: Vec<String> = Vec::new();
+        let mut skills: Vec<&str> = Vec::new();
+        for part in &input {
+            match part {
+                UserInput::Text { .. } => {}
+                UserInput::Image { url } => match koda_protocol::turn::data_url(url) {
+                    Some((media_type, data)) => images.push(ImageData {
+                        media_type: media_type.to_string(),
+                        base64: data.to_string(),
+                    }),
+                    None => {
+                        let _ = reply.send(Err(ErrorObject::new(
+                            codes::INVALID_PARAMS,
+                            "an image part's url must be a data: URL with base64 content",
+                        )));
+                        return Next::Idle;
+                    }
+                },
+                UserInput::LocalImage { path } => {
+                    use koda_core::tools::mention::Mentioned;
+                    match self.session.agent.tools.read_mention(path).await {
+                        Mentioned::Image(image) => images.push(image),
+                        _ => {
+                            let _ = reply.send(Err(ErrorObject::new(
+                                codes::INVALID_PARAMS,
+                                format!("{path} isn't an image Koda can read"),
+                            )));
+                            return Next::Idle;
+                        }
+                    }
+                }
+                UserInput::Skill { name, .. } => skills.push(name),
+                UserInput::Mention { path, .. } => mentions.push(path.clone()),
+            }
+        }
         // Mentioned files are read here, on the host's machine, under the
-        // Read tool's rules; the model gets them after the text, and the
-        // item keeps the text as written.
-        let message = self.with_mentions(&input, &mentions, &mut images).await;
-        let message = self.with_skills(message, &input, &skills);
+        // Read tool's rules; the model gets them after the text.
+        let message = self.with_mentions(&text, &mentions, &mut images).await;
+        let message = self.with_skills(message, &text, &skills);
         let message = match &output_schema {
             Some(schema) => format!(
                 "{message}\n\n{}",
@@ -1145,7 +1170,7 @@ impl SessionTask {
         }
         if !self.session.title_set {
             self.session.title_set = true;
-            let title: String = input.chars().take(50).collect();
+            let title: String = text.chars().take(50).collect();
             let _ = self.session.db.set_session_title(&session_id, &title).await;
         }
 
@@ -1163,12 +1188,8 @@ impl SessionTask {
                 items: Vec::new(),
             },
         }));
-        self.sink.begin_turn(
-            input,
-            client_user_message_id.into_iter().collect(),
-            mentions,
-            sent_images,
-        );
+        self.sink
+            .begin_turn(input, client_user_message_id.into_iter().collect());
         self.mark_turn_start(&turn_id, boundary).await;
         self.run_turn(turn_id, Work::Prompt(images)).await
     }
@@ -1180,7 +1201,7 @@ impl SessionTask {
     async fn with_mentions(
         &mut self,
         input: &str,
-        mentions: &[Mention],
+        mentions: &[String],
         images: &mut Vec<ImageData>,
     ) -> String {
         use koda_core::tools::mention::{Mentioned, mention_context};
@@ -1188,7 +1209,7 @@ impl SessionTask {
             return input.to_string();
         }
         if !self.config.file_mentions {
-            let paths: Vec<&str> = mentions.iter().map(|m| m.path.as_str()).collect();
+            let paths: Vec<&str> = mentions.iter().map(String::as_str).collect();
             return format!(
                 "{input}\n\n(Mentioned, not attached; read them if you need them: {})",
                 paths.join(", ")
@@ -1197,13 +1218,13 @@ impl SessionTask {
         let mut read = Vec::new();
         let mut resources = Vec::new();
         for mention in mentions {
-            if let Some((server, uri)) = self.resource_mention(&mention.path).await {
+            if let Some((server, uri)) = self.resource_mention(mention).await {
                 resources.push(self.read_resource(server, uri, images).await);
                 continue;
             }
-            match self.session.agent.tools.read_mention(&mention.path).await {
+            match self.session.agent.tools.read_mention(mention).await {
                 Mentioned::Image(image) => images.push(image),
-                other => read.push((mention.path.clone(), other)),
+                other => read.push((mention.clone(), other)),
             }
         }
         let mut message = match mention_context(&read) {
@@ -1293,12 +1314,12 @@ impl SessionTask {
     /// that this session hasn't sent yet, as Claude Code adds the `CLAUDE.md`
     /// of an `@` file's folder and the folders above it: root first, each
     /// once.
-    fn folder_instructions_for(&mut self, mentions: &[Mention]) -> Vec<String> {
+    fn folder_instructions_for(&mut self, mentions: &[String]) -> Vec<String> {
         let root = self.session.agent.project_root.clone();
         let shown_root = root.canonicalize().unwrap_or_else(|_| root.clone());
         let mut found = Vec::new();
         for mention in mentions {
-            let path = std::path::Path::new(&mention.path);
+            let path = std::path::Path::new(mention);
             for file in koda_core::memory::nested_instruction_files(&root, path) {
                 if !self.folder_instructions.insert(file.clone()) {
                     continue;
@@ -1319,13 +1340,13 @@ impl SessionTask {
     }
 
     /// `message` with the instructions of each skill the user named after it,
-    /// as Codex sends a `$name` skill: those picked (`skills`), then each
+    /// as Codex sends a `$name` skill: those picked (`skill` parts), then each
     /// `$name` in `input` that names one. A model-only skill
     /// (`user_invocable: false`) isn't the user's to load, and a `$name` that
     /// names no skill stays text.
-    fn with_skills(&self, message: String, input: &str, picked: &[SkillInput]) -> String {
+    fn with_skills(&self, message: String, input: &str, picked: &[&str]) -> String {
         let registry = &self.session.agent.tools.skill_registry;
-        let mut names: Vec<&str> = picked.iter().map(|skill| skill.name.as_str()).collect();
+        let mut names: Vec<&str> = picked.to_vec();
         for name in koda_core::skills::mentioned_names(input) {
             if !names.contains(&name) {
                 names.push(name);
@@ -1456,10 +1477,23 @@ impl SessionTask {
                                 ))));
                                 continue;
                             }
+                            // Steering reaches the model as text.
+                            if params
+                                .input
+                                .iter()
+                                .any(|part| !matches!(part, UserInput::Text { .. }))
+                            {
+                                let _ = reply.send(Err(ErrorObject::new(
+                                    codes::INVALID_PARAMS,
+                                    "turn/steer takes text parts only; send images, mentions \
+                                     and skills with turn/start",
+                                )));
+                                continue;
+                            }
+                            let text = koda_protocol::turn::text_of(&params.input);
                             // `try_send`: the turn isn't polled while this arm
                             // runs, so waiting for room could wait forever.
-                            let queued = engine_tx
-                                .try_send(EngineCommand::QueueNext { text: params.input });
+                            let queued = engine_tx.try_send(EngineCommand::QueueNext { text });
                             if queued.is_ok() {
                                 sink.queue_steer(params.client_user_message_id);
                             }
@@ -1795,7 +1829,7 @@ struct SinkState {
 
 /// A turn's prompt, waiting for the turn to start: its text, the client's
 /// ids for it, the paths it mentioned and the images sent with it.
-type Prompt = (String, Vec<String>, Vec<Mention>, Vec<ImageInput>);
+type Prompt = (Vec<UserInput>, Vec<String>);
 
 /// The session's [`EngineSink`]: engine events become protocol messages on
 /// the client's queue.
@@ -1819,15 +1853,9 @@ impl HostSink {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn begin_turn(
-        &self,
-        prompt: String,
-        client_user_message_ids: Vec<String>,
-        mentions: Vec<Mention>,
-        images: Vec<ImageInput>,
-    ) {
+    fn begin_turn(&self, prompt: Vec<UserInput>, client_user_message_ids: Vec<String>) {
         let mut state = self.lock();
-        state.prompt = Some((prompt, client_user_message_ids, mentions, images));
+        state.prompt = Some((prompt, client_user_message_ids));
         state.steers.clear();
     }
 
@@ -2009,12 +2037,12 @@ impl HostSink {
                     .collect();
                 state
                     .projector
-                    .user_message(texts.join("\n\n"), ids, Vec::new(), Vec::new())
+                    .user_message(vec![UserInput::text(texts.join("\n\n"))], ids)
             }
             (None, event @ EngineEvent::TurnStart { .. }) => {
                 let mut out = state.projector.project(None, event);
-                if let Some((text, ids, mentions, images)) = state.prompt.take() {
-                    out.extend(state.projector.user_message(text, ids, mentions, images));
+                if let Some((content, ids)) = state.prompt.take() {
+                    out.extend(state.projector.user_message(content, ids));
                 }
                 out
             }
