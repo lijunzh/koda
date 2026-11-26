@@ -262,8 +262,8 @@ pub(crate) async fn list_models(
         .into_iter()
         .filter(|a| a.provider == ptype && a.alias != model_alias::LOCAL_ALIAS)
         .map(|a| Model {
-            id: a.model_id,
             alias: Some(a.alias.to_string()),
+            ..Model::named(a.model_id)
         })
         .collect();
     let mut config = host.clone();
@@ -282,15 +282,37 @@ pub(crate) async fn list_models(
         Ok(Ok(models)) => {
             for model in models {
                 if !data.iter().any(|m| m.id == model.id) {
-                    data.push(Model {
-                        id: model.id,
-                        alias: None,
-                    });
+                    data.push(Model::named(model.id));
                 }
             }
         }
         Ok(Err(e)) => tracing::info!("model/list: {ptype} listed nothing: {e:#}"),
         Err(_) => tracing::info!("model/list: {ptype} didn't answer in {LIST_TIMEOUT:?}"),
+    }
+    // What each takes, and which a new session gets: the host's model for
+    // its own provider, else the provider's default.
+    let default = if ptype == host.provider_type {
+        host.model.clone()
+    } else {
+        ptype.default_model().to_string()
+    };
+    for model in &mut data {
+        if ptype == ProviderType::Anthropic
+            && let Some(effort) = koda_core::model_effort::lookup(&model.id)
+        {
+            model.supported_reasoning_efforts = effort
+                .levels
+                .iter()
+                .map(|level| level.to_string())
+                .collect();
+            model.default_reasoning_effort = Some(effort.default.to_string());
+        }
+    }
+    if let Some(model) = data
+        .iter_mut()
+        .find(|m| m.id == default || m.alias.as_deref() == Some(default.as_str()))
+    {
+        model.is_default = true;
     }
     Ok(ModelListResponse { data })
 }

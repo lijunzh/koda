@@ -126,6 +126,7 @@ mod tests {
                     text: "joined".into(),
                     client_message_ids: ids.iter().map(|id| id.to_string()).collect(),
                     mentions: Vec::new(),
+                    images: Vec::new(),
                 },
                 completed_at_ms: 0,
             },

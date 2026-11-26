@@ -850,7 +850,10 @@ async fn mentions_are_read_by_the_host() {
         .request::<methods::TurnStart>(TurnStartParams {
             session_id: koda.session.clone(),
             input: typed.to_string(),
-            images: Vec::new(),
+            images: vec![koda_client::protocol::turn::ImageInput {
+                media_type: "image/png".into(),
+                data: "aGk=".into(),
+            }],
             mentions: ["notes.md", "src", "blob.bin", "shot.png"]
                 .map(mention)
                 .to_vec(),
@@ -862,11 +865,20 @@ async fn mentions_are_read_by_the_host() {
         .await
         .unwrap();
     let messages = koda.until("turn/completed").await;
-    let Item::UserMessage { text, mentions, .. } = completed(&messages)[0] else {
+    let Item::UserMessage {
+        text,
+        mentions,
+        images,
+        ..
+    } = completed(&messages)[0]
+    else {
         panic!("no user message first");
     };
     assert_eq!(text, typed);
     assert_eq!(mentions.len(), 4);
+    // The image sent with the prompt, not the one a mention read.
+    assert_eq!(images.len(), 1);
+    assert_eq!(images[0].data, "aGk=");
 
     let sent = chat_requests(&server).await[0]["messages"].to_string();
     assert!(sent.contains("<file path=\\\"notes.md\\\">"), "{sent}");
@@ -2313,6 +2325,39 @@ async fn models_and_providers_are_listed() {
         .unwrap();
     let ids: Vec<&str> = models.data.iter().map(|m| m.id.as_str()).collect();
     assert_eq!(ids, ["m-one", "m-two"]);
+    // A local model takes no effort Koda sets; none is the host's model.
+    assert!(
+        models
+            .data
+            .iter()
+            .all(|m| m.supported_reasoning_efforts.is_empty() && !m.is_default),
+        "{models:?}"
+    );
+    // Claude's take the ladder, and say what they get without a choice.
+    // `.invalid` never resolves: only the aliases Koda knows are listed.
+    let claude = koda
+        .client
+        .request::<methods::ModelList>(ModelListParams {
+            model_provider: Some("anthropic".into()),
+            base_url: Some("https://claude.invalid".into()),
+        })
+        .await
+        .unwrap();
+    let haiku = claude
+        .data
+        .iter()
+        .find(|m| m.alias.as_deref() == Some("claude-haiku"))
+        .expect("the haiku alias is listed");
+    assert_eq!(
+        haiku.supported_reasoning_efforts,
+        ["low", "medium", "high", "xhigh", "max"]
+    );
+    assert!(haiku.default_reasoning_effort.is_some(), "{haiku:?}");
+    assert_eq!(
+        claude.data.iter().filter(|m| m.is_default).count(),
+        1,
+        "the provider's default: {claude:?}"
+    );
 
     let providers = koda
         .client
@@ -3539,6 +3584,13 @@ async fn usage_is_split_by_agent_and_restored_on_resume() {
     );
     assert_eq!(restored.token_usage.by_agent, live.by_agent);
     assert_eq!(restored.token_usage.total, live.total);
+    // How full the context was: the session's own latest call, as stored,
+    // so a meter is right before the next call.
+    assert_eq!(
+        restored.token_usage.last.input_tokens,
+        live.last.input_tokens
+    );
+    assert!(restored.token_usage.last.total_tokens > 0, "{restored:?}");
     koda.client.shutdown().await;
 }
 

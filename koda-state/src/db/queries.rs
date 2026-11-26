@@ -920,6 +920,29 @@ impl SessionStore for Database {
     }
 
     /// Get token usage totals for a session.
+    async fn last_call_usage(&self, session_id: &str) -> Result<Option<SessionUsage>> {
+        let row: Option<(i64, i64, i64, i64, i64)> = sqlx::query_as(
+            "SELECT COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0),
+                    COALESCE(cache_read_tokens, 0), COALESCE(cache_creation_tokens, 0),
+                    COALESCE(thinking_tokens, 0)
+             FROM messages
+             WHERE session_id = ?
+               AND (prompt_tokens IS NOT NULL OR completion_tokens IS NOT NULL)
+             ORDER BY id DESC LIMIT 1",
+        )
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|row| SessionUsage {
+            prompt_tokens: row.0,
+            completion_tokens: row.1,
+            cache_read_tokens: row.2,
+            cache_creation_tokens: row.3,
+            thinking_tokens: row.4,
+            api_calls: 1,
+        }))
+    }
+
     async fn session_token_usage(&self, session_id: &str) -> Result<SessionUsage> {
         let row: (i64, i64, i64, i64, i64, i64) = sqlx::query_as(
             "SELECT
