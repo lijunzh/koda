@@ -14,3 +14,4 @@ pub mod provider_menu;
 pub mod session_menu;
 pub mod shortcuts_overlay;
 pub mod status_bar;
+pub mod working_area;

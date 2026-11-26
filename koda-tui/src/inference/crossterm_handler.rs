@@ -59,6 +59,7 @@ pub(super) async fn handle_crossterm_event_inline(
     pastes: &mut input::Pastes,
     input_history: (&crate::input_history::InputHistory, &str),
     child_activity: &mut crate::child_activity::ChildActivityTracker,
+    plan_shown: &mut bool,
 ) -> bool {
     use crossterm::event::MouseEventKind;
     match ev {
@@ -103,6 +104,7 @@ pub(super) async fn handle_crossterm_event_inline(
                 pastes,
                 input_history,
                 child_activity,
+                plan_shown,
             )
             .await;
         }
@@ -131,6 +133,7 @@ async fn handle_inference_key_inline(
     pastes: &mut input::Pastes,
     input_history: (&crate::input_history::InputHistory, &str),
     child_activity: &mut crate::child_activity::ChildActivityTracker,
+    plan_shown: &mut bool,
 ) -> bool {
     // Vim insert-mode Escape (PR 3 of #1178). Same rationale as in
     // `tui_context::events::handle_key`: route bare Esc to the textarea
@@ -474,6 +477,11 @@ async fn handle_inference_key_inline(
             // Ctrl+O: tool output in full, or folded again, as at idle.
             let full = !scroll_buffer.is_full();
             scroll_buffer.set_full(full);
+        }
+        (KeyCode::Char('t'), m) if m.contains(KeyModifiers::CONTROL) => {
+            // Ctrl+T: hide or show the plan under the status line, as
+            // Claude Code's task list.
+            *plan_shown = !*plan_shown;
         }
         (KeyCode::BackTab, _) => {
             // Safe, Auto and Plan in turn; Auto only with the kernel

@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- **A turn's steps are folded, as Claude Code folds them, so the answer is easy to find.** Thinking was printed in full and every lookup had its own header and output: a local model's turn put about 190 lines before a 50-line answer. Now, in the folded view:
+  - **Thinking** leaves one line when it ends, `∴ Thought for 12s (ctrl+o to show thinking)`.
+  - **Lookups made one after another** (reads, searches, listings and commands the host found read-only) are one row with no output, in Claude Code's words: `Read 3 files, searched 2 patterns, ran 4 commands`, or `Reading …` while one runs. A failed one is counted on the row in red. A thought between two lookups goes into their row; text from Koda or any other step starts a new one.
+  - **A plan update** (`TodoWrite`) is no longer a row: the plan has a panel (below).
+  - Other commands, edits and their diffs, approvals and errors show as before. `Ctrl+O` and `/verbose` switch to the full view, which shows every call, its output and the thinking text, as before. A resumed session's turns fold the same way.
+
+### Added
+
+- **A working area above the prompt while a turn runs,** as Claude Code's status line and task list: what Koda is doing now and for how long (`Thinking… 12s`, `Reading Cargo.toml… 2s`, `Running a command… 1m 2s`, `Waiting on explore`, `Waiting for your approval`), and the turn's plan from `turn/plan/updated` under it while a step is left, with each step's mark, at most five steps at a time. **`Ctrl+T` hides or shows the plan,** as in Claude Code.
+
 ## [0.7.14] - 2026-11-26
 
 ### Changed

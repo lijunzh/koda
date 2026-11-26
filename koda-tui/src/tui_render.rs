@@ -38,10 +38,22 @@
 //! Claude Code lists them when expanded; the overlay shows the latest while
 //! it runs. When it ends, its call sums it up: `Done (3 tool uses · 12s)`.
 //!
-//! ## Verbose mode
+//! ## Folding (Normal and Verbose)
 //!
-//! Set `TuiRenderer::verbose = true` to suppress the
-//! [`crate::truncate`]-based collapsing. Every output line is shown.
+//! Every line is tagged with the view it belongs to ([`Fold`]); Ctrl+O
+//! switches between the folded view (Normal) and the full one (Verbose), as
+//! Claude Code's does. In Normal, as Claude Code shows a turn:
+//!
+//! - **Thinking** is a status line while it runs ([`WorkingArea`]) and then
+//!   one line, `∴ Thought for 12s`. Its text is in the full view.
+//! - **Lookups** run one after another (reads, searches, listings and
+//!   read-only commands) are one row, `Read 3 files, ran 2 commands`, with no
+//!   output; each call and its output are in the full view. A thought between
+//!   two lookups goes into their row. Anything else shown ends the row.
+//! - **A plan update** (`TodoWrite`) is the working area's plan panel, not a
+//!   row; the call is in the full view.
+//!
+//! [`WorkingArea`]: crate::widgets::working_area::WorkingArea
 
 use crate::ansi_parse::parse_ansi_spans;
 use crate::protocol_text::{self, Tone};
@@ -49,8 +61,11 @@ use crate::scroll_buffer::Fold;
 use crate::scroll_buffer::ScrollBuffer;
 use crate::theme;
 use crate::tui_output::{self, CYAN, DIM, RED, TOOL_PREFIX, YELLOW};
+use crate::widgets::working_area::{Step, WorkingArea};
 use koda_client::protocol::ServerNotification;
-use koda_client::protocol::item::{FileUpdateChange, Item, OutputStream, ToolCallStatus, TurnItem};
+use koda_client::protocol::item::{
+    FileUpdateChange, Item, OutputStream, ToolCallStatus, ToolEffect, TurnItem,
+};
 use koda_client::protocol::turn::{Turn, TurnStatus};
 use ratatui::{
     style::{Color, Style},
@@ -73,6 +88,129 @@ struct Call {
     /// calls was open (a batch run together), so it is drawn with its
     /// result, where it lands under its own header.
     header: Option<Line<'static>>,
+    /// Its lines are in the full view only: a lookup, whose row sums it up
+    /// in the folded view, or a plan update, which the plan panel shows.
+    quiet: bool,
+    /// The lookup row it counts on, an index into `TuiRenderer::groups`.
+    group: Option<usize>,
+}
+
+impl Call {
+    /// The view its own lines go in.
+    fn fold(&self) -> Fold {
+        if self.quiet { Fold::Full } else { Fold::Always }
+    }
+}
+
+/// What a lookup does, for its row's words.
+#[derive(Debug, Clone, Copy)]
+enum Lookup {
+    Read,
+    Search,
+    List,
+    Command,
+}
+
+/// Which of the session's calls only look: a read, search or listing, or a
+/// command the host found read-only. They fold into one row, as Claude Code
+/// folds reads and searches. A call stored before Koda sent its effect
+/// keeps its own row.
+fn lookup(tool: &str, effect: Option<ToolEffect>) -> Option<Lookup> {
+    if effect != Some(ToolEffect::ReadOnly) {
+        return None;
+    }
+    match tool {
+        "Read" => Some(Lookup::Read),
+        "Grep" | "Glob" => Some(Lookup::Search),
+        "List" => Some(Lookup::List),
+        "Bash" => Some(Lookup::Command),
+        _ => None,
+    }
+}
+
+/// Lookups run one after another, drawn as one row.
+#[derive(Default)]
+struct Group {
+    /// The row's key in the buffer ([`ScrollBuffer::push_row`]).
+    row: u64,
+    reads: usize,
+    searches: usize,
+    lists: usize,
+    commands: usize,
+    /// Calls still running: the row says what it is doing.
+    running: usize,
+    failed: usize,
+}
+
+impl Group {
+    fn count(&mut self, lookup: Lookup) {
+        match lookup {
+            Lookup::Read => self.reads += 1,
+            Lookup::Search => self.searches += 1,
+            Lookup::List => self.lists += 1,
+            Lookup::Command => self.commands += 1,
+        }
+    }
+
+    /// The row, in Claude Code's words: `Read 3 files, searched 5 patterns,
+    /// listed 2 directories`, then `ran 4 commands`; `Reading …` while a
+    /// call runs. A failure is counted in red.
+    fn line(&self) -> Line<'static> {
+        let live = self.running > 0;
+        let parts: Vec<String> = [
+            (self.reads, ("read", "reading"), ("file", "files")),
+            (
+                self.searches,
+                ("searched", "searching"),
+                ("pattern", "patterns"),
+            ),
+            (
+                self.lists,
+                ("listed", "listing"),
+                ("directory", "directories"),
+            ),
+            (self.commands, ("ran", "running"), ("command", "commands")),
+        ]
+        .into_iter()
+        .filter(|(n, _, _)| *n > 0)
+        .map(|(n, (done, doing), (one, many))| {
+            let verb = if live { doing } else { done };
+            let noun = if n == 1 { one } else { many };
+            format!("{verb} {n} {noun}")
+        })
+        .collect();
+        let mut words = parts.join(", ");
+        if let Some(first) = words.get_mut(..1) {
+            first.make_ascii_uppercase();
+        }
+        if live {
+            words.push('\u{2026}');
+        }
+        let mut spans = vec![
+            Span::styled(
+                "\u{25cf} ",
+                theme::tool_dot("Read", Some(ToolEffect::ReadOnly)),
+            ),
+            Span::styled(words, tui_output::BOLD),
+        ];
+        if self.failed > 0 {
+            spans.push(Span::styled(
+                format!(" \u{00b7} {} failed", self.failed),
+                RED,
+            ));
+        }
+        spans.push(Span::styled(" (ctrl+o to expand)", DIM));
+        Line::from(spans)
+    }
+}
+
+/// A finished thought, not drawn yet: it goes in before whatever is shown
+/// next, or into the lookup row it falls inside.
+struct Thought {
+    /// How long it took, when the items' times are known.
+    ms: Option<u64>,
+    /// Whether the model sent any text for it, which the full view shows.
+    text: bool,
 }
 
 /// A sub-agent at work: its `InvokeAgent` call, for the line that sums it up.
@@ -115,6 +253,19 @@ pub struct TuiRenderer {
     agents: HashMap<String, AgentRun>,
     /// The turn's error was drawn, so its end needn't say it again.
     error_shown: bool,
+    /// What Koda is doing now, and the turn's plan, for the working area
+    /// above the prompt.
+    pub working: WorkingArea,
+    /// When the reasoning being drawn started, in Unix milliseconds.
+    thinking_since: Option<i64>,
+    /// Whether the reasoning being drawn has had any text.
+    thinking_text: bool,
+    /// A finished thought, not drawn yet.
+    thought: Option<Thought>,
+    /// The turn's lookup rows.
+    groups: Vec<Group>,
+    /// The row lookups join now; `None` once something else was shown.
+    open_group: Option<usize>,
 }
 
 impl Default for TuiRenderer {
@@ -140,6 +291,12 @@ impl TuiRenderer {
             changes_shown: HashSet::new(),
             agents: HashMap::new(),
             error_shown: false,
+            working: WorkingArea::new(),
+            thinking_since: None,
+            thinking_text: false,
+            thought: None,
+            groups: Vec::new(),
+            open_group: None,
         }
     }
 
@@ -178,7 +335,78 @@ impl TuiRenderer {
     ) {
         if !changes.is_empty() {
             self.changes_shown.insert(item_id.to_string());
+            self.break_run(buffer);
             push_changes(changes, buffer);
+        }
+    }
+
+    /// The turn ended: a thought not drawn yet goes in, and the lookup row
+    /// closes. A row whose calls never ended, as when the turn was stopped,
+    /// stops saying it is at work.
+    pub fn end_turn(&mut self, buffer: &mut ScrollBuffer) {
+        self.break_run(buffer);
+        for group in self.groups.iter_mut().filter(|g| g.running > 0) {
+            group.running = 0;
+            buffer.set_row(group.row, group.line());
+        }
+    }
+
+    /// Something is about to be shown in both views: a thought waiting to be
+    /// drawn goes in first, and the next lookup starts a row of its own.
+    fn break_run(&mut self, buffer: &mut ScrollBuffer) {
+        self.draw_thought(buffer);
+        self.open_group = None;
+    }
+
+    /// Draw the finished thought waiting, if any: `∴ Thought for 12s`, in the
+    /// folded view; the full one has its text.
+    fn draw_thought(&mut self, buffer: &mut ScrollBuffer) {
+        if let Some(thought) = self.thought.take() {
+            buffer.push_folded(thought_line(&thought), Fold::Folded);
+        }
+    }
+
+    /// A line for both views, after whatever waits to go in first.
+    fn show(&mut self, buffer: &mut ScrollBuffer, line: Line<'static>) {
+        self.break_run(buffer);
+        tui_output::emit_line(buffer, line);
+    }
+
+    /// Count a lookup that started on the open row, opening one if none is.
+    /// A thought since the row's last call goes into it.
+    fn join_group(&mut self, lookup: Lookup, buffer: &mut ScrollBuffer) -> usize {
+        let index = match self.open_group {
+            Some(index) => {
+                self.thought = None;
+                index
+            }
+            None => {
+                self.draw_thought(buffer);
+                let row = buffer.push_row(Line::default(), Fold::Folded);
+                self.groups.push(Group {
+                    row,
+                    ..Group::default()
+                });
+                let index = self.groups.len() - 1;
+                self.open_group = Some(index);
+                index
+            }
+        };
+        let group = &mut self.groups[index];
+        group.count(lookup);
+        group.running += 1;
+        buffer.set_row(group.row, group.line());
+        index
+    }
+
+    /// A lookup on row `index` ended.
+    fn leave_group(&mut self, index: usize, failed: bool, buffer: &mut ScrollBuffer) {
+        if let Some(group) = self.groups.get_mut(index) {
+            group.running = group.running.saturating_sub(1);
+            if failed {
+                group.failed += 1;
+            }
+            buffer.set_row(group.row, group.line());
         }
     }
 
@@ -207,6 +435,7 @@ impl TuiRenderer {
                 buffer,
             );
         }
+        self.end_turn(buffer);
         match (&turn.status, &turn.error) {
             (TurnStatus::Failed, Some(error)) => {
                 tui_output::emit_line(buffer, turn_failed_line(&error.message));
@@ -286,31 +515,40 @@ impl TuiRenderer {
                 self.output(&delta.item_id, &delta.delta, delta.stream, buffer);
             }
             ServerNotification::ToolCallProgress(progress) => {
-                tui_output::emit_line(
+                let line = Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(progress.message.clone(), CYAN),
+                ]);
+                match self.calls.get(&progress.item_id).map(Call::fold) {
+                    Some(Fold::Full) => buffer.push_folded(line, Fold::Full),
+                    _ => self.show(buffer, line),
+                }
+            }
+            ServerNotification::TurnPlanUpdated(updated) => {
+                self.working.set_plan(updated.plan.clone());
+            }
+            ServerNotification::TurnLoopGuard(guard) => {
+                self.break_run(buffer);
+                notice(
+                    (
+                        Tone::Warn,
+                        protocol_text::loop_guard(guard.action, &guard.detail),
+                    ),
                     buffer,
-                    Line::from(vec![
-                        Span::raw("  "),
-                        Span::styled(progress.message.clone(), CYAN),
-                    ]),
                 );
             }
-            ServerNotification::TurnLoopGuard(guard) => notice(
-                (
-                    Tone::Warn,
-                    protocol_text::loop_guard(guard.action, &guard.detail),
-                ),
-                buffer,
-            ),
             ServerNotification::Warning(warning) => {
+                self.break_run(buffer);
                 notice((Tone::Warn, warning.message.clone()), buffer);
             }
             // A retry's notice says what happened and when Koda tries again.
             ServerNotification::Error(error) if error.will_retry => {
+                self.break_run(buffer);
                 notice((Tone::Warn, error.error.message.clone()), buffer);
             }
             ServerNotification::Error(error) => {
                 self.error_shown = true;
-                tui_output::emit_line(
+                self.show(
                     buffer,
                     Line::from(vec![
                         Span::raw("  "),
@@ -334,16 +572,20 @@ impl TuiRenderer {
                 self.messages.insert(id.clone());
                 self.has_emitted_text = false;
                 self.ruled = false;
+                self.working.set(Step::Writing);
             }
             Item::Reasoning { id, .. } if parent.is_none() => {
                 self.reasoning.insert(id.clone());
                 self.think_buf.clear();
-                tui_output::emit_line(
-                    buffer,
+                self.thinking_since = started_ms;
+                self.thinking_text = false;
+                self.working.set(Step::Thinking);
+                buffer.push_folded(
                     Line::from(vec![
                         Span::raw("  "),
                         Span::styled("\u{1f4ad} Thinking...", DIM),
                     ]),
+                    Fold::Full,
                 );
             }
             Item::ToolCall {
@@ -357,6 +599,21 @@ impl TuiRenderer {
                 // header waits for its result.
                 let another_open =
                     parent.is_none() && self.calls.values().any(|call| call.parent.is_none());
+                // The session's own lookups fold into a row, and its plan
+                // updates into the plan panel; anything else ends the row.
+                let mut group = None;
+                let mut quiet = false;
+                if parent.is_none() {
+                    self.working.call_started(id, tool, arguments);
+                    if let Some(lookup) = lookup(tool, *effect) {
+                        group = Some(self.join_group(lookup, buffer));
+                        quiet = true;
+                    } else if tool == "TodoWrite" {
+                        quiet = true;
+                    } else {
+                        self.break_run(buffer);
+                    }
+                }
                 self.calls.insert(
                     id.clone(),
                     Call {
@@ -365,6 +622,8 @@ impl TuiRenderer {
                         parent: parent.map(str::to_string),
                         stream_start: None,
                         header: None,
+                        quiet,
+                        group,
                     },
                 );
                 if tool == "InvokeAgent" {
@@ -391,18 +650,20 @@ impl TuiRenderer {
                     None => {
                         let line =
                             crate::tool_header::build_header_line("", tool, arguments, *effect);
+                        let fold = if quiet { Fold::Full } else { Fold::Always };
                         if another_open {
                             if let Some(call) = self.calls.get_mut(id) {
                                 call.header = Some(line);
                             }
                         } else {
-                            tui_output::emit_line(buffer, line);
+                            buffer.push_folded(line, fold);
                         }
                     }
                 }
             }
             item @ Item::ContextCompaction { .. } => {
                 if let Some(line) = protocol_text::compaction_started(item) {
+                    self.break_run(buffer);
                     notice(line, buffer);
                 }
             }
@@ -424,20 +685,38 @@ impl TuiRenderer {
                 }
                 if !self.text_buf.is_empty() {
                     let rest = std::mem::take(&mut self.text_buf);
+                    self.break_run(buffer);
                     self.rule(&rest, buffer);
                     tui_output::emit_line(buffer, self.md.render_line(&rest));
                 }
                 self.has_emitted_text = false;
                 self.md = crate::md_render::MarkdownRenderer::new();
+                self.working.set(Step::Working);
             }
             Item::Reasoning { id, .. } if self.reasoning.remove(id) => {
                 if !self.think_buf.is_empty() {
                     let rest = std::mem::take(&mut self.think_buf);
-                    tui_output::emit_line(buffer, thinking_line(rest));
+                    self.thinking_text |= !rest.trim().is_empty();
+                    buffer.push_folded(thinking_line(rest), Fold::Full);
                 }
+                // Its stub waits for what comes next. Thoughts one after
+                // another add up to one.
+                let ms = self
+                    .thinking_since
+                    .take()
+                    .zip(completed_ms)
+                    .map(|(started, done)| done.saturating_sub(started).max(0) as u64);
+                let thought = self.thought.get_or_insert(Thought {
+                    ms: Some(0),
+                    text: false,
+                });
+                thought.ms = thought.ms.zip(ms).map(|(a, b)| a + b);
+                thought.text |= self.thinking_text;
+                self.working.set(Step::Working);
             }
             item @ Item::ContextCompaction { .. } => {
                 if let Some(line) = protocol_text::compaction_done(item) {
+                    self.break_run(buffer);
                     notice(line, buffer);
                 }
             }
@@ -452,9 +731,18 @@ impl TuiRenderer {
             } => {
                 let mut call = self.calls.remove(id);
                 let changes_shown = self.changes_shown.remove(id);
+                let failed = *status == ToolCallStatus::Failed;
+                if parent.is_none() {
+                    self.working.call_ended(id);
+                }
+                if let Some(index) = call.as_ref().and_then(|call| call.group) {
+                    self.leave_group(index, failed, buffer);
+                }
                 // A header held back while another call ran goes first.
-                if let Some(header) = call.as_mut().and_then(|call| call.header.take()) {
-                    tui_output::emit_line(buffer, header);
+                if let Some(call) = call.as_mut()
+                    && let Some(header) = call.header.take()
+                {
+                    buffer.push_folded(header, call.fold());
                 }
                 // What happened to it, as both peers show a declined call:
                 // what the model was told says which it was.
@@ -464,6 +752,7 @@ impl TuiRenderer {
                     // The diff, unless the approval drew it already, as when
                     // the turn is replayed.
                     let diff = (!changes_shown).then_some(changes.as_slice());
+                    self.break_run(buffer);
                     declined_lines(outcome, what, diff, buffer);
                     return;
                 }
@@ -471,7 +760,6 @@ impl TuiRenderer {
                 if parent.is_some() {
                     return;
                 }
-                let failed = *status == ToolCallStatus::Failed;
                 if !(failed || *status == ToolCallStatus::Completed) {
                     return;
                 }
@@ -480,7 +768,7 @@ impl TuiRenderer {
                         .started_ms
                         .zip(completed_ms)
                         .map(|(started, done)| done.saturating_sub(started).max(0) as u64);
-                    tui_output::emit_line(buffer, agent_summary(run.calls, ms, failed));
+                    self.show(buffer, agent_summary(run.calls, ms, failed));
                 }
                 let output = output.as_deref().unwrap_or("");
                 self.result(tool, call, output, failed, changes_shown, buffer);
@@ -502,23 +790,29 @@ impl TuiRenderer {
         buffer: &mut ScrollBuffer,
     ) {
         self.tool_history.push(tool, output);
+        // A lookup or plan update: everything in the full view, nothing
+        // in the folded one, which has its row or the plan panel.
+        let quiet = call.as_ref().is_some_and(|c| c.quiet);
         if let Some(start) = call.as_ref().and_then(|c| c.stream_start) {
-            let tail = if failed { FOLD_TAIL } else { 0 };
-            buffer.fold_since(start, FOLD_HEAD, tail, fold_marker);
+            if !quiet {
+                let tail = if failed { FOLD_TAIL } else { 0 };
+                buffer.fold_since(start, FOLD_HEAD, tail, fold_marker);
+                self.break_run(buffer);
+            }
             let exit_line = output.lines().next().unwrap_or("");
-            tui_output::emit_line(
-                buffer,
+            buffer.push_folded(
                 Line::from(vec![
                     Span::styled("  \u{2514} ", DIM),
                     Span::styled(exit_line.to_string(), DIM),
                 ]),
+                if quiet { Fold::Full } else { Fold::Always },
             );
             return;
         }
         if changes_shown && matches!(tool, "Write" | "Edit" | "MemoryWrite") {
             // The diff is above the dialog: just how long the result is.
             let line_count = output.lines().count();
-            tui_output::emit_line(
+            self.show(
                 buffer,
                 Line::from(vec![
                     Span::styled("  \u{2514} ", DIM),
@@ -534,14 +828,26 @@ impl TuiRenderer {
         let grep_pattern = (tool == "Grep")
             .then(|| arguments["pattern"].as_str().map(str::to_string))
             .flatten();
-        buffer.push_folded_lines(tool_output_view(
+        let view = tool_output_view(
             tool,
             effect,
             output,
             failed,
             file_ext.as_deref(),
             grep_pattern.as_deref(),
-        ));
+        );
+        if quiet {
+            buffer.push_folded_lines(
+                view.into_iter()
+                    .filter(|(_, fold)| *fold != Fold::Folded)
+                    .map(|(line, _)| (line, Fold::Full)),
+            );
+        } else {
+            if view.iter().any(|(_, fold)| *fold != Fold::Full) {
+                self.break_run(buffer);
+            }
+            buffer.push_folded_lines(view);
+        }
     }
 
     /// A chunk of a call's live output, one line at a time.
@@ -552,7 +858,7 @@ impl TuiRenderer {
         stream: OutputStream,
         buffer: &mut ScrollBuffer,
     ) {
-        let Some(call) = self.calls.get_mut(item_id) else {
+        let Some(call) = self.calls.get(item_id) else {
             return;
         };
         let stderr = stream == OutputStream::Stderr;
@@ -565,11 +871,16 @@ impl TuiRenderer {
         // output stays legible (#804) and stderr is always red whatever
         // the tool.
         let style = theme::content_style_for(call.effect, stderr);
-        let sub_agent = call.parent.is_some();
-        if !sub_agent {
+        // A sub-agent's output and a lookup's are in the full view only.
+        let own = call.parent.is_none();
+        let fold = if own { call.fold() } else { Fold::Full };
+        if fold == Fold::Always {
+            self.break_run(buffer);
+        }
+        if own && let Some(call) = self.calls.get_mut(item_id) {
             // Its output says whose it is: a held-back header goes first.
             if let Some(header) = call.header.take() {
-                tui_output::emit_line(buffer, header);
+                buffer.push_folded(header, fold);
             }
             call.stream_start.get_or_insert_with(|| buffer.next_seq());
         }
@@ -578,11 +889,7 @@ impl TuiRenderer {
                 Span::styled(prefix, TOOL_PREFIX),
                 Span::styled(text.to_string(), style),
             ]);
-            if sub_agent {
-                buffer.push_folded(line, Fold::Full);
-            } else {
-                tui_output::emit_line(buffer, line);
-            }
+            buffer.push_folded(line, fold);
         }
     }
 
@@ -597,19 +904,22 @@ impl TuiRenderer {
             if line.is_empty() && !self.has_emitted_text {
                 continue;
             }
+            self.break_run(buffer);
             self.rule(&line, buffer);
             self.has_emitted_text = true;
             tui_output::emit_line(buffer, self.md.render_line(&line));
         }
     }
 
-    /// Reasoning text: complete lines are drawn as they arrive.
+    /// Reasoning text: complete lines are drawn as they arrive, in the full
+    /// view; the folded one has the status line, then the stub.
     fn thinking_text(&mut self, text: &str, buffer: &mut ScrollBuffer) {
         self.think_buf.push_str(text);
         while let Some(pos) = self.think_buf.find('\n') {
             let line = self.think_buf[..pos].to_string();
             self.think_buf.drain(..=pos);
-            tui_output::emit_line(buffer, thinking_line(line));
+            self.thinking_text |= !line.trim().is_empty();
+            buffer.push_folded(thinking_line(line), Fold::Full);
         }
     }
 
@@ -651,6 +961,20 @@ pub(crate) fn turn_failed_line(error: &str) -> Line<'static> {
         Span::raw("  "),
         Span::styled(format!("\u{2717} Turn failed: {error}"), RED),
     ])
+}
+
+/// What a finished thought leaves in the folded view, as Claude Code's:
+/// `∴ Thought for 12s (ctrl+o to show thinking)`. Without the items' times
+/// it says only that it thought; with no text there is nothing to show.
+fn thought_line(thought: &Thought) -> Line<'static> {
+    let mut words = match thought.ms {
+        Some(ms) => format!("\u{2234} Thought for {}", worked_for(ms)),
+        None => "\u{2234} Thought".to_string(),
+    };
+    if thought.text {
+        words.push_str(" (ctrl+o to show thinking)");
+    }
+    Line::from(vec![Span::raw("  "), Span::styled(words, DIM)])
 }
 
 /// A line of reasoning, dim behind a bar.
@@ -1563,6 +1887,339 @@ mod tests {
             "{full:?}"
         );
         assert!(full.iter().any(|l| l.contains("\u{2502} line")), "{full:?}");
+    }
+
+    // ── folding ──────────────────────────────────────────────────────────────
+
+    /// `item` with the effect the host gives a call that only looks.
+    fn read_only(item: Item) -> Item {
+        match item {
+            Item::ToolCall {
+                id,
+                tool,
+                arguments,
+                status,
+                output,
+                detail,
+                changes,
+                progress,
+                exit_code,
+                duration_ms,
+                kind,
+                ..
+            } => Item::ToolCall {
+                id,
+                tool,
+                arguments,
+                effect: Some(ToolEffect::ReadOnly),
+                kind,
+                status,
+                output,
+                detail,
+                changes,
+                progress,
+                exit_code,
+                duration_ms,
+            },
+            other => other,
+        }
+    }
+
+    fn thinking(id: &str) -> Item {
+        Item::Reasoning {
+            id: id.into(),
+            text: String::new(),
+        }
+    }
+
+    fn reasoning(id: &str, delta: &str) -> ServerNotification {
+        ServerNotification::ReasoningTextDelta(TextDeltaNotification {
+            session_id: "s".into(),
+            turn_id: "t".into(),
+            item_id: id.into(),
+            delta: delta.into(),
+        })
+    }
+
+    /// Run a call that only looks from start to end.
+    fn look(
+        renderer: &mut TuiRenderer,
+        buffer: &mut ScrollBuffer,
+        id: &str,
+        tool: &str,
+        arguments: serde_json::Value,
+        status: ToolCallStatus,
+        out: &str,
+    ) {
+        let item = read_only(call(id, tool, arguments));
+        renderer.render(&started(None, item.clone()), buffer);
+        renderer.render(
+            &completed(None, read_only(finished(item, status, out))),
+            buffer,
+        );
+    }
+
+    /// Thinking leaves one line in the folded view, as Claude Code's does;
+    /// its text is in the full view.
+    #[test]
+    fn a_thought_folds_to_a_stub() {
+        let mut renderer = TuiRenderer::new();
+        let mut buffer = ScrollBuffer::new(256);
+        renderer.render(&started(None, thinking("r1")), &mut buffer);
+        assert_eq!(renderer.working.label(), "Thinking");
+        renderer.render(&reasoning("r1", "Look at the plan.\nThen"), &mut buffer);
+        renderer.render(&completed(None, thinking("r1")), &mut buffer);
+        // Nothing yet: the stub waits for what comes next.
+        assert!(text(&buffer).is_empty(), "{:?}", text(&buffer));
+        renderer.end_turn(&mut buffer);
+        assert_eq!(
+            text(&buffer),
+            vec!["  \u{2234} Thought for 2s (ctrl+o to show thinking)"]
+        );
+        buffer.set_full(true);
+        let full = text(&buffer);
+        assert!(
+            full.iter().any(|l| l.contains("Look at the plan.")),
+            "{full:?}"
+        );
+        assert!(full.iter().any(|l| l.contains("Then")), "{full:?}");
+        assert!(!full.iter().any(|l| l.contains("Thought for")), "{full:?}");
+    }
+
+    /// Lookups one after another are one row in Claude Code's words, with no
+    /// output; a thought between them goes into the row, and a progress note
+    /// ends it. Each call and its output are in the full view.
+    #[test]
+    fn lookups_fold_into_one_row() {
+        let mut renderer = TuiRenderer::new();
+        let mut buffer = ScrollBuffer::new(256);
+        let done = ToolCallStatus::Completed;
+        renderer.render(&started(None, thinking("r1")), &mut buffer);
+        renderer.render(&completed(None, thinking("r1")), &mut buffer);
+        let read = json!({"file_path": "Cargo.toml"});
+        look(
+            &mut renderer,
+            &mut buffer,
+            "c1",
+            "Read",
+            read,
+            done,
+            "     1\t[package]",
+        );
+        renderer.render(&started(None, thinking("r2")), &mut buffer);
+        renderer.render(&completed(None, thinking("r2")), &mut buffer);
+        let grep = json!({"pattern": "GUI"});
+        look(
+            &mut renderer,
+            &mut buffer,
+            "c2",
+            "Grep",
+            grep,
+            done,
+            "a.rs:1:GUI",
+        );
+        for id in ["c3", "c4"] {
+            let bash = json!({"command": "rg GUI docs"});
+            look(
+                &mut renderer,
+                &mut buffer,
+                id,
+                "Bash",
+                bash,
+                done,
+                "docs/a.md:GUI",
+            );
+        }
+        let note = Item::AgentMessage {
+            id: "m1".into(),
+            text: String::new(),
+        };
+        renderer.render(&started(None, note.clone()), &mut buffer);
+        renderer.render(&reply("m1", "Checking the docs next.\n"), &mut buffer);
+        renderer.render(&completed(None, note), &mut buffer);
+        let list = json!({"path": "docs"});
+        look(&mut renderer, &mut buffer, "c5", "List", list, done, "a.md");
+        renderer.end_turn(&mut buffer);
+
+        let folded = text(&buffer);
+        assert_eq!(
+            folded,
+            vec![
+                "  \u{2234} Thought for 2s",
+                "\u{25cf} Read 1 file, searched 1 pattern, ran 2 commands (ctrl+o to expand)",
+                "  \u{2500}\u{2500}\u{2500}",
+                "  Checking the docs next.",
+                "\u{25cf} Listed 1 directory (ctrl+o to expand)",
+            ]
+        );
+        buffer.set_full(true);
+        let full = text(&buffer);
+        for needle in ["Cargo.toml", "[package]", "GUI", "docs/a.md:GUI", "a.md"] {
+            assert!(
+                full.iter().any(|l| l.contains(needle)),
+                "{needle}: {full:?}"
+            );
+        }
+        assert!(
+            !full.iter().any(|l| l.contains("ran 2 commands")),
+            "{full:?}"
+        );
+    }
+
+    /// While a lookup runs its row says so; a failed one is counted on it.
+    #[test]
+    fn a_lookup_row_is_live_and_counts_a_failure() {
+        let mut renderer = TuiRenderer::new();
+        let mut buffer = ScrollBuffer::new(256);
+        let item = read_only(call("c1", "Read", json!({"file_path": "a.rs"})));
+        renderer.render(&started(None, item.clone()), &mut buffer);
+        assert_eq!(
+            text(&buffer),
+            vec!["\u{25cf} Reading 1 file\u{2026} (ctrl+o to expand)"]
+        );
+        assert_eq!(renderer.working.label(), "Reading a.rs");
+        renderer.render(
+            &completed(
+                None,
+                read_only(finished(item, ToolCallStatus::Failed, "No such file")),
+            ),
+            &mut buffer,
+        );
+        assert_eq!(
+            text(&buffer),
+            vec!["\u{25cf} Read 1 file \u{00b7} 1 failed (ctrl+o to expand)"]
+        );
+        assert_eq!(renderer.working.label(), "Working");
+
+        // A turn stopped while a lookup ran: its row stops saying so.
+        let item = read_only(call("c2", "Grep", json!({"pattern": "x"})));
+        renderer.render(&started(None, item), &mut buffer);
+        renderer.end_turn(&mut buffer);
+        assert_eq!(
+            text(&buffer).last().unwrap(),
+            "\u{25cf} Read 1 file, searched 1 pattern \u{00b7} 1 failed (ctrl+o to expand)"
+        );
+    }
+
+    /// A command that changes something keeps its own row and output, and
+    /// ends the lookup row; streamed lookup output stays out of the folded
+    /// view.
+    #[test]
+    fn a_command_that_changes_something_keeps_its_row() {
+        let mut renderer = TuiRenderer::new();
+        let mut buffer = ScrollBuffer::new(256);
+        let ls = read_only(call("c1", "Bash", json!({"command": "ls"})));
+        renderer.render(&started(None, ls.clone()), &mut buffer);
+        renderer.render(&output("c1", "a.rs\nb.rs\n"), &mut buffer);
+        renderer.render(
+            &completed(
+                None,
+                read_only(finished(ls, ToolCallStatus::Completed, "Exit code: 0")),
+            ),
+            &mut buffer,
+        );
+        let build = call("c2", "Bash", json!({"command": "cargo build"}));
+        renderer.render(&started(None, build.clone()), &mut buffer);
+        renderer.render(
+            &completed(
+                None,
+                finished(build, ToolCallStatus::Completed, "Finished dev"),
+            ),
+            &mut buffer,
+        );
+        let folded = text(&buffer);
+        assert_eq!(folded.len(), 3, "{folded:?}");
+        assert!(folded[0].contains("Ran 1 command"), "{folded:?}");
+        assert!(folded[1].contains("cargo build"), "{folded:?}");
+        assert!(folded[2].contains("Finished dev"), "{folded:?}");
+        buffer.set_full(true);
+        let full = text(&buffer);
+        assert!(full.iter().any(|l| l.contains("b.rs")), "{full:?}");
+        assert!(full.iter().any(|l| l.contains("Exit code: 0")), "{full:?}");
+    }
+
+    /// A plan update is the working area's plan, not a row.
+    #[test]
+    fn a_plan_update_goes_to_the_plan_panel() {
+        use koda_client::protocol::turn::{PlanStep, PlanStepStatus, TurnPlanUpdatedNotification};
+        let mut renderer = TuiRenderer::new();
+        let mut buffer = ScrollBuffer::new(256);
+        let todo = call("c1", "TodoWrite", json!({"todos": []}));
+        renderer.render(&started(None, todo.clone()), &mut buffer);
+        assert_eq!(renderer.working.label(), "Updating the plan");
+        renderer.render(
+            &ServerNotification::TurnPlanUpdated(TurnPlanUpdatedNotification {
+                session_id: "s".into(),
+                turn_id: "t".into(),
+                plan: vec![PlanStep {
+                    step: "Write the code".into(),
+                    status: PlanStepStatus::InProgress,
+                }],
+            }),
+            &mut buffer,
+        );
+        renderer.render(
+            &completed(
+                None,
+                finished(todo, ToolCallStatus::Completed, "1 task in progress"),
+            ),
+            &mut buffer,
+        );
+        assert!(text(&buffer).is_empty(), "{:?}", text(&buffer));
+        assert!(renderer.working.has_open_plan());
+        buffer.set_full(true);
+        assert!(text(&buffer).iter().any(|l| l.contains("TodoWrite")));
+    }
+
+    /// A stored turn folds as it did live.
+    #[test]
+    fn a_stored_turn_folds_as_it_did_live() {
+        let reads: Vec<TurnItem> = ["a.rs", "b.rs"]
+            .iter()
+            .enumerate()
+            .map(|(i, file)| {
+                let item = read_only(finished(
+                    call(&format!("c{i}"), "Read", json!({"file_path": file})),
+                    ToolCallStatus::Completed,
+                    "     1\tx",
+                ));
+                stored(None, item, Some((1_000, 2_000)))
+            })
+            .collect();
+        let mut items = vec![stored(
+            None,
+            Item::Reasoning {
+                id: "r1".into(),
+                text: "Read both.".into(),
+            },
+            Some((0, 3_000)),
+        )];
+        items.extend(reads);
+        items.push(stored(
+            None,
+            Item::AgentMessage {
+                id: "m1".into(),
+                text: "Both fine.".into(),
+            },
+            None,
+        ));
+        let mut renderer = TuiRenderer::new();
+        let mut buffer = ScrollBuffer::new(256);
+        renderer.replay_turn(
+            &turn(items, TurnStatus::Completed, Some(4_000)),
+            &mut buffer,
+        );
+        let folded = text(&buffer);
+        assert_eq!(
+            folded[0],
+            "  \u{2234} Thought for 3s (ctrl+o to show thinking)"
+        );
+        assert_eq!(folded[1], "\u{25cf} Read 2 files (ctrl+o to expand)");
+        assert!(
+            folded.iter().any(|l| l.contains("Both fine.")),
+            "{folded:?}"
+        );
+        assert!(!folded.iter().any(|l| l.contains("b.rs")), "{folded:?}");
     }
 
     /// The `───` line goes before a reply's first words, and the reply is

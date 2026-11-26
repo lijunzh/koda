@@ -389,12 +389,15 @@ that doesn't exist yet.
 
 ## `/verbose [on|off]`
 
-Switches tool output between folded and full, the same as `Ctrl+O`. Koda
-folds tool output by default: a file read shows as one line (`└ 123
-lines`), and other output as its first five lines and a `… +N lines`
-marker, plus the last five when the call failed. Edits and writes show
-their diff. The full view shows every line, for past output as well as new,
-in a resumed session too.
+Switches between the folded view and the full one, the same as `Ctrl+O`.
+Koda folds a turn's steps by default (see
+[What a turn shows](./tui.md#what-a-turn-shows)): thinking leaves a
+`∴ Thought for 12s` line, lookups made one after another are one row
+(`Read 3 files, ran 2 commands`), and other output shows its first five
+lines and a `… +N lines` marker, plus the last five when the call failed.
+Edits and writes show their diff. The full view shows every call, every
+line and the thinking text, for past turns as well as new, in a resumed
+session too.
 
 ```text
 /verbose      ← switch

@@ -51,6 +51,9 @@ pub(crate) fn draw_viewport(
     child_activity_hint: &str,
     // In a side conversation (`/side`): the hint says how to go back.
     side: bool,
+    // The working area while a turn runs: its status line, then the plan
+    // (`widgets::working_area`). Empty at idle.
+    working: &[Line<'static>],
 ) -> ratatui::layout::Rect {
     let area = frame.area();
 
@@ -119,8 +122,12 @@ pub(crate) fn draw_viewport(
     // Round 4 (#1194/#1195): the `? for shortcuts` hint moved to the
     // banner (shown on every session start). The footer is now just
     // the status bar — saves 1 row of persistent chrome.
+    // The working area sits right above the prompt, where Claude Code draws
+    // its status line and task list. Never more than half the screen.
+    let working_height = (working.len() as u16).min(area.height / 2);
     let [
         history_area,
+        working_rows,
         top_sep_row,
         input_rows,
         bot_sep_row,
@@ -129,6 +136,7 @@ pub(crate) fn draw_viewport(
         menu_area,
     ] = Layout::vertical([
         Constraint::Min(1),                        // history: fill remaining space
+        Constraint::Length(working_height),        // working area (0 at idle)
         Constraint::Length(1),                     // top separator (─────)
         Constraint::Length(input_height),          // input textarea
         Constraint::Length(1),                     // bottom separator (─────)
@@ -140,6 +148,11 @@ pub(crate) fn draw_viewport(
 
     // ── History panel (scrollable) ──────────────────────
     render_history(frame, scroll_buffer, history_area, selection, project_root);
+
+    // ── Working area (while a turn runs) ─────────────────
+    if working_height > 0 {
+        frame.render_widget(Paragraph::new(working.to_vec()), working_rows);
+    }
 
     // ── Top separator: plain full-width rule (#1194/#1195 cleanup) ────────────────
     // The bear emoji was dropped along with the bottom-spacer addition

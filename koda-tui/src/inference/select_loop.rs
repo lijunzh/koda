@@ -29,7 +29,7 @@
 use super::TurnCommand;
 use super::turn_tracker::TurnTracker;
 use crate::tui_context::{TuiContext, TurnInput, TurnRequest};
-use crate::tui_types::TuiState;
+use crate::tui_types::{MenuContent, TuiState};
 use crate::tui_viewport::draw_viewport;
 
 use futures_util::StreamExt;
@@ -98,6 +98,7 @@ fn turn_of(notification: &ServerNotification) -> Option<&str> {
         ServerNotification::ToolCallOutputDelta(n) => &n.turn_id,
         ServerNotification::ToolCallProgress(n) => &n.turn_id,
         ServerNotification::TurnLoopGuard(n) => &n.turn_id,
+        ServerNotification::TurnPlanUpdated(n) => &n.turn_id,
         ServerNotification::SessionTokenUsageUpdated(n) => &n.turn_id,
         ServerNotification::Error(n) => n.turn_id.as_deref()?,
         _ => return None,
@@ -409,6 +410,21 @@ impl TuiContext {
                         let (child_activity_rows, child_activity_total) =
                             self.child_activity.build_rows();
                         let child_activity_hint = self.child_activity.hint();
+                        // The working area: what Koda does now, and the
+                        // plan. A question for the user takes the status
+                        // line's place.
+                        let waiting = match &self.menu {
+                            MenuContent::Approval { .. } => Some("Waiting for your approval"),
+                            MenuContent::AskUser { .. } | MenuContent::LoopCap { .. } => {
+                                Some("Waiting for your answer")
+                            }
+                            _ => None,
+                        };
+                        let working = self.renderer.working.lines(
+                            waiting,
+                            self.plan_shown,
+                            std::time::Instant::now(),
+                        );
                         let _ = self.terminal.draw(|f| {
                             draw_viewport(
                                 f,
@@ -431,14 +447,13 @@ impl TuiContext {
                                 child_activity_total,
                                 child_activity_hint,
                                 self.side.is_some(),
+                                &working,
                             );
                         });
-                        // #1354: while any sub-agent or background process runs,
-                        // draw again in a second so the overlay's ages tick.
-                        if child_activity_total > 0 {
-                            self.frame_requester
-                                .schedule_frame_in(std::time::Duration::from_secs(1));
-                        }
+                        // Draw again in a second so the status line's time
+                        // and the overlay's ages (#1354) tick.
+                        self.frame_requester
+                            .schedule_frame_in(std::time::Duration::from_secs(1));
                     }
                     SelectArm::Crossterm(ev) => {
                         quit_requested |= super::crossterm_handler::handle_crossterm_event_inline(
@@ -458,6 +473,7 @@ impl TuiContext {
                             &mut self.pastes,
                             (&self.input_history, &self.session.id),
                             &mut self.child_activity,
+                            &mut self.plan_shown,
                         )
                         .await;
                         self.frame_requester.schedule_frame();
@@ -500,6 +516,8 @@ impl TuiContext {
                 }
             };
 
+        // A thought not drawn yet goes in; the lookup row closes.
+        self.renderer.end_turn(&mut self.scroll_buffer);
         // Its sub-agents ended with it; what it left running in the
         // background stays listed.
         self.child_activity.clear_agents();
@@ -775,6 +793,24 @@ impl TuiContext {
         if let Err(e) = steered {
             tracing::debug!("turn/steer: {e}");
         }
+    }
+}
+
+#[cfg(test)]
+mod turn_tests {
+    use super::turn_of;
+    use koda_client::protocol::ServerNotification;
+    use koda_client::protocol::turn::TurnPlanUpdatedNotification;
+
+    /// The plan is the turn's: the working area's panel draws it.
+    #[test]
+    fn a_plan_update_belongs_to_its_turn() {
+        let updated = ServerNotification::TurnPlanUpdated(TurnPlanUpdatedNotification {
+            session_id: "s".into(),
+            turn_id: "t1".into(),
+            plan: Vec::new(),
+        });
+        assert_eq!(turn_of(&updated), Some("t1"));
     }
 }
 

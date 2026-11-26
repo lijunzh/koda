@@ -106,7 +106,11 @@ const SHORTCUTS: &[ShortcutItem] = &[
     },
     ShortcutItem {
         key: "ctrl+o",
-        verb: "tool output in full",
+        verb: "show every step in full",
+    },
+    ShortcutItem {
+        key: "ctrl+t",
+        verb: "hide / show the plan",
     },
     ShortcutItem {
         key: "pgup/pgdn",

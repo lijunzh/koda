@@ -20,8 +20,14 @@ Run `koda` with no arguments to open the full-screen TUI.
 ## Layout
 
 - **History panel** — scrollable conversation history. Supports
-  syntax-highlighted code blocks, rendered markdown, and collapsible
-  tool-call summaries.
+  syntax-highlighted code blocks, rendered markdown, and folded steps
+  (below).
+- **Working area** — while a turn runs, right above the input: what Koda
+  is doing now and for how long (`Thinking… 12s`, `Reading Cargo.toml… 2s`,
+  `Running a command… 1m 2s`, `Waiting for your approval`), and under it
+  the turn's plan, when the model keeps one, with each step done, in
+  progress or to do. At most five steps show; `Ctrl+T` hides or shows the
+  plan.
 - **Input** — multi-line editor with tab-completion for slash commands and
   `@file` paths, a skill picker on `$` (see [Skills](./skills.md#loading-a-skill-yourself)),
   and reverse-search (`Ctrl+R`).
@@ -33,6 +39,34 @@ Run `koda` with no arguments to open the full-screen TUI.
 ## Starting a conversation
 
 Type your message and press `Enter`. Koda streams the response in real time.
+
+## What a turn shows
+
+The steps between your prompt and the answer are folded, as Claude Code
+folds them, so the answer is easy to find:
+
+```text
+  ∴ Thought for 12s (ctrl+o to show thinking)
+● Read 3 files, searched 2 patterns, ran 4 commands (ctrl+o to expand)
+  ───
+  The docs describe the GUI plan in two places …
+● Bash cargo test
+  │ running 42 tests …
+```
+
+- **Thinking** shows in the working area while it runs, then leaves one
+  line, `∴ Thought for 12s`.
+- **Lookups** made one after another (reads, searches, listings, and
+  commands that only read) are one row with no output. A failed one is
+  counted on the row in red. Text from Koda, or any other step, starts a
+  new row.
+- **Other commands** keep their own row and the first lines of their
+  output; **edits** show their diff; approvals and errors are never
+  folded.
+- A plan update is the working area's plan, not a row.
+
+`Ctrl+O` (or `/verbose`) switches to the full view, which shows every call,
+its output and the thinking text, and back.
 
 ## Typing during inference
 

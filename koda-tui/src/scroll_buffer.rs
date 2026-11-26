@@ -38,6 +38,8 @@ struct Entry {
     /// Columns to skip during NoSelect copy. 0 = no gutter (normal text).
     gutter: u16,
     fold: Fold,
+    /// The key of a row that can be redrawn ([`ScrollBuffer::push_row`]).
+    row: Option<u64>,
 }
 
 /// Scrollable buffer of rendered `Line`s with sticky-bottom auto-scroll.
@@ -67,6 +69,9 @@ pub struct ScrollBuffer {
     /// Updated on scroll operations and used by `enforce_capacity()`
     /// to compute visual height of evicted lines.
     cached_term_width: usize,
+
+    /// The last key [`Self::push_row`] gave out.
+    next_row: u64,
 }
 
 impl ScrollBuffer {
@@ -79,6 +84,7 @@ impl ScrollBuffer {
             scroll_offset: 0,
             sticky_bottom: true,
             cached_term_width: 80,
+            next_row: 0,
         }
     }
 
@@ -118,6 +124,7 @@ impl ScrollBuffer {
             line,
             gutter: 0,
             fold,
+            row: None,
         });
     }
 
@@ -127,6 +134,7 @@ impl ScrollBuffer {
             line,
             gutter: gutter_width,
             fold: Fold::Always,
+            row: None,
         });
     }
 
@@ -142,6 +150,7 @@ impl ScrollBuffer {
                 line,
                 gutter: 0,
                 fold,
+                row: None,
             });
         }
         self.enforce_capacity();
@@ -161,7 +170,10 @@ impl ScrollBuffer {
     /// `tail` in both views, and show the rest only in the full view, with
     /// `marker(hidden)` in their place in the folded one. For output that
     /// streamed in line by line before anyone knew how long it would be.
-    /// Does nothing when no more than one line would be hidden.
+    /// Does nothing when no more than one line would be hidden. Only lines
+    /// both views show are counted and folded: a line one view already
+    /// keeps to itself, such as a row another call pushed meanwhile, stays
+    /// as it is.
     pub fn fold_since(
         &mut self,
         start: u64,
@@ -170,24 +182,51 @@ impl ScrollBuffer {
         marker: impl FnOnce(usize) -> Line<'static>,
     ) {
         let from = start.saturating_sub(self.first_seq) as usize;
-        let count = self.entries.len().saturating_sub(from);
+        let shown: Vec<usize> = (from..self.entries.len())
+            .filter(|&i| self.entries[i].fold == Fold::Always)
+            .collect();
+        let count = shown.len();
         if count <= head + tail + 1 {
             return;
         }
         let hidden = count - head - tail;
-        for entry in self.entries.range_mut(from + head..from + head + hidden) {
-            entry.fold = Fold::Full;
+        for &i in &shown[head..head + hidden] {
+            self.entries[i].fold = Fold::Full;
         }
         self.entries.insert(
-            from + head,
+            shown[head],
             Entry {
                 line: marker(hidden),
                 gutter: 0,
                 fold: Fold::Folded,
+                row: None,
             },
         );
         if self.sticky_bottom {
             self.scroll_offset = 0;
+        }
+    }
+
+    /// Append a line that can be redrawn later with [`Self::set_row`]: a
+    /// row that sums up calls still running. Returns its key, which stays
+    /// good when [`Self::fold_since`] inserts a line before it.
+    pub fn push_row(&mut self, line: Line<'static>, fold: Fold) -> u64 {
+        self.next_row += 1;
+        let key = self.next_row;
+        self.push_entry(Entry {
+            line,
+            gutter: 0,
+            fold,
+            row: Some(key),
+        });
+        key
+    }
+
+    /// Redraw the row pushed with `key`, in the same view. Does nothing once
+    /// it has been evicted. Rows are recent, so the search starts at the end.
+    pub fn set_row(&mut self, key: u64, line: Line<'static>) {
+        if let Some(entry) = self.entries.iter_mut().rev().find(|e| e.row == Some(key)) {
+            entry.line = line;
         }
     }
 
@@ -365,6 +404,7 @@ impl ScrollBuffer {
                 line,
                 gutter: 0,
                 fold: Fold::Always,
+                row: None,
             });
         }
         self.first_seq = self.first_seq.saturating_sub(count as u64);
@@ -429,6 +469,28 @@ mod tests {
         assert_eq!(visible_text(&buf, H), vec!["header", "detail", "after"]);
         assert_eq!(buf.gutter_widths().count(), 3);
         assert_eq!(buf.len(), 4);
+    }
+
+    /// A row is redrawn by its key, in its view, even after a fold put a
+    /// marker in before it.
+    #[test]
+    fn a_row_is_redrawn_in_place_by_its_key() {
+        let mut buf = ScrollBuffer::new(100);
+        let start = buf.next_seq();
+        for i in 1..=10 {
+            buf.push(make_line(&format!("l{i}")));
+        }
+        let row = buf.push_row(make_line("Reading 1 file"), Fold::Folded);
+        buf.push_folded(make_line("its output"), Fold::Full);
+        // The streamed output folds; the row, folded view only, stays put.
+        buf.fold_since(start, 2, 0, |n| make_line(&format!("+{n}")));
+        buf.set_row(row, make_line("Read 2 files"));
+        assert_eq!(
+            visible_text(&buf, H),
+            vec!["l1", "l2", "+8", "Read 2 files"]
+        );
+        buf.set_full(true);
+        assert!(!visible_text(&buf, H).contains(&"Read 2 files".to_string()));
     }
 
     #[test]

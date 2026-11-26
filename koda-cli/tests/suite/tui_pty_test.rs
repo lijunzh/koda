@@ -834,8 +834,9 @@ async fn esc_stops_a_running_command_at_once() {
     }
 }
 
-/// A read shows as one summary line; Ctrl+O shows its content and folds it
-/// again. Before, a read filled the screen in the reply's colour.
+/// A read folds into its lookup row, as Claude Code's do; Ctrl+O shows its
+/// content and folds it again. Before, a read filled the screen in the
+/// reply's colour.
 #[tokio::test(flavor = "multi_thread")]
 async fn ctrl_o_unfolds_a_read_and_folds_it_again() {
     let server = scripted_model(vec![tool_calls(&[(
@@ -853,18 +854,18 @@ async fn ctrl_o_unfolds_a_read_and_folds_it_again() {
 
     tui.submit("read the notes");
     tui.wait_for_screen("All done.");
-    tui.wait_for_screen("3 lines");
+    tui.wait_for_screen("Read 1 file");
     assert!(!tui.screen().contains("beta line"), "{}", tui.screen());
 
     tui.type_text(CTRL_O);
     tui.wait_for_screen("beta line");
     // The full view lines the number up apart from the text.
     assert!(tui.screen().contains("2  beta line"), "{}", tui.screen());
-    assert!(!tui.screen().contains("3 lines"), "{}", tui.screen());
+    assert!(!tui.screen().contains("Read 1 file"), "{}", tui.screen());
 
     tui.type_text(CTRL_O);
     tui.wait_for_screen_without("beta line");
-    tui.wait_for_screen("3 lines");
+    tui.wait_for_screen("Read 1 file");
 }
 
 /// A pasted `?` reaches the model. Mid-paste it used to open the shortcuts
@@ -1024,7 +1025,7 @@ async fn a_resumed_session_shows_and_keeps_its_history() {
     let screen = tui.screen();
     assert!(screen.contains("read the notes"), "{screen}");
     assert!(
-        screen.contains("3 lines"),
+        screen.contains("Read 1 file"),
         "the read isn't folded:\n{screen}"
     );
     assert!(!screen.contains("beta line"), "{screen}");
