@@ -372,6 +372,12 @@ security-boundary tests ran rather than being skipped, look for each name in
   field, Codex's experimental methods included (it uses the installed `codex`).
   A difference is renamed to Codex's name or recorded, with its reason, in
   `koda-protocol/codex-deviations.toml`. Run it too when Codex is updated.
+- Run koda-evals' `bin/compare-claude-requests <koda>`: Claude Code and Koda on
+  one scripted task against a local stub of the Messages API (no model, no key,
+  a couple of minutes). Thinking blocks must come back unchanged, each request
+  must only add to the one before, and cache breakpoints must stay within four;
+  its README lists the differences from Claude Code that are by design. In
+  0.7.14 it found `koda exec resume --model` on the wrong provider.
 - Move CHANGELOG.md `[Unreleased]` to a versioned section.
 - Bump the version in the root `Cargo.toml`: `[workspace.package] version`, which
   every published crate inherits, and the exact pins of the Koda crates under

@@ -25,7 +25,7 @@ default-members = ["koda-cli"]
 [workspace.package]
 # The version of every published crate. A release bumps it here and in the
 # exact pins of the Koda crates below, all in this file.
-version = "0.7.13"
+version = "0.7.14"
 edition = "2024"
 # The MSRV equals the pinned toolchain in rust-toolchain.toml and moves
 # with it (DESIGN.md P1: latest dependencies, one environment). Koda
@@ -44,22 +44,22 @@ authors = ["Lijun Zhu"]
 [workspace.dependencies]
 # Koda's own crates, pinned exactly, so every koda-cli builds against the
 # crates it shipped with, whatever later 0.7.x versions exist.
-koda-config = { path = "koda-config", version = "=0.7.13" }
-koda-protocol = { path = "koda-protocol", version = "=0.7.13" }
-koda-state = { path = "koda-state", version = "=0.7.13" }
-koda-providers = { path = "koda-providers", version = "=0.7.13" }
-koda-skills = { path = "koda-skills", version = "=0.7.13" }
-koda-memory = { path = "koda-memory", version = "=0.7.13" }
-koda-command = { path = "koda-command", version = "=0.7.13" }
-koda-mcp = { path = "koda-mcp", version = "=0.7.13" }
-koda-sandbox = { path = "koda-sandbox", version = "=0.7.13" }
-koda-core = { path = "koda-core", version = "=0.7.13" }
-koda-server = { path = "koda-server", version = "=0.7.13" }
-koda-client = { path = "koda-client", version = "=0.7.13" }
-koda-tui = { path = "koda-tui", version = "=0.7.13" }
-koda-oss = { path = "koda-oss", version = "=0.7.13" }
-koda-git = { path = "koda-git", version = "=0.7.13" }
-koda-search = { path = "koda-search", version = "=0.7.13" }
+koda-config = { path = "koda-config", version = "=0.7.14" }
+koda-protocol = { path = "koda-protocol", version = "=0.7.14" }
+koda-state = { path = "koda-state", version = "=0.7.14" }
+koda-providers = { path = "koda-providers", version = "=0.7.14" }
+koda-skills = { path = "koda-skills", version = "=0.7.14" }
+koda-memory = { path = "koda-memory", version = "=0.7.14" }
+koda-command = { path = "koda-command", version = "=0.7.14" }
+koda-mcp = { path = "koda-mcp", version = "=0.7.14" }
+koda-sandbox = { path = "koda-sandbox", version = "=0.7.14" }
+koda-core = { path = "koda-core", version = "=0.7.14" }
+koda-server = { path = "koda-server", version = "=0.7.14" }
+koda-client = { path = "koda-client", version = "=0.7.14" }
+koda-tui = { path = "koda-tui", version = "=0.7.14" }
+koda-oss = { path = "koda-oss", version = "=0.7.14" }
+koda-git = { path = "koda-git", version = "=0.7.14" }
+koda-search = { path = "koda-search", version = "=0.7.14" }
 base64 = "0.23"
 anyhow = "1"
 async-trait = "0.1"
