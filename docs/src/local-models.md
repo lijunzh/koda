@@ -68,16 +68,18 @@ sessions, start Koda without `--oss` and point it at the server (see
 
 With LM Studio, set up the model there, since Koda only connects:
 
-- **Save the model's load settings as its default** in LM Studio: the
-  context length (262,144 for Qwen3.8-Flash-Next) and GPU offload at max.
-  A load from the app, or one a request starts, then gets them. Otherwise
-  LM Studio picks the context length itself, which can be far smaller than
-  an agent needs, and Koda, which reads the window from the loaded model,
-  would compact all the time.
+- **Save the model's load settings as its default** in LM Studio, before
+  anything loads it: the context length (262,144 for Qwen3.8-Flash-Next) and
+  GPU offload at max. A load from the app, or one a request starts, then gets
+  them. Without saved settings, LM Studio loaded Qwen3.8-Flash-Next at 8,192
+  tokens, and Koda's first request (about 9,500 tokens) failed with
+  `exceeds the available context size`. To load it with the right window
+  from a terminal: `lms load qwen3.8-flash-next -c 262144 --gpu max`.
 - **Load the model before starting Koda, or name it.** Koda takes the first
   model the server lists, and LM Studio lists every downloaded model, loaded
   or not, when it loads models on request. `--model qwen3.8-flash-next`
-  (the id `lms ls` shows) picks one; LM Studio loads it if it isn't loaded.
+  (the id `lms ls` shows) picks one; LM Studio loads it, with its saved
+  settings, if it isn't loaded.
 - **Set the effort yourself.** `--oss` sets `xhigh` for Qwen3.8-Flash-Next
   only when it starts `llama-server`; with LM Studio, pass `--effort xhigh`.
 
