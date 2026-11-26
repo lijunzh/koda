@@ -13,6 +13,7 @@ keywords = ["ai", "coding-agent", "json-rpc", "server"]
 categories = ["development-tools"]
 
 [dependencies]
+futures-util = { workspace = true }
 koda-config = { workspace = true }
 koda-state = { workspace = true }
 koda-core = { workspace = true }

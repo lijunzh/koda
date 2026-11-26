@@ -63,6 +63,8 @@ const LOCK_FILE: &str = "koda-serve.lock";
 /// How long a session with no subscriber and no running turn stays open,
 /// as Codex's `thread_unload_delay` defaults to.
 const UNLOAD_DELAY: Duration = Duration::from_secs(60);
+/// How long the server waits after failing to accept a connection.
+const ACCEPT_RETRY: Duration = Duration::from_secs(1);
 /// How long a request waits for a client unless `approval_wait_timeout_secs`
 /// says otherwise: a day, so an approval asked overnight is still there in
 /// the morning.
@@ -305,7 +307,12 @@ async fn serve_on(
                         initialized.clone(),
                     ));
                 }
-                Err(e) => tracing::warn!("koda serve: accepting a connection failed: {e}"),
+                Err(e) => {
+                    // Too many open files, say: wait before trying again,
+                    // as Codex does, rather than spin.
+                    tracing::warn!("koda serve: accepting a connection failed: {e}");
+                    tokio::time::sleep(ACCEPT_RETRY).await;
+                }
             },
             Some(_) = connections.join_next(), if !connections.is_empty() => {}
         }
@@ -470,6 +477,8 @@ struct RouterState {
     live: HashMap<String, Value>,
     /// Clients waiting for an open session's answer to join it, by token.
     joining: HashMap<u64, Joining>,
+    /// The wait on each request nobody has answered, by its id as JSON.
+    timers: HashMap<String, tokio::task::AbortHandle>,
     /// The last join token given.
     next_join: u64,
 }
@@ -502,12 +511,15 @@ impl Router {
                 .entry(session.clone())
                 .or_default()
                 .push((value["id"].clone(), line.clone()));
-            self.answer_no_after_wait(&session, value["id"].clone());
+            self.answer_no_after_wait(&mut state, &session, value["id"].clone());
         }
         if method == "serverRequest/resolved" {
             let resolved = &value["params"]["requestId"];
             if let Some(pending) = state.pending.get_mut(&session) {
                 pending.retain(|(id, _)| id != resolved);
+            }
+            if let Some(timer) = state.timers.remove(&resolved.to_string()) {
+                timer.abort();
             }
         }
         match method {
@@ -710,10 +722,11 @@ impl Router {
     /// Answer request `id` of `session` no once [`Router::approval_wait`]
     /// has passed, if nobody has: the approval is refused, the question gets
     /// an empty answer, the loop stops.
-    fn answer_no_after_wait(self: &Arc<Self>, session: &str, id: Value) {
+    fn answer_no_after_wait(self: &Arc<Self>, state: &mut RouterState, session: &str, id: Value) {
         let router = Arc::clone(self);
         let session = session.to_string();
-        tokio::spawn(async move {
+        let key = id.to_string();
+        let timer = tokio::spawn(async move {
             tokio::time::sleep(router.approval_wait).await;
             let waiting = router
                 .lock()
@@ -743,6 +756,9 @@ impl Router {
                 })
                 .await;
         });
+        // Stopped when the request is answered, so a day's wait doesn't
+        // outlive it ([`Router::deliver`]). The caller holds the lock.
+        state.timers.insert(key, timer.abort_handle());
     }
 
     /// Unsubscribe `connection` from `session`. `true` if it was subscribed.
@@ -801,7 +817,11 @@ impl Router {
                 state.subscribers.remove(&session);
                 state.activity.remove(&session);
                 state.open.remove(&session);
-                state.pending.remove(&session);
+                for (id, _) in state.pending.remove(&session).unwrap_or_default() {
+                    if let Some(timer) = state.timers.remove(&id.to_string()) {
+                        timer.abort();
+                    }
+                }
                 state.live.remove(&session);
             }
             tracing::info!("koda serve: closing idle session {session}");
@@ -1133,6 +1153,8 @@ pub async fn connect(socket: &Path) -> Result<crate::in_process::Launched, Reque
                         Some(HostCommand::Response { id, result: Err(error) }) => {
                             error_line(Some(id), error)
                         }
+                        #[cfg(test)]
+                        Some(HostCommand::PanicSession { .. }) => continue,
                         Some(HostCommand::Shutdown { done }) => {
                             let _ = output.shutdown().await;
                             let _ = done.send(());

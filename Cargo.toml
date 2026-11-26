@@ -95,4 +95,5 @@ tempfile = "3"
 strip = true
 lto = true
 codegen-units = 1
-panic = "abort"
+# Panics unwind, as Codex's release build does: one session's panic ends
+# that session, not the shared server and every session on it.
