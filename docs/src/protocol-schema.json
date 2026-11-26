@@ -94,62 +94,47 @@
       "type": "object"
     },
     "ApprovalDecision": {
-      "description": "Yes or no to a tool call.",
+      "description": "Yes or no to a tool call, as Codex answers a command or file-change\napproval: `\"accept\"`, `\"acceptForSession\"`, `\"decline\"`, `\"cancel\"`, or\nKoda's own `{\"declineWithFeedback\": {\"feedback\": \"...\"}}`. Codex's\npolicy amendments (`acceptWithExecpolicyAmendment`,\n`applyNetworkPolicyAmendment`) aren't taken.",
       "oneOf": [
         {
+          "const": "accept",
           "description": "Run it.",
-          "properties": {
-            "type": {
-              "const": "approve",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "type": "object"
+          "type": "string"
         },
         {
-          "description": "Run it, and the same command or file again this session.",
-          "properties": {
-            "type": {
-              "const": "approveForSession",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "type": "object"
+          "const": "acceptForSession",
+          "description": "Run it, and the same command or file again this session; only when\nthe request says `allowForSession`.",
+          "type": "string"
         },
         {
-          "description": "Don't run it.",
-          "properties": {
-            "type": {
-              "const": "reject",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "type": "object"
+          "const": "decline",
+          "description": "Don't run it; the turn goes on.",
+          "type": "string"
         },
         {
-          "description": "Don't run it, and tell the model why.",
+          "const": "cancel",
+          "description": "Don't run it, and stop: the turn is interrupted, or, for a\nsub-agent's request, that sub-agent stops.",
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Don't run it, and tell the model why. Koda's own.",
           "properties": {
-            "feedback": {
-              "description": "What the model is told.",
-              "type": "string"
-            },
-            "type": {
-              "const": "rejectWithFeedback",
-              "type": "string"
+            "declineWithFeedback": {
+              "properties": {
+                "feedback": {
+                  "description": "What the model is told.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "feedback"
+              ],
+              "type": "object"
             }
           },
           "required": [
-            "type",
-            "feedback"
+            "declineWithFeedback"
           ],
           "type": "object"
         }

@@ -2418,14 +2418,13 @@ fn engine_command(kind: RequestKind, id: String, result: Answer) -> EngineComman
             id,
             decision: match result.map(serde_json::from_value::<ToolCallApprovalResponse>) {
                 Ok(Ok(answer)) => match answer.decision {
-                    item::ApprovalDecision::Approve => ApprovalDecision::Approve,
-                    item::ApprovalDecision::ApproveForSession => {
-                        ApprovalDecision::ApproveForSession
-                    }
-                    item::ApprovalDecision::RejectWithFeedback { feedback } => {
+                    item::ApprovalDecision::Accept => ApprovalDecision::Approve,
+                    item::ApprovalDecision::AcceptForSession => ApprovalDecision::ApproveForSession,
+                    item::ApprovalDecision::DeclineWithFeedback { feedback } => {
                         ApprovalDecision::RejectWithFeedback { feedback }
                     }
-                    item::ApprovalDecision::Reject => ApprovalDecision::Reject,
+                    item::ApprovalDecision::Decline => ApprovalDecision::Reject,
+                    item::ApprovalDecision::Cancel => ApprovalDecision::Cancel,
                 },
                 Ok(Err(error)) => {
                     tracing::error!("an approval's answer didn't decode: {error}");
@@ -2736,7 +2735,7 @@ mod tests {
         // A turn ending doesn't withdraw it.
         sink.lock().pending_end = None;
         sink.end_turn(None).await;
-        let answer = serde_json::json!({"decision": {"type": "approveForSession"}});
+        let answer = serde_json::json!({"decision": "acceptForSession"});
         assert!(
             sink.answer(&id, Ok(answer)).is_none(),
             "nothing goes to the turn"

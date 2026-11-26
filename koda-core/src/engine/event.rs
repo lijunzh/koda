@@ -936,6 +936,9 @@ pub enum ApprovalDecision {
     ApproveForSession,
     /// Reject the action (interactive: a human said no).
     Reject,
+    /// Reject, and stop: the turn's own call interrupts the turn, and a
+    /// sub-agent's stops that sub-agent. Codex's `cancel`.
+    Cancel,
     /// Reject with feedback (tells the LLM what to change).
     RejectWithFeedback {
         /// Feedback explaining why the action was rejected.

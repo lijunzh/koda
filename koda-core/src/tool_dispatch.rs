@@ -903,7 +903,10 @@ pub(crate) async fn execute_tools_sequential(
                         record_unrun_call(tc, &result, ToolOutcome::Declined, ctx).await?;
                         continue;
                     }
-                    None => return record_stopped_after_start(&tool_calls[i..], ctx).await,
+                    // `request_approval` stops the turn for it and says `None`.
+                    Some(ApprovalDecision::Cancel) | None => {
+                        return record_stopped_after_start(&tool_calls[i..], ctx).await;
+                    }
                 }
             }
         }

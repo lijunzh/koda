@@ -666,7 +666,7 @@ async fn an_approval_waits_for_a_client_that_attaches() {
     third.until_method("item/toolCall/requestApproval").await;
 
     second
-        .answer(&request_id, json!({"decision": {"type": "approve"}}))
+        .answer(&request_id, json!({"decision": "accept"}))
         .await;
     let done = second.until_method("turn/completed").await;
     assert_eq!(
@@ -778,7 +778,7 @@ async fn a_client_that_joins_mid_turn_gets_the_turn_as_it_stands() {
         "{usage}"
     );
     first
-        .answer(&request_id, json!({"decision": {"type": "approve"}}))
+        .answer(&request_id, json!({"decision": "accept"}))
         .await;
     let rest = second.until_method("turn/completed").await;
     let of_the_call: Vec<&str> = rest
@@ -844,7 +844,7 @@ async fn reading_a_session_mid_turn_has_its_open_items() {
     }
 
     first
-        .answer(&request_id, json!({"decision": {"type": "approve"}}))
+        .answer(&request_id, json!({"decision": "accept"}))
         .await;
     first.until_method("turn/completed").await;
     let listed = reader
@@ -894,7 +894,7 @@ async fn every_client_hears_what_a_session_is_doing() {
     assert_eq!(status_of(&listed), waiting, "{listed}");
 
     owner
-        .answer(&request_id, json!({"decision": {"type": "approve"}}))
+        .answer(&request_id, json!({"decision": "accept"}))
         .await;
     owner.until_method("turn/completed").await;
     drop(owner);
@@ -1170,10 +1170,7 @@ async fn a_client_runs_a_turn_over_the_socket() {
         match event {
             Outgoing::Request(request @ ServerRequest::ToolCallApproval { .. }) => {
                 handle
-                    .respond(
-                        request.id().clone(),
-                        Ok(json!({"decision": {"type": "approve"}})),
-                    )
+                    .respond(request.id().clone(), Ok(json!({"decision": "accept"})))
                     .await
                     .unwrap();
             }
@@ -1360,7 +1357,7 @@ async fn a_newer_koda_waits_for_running_turns_when_asked() {
     assert!(!koda.served.is_finished(), "it waits for the turn");
 
     other
-        .answer(&request_id, json!({"decision": {"type": "approve"}}))
+        .answer(&request_id, json!({"decision": "accept"}))
         .await;
     let rest = other.until_method("turn/completed").await;
     assert_eq!(
