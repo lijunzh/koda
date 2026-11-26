@@ -6239,7 +6239,7 @@
       }
     }
   },
-  "protocolVersion": 2,
+  "protocolVersion": 3,
   "serverRequests": {
     "item/tool/requestUserInput": {
       "params": {

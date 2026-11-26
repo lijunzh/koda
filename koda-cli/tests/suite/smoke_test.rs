@@ -334,7 +334,7 @@ fn exec_json_prints_the_protocol_from_session_to_summary() {
         "{stdout}"
     );
     let started = &lines[0]["params"];
-    assert_eq!(started["protocolVersion"], 2);
+    assert_eq!(started["protocolVersion"], 3);
     assert_eq!(started["session"]["modelProvider"], "lm-studio");
     let prompt = &lines[4]["params"]["item"];
     assert_eq!(
