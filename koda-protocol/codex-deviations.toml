@@ -1,0 +1,121 @@
+# Where Koda's protocol differs from Codex's app-server protocol, and why.
+#
+# Koda follows Codex's protocol and says "session" where Codex says
+# "thread"; that mapping is applied before comparing and isn't listed here.
+# `scripts/check_codex_parity.sh` compares every method, notification and
+# server request Koda has with Codex's, field by field, and fails on a
+# difference not listed here, or on an entry here that no longer differs.
+# A new difference is either renamed to Codex's name or recorded with its
+# reason. Koda lacking something Codex has isn't checked.
+#
+# Keys: `methods` by method name, `fields` as `Type.field` (a tagged
+# union's field as `Type.tag.field`), `variants` as `Type.tag`, with Koda's
+# type names.
+
+[methods]
+# The one tool-call item, as the Agent Client Protocol has it, where Codex
+# has an item, a stream and an approval per kind of tool: Koda's tools
+# (Read, Edit, Grep, Glob, Cargo, MCP, sub-agents) don't map onto Codex's
+# shell-only set (vault: Foundation Review, 2026-11-26).
+"item/toolCall/outputDelta" = "Koda's one toolCall item: Codex's item/commandExecution/outputDelta"
+"item/toolCall/progress" = "Koda's one toolCall item: Codex's item/mcpToolCall/progress"
+"item/toolCall/requestApproval" = "Koda's one approval request: Codex's item/commandExecution/requestApproval and item/fileChange/requestApproval"
+# The shared server's own lifecycle; Codex manages its daemon outside the
+# protocol (app-server-daemon).
+"serve/stop" = "Koda's shared server: stop, or make way for a newer Koda (Codex's daemon manager does this outside the protocol)"
+"serve/updating" = "Koda's shared server: tells clients it is making way for a newer Koda"
+"state/read" = "What a new session starts with: model, provider, window, mode, sandbox (Codex has no equivalent read)"
+# Koda stores API keys itself; Codex signs in to OpenAI or reads the
+# environment.
+"modelProvider/apiKey/set" = "Koda stores provider API keys"
+"modelProvider/apiKey/remove" = "Koda stores provider API keys"
+"webSearch/apiKey/read" = "Koda's web search key"
+"webSearch/apiKey/set" = "Koda's web search key"
+"webSearch/apiKey/remove" = "Koda's web search key"
+"mcpServer/oauth/logout" = "Koda forgets an MCP server's sign-in; Codex has only login"
+# Koda's own features.
+"agent/list" = "Koda's sub-agent definitions (built-in, user, project)"
+"session/memory/add" = "Koda's memory notes, written by the user"
+"session/goal/held" = "Koda's goal: held after turns without progress"
+"session/goal/judged" = "Koda's goal: the judge's verdict on a turn"
+"session/backgroundTerminals/exited" = "Koda tells clients when a background command exits"
+"turn/loopGuard" = "Koda's loop guard: the model repeated itself"
+"turn/loopCap/requestDecision" = "Koda's loop cap: whether to go on past the tool-call limit"
+"exec/summary" = "koda exec's last line: the run as a whole"
+
+[fields]
+# initialize: the version check Koda's one-version rule needs. Codex
+# answers with codexHome, platform and userAgent.
+"InitializeResponse.serverInfo" = "Koda's server name and version, which every client compares with its own"
+"InitializeResponse.protocolVersion" = "Koda's protocol version"
+"SessionStartedNotification.kodaVersion" = "For koda exec --json readers, which see no initialize answer"
+"SessionStartedNotification.protocolVersion" = "For koda exec --json readers, which see no initialize answer"
+# Trust modes (safe, auto, plan) in place of Codex's approval and sandbox
+# policies.
+"Session.mode" = "Koda's trust mode"
+"SessionSettings.mode" = "Koda's trust mode"
+"SessionSettingsUpdateParams.mode" = "Koda's trust mode"
+"TurnStartParams.mode" = "Koda's trust mode"
+# Endpoints: Koda runs against local servers and gateways, per session.
+"SessionStartParams.baseUrl" = "The provider's endpoint, for a local server or a gateway"
+"SessionResumeParams.baseUrl" = "The provider's endpoint, for a local server or a gateway"
+"SessionForkParams.baseUrl" = "The provider's endpoint, for a local server or a gateway"
+"SessionSettings.baseUrl" = "The provider's endpoint, for a local server or a gateway"
+"ModelListParams.baseUrl" = "Lists a local server's models"
+# Models and providers.
+"Model.alias" = "Koda's model aliases, which follow a line's newest model"
+"SessionSettings.alias" = "Koda's model aliases"
+"ModelProviderSummary.envKey" = "Koda stores provider API keys: the variable a key can come from"
+"ModelProviderSummary.hasApiKey" = "Koda stores provider API keys"
+"ModelProviderSummary.requiresApiKey" = "Koda stores provider API keys"
+"KodaConfigValues.agent" = "config/read gives Koda's config file, whose keys aren't Codex's"
+"KodaConfigValues.file_mentions" = "config/read gives Koda's config file"
+"KodaConfigValues.mcp_servers" = "config/read gives Koda's config file"
+"KodaConfigValues.mode" = "config/read gives Koda's config file"
+"KodaConfigValues.model_input_modalities" = "config/read gives Koda's config file"
+"KodaConfigValues.model_max_output_tokens" = "config/read gives Koda's config file"
+"KodaConfigValues.model_post_turn_compact_threshold_percent" = "config/read gives Koda's config file"
+"KodaConfigValues.model_providers" = "config/read gives Koda's config file"
+"KodaConfigValues.model_temperature" = "config/read gives Koda's config file"
+"KodaConfigValues.model_thinking_budget" = "config/read gives Koda's config file"
+"KodaConfigValues.sandbox" = "config/read gives Koda's config file"
+"KodaConfigValues.tui" = "config/read gives Koda's config file"
+# What Koda puts on the session that Codex sends beside the thread, or not
+# at all.
+"Session.contextWindow" = "The window the session runs with, for a client's context meter"
+"Session.tools" = "The tools the session's model is given"
+"Session.instructionSources" = "On the session; Codex sends instructionSources beside the thread in thread/start and thread/resume answers"
+"Session.settings" = "What the session's turns run with, for a client that joins it; Codex sends ThreadSettings only in thread/settings/updated"
+"SessionSettings.contextWindow" = "The window the session runs with"
+# Usage: Koda counts each turn and each sub-agent.
+"Turn.usage" = "What the turn used; Codex reports usage only in thread/tokenUsage/updated"
+"TokenUsage.byAgent" = "Usage by sub-agent"
+"TurnError.code" = "Koda's error code (tokenBudgetSpent); Codex has codexErrorInfo"
+"ErrorNotification.retry" = "Why and when Koda tries a model call again"
+# Items.
+"Item.userMessage.clientUserMessageIds" = "Several: steering texts that reach the model together are one item; Codex's has one clientId"
+"Item.reasoning.text" = "One text; Codex's reasoning has summary and content lists (later)"
+"Item.contextCompaction.contextPercent" = "Koda's compaction item says what it did; Codex's has only its id"
+"Item.contextCompaction.messagesRemoved" = "Koda's compaction item says what it did"
+"Item.contextCompaction.reason" = "Koda's compaction item says what it did"
+"Item.contextCompaction.status" = "Koda's compaction item says what it did"
+"Item.contextCompaction.summaryTokens" = "Koda's compaction item says what it did"
+"Item.contextCompaction.trigger" = "Koda's compaction item says what it did"
+"ItemStartedNotification.parentItemId" = "A sub-agent's items arrive in its parent's session, under the call that started it; Codex's sub-agents are threads of their own"
+"ItemCompletedNotification.parentItemId" = "A sub-agent's items arrive in its parent's session"
+"TurnItem.item" = "Nested; Codex keeps a stored item flat with its times (to change in 0.7.14)"
+"TurnItem.parentItemId" = "A sub-agent's items are stored in its parent's turn"
+# Questions: Koda asks one; Codex's experimental request takes a list.
+"UserInputParams.question" = "One question; Codex's requestUserInput takes questions (later)"
+"UserInputParams.options" = "One question's options"
+"UserInputResponse.answer" = "One answer"
+# Background terminals and memory: Koda's are broader than Codex's.
+"BackgroundTerminal.startedAt" = "When it started"
+"BackgroundTerminalsListResponse.agents" = "Background agents are listed beside background commands, as in Claude Code"
+"BackgroundTerminalsListResponse.waiting" = "Background agents waiting on an approval"
+"BackgroundTerminalsCleanResponse.terminated" = "How many were stopped; Codex's answer is empty"
+"SessionMemoryReadResponse.notes" = "Koda's memory is notes; Codex's thread/memory/read gives a summary"
+"SkillMetadata.userInvocable" = "Whether the user may invoke the skill, as Claude Code's user-invocable"
+
+[variants]
+"Item.toolCall" = "Koda's one tool-call item, as the Agent Client Protocol has it, where Codex has commandExecution, fileChange, mcpToolCall and others"

@@ -363,6 +363,10 @@ security-boundary tests ran rather than being skipped, look for each name in
   directly, not the ones those pull in, which otherwise drift until an
   advisory fails the audit on release day (`rustix` in 0.6.3).
 - Run the release check on that commit, and release the commit it checked.
+- Run `scripts/check_codex_parity.sh`: Koda's protocol against Codex's, field by
+  field, Codex's experimental methods included (it uses the installed `codex`).
+  A difference is renamed to Codex's name or recorded, with its reason, in
+  `koda-protocol/codex-deviations.toml`. Run it too when Codex is updated.
 - Move CHANGELOG.md `[Unreleased]` to a versioned section.
 - Bump the version in the root `Cargo.toml`: `[workspace.package] version`, which
   every published crate inherits, and the exact pins of the Koda crates under
