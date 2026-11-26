@@ -2279,12 +2279,20 @@ impl HostSink {
         request: koda_core::approval_flow::AgentApproval,
     ) -> Result<ApprovalDecision, (RequestId, oneshot::Receiver<Answer>)> {
         if self.answers.is_some() {
+            // The call's item says what was refused, as the main agent's
+            // does when its request is answered.
+            self.lock().projector.note_detail(
+                &request.tool_call_id,
+                request.detail.clone(),
+                request.preview.as_ref(),
+            );
             let event = EngineEvent::ApprovalRequest {
                 id: String::new(),
                 tool_call_id: request.tool_call_id,
                 tool_name: request.tool_name,
                 detail: request.detail,
-                command: None,
+                // The policy reads whether it asks to leave the sandbox.
+                command: request.command,
                 preview: None,
                 effect: request.effect,
                 allow_for_session: false,
@@ -2839,6 +2847,68 @@ mod tests {
             Some(ApprovalDecision::RejectAuto { .. })
         ));
         assert!(drain(&mut events).is_empty(), "nothing asked of a client");
+    }
+
+    /// A sub-agent's call refused that way says what was refused, as the
+    /// main agent's does, and one that asks to leave the sandbox is refused
+    /// as that.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_sub_agents_refused_call_says_what_was_refused() {
+        use koda_core::approval_flow::Approver;
+        let (sink, mut events) = sink(Some(mpsc::channel(8).0));
+        let sink = Arc::new(sink);
+        sink.emit(EngineEvent::TurnStart {
+            turn_id: "t1".into(),
+        });
+        sink.emit_child(
+            "agent",
+            EngineEvent::ToolCallStart {
+                id: "sub-call".into(),
+                name: "Bash".into(),
+                args: serde_json::json!({"command": "git push", "outside_sandbox": true}),
+                is_sub_agent: true,
+                preview: None,
+            },
+        );
+        let approver = HostApprover {
+            sink: Arc::downgrade(&sink),
+        };
+        let mut request = agent_request(None, ToolEffect::Destructive);
+        request.tool_name = "Bash".into();
+        request.detail = "git push".into();
+        request.command = koda_core::tools::approval_command(
+            "Bash",
+            &serde_json::json!({"command": "git push", "outside_sandbox": true}),
+            std::path::Path::new("/work"),
+        );
+        let decision = approver.approve(request).await;
+        assert!(
+            matches!(&decision, Some(ApprovalDecision::RejectAuto { reason })
+                if reason.contains("outside the sandbox")),
+            "{decision:?}"
+        );
+        sink.emit_child(
+            "agent",
+            EngineEvent::ToolCallResult {
+                id: "sub-call".into(),
+                name: "Bash".into(),
+                output: "[auto-rejected]".into(),
+                outcome: koda_core::engine::event::ToolOutcome::Declined,
+                exit_code: None,
+                duration_ms: None,
+            },
+        );
+        let completed = drain(&mut events)
+            .into_iter()
+            .find_map(|message| match message {
+                Outgoing::Notification(ServerNotification::ItemCompleted(n)) => Some(n.item),
+                _ => None,
+            })
+            .expect("the call completed");
+        let koda_protocol::item::Item::ToolCall { detail, .. } = completed else {
+            panic!("{completed:?}");
+        };
+        assert_eq!(detail.as_deref(), Some("git push"));
     }
 
     /// What `koda exec` has always answered, now answered by the host.
