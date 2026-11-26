@@ -860,6 +860,7 @@ pub(crate) async fn execute_tools_sequential(
                     &tc.id,
                     &tc.function_name,
                     &detail,
+                    tools::approval_command(&tc.function_name, &parsed_args, project_root),
                     diff_preview,
                     effect,
                     session_key.is_some(),

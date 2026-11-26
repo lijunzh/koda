@@ -1440,6 +1440,11 @@ fn run_sub_agent<'a>(
                                             &tc.function_name,
                                             &parsed_args,
                                         ),
+                                        command: tools::approval_command(
+                                            &tc.function_name,
+                                            &parsed_args,
+                                            effective_root_ref,
+                                        ),
                                         preview: diff_preview.clone(),
                                         effect: effect.expect("computed for every NeedsConfirmation"),
                                         allow_for_session: session_key.is_some(),

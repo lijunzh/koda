@@ -2189,6 +2189,7 @@ impl HostSink {
                 tool_call_id: request.tool_call_id,
                 tool_name: request.tool_name,
                 detail: request.detail,
+                command: None,
                 preview: None,
                 effect: request.effect,
                 allow_for_session: false,
@@ -2402,12 +2403,10 @@ fn policy_answer(event: &EngineEvent) -> Option<(String, EngineCommand)> {
             id,
             effect,
             tool_name,
-            detail,
+            command,
             ..
         } => {
-            let decision = if *effect == koda_core::tools::ToolEffect::Destructive
-                && detail.starts_with(koda_core::tools::OUTSIDE_SANDBOX_TAG)
-            {
+            let decision = if command.as_ref().is_some_and(|c| c.outside_sandbox) {
                 ApprovalDecision::RejectAuto {
                     reason: format!(
                         "running '{tool_name}' outside the sandbox auto-rejected (headless \
@@ -2602,6 +2601,7 @@ mod tests {
             tool_call_id: format!("call-{id}"),
             tool_name: "Bash".into(),
             detail: detail.into(),
+            command: None,
             preview: None,
             effect,
             allow_for_session: false,
@@ -2631,6 +2631,7 @@ mod tests {
             tool_call_id: "sub-call".into(),
             tool_name: "Write".into(),
             detail: "write a.txt".into(),
+            command: None,
             preview: None,
             effect,
             allow_for_session: true,
@@ -2755,8 +2756,16 @@ mod tests {
 
         sink.emit(approval("a1", ToolEffect::LocalMutation, "write a.txt"));
         sink.emit(approval("a2", ToolEffect::Destructive, "rm -rf build"));
-        let outside = format!("{OUTSIDE_SANDBOX_TAG} cargo test");
-        sink.emit(approval("a3", ToolEffect::Destructive, &outside));
+        let outside = format!("{OUTSIDE_SANDBOX_TAG} git push");
+        let mut asks_out = approval("a3", ToolEffect::Destructive, &outside);
+        if let EngineEvent::ApprovalRequest { command, .. } = &mut asks_out {
+            *command = koda_core::tools::approval_command(
+                "Bash",
+                &serde_json::json!({"command": "git push", "outside_sandbox": true}),
+                std::path::Path::new("/work"),
+            );
+        }
+        sink.emit(asks_out);
         sink.emit(EngineEvent::AskUserRequest {
             id: "q1".into(),
             tool_call_id: "call-q1".into(),

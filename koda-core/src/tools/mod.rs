@@ -2016,6 +2016,60 @@ mod tests {
 /// sandbox: the protocol's [`koda_protocol::item::OUTSIDE_SANDBOX_TAG`].
 pub use koda_protocol::item::OUTSIDE_SANDBOX_TAG;
 
+/// The command a `Bash` or `Cargo` approval is about, as fields a client
+/// can lay out, as Codex's command approval sends `command`, `cwd` and
+/// `reason`. The approval's `detail` says the same in a line.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ApprovalCommand {
+    /// The command line: a `Bash` call's command, or the `cargo` command a
+    /// `Cargo` call runs.
+    pub command: String,
+    /// The folder it runs in.
+    pub cwd: std::path::PathBuf,
+    /// Why the model wants it run, when it said: a `Bash` call's `reason`.
+    pub reason: Option<String>,
+    /// Whether it asks to run outside the sandbox. Koda's own: Codex asks
+    /// for more than the sandbox gives with `additionalPermissions`.
+    pub outside_sandbox: bool,
+    /// Whether it runs in the background.
+    pub background: bool,
+}
+
+/// [`ApprovalCommand`] for a call of `tool_name` run in `cwd`; `None` for
+/// a tool that runs no command.
+pub fn approval_command(
+    tool_name: &str,
+    args: &serde_json::Value,
+    cwd: &std::path::Path,
+) -> Option<ApprovalCommand> {
+    let text = |key: &str| {
+        args.get(key)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    let (command, reason, outside_sandbox, background) = match tool_name {
+        "Bash" => (
+            text("command").or_else(|| text("cmd"))?,
+            text("reason"),
+            shell::wants_outside_sandbox(args),
+            args.get("background")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+        ),
+        "Cargo" => (cargo::describe(args), None, false, false),
+        _ => return None,
+    };
+    Some(ApprovalCommand {
+        command,
+        cwd: cwd.to_path_buf(),
+        reason,
+        outside_sandbox,
+        background,
+    })
+}
+
 /// Generate a human-readable description of a tool action for approval prompts.
 pub fn describe_action(tool_name: &str, args: &serde_json::Value) -> String {
     match tool_name {
@@ -2144,6 +2198,35 @@ mod describe_action_tests {
         assert_eq!(desc, "cargo test -p koda-core parse");
         // Malformed args still read as a cargo call, not "Execute: Cargo".
         assert_eq!(describe_action("Cargo", &json!({})), "cargo ?");
+    }
+
+    #[test]
+    fn an_approval_names_its_command_folder_and_reason_as_fields() {
+        let cwd = std::path::Path::new("/work/app");
+        let bash = approval_command(
+            "Bash",
+            &json!({"command": "git push", "outside_sandbox": true, "reason": " Push over SSH "}),
+            cwd,
+        )
+        .unwrap();
+        assert_eq!(bash.command, "git push");
+        assert_eq!(bash.cwd, cwd);
+        assert_eq!(bash.reason.as_deref(), Some("Push over SSH"));
+        assert!(bash.outside_sandbox);
+        assert!(!bash.background);
+        let plain = approval_command(
+            "Bash",
+            &json!({"command": "rm -rf target", "background": true}),
+            cwd,
+        )
+        .unwrap();
+        assert_eq!(plain.reason, None);
+        assert!(!plain.outside_sandbox);
+        assert!(plain.background);
+        let cargo = approval_command("Cargo", &json!({"subcommand": "test"}), cwd).unwrap();
+        assert!(cargo.command.starts_with("cargo"), "{}", cargo.command);
+        assert_eq!(approval_command("Write", &json!({"path": "a"}), cwd), None);
+        assert_eq!(approval_command("Bash", &json!({}), cwd), None);
     }
 
     #[test]

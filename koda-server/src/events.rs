@@ -604,6 +604,7 @@ impl EventProjector {
                 tool_call_id,
                 tool_name,
                 detail,
+                command,
                 preview,
                 effect,
                 allow_for_session,
@@ -616,17 +617,25 @@ impl EventProjector {
                 let request_id = self.request_id(id);
                 out.push(Outgoing::Request(ServerRequest::ToolCallApproval {
                     id: request_id,
-                    params: ToolCallApprovalParams {
-                        session_id: self.session_id.clone(),
-                        turn_id: self.turn(),
-                        item_id: tool_call_id,
-                        tool: tool_name,
-                        detail,
-                        changes,
-                        effect: effect_of(effect),
-                        allow_for_session,
-                        agent: None,
-                    },
+                    params: with_command(
+                        ToolCallApprovalParams {
+                            session_id: self.session_id.clone(),
+                            turn_id: self.turn(),
+                            item_id: tool_call_id,
+                            tool: tool_name,
+                            detail,
+                            changes,
+                            effect: effect_of(effect),
+                            allow_for_session,
+                            agent: None,
+                            command: None,
+                            cwd: None,
+                            reason: None,
+                            outside_sandbox: false,
+                            background: false,
+                        },
+                        command,
+                    ),
                 }));
             }
             EngineEvent::AskUserRequest {
@@ -939,6 +948,11 @@ impl EventProjector {
     ) -> (RequestId, ToolCallApprovalParams) {
         let id = self.new_request_id();
         let params = ToolCallApprovalParams {
+            command: None,
+            cwd: None,
+            reason: None,
+            outside_sandbox: false,
+            background: false,
             session_id: self.session_id.clone(),
             turn_id: self.turn(),
             item_id: request.tool_call_id,
@@ -952,7 +966,7 @@ impl EventProjector {
                 id: request.agent_id,
             }),
         };
-        (id, params)
+        (id, with_command(params, request.command))
     }
 
     /// A request id for a request of the host's own, not the engine's: an
@@ -1268,6 +1282,21 @@ fn changes_of(preview: Option<&DiffPreview>) -> Vec<FileUpdateChange> {
 }
 
 /// One model call's tokens, in Codex's breakdown.
+/// `params` with the command it is about, when it is about one.
+fn with_command(
+    mut params: ToolCallApprovalParams,
+    command: Option<koda_core::tools::ApprovalCommand>,
+) -> ToolCallApprovalParams {
+    if let Some(command) = command {
+        params.command = Some(command.command);
+        params.cwd = Some(command.cwd.to_string_lossy().into_owned());
+        params.reason = command.reason;
+        params.outside_sandbox = command.outside_sandbox;
+        params.background = command.background;
+    }
+    params
+}
+
 /// Now, in Unix milliseconds.
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
@@ -1549,6 +1578,11 @@ mod tests {
                         tool_call_id: "c1".into(),
                         tool_name: "Bash".into(),
                         detail: "rm -rf build".into(),
+                        command: koda_core::tools::approval_command(
+                            "Bash",
+                            &json!({"command": "rm -rf build", "reason": "stale"}),
+                            std::path::Path::new("/work/app"),
+                        ),
                         preview: None,
                         effect: koda_core::tools::ToolEffect::Destructive,
                         allow_for_session: false,
@@ -1569,6 +1603,14 @@ mod tests {
         assert_eq!(request["id"], 1);
         assert_eq!(request["params"]["itemId"], "c1");
         assert_eq!(request["params"]["effect"], "destructive");
+        // The command as fields, as Codex's command approval has them.
+        assert_eq!(request["params"]["command"], "rm -rf build");
+        assert_eq!(request["params"]["cwd"], "/work/app");
+        assert_eq!(request["params"]["reason"], "stale");
+        assert!(
+            request["params"].get("outsideSandbox").is_none(),
+            "false is left out"
+        );
         assert_eq!(lines[3]["method"], "serverRequest/resolved");
         assert_eq!(lines[3]["params"]["requestId"], 1);
         let call = &lines[4]["params"]["item"];

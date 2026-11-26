@@ -4661,12 +4661,30 @@
           "description": "Whether `approveForSession` may be answered: only for local changes\ninside the project.",
           "type": "boolean"
         },
+        "background": {
+          "description": "Whether the command runs in the background.",
+          "type": "boolean"
+        },
         "changes": {
           "description": "The file changes it would make, as on its item.",
           "items": {
             "$ref": "#/$defs/FileUpdateChange"
           },
           "type": "array"
+        },
+        "command": {
+          "description": "The command a `Bash` or `Cargo` call would run, as Codex's command\napproval's `command`. `detail` says the same in a line; this is for\na client that lays the dialog out itself.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cwd": {
+          "description": "The folder the command runs in, as Codex's `cwd`.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "detail": {
           "description": "What the call would do, in a line.",
@@ -4679,6 +4697,17 @@
         "itemId": {
           "description": "The tool call.",
           "type": "string"
+        },
+        "outsideSandbox": {
+          "description": "Whether the command asks to run outside the sandbox, with the\nuser's yes for this one call. Koda's own: Codex asks for more than\nthe sandbox gives with `additionalPermissions`. `detail` then starts\nwith [`OUTSIDE_SANDBOX_TAG`].",
+          "type": "boolean"
+        },
+        "reason": {
+          "description": "Why the model wants the command run, when it said, as Codex's\n`reason`.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "sessionId": {
           "description": "The session.",
