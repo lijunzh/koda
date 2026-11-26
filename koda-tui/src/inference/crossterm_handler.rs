@@ -47,7 +47,7 @@ pub(super) async fn handle_crossterm_event_inline(
     stop: &super::TurnStop,
     cmd_tx: &mpsc::Sender<TurnCommand>,
     scroll_buffer: &mut ScrollBuffer,
-    hist_h: usize,
+    (hist_y, hist_h): (u16, usize),
     menu: &mut MenuContent,
     prompt_mode: &mut PromptMode,
     pending_approval_id: &mut Option<RequestId>,
@@ -77,6 +77,14 @@ pub(super) async fn handle_crossterm_event_inline(
             match mouse.kind {
                 MouseEventKind::ScrollUp => scroll_buffer.scroll_up(3, w, hist_h),
                 MouseEventKind::ScrollDown => scroll_buffer.scroll_down(3),
+                // A click on a folded row opens or closes it. Nothing is
+                // selected with the mouse mid-turn, so a press is a click.
+                MouseEventKind::Down(crossterm::event::MouseButton::Left)
+                    if mouse.row >= hist_y && usize::from(mouse.row - hist_y) < hist_h =>
+                {
+                    let row = usize::from(mouse.row - hist_y);
+                    crate::fold_keys::click(scroll_buffer, row, w, hist_h);
+                }
                 _ => {}
             }
         }
@@ -87,6 +95,15 @@ pub(super) async fn handle_crossterm_event_inline(
                 textarea.insert_str(&text);
             }
         }
+        // F4's focus mode, before Esc can stop the turn: in focus mode Esc
+        // leaves it.
+        Event::Key(key)
+            if menu.is_none() && {
+                let (w, _) = crossterm::terminal::size()
+                    .map(|(c, r)| (c as usize, r as usize))
+                    .unwrap_or((80, 24));
+                crate::fold_keys::handle_key(scroll_buffer, key, w, hist_h)
+            } => {}
         Event::Key(key) => {
             return handle_inference_key_inline(
                 key,

@@ -113,6 +113,10 @@ const SHORTCUTS: &[ShortcutItem] = &[
         verb: "hide / show the plan",
     },
     ShortcutItem {
+        key: "f4",
+        verb: "open one folded row",
+    },
+    ShortcutItem {
         key: "pgup/pgdn",
         verb: "scroll history",
     },

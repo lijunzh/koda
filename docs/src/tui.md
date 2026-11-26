@@ -68,6 +68,13 @@ folds them, so the answer is easy to find:
 `Ctrl+O` (or `/verbose`) switches to the full view, which shows every call,
 its output and the thinking text, and back.
 
+To open just one row, click it: a lookup row opens to its calls and their
+output, a `Thought for` line to its text, a `… +N lines` marker to the whole
+output. Click it, or any line it opened to, again to close it. From the
+keyboard, as in Codex: `F4` puts the focus on the last row on screen
+(drawn reversed), `↑`/`↓` move it, `Enter` opens or closes the row, `→`
+opens and `←` closes it, and `Esc` or `F4` leaves.
+
 ## Typing during inference
 
 You can type while Koda is thinking or running tools. The input area stays
