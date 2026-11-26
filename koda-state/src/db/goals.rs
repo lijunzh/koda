@@ -194,7 +194,7 @@ fn within_budget(status: GoalStatus, tokens_used: i64, token_budget: Option<i64>
 
 impl Database {
     /// Create the goals table. Called by the schema migration.
-    pub(crate) async fn migrate_goals(pool: &sqlx::SqlitePool) -> Result<()> {
+    pub(crate) async fn migrate_goals(conn: &mut sqlx::SqliteConnection) -> Result<()> {
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS session_goals (
                 session_id TEXT PRIMARY KEY NOT NULL,
@@ -209,7 +209,7 @@ impl Database {
                 FOREIGN KEY(session_id) REFERENCES sessions(id)
             );",
         )
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
         Ok(())
     }

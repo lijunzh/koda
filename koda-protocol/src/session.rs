@@ -109,6 +109,13 @@ pub struct SessionStartParams {
     /// `thread/start` takes a `config` map: dotted keys, JSON values.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<std::collections::BTreeMap<String, serde_json::Value>>,
+    /// A session not meant to be kept, such as a review: `session/list`
+    /// leaves it out and its client deletes it when done. Codex's
+    /// `ephemeral` thread isn't written to disk at all; Koda's is stored
+    /// like any other while it lasts, so it can be resumed after a restart.
+    /// Ignored when resuming.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ephemeral: Option<bool>,
 }
 
 /// `session/settings/update`: what the session's next turns run with, as
@@ -469,6 +476,10 @@ pub struct SessionForkParams {
     /// Config values for the copy only, as `session/start` takes them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<std::collections::BTreeMap<String, serde_json::Value>>,
+    /// A copy not meant to be kept, such as a side conversation: see
+    /// `session/start`'s `ephemeral`, and Codex's on `thread/fork`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ephemeral: bool,
 }
 
 /// The answer to `session/fork`: the fork, opened, with its turns, as

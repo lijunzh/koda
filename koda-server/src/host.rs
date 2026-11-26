@@ -57,10 +57,13 @@ pub(crate) type Answer = Result<Value, ErrorObject>;
 
 /// What a client sends the host.
 pub(crate) enum HostCommand {
-    /// Answer `request` on `reply`.
+    /// Answer `request` on `reply`. `client` is the name the connection
+    /// it came over gave in `initialize`; without one, the host's own
+    /// client sent it.
     Request {
         request: rpc::Request,
         reply: oneshot::Sender<Answer>,
+        client: Option<Arc<str>>,
     },
     /// The client's answer to the server request `id`.
     Response { id: RequestId, result: Answer },
@@ -133,9 +136,9 @@ async fn run(host: Arc<Host>, mut commands: mpsc::Receiver<HostCommand>) {
     loop {
         tokio::select! {
             command = commands.recv() => match command {
-                Some(HostCommand::Request { request, reply }) => {
+                Some(HostCommand::Request { request, reply, client }) => {
                     let host = Arc::clone(&host);
-                    running.spawn(async move { host.handle(request, reply).await });
+                    running.spawn(async move { host.handle(request, reply, client).await });
                 }
                 Some(HostCommand::Response { id, result }) => host.route(id, result).await,
                 Some(HostCommand::Shutdown { done }) => {
@@ -162,7 +165,12 @@ async fn run(host: Arc<Host>, mut commands: mpsc::Receiver<HostCommand>) {
 }
 
 impl Host {
-    async fn handle(&self, request: rpc::Request, reply: oneshot::Sender<Answer>) {
+    async fn handle(
+        &self,
+        request: rpc::Request,
+        reply: oneshot::Sender<Answer>,
+        client: Option<Arc<str>>,
+    ) {
         let request = match ClientRequest::try_from(request) {
             Ok(request) => request,
             Err(e) => {
@@ -218,7 +226,8 @@ impl Host {
                 return;
             }
             ClientRequest::SessionStart { params, .. } => {
-                let _ = reply.send(self.start_session(params).await.and_then(to_json));
+                let origin = self.origin(client.as_deref(), params.ephemeral.unwrap_or(false));
+                let _ = reply.send(self.start_session(params, origin).await.and_then(to_json));
                 return;
             }
             ClientRequest::ModelList { params, .. } => {
@@ -446,7 +455,8 @@ impl Host {
                 return;
             }
             ClientRequest::SessionFork { params, .. } => {
-                let _ = reply.send(self.fork_session(params).await.and_then(to_json));
+                let origin = self.origin(client.as_deref(), params.ephemeral);
+                let _ = reply.send(self.fork_session(params, origin).await.and_then(to_json));
                 return;
             }
             ClientRequest::SessionUnsubscribe { params, .. } => {
@@ -684,6 +694,7 @@ impl Host {
     async fn fork_session(
         &self,
         params: koda_protocol::session::SessionForkParams,
+        origin: koda_state::session_store::SessionOrigin,
     ) -> Result<koda_protocol::session::SessionForkResponse, ErrorObject> {
         use koda_state::session_store::SessionStore;
         let source = self
@@ -713,19 +724,23 @@ impl Host {
         let id = self
             .context
             .db
-            .fork_session(&source.id, &name, &root)
+            .fork_session(&source.id, &name, &root, &origin)
             .await
             .map_err(|e| internal(format!("couldn't fork the session: {e:#}")))?;
         let started = self
-            .start_session(SessionStartParams {
-                session_id: Some(id.clone()),
-                approval_policy: params.approval_policy,
-                model_provider: params.model_provider,
-                base_url: params.base_url,
-                model: params.model,
-                cwd: Some(root.display().to_string()),
-                config: params.config,
-            })
+            .start_session(
+                SessionStartParams {
+                    session_id: Some(id.clone()),
+                    approval_policy: params.approval_policy,
+                    model_provider: params.model_provider,
+                    base_url: params.base_url,
+                    model: params.model,
+                    cwd: Some(root.display().to_string()),
+                    config: params.config,
+                    ephemeral: None,
+                },
+                origin,
+            )
             .await;
         match started {
             Ok(started) => Ok(koda_protocol::session::SessionForkResponse {
@@ -857,6 +872,32 @@ impl Host {
         SessionUnsubscribeStatus::Unsubscribed
     }
 
+    /// Where a session `client` starts comes from: the client by the name
+    /// it gave (the host's own client when the connection gave none), and
+    /// what that makes the session, as Codex tells its TUI's threads from
+    /// `codex exec`'s and an app's.
+    fn origin(
+        &self,
+        client: Option<&str>,
+        ephemeral: bool,
+    ) -> koda_state::session_store::SessionOrigin {
+        use koda_state::session_store::source;
+        let originator = client
+            .map(str::to_string)
+            .or_else(|| self.client.get().map(|info| info.name.clone()));
+        let source = originator.as_deref().map(|name| match name {
+            "koda-tui" => source::CLI,
+            "koda-exec" => source::EXEC,
+            _ => source::APP_SERVER,
+        });
+        koda_state::session_store::SessionOrigin {
+            source: source.map(str::to_string),
+            originator,
+            parent_session_id: None,
+            ephemeral,
+        }
+    }
+
     fn initialize(&self, client_info: ClientInfo) -> Answer {
         if self.client.set(client_info).is_err() {
             return Err(invalid("Already initialized"));
@@ -907,6 +948,7 @@ impl Host {
     async fn start_session(
         &self,
         params: SessionStartParams,
+        origin: koda_state::session_store::SessionOrigin,
     ) -> Result<SessionStartResponse, ErrorObject> {
         if let Some(id) = &params.session_id
             && self.sessions.lock().await.contains_key(id)
@@ -921,7 +963,7 @@ impl Host {
         };
         let resuming = params.session_id.is_some();
         let context = self.session_context(params.cwd.as_deref(), params.config.as_ref())?;
-        let mut opened = session::open(context, params.session_id, policy, choice).await?;
+        let mut opened = session::open(context, params.session_id, policy, choice, origin).await?;
         let id = opened.session.id.clone();
         // A resumed session comes back with its turns, as Codex's
         // `thread/resume` does.
@@ -1144,9 +1186,13 @@ mod tests {
     async fn ask(tx: &mpsc::Sender<HostCommand>, method: &str, params: Value) -> Answer {
         let (reply, answer) = oneshot::channel();
         let request = rpc::Request::new(RequestId::Integer(1), method, Some(params));
-        tx.send(HostCommand::Request { request, reply })
-            .await
-            .unwrap();
+        tx.send(HostCommand::Request {
+            request,
+            reply,
+            client: None,
+        })
+        .await
+        .unwrap();
         answer.await.unwrap()
     }
 

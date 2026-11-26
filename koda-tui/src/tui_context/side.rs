@@ -145,6 +145,8 @@ impl TuiContext {
             .request::<methods::SessionFork>(SessionForkParams {
                 session_id: self.session.id.clone(),
                 config: Some(config),
+                // It goes with the TUI: not one to list or keep.
+                ephemeral: true,
                 ..Default::default()
             })
             .await;

@@ -3225,6 +3225,10 @@
             "null"
           ]
         },
+        "ephemeral": {
+          "description": "A copy not meant to be kept, such as a side conversation: see\n`session/start`'s `ephemeral`, and Codex's on `thread/fork`.",
+          "type": "boolean"
+        },
         "model": {
           "description": "The model: an id or an alias, as `session/start` takes it.",
           "type": [
@@ -3826,6 +3830,13 @@
           "description": "The folder the session works in, as Codex's `thread/start` takes a\n`cwd`: an absolute path to an existing folder. Without one, the\nhost's. One shared server serves every project this way.",
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "ephemeral": {
+          "description": "A session not meant to be kept, such as a review: `session/list`\nleaves it out and its client deletes it when done. Codex's\n`ephemeral` thread isn't written to disk at all; Koda's is stored\nlike any other while it lasts, so it can be resumed after a restart.\nIgnored when resuming.",
+          "type": [
+            "boolean",
             "null"
           ]
         },

@@ -167,6 +167,7 @@ pub(crate) async fn open(
     resume: Option<String>,
     policy: ApprovalPolicy,
     mut choice: crate::settings::ModelChoice,
+    origin: koda_state::session_store::SessionOrigin,
 ) -> Result<OpenSession, ErrorObject> {
     let SessionContext {
         mut config,
@@ -257,7 +258,7 @@ pub(crate) async fn open(
     let id = match resume {
         Some(id) => id,
         None => db
-            .create_session(&config.agent_name, &project_root)
+            .create_session_from(&config.agent_name, &project_root, &origin)
             .await
             .map_err(|e| internal(format!("couldn't create the session: {e:#}")))?,
     };

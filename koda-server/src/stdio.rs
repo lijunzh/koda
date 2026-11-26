@@ -222,7 +222,11 @@ async fn take_line(
             }
             let (reply, answer) = oneshot::channel();
             let sent = commands
-                .send(HostCommand::Request { request, reply })
+                .send(HostCommand::Request {
+                    request,
+                    reply,
+                    client: outbox.client(),
+                })
                 .await
                 .is_ok();
             let outbox = Arc::clone(outbox);
@@ -397,6 +401,8 @@ pub(crate) struct Outbox {
     overflowed: AtomicBool,
     /// What the client said it takes in `initialize`.
     taking: std::sync::OnceLock<Taking>,
+    /// The name the client gave in `initialize`.
+    client: std::sync::OnceLock<Arc<str>>,
 }
 
 /// A connection's `initialize` capabilities, as Codex keeps them per
@@ -429,6 +435,12 @@ impl Outbox {
             .and_then(|params| params.get("capabilities"))
             .and_then(|capabilities| serde_json::from_value(capabilities.clone()).ok())
             .unwrap_or_default();
+        if let Some(name) = params
+            .and_then(|params| params["clientInfo"]["name"].as_str())
+            .filter(|name| !name.is_empty())
+        {
+            let _ = self.client.set(Arc::from(name));
+        }
         let _ = self.taking.set(Taking {
             experimental: capabilities.experimental_api,
             opted_out: capabilities
@@ -437,6 +449,11 @@ impl Outbox {
                 .into_iter()
                 .collect(),
         });
+    }
+
+    /// The name the client gave in `initialize`, once it has.
+    pub(crate) fn client(&self) -> Option<Arc<str>> {
+        self.client.get().cloned()
     }
 
     /// The refusal of `method` to this client, if it is experimental and

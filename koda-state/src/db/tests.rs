@@ -2120,6 +2120,11 @@ async fn test_open_drops_the_owned_files_table() {
         .execute(db.pool())
         .await
         .unwrap();
+    // A file from before versions were kept.
+    sqlx::query("PRAGMA user_version = 0")
+        .execute(db.pool())
+        .await
+        .unwrap();
     drop(db);
 
     let db = Database::open(&tmp.path().join("test.db")).await.unwrap();
@@ -2130,6 +2135,213 @@ async fn test_open_drops_the_owned_files_table() {
     .await
     .unwrap();
     assert!(tables.is_empty(), "owned_files should be dropped");
+}
+
+/// The file as Koda 0.7.12 left it: version 0, sessions without the columns
+/// version 2 adds.
+async fn as_koda_0_7_12_left_it(db: &Database) {
+    for sql in [
+        "DROP INDEX idx_sessions_root_recent",
+        "DROP INDEX idx_sessions_recent",
+        "ALTER TABLE sessions DROP COLUMN source",
+        "ALTER TABLE sessions DROP COLUMN originator",
+        "ALTER TABLE sessions DROP COLUMN koda_version",
+        "ALTER TABLE sessions DROP COLUMN forked_from_id",
+        "ALTER TABLE sessions DROP COLUMN parent_session_id",
+        "ALTER TABLE sessions DROP COLUMN ephemeral",
+        "ALTER TABLE sessions DROP COLUMN preview",
+        "PRAGMA user_version = 0",
+    ] {
+        sqlx::query(sql).execute(db.pool()).await.unwrap();
+    }
+}
+
+async fn schema_version(db: &Database) -> i64 {
+    let (version,): (i64,) = sqlx::query_as("PRAGMA user_version")
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+    version
+}
+
+/// An older Koda's file gains version 2's columns once: its sessions get
+/// their previews and last-used times from their messages, and a
+/// sub-agent's session its parent from its metadata.
+#[tokio::test]
+async fn an_older_file_is_brought_to_the_current_version() {
+    let (db, tmp) = setup().await;
+    as_koda_0_7_12_left_it(&db).await;
+    let long = "x".repeat(crate::session_store::PREVIEW_CHARS + 50);
+    for sql in [
+        "INSERT INTO sessions (id, agent_name, project_root, created_at) \
+         VALUES ('parent', 'default', '/p', '2026-01-02 03:04:05')",
+        "INSERT INTO sessions (id, agent_name, project_root) VALUES ('child', 'explore', '/p')",
+        "INSERT INTO sessions (id, agent_name, project_root, created_at) \
+         VALUES ('empty', 'default', '/p', '2026-01-01 00:00:00')",
+        "INSERT INTO session_metadata (session_id, key, value) \
+         VALUES ('child', 'parent_session', 'parent')",
+        "INSERT INTO messages (session_id, role, content, created_at) \
+         VALUES ('parent', 'user', 'fix the test', '2026-01-02 03:05:00')",
+        "INSERT INTO messages (session_id, role, content, created_at) \
+         VALUES ('parent', 'assistant', 'done', '2026-01-02 03:06:00')",
+    ] {
+        sqlx::query(sql).execute(db.pool()).await.unwrap();
+    }
+    sqlx::query("INSERT INTO messages (session_id, role, content) VALUES ('child', 'user', ?)")
+        .bind(&long)
+        .execute(db.pool())
+        .await
+        .unwrap();
+    drop(db);
+
+    let db = Database::open(&tmp.path().join("test.db")).await.unwrap();
+    assert_eq!(schema_version(&db).await, 2);
+    let parent = db.get_session("parent").await.unwrap().unwrap();
+    assert_eq!(parent.preview.as_deref(), Some("fix the test"));
+    assert_eq!(parent.source, None, "who started it was never recorded");
+    assert_eq!(parent.parent_session_id, None);
+    assert_eq!(parent.updated_unix - parent.created_unix, 115);
+    let child = db.get_session("child").await.unwrap().unwrap();
+    assert_eq!(child.source.as_deref(), Some("subAgent"));
+    assert_eq!(child.parent_session_id.as_deref(), Some("parent"));
+    assert_eq!(
+        child.preview.map(|p| p.chars().count()),
+        Some(crate::session_store::PREVIEW_CHARS)
+    );
+    let empty = db.get_session("empty").await.unwrap().unwrap();
+    assert_eq!(empty.preview, None);
+    assert_eq!(empty.updated_unix, empty.created_unix);
+
+    // Opening it again changes nothing.
+    drop(db);
+    let db = Database::open(&tmp.path().join("test.db")).await.unwrap();
+    assert_eq!(schema_version(&db).await, 2);
+}
+
+/// Two Kodas opening an older file at once take turns: both open, and the
+/// columns are added once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_processes_can_open_an_older_file_at_once() {
+    let (db, tmp) = setup().await;
+    as_koda_0_7_12_left_it(&db).await;
+    drop(db);
+    let path = tmp.path().join("test.db");
+    let (a, b) = tokio::join!(Database::open(&path), Database::open(&path));
+    let (a, _b) = (a.unwrap(), b.unwrap());
+    assert_eq!(schema_version(&a).await, 2);
+}
+
+/// A newer Koda's file opens as it is: this version adds nothing to it and
+/// leaves its version alone, as Codex's migrator ignores migrations it
+/// doesn't know.
+#[tokio::test]
+async fn a_newer_file_opens_unchanged() {
+    let (db, tmp) = setup().await;
+    sqlx::query("PRAGMA user_version = 99")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    drop(db);
+    let db = Database::open(&tmp.path().join("test.db")).await.unwrap();
+    assert_eq!(schema_version(&db).await, 99);
+    db.create_session("default", tmp.path()).await.unwrap();
+}
+
+/// A session records where it came from, its first prompt as its preview,
+/// and when it was last written.
+#[tokio::test]
+async fn a_session_records_its_origin_and_its_preview() {
+    use crate::session_store::{SessionOrigin, source};
+    let (db, tmp) = setup().await;
+    let parent = db
+        .create_session_from(
+            "default",
+            tmp.path(),
+            &SessionOrigin {
+                source: Some(source::CLI.into()),
+                originator: Some("koda-tui".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    db.insert_message(&parent, &Role::User, Some("first prompt"), None, None, None)
+        .await
+        .unwrap();
+    db.insert_message(
+        &parent,
+        &Role::User,
+        Some("second prompt"),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let info = db.get_session(&parent).await.unwrap().unwrap();
+    assert_eq!(info.source.as_deref(), Some("cli"));
+    assert_eq!(info.originator.as_deref(), Some("koda-tui"));
+    assert_eq!(info.preview.as_deref(), Some("first prompt"));
+    assert!(!info.ephemeral);
+
+    let fork = db
+        .fork_session(
+            &parent,
+            "a fork",
+            tmp.path(),
+            &SessionOrigin {
+                source: Some(source::APP_SERVER.into()),
+                originator: Some("koda-desktop".into()),
+                ephemeral: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let info = db.get_session(&fork).await.unwrap().unwrap();
+    assert_eq!(info.forked_from_id.as_deref(), Some(parent.as_str()));
+    assert_eq!(info.source.as_deref(), Some("appServer"));
+    assert_eq!(info.preview.as_deref(), Some("first prompt"));
+    assert!(info.ephemeral);
+}
+
+/// Deleting a session deletes the sessions of the sub-agents it ran, and
+/// theirs; another session's are left.
+#[tokio::test]
+async fn deleting_a_session_deletes_its_sub_agents_sessions() {
+    use crate::session_store::{SessionOrigin, source};
+    let (db, tmp) = setup().await;
+    let child_of = |parent: &str| SessionOrigin {
+        source: Some(source::SUB_AGENT.into()),
+        parent_session_id: Some(parent.to_string()),
+        ..Default::default()
+    };
+    let parent = db.create_session("default", tmp.path()).await.unwrap();
+    let child = db
+        .create_session_from("explore", tmp.path(), &child_of(&parent))
+        .await
+        .unwrap();
+    let grandchild = db
+        .create_session_from("explore", tmp.path(), &child_of(&child))
+        .await
+        .unwrap();
+    let other = db.create_session("default", tmp.path()).await.unwrap();
+    let others_child = db
+        .create_session_from("explore", tmp.path(), &child_of(&other))
+        .await
+        .unwrap();
+    db.insert_session_event(&grandchild, "info", "{}", None)
+        .await
+        .unwrap();
+
+    assert!(db.delete_session(&parent).await.unwrap());
+    for gone in [&parent, &child, &grandchild] {
+        assert!(db.get_session(gone).await.unwrap().is_none(), "{gone}");
+    }
+    for kept in [&other, &others_child] {
+        assert!(db.get_session(kept).await.unwrap().is_some(), "{kept}");
+    }
+    assert!(!db.delete_session(&parent).await.unwrap(), "already gone");
 }
 
 /// A prompt's images are stored on the latest user message and come back
@@ -2250,6 +2462,7 @@ async fn fork_session_copies_everything_a_session_holds() {
             &src,
             "Fork of look",
             std::path::Path::new("/elsewhere/checkout"),
+            &Default::default(),
         )
         .await
         .unwrap();
@@ -2292,9 +2505,14 @@ async fn fork_session_copies_everything_a_session_holds() {
     assert_eq!(db.load_all_messages(&src).await.unwrap().len(), 2);
 
     assert!(
-        db.fork_session("missing", "x", std::path::Path::new("/p"))
-            .await
-            .is_err()
+        db.fork_session(
+            "missing",
+            "x",
+            std::path::Path::new("/p"),
+            &Default::default()
+        )
+        .await
+        .is_err()
     );
 }
 

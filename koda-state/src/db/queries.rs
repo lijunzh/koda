@@ -422,57 +422,88 @@ pub(crate) fn dedupe_tool_results_by_call_id(messages: &mut Vec<Message>) {
     });
 }
 
+/// The start of a prompt, as a session's preview.
+fn preview_of(text: &str) -> String {
+    text.chars()
+        .take(crate::session_store::PREVIEW_CHARS)
+        .collect()
+}
+
 // ── SessionStore trait ──────────────────────────────────────────────────────────────
 
-/// A session's summary: [`SessionInfoRow`]'s columns, before a filter. A
-/// macro, so queries are built with `concat!` and stay static SQL.
+/// A session's summary: [`SessionInfoRow`]'s columns, before a filter, all
+/// from the session's own row, so listing reads no messages. A macro, so
+/// queries are built with `concat!` and stay static SQL.
 macro_rules! session_info_select {
     () => {
         "SELECT s.id, s.agent_name, s.created_at,
-        COUNT(m.id) as message_count,
-        COALESCE(SUM(m.prompt_tokens), 0) + COALESCE(SUM(m.completion_tokens), 0) as total_tokens,
         s.title, s.mode,
         CAST(strftime('%s', s.created_at) AS INTEGER) as created_unix,
-        CAST(strftime('%s', COALESCE(MAX(m.created_at), s.created_at)) AS INTEGER)
+        CAST(strftime('%s', COALESCE(s.last_accessed_at, s.created_at)) AS INTEGER)
             as updated_unix,
-        (SELECT u.content FROM messages u
-          WHERE u.session_id = s.id AND u.role = 'user'
-          ORDER BY u.id LIMIT 1) as preview,
-        s.project_root, s.provider, s.base_url, s.model
-     FROM sessions s
-     LEFT JOIN messages m ON m.session_id = s.id"
+        s.preview,
+        s.project_root, s.provider, s.base_url, s.model,
+        s.source, s.originator, s.forked_from_id, s.parent_session_id, s.ephemeral
+     FROM sessions s"
     };
 }
 
 #[async_trait::async_trait]
 impl SessionStore for Database {
     /// Create a new session, returning the generated session ID.
-    async fn create_session(&self, agent_name: &str, project_root: &Path) -> Result<String> {
+    async fn create_session_from(
+        &self,
+        agent_name: &str,
+        project_root: &Path,
+        origin: &crate::session_store::SessionOrigin,
+    ) -> Result<String> {
         let id = uuid::Uuid::new_v4().to_string();
         let root = project_root.to_string_lossy().to_string();
-        sqlx::query("INSERT INTO sessions (id, agent_name, project_root) VALUES (?, ?, ?)")
-            .bind(&id)
-            .bind(agent_name)
-            .bind(&root)
-            .execute_write(&self.pool)
-            .await?;
+        sqlx::query(
+            "INSERT INTO sessions \
+               (id, agent_name, project_root, last_accessed_at, \
+                source, originator, koda_version, parent_session_id, ephemeral) \
+             VALUES (?, ?, ?, datetime('now'), ?, ?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(agent_name)
+        .bind(&root)
+        .bind(origin.source.as_deref())
+        .bind(origin.originator.as_deref())
+        .bind(env!("CARGO_PKG_VERSION"))
+        .bind(origin.parent_session_id.as_deref())
+        .bind(origin.ephemeral)
+        .execute_write(&self.pool)
+        .await?;
         tracing::info!("Created session: {id} (project: {root})");
         Ok(id)
     }
 
-    async fn fork_session(&self, source: &str, title: &str, project_root: &Path) -> Result<String> {
+    async fn fork_session(
+        &self,
+        source: &str,
+        title: &str,
+        project_root: &Path,
+        origin: &crate::session_store::SessionOrigin,
+    ) -> Result<String> {
         let id = uuid::Uuid::new_v4().to_string();
         let root = project_root.to_string_lossy().to_string();
         let mut tx = self.pool.begin_immediate().await?;
         let copied = sqlx::query(
             "INSERT INTO sessions \
-               (id, agent_name, project_root, last_accessed_at, title, mode, provider, base_url, model) \
-             SELECT ?, agent_name, ?, datetime('now'), ?, mode, provider, base_url, model \
+               (id, agent_name, project_root, last_accessed_at, title, mode, provider, base_url, model, \
+                preview, forked_from_id, source, originator, koda_version, ephemeral) \
+             SELECT ?, agent_name, ?, datetime('now'), ?, mode, provider, base_url, model, \
+                preview, id, ?, ?, ?, ? \
              FROM sessions WHERE id = ?",
         )
         .bind(&id)
         .bind(&root)
         .bind(title)
+        .bind(origin.source.as_deref())
+        .bind(origin.originator.as_deref())
+        .bind(env!("CARGO_PKG_VERSION"))
+        .bind(origin.ephemeral)
         .bind(source)
         .execute(&mut *tx)
         .await?;
@@ -580,11 +611,18 @@ impl SessionStore for Database {
         .execute_write(&self.pool)
         .await?;
 
-        // Update session activity timestamp
-        sqlx::query("UPDATE sessions SET last_accessed_at = datetime('now') WHERE id = ?")
-            .bind(session_id)
-            .execute_write(&self.pool)
-            .await?;
+        // The session was written now, and its first prompt is its preview.
+        let preview = (matches!(role, Role::User))
+            .then(|| content.map(preview_of))
+            .flatten();
+        sqlx::query(
+            "UPDATE sessions SET last_accessed_at = datetime('now'), \
+             preview = COALESCE(preview, ?) WHERE id = ?",
+        )
+        .bind(preview)
+        .bind(session_id)
+        .execute_write(&self.pool)
+        .await?;
 
         Ok(result.last_insert_rowid())
     }
@@ -971,7 +1009,6 @@ impl SessionStore for Database {
         let rows: Vec<SessionInfoRow> = sqlx::query_as(concat!(
             session_info_select!(),
             " WHERE s.project_root = ? OR s.project_root IS NULL
-             GROUP BY s.id
              ORDER BY s.created_at DESC, s.rowid DESC
              LIMIT ? OFFSET ?"
         ))
@@ -984,14 +1021,11 @@ impl SessionStore for Database {
     }
 
     async fn get_session(&self, session_id: &str) -> Result<Option<SessionInfo>> {
-        let row: Option<SessionInfoRow> = sqlx::query_as(concat!(
-            session_info_select!(),
-            " WHERE s.id = ?
-             GROUP BY s.id"
-        ))
-        .bind(session_id)
-        .fetch_optional(&self.pool)
-        .await?;
+        let row: Option<SessionInfoRow> =
+            sqlx::query_as(concat!(session_info_select!(), " WHERE s.id = ?"))
+                .bind(session_id)
+                .fetch_optional(&self.pool)
+                .await?;
         Ok(row.map(Into::into))
     }
 
@@ -1030,41 +1064,43 @@ impl SessionStore for Database {
         Ok(row.map(|r| r.0).unwrap_or_default())
     }
 
-    /// Delete a session and all its messages/metadata atomically.
+    /// Delete a session and everything stored for it, and with it the
+    /// sessions of the sub-agents it ran, and theirs: nothing lists them once
+    /// their parent is gone. One transaction.
     async fn delete_session(&self, session_id: &str) -> Result<bool> {
         let mut tx = self.pool.begin_immediate().await?;
 
-        sqlx::query("DELETE FROM messages WHERE session_id = ?")
-            .bind(session_id)
-            .execute(&mut *tx)
-            .await?;
+        let doomed: Vec<(String,)> = sqlx::query_as(
+            "WITH RECURSIVE doomed(id) AS (
+               SELECT ?
+               UNION
+               SELECT s.id FROM sessions s JOIN doomed d ON s.parent_session_id = d.id
+             )
+             SELECT id FROM doomed",
+        )
+        .bind(session_id)
+        .fetch_all(&mut *tx)
+        .await?;
 
-        sqlx::query("DELETE FROM session_metadata WHERE session_id = ?")
-            .bind(session_id)
-            .execute(&mut *tx)
-            .await?;
-
-        sqlx::query("DELETE FROM turn_records WHERE session_id = ?")
-            .bind(session_id)
-            .execute(&mut *tx)
-            .await?;
-
-        sqlx::query("DELETE FROM session_goals WHERE session_id = ?")
-            .bind(session_id)
-            .execute(&mut *tx)
-            .await?;
-
-        // Its notices and sub-agent events, which hold a foreign key to it:
-        // left behind, they refuse the delete below.
-        sqlx::query("DELETE FROM session_events WHERE session_id = ?")
-            .bind(session_id)
-            .execute(&mut *tx)
-            .await?;
-
-        let result = sqlx::query("DELETE FROM sessions WHERE id = ?")
-            .bind(session_id)
-            .execute(&mut *tx)
-            .await?;
+        let mut existed = false;
+        for (id,) in &doomed {
+            // A session's rows in the other tables hold a foreign key to
+            // it: all of them go first, or the last delete is refused.
+            for delete in [
+                "DELETE FROM messages WHERE session_id = ?",
+                "DELETE FROM session_metadata WHERE session_id = ?",
+                "DELETE FROM turn_records WHERE session_id = ?",
+                "DELETE FROM session_goals WHERE session_id = ?",
+                "DELETE FROM session_events WHERE session_id = ?",
+            ] {
+                sqlx::query(delete).bind(id).execute(&mut *tx).await?;
+            }
+            let result = sqlx::query("DELETE FROM sessions WHERE id = ?")
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+            existed |= id == session_id && result.rows_affected() > 0;
+        }
 
         tx.commit().await?;
 
@@ -1073,13 +1109,15 @@ impl SessionStore for Database {
             .execute_write(&self.pool)
             .await?;
 
-        // (#1166) Drop any cached context for this session so a future
+        // (#1166) Drop any cached context for these sessions so a future
         // `load_context` call doesn't return stale data if the same
         // session_id were ever to be re-created (defensive; sessions
         // ids are UUIDs so collision is improbable).
-        self.context_cache.invalidate(session_id);
+        for (id,) in &doomed {
+            self.context_cache.invalidate(id);
+        }
 
-        Ok(result.rows_affected() > 0)
+        Ok(existed)
     }
 
     async fn set_session_title(&self, session_id: &str, title: &str) -> Result<()> {
