@@ -2059,6 +2059,51 @@ async fn ctx_cache_delete_session_invalidates_only_target() {
     assert_eq!(db.load_context(&s2).await.unwrap().len(), 1);
 }
 
+/// Another process may rewind or compact a session between two times this
+/// one holds it, so taking its writer lock drops what this process cached
+/// of its context.
+#[tokio::test]
+async fn taking_the_writer_lock_drops_the_cached_context() {
+    let (db, tmp) = setup().await;
+    let session = db.create_session("default", tmp.path()).await.unwrap();
+    for text in ["kept", "rewound away"] {
+        db.insert_message(&session, &Role::User, Some(text), None, None, None)
+            .await
+            .unwrap();
+    }
+    assert_eq!(db.load_context(&session).await.unwrap().len(), 2);
+
+    // Another process's rewind: this process's cache can't see it.
+    let other = Database::open(&tmp.path().join("test.db")).await.unwrap();
+    sqlx::query("DELETE FROM messages WHERE session_id = ? AND content = 'rewound away'")
+        .bind(&session)
+        .execute(other.pool())
+        .await
+        .unwrap();
+
+    let _writer = db.acquire_writer(&session).await.unwrap();
+    let context = db.load_context(&session).await.unwrap();
+    assert_eq!(context.len(), 1, "{context:?}");
+}
+
+/// A session with event rows (every one that used a sub-agent or logged a
+/// notice) deletes, its events with it: they hold a foreign key to it.
+#[tokio::test]
+async fn delete_session_removes_its_events() {
+    let (db, tmp) = setup().await;
+    let doomed = db.create_session("default", tmp.path()).await.unwrap();
+    let kept = db.create_session("default", tmp.path()).await.unwrap();
+    for session in [&doomed, &kept] {
+        db.insert_session_event(session, "info", "{}", None)
+            .await
+            .unwrap();
+    }
+
+    assert!(db.delete_session(&doomed).await.unwrap());
+    assert!(db.load_session_events(&doomed).await.unwrap().is_empty());
+    assert_eq!(db.load_session_events(&kept).await.unwrap().len(), 1);
+}
+
 /// The file tracker's table goes when a database from before its removal
 /// is opened.
 #[tokio::test]

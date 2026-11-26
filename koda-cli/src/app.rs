@@ -836,6 +836,12 @@ pub(crate) async fn run() -> Result<()> {
         .as_deref()
         .map(|dir| crate::logging::resolve_log_dir(dir, &config_dir));
     let _logging = crate::logging::init(&config_dir, log_dir).await?;
+    // A panic in `koda serve` or `koda exec` goes into the log, as one in
+    // the TUI does: a release build aborts on it, and a server the TUI
+    // started has nowhere to print it.
+    if serving.is_some() || headless_run.is_some() {
+        koda_tui::panic_log::install();
+    }
 
     // `--worktree`: a new session, or a fork of one (`koda fork <id>
     // --worktree`), in a new checkout, as Codex's flag is for new sessions

@@ -131,9 +131,14 @@ impl Database {
     ) -> std::io::Result<crate::writer_lock::WriterLockGuard> {
         let locks = std::sync::Arc::clone(&self.writer_locks);
         let id = session_id.to_string();
-        tokio::task::spawn_blocking(move || locks.acquire(&id))
+        let guard = tokio::task::spawn_blocking(move || locks.acquire(&id))
             .await
-            .map_err(std::io::Error::other)?
+            .map_err(std::io::Error::other)??;
+        // Another process may have written the session since this one last
+        // held it (a `koda exec` that compacted or rewound it): what this
+        // process cached of its context is no longer the session's.
+        self.context_cache.invalidate(session_id);
+        Ok(guard)
     }
 
     /// Apply the schema (idempotent).

@@ -243,7 +243,31 @@ pub(crate) async fn turns(
 pub(crate) async fn turns_for_resume(db: &dyn SessionStore, session_id: &str) -> Result<Vec<Turn>> {
     let records = turn_records(db, session_id).await?;
     if !records.is_empty() {
-        return Ok(replay(&records, false));
+        let mut turns = replay(&records, true);
+        // The host is opening the session, so none of its turns is
+        // running: one still in progress in its records ended with the
+        // process that ran it. Store that end, or the turn would read as
+        // running to everyone who looks while the session is open.
+        if let Some(last) = turns
+            .last_mut()
+            .filter(|turn| turn.status == TurnStatus::InProgress)
+        {
+            last.status = TurnStatus::Interrupted;
+            let bare = Turn {
+                items: Vec::new(),
+                ..last.clone()
+            };
+            let ended = serde_json::to_string(&bare).ok().map(|payload| TurnRecord {
+                turn_id: last.id.clone(),
+                kind: TURN.to_string(),
+                payload,
+            });
+            checked(
+                db.append_turn_records(session_id, &ended.into_iter().collect::<Vec<_>>())
+                    .await,
+            )?;
+        }
+        return Ok(turns);
     }
     let turns = rebuild(db, session_id).await?;
     let mut backfill = Vec::new();
@@ -650,6 +674,34 @@ mod tests {
         insert(&answered, &chat, Role::Assistant, "Hello.").await;
         let rebuilt = turns(&answered, &chat, false).await.unwrap();
         assert_eq!(rebuilt[0].status, TurnStatus::Completed);
+    }
+
+    /// A turn the server died in is stored as ended when the session is
+    /// opened again: read while the session is open, it is interrupted, not
+    /// still running.
+    #[tokio::test]
+    async fn a_turn_that_died_with_the_server_is_stored_as_interrupted_on_resume() {
+        let (_dir, db, session) = db().await;
+        db.append_turn_records(
+            &session,
+            &[
+                turn_record("t1", TurnStatus::Completed),
+                turn_record("t2", TurnStatus::InProgress),
+                item_record("t2", None, "half an answer"),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let resumed = turns_for_resume(&db, &session).await.unwrap();
+        assert_eq!(resumed[1].status, TurnStatus::Interrupted);
+        assert_eq!(resumed[1].items.len(), 1);
+
+        // The session is open now; a second client reads it.
+        let read = turns(&db, &session, true).await.unwrap();
+        assert_eq!(read[0].status, TurnStatus::Completed);
+        assert_eq!(read[1].status, TurnStatus::Interrupted);
+        assert_eq!(read[1].items.len(), 1);
     }
 
     /// A session from before 6h: prompts open turns, steering text joins
