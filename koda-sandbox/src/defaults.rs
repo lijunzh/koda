@@ -65,6 +65,19 @@ pub const CREDENTIAL_CONFIG_FULL_DENY: &[&str] = &[
     "koda/mcp_oauth", // MCP servers' OAuth access and refresh tokens (`koda mcp login`)
 ];
 
+/// Koda's own folder under a config folder, **write-protected**: its
+/// `config.toml` names MCP servers to run, and its instructions, agents and
+/// skills shape every session, so a command that could write there could
+/// decide what the next session runs outside the sandbox. It is writable
+/// only when the session's folder contains it (a session started in `~`);
+/// Codex keeps `.codex` read-only inside a writable root the same way.
+pub const KODA_CONFIG_SUBDIR: &str = "koda";
+
+/// The one part of Koda's folder sessions work in: the checkouts Koda makes
+/// for `--worktree` and for sub-agents. A session there writes its own
+/// checkout as any session writes its folder.
+pub const KODA_WORKTREES_SUBDIR: &str = "worktrees";
+
 /// The folders `.config/` paths are looked up in: `~/.config`, and
 /// `$XDG_CONFIG_HOME` when it names another, where Koda then keeps its own.
 pub(crate) fn config_folders(home: &str) -> Vec<std::path::PathBuf> {

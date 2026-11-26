@@ -206,6 +206,70 @@ fn a_sandboxed_command_cannot_reach_the_server() {
     assert!(UnixStream::connect(&socket).is_ok(), "{text}");
 }
 
+/// A session started in the home folder makes Koda's own folder part of
+/// what a command may write. Its settings stay read-only all the same, as
+/// Codex keeps `.codex` inside a writable root: an added MCP server would
+/// run outside the sandbox in the next session.
+#[test]
+fn kodas_settings_cant_be_written_from_a_session_in_the_home_folder() {
+    if !available() {
+        return;
+    }
+    let mut case = Case::new();
+    case.project = case.home.clone();
+    std::fs::create_dir_all(case.koda()).unwrap();
+    let config = case.koda().join("config.toml");
+    std::fs::write(&config, "model = \"stub\"\n").unwrap();
+    let planted = case.koda().join("skills-new.md");
+    let note = case.home.join("note.txt");
+
+    let text = case.run(&format!(
+        "echo 'mcp_servers = 1' >> '{}'; echo x > '{}'; echo ok > '{}'; cat '{}'",
+        config.display(),
+        planted.display(),
+        note.display(),
+        config.display(),
+    ));
+    assert_eq!(
+        std::fs::read_to_string(&config).unwrap(),
+        "model = \"stub\"\n",
+        "{text}"
+    );
+    assert!(!planted.exists(), "{text}");
+    // The rest of the folder is the session's to write, and the settings
+    // can still be read.
+    assert!(note.exists(), "{text}");
+    assert!(text.contains("model = \"stub\""), "{text}");
+}
+
+/// The checkouts Koda makes for `--worktree` and for sub-agents are inside
+/// its folder: a session in one writes its checkout, and nothing else of
+/// Koda's.
+#[test]
+fn a_session_in_one_of_kodas_worktrees_writes_its_checkout_only() {
+    if !available() {
+        return;
+    }
+    let mut case = Case::new();
+    case.project = case.koda().join("worktrees/repo/wt-1");
+    std::fs::create_dir_all(&case.project).unwrap();
+    let config = case.koda().join("config.toml");
+    std::fs::write(&config, "model = \"stub\"\n").unwrap();
+    let edited = case.project.join("a.txt");
+
+    let text = case.run(&format!(
+        "echo ok > '{}'; echo 'mcp_servers = 1' >> '{}'",
+        edited.display(),
+        config.display(),
+    ));
+    assert!(edited.exists(), "{text}");
+    assert_eq!(
+        std::fs::read_to_string(&config).unwrap(),
+        "model = \"stub\"\n",
+        "{text}"
+    );
+}
+
 /// Koda's folder moves with `XDG_CONFIG_HOME`, and the rule with it.
 #[test]
 fn a_server_under_xdg_config_home_is_closed_too() {

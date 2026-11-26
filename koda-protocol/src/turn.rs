@@ -233,7 +233,8 @@ pub struct TurnDiffUpdatedNotification {
     pub session_id: String,
     /// The turn.
     pub turn_id: String,
-    /// The whole diff so far. Empty when the turn's edits have been undone.
+    /// The whole diff so far. Empty when the turn's edits have been undone,
+    /// and from an edit Koda couldn't track on: the turn then has no diff.
     pub diff: String,
 }
 

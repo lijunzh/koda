@@ -235,11 +235,11 @@ below as described, and Ctrl+C sends `turn/interrupt`.
 
 | `type` | Fields | Notes |
 |--------|--------|-------|
-| `userMessage` | `id`, `text`, `clientMessageIds` | What the user said, as the model received it: a turn's prompt, or steering text sent during it (texts that arrived together are one item) |
+| `userMessage` | `id`, `text`, `clientMessageIds`, `mentions` | What the user said, as the model received it; `mentions` are the files and folders it named with `@`, as paths: a turn's prompt, or steering text sent during it (texts that arrived together are one item) |
 | `agentMessage` | `id`, `text` | Text is empty when it starts and complete when it completes |
 | `reasoning` | `id`, `text` | Where the provider shows reasoning |
 | `toolCall` | `id`, `tool`, `kind`, `arguments`, `status`, `output`, `exitCode`, `durationMs`, `detail`, `changes`, `progress` | One item for every tool, named by `tool`. `kind` is what sort of tool it is, from the Agent Client Protocol's list (`read`, `edit`, `delete`, `move`, `search`, `execute`, `think`, `fetch`, `switch_mode`, `other`), so a client can draw a call without knowing every tool's name; an MCP tool is `other`. `status` ends as `completed`, `failed` (it ran and failed, or a command exited non-zero), `declined` (refused at an approval, by `--mode plan` or by a sub-agent's limits) or `cancelled`. `output` is what the model read. On completion, `exitCode` is the exit code of the command a `Bash` or `Cargo` call ran (absent for other tools, or when the command timed out, was stopped or went to the background), and `durationMs` how long the tool ran, not counting a wait for approval (absent when it never ran), as Codex's items have them. `detail` is the one-line description Koda showed when it asked about or blocked the call. `changes` is what an `Edit` or `Write` changes, from the call's start whether or not anyone was asked, each `{path, kind, diff}` as Codex's `fileChange` item has them (`kind` is `{"type": "add"}` with the new file as `diff`, or `{"type": "update"}` with a unified diff). `progress` lists the call's notices, on completion. The last three are left out when empty |
-| `contextCompaction` | `id`, `trigger`, `status`, `contextPercent`, `messagesRemoved`, `summaryTokens`, `reason` | `trigger` is `threshold`, `overflow`, `window` or `idle`. `status` ends as `completed`, `skipped` or `failed` (`reason` says why) |
+| `contextCompaction` | `id`, `trigger`, `status`, `contextPercent`, `messagesRemoved`, `summaryTokens`, `reason` | `trigger` is `threshold`, `overflow`, `window`, `manual` (asked for with `session/compact/start`) or `postTurn` (the turn's last reply left the context past the after-turn threshold). `status` ends as `completed`, `skipped` or `failed` (`reason` says why) |
 
 Codex has an item per kind of call (`commandExecution`, `fileChange`,
 `mcpToolCall`, …). Koda's tools share one shape, so it has one, and adds
@@ -251,7 +251,7 @@ Koda asks with JSON-RPC requests, which have an `id`:
 
 | Method | Carries | Answer |
 |--------|---------|--------|
-| `item/toolCall/requestApproval` | `itemId`, `tool`, `detail`, `changes`, `effect`, `allowForSession` | `decision`: `approve`, `approveForSession`, `reject` or `rejectWithFeedback`. `changes` is the edit's diff, as on the item |
+| `item/toolCall/requestApproval` | `itemId`, `tool`, `detail`, `changes`, `effect`, `allowForSession`, `agent` | `decision`: `approve`, `approveForSession`, `reject` or `rejectWithFeedback`. `changes` is the edit's diff, as on the item. `agent` names the sub-agent asking, when it isn't the main agent; a background agent may ask with no turn running, and `turnId` is then empty |
 | `item/tool/requestUserInput` | `itemId`, `question`, `options` | `answer` |
 | `turn/loopCap/requestDecision` | `cap`, `recentTools` | `decision`: `continue50`, `continue200` or `stop` |
 

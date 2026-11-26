@@ -77,7 +77,7 @@ pub use policy::{
     DomainPattern, FsPolicy, MitmConfig, NetPolicy, PathPattern, ResourceLimits, SandboxPolicy,
     TrustPreference,
 };
-pub use policy_check::is_fully_denied;
+pub use policy_check::{is_fully_denied, is_koda_config};
 pub use proxy::{
     BuiltInProxy, BuiltInSocks5Proxy, DEFAULT_DEV_ALLOWLIST, DEFAULT_NO_PROXY, ExternalProxy,
     Filter, PROXY_PORT_ENV_KEY, ProxyHandle, Socks5Server, ca_bundle_for_policy, proxy_env_vars,

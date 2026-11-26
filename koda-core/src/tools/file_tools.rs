@@ -622,6 +622,12 @@ pub(crate) fn apply_edit(
     replace_all: bool,
     path_str: &str,
 ) -> Result<(String, Vec<String>)> {
+    // Here as well as in Edit, since the preview calls this without it:
+    // every position matches an empty string, and `replace_all` would put
+    // `new_str` between every two bytes of the file.
+    if old_str.is_empty() {
+        anyhow::bail!("'old_str' cannot be empty");
+    }
     let mut content = content.to_string();
     let mut changes = Vec::new();
 

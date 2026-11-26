@@ -18,6 +18,11 @@ const CONTEXT_LINES: usize = 3;
 /// Maximum total diff lines before we truncate.
 const MAX_DIFF_LINES: usize = 120;
 
+/// How long one diff may take, as the turn's diff allows: past it,
+/// `similar` falls back to a coarser diff that is still exact, so a large
+/// rewrite can't hold up the edit it previews.
+const DIFF_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// Maximum lines shown for a new-file preview.
 const MAX_WRITE_NEW_LINES: usize = 60;
 
@@ -117,7 +122,9 @@ impl UnifiedDiffPreview {
     /// The whole change as a unified diff: `@@` hunks with three lines of
     /// context and no file header, not cut short as [`Self::hunks`] may be.
     pub fn unified_text(&self) -> String {
-        TextDiff::from_lines(&self.old_content, &self.new_content)
+        TextDiff::configure()
+            .timeout(DIFF_TIMEOUT)
+            .diff_lines(&self.old_content, &self.new_content)
             .unified_diff()
             .context_radius(CONTEXT_LINES)
             .to_string()
@@ -145,7 +152,9 @@ pub async fn compute(
 ///
 /// Shared by Edit and Write-overwrite paths.
 fn build_unified_diff(path: &str, old_content: &str, new_content: &str) -> UnifiedDiffPreview {
-    let diff = TextDiff::from_lines(old_content, new_content);
+    let diff = TextDiff::configure()
+        .timeout(DIFF_TIMEOUT)
+        .diff_lines(old_content, new_content);
     let mut hunks = Vec::new();
     let mut total_lines = 0usize;
     let mut truncated = false;
@@ -317,6 +326,12 @@ mod tests {
         std::fs::write(&file, "keep  \nend\n").unwrap();
         let fuzzy = json!({"file_path": "a.txt", "old_str": "keep\nend", "new_str": "done"});
         assert_eq!(new_content(fuzzy).await, "done\n");
+
+        // An empty `old_str` matches everywhere: Edit refuses it, and the
+        // preview doesn't try it.
+        let empty =
+            json!({"file_path": "a.txt", "old_str": "", "new_str": "zz", "replace_all": true});
+        assert_eq!(new_content(empty).await, "keep  \nend\n");
 
         // Ambiguous without `replace_all`: Edit refuses, so nothing changes.
         std::fs::write(&file, "a\na\n").unwrap();

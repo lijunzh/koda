@@ -33,6 +33,27 @@ pub fn is_fully_denied(path: &Path) -> bool {
         || crate::defaults::xdg_config_home().is_some_and(|xdg| denied_in(path, &xdg))
 }
 
+/// Whether `path` is in Koda's own folder ([`crate::defaults::KODA_CONFIG_SUBDIR`]),
+/// which no tool may change unasked, its worktrees apart. `path` is taken as resolved; the
+/// config folders are compared as given and through their links.
+pub fn is_koda_config(path: &Path) -> bool {
+    resolve_home_dir().is_some_and(|home| {
+        crate::defaults::config_folders(&home)
+            .iter()
+            .any(|config| in_koda_folder(path, config))
+    })
+}
+
+/// Whether `path` is in Koda's folder under the config folder `config`.
+fn in_koda_folder(path: &Path, config: &Path) -> bool {
+    let inside = |koda: &Path| {
+        path.starts_with(koda)
+            && !path.starts_with(koda.join(crate::defaults::KODA_WORKTREES_SUBDIR))
+    };
+    let koda = config.join(crate::defaults::KODA_CONFIG_SUBDIR);
+    inside(&koda) || koda.canonicalize().is_ok_and(|real| inside(&real))
+}
+
 /// Whether `path` is in a folder fully denied in `config`. Runs for every
 /// path a tool is given, so it makes no path of its own.
 fn denied_in(path: &Path, config: &Path) -> bool {
@@ -104,6 +125,36 @@ pub(crate) fn is_fully_denied_with_home(path: &Path, home: Option<&str>) -> bool
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kodas_own_folder_is_recognised_and_its_neighbours_arent() {
+        let config = Path::new("/home/me/.config");
+        assert!(in_koda_folder(
+            Path::new("/home/me/.config/koda/config.toml"),
+            config
+        ));
+        assert!(in_koda_folder(
+            Path::new("/home/me/.config/koda/skills/a/SKILL.md"),
+            config
+        ));
+        assert!(!in_koda_folder(
+            Path::new("/home/me/.config/kodak/config.toml"),
+            config
+        ));
+        assert!(!in_koda_folder(
+            Path::new("/home/me/.config/gh/hosts.yml"),
+            config
+        ));
+        assert!(!in_koda_folder(
+            Path::new("/home/me/project/koda/config.toml"),
+            config
+        ));
+        // A session's own checkout among Koda's worktrees is its to write.
+        assert!(!in_koda_folder(
+            Path::new("/home/me/.config/koda/worktrees/repo/wt-1/src/a.rs"),
+            config
+        ));
+    }
 
     #[test]
     fn fully_denied_blocks_koda_db() {

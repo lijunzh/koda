@@ -539,6 +539,20 @@ pub(crate) fn credential_deny_rules(home: &str) -> String {
         rules.push_str(&format!("(deny file-write* (literal \"{p}\"))\n"));
     }
 
+    // Koda's own settings, which decide what the next session runs.
+    for config in crate::defaults::config_folders(home) {
+        let koda = home_path(
+            &config.to_string_lossy(),
+            crate::defaults::KODA_CONFIG_SUBDIR,
+        );
+        // Its worktrees apart: a session there writes its own checkout.
+        let worktrees = home_path(&koda, crate::defaults::KODA_WORKTREES_SUBDIR);
+        rules.push_str(&format!(
+            "(deny file-write* (require-all (subpath \"{koda}\") \
+             (require-not (subpath \"{worktrees}\"))))\n"
+        ));
+    }
+
     // Tier 2 — full read+write deny (koda's own secrets).
     rules.push_str("; ── strict: full deny for koda-internal secrets ─────────────\n");
     for config in crate::defaults::config_folders(home) {

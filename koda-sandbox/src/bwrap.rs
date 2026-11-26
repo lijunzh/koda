@@ -81,7 +81,7 @@ pub fn build_command(
     }
 
     let (mut cmd, home) = base_cmd(project_root);
-    apply_credential_denies(&mut cmd, &home);
+    apply_credential_denies(&mut cmd, &home, project_root);
     // Gap 1 of #1072: protect git hooks + config when allow_git_config=false.
     if !policy.fs.allow_git_config {
         let root = project_root.to_string_lossy();
@@ -136,7 +136,7 @@ pub fn build_command_with_proxy(
     }
 
     let (mut cmd, home) = base_cmd(project_root);
-    apply_credential_denies(&mut cmd, &home);
+    apply_credential_denies(&mut cmd, &home, project_root);
     // Gap 1 of #1072: protect git hooks + config when allow_git_config=false.
     if !policy.fs.allow_git_config {
         let root = project_root.to_string_lossy();
@@ -212,8 +212,29 @@ pub fn build_command_with_proxy(
 /// Apply the credential full-deny tmpfs overlays (layer 2). Shared
 /// between the proxied and unproxied build paths so they stay in
 /// lockstep.
-fn apply_credential_denies(cmd: &mut Command, home: &str) {
+fn apply_credential_denies(cmd: &mut Command, home: &str, project_root: &Path) {
     for config in crate::defaults::config_folders(home) {
+        // Koda's own settings stay read-only where the session's folder
+        // would make them writable; its secrets are hidden on top of that.
+        // A session in one of Koda's worktrees keeps its own checkout.
+        let koda = config.join(crate::defaults::KODA_CONFIG_SUBDIR);
+        if koda.is_dir() {
+            cmd.arg("--ro-bind").arg(&koda).arg(&koda);
+            let worktrees = koda.join(crate::defaults::KODA_WORKTREES_SUBDIR);
+            let in_worktrees = |root: &Path| {
+                root.starts_with(&worktrees)
+                    || worktrees
+                        .canonicalize()
+                        .is_ok_and(|real| root.starts_with(real))
+            };
+            if in_worktrees(project_root)
+                || project_root
+                    .canonicalize()
+                    .is_ok_and(|real| in_worktrees(&real))
+            {
+                cmd.arg("--bind").arg(project_root).arg(project_root);
+            }
+        }
         for rel in CREDENTIAL_CONFIG_FULL_DENY {
             let p = config.join(rel);
             if p.exists() {
