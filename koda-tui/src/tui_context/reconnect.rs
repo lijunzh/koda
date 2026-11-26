@@ -25,6 +25,15 @@ impl TuiContext {
     /// tries quits. Returns the session's turn still running on the server,
     /// for the caller to follow.
     pub(crate) async fn reconnect(&mut self) -> Option<String> {
+        // The server stopped for a newer Koda, which this window can't use.
+        if let Some(version) = self.updated_to.clone() {
+            self.offline = true;
+            err_msg(
+                &mut self.scroll_buffer,
+                updated_away(&version, &self.session.id),
+            );
+            return None;
+        }
         // A host in this process that stopped has nothing to reconnect to.
         if self.backend == crate::backend::Backend::InProcess {
             self.offline = true;
@@ -166,6 +175,48 @@ impl TuiContext {
             }
         }
     }
+}
+
+impl TuiContext {
+    /// Take note of `serve/updating`, saying what it means for this window.
+    /// True when `message` was it.
+    pub(crate) fn note_update(&mut self, message: &koda_client::events::Outgoing) -> bool {
+        let koda_client::events::Outgoing::Notification(
+            koda_client::protocol::ServerNotification::ServeUpdating(update),
+        ) = message
+        else {
+            return false;
+        };
+        let when = if update.working == 0 {
+            "now".to_string()
+        } else {
+            format!(
+                "once the turns running in {} session(s) finish; new turns are refused until then",
+                update.working
+            )
+        };
+        warn_msg(
+            &mut self.scroll_buffer,
+            format!(
+                "Koda was updated to {}. Its server restarts onto it {when}. This window \
+                 runs {} and can't go on after that: /quit, then `koda --resume {}`.",
+                update.version,
+                env!("CARGO_PKG_VERSION"),
+                self.session.id
+            ),
+        );
+        self.updated_to = Some(update.version.clone());
+        true
+    }
+}
+
+/// What a window says once its server has stopped for `version`.
+fn updated_away(version: &str, session: &str) -> String {
+    format!(
+        "Koda's server stopped for the update to {version}, which this window ({}) can't \
+         use. /quit, then `koda --resume {session}` goes on with this session.",
+        env!("CARGO_PKG_VERSION")
+    )
 }
 
 /// Whether a key press asks to quit while reconnecting.

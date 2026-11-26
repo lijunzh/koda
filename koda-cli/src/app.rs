@@ -1245,7 +1245,10 @@ async fn stop_server(socket: &Path) -> Result<(), String> {
     .map_err(|_| format!("no koda serve is listening at {}", socket.display()))?;
     let answer = client
         .request::<koda_client::protocol::methods::ServeStop>(
-            koda_client::protocol::serve::ServeStopParams { if_idle: false },
+            koda_client::protocol::serve::ServeStopParams {
+                if_idle: false,
+                ..Default::default()
+            },
         )
         .await
         .map_err(|e| e.to_string())?;

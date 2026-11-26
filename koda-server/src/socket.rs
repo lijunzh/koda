@@ -481,6 +481,38 @@ struct RouterState {
     timers: HashMap<String, tokio::task::AbortHandle>,
     /// The last join token given.
     next_join: u64,
+    /// The newer version this server makes way for once its running turns
+    /// end (`serve/stop` with `forUpdate` and `afterTurns`): new turns are
+    /// refused until then.
+    update: Option<String>,
+}
+
+/// Requests that start a turn, which a server making way for a newer Koda
+/// refuses, as Codex's draining app-server refuses new turns. A goal set
+/// on an idle session starts one, and so does compaction.
+const TURN_ADMISSIONS: &[&str] = &["turn/start", "session/compact/start", "session/goal/set"];
+
+/// Sessions with a turn running or a request waiting: the work that stopping
+/// the server would cut short.
+fn working(state: &RouterState) -> u32 {
+    let mut working: HashSet<&String> = state.running.iter().collect();
+    working.extend(
+        state
+            .pending
+            .iter()
+            .filter(|(_, pending)| !pending.is_empty())
+            .map(|(session, _)| session),
+    );
+    u32::try_from(working.len()).unwrap_or(u32::MAX)
+}
+
+/// The error a draining server answers a new turn with, Codex's.
+fn draining_error() -> ErrorObject {
+    ErrorObject {
+        code: codes::INVALID_REQUEST,
+        message: koda_protocol::serve::DRAINING_MESSAGE.to_string(),
+        data: Some(serde_json::json!({ "reason": koda_protocol::serve::DRAINING_REASON })),
+    }
 }
 
 impl Router {
@@ -545,6 +577,11 @@ impl Router {
                 state.running.remove(&session);
             }
             _ => {}
+        }
+        // Making way for a newer Koda: the last turn has ended, or the last
+        // request been answered. This message still goes out first.
+        if state.update.is_some() && working(&state) == 0 {
+            self.stop_requested.notify_one();
         }
         // What changes the list of sessions goes to every client, as Codex
         // sends a thread's start, rename, delete and status to every
@@ -842,6 +879,88 @@ impl Router {
             outbox.close();
         }
     }
+
+    /// `serve/stop` with `forUpdate`: make way for Koda `version`. Clients
+    /// don't hold the server back, since none can go on with a server of
+    /// another version; only running turns and waiting requests do. With
+    /// those, `if_idle` leaves everything as it is and says how many there
+    /// are, `after_turns` waits for them refusing new turns, and neither
+    /// stops them. Returns the answer and whether to stop now.
+    fn make_way(
+        &self,
+        version: &str,
+        if_idle: bool,
+        after_turns: bool,
+    ) -> (koda_protocol::serve::ServeStopResponse, bool) {
+        use koda_protocol::serve::ServeStopResponse;
+        let mut state = self.lock();
+        let working = working(&state);
+        let waiting = |working: u32| {
+            Some(format!(
+                "{working} session(s) have a turn running or a request waiting"
+            ))
+        };
+        // Already waiting for them, at another client's word.
+        if state.update.is_some() && working > 0 {
+            let answer = ServeStopResponse {
+                stopped: false,
+                reason: waiting(working),
+                working,
+                draining: true,
+            };
+            return (answer, false);
+        }
+        if working > 0 && if_idle {
+            let answer = ServeStopResponse {
+                stopped: false,
+                reason: waiting(working),
+                working,
+                draining: false,
+            };
+            return (answer, false);
+        }
+        let draining = working > 0 && after_turns;
+        self.announce(&state, version, if draining { working } else { 0 });
+        if draining {
+            tracing::info!(
+                "koda serve: making way for Koda {version} once {working} session(s) finish"
+            );
+            state.update = Some(version.to_string());
+            let answer = ServeStopResponse {
+                stopped: false,
+                reason: waiting(working),
+                working,
+                draining: true,
+            };
+            return (answer, false);
+        }
+        tracing::info!("koda serve: making way for Koda {version}");
+        let answer = ServeStopResponse {
+            stopped: true,
+            reason: None,
+            working,
+            draining: false,
+        };
+        (answer, true)
+    }
+
+    /// Tell every client the server is making way for `version`.
+    fn announce(&self, state: &RouterState, version: &str, working: u32) {
+        let notice = crate::events::Outgoing::Notification(
+            koda_protocol::ServerNotification::ServeUpdating(
+                koda_protocol::serve::ServeUpdatingNotification {
+                    version: version.to_string(),
+                    working,
+                },
+            ),
+        );
+        let Ok(line) = notice.to_json() else {
+            return;
+        };
+        for outbox in state.connections.values() {
+            outbox.push(line.clone());
+        }
+    }
 }
 
 /// Serve one client until it hangs up or its socket breaks.
@@ -926,19 +1045,30 @@ async fn connection(id: u64, stream: UnixStream, router: Arc<Router>, initialize
                     continue;
                 }
                 if method == methods::ServeStop::NAME {
-                    let if_idle = request
-                        .params
-                        .as_ref()
-                        .and_then(|p| p["ifIdle"].as_bool())
-                        .unwrap_or(false);
-                    let busy = if if_idle {
-                        router.busy_reason(Some(id))
-                    } else {
-                        None
-                    };
-                    let result = koda_protocol::serve::ServeStopResponse {
-                        stopped: busy.is_none(),
-                        reason: busy.clone(),
+                    // Each field read on its own, so a field a later Koda
+                    // adds can't turn the request into a plain stop.
+                    let params = request.params.as_ref();
+                    let flag = |name: &str| params.and_then(|p| p[name].as_bool()).unwrap_or(false);
+                    let if_idle = flag("ifIdle");
+                    let for_update = params
+                        .and_then(|p| p["forUpdate"].as_str())
+                        .map(str::to_string);
+                    let (result, stop) = match for_update {
+                        Some(version) => router.make_way(&version, if_idle, flag("afterTurns")),
+                        None => {
+                            let busy = if if_idle {
+                                router.busy_reason(Some(id))
+                            } else {
+                                None
+                            };
+                            let stop = busy.is_none();
+                            let result = koda_protocol::serve::ServeStopResponse {
+                                stopped: stop,
+                                reason: busy,
+                                ..Default::default()
+                            };
+                            (result, stop)
+                        }
                     };
                     outbox.push(
                         serde_json::to_string(&rpc::Response::new(
@@ -947,9 +1077,14 @@ async fn connection(id: u64, stream: UnixStream, router: Arc<Router>, initialize
                         ))
                         .unwrap_or_default(),
                     );
-                    if busy.is_none() {
+                    if stop {
                         router.stop_requested.notify_one();
                     }
+                    continue;
+                }
+                // Making way for a newer Koda: no new turns.
+                if TURN_ADMISSIONS.contains(&method.as_str()) && router.lock().update.is_some() {
+                    outbox.push(error_line(Some(request_id), draining_error()).unwrap_or_default());
                     continue;
                 }
                 if method == methods::SessionUnsubscribe::NAME {

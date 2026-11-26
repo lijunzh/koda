@@ -2995,9 +2995,21 @@
       "additionalProperties": false,
       "description": "`serve/stop`: stop the shared server, as `claude daemon stop` stops\nClaude Code's supervisor. Only `koda serve` takes it; a host in the\nclient's process refuses it.",
       "properties": {
+        "afterTurns": {
+          "default": false,
+          "description": "With `forUpdate`: when turns are running, let them finish and stop\nafter the last one, refusing new turns meanwhile, as Codex's\napp-server drains. Without it and without `ifIdle`, running turns\nare stopped and end interrupted.",
+          "type": "boolean"
+        },
+        "forUpdate": {
+          "description": "The newer Koda version this server makes way for. Clients still\nconnected don't hold it back, since none of them can go on with a\nserver of another version; each is told with `serve/updating`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "ifIdle": {
           "default": false,
-          "description": "Stop only if nothing would be lost: no open session and no other\nclient. A TUI that finds a server of another version asks this way.",
+          "description": "Stop only if nothing would be lost. Without `forUpdate`: no session\nwith a client, a running turn or a waiting request, and no other\nclient. With it: no running turn and no waiting request.",
           "type": "boolean"
         }
       },
@@ -3006,6 +3018,10 @@
     "ServeStopResponse": {
       "description": "The answer to `serve/stop`, sent before the server stops.",
       "properties": {
+        "draining": {
+          "description": "Whether it is waiting for those turns to finish before it stops.",
+          "type": "boolean"
+        },
         "reason": {
           "description": "Why it isn't, when it isn't.",
           "type": [
@@ -3014,12 +3030,38 @@
           ]
         },
         "stopped": {
-          "description": "Whether it is stopping.",
+          "description": "Whether it is stopping now.",
           "type": "boolean"
+        },
+        "working": {
+          "description": "Sessions with a turn running or a request waiting, when asked with\n`forUpdate`: what a client asks its user about.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
         }
       },
       "required": [
         "stopped"
+      ],
+      "type": "object"
+    },
+    "ServeUpdatingNotification": {
+      "description": "`serve/updating`: the server is stopping to make way for a newer Koda,\nnow or once `working` sessions' turns finish, which it waits for\nrefusing new turns. Sent to every client. A client of the server's\nversion can't go on with the newer one: it tells its user to start it\nagain rather than reconnecting. Koda's own; Codex's clients learn of a\nrestart from the error a draining server answers new turns with.",
+      "properties": {
+        "version": {
+          "description": "The version that replaces it.",
+          "type": "string"
+        },
+        "working": {
+          "description": "Sessions whose turns it waits for; 0 when it stops at once.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "working"
       ],
       "type": "object"
     },
@@ -5962,6 +6004,11 @@
     "mcpServer/startupStatus/updated": {
       "params": {
         "$ref": "#/$defs/McpServerStatusUpdatedNotification"
+      }
+    },
+    "serve/updating": {
+      "params": {
+        "$ref": "#/$defs/ServeUpdatingNotification"
       }
     },
     "serverRequest/resolved": {

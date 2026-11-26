@@ -1254,6 +1254,173 @@ async fn serve_stop_stops_the_server_unless_asked_only_when_idle() {
     assert!(!koda.socket.exists());
 }
 
+/// A newer Koda replaces a server whose clients are only connected: none
+/// of them can go on with a server of another version, so they don't hold
+/// it back, and each is told before it goes.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_newer_koda_replaces_a_server_whose_clients_are_idle() {
+    let server = model(vec![]).await;
+    let mut koda = Server::start(config(&server), Duration::from_secs(60)).await;
+    let mut other = Client::ready(&koda).await;
+    other.start_session().await;
+    let mut newer = Client::ready(&koda).await;
+
+    let answer = newer
+        .request("serve/stop", json!({"ifIdle": true, "forUpdate": "9.9.9"}))
+        .await
+        .unwrap();
+    assert_eq!(answer, json!({"stopped": true}), "{answer}");
+    let told = other.until_method("serve/updating").await;
+    assert_eq!(
+        told.last().unwrap()["params"],
+        json!({"version": "9.9.9", "working": 0})
+    );
+    tokio::time::timeout(WAIT, &mut koda.served)
+        .await
+        .expect("koda serve didn't stop")
+        .unwrap()
+        .unwrap();
+    assert!(!koda.socket.exists());
+}
+
+/// A running turn holds it back: asked only if idle, the server says how
+/// many sessions are working and changes nothing; asked to wait, it
+/// refuses new turns with Codex's draining error, tells every client, and
+/// stops once the turn ends.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_newer_koda_waits_for_running_turns_when_asked() {
+    let server = model(vec![write_file("w1", "a.txt"), text("Written.")]).await;
+    let mut koda = Server::start(safe(&server), Duration::from_secs(60)).await;
+    let mut other = Client::ready(&koda).await;
+    let session = other.start_session().await;
+    other
+        .request(
+            "turn/start",
+            json!({"sessionId": session, "input": "write it"}),
+        )
+        .await
+        .unwrap();
+    let asked = other.until_method("item/toolCall/requestApproval").await;
+    let request_id = asked.last().unwrap()["id"].clone();
+
+    let mut newer = Client::ready(&koda).await;
+    let busy = newer
+        .request("serve/stop", json!({"ifIdle": true, "forUpdate": "9.9.9"}))
+        .await
+        .unwrap();
+    assert_eq!(busy["stopped"], false, "{busy}");
+    assert_eq!(busy["working"], 1, "{busy}");
+    assert!(busy.get("draining").is_none(), "{busy}");
+    // Nothing changed: new turns still start elsewhere.
+    let second = other.start_session().await;
+    other
+        .request(
+            "session/settings/update",
+            json!({"sessionId": second, "mode": "plan"}),
+        )
+        .await
+        .unwrap();
+
+    let draining = newer
+        .request(
+            "serve/stop",
+            json!({"forUpdate": "9.9.9", "afterTurns": true}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(draining["stopped"], false, "{draining}");
+    assert_eq!(draining["draining"], true, "{draining}");
+    let told = other.until_method("serve/updating").await;
+    assert_eq!(
+        told.last().unwrap()["params"],
+        json!({"version": "9.9.9", "working": 1})
+    );
+    let refused = other
+        .request(
+            "turn/start",
+            json!({"sessionId": second, "input": "anything"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(refused["data"]["reason"], "serverShuttingDown", "{refused}");
+    assert_eq!(
+        refused["message"],
+        "Server is draining; retry after reconnecting"
+    );
+    // Another newer client finds it already waiting.
+    let mut another = Client::ready(&koda).await;
+    let again = another
+        .request("serve/stop", json!({"ifIdle": true, "forUpdate": "9.9.9"}))
+        .await
+        .unwrap();
+    assert_eq!(again["draining"], true, "{again}");
+    assert!(!koda.served.is_finished(), "it waits for the turn");
+
+    other
+        .answer(&request_id, json!({"decision": {"type": "approve"}}))
+        .await;
+    let rest = other.until_method("turn/completed").await;
+    assert_eq!(
+        rest.last().unwrap()["params"]["turn"]["status"],
+        "completed"
+    );
+    tokio::time::timeout(WAIT, &mut koda.served)
+        .await
+        .expect("koda serve didn't stop after the turn")
+        .unwrap()
+        .unwrap();
+    assert!(!koda.socket.exists());
+}
+
+/// Told to stop now, the server stops the running turn: stored, it reads
+/// as interrupted when the session is opened again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_newer_koda_can_stop_running_turns() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = model(vec![write_file("w1", "a.txt"), text("Written.")]).await;
+    let mut koda = Server::start_in(dir.path(), safe(&server), Duration::from_secs(60)).await;
+    let mut other = Client::ready(&koda).await;
+    let session = other.start_session().await;
+    other
+        .request(
+            "turn/start",
+            json!({"sessionId": session, "input": "write it"}),
+        )
+        .await
+        .unwrap();
+    other.until_method("item/toolCall/requestApproval").await;
+
+    let mut newer = Client::ready(&koda).await;
+    let answer = newer
+        .request("serve/stop", json!({"forUpdate": "9.9.9"}))
+        .await
+        .unwrap();
+    assert_eq!(answer["stopped"], true, "{answer}");
+    assert_eq!(answer["working"], 1, "{answer}");
+    let told = other.until_method("serve/updating").await;
+    assert_eq!(told.last().unwrap()["params"]["working"], 0);
+    tokio::time::timeout(WAIT, &mut koda.served)
+        .await
+        .expect("koda serve didn't stop")
+        .unwrap()
+        .unwrap();
+
+    let koda = Server::start_in(dir.path(), safe(&server), Duration::from_secs(60)).await;
+    let mut reader = Client::ready(&koda).await;
+    let read = reader
+        .request(
+            "session/read",
+            json!({"sessionId": session, "includeTurns": true}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        read["session"]["turns"][0]["status"], "interrupted",
+        "{read}"
+    );
+    koda.stop().await;
+}
+
 /// A client that hangs up while its `session/start` is being answered
 /// doesn't stay the session's subscriber: another client opens the session,
 /// and once that one leaves it is idle, so the server may stop.

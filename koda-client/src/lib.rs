@@ -50,6 +50,9 @@ pub use koda_server::{builtin_skills, earlier_input_history, events, feedback, s
 /// Getting back to the shared server after losing it, as Codex's TUI does.
 pub mod reconnect;
 
+/// Whether a server's version is this client's: Koda runs one version.
+pub mod version;
+
 use events::Outgoing;
 use koda_server::in_process::{HostStart, launch};
 

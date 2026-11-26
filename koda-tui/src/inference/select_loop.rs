@@ -652,6 +652,9 @@ impl TuiContext {
         if self.take_request(&message) {
             return;
         }
+        if self.note_update(&message) {
+            return;
+        }
         let notification = match &message {
             Outgoing::Notification(notification) => notification,
             _ => return,

@@ -361,6 +361,45 @@ and `nc -U ~/.config/koda/serve/koda.sock` is enough to try it.)
   `ifIdle` it stops only if no session is in use (a client, a running turn or a
   request waiting) and no other client is connected.
 
+## One version, and updates
+
+Every Koda client and the server run the same version: a client uses only a
+server whose `serverInfo.version` in the `initialize` answer is its own. Koda
+doesn't keep its protocol compatible across versions, so a client of another
+app (the desktop app included) follows the same rule:
+
+- **An older server is replaced.** Send `serve/stop` with `forUpdate` (your
+  version) and `ifIdle`. Connected clients don't hold it back, since none can
+  go on with a server of another version: with no turn running and no request
+  waiting it answers `{"stopped": true}`, tells every client, and stops; start
+  a server of your version once its socket is gone. Otherwise it answers
+  `{"stopped": false, "working": N}` and changes nothing: ask the user, as
+  Codex's TUI does before a restart that may interrupt work, then send
+  `serve/stop` with `forUpdate` and `afterTurns` to wait for those turns, or
+  with `forUpdate` alone to stop them now (they end `interrupted`, stored).
+  While it waits it answers `{"draining": true}` and refuses new turns
+  (`turn/start`, `session/compact/start`, `session/goal/set`) with Codex's
+  error, `"Server is draining; retry after reconnecting"`,
+  `data: {"reason": "serverShuttingDown"}`, and stops after the last one.
+- **A newer server means Koda was updated** while you were running. Don't use
+  it, and don't stop or replace it; say the client must be started again.
+- **`serve/updating`** goes to every client before the server stops for an
+  update: `version` is the one replacing it, and `working` the sessions it
+  still waits for (0 when it stops at once). A client of the old version
+  can't go on afterwards, so it tells its user to start it again rather than
+  reconnecting, and doesn't start a server of its own version in the gap.
+
+Codex drains its app-server in the same way when its manager restarts it onto
+a new version (60 seconds for running turns, then it stops them); its clients
+use a server of another version and warn. Koda waits for the user's choice
+and doesn't use a server of another version.
+
+**What stays the same across versions** is only what two versions need to
+speak to each other for this: `initialize` and the `serverInfo.version` in
+its answer, `serve/stop` with its fields and answer, and `serve/updating`.
+Anything else in the protocol may change in any release, with the client
+and server changing together.
+
 ## The TUI on the shared server
 
 `koda` works on the shared server, as Codex's TUI works on its daemon: it
@@ -387,10 +426,18 @@ it was waiting for is still there.
   A side conversation or `/review` ends with the connection: the TUI returns
   to the main session. Ctrl+C quits while it tries. If it gives up, your next
   prompt tries again.
-- **After an update,** a server of another version is replaced if nothing is
-  in use, as Claude Code's supervisor restarts onto a new version; if it's
-  busy, this run uses its own process and says so. `koda serve --stop` stops
-  it.
+- **After an update,** the first `koda` you run replaces the older server
+  (see [One version, and updates](#one-version-and-updates)). Windows that are
+  only open don't hold it back. If turns are running in other windows, it
+  asks: wait for them to finish (the default, and what it does with no
+  terminal to ask on; Ctrl+C leaves, and the server restarts after them
+  anyway), restart now (those turns stop, saved as interrupted), or quit and
+  leave it running. The older windows say Koda was updated; once their server
+  has gone they ask you to quit and run `koda --resume <id>` rather than
+  reconnecting. A `koda` older than the running server doesn't use or replace
+  it, and says Koda was updated. A server from before 0.7.13 doesn't know
+  this and refuses while other windows are open: `koda` then says to run
+  `koda serve --stop` (which stops their turns) and start it again.
 - **API keys:** the server has the environment of the shell that started it.
   A key saved with `/key` works for every TUI; one only in a shell's
   environment reaches the server only if that shell started it.
