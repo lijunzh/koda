@@ -7,7 +7,9 @@
 
 use koda_client::InProcessClient;
 use koda_client::protocol::methods;
-use koda_client::protocol::session::{Session, SessionListParams};
+use koda_client::protocol::session::{
+    Session, SessionListCwd, SessionListParams, SessionSourceKind,
+};
 
 /// How many sessions one `session/list` page asks for.
 const PAGE: u32 = 100;
@@ -62,9 +64,21 @@ pub(crate) async fn all_sessions(client: &InProcessClient) -> anyhow::Result<Vec
             // This client's project: on the shared server, the server's own
             // folder is another's.
             .request::<methods::SessionList>(SessionListParams {
-                cwd: Some(client.project_root().display().to_string()),
+                cwd: Some(SessionListCwd::One(
+                    client.project_root().display().to_string(),
+                )),
                 limit: Some(PAGE),
                 cursor,
+                // Every kind: an id may name a `koda exec` run or a
+                // sub-agent's session, which the list leaves out by default.
+                source_kinds: Some(vec![
+                    SessionSourceKind::Cli,
+                    SessionSourceKind::Exec,
+                    SessionSourceKind::AppServer,
+                    SessionSourceKind::SubAgent,
+                    SessionSourceKind::Unknown,
+                ]),
+                ..Default::default()
             })
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;

@@ -1586,8 +1586,10 @@ pub(crate) fn describe(stored: &koda_state::session_store::SessionInfo) -> Sessi
         created_at: stored.created_unix,
         updated_at: stored.updated_unix,
         cwd: stored.project_root.clone(),
-        model: None,
-        provider: None,
+        // As stored: the choice as made, which may be an alias. An open
+        // session says what it resolved to.
+        model: stored.model.clone(),
+        provider: stored.provider.clone(),
         context_window: None,
         mode: stored
             .mode
@@ -1595,7 +1597,25 @@ pub(crate) fn describe(stored: &koda_state::session_store::SessionInfo) -> Sessi
             .and_then(koda_core::trust::TrustMode::parse),
         tools: None,
         instruction_sources: None,
+        source: Some(source_kind(stored.source.as_deref())),
+        originator: stored.originator.clone(),
+        forked_from_id: stored.forked_from_id.clone(),
+        parent_session_id: stored.parent_session_id.clone(),
+        ephemeral: stored.ephemeral,
         turns: Vec::new(),
+    }
+}
+
+/// A stored session's source, as the protocol names it.
+fn source_kind(stored: Option<&str>) -> koda_protocol::session::SessionSourceKind {
+    use koda_protocol::session::SessionSourceKind;
+    use koda_state::session_store::source;
+    match stored {
+        Some(source::CLI) => SessionSourceKind::Cli,
+        Some(source::EXEC) => SessionSourceKind::Exec,
+        Some(source::APP_SERVER) => SessionSourceKind::AppServer,
+        Some(source::SUB_AGENT) => SessionSourceKind::SubAgent,
+        _ => SessionSourceKind::Unknown,
     }
 }
 
