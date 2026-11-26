@@ -1054,6 +1054,13 @@ impl SessionStore for Database {
             .execute(&mut *tx)
             .await?;
 
+        // Its notices and sub-agent events, which hold a foreign key to it:
+        // left behind, they refuse the delete below.
+        sqlx::query("DELETE FROM session_events WHERE session_id = ?")
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await?;
+
         let result = sqlx::query("DELETE FROM sessions WHERE id = ?")
             .bind(session_id)
             .execute(&mut *tx)

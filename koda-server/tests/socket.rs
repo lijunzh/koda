@@ -939,6 +939,48 @@ async fn serve_stop_stops_the_server_unless_asked_only_when_idle() {
     assert!(!koda.socket.exists());
 }
 
+/// A client that hangs up while its `session/start` is being answered
+/// doesn't stay the session's subscriber: another client opens the session,
+/// and once that one leaves it is idle, so the server may stop.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_that_leaves_while_opening_a_session_doesnt_keep_it() {
+    let server = model(vec![]).await;
+    let mut koda = Server::start(config(&server), Duration::from_millis(300)).await;
+    let mut first = Client::ready(&koda).await;
+    let session = first.start_session().await;
+    drop(first);
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    // It opens the stored session and hangs up before the answer.
+    let mut leaver = Client::ready(&koda).await;
+    leaver
+        .send_request("session/start", json!({"sessionId": session}))
+        .await;
+    drop(leaver);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let mut next = Client::ready(&koda).await;
+    let opened = next
+        .request("session/start", json!({"sessionId": session}))
+        .await
+        .unwrap_or_else(|e| panic!("the session can't be opened again: {e}"));
+    assert_eq!(opened["session"]["id"], session.as_str());
+    drop(next);
+
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let mut asking = Client::ready(&koda).await;
+    let idle = asking
+        .request("serve/stop", json!({"ifIdle": true}))
+        .await
+        .unwrap();
+    assert_eq!(idle["stopped"], true, "{idle}");
+    tokio::time::timeout(WAIT, &mut koda.served)
+        .await
+        .expect("koda serve didn't stop")
+        .unwrap()
+        .unwrap();
+}
+
 /// Started with an idle exit, as the TUI starts it, the server stops once
 /// it has had no client and no work that long, and not while a client is
 /// connected.

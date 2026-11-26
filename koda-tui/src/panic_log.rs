@@ -26,6 +26,18 @@ pub(crate) fn record_panic(info: &PanicHookInfo<'_>) {
     koda_state::log_db::flush_blocking(std::time::Duration::from_secs(2));
 }
 
+/// Record this process's panics from now on, then run the hook that was
+/// there: for `koda serve` and `koda exec`, which have no terminal to
+/// restore. A server the TUI starts has no terminal at all, so the log is
+/// the only place its panic can be read.
+pub fn install() {
+    let original = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        record_panic(info);
+        original(info);
+    }));
+}
+
 /// The backtrace, or why there isn't one: it is captured only with
 /// `RUST_BACKTRACE` set.
 fn backtrace_text() -> String {
