@@ -3,14 +3,17 @@
 # Koda follows Codex's protocol and says "session" where Codex says
 # "thread"; that mapping is applied before comparing and isn't listed here.
 # `scripts/check_codex_parity.sh` compares every method, notification and
-# server request Koda has with Codex's, field by field, and fails on a
-# difference not listed here, or on an entry here that no longer differs.
-# A new difference is either renamed to Codex's name or recorded with its
-# reason. Koda lacking something Codex has isn't checked.
+# server request Koda has with Codex's, field by field and enum value by
+# enum value, and fails on a difference not listed here, or on an entry
+# here that no longer differs. A new difference is either renamed to
+# Codex's name or spelling, or recorded with its reason. Koda lacking
+# something Codex has isn't checked.
 #
-# Keys: `methods` by method name, `fields` as `Type.field` (a tagged
-# union's field as `Type.tag.field`), `variants` as `Type.tag`, with Koda's
-# type names.
+# Keys: `methods` and `results` (an answer Codex's schema has under neither
+# the params' name nor Koda's) by method name, `fields` as `Type.field` (a
+# tagged union's field as `Type.tag.field`), `variants` as `Type.tag`,
+# `values` as `Type.value` (a value a string enum of Koda's takes that
+# Codex's doesn't), with Koda's type names.
 
 [methods]
 # The one tool-call item, as the Agent Client Protocol has it, where Codex
@@ -68,6 +71,7 @@
 "ModelProviderSummary.envKey" = "Koda stores provider API keys: the variable a key can come from"
 "ModelProviderSummary.hasApiKey" = "Koda stores provider API keys"
 "ModelProviderSummary.requiresApiKey" = "Koda stores provider API keys"
+"ConfigWriteResponse.config" = "The settings as saved, -c values included, so a client needn't follow a write with config/read; Codex's answer has only status, version and filePath"
 "KodaConfigValues.agent" = "config/read gives Koda's config file, whose keys aren't Codex's"
 "KodaConfigValues.file_mentions" = "config/read gives Koda's config file"
 "KodaConfigValues.mcp_servers" = "config/read gives Koda's config file"
@@ -129,3 +133,6 @@
 [variants]
 "Item.toolCall" = "Koda's one tool-call item, as the Agent Client Protocol has it, where Codex has commandExecution, fileChange, mcpToolCall and others"
 "TurnItem.toolCall" = "As Item.toolCall"
+
+[values]
+"SessionSourceKind.subAgent" = "Session.source is the kind alone, as session/list's sourceKinds; Codex's SessionSource writes a sub-agent's as {subAgent: SubAgentSource}, with its parent and role"

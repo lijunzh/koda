@@ -4,8 +4,11 @@
 //! "thread". This walks every method, notification and server request Koda
 //! has, pairs it with Codex's of the same name, and compares their params
 //! and results down through the types they reach: each field Koda has must
-//! be one Codex has under the same name, or a deviation recorded in
-//! `codex-deviations.toml` with its reason. A recorded deviation that no
+//! be one Codex has under the same name, each value a string enum of Koda's
+//! can take must be one Codex's takes, spelled the same, or a deviation
+//! recorded in `codex-deviations.toml` with its reason. A method's answer
+//! is paired with Codex's by name; one Codex's schema doesn't name is a
+//! difference too, so a result isn't skipped unseen. A recorded deviation that no
 //! longer differs is reported too, so the file stays true. What Codex has
 //! and Koda lacks isn't checked: Koda doesn't aim to have all of it.
 //!
@@ -39,6 +42,10 @@ struct Deviations {
     fields: BTreeMap<String, String>,
     #[serde(default)]
     variants: BTreeMap<String, String>,
+    #[serde(default)]
+    values: BTreeMap<String, String>,
+    #[serde(default)]
+    results: BTreeMap<String, String>,
 }
 
 /// One schema's definitions, by name.
@@ -146,6 +153,48 @@ impl Defs<'_> {
         }
         out
     }
+
+    /// The values a string enum takes: a plain `enum`, a `const`, or the
+    /// `const`s and `enum`s of a `oneOf` or `anyOf` (where schemars puts an
+    /// enum whose values have doc comments). `None` when `schema` isn't one.
+    /// A union of strings and objects (Codex's `AskForApproval`) gives its
+    /// strings.
+    fn string_values(&self, schema: &Value) -> Option<BTreeSet<String>> {
+        let schema = self.resolve(schema);
+        let strings = |values: &Value| -> Option<BTreeSet<String>> {
+            let values = values.as_array()?;
+            values
+                .iter()
+                .map(|v| v.as_str().map(str::to_string))
+                .collect()
+        };
+        if let Some(values) = schema.get("enum") {
+            return strings(values);
+        }
+        if let Some(value) = schema.get("const").and_then(Value::as_str) {
+            return Some(BTreeSet::from([value.to_string()]));
+        }
+        let mut out = BTreeSet::new();
+        for key in ["oneOf", "anyOf"] {
+            for part in schema
+                .get(key)
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let part = self.resolve(part);
+                if part.get("properties").is_some() {
+                    continue;
+                }
+                if let Some(values) = part.get("enum").and_then(strings) {
+                    out.extend(values);
+                } else if let Some(value) = part.get("const").and_then(Value::as_str) {
+                    out.insert(value.to_string());
+                }
+            }
+        }
+        (!out.is_empty()).then_some(out)
+    }
 }
 
 /// The type name a `$ref` names: its last segment.
@@ -199,10 +248,11 @@ fn codex_name(name: &str) -> String {
         .replace("Session", "Thread")
 }
 
-/// What differs, each as `kind`, `where`.
+/// What differs, each as `kind`, `where`, with what each side has where
+/// that helps (an enum's values).
 #[derive(Default)]
 struct Walk {
-    differences: BTreeSet<(String, String)>,
+    differences: BTreeMap<(String, String), String>,
     seen: BTreeSet<(String, String)>,
 }
 
@@ -224,6 +274,23 @@ impl Walk {
         if !self.seen.insert(pair) {
             return;
         }
+        // A string enum: each value Koda's takes must be one Codex's takes.
+        // Values only Codex's takes aren't checked, as fields.
+        if let (Some(ours), Some(theirs)) = (koda.string_values(k), codex.string_values(c)) {
+            for value in &ours {
+                if !theirs.contains(value) && !theirs.contains(&codex_name(value)) {
+                    self.differences.insert(
+                        ("values".into(), format!("{name}.{value}")),
+                        format!(
+                            "Koda: {}; Codex: {}",
+                            ours.iter().cloned().collect::<Vec<_>>().join(", "),
+                            theirs.iter().cloned().collect::<Vec<_>>().join(", "),
+                        ),
+                    );
+                }
+            }
+            return;
+        }
         let koda_variants = koda.variants(k);
         if !koda_variants.is_empty() {
             // The fields a union has beside its variants (a stored item's
@@ -238,7 +305,7 @@ impl Walk {
                     .is_some_and(|t| t.contains_key(&codex_name(field)) || t.contains_key(field));
                 if !matched {
                     self.differences
-                        .insert(("fields".into(), format!("{name}.{field}")));
+                        .insert(("fields".into(), format!("{name}.{field}")), String::new());
                 }
             }
             let codex_variants = codex.variants(c);
@@ -254,7 +321,7 @@ impl Walk {
                     ),
                     None => {
                         self.differences
-                            .insert(("variants".into(), format!("{name}.{tag}")));
+                            .insert(("variants".into(), format!("{name}.{tag}")), String::new());
                     }
                 }
             }
@@ -278,7 +345,7 @@ impl Walk {
                 ),
                 None => {
                     self.differences
-                        .insert(("fields".into(), format!("{name}.{field}")));
+                        .insert(("fields".into(), format!("{name}.{field}")), String::new());
                 }
             }
         }
@@ -301,8 +368,22 @@ fn codex_methods(codex: &Defs, kind: &str) -> BTreeMap<String, Value> {
     out
 }
 
+/// The name of Codex's answer to a method Koda answers with `result`: its
+/// params' type with `Response` for `Params`, or else Koda's result type
+/// under Codex's name (`config/batchWrite` answers with
+/// `ConfigWriteResponse`; Codex's `config/mcpServer/reload` takes no
+/// params). `None` when Codex has neither.
+fn codex_response(codex: &Defs, params: &Value, result: &Value) -> Option<String> {
+    let from_params = type_name(params).map(|name| name.replace("Params", "Response"));
+    let from_result = type_name(result).map(|name| codex_name(&name));
+    [from_params, from_result]
+        .into_iter()
+        .flatten()
+        .find(|name| codex.get(name).is_some())
+}
+
 /// Every difference between Koda's protocol and Codex's in `codex_dir`.
-fn differences(codex_dir: &Path) -> BTreeSet<(String, String)> {
+fn differences(codex_dir: &Path) -> BTreeMap<(String, String), String> {
     let bundle: Value = serde_json::from_str(
         &std::fs::read_to_string(codex_dir.join("codex_app_server_protocol.schemas.json"))
             .expect("Codex's schema bundle"),
@@ -313,7 +394,7 @@ fn differences(codex_dir: &Path) -> BTreeSet<(String, String)> {
 
 /// Every difference between `koda_schema`, as `koda_protocol::schema`
 /// gives it, and Codex's schema `bundle`.
-fn differences_between(koda_schema: &Value, bundle: &Value) -> BTreeSet<(String, String)> {
+fn differences_between(koda_schema: &Value, bundle: &Value) -> BTreeMap<(String, String), String> {
     let koda = Defs {
         defs: koda_schema["$defs"]
             .as_object()
@@ -342,16 +423,22 @@ fn differences_between(koda_schema: &Value, bundle: &Value) -> BTreeSet<(String,
         let theirs = codex_methods(&codex, kind);
         for (method, spec) in koda_schema[group].as_object().into_iter().flatten() {
             let Some(params) = theirs.get(&codex_name(method)) else {
-                walk.differences.insert(("methods".into(), method.clone()));
+                walk.differences
+                    .insert(("methods".into(), method.clone()), String::new());
                 continue;
             };
             walk.compare(&koda, &codex, &spec["params"], params, method, 0);
-            // A response is the params' type with `Response` for `Params`.
-            if let (Some(result), Some(params_type)) = (spec.get("result"), type_name(params)) {
-                let response = params_type.replace("Params", "Response");
-                if codex.get(&response).is_some() {
-                    let theirs = serde_json::json!({ "$ref": format!("#/definitions/{response}") });
-                    walk.compare(&koda, &codex, result, &theirs, method, 0);
+            if let Some(result) = spec.get("result") {
+                match codex_response(&codex, params, result) {
+                    Some(response) => {
+                        let theirs =
+                            serde_json::json!({ "$ref": format!("#/definitions/{response}") });
+                        walk.compare(&koda, &codex, result, &theirs, method, 0);
+                    }
+                    None => {
+                        walk.differences
+                            .insert(("results".into(), method.clone()), String::new());
+                    }
                 }
             }
         }
@@ -377,21 +464,28 @@ fn koda_s_protocol_is_codex_s_or_a_recorded_deviation() {
     let recorded = |kind: &str| match kind {
         "methods" => &deviations.methods,
         "fields" => &deviations.fields,
+        "values" => &deviations.values,
+        "results" => &deviations.results,
         _ => &deviations.variants,
     };
     let unexplained: Vec<String> = found
         .iter()
-        .filter(|(kind, at)| !recorded(kind).contains_key(at))
-        .map(|(kind, at)| format!("{kind}: {at}"))
+        .filter(|((kind, at), _)| !recorded(kind).contains_key(at))
+        .map(|((kind, at), detail)| match detail.as_str() {
+            "" => format!("{kind}: {at}"),
+            detail => format!("{kind}: {at} ({detail})"),
+        })
         .collect();
     let mut stale = Vec::new();
     for (kind, table) in [
         ("methods", &deviations.methods),
         ("fields", &deviations.fields),
         ("variants", &deviations.variants),
+        ("values", &deviations.values),
+        ("results", &deviations.results),
     ] {
         for at in table.keys() {
-            if !found.contains(&(kind.to_string(), at.clone())) {
+            if !found.contains_key(&(kind.to_string(), at.clone())) {
                 stale.push(format!("{kind}: {at}"));
             }
         }
@@ -400,7 +494,7 @@ fn koda_s_protocol_is_codex_s_or_a_recorded_deviation() {
         unexplained.is_empty() && stale.is_empty(),
         "Koda's protocol differs from Codex's where no deviation is recorded:\n  {}\n\
          Recorded deviations that no longer differ:\n  {}\n\
-         Rename to Codex's name, or record the deviation and its reason in \
+         Rename to Codex's name or spelling, or record the deviation and its reason in \
          koda-protocol/codex-deviations.toml.",
         unexplained.join("\n  "),
         stale.join("\n  "),
@@ -457,13 +551,126 @@ fn a_renamed_field_or_a_missing_variant_is_a_difference() {
         }
     }});
     let found = differences_between(&koda, &codex);
-    let found: Vec<String> = found.iter().map(|(k, at)| format!("{k}: {at}")).collect();
+    let found: Vec<String> = found.keys().map(|(k, at)| format!("{k}: {at}")).collect();
     assert_eq!(
         found,
         [
             "fields: SessionReadParams.withTurns",
             "methods: koda/only",
             "variants: SessionStatus.sleeping",
+        ]
+    );
+}
+
+/// A string enum is compared by its values: one Koda spells differently
+/// (`finalAnswer` for Codex's `final_answer`, the 2026-11-26 `MessagePhase`
+/// miss) is a difference, whether Koda writes the enum as `oneOf` of
+/// `const`s and Codex as a plain `enum` or the other way round. A value only
+/// Codex has isn't, and neither is a tag that matches.
+#[test]
+fn an_enum_value_spelled_differently_is_a_difference() {
+    let koda = serde_json::json!({
+        "methods": {},
+        "notifications": {
+            "item/completed": {"params": {"$ref": "#/$defs/ItemCompletedNotification"}}
+        },
+        "serverRequests": {},
+        "$defs": {
+            "ItemCompletedNotification": {"properties": {
+                "phase": {"anyOf": [{"$ref": "#/$defs/MessagePhase"}, {"type": "null"}]},
+                "status": {"$ref": "#/$defs/Status"}
+            }},
+            "MessagePhase": {"oneOf": [
+                {"type": "string", "const": "commentary"},
+                {"type": "string", "const": "finalAnswer"}
+            ]},
+            "Status": {"type": "string", "enum": ["done"]}
+        }
+    });
+    let codex = serde_json::json!({"definitions": {
+        "ServerNotification": {"oneOf": [{"properties": {
+            "method": {"enum": ["item/completed"]},
+            "params": {"$ref": "#/definitions/v2/ItemCompletedNotification"}
+        }}]},
+        "v2": {
+            "ItemCompletedNotification": {"properties": {
+                "phase": {"anyOf": [{"$ref": "#/definitions/v2/MessagePhase"}, {"type": "null"}]},
+                "status": {"$ref": "#/definitions/v2/Status"}
+            }},
+            "MessagePhase": {"type": "string", "enum": ["commentary", "partial_answer", "final_answer"]},
+            "Status": {"oneOf": [
+                {"type": "string", "enum": ["done"], "description": "Finished."},
+                {"type": "string", "enum": ["failed"]}
+            ]}
+        }
+    }});
+    let found = differences_between(&koda, &codex);
+    let found: Vec<String> = found
+        .iter()
+        .map(|((k, at), detail)| format!("{k}: {at} ({detail})"))
+        .collect();
+    assert_eq!(
+        found,
+        ["values: MessagePhase.finalAnswer \
+             (Koda: commentary, finalAnswer; Codex: commentary, final_answer, partial_answer)"]
+    );
+}
+
+/// A method's answer is paired with Codex's by its params' name
+/// (`XParams`, `XResponse`) or else by its own (`config/batchWrite` answers
+/// with `ConfigWriteResponse`), and compared: a field Codex's answer lacks
+/// is a difference. An answer Codex has under neither name is reported.
+#[test]
+fn an_answer_is_paired_by_its_own_name_when_not_by_its_params() {
+    let koda = serde_json::json!({
+        "methods": {
+            "config/batchWrite": {
+                "params": {"$ref": "#/$defs/ConfigBatchWriteParams"},
+                "result": {"$ref": "#/$defs/ConfigWriteResponse"}
+            },
+            "config/read": {
+                "params": {"$ref": "#/$defs/ConfigReadParams"},
+                "result": {"$ref": "#/$defs/KodaConfig"}
+            }
+        },
+        "notifications": {},
+        "serverRequests": {},
+        "$defs": {
+            "ConfigBatchWriteParams": {"properties": {}},
+            "ConfigReadParams": {"properties": {}},
+            "ConfigWriteResponse": {"properties": {
+                "status": {"type": "string", "enum": ["ok"]},
+                "written": {"type": "boolean"}
+            }},
+            "KodaConfig": {"properties": {"config": {"type": "object"}}}
+        }
+    });
+    let codex = serde_json::json!({"definitions": {
+        "ClientRequest": {"oneOf": [
+            {"properties": {
+                "method": {"enum": ["config/batchWrite"]},
+                "params": {"$ref": "#/definitions/v2/ConfigBatchWriteParams"}
+            }},
+            {"properties": {
+                "method": {"enum": ["config/read"]},
+                "params": {"$ref": "#/definitions/v2/ConfigReadParams"}
+            }}
+        ]},
+        "v2": {
+            "ConfigBatchWriteParams": {"properties": {}},
+            "ConfigReadParams": {"properties": {}},
+            "ConfigWriteResponse": {"properties": {
+                "status": {"type": "string", "enum": ["ok", "okOverridden"]}
+            }}
+        }
+    }});
+    let found = differences_between(&koda, &codex);
+    let found: Vec<String> = found.keys().map(|(k, at)| format!("{k}: {at}")).collect();
+    assert_eq!(
+        found,
+        [
+            "fields: ConfigWriteResponse.written",
+            "results: config/read"
         ]
     );
 }
