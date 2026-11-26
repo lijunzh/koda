@@ -628,12 +628,7 @@ impl EventProjector {
                 detail,
                 preview,
                 ..
-            } => {
-                if let Some(call) = self.calls.get_mut(&tool_call_id) {
-                    call.detail = Some(detail);
-                    call.changes = changes_of(preview.as_ref());
-                }
-            }
+            } => self.note_detail(&tool_call_id, detail, preview.as_ref()),
             EngineEvent::ApprovalRequest {
                 id,
                 tool_call_id,
@@ -973,6 +968,20 @@ impl EventProjector {
                 diff,
             },
         ))
+    }
+
+    /// What call `tool_call_id` would have done, and the changes it would
+    /// have made, for its item: set when it is blocked or asked about.
+    pub(crate) fn note_detail(
+        &mut self,
+        tool_call_id: &str,
+        detail: String,
+        preview: Option<&koda_core::preview::DiffPreview>,
+    ) {
+        if let Some(call) = self.calls.get_mut(tool_call_id) {
+            call.detail = Some(detail);
+            call.changes = changes_of(preview);
+        }
     }
 
     /// A sub-agent's approval request, with an id of the host's own: it is
