@@ -110,7 +110,16 @@ struct OpenCall {
     /// The file change it makes, for the turn's diff: set for the session's
     /// own `Edit` and `Write` calls when Koda could preview them.
     applied: Option<AppliedEdit>,
+    /// How many output lines it has sent.
+    deltas: usize,
 }
+
+/// The most output lines one call sends, as Codex's
+/// `MAX_EXEC_OUTPUT_DELTAS_PER_CALL`.
+const MAX_OUTPUT_DELTAS: usize = 10_000;
+/// The most bytes one output line sends, as Codex's
+/// `UNIFIED_EXEC_OUTPUT_DELTA_MAX_BYTES`; a longer one is cut with `…`.
+const MAX_DELTA_BYTES: usize = 8192;
 
 /// An edit's file before and after, from its preview.
 #[derive(Debug)]
@@ -497,6 +506,7 @@ impl EventProjector {
                         changes,
                         progress: Vec::new(),
                         applied,
+                        deltas: 0,
                     },
                 );
                 out.push(self.item_started(parent, item));
@@ -505,19 +515,39 @@ impl EventProjector {
                 id,
                 line,
                 is_stderr,
-            } => out.push(notification(ServerNotification::ToolCallOutputDelta(
-                ToolCallOutputDeltaNotification {
-                    session_id: self.session_id.clone(),
-                    turn_id: self.turn(),
-                    item_id: id,
-                    delta: format!("{line}\n"),
-                    stream: if is_stderr {
-                        OutputStream::Stderr
-                    } else {
-                        OutputStream::Stdout
+            } => {
+                // As much as Codex sends of a call's output: the model reads
+                // its own copy, and a client drawing a flood of lines falls
+                // behind and is dropped.
+                if let Some(call) = self.calls.get_mut(&id) {
+                    call.deltas += 1;
+                    if call.deltas > MAX_OUTPUT_DELTAS {
+                        return out;
+                    }
+                }
+                let mut line = line;
+                if line.len() > MAX_DELTA_BYTES {
+                    let mut end = MAX_DELTA_BYTES;
+                    while !line.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    line.truncate(end);
+                    line.push('\u{2026}');
+                }
+                out.push(notification(ServerNotification::ToolCallOutputDelta(
+                    ToolCallOutputDeltaNotification {
+                        session_id: self.session_id.clone(),
+                        turn_id: self.turn(),
+                        item_id: id,
+                        delta: format!("{line}\n"),
+                        stream: if is_stderr {
+                            OutputStream::Stderr
+                        } else {
+                            OutputStream::Stdout
+                        },
                     },
-                },
-            ))),
+                )));
+            }
             EngineEvent::ToolCallResult {
                 id,
                 name,
@@ -1875,6 +1905,37 @@ mod tests {
             }
         }
         assert_eq!(seen.len(), 2);
+    }
+
+    /// A call sends at most Codex's share of its output: ten thousand lines,
+    /// each at most 8 KiB, cut at a character.
+    #[test]
+    fn a_calls_output_is_capped_as_codexs_is() {
+        let mut p = EventProjector::new("s1");
+        let line = |text: String| EngineEvent::ToolOutputLine {
+            id: "c1".into(),
+            line: text,
+            is_stderr: false,
+        };
+        let mut events = vec![(None, start("c1", "Bash"))];
+        events.push((None, line("é".repeat(MAX_DELTA_BYTES))));
+        for i in 0..MAX_OUTPUT_DELTAS + 5 {
+            events.push((None, line(format!("line {i}"))));
+        }
+        let lines = run(&mut p, events);
+        let deltas: Vec<&str> = lines
+            .iter()
+            .filter(|l| l["method"] == "item/toolCall/outputDelta")
+            .map(|l| l["params"]["delta"].as_str().unwrap())
+            .collect();
+        assert_eq!(deltas.len(), MAX_OUTPUT_DELTAS);
+        let long = deltas[0];
+        assert!(long.len() <= MAX_DELTA_BYTES + 5, "{}", long.len());
+        assert!(long.ends_with("\u{2026}\n"), "cut, and says so");
+        assert_eq!(
+            deltas.last().unwrap(),
+            &format!("line {}\n", MAX_OUTPUT_DELTAS - 2)
+        );
     }
 
     fn edit_start(id: &str, path: &str, before: Option<&str>, after: &str) -> EngineEvent {

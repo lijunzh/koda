@@ -69,6 +69,10 @@ struct Call {
     /// result isn't drawn again; the streamed lines are folded in place
     /// ([`ScrollBuffer::fold_since`]).
     stream_start: Option<u64>,
+    /// Its header, not drawn yet: it started while another of the session's
+    /// calls was open (a batch run together), so it is drawn with its
+    /// result, where it lands under its own header.
+    header: Option<Line<'static>>,
 }
 
 /// A sub-agent at work: its `InvokeAgent` call, for the line that sums it up.
@@ -347,6 +351,10 @@ impl TuiRenderer {
                 effect,
                 ..
             } => {
+                // Another of the session's own calls is open: this one's
+                // header waits for its result.
+                let another_open =
+                    parent.is_none() && self.calls.values().any(|call| call.parent.is_none());
                 self.calls.insert(
                     id.clone(),
                     Call {
@@ -354,6 +362,7 @@ impl TuiRenderer {
                         effect: *effect,
                         parent: parent.map(str::to_string),
                         stream_start: None,
+                        header: None,
                     },
                 );
                 if tool == "InvokeAgent" {
@@ -380,7 +389,13 @@ impl TuiRenderer {
                     None => {
                         let line =
                             crate::tool_header::build_header_line("", tool, arguments, *effect);
-                        tui_output::emit_line(buffer, line);
+                        if another_open {
+                            if let Some(call) = self.calls.get_mut(id) {
+                                call.header = Some(line);
+                            }
+                        } else {
+                            tui_output::emit_line(buffer, line);
+                        }
                     }
                 }
             }
@@ -433,8 +448,12 @@ impl TuiRenderer {
                 changes,
                 ..
             } => {
-                let call = self.calls.remove(id);
+                let mut call = self.calls.remove(id);
                 let changes_shown = self.changes_shown.remove(id);
+                // A header held back while another call ran goes first.
+                if let Some(header) = call.as_mut().and_then(|call| call.header.take()) {
+                    tui_output::emit_line(buffer, header);
+                }
                 // What happened to it, as both peers show a declined call:
                 // what the model was told says which it was.
                 if *status == ToolCallStatus::Declined {
@@ -546,6 +565,10 @@ impl TuiRenderer {
         let style = theme::content_style_for(call.effect, stderr);
         let sub_agent = call.parent.is_some();
         if !sub_agent {
+            // Its output says whose it is: a held-back header goes first.
+            if let Some(header) = call.header.take() {
+                tui_output::emit_line(buffer, header);
+            }
             call.stream_start.get_or_insert_with(|| buffer.next_seq());
         }
         for text in delta.strip_suffix('\n').unwrap_or(delta).split('\n') {
@@ -1389,6 +1412,36 @@ mod tests {
             assert!(!added.iter().any(|l| l.contains("+ x")), "{added:?}");
             assert!(renderer.calls.is_empty());
         }
+    }
+
+    /// Calls run together all start before any ends: each one's header is
+    /// drawn with its result, so a result lands under its own header.
+    #[test]
+    fn calls_run_together_each_show_under_their_own_header() {
+        let mut renderer = TuiRenderer::new();
+        let mut buffer = ScrollBuffer::new(256);
+        let first = call("b1", "Bash", json!({"command": "echo first"}));
+        let second = call("b2", "Bash", json!({"command": "echo second"}));
+        renderer.render(&started(None, first.clone()), &mut buffer);
+        renderer.render(&started(None, second.clone()), &mut buffer);
+        renderer.render(
+            &completed(None, finished(first, ToolCallStatus::Completed, "out-one")),
+            &mut buffer,
+        );
+        renderer.render(
+            &completed(None, finished(second, ToolCallStatus::Completed, "out-two")),
+            &mut buffer,
+        );
+        let lines = text(&buffer);
+        let at = |needle: &str| {
+            lines
+                .iter()
+                .position(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("no {needle}: {lines:?}"))
+        };
+        assert!(at("echo first") < at("out-one"), "{lines:?}");
+        assert!(at("out-one") < at("echo second"), "{lines:?}");
+        assert!(at("echo second") < at("out-two"), "{lines:?}");
     }
 
     /// A call blocked without asking, as in plan mode, says what it would

@@ -843,6 +843,46 @@ async fn every_client_hears_what_a_session_is_doing() {
     koda.stop().await;
 }
 
+/// A session's requests take effect in the order they were sent, as Codex
+/// queues a thread's: of several updates sent without waiting, each is said
+/// in the order sent, and the last is what the session ends with.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sessions_requests_take_effect_in_the_order_sent() {
+    let server = model(vec![]).await;
+    let koda = Server::start(safe(&server), Duration::from_secs(60)).await;
+    let mut client = Client::ready(&koda).await;
+    let session = client.start_session().await;
+    let modes = ["plan", "safe", "plan", "safe", "plan", "safe", "plan"];
+    let mut sent = Vec::new();
+    for mode in modes {
+        sent.push(
+            client
+                .send_request(
+                    "session/settings/update",
+                    json!({"sessionId": session, "mode": mode}),
+                )
+                .await,
+        );
+    }
+    for id in sent {
+        client.response(id).await.unwrap();
+    }
+    client.request("state/read", json!({})).await.unwrap();
+    let said: Vec<String> = client
+        .seen()
+        .iter()
+        .filter(|l| l["method"] == "session/settings/updated")
+        .map(|l| {
+            l["params"]["settings"]["mode"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(said, modes, "each said in the order sent");
+    koda.stop().await;
+}
+
 /// An approval no client answers is refused once the wait runs out, and
 /// the turn goes on without it.
 #[tokio::test(flavor = "multi_thread")]
