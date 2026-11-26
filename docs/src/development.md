@@ -368,6 +368,10 @@ security-boundary tests ran rather than being skipped, look for each name in
   koda-evals' `cargo test`: the same scripted run must grade alike through every
   protocol. A difference is a change in what `koda exec --json` says; in 0.7.13
   it found a sub-agent refusal that had carried no `detail` since 0.7.11.
+- Run `scripts/check_codex_parity.sh`: Koda's protocol against Codex's, field by
+  field, Codex's experimental methods included (it uses the installed `codex`).
+  A difference is renamed to Codex's name or recorded, with its reason, in
+  `koda-protocol/codex-deviations.toml`. Run it too when Codex is updated.
 - Move CHANGELOG.md `[Unreleased]` to a versioned section.
 - Bump the version in the root `Cargo.toml`: `[workspace.package] version`, which
   every published crate inherits, and the exact pins of the Koda crates under
