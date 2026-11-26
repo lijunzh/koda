@@ -55,7 +55,8 @@ async fn session_writes(db: Database, root: &Path, tag: String) -> anyhow::Resul
             .await?;
         db.kv_set(&format!("{tag}-k{round}"), "v").await?;
     }
-    db.fork_session(&session, "fork", root).await?;
+    db.fork_session(&session, "fork", root, &Default::default())
+        .await?;
     Ok(session)
 }
 

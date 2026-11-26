@@ -73,6 +73,15 @@ fn folder_of(path: &Path) -> &Path {
         .unwrap_or(Path::new("."))
 }
 
+/// The schema's version, kept in SQLite's `user_version`, as Codex's
+/// migrator keeps a ledger. Each version's changes run once, in one
+/// transaction. They only add: an older Koda that opens a newer file runs
+/// its own checks, finds what it needs, and leaves the rest alone, as
+/// Codex's migrator ignores migrations it doesn't know.
+const SCHEMA_VERSION: i64 = 2;
+/// Sets [`SCHEMA_VERSION`]; a pragma takes no bound value.
+const SET_SCHEMA_VERSION: &str = "PRAGMA user_version = 2";
+
 impl Database {
     /// Access the underlying connection pool (for tests and raw queries).
     pub fn pool(&self) -> &SqlitePool {
@@ -141,8 +150,127 @@ impl Database {
         Ok(guard)
     }
 
-    /// Apply the schema (idempotent).
+    /// Bring the file to [`SCHEMA_VERSION`], if it isn't there or past it.
+    ///
+    /// The version is checked again inside the write transaction, so two
+    /// Kodas opening an old file at once take turns and the second finds
+    /// the work done; a failure leaves the file as it was.
     async fn migrate(pool: &SqlitePool) -> Result<()> {
+        let version = |row: (i64,)| row.0;
+        if version(
+            sqlx::query_as("PRAGMA user_version")
+                .fetch_one(pool)
+                .await?,
+        ) >= SCHEMA_VERSION
+        {
+            return Ok(());
+        }
+        use crate::busy_retry::PoolWriteExt;
+        let mut tx = pool.begin_immediate().await?;
+        let found = version(
+            sqlx::query_as("PRAGMA user_version")
+                .fetch_one(&mut *tx)
+                .await?,
+        );
+        if found < 1 {
+            Self::baseline(&mut tx).await?;
+        }
+        if found < 2 {
+            Self::session_origins(&mut tx).await?;
+        }
+        if found < SCHEMA_VERSION {
+            sqlx::query(SET_SCHEMA_VERSION).execute(&mut *tx).await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Version 2: where a session came from, and its preview, on its own
+    /// row, as Codex's `threads` table keeps them, so a list of sessions
+    /// reads no messages. Sessions made before it have no origin recorded,
+    /// which nothing later can tell; their previews and last-used times are
+    /// filled in from their messages.
+    async fn session_origins(conn: &mut sqlx::SqliteConnection) -> Result<()> {
+        // Checked, like the baseline's: a file whose version was lost
+        // (copied by hand, say) may have them already.
+        for (column, add) in [
+            ("source", "ALTER TABLE sessions ADD COLUMN source TEXT"),
+            (
+                "originator",
+                "ALTER TABLE sessions ADD COLUMN originator TEXT",
+            ),
+            (
+                "koda_version",
+                "ALTER TABLE sessions ADD COLUMN koda_version TEXT",
+            ),
+            (
+                "forked_from_id",
+                "ALTER TABLE sessions ADD COLUMN forked_from_id TEXT",
+            ),
+            (
+                "parent_session_id",
+                "ALTER TABLE sessions ADD COLUMN parent_session_id TEXT",
+            ),
+            (
+                "ephemeral",
+                "ALTER TABLE sessions ADD COLUMN ephemeral INTEGER NOT NULL DEFAULT 0",
+            ),
+            ("preview", "ALTER TABLE sessions ADD COLUMN preview TEXT"),
+        ] {
+            let present: Option<(String,)> =
+                sqlx::query_as("SELECT name FROM pragma_table_info('sessions') WHERE name = ?")
+                    .bind(column)
+                    .fetch_optional(&mut *conn)
+                    .await?;
+            if present.is_none() {
+                sqlx::query(add).execute(&mut *conn).await?;
+            }
+        }
+        // A sub-agent's session already named its parent, in its metadata.
+        sqlx::query(
+            "UPDATE sessions SET
+               parent_session_id = COALESCE(parent_session_id,
+                 (SELECT p.value FROM session_metadata p
+                   WHERE p.session_id = sessions.id AND p.key = 'parent_session')),
+               source = COALESCE(source,
+                 (SELECT 'subAgent' FROM session_metadata p
+                   WHERE p.session_id = sessions.id AND p.key = 'parent_session'))",
+        )
+        .execute(&mut *conn)
+        .await?;
+        sqlx::query(
+            "UPDATE sessions SET
+               preview = COALESCE(preview,
+                 (SELECT substr(u.content, 1, 1000) FROM messages u
+                   WHERE u.session_id = sessions.id AND u.role = 'user'
+                   ORDER BY u.id LIMIT 1)),
+               last_accessed_at = COALESCE(
+                 last_accessed_at,
+                 (SELECT MAX(m.created_at) FROM messages m WHERE m.session_id = sessions.id),
+                 created_at)",
+        )
+        .execute(&mut *conn)
+        .await?;
+        // A folder's sessions, latest first, and every folder's.
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_root_recent \
+             ON sessions(project_root, last_accessed_at DESC, id)",
+        )
+        .execute(&mut *conn)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_recent \
+             ON sessions(last_accessed_at DESC, id)",
+        )
+        .execute(&mut *conn)
+        .await?;
+        Ok(())
+    }
+
+    /// Version 1: everything up to Koda 0.7.12, as statements that check
+    /// before they add, since a file from before versions were kept may be
+    /// at any point along the way.
+    async fn baseline(conn: &mut sqlx::SqliteConnection) -> Result<()> {
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY,
@@ -157,7 +285,7 @@ impl Database {
                 model TEXT
             );",
         )
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
 
         sqlx::query(
@@ -184,18 +312,18 @@ impl Database {
                 FOREIGN KEY(session_id) REFERENCES sessions(id)
             );",
         )
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
 
         // Older databases predate this column.
         let has_thinking_blocks: Option<(String,)> = sqlx::query_as(
             "SELECT name FROM pragma_table_info('messages') WHERE name = 'thinking_blocks'",
         )
-        .fetch_optional(pool)
+        .fetch_optional(&mut *conn)
         .await?;
         if has_thinking_blocks.is_none() {
             sqlx::query("ALTER TABLE messages ADD COLUMN thinking_blocks TEXT")
-                .execute(pool)
+                .execute(&mut *conn)
                 .await?;
         }
         // A session's provider, endpoint and model choice, restored on
@@ -208,10 +336,10 @@ impl Database {
             let present: Option<(String,)> =
                 sqlx::query_as("SELECT name FROM pragma_table_info('sessions') WHERE name = ?")
                     .bind(column)
-                    .fetch_optional(pool)
+                    .fetch_optional(&mut *conn)
                     .await?;
             if present.is_none() {
-                sqlx::query(add).execute(pool).await?;
+                sqlx::query(add).execute(&mut *conn).await?;
             }
         }
         // The model that wrote `thinking_content`, so it goes back to that
@@ -219,11 +347,11 @@ impl Database {
         let has_thinking_model: Option<(String,)> = sqlx::query_as(
             "SELECT name FROM pragma_table_info('messages') WHERE name = 'thinking_model'",
         )
-        .fetch_optional(pool)
+        .fetch_optional(&mut *conn)
         .await?;
         if has_thinking_model.is_none() {
             sqlx::query("ALTER TABLE messages ADD COLUMN thinking_model TEXT")
-                .execute(pool)
+                .execute(&mut *conn)
                 .await?;
         }
 
@@ -232,20 +360,20 @@ impl Database {
         // rows have none; older Koda ignores the column.
         let has_images: Option<(String,)> =
             sqlx::query_as("SELECT name FROM pragma_table_info('messages') WHERE name = 'images'")
-                .fetch_optional(pool)
+                .fetch_optional(&mut *conn)
                 .await?;
         if has_images.is_none() {
             sqlx::query("ALTER TABLE messages ADD COLUMN images TEXT")
-                .execute(pool)
+                .execute(&mut *conn)
                 .await?;
         }
 
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id);")
-            .execute(pool)
+            .execute(&mut *conn)
             .await?;
 
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_messages_role_id ON messages(role, id DESC);")
-            .execute(pool)
+            .execute(&mut *conn)
             .await?;
 
         // Session-scoped key-value metadata (e.g. todo list).
@@ -259,14 +387,14 @@ impl Database {
                 FOREIGN KEY(session_id) REFERENCES sessions(id)
             );",
         )
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
 
         // `owned_files` fed the file tracker (#465), removed with the
         // `Delete` tool. Its rows only said which files `Delete` could remove
         // without asking. An older Koda recreates it empty if it needs it.
         sqlx::query("DROP TABLE IF EXISTS owned_files")
-            .execute(pool)
+            .execute(&mut *conn)
             .await?;
 
         // Global key-value store (#693): replaces settings.toml and keys.toml.
@@ -280,7 +408,7 @@ impl Database {
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );",
         )
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
 
         // Input history until the TUI kept its own `history.jsonl`; read once
@@ -292,7 +420,7 @@ impl Database {
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );",
         )
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
 
         // Session events (#1108 P1b/P2a): non-message engine events that
@@ -315,14 +443,14 @@ impl Database {
                 FOREIGN KEY(session_id) REFERENCES sessions(id)
             );",
         )
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
 
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_session_events_session_id \
              ON session_events(session_id, id);",
         )
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
 
         // Turn records (6h): each turn as a client saw it, written by the
@@ -338,17 +466,17 @@ impl Database {
                 FOREIGN KEY(session_id) REFERENCES sessions(id)
             );",
         )
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_turn_records_session_id \
              ON turn_records(session_id, id);",
         )
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
 
         // A session's goal (Codex's `thread_goals`).
-        Self::migrate_goals(pool).await?;
+        Self::migrate_goals(conn).await?;
 
         Ok(())
     }
@@ -419,8 +547,6 @@ pub(crate) struct SessionInfoRow {
     pub id: String,
     pub agent_name: String,
     pub created_at: String,
-    pub message_count: i64,
-    pub total_tokens: i64,
     pub title: Option<String>,
     pub mode: Option<String>,
     pub created_unix: i64,
@@ -430,6 +556,11 @@ pub(crate) struct SessionInfoRow {
     pub provider: Option<String>,
     pub base_url: Option<String>,
     pub model: Option<String>,
+    pub source: Option<String>,
+    pub originator: Option<String>,
+    pub forked_from_id: Option<String>,
+    pub parent_session_id: Option<String>,
+    pub ephemeral: bool,
 }
 
 impl From<SessionInfoRow> for SessionInfo {
@@ -438,8 +569,6 @@ impl From<SessionInfoRow> for SessionInfo {
             id: r.id,
             agent_name: r.agent_name,
             created_at: r.created_at,
-            message_count: r.message_count,
-            total_tokens: r.total_tokens,
             title: r.title,
             mode: r.mode,
             created_unix: r.created_unix,
@@ -449,6 +578,11 @@ impl From<SessionInfoRow> for SessionInfo {
             provider: r.provider,
             base_url: r.base_url,
             model: r.model,
+            source: r.source,
+            originator: r.originator,
+            forked_from_id: r.forked_from_id,
+            parent_session_id: r.parent_session_id,
+            ephemeral: r.ephemeral,
         }
     }
 }

@@ -160,8 +160,40 @@ pub struct SessionEvent {
 }
 
 /// Metadata key on a sub-agent's session, holding the id of the session that
-/// started it.
+/// started it. The session's row holds it too ([`SessionInfo::parent_session_id`]);
+/// the key stays for a Koda from before the column.
 pub const PARENT_SESSION_KEY: &str = "parent_session";
+
+/// How a session came to be, as Codex's `SessionSource` says of a thread.
+/// Stored as text; a session from before it was recorded has none.
+pub mod source {
+    /// Started in the terminal UI.
+    pub const CLI: &str = "cli";
+    /// Started by `koda exec`.
+    pub const EXEC: &str = "exec";
+    /// Started by another client of the server, such as a desktop app.
+    pub const APP_SERVER: &str = "appServer";
+    /// Started by a session, for one of its sub-agents.
+    pub const SUB_AGENT: &str = "subAgent";
+}
+
+/// How many characters of its first prompt a session keeps as its preview.
+pub const PREVIEW_CHARS: usize = 1000;
+
+/// Where a new session came from, recorded on its row.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionOrigin {
+    /// One of [`source`]'s, when known.
+    pub source: Option<String>,
+    /// The client that started it, by the name it gave in `initialize`, as
+    /// Codex records a thread's originator.
+    pub originator: Option<String>,
+    /// The session whose sub-agent this is.
+    pub parent_session_id: Option<String>,
+    /// Not meant to be kept or listed: a side conversation or a review,
+    /// which its client deletes, as Codex marks a thread ephemeral.
+    pub ephemeral: bool,
+}
 
 /// One stored part of a turn: the turn as it started or ended, or an item
 /// as it completed, which the client host writes as a client saw them, so
@@ -318,19 +350,16 @@ pub struct SessionInfo {
     pub agent_name: String,
     /// ISO 8601 creation timestamp.
     pub created_at: String,
-    /// Total messages in the session.
-    pub message_count: i64,
-    /// Cumulative token count.
-    pub total_tokens: i64,
     /// Auto-generated title from first user message.
     pub title: Option<String>,
     /// Last active approval mode (for restore on resume).
     pub mode: Option<String>,
     /// Creation time, in Unix seconds.
     pub created_unix: i64,
-    /// The last message's time (the creation time before any), in Unix seconds.
+    /// When it was last written (its creation before that), in Unix seconds.
     pub updated_unix: i64,
-    /// The session's first user message, if it has one.
+    /// The start of the session's first user message, if it has one
+    /// ([`PREVIEW_CHARS`] of it).
     pub preview: Option<String>,
     /// The project it was started in; `None` for sessions older than the column.
     pub project_root: Option<String>,
@@ -340,6 +369,17 @@ pub struct SessionInfo {
     pub base_url: Option<String>,
     /// The model choice as made, an alias or an id, when recorded.
     pub model: Option<String>,
+    /// How it came to be, one of [`source`]'s; `None` from before it was
+    /// recorded.
+    pub source: Option<String>,
+    /// The client that started it, by its `initialize` name, when recorded.
+    pub originator: Option<String>,
+    /// The session it was forked from.
+    pub forked_from_id: Option<String>,
+    /// The session whose sub-agent it is.
+    pub parent_session_id: Option<String>,
+    /// A side conversation or a review, not meant to be listed.
+    pub ephemeral: bool,
 }
 
 /// Core storage contract for sessions, messages, and metadata.
@@ -348,7 +388,17 @@ pub trait SessionStore: Send + Sync {
     // ── Sessions ──
 
     /// Create a new session, returning its unique ID.
-    async fn create_session(&self, agent_name: &str, project_root: &Path) -> Result<String>;
+    async fn create_session(&self, agent_name: &str, project_root: &Path) -> Result<String> {
+        self.create_session_from(agent_name, project_root, &SessionOrigin::default())
+            .await
+    }
+    /// [`Self::create_session`], recording where it came from.
+    async fn create_session_from(
+        &self,
+        agent_name: &str,
+        project_root: &Path,
+        origin: &SessionOrigin,
+    ) -> Result<String>;
     /// List recent sessions for the given project root.
     async fn list_sessions(&self, limit: i64, project_root: &Path) -> Result<Vec<SessionInfo>> {
         self.list_sessions_from(limit, 0, project_root).await
@@ -370,8 +420,15 @@ pub trait SessionStore: Send + Sync {
     /// `thread/fork` copies a thread's rollout. The copy belongs to
     /// `project_root`, where it opens, as a Codex fork takes the cwd it
     /// starts in (`koda fork --worktree` opens it in a new checkout). One
-    /// transaction; `source` is left as it was.
-    async fn fork_session(&self, source: &str, title: &str, project_root: &Path) -> Result<String>;
+    /// transaction; `source` is left as it was. The copy records `source`
+    /// as what it was forked from, and `origin` as who forked it.
+    async fn fork_session(
+        &self,
+        source: &str,
+        title: &str,
+        project_root: &Path,
+        origin: &SessionOrigin,
+    ) -> Result<String>;
     /// Delete a session by ID. Returns `true` if it existed.
     async fn delete_session(&self, session_id: &str) -> Result<bool>;
     /// Set the auto-generated title for a session.

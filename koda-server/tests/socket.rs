@@ -981,6 +981,39 @@ async fn a_client_that_leaves_while_opening_a_session_doesnt_keep_it() {
         .unwrap();
 }
 
+/// A session records who started it, by the name its connection gave, and
+/// a fork what it was forked from and that it isn't one to keep.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_records_the_client_that_started_it() {
+    use koda_state::session_store::SessionStore;
+    let server = model(vec![]).await;
+    let koda = Server::start(config(&server), Duration::from_secs(60)).await;
+    let mut client = Client::ready(&koda).await;
+    let session = client.start_session().await;
+    let fork = client
+        .request(
+            "session/fork",
+            json!({"sessionId": session, "ephemeral": true}),
+        )
+        .await
+        .unwrap()["session"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let home = koda._dir.as_ref().unwrap().path().join("config");
+    let db = koda_state::db::Database::init(&home).await.unwrap();
+    let started = db.get_session(&session).await.unwrap().unwrap();
+    assert_eq!(started.source.as_deref(), Some("appServer"));
+    assert_eq!(started.originator.as_deref(), Some("socket-test"));
+    assert!(!started.ephemeral);
+    let forked = db.get_session(&fork).await.unwrap().unwrap();
+    assert_eq!(forked.forked_from_id.as_deref(), Some(session.as_str()));
+    assert_eq!(forked.originator.as_deref(), Some("socket-test"));
+    assert!(forked.ephemeral);
+    koda.stop().await;
+}
+
 /// Started with an idle exit, as the TUI starts it, the server stops once
 /// it has had no client and no work that long, and not while a client is
 /// connected.

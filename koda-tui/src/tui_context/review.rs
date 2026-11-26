@@ -308,6 +308,8 @@ impl TuiContext {
                 model: Some(model),
                 cwd: Some(self.client.project_root().display().to_string()),
                 config: Some(config),
+                // Its findings go back to the main session; it isn't kept.
+                ephemeral: Some(true),
                 ..Default::default()
             })
             .await;

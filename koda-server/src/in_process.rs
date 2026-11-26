@@ -46,7 +46,11 @@ impl RequestHandle {
         let (reply, answer) = oneshot::channel();
         let closed = || RequestError::Closed { method: M::NAME };
         self.commands
-            .send(HostCommand::Request { request, reply })
+            .send(HostCommand::Request {
+                request,
+                reply,
+                client: None,
+            })
             .await
             .map_err(|_| closed())?;
         let result = answer

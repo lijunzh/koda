@@ -913,7 +913,11 @@ async fn connection(id: u64, stream: UnixStream, router: Arc<Router>, initialize
                 if router
                     .handle
                     .commands
-                    .send(HostCommand::Request { request, reply })
+                    .send(HostCommand::Request {
+                        request,
+                        reply,
+                        client: outbox.client(),
+                    })
                     .await
                     .is_err()
                 {
@@ -1030,7 +1034,7 @@ pub async fn connect(socket: &Path) -> Result<crate::in_process::Launched, Reque
             tokio::select! {
                 command = incoming.recv() => {
                     let out = match command {
-                        Some(HostCommand::Request { request, reply }) => {
+                        Some(HostCommand::Request { request, reply, .. }) => {
                             waiting.insert(request.id.clone(), reply);
                             serde_json::to_string(&request)
                         }

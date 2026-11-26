@@ -580,7 +580,15 @@ fn run_sub_agent<'a>(
             sid
         } else {
             let sid = db
-                .create_session(&sub_config.agent_name, project_root)
+                .create_session_from(
+                    &sub_config.agent_name,
+                    project_root,
+                    &koda_state::session_store::SessionOrigin {
+                        source: Some(koda_state::session_store::source::SUB_AGENT.to_string()),
+                        parent_session_id: Some(parent_session_id.to_string()),
+                        ..Default::default()
+                    },
+                )
                 .await?;
             db.set_metadata(
                 &sid,
