@@ -153,11 +153,49 @@ pub async fn serve(
     idle_exit: Option<Duration>,
     stop: impl Future<Output = ()> + Send,
 ) -> Result<(), ServeError> {
+    // Every session's MCP servers, files and clients count against one
+    // process; macOS's default of 256 is reached with 15 to 25 sessions
+    // running MCP servers. Codex's app-server daemon raises it the same way.
+    if let Err(e) = raise_open_file_limit() {
+        tracing::warn!("koda serve: couldn't raise the open-file limit: {e}");
+    }
     let options = Options {
         idle_exit,
         ..Options::default()
     };
     serve_on(args, None, socket, options, stop).await
+}
+
+/// The soft open-file limit `koda serve` asks for, as Codex's app-server
+/// daemon does (`app-server/src/managed_daemon.rs`).
+const OPEN_FILE_LIMIT: libc::rlim_t = 4096;
+
+/// The soft limit to set: [`OPEN_FILE_LIMIT`], never above the hard limit and
+/// never below what the process already has.
+fn open_file_target(soft: libc::rlim_t, hard: libc::rlim_t) -> libc::rlim_t {
+    soft.max(hard.min(OPEN_FILE_LIMIT))
+}
+
+/// Raise this process's soft open-file limit to [`open_file_target`].
+fn raise_open_file_limit() -> std::io::Result<()> {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit fills in the rlimit it is given.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let target = open_file_target(limit.rlim_cur, limit.rlim_max);
+    if target == limit.rlim_cur {
+        return Ok(());
+    }
+    limit.rlim_cur = target;
+    // SAFETY: the soft limit asked for is at most the hard limit.
+    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const limit) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// [`serve`] with new sessions starting from `config`, for tests that need
@@ -1367,4 +1405,38 @@ pub async fn connect(socket: &Path) -> Result<crate::in_process::Launched, Reque
         host: task,
         events: received,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_open_file_target_is_codex_s() {
+        // macOS's default soft limit, with room under the hard limit.
+        assert_eq!(open_file_target(256, libc::RLIM_INFINITY), 4096);
+        // Never above the hard limit.
+        assert_eq!(open_file_target(256, 1024), 1024);
+        // Never lower than what the process already has.
+        assert_eq!(open_file_target(65_536, libc::RLIM_INFINITY), 65_536);
+    }
+
+    #[test]
+    fn the_open_file_limit_is_raised() {
+        raise_open_file_limit().unwrap();
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit fills in the rlimit it is given.
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit) },
+            0
+        );
+        assert!(
+            limit.rlim_cur >= limit.rlim_max.min(OPEN_FILE_LIMIT),
+            "{}",
+            limit.rlim_cur
+        );
+    }
 }

@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **`koda serve` raises its open-file limit to 4,096,** as Codex's app-server daemon does, never above the system's hard limit. Every session's MCP servers, files and clients count against the one server, and macOS's default of 256 could be reached with 15 to 25 sessions running MCP servers.
 - **`koda exec resume --model` keeps the session's provider,** as Codex's `thread/resume` does. Naming a model on resume used to drop the stored provider, so a session on Anthropic with a local `--base-url` resumed on LM Studio and failed. Found by koda-evals' new request comparison against Claude Code.
 - **No `anthropic-beta: prompt-caching-2024-07-31` header:** prompt caching is GA, and a request now names only the betas it uses (thinking binding, task budgets).
 
