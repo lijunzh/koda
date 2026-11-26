@@ -43,6 +43,20 @@ impl TuiContext {
         }
     }
 
+    /// Forget every request, on screen or queued: the connection they came
+    /// over is gone, and the host sends again what it still waits on.
+    pub(crate) fn drop_requests(&mut self) {
+        self.queued_requests.clear();
+        if self.shown_request().is_some() {
+            self.menu = MenuContent::None;
+            if matches!(self.prompt_mode, PromptMode::WizardInput { .. }) {
+                self.prompt_mode = PromptMode::Chat;
+                self.textarea.set_text_clearing_elements("");
+            }
+        }
+        self.pending_approval_id = None;
+    }
+
     /// Show the next queued request once nothing is asking.
     pub(crate) fn show_next_request(&mut self) {
         if self.shown_request().is_some() || self.pending_approval_id.is_some() {

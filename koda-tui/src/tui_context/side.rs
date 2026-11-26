@@ -300,7 +300,7 @@ impl TuiContext {
     }
 
     /// Draw the main session again from what the host has stored.
-    async fn redraw_main(&mut self) {
+    pub(super) async fn redraw_main(&mut self) {
         use koda_client::protocol::session::SessionReadParams;
         let read = self
             .client

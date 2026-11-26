@@ -12,6 +12,9 @@
 
 use crate::file_search::FileSearch;
 
+/// How long Tab waits for the host's file search.
+const TAB_SEARCH_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
+
 /// Re-export so existing call sites (and external doc-tests) can keep
 /// referring to `crate::completer::SLASH_COMMANDS`. The canonical
 /// definition moved to [`crate::composer::slash_popup`] in #1187.
@@ -144,7 +147,11 @@ impl InputCompleter {
         if !is_cycling {
             self.token = format!("@{partial}");
             self.matches = match &self.files {
-                Some(files) => files.search(partial).await,
+                // Tab waits for the answer, so not for long: a walk of a
+                // very large folder gives nothing rather than a stuck TUI.
+                Some(files) => tokio::time::timeout(TAB_SEARCH_WAIT, files.search(partial))
+                    .await
+                    .unwrap_or_default(),
                 None => Vec::new(),
             };
             self.idx = 0;
