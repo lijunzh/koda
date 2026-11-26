@@ -2063,7 +2063,7 @@ dependencies = [
 
 [[package]]
 name = "koda-cli"
-version = "0.7.12"
+version = "0.7.13"
 dependencies = [
  "anyhow",
  "clap",
@@ -2093,7 +2093,7 @@ dependencies = [
 
 [[package]]
 name = "koda-client"
-version = "0.7.12"
+version = "0.7.13"
 dependencies = [
  "koda-config",
  "koda-core",
@@ -2109,7 +2109,7 @@ dependencies = [
 
 [[package]]
 name = "koda-command"
-version = "0.7.12"
+version = "0.7.13"
 dependencies = [
  "path-clean",
  "regex",
@@ -2120,7 +2120,7 @@ dependencies = [
 
 [[package]]
 name = "koda-config"
-version = "0.7.12"
+version = "0.7.13"
 dependencies = [
  "koda-protocol",
  "serde",
@@ -2134,7 +2134,7 @@ dependencies = [
 
 [[package]]
 name = "koda-core"
-version = "0.7.12"
+version = "0.7.13"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2184,7 +2184,7 @@ dependencies = [
 
 [[package]]
 name = "koda-git"
-version = "0.7.12"
+version = "0.7.13"
 dependencies = [
  "serde_json",
  "tempfile",
@@ -2193,7 +2193,7 @@ dependencies = [
 
 [[package]]
 name = "koda-mcp"
-version = "0.7.12"
+version = "0.7.13"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2215,7 +2215,7 @@ dependencies = [
 
 [[package]]
 name = "koda-memory"
-version = "0.7.12"
+version = "0.7.13"
 dependencies = [
  "anyhow",
  "koda-config",
@@ -2225,7 +2225,7 @@ dependencies = [
 
 [[package]]
 name = "koda-oss"
-version = "0.7.12"
+version = "0.7.13"
 dependencies = [
  "anyhow",
  "libc",
@@ -2239,7 +2239,7 @@ dependencies = [
 
 [[package]]
 name = "koda-protocol"
-version = "0.7.12"
+version = "0.7.13"
 dependencies = [
  "schemars",
  "serde",
@@ -2249,7 +2249,7 @@ dependencies = [
 
 [[package]]
 name = "koda-providers"
-version = "0.7.12"
+version = "0.7.13"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2270,7 +2270,7 @@ dependencies = [
 
 [[package]]
 name = "koda-sandbox"
-version = "0.7.12"
+version = "0.7.13"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2290,7 +2290,7 @@ dependencies = [
 
 [[package]]
 name = "koda-search"
-version = "0.7.12"
+version = "0.7.13"
 dependencies = [
  "bzip2-sys",
  "cc",
@@ -2301,7 +2301,7 @@ dependencies = [
 
 [[package]]
 name = "koda-server"
-version = "0.7.12"
+version = "0.7.13"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2326,7 +2326,7 @@ dependencies = [
 
 [[package]]
 name = "koda-skills"
-version = "0.7.12"
+version = "0.7.13"
 dependencies = [
  "koda-config",
  "tempfile",
@@ -2335,7 +2335,7 @@ dependencies = [
 
 [[package]]
 name = "koda-state"
-version = "0.7.12"
+version = "0.7.13"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2370,7 +2370,7 @@ dependencies = [
 
 [[package]]
 name = "koda-tui"
-version = "0.7.12"
+version = "0.7.13"
 dependencies = [
  "ansi-to-tui",
  "anyhow",
