@@ -693,6 +693,20 @@ async fn an_approval_waits_for_a_client_that_attaches() {
     koda.stop().await;
 }
 
+/// What the server sends to every connection, subscribed or not, as Codex
+/// sends a thread's start, rename, delete and status.
+fn is_broadcast(line: &Value) -> bool {
+    matches!(
+        line["method"].as_str(),
+        Some(
+            "session/started"
+                | "session/name/updated"
+                | "session/deleted"
+                | "session/status/changed"
+        )
+    )
+}
+
 /// A client that joins a session mid-turn is told the turn as it stands,
 /// with the tool call still open in it, then the approval it waits on, then
 /// everything after, each once, as Codex merges a thread's active turn into
@@ -725,7 +739,9 @@ async fn a_client_that_joins_mid_turn_gets_the_turn_as_it_stands() {
     let join = second
         .send_request("session/resume", json!({"sessionId": session}))
         .await;
-    // Nothing of the session reaches it before the answer.
+    // Nothing of the session reaches it before the answer but what goes to
+    // every client: a session's start, name, deletion and status. The status
+    // change for the waiting approval can race the join, and did on CI.
     let mut before = Vec::new();
     let joined = loop {
         let line = second.read().await.expect("the join is answered");
@@ -737,7 +753,7 @@ async fn a_client_that_joins_mid_turn_gets_the_turn_as_it_stands() {
     assert!(
         before
             .iter()
-            .all(|l| session_of(l) != Some(session.as_str()) || l["method"] == "session/started"),
+            .all(|l| session_of(l) != Some(session.as_str()) || is_broadcast(l)),
         "{before:?}"
     );
 
