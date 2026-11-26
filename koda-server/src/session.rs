@@ -95,9 +95,12 @@ pub(crate) enum SessionCommand {
     /// Stop the turn, if one runs, and end the task. `done`, if given, is
     /// dropped once the task has ended.
     Shutdown { done: Option<oneshot::Sender<()>> },
-    /// Store the session's turns sent so far: `done` is dropped once they
-    /// are, so a read of the store that follows sees all of them.
-    FlushHistory { done: oneshot::Sender<()> },
+    /// Store the session's turns sent so far, then answer on `done` with its
+    /// latest turn as it stands, so a read of the store that follows sees
+    /// all of them, and the items still open can be laid over them.
+    FlushHistory {
+        done: oneshot::Sender<Option<crate::live_turn::LiveTurn>>,
+    },
     /// A client asked to join the open session: put the session as it
     /// stands on its message queue, marked with `token`
     /// ([`Outgoing::Joined`]), and say on `reply` whether that worked.
@@ -649,7 +652,7 @@ impl SessionTask {
                 }
                 SessionCommand::FlushHistory { done } => {
                     self.sink.flush_history().await;
-                    drop(done);
+                    let _ = done.send(self.sink.live_turn());
                     Next::Idle
                 }
                 SessionCommand::Join { token, reply } => {
@@ -1006,7 +1009,11 @@ impl SessionTask {
             .db
             .rewind(id, before_turn_id, boundary)
             .await
-            .map_err(|e| invalid(format!("{e:#}")))
+            .map_err(|e| invalid(format!("{e:#}")))?;
+        // The latest turn went with the rewind: a later read or join
+        // mustn't bring it back.
+        self.sink.forget_latest_turn();
+        Ok(())
     }
 
     /// Store where the session's messages stand as turn `turn_id` starts, so
@@ -1520,7 +1527,7 @@ impl SessionTask {
                         // only pauses while its queued records are stored.
                         Some(SessionCommand::FlushHistory { done }) => {
                             sink.flush_history().await;
-                            drop(done);
+                            let _ = done.send(sink.live_turn());
                         }
                         // The turn pauses only while its stored turns are
                         // read; the joiner then follows it from here.
@@ -1840,6 +1847,18 @@ impl HostSink {
         }
     }
 
+    /// The session's latest turn as its clients have been told of it.
+    fn live_turn(&self) -> Option<crate::live_turn::LiveTurn> {
+        self.lock().live_turn.clone()
+    }
+
+    /// Drop the latest turn and its diff, which a rewind has taken out.
+    fn forget_latest_turn(&self) {
+        let mut state = self.lock();
+        state.live_turn = None;
+        state.last_diff = None;
+    }
+
     /// The window the server stated during the turn, if it did.
     fn take_learned_window(&self) -> Option<usize> {
         self.lock().learned_window.take()
@@ -1896,7 +1915,7 @@ impl HostSink {
             history.flush().await;
         }
         let mut state = self.lock();
-        self.deliver(&mut state, out);
+        self.publish(&mut state, out);
     }
 
     /// The engine command the client's answer to `id` stands for, once
@@ -1989,6 +2008,13 @@ impl HostSink {
         if let Some(history) = &self.history {
             history.record(&out);
         }
+        self.publish(state, out);
+    }
+
+    /// Take note of what `out` says the session's turn, settings, plan and
+    /// diff now are, for a client that joins later, and put it on the
+    /// client's queue. For messages already stored.
+    fn publish(&self, state: &mut SinkState, out: Vec<Outgoing>) {
         for message in &out {
             crate::live_turn::LiveTurn::observe(&mut state.live_turn, message);
             match message {

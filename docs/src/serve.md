@@ -166,7 +166,10 @@ with `session/turns/list`, as Codex's `thread/turns/list` does:
 
 The answer's `data` has up to `limit` turns (25 without one, at most 100),
 newest first, each with its items; a turn still running is `inProgress`, with
-the items it has so far. Pass `nextCursor` as `cursor` for the next older page;
+the items it has so far as its clients were told of them: those that
+completed, and those still open, a message with its text so far and a tool
+call still running, as a client joining the session gets it and as Codex's
+`thread/read` merges a thread's active turn. `session/read` gives the same. Pass `nextCursor` as `cursor` for the next older page;
 it is absent on the last. `"sortDirection": "asc"` pages from the oldest
 instead. `backwardsCursor`, with the other direction, reads back from a page's
 first turn, that turn included, to catch what changed in a turn that was

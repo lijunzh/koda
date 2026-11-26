@@ -34,6 +34,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **`session/read` and `session/turns/list` on an open session give a running turn as it stands,** as a client joining it gets it and as Codex's `thread/read` merges a thread's active turn: the items that completed and those still open, a message with its text so far and a tool call still running. Before, they gave only what had completed and been stored. Two faults in joining a session are fixed with it: a client that joined after a turn ended and before the next began was told the turn was still running, and one that joined after a rewind was given the rewound turn back.
 - **Koda's database keeps a schema version, and its changes run once, in one transaction.** Two Kodas of a new version opening an older file at once could both try to add the same column, and the second failed to start. They now take turns. An older Koda still opens a newer file: changes only add.
 - **Deleting a session deletes the sessions of the sub-agents it ran.** They were left behind with nothing to list them.
 - **`session/delete` deletes a session that has notices or sub-agent events.** Those rows hold a foreign key to the session and weren't removed first, so deleting any session that had used a sub-agent failed with "FOREIGN KEY constraint failed".
