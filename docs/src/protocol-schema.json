@@ -4924,6 +4924,15 @@
     "Turn": {
       "description": "A turn. `turn/started` sends it in progress, `turn/completed` finished.",
       "properties": {
+        "completedAt": {
+          "default": null,
+          "description": "When it ended, in Unix seconds, as Codex's `Turn.completedAt`. Not\non a turn that ended with the process running it.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "durationMs": {
           "description": "Wall-clock time, set when the turn is over.",
           "format": "uint64",
@@ -4954,6 +4963,15 @@
             "$ref": "#/$defs/TurnItem"
           },
           "type": "array"
+        },
+        "startedAt": {
+          "default": null,
+          "description": "When it started, in Unix seconds, as Codex's `Turn.startedAt`. Not\non the `turn/start` response, whose `turn/started` carries it, nor\non turns of sessions stored before 0.8.0.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "status": {
           "$ref": "#/$defs/TurnStatus",
