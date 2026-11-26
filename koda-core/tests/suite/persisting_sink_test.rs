@@ -247,7 +247,7 @@ async fn top_level_forwards_non_persistable_events_unconditionally() {
     sink.emit(EngineEvent::TextDelta {
         text: "hello".into(),
     });
-    sink.emit(EngineEvent::TextDone);
+    sink.emit(EngineEvent::TextDone { tools_follow: None });
     sink.emit(EngineEvent::ToolCallStart {
         id: "call-1".into(),
         name: "Read".into(),
@@ -522,10 +522,10 @@ async fn forwarding_is_unconditional_for_non_persisted_events() {
     let sink = PersistingSink::new(&inner, db.clone(), session_id.clone(), Some("p".into()));
 
     sink.emit(EngineEvent::ResponseStart);
-    sink.emit(EngineEvent::TextDone);
+    sink.emit(EngineEvent::TextDone { tools_follow: None });
 
     // Inner sink saw both — forwarding is unconditional.
     assert_eq!(inner.len(), 2);
     assert!(matches!(&inner.events()[0], EngineEvent::ResponseStart));
-    assert!(matches!(&inner.events()[1], EngineEvent::TextDone));
+    assert!(matches!(&inner.events()[1], EngineEvent::TextDone { .. }));
 }

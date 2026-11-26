@@ -34,7 +34,9 @@ async fn test_text_response_streams_and_persists() {
         .collect();
     assert!(!text_deltas.is_empty(), "expected TextDelta events");
     assert!(
-        events.iter().any(|e| matches!(e, EngineEvent::TextDone)),
+        events
+            .iter()
+            .any(|e| matches!(e, EngineEvent::TextDone { .. })),
         "expected TextDone"
     );
 
@@ -73,7 +75,9 @@ async fn test_tool_call_executes_and_returns() {
         "expected ToolCallResult for Bash"
     );
     assert!(
-        events.iter().any(|e| matches!(e, EngineEvent::TextDone)),
+        events
+            .iter()
+            .any(|e| matches!(e, EngineEvent::TextDone { .. })),
         "expected TextDone after tool execution"
     );
 

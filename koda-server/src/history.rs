@@ -485,6 +485,7 @@ fn rebuild_from(messages: &[Message], progress: &mut HashMap<String, Vec<String>
                         Item::AgentMessage {
                             id: format!("message-m{}", msg.id),
                             text: text.to_string(),
+                            phase: None,
                         },
                     );
                 }
@@ -628,6 +629,7 @@ mod tests {
                 item: Item::AgentMessage {
                     id: format!("message-{text}"),
                     text: text.into(),
+                    phase: None,
                 },
                 started_at_ms: None,
                 completed_at_ms: None,
@@ -889,6 +891,7 @@ mod tests {
         let item = Item::AgentMessage {
             id: "message-1".into(),
             text: "Hi.".into(),
+            phase: None,
         };
         let note = |n| Outgoing::Notification(n);
         writer.record(&[

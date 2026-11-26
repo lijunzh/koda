@@ -53,6 +53,14 @@ pub enum Item {
         id: String,
         /// The text so far: empty when it starts.
         text: String,
+        /// What the text is to the turn, as Codex's agent message says:
+        /// a note on the way (`commentary`), as when tool calls follow it,
+        /// or the turn's answer (`final_answer`). Codex's model says so
+        /// itself; Koda's server sets it on completion from whether the
+        /// same response asked for tools. Absent while it streams, and
+        /// when the response was cut short.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        phase: Option<MessagePhase>,
     },
     /// The model's reasoning, where the provider shows it.
     #[serde(rename_all = "camelCase")]
@@ -189,6 +197,19 @@ pub enum CommandAction {
         /// The whole command.
         command: String,
     },
+}
+
+/// What an agent message is to its turn, Codex's `MessagePhase`, spelled as
+/// Codex spells it on the wire (`final_answer`, unlike Koda's other enums).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MessagePhase {
+    /// Text on the way: more tool calls or text may follow.
+    Commentary,
+    /// Answer text more may follow. Codex's; Koda doesn't send it.
+    PartialAnswer,
+    /// The turn's answer.
+    FinalAnswer,
 }
 
 /// A change to one file, in Codex's `FileUpdateChange` shape.

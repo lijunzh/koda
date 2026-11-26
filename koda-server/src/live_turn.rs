@@ -172,7 +172,7 @@ mod tests {
             start(),
             text("Let me "),
             text("check."),
-            EngineEvent::TextDone,
+            EngineEvent::TextDone { tools_follow: None },
             call("c1"),
             EngineEvent::ToolCallResult {
                 id: "c1".into(),
@@ -220,7 +220,7 @@ mod tests {
         let live = watch(vec![
             start(),
             text("Done."),
-            EngineEvent::TextDone,
+            EngineEvent::TextDone { tools_follow: None },
             EngineEvent::TurnEnd {
                 turn_id: "t1".into(),
                 reason: TurnEndReason::Complete,
@@ -234,7 +234,7 @@ mod tests {
         let next = watch(vec![
             start(),
             text("Done."),
-            EngineEvent::TextDone,
+            EngineEvent::TextDone { tools_follow: None },
             EngineEvent::TurnEnd {
                 turn_id: "t1".into(),
                 reason: TurnEndReason::Complete,

@@ -795,7 +795,7 @@ async fn collect_stream(
         if interrupted || cancel.is_cancelled() {
             sink.emit(EngineEvent::SpinnerStop);
             if !full_text.is_empty() {
-                sink.emit(EngineEvent::TextDone);
+                sink.emit(EngineEvent::TextDone { tools_follow: None });
             }
             sink.emit(EngineEvent::Warn {
                 message: "Interrupted".into(),
@@ -940,7 +940,7 @@ async fn collect_stream(
                 // discards the partial response and retries or ends the turn.
                 sink.emit(EngineEvent::SpinnerStop);
                 if !full_text.is_empty() {
-                    sink.emit(EngineEvent::TextDone);
+                    sink.emit(EngineEvent::TextDone { tools_follow: None });
                 }
                 return StreamResult {
                     text: full_text,
@@ -966,7 +966,7 @@ async fn collect_stream(
                 sink.emit(EngineEvent::ThinkingDone);
             }
             if !full_text.is_empty() {
-                sink.emit(EngineEvent::TextDone);
+                sink.emit(EngineEvent::TextDone { tools_follow: None });
             }
             return StreamResult {
                 text: full_text,
@@ -984,7 +984,9 @@ async fn collect_stream(
         }
     }
 
-    sink.emit(EngineEvent::TextDone);
+    sink.emit(EngineEvent::TextDone {
+        tools_follow: Some(!tool_calls.is_empty()),
+    });
 
     if first_token {
         sink.emit(EngineEvent::SpinnerStop);

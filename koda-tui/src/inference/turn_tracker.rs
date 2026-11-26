@@ -141,6 +141,7 @@ mod tests {
                 item: Item::AgentMessage {
                     id: "m".into(),
                     text: text.into(),
+                    phase: None,
                 },
                 completed_at_ms: 0,
             },

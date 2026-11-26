@@ -461,7 +461,7 @@ impl TuiRenderer {
         for stored in &turn.items {
             self.replay_start(stored.item.id(), &by_id, &mut started, buffer);
             match &stored.item {
-                Item::AgentMessage { id, text } if self.messages.contains(id) => {
+                Item::AgentMessage { id, text, .. } if self.messages.contains(id) => {
                     self.reply_text(text, buffer);
                 }
                 Item::Reasoning { id, text } if self.reasoning.contains(id) => {
@@ -738,7 +738,7 @@ impl TuiRenderer {
         buffer: &mut ScrollBuffer,
     ) {
         match item {
-            Item::AgentMessage { id, text } if self.messages.remove(id) => {
+            Item::AgentMessage { id, text, .. } if self.messages.remove(id) => {
                 if !text.trim().is_empty() {
                     self.replies.push(text.clone());
                 }
@@ -2114,6 +2114,7 @@ mod tests {
         let note = Item::AgentMessage {
             id: "m1".into(),
             text: String::new(),
+            phase: None,
         };
         renderer.render(&started(None, note.clone()), &mut buffer);
         renderer.render(&reply("m1", "Checking the docs next.\n"), &mut buffer);
@@ -2444,6 +2445,7 @@ mod tests {
             Item::AgentMessage {
                 id: "m1".into(),
                 text: "Both fine.".into(),
+                phase: None,
             },
             None,
         ));
@@ -2475,6 +2477,7 @@ mod tests {
         let message = Item::AgentMessage {
             id: "m1".into(),
             text: String::new(),
+            phase: None,
         };
         renderer.render(&started(None, message.clone()), &mut buffer);
         renderer.render(&reply("m1", "\nHello"), &mut buffer);
@@ -2549,6 +2552,7 @@ mod tests {
                 Item::AgentMessage {
                     id: "m1".into(),
                     text: "All done.".into(),
+                    phase: None,
                 },
                 None,
             ),
