@@ -60,8 +60,9 @@ use serde_json::{Value, json};
 /// this protocol replaces. Version 3 (0.7.13) took Codex's names and
 /// shapes: `modelProvider`, Codex's token-usage names, prompts as a list
 /// of `UserInput` parts, Codex's approval answers, `session/resume`, and
-/// more (see the changelog).
-pub const PROTOCOL_VERSION: u32 = 3;
+/// more (see the changelog). Version 4 (0.7.14) keeps a stored turn's
+/// items flat, as Codex's `ThreadItem`.
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// The protocol as one JSON Schema document: every message shape; for each
 /// client method and server request its parameters and result; for each

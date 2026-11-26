@@ -350,12 +350,24 @@ fn replay(records: &[TurnRecord], running: bool) -> Vec<Turn> {
     turns
 }
 
-/// A stored item. A `userMessage` stored before prompts were lists of
-/// parts (0.7.13) had `text`, `mentions` and `images`: it reads as the
-/// parts they were, text first, as the model was sent them.
+/// A stored item. One stored before 0.7.14 is nested under `item`, and
+/// reads flat. A `userMessage` stored before prompts were lists of parts
+/// (0.7.13) had `text`, `mentions` and `images`: it reads as the parts they
+/// were, text first, as the model was sent them.
 fn stored_item(payload: &str) -> serde_json::Result<TurnItem> {
     let mut value: serde_json::Value = serde_json::from_str(payload)?;
-    let item = &mut value["item"];
+    // Stored before 0.7.14, the item was nested under `item`; it is flat
+    // now, as Codex's `ThreadItem`.
+    if let Some(serde_json::Value::Object(nested)) = value
+        .as_object_mut()
+        .and_then(|stored| stored.remove("item"))
+        && let Some(stored) = value.as_object_mut()
+    {
+        for (key, field) in nested {
+            stored.entry(key).or_insert(field);
+        }
+    }
+    let item = &mut value;
     if item["type"] == "userMessage"
         && item.get("content").is_none()
         && let Some(old) = item.as_object_mut()
@@ -990,9 +1002,11 @@ mod tests {
             ]
         );
         assert_eq!(client_user_message_ids, &["m1".to_string()]);
-        // One stored as parts reads as it was.
-        let new = serde_json::to_string(&item).unwrap();
-        assert_eq!(stored_item(&new).unwrap(), item);
+        // Written flat now, as Codex's `ThreadItem`, and read back as it was.
+        let new = serde_json::to_value(&item).unwrap();
+        assert_eq!(new["type"], "userMessage", "{new}");
+        assert!(new.get("item").is_none(), "{new}");
+        assert_eq!(stored_item(&new.to_string()).unwrap(), item);
     }
 
     #[test]

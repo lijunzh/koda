@@ -103,8 +103,17 @@
 "Item.contextCompaction.trigger" = "Koda's compaction item says what it did"
 "ItemStartedNotification.parentItemId" = "A sub-agent's items arrive in its parent's session, under the call that started it; Codex's sub-agents are threads of their own"
 "ItemCompletedNotification.parentItemId" = "A sub-agent's items arrive in its parent's session"
-"TurnItem.item" = "Nested; Codex keeps a stored item flat with its times (to change in 0.7.14)"
 "TurnItem.parentItemId" = "A sub-agent's items are stored in its parent's turn"
+# A stored item is flat, as Codex's ThreadItem, so it differs where an item
+# does (above).
+"TurnItem.userMessage.clientUserMessageIds" = "As Item.userMessage.clientUserMessageIds"
+"TurnItem.reasoning.text" = "As Item.reasoning.text"
+"TurnItem.contextCompaction.contextPercent" = "As Item.contextCompaction"
+"TurnItem.contextCompaction.messagesRemoved" = "As Item.contextCompaction"
+"TurnItem.contextCompaction.reason" = "As Item.contextCompaction"
+"TurnItem.contextCompaction.status" = "As Item.contextCompaction"
+"TurnItem.contextCompaction.summaryTokens" = "As Item.contextCompaction"
+"TurnItem.contextCompaction.trigger" = "As Item.contextCompaction"
 # Questions: Koda asks one; Codex's experimental request takes a list.
 "UserInputParams.question" = "One question; Codex's requestUserInput takes questions (later)"
 "UserInputParams.options" = "One question's options"
@@ -119,3 +128,4 @@
 
 [variants]
 "Item.toolCall" = "Koda's one tool-call item, as the Agent Client Protocol has it, where Codex has commandExecution, fileChange, mcpToolCall and others"
+"TurnItem.toolCall" = "As Item.toolCall"

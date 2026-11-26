@@ -745,14 +745,11 @@ async fn a_client_that_joins_mid_turn_gets_the_turn_as_it_stands() {
     let turn = turns.last().unwrap();
     assert_eq!(turn["status"], "inProgress", "{turn}");
     let items = turn["items"].as_array().unwrap();
-    let kinds: Vec<&str> = items
-        .iter()
-        .map(|i| i["item"]["type"].as_str().unwrap())
-        .collect();
+    let kinds: Vec<&str> = items.iter().map(|i| i["type"].as_str().unwrap()).collect();
     assert_eq!(kinds, ["userMessage", "toolCall"], "{turn}");
     let call = &items[1];
-    assert_eq!(call["item"]["status"], "inProgress", "{call}");
-    assert_eq!(call["item"]["id"], "w1");
+    assert_eq!(call["status"], "inProgress", "{call}");
+    assert_eq!(call["id"], "w1");
     assert!(call["completedAtMs"].is_null(), "{call}");
     assert_eq!(joined["session"]["model"], "stub", "as it runs: {joined}");
     assert_eq!(
@@ -837,12 +834,9 @@ async fn reading_a_session_mid_turn_has_its_open_items() {
     ] {
         assert_eq!(turn["status"], "inProgress", "{turn}");
         let items = turn["items"].as_array().unwrap();
-        let kinds: Vec<&str> = items
-            .iter()
-            .map(|i| i["item"]["type"].as_str().unwrap())
-            .collect();
+        let kinds: Vec<&str> = items.iter().map(|i| i["type"].as_str().unwrap()).collect();
         assert_eq!(kinds, ["userMessage", "toolCall"], "{turn}");
-        assert_eq!(items[1]["item"]["status"], "inProgress", "{turn}");
+        assert_eq!(items[1]["status"], "inProgress", "{turn}");
         assert!(items[1]["completedAtMs"].is_null(), "{turn}");
     }
 
@@ -856,7 +850,7 @@ async fn reading_a_session_mid_turn_has_its_open_items() {
         .unwrap();
     let turn = &listed["data"][0];
     assert_eq!(turn["status"], "completed", "{turn}");
-    assert_eq!(turn["items"][1]["item"]["status"], "completed", "{turn}");
+    assert_eq!(turn["items"][1]["status"], "completed", "{turn}");
     koda.stop().await;
 }
 

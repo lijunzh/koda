@@ -257,16 +257,19 @@ pub struct ItemCompletedNotification {
     pub completed_at_ms: i64,
 }
 
-/// An item of a stored turn, as `session/resume` and
-/// `session/read` return it: what `item/completed` sent, with its parent
-/// and its times, as Codex's `ThreadItem` keeps them.
+/// An item of a stored turn, as `session/resume` and `session/read`
+/// return it: what `item/completed` sent, flat, with its times beside its
+/// own fields, as Codex's `ThreadItem` keeps it ("the payload stays flat
+/// on the wire"), and its parent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnItem {
     /// On a sub-agent's items: the tool call that started the sub-agent.
+    /// Koda's own: Codex's sub-agents are threads of their own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_item_id: Option<String>,
-    /// The item.
+    /// The item, its fields at this level.
+    #[serde(flatten)]
     pub item: Item,
     /// When it started, in Unix milliseconds; absent when not recorded, as
     /// in sessions stored before Koda recorded it.

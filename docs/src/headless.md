@@ -183,7 +183,7 @@ may stream, and complete. [`protocol-schema.json`](protocol-schema.json) is
 generated from the protocol's types, and CI fails if the two differ.
 
 ```json
-{"jsonrpc":"2.0","method":"session/started","params":{"session":{"id":"a3f8bc12-…","preview":"","createdAt":1794700000,"updatedAt":1794700000,"cwd":"/home/me/project","model":"claude-haiku-5-5","modelProvider":"anthropic","contextWindow":200000,"mode":"auto","tools":["Read","Bash","…"]},"kodaVersion":"0.7.12","protocolVersion":3}}
+{"jsonrpc":"2.0","method":"session/started","params":{"session":{"id":"a3f8bc12-…","preview":"","createdAt":1794700000,"updatedAt":1794700000,"cwd":"/home/me/project","model":"claude-haiku-5-5","modelProvider":"anthropic","contextWindow":200000,"mode":"auto","tools":["Read","Bash","…"]},"kodaVersion":"0.7.12","protocolVersion":4}}
 {"jsonrpc":"2.0","method":"turn/started","params":{"sessionId":"a3f8bc12-…","turn":{"id":"7d1e…","status":"inProgress","error":null,"usage":null,"durationMs":null,"startedAt":1794700001,"completedAt":null}}}
 {"jsonrpc":"2.0","method":"item/started","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"userMessage","id":"user-3f9a2c1e-1","content":[{"type":"text","text":"Why does the test fail?"}],"clientUserMessageIds":[]}}}
 {"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"userMessage","id":"user-3f9a2c1e-1","content":[{"type":"text","text":"Why does the test fail?"}],"clientUserMessageIds":[]}}}
