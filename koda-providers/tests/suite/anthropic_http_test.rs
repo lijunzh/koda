@@ -343,6 +343,8 @@ async fn chat_stream_asks_to_drop_thinking_that_no_longer_matches() {
 
     let plain: Value = serde_json::from_slice(&reqs[1].body).unwrap();
     assert!(plain.get("thinking").is_none(), "{plain}");
+    // No beta asked for, no header: prompt caching is GA.
+    assert!(reqs[1].headers.get("anthropic-beta").is_none());
 }
 
 // ── chat_stream() ─────────────────────────────────────────────────────────
@@ -565,10 +567,8 @@ async fn chat_stream_sends_a_task_budget_to_a_model_that_takes_one() {
         reqs[i]
             .headers
             .get("anthropic-beta")
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_string()
+            .map(|v| v.to_str().unwrap().to_string())
+            .unwrap_or_default()
     };
     let haiku: Value = serde_json::from_slice(&reqs[0].body).unwrap();
     assert_eq!(

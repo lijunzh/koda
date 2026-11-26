@@ -235,11 +235,13 @@ pub(crate) async fn open(
         // Before anything is written: one process writes a session at a
         // time, as Codex's `thread/resume` takes the thread's writer lock.
         writer = Some(take_writer(&db, id).await?);
-        let overridden = choice.provider.is_some() || choice.model.is_some();
-        if !overridden {
+        // A provider the client doesn't name is the session's own, with its
+        // endpoint, whether or not it names a model; `koda exec resume
+        // --model` once fell back to the host's provider.
+        if choice.provider.is_none() {
             choice.provider = stored.provider;
             choice.base_url = choice.base_url.or(stored.base_url);
-            choice.model = stored.model;
+            choice.model = choice.model.or(stored.model);
         }
         if let Some(saved) = stored
             .mode
