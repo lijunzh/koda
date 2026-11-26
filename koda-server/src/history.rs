@@ -679,7 +679,7 @@ mod tests {
     /// A turn the server died in is stored as ended when the session is
     /// opened again: read while the session is open, it is interrupted, not
     /// still running.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_turn_that_died_with_the_server_is_stored_as_interrupted_on_resume() {
         let (_dir, db, session) = db().await;
         db.append_turn_records(
