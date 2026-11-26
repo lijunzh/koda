@@ -121,6 +121,8 @@ server_notifications! {
     SessionDeleted => "session/deleted" (crate::session::SessionDeletedNotification),
     /// A session was named.
     SessionNameUpdated => "session/name/updated" (crate::session::SessionNameUpdatedNotification),
+    /// What a session is doing changed.
+    SessionStatusChanged => "session/status/changed" (crate::session::SessionStatusChangedNotification),
     SessionSettingsUpdated => "session/settings/updated" (crate::session::SessionSettingsUpdatedNotification),
     /// A session's goal was set or changed.
     SessionGoalUpdated => "session/goal/updated" (crate::goal::SessionGoalUpdatedNotification),

@@ -138,13 +138,19 @@ text.
 
 Each session has its `id`, `name`, `preview` (the start of its first prompt),
 `createdAt` and `updatedAt` in Unix seconds, `cwd`, the `model` and `provider`
-it last ran with, `mode`, and where it came from: `source`, `originator` (the
-name its client gave in `initialize`), `forkedFromId` and `parentSessionId`.
+it last ran with, `mode`, where it came from (`source`, `originator`, the
+name its client gave in `initialize`, `forkedFromId` and `parentSessionId`),
+and its `status`, as Codex's `Thread.status`: `{"type": "notLoaded"}` for a
+stored session that isn't open, `{"type": "idle"}`, or `{"type": "active",
+"activeFlags": […]}` while a turn runs or an answer is waited on, with
+`waitingOnApproval` (a tool call's approval, the loop cap, an MCP server's
+request) and `waitingOnUserInput` (the model's question) among the flags.
 
-Every client hears `session/started`, `session/name/updated` and
-`session/deleted` for every session, as Codex sends them to every connection,
-so a list a client shows stays right when another client makes, renames or
-deletes a session. A session's turns and requests go only to the clients that
+Every client hears `session/started`, `session/name/updated`,
+`session/deleted` and `session/status/changed` for every session, as Codex
+sends them to every connection, so a list a client shows stays right when
+another client makes, renames or deletes a session, and shows what each is
+doing. `koda exec --json` leaves `session/status/changed` out. A session's turns and requests go only to the clients that
 have it open.
 
 ## A session's earlier turns
@@ -307,7 +313,13 @@ and `nc -U ~/.config/koda/serve/koda.sock` is enough to try it.)
 - **Attaching.** `session/start` with the id of a session that's open
   attaches the client to it, as Codex's `thread/resume` subscribes to a loaded
   thread: the answer is the session as it runs, with its turns, and nothing
-  starts again.
+  starts again. A turn that is running comes as it stands, `inProgress`, with
+  its completed items and then the ones still open: a message with its text
+  so far, a tool call `inProgress` with the notices sent about it (an open
+  item has no `completedAtMs`). The client hears nothing of the session
+  before the answer, and after it everything that follows, once: the
+  session answers at one point in its own stream of messages, and the
+  client is subscribed there.
 - **One writer per session.** One process writes a session at a time, as
   Codex keeps one writer per thread. While a session is open in one Koda
   process (this server, a `koda exec` run, or a TUI started with

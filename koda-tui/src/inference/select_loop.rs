@@ -653,8 +653,8 @@ impl TuiContext {
             return;
         }
         let notification = match &message {
-            Outgoing::Request(_) => return,
             Outgoing::Notification(notification) => notification,
+            _ => return,
         };
         match notification {
             // A warning names only its session.

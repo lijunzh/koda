@@ -285,6 +285,7 @@ fn name(message: &Outgoing) -> &'static str {
     match message {
         Outgoing::Notification(n) => n.method(),
         Outgoing::Request(r) => r.method(),
+        _ => "",
     }
 }
 

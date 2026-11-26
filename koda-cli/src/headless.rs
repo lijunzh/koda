@@ -620,6 +620,14 @@ impl View {
         {
             return;
         }
+        // For a client that lists sessions; a run has the one, and its
+        // turn's start and end say the same.
+        if matches!(
+            message,
+            Outgoing::Notification(ServerNotification::SessionStatusChanged(_))
+        ) {
+            return;
+        }
         match message.to_json() {
             Ok(text) => println!("{text}"),
             Err(e) => tracing::warn!("exec --json: failed to serialize a message: {e}"),
@@ -731,6 +739,7 @@ impl View {
                 return;
             }
             Outgoing::Notification(notification) => notification,
+            _ => return,
         };
         match notification {
             ServerNotification::AgentMessageDelta(delta) => {

@@ -69,6 +69,10 @@ pub struct Session {
     /// client deletes it, and `session/list` leaves it out.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ephemeral: bool,
+    /// What it is doing now, as Codex's `Thread.status`;
+    /// `session/status/changed` follows each change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<SessionStatus>,
     /// Its turns, oldest first, each with its items. Filled only by
     /// `session/start` resuming a session and by `session/read` with
     /// `includeTurns`, as Codex's `Thread.turns` is.
@@ -605,6 +609,44 @@ pub struct SessionNameUpdatedNotification {
     pub session_id: String,
     /// Its name now.
     pub name: String,
+}
+
+/// What a session is doing. Codex's `ThreadStatus`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum SessionStatus {
+    /// Stored, and not open on the host.
+    NotLoaded,
+    /// Open, with nothing running and nothing asked.
+    Idle,
+    /// A turn is running, or the session is waiting on an answer.
+    #[serde(rename_all = "camelCase")]
+    Active {
+        /// What it is waiting on, if anything.
+        active_flags: Vec<SessionActiveFlag>,
+    },
+}
+
+/// What an active session is waiting on. Codex's `ThreadActiveFlag`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum SessionActiveFlag {
+    /// A yes or no: a tool call's approval, the loop cap, or an MCP
+    /// server's request.
+    WaitingOnApproval,
+    /// An answer to the model's question.
+    WaitingOnUserInput,
+}
+
+/// `session/status/changed`: what a session is doing changed, for every
+/// client, as Codex's `thread/status/changed`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionStatusChangedNotification {
+    /// The session.
+    pub session_id: String,
+    /// What it is doing now.
+    pub status: SessionStatus,
 }
 
 /// `session/deleted`: a session was deleted. Codex's `thread/deleted`.

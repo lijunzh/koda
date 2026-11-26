@@ -76,6 +76,14 @@ pub(crate) enum HostCommand {
     },
     /// The client's answer to the server request `id`.
     Response { id: RequestId, result: Answer },
+    /// A client asked to join the open session `session_id`: have the
+    /// session put itself, as it stands, on the message queue under
+    /// `token`. An error on `reply` if it isn't open here.
+    Join {
+        session_id: String,
+        token: u64,
+        reply: oneshot::Sender<Result<(), ErrorObject>>,
+    },
     /// Stop every session and the host; say so on `done`.
     Shutdown { done: oneshot::Sender<()> },
 }
@@ -111,6 +119,7 @@ pub(crate) fn spawn(args: HostArgs) -> (mpsc::Sender<HostCommand>, JoinHandle<()
             events: args.events,
             request_ids: Arc::new(AtomicI64::new(0)),
             open_requests: OpenRequests::default(),
+            statuses: session::Statuses::default(),
             run_checked: Arc::default(),
         },
         handles: HandleMap::default(),
@@ -150,6 +159,24 @@ async fn run(host: Arc<Host>, mut commands: mpsc::Receiver<HostCommand>) {
                     running.spawn(async move { host.handle(request, reply, client).await });
                 }
                 Some(HostCommand::Response { id, result }) => host.route(id, result).await,
+                Some(HostCommand::Join { session_id, token, reply }) => {
+                    let open = host.sessions.lock().await.get(&session_id).cloned();
+                    match open {
+                        Some(commands) => {
+                            if let Err(refused) =
+                                commands.send(SessionCommand::Join { token, reply })
+                            {
+                                refused.0.refuse(invalid(format!(
+                                    "session {session_id} has closed"
+                                )));
+                            }
+                        }
+                        None => {
+                            let _ = reply
+                                .send(Err(invalid(format!("session {session_id} isn't open"))));
+                        }
+                    }
+                }
                 Some(HostCommand::Shutdown { done }) => {
                     running.shutdown().await;
                     host.stop_sessions().await;
@@ -665,7 +692,10 @@ impl Host {
             .ok()
         });
         Ok(SessionListResponse {
-            data: stored.iter().map(session::describe).collect(),
+            data: stored
+                .iter()
+                .map(|stored| self.with_status(session::describe(stored)))
+                .collect(),
             next_cursor,
         })
     }
@@ -689,7 +719,7 @@ impl Host {
                     format!("no session {:?}", params.session_id),
                 )
             })?;
-        let mut session = session::describe(&stored);
+        let mut session = self.with_status(session::describe(&stored));
         if params.include_turns {
             // An open session's last turn may still be running.
             let running = self.sessions.lock().await.contains_key(&session.id);
@@ -893,6 +923,7 @@ impl Host {
             let _ = session.send(SessionCommand::Shutdown { done: Some(done) });
             // Dropped once the session's task has ended, its turn stopped.
             let _ = tokio::time::timeout(SESSION_STOP, stopped).await;
+            self.closed(&id);
         }
         // Not while another process writes it, as Codex's `thread/delete`
         // takes the thread's writer lock. An id that names no session is
@@ -919,11 +950,53 @@ impl Host {
         Ok(SessionDeleteResponse {})
     }
 
+    /// `session` with what it is doing now: an open session's own account,
+    /// or not loaded.
+    fn with_status(
+        &self,
+        mut session: koda_protocol::session::Session,
+    ) -> koda_protocol::session::Session {
+        use koda_protocol::session::SessionStatus;
+        session.status = Some(
+            self.context
+                .statuses
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&session.id)
+                .cloned()
+                .unwrap_or(SessionStatus::NotLoaded),
+        );
+        session
+    }
+
+    /// Session `id` is no longer open: say so, to every client, as Codex
+    /// says a thread was unloaded.
+    fn closed(&self, id: &str) {
+        let was_open = self
+            .context
+            .statuses
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(id)
+            .is_some();
+        if was_open {
+            let _ = self.context.events.send(Outgoing::Notification(
+                ServerNotification::SessionStatusChanged(
+                    koda_protocol::session::SessionStatusChangedNotification {
+                        session_id: id.to_string(),
+                        status: koda_protocol::session::SessionStatus::NotLoaded,
+                    },
+                ),
+            ));
+        }
+    }
+
     /// Close session `id`: its task stops its turn, if one runs, and ends.
     async fn unsubscribe(&self, id: &str) -> SessionUnsubscribeStatus {
         let Some(session) = self.sessions.lock().await.remove(id) else {
             return SessionUnsubscribeStatus::NotLoaded;
         };
+        self.closed(id);
         self.handles
             .lock()
             .unwrap_or_else(PoisonError::into_inner)

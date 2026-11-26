@@ -39,7 +39,7 @@ impl TuiContext {
                 }
                 false
             }
-            Outgoing::Notification(_) => false,
+            _ => false,
         }
     }
 
