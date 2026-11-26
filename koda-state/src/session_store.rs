@@ -177,6 +177,32 @@ pub mod source {
     pub const SUB_AGENT: &str = "subAgent";
 }
 
+/// Which sessions to list, in what order, and from where, as Codex's
+/// `thread/list` filters, sorts and pages. Ephemeral sessions are never
+/// listed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionListQuery {
+    /// Only sessions of these folders, and those from before folders were
+    /// recorded; `None` lists every folder's.
+    pub project_roots: Option<Vec<String>>,
+    /// Only sessions of these [`source`]s; `None` lists every source's.
+    pub sources: Option<Vec<String>>,
+    /// With [`Self::sources`]: also sessions whose source was never
+    /// recorded.
+    pub unknown_source: bool,
+    /// Only sessions of these providers; `None` lists every provider's.
+    pub providers: Option<Vec<String>>,
+    /// Order by when each was last written, not when it was created.
+    pub by_updated: bool,
+    /// Oldest first, not newest first.
+    pub ascending: bool,
+    /// Go on after the session with this sort time (Unix seconds) and
+    /// [`SessionInfo::sequence`]: the last of the page before.
+    pub after: Option<(i64, i64)>,
+    /// How many at most.
+    pub limit: i64,
+}
+
 /// How many characters of its first prompt a session keeps as its preview.
 pub const PREVIEW_CHARS: usize = 1000;
 
@@ -380,6 +406,9 @@ pub struct SessionInfo {
     pub parent_session_id: Option<String>,
     /// A side conversation or a review, not meant to be listed.
     pub ephemeral: bool,
+    /// Its place in the order sessions were made, which orders the
+    /// sessions of one second in a list.
+    pub sequence: i64,
 }
 
 /// Core storage contract for sessions, messages, and metadata.
@@ -411,6 +440,9 @@ pub trait SessionStore: Send + Sync {
         offset: i64,
         project_root: &Path,
     ) -> Result<Vec<SessionInfo>>;
+    /// The sessions `query` asks for: one page, in its order. A page ends
+    /// at a session, not a count, so sessions made meanwhile don't shift it.
+    async fn list_sessions_page(&self, query: &SessionListQuery) -> Result<Vec<SessionInfo>>;
     /// One session by its full id, or `None` if there is none.
     async fn get_session(&self, session_id: &str) -> Result<Option<SessionInfo>>;
 

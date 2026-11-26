@@ -49,6 +49,15 @@ const SESSION_STOP: Duration = Duration::from_secs(4);
 /// How many sessions `session/list` gives without a limit.
 const DEFAULT_LIST_LIMIT: u32 = 50;
 
+/// Where a page of `session/list` ended: its last session's sort time, in
+/// Unix seconds, and its place in the order sessions were made. Opaque to
+/// clients.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ListCursor {
+    at: i64,
+    seq: i64,
+}
+
 /// The longest name `session/name/set` takes, in characters.
 const MAX_SESSION_NAME: usize = 100;
 
@@ -577,36 +586,87 @@ impl Host {
         &self,
         params: SessionListParams,
     ) -> Result<SessionListResponse, ErrorObject> {
-        use koda_state::session_store::SessionStore;
-        let root = match params.cwd.as_deref() {
-            Some(cwd) => {
-                let home = koda_config::runtime_env::get("HOME").map(PathBuf::from);
-                listed_folder(cwd, &self.context.project_root, home.as_deref())
-            }
-            None => self.context.project_root.clone(),
+        use koda_protocol::session::{
+            SessionListCwd, SessionSortKey, SessionSourceKind, SortDirection,
         };
+        use koda_state::session_store::{SessionListQuery, SessionStore, source};
+        let home = koda_config::runtime_env::get("HOME").map(PathBuf::from);
+        let folder = |cwd: &str| {
+            listed_folder(cwd, &self.context.project_root, home.as_deref())
+                .to_string_lossy()
+                .into_owned()
+        };
+        let project_roots = params.cwd.as_ref().map(|cwd| match cwd {
+            SessionListCwd::One(cwd) => vec![folder(cwd)],
+            SessionListCwd::Many(cwds) => cwds.iter().map(|cwd| folder(cwd)).collect(),
+        });
+        // Without any, the sessions a person started, as Codex's
+        // `thread/list` lists its interactive sources.
+        let kinds = match params.source_kinds.as_deref() {
+            None | Some([]) => &[
+                SessionSourceKind::Cli,
+                SessionSourceKind::AppServer,
+                SessionSourceKind::Unknown,
+            ][..],
+            Some(kinds) => kinds,
+        };
+        let sources = kinds
+            .iter()
+            .filter_map(|kind| match kind {
+                SessionSourceKind::Cli => Some(source::CLI),
+                SessionSourceKind::Exec => Some(source::EXEC),
+                SessionSourceKind::AppServer => Some(source::APP_SERVER),
+                SessionSourceKind::SubAgent => Some(source::SUB_AGENT),
+                SessionSourceKind::Unknown => None,
+            })
+            .map(str::to_string)
+            .collect();
+        let by_updated = params.sort_key == Some(SessionSortKey::UpdatedAt);
         let limit = i64::from(params.limit.unwrap_or(DEFAULT_LIST_LIMIT));
-        // The cursor is how many came before; opaque to clients.
-        let offset = match params.cursor.as_deref() {
-            None => 0,
-            Some(cursor) => cursor
-                .parse::<i64>()
-                .ok()
-                .filter(|n| *n >= 0)
-                .ok_or_else(|| invalid(format!("not a cursor from session/list: {cursor}")))?,
+        let after = match params.cursor.as_deref() {
+            None => None,
+            Some(cursor) => Some(
+                serde_json::from_str::<ListCursor>(cursor)
+                    .map(|cursor| (cursor.at, cursor.seq))
+                    .map_err(|_| invalid(format!("not a cursor from session/list: {cursor}")))?,
+            ),
         };
-        // One more than asked says whether there is another page.
+        let query = SessionListQuery {
+            project_roots,
+            sources: Some(sources),
+            unknown_source: kinds.contains(&SessionSourceKind::Unknown),
+            providers: params
+                .model_providers
+                .filter(|providers| !providers.is_empty()),
+            by_updated,
+            ascending: params.sort_direction == Some(SortDirection::Asc),
+            after,
+            // One more than asked says whether there is another page.
+            limit: limit + 1,
+        };
         let mut stored = self
             .context
             .db
-            .list_sessions_from(limit + 1, offset, &root)
+            .list_sessions_page(&query)
             .await
             .map_err(|e| internal(format!("couldn't list sessions: {e:#}")))?;
         let more = stored.len() as i64 > limit;
         stored.truncate(limit.max(0) as usize);
+        // The next page goes on from this one's last session.
+        let next_cursor = stored.last().filter(|_| more).and_then(|last| {
+            serde_json::to_string(&ListCursor {
+                at: if by_updated {
+                    last.updated_unix
+                } else {
+                    last.created_unix
+                },
+                seq: last.sequence,
+            })
+            .ok()
+        });
         Ok(SessionListResponse {
             data: stored.iter().map(session::describe).collect(),
-            next_cursor: more.then(|| (offset + limit).to_string()),
+            next_cursor,
         })
     }
 

@@ -258,9 +258,11 @@ pub(crate) async fn list_sessions(
     use koda_client::protocol::{methods, session::SessionListParams};
     client
         .request::<methods::SessionList>(SessionListParams {
-            cwd: Some(client.project_root().display().to_string()),
+            cwd: Some(koda_client::protocol::session::SessionListCwd::One(
+                client.project_root().display().to_string(),
+            )),
             limit: Some(limit),
-            cursor: None,
+            ..Default::default()
         })
         .await
         .map(|listed| listed.data)

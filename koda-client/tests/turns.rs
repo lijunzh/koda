@@ -1449,10 +1449,18 @@ async fn sessions_are_listed_newest_first_with_their_first_prompt() {
         stored.cwd.as_ref().is_some_and(|c| c.ends_with("project")),
         "{stored:?}"
     );
+    // What it last ran with as stored, not what an open one runs with now.
     assert!(
-        stored.model.is_none() && stored.tools.is_none(),
+        stored.tools.is_none() && stored.context_window.is_none(),
         "{stored:?}"
     );
+    assert_eq!(stored.model.as_deref(), Some("stub"));
+    assert_eq!(stored.provider.as_deref(), Some("lm-studio"));
+    assert_eq!(
+        stored.source,
+        Some(koda_client::protocol::session::SessionSourceKind::AppServer)
+    );
+    assert_eq!(stored.originator.as_deref(), Some("turns-test"));
 
     let one = koda
         .client
@@ -1490,7 +1498,7 @@ async fn sessions_are_listed_newest_first_with_their_first_prompt() {
     let by_another_name = koda
         .client
         .request::<methods::SessionList>(SessionListParams {
-            cwd: Some(roundabout),
+            cwd: Some(roundabout.into()),
             ..Default::default()
         })
         .await
@@ -1502,7 +1510,7 @@ async fn sessions_are_listed_newest_first_with_their_first_prompt() {
     let here = koda
         .client
         .request::<methods::SessionList>(SessionListParams {
-            cwd: Some(".".to_string()),
+            cwd: Some(".".into()),
             ..Default::default()
         })
         .await
@@ -1511,7 +1519,7 @@ async fn sessions_are_listed_newest_first_with_their_first_prompt() {
     let gone = koda
         .client
         .request::<methods::SessionList>(SessionListParams {
-            cwd: Some("/no/such/folder/anywhere".to_string()),
+            cwd: Some("/no/such/folder/anywhere".into()),
             ..Default::default()
         })
         .await
@@ -3645,8 +3653,13 @@ async fn a_resumed_session_returns_its_turns_as_they_were_sent() {
     assert_eq!(bare.id, koda.session);
     assert!(bare.turns.is_empty());
     assert!(
-        bare.model.is_none(),
+        bare.tools.is_none() && bare.context_window.is_none(),
         "a closed session isn't running with anything"
+    );
+    assert_eq!(
+        bare.model.as_deref(),
+        Some("stub"),
+        "the model it last ran with, as stored"
     );
     let read_back = read(true).await.unwrap().session.turns;
 

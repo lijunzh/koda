@@ -443,7 +443,8 @@ macro_rules! session_info_select {
             as updated_unix,
         s.preview,
         s.project_root, s.provider, s.base_url, s.model,
-        s.source, s.originator, s.forked_from_id, s.parent_session_id, s.ephemeral
+        s.source, s.originator, s.forked_from_id, s.parent_session_id, s.ephemeral,
+        s.rowid as sequence
      FROM sessions s"
     };
 }
@@ -1018,6 +1019,65 @@ impl SessionStore for Database {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(|r| r.into()).collect())
+    }
+
+    async fn list_sessions_page(
+        &self,
+        query: &crate::session_store::SessionListQuery,
+    ) -> Result<Vec<SessionInfo>> {
+        // The sort time as whole seconds, with the order sessions were made
+        // in for those of one second: what a cursor names.
+        let at = if query.by_updated {
+            "CAST(strftime('%s', COALESCE(s.last_accessed_at, s.created_at)) AS INTEGER)"
+        } else {
+            "CAST(strftime('%s', s.created_at) AS INTEGER)"
+        };
+        let mut sql = sqlx::QueryBuilder::<sqlx::Sqlite>::new(session_info_select!());
+        sql.push(" WHERE s.ephemeral = 0");
+        if let Some(roots) = &query.project_roots {
+            sql.push(" AND (s.project_root IS NULL OR s.project_root IN (");
+            let mut list = sql.separated(", ");
+            for root in roots {
+                list.push_bind(root.clone());
+            }
+            sql.push("))");
+        }
+        if let Some(sources) = &query.sources {
+            sql.push(" AND (");
+            if query.unknown_source {
+                sql.push("s.source IS NULL OR ");
+            }
+            sql.push("s.source IN (");
+            let mut list = sql.separated(", ");
+            for source in sources {
+                list.push_bind(source.clone());
+            }
+            sql.push("))");
+        }
+        if let Some(providers) = &query.providers {
+            sql.push(" AND s.provider IN (");
+            let mut list = sql.separated(", ");
+            for provider in providers {
+                list.push_bind(provider.clone());
+            }
+            sql.push(")");
+        }
+        let (before, order) = if query.ascending {
+            (">", "ASC")
+        } else {
+            ("<", "DESC")
+        };
+        if let Some((time, sequence)) = query.after {
+            sql.push(format!(" AND ({at}, s.rowid) {before} ("));
+            sql.push_bind(time);
+            sql.push(", ");
+            sql.push_bind(sequence);
+            sql.push(")");
+        }
+        sql.push(format!(" ORDER BY {at} {order}, s.rowid {order} LIMIT "));
+        sql.push_bind(query.limit);
+        let rows: Vec<SessionInfoRow> = sql.build_query_as().fetch_all(&self.pool).await?;
+        Ok(rows.into_iter().map(Into::into).collect())
     }
 
     async fn get_session(&self, session_id: &str) -> Result<Option<SessionInfo>> {

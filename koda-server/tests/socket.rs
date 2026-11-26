@@ -318,8 +318,9 @@ fn session_of(line: &Value) -> Option<&str> {
         .or_else(|| params["session"]["id"].as_str())
 }
 
-/// Two clients at once: each is answered, and hears only its own sessions,
-/// as Codex routes a thread's messages to its subscribers.
+/// Two clients at once: each is answered and hears its own sessions' turns,
+/// as Codex routes a thread's messages to its subscribers, and both hear
+/// what changes the list of sessions.
 #[tokio::test(flavor = "multi_thread")]
 async fn each_client_hears_its_own_sessions() {
     let server = model(vec![text("for alpha")]).await;
@@ -344,20 +345,36 @@ async fn each_client_hears_its_own_sessions() {
             .any(|l| l["method"] == "item/agentMessage/delta"),
         "{heard:?}"
     );
+    // What changes the list of sessions (a start, a rename, a delete) goes
+    // to every client, as Codex sends them; a session's turns only to its
+    // own.
+    let lists = |l: &Value| {
+        matches!(
+            l["method"].as_str(),
+            Some("session/started" | "session/name/updated" | "session/deleted")
+        )
+    };
     assert!(
         heard
             .iter()
-            .all(|l| session_of(l).is_none_or(|s| s == alpha_session)),
+            .all(|l| lists(l) || session_of(l).is_none_or(|s| s == alpha_session)),
         "{heard:?}"
     );
+    assert!(
+        heard
+            .iter()
+            .any(|l| l["method"] == "session/started"
+                && session_of(l) == Some(beta_session.as_str())),
+        "alpha hears of beta's new session: {heard:?}"
+    );
 
-    // Beta heard its own session start, and nothing of alpha's.
+    // Beta heard its own session start, and of alpha's turn nothing.
     beta.request("state/read", json!({})).await.unwrap();
     let beta_heard = beta.seen();
     assert!(
         beta_heard
             .iter()
-            .all(|l| session_of(l) != Some(alpha_session.as_str())),
+            .all(|l| lists(l) || session_of(l) != Some(alpha_session.as_str())),
         "{beta_heard:?}"
     );
     assert!(
@@ -1011,6 +1028,118 @@ async fn a_session_records_the_client_that_started_it() {
     assert_eq!(forked.forked_from_id.as_deref(), Some(session.as_str()));
     assert_eq!(forked.originator.as_deref(), Some("socket-test"));
     assert!(forked.ephemeral);
+    koda.stop().await;
+}
+
+/// A client that lists sessions hears of a rename and a delete another
+/// client makes, of a session it never opened.
+#[tokio::test(flavor = "multi_thread")]
+async fn every_client_hears_a_rename_and_a_delete() {
+    let server = model(vec![]).await;
+    let koda = Server::start(config(&server), Duration::from_secs(60)).await;
+    let mut owner = Client::ready(&koda).await;
+    let mut watcher = Client::ready(&koda).await;
+    let session = owner.start_session().await;
+
+    owner
+        .request(
+            "session/name/set",
+            json!({"sessionId": session, "name": "renamed"}),
+        )
+        .await
+        .unwrap();
+    let renamed = watcher.until_method("session/name/updated").await;
+    let last = renamed.last().unwrap();
+    assert_eq!(session_of(last), Some(session.as_str()), "{last}");
+
+    owner
+        .request("session/delete", json!({"sessionId": session}))
+        .await
+        .unwrap();
+    let deleted = watcher.until_method("session/deleted").await;
+    assert_eq!(session_of(deleted.last().unwrap()), Some(session.as_str()));
+    koda.stop().await;
+}
+
+/// `session/list` covers every folder unless told one, leaves out what a
+/// person didn't start unless asked, and pages from the last session.
+#[tokio::test(flavor = "multi_thread")]
+async fn sessions_are_listed_across_folders_by_kind() {
+    let server = model(vec![]).await;
+    let koda = Server::start(config(&server), Duration::from_secs(60)).await;
+    let dir = koda._dir.as_ref().unwrap().path().to_path_buf();
+    let other = dir.join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    let mut client = Client::ready(&koda).await;
+    let here = client.start_session().await;
+    let started = client
+        .request("session/start", json!({"cwd": other}))
+        .await
+        .unwrap();
+    let there = started["session"]["id"].as_str().unwrap().to_string();
+    // A folder is listed by the `cwd` its sessions report: links aren't
+    // followed.
+    let other = started["session"]["cwd"].as_str().unwrap().to_string();
+    let side = client
+        .request(
+            "session/fork",
+            json!({"sessionId": here, "ephemeral": true}),
+        )
+        .await
+        .unwrap()["session"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let ids = |listed: &Value| -> Vec<String> {
+        listed["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let all = client.request("session/list", json!({})).await.unwrap();
+    let listed = ids(&all);
+    assert!(listed.contains(&here) && listed.contains(&there), "{all}");
+    assert!(
+        !listed.contains(&side),
+        "an ephemeral session isn't listed: {all}"
+    );
+    assert_eq!(all["data"][0]["source"], "appServer", "{all}");
+    assert_eq!(all["data"][0]["model"], "stub", "{all}");
+
+    let one_folder = client
+        .request("session/list", json!({"cwd": other}))
+        .await
+        .unwrap();
+    assert_eq!(ids(&one_folder), std::slice::from_ref(&there));
+    let both = client
+        .request(
+            "session/list",
+            json!({"cwd": [other, all["data"][1]["cwd"]]}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ids(&both).len(), 2, "{both}");
+
+    // Nothing here came from `koda exec`.
+    let exec = client
+        .request("session/list", json!({"sourceKinds": ["exec"]}))
+        .await
+        .unwrap();
+    assert!(ids(&exec).is_empty(), "{exec}");
+
+    // One per page, oldest first: the second page goes on from the first.
+    let page = json!({"limit": 1, "sortDirection": "asc", "sortKey": "created_at"});
+    let first = client.request("session/list", page.clone()).await.unwrap();
+    assert_eq!(ids(&first).len(), 1);
+    let mut next = page;
+    next["cursor"] = first["nextCursor"].clone();
+    let second = client.request("session/list", next).await.unwrap();
+    assert_eq!(ids(&second).len(), 1);
+    assert_ne!(ids(&first), ids(&second));
+    assert!(second["nextCursor"].is_null(), "{second}");
     koda.stop().await;
 }
 

@@ -111,6 +111,42 @@ it, is optional, since the name decides. A model-only skill isn't loaded, and a
 `$name` that names no skill, or a common shell variable such as `$PATH`, stays
 text.
 
+## Listing sessions
+
+`session/list` gives the stored sessions, as Codex's `thread/list` does:
+
+```json
+{"jsonrpc":"2.0","id":6,"method":"session/list","params":{"cwd":"/Users/me/project","sortKey":"updated_at","limit":20}}
+```
+
+- **`cwd`** is one folder or a list of them; without it, every folder's
+  sessions. Name a folder as its sessions report it (`cwd`): links aren't
+  followed.
+- **`sourceKinds`** picks how the sessions came to be: `cli` (the terminal
+  UI), `exec` (`koda exec`), `appServer` (another client of the server),
+  `subAgent` (a session's sub-agent) and `unknown` (from before this was
+  recorded). Without it, the ones a person started: `cli`, `appServer` and
+  `unknown`. A session started with `ephemeral`, such as the TUI's side
+  conversations and reviews, is never listed.
+- **`modelProviders`** keeps the sessions of those providers.
+- **`sortKey`** is `created_at` (the default) or `updated_at`, and
+  **`sortDirection`** `desc` (the default, newest first) or `asc`.
+- **`limit`** is 50 without one. Pass the answer's `nextCursor` as `cursor`,
+  with the same filters and order, for the next page; it is absent on the
+  last. A cursor names the page's last session, so a session made meanwhile
+  doesn't shift the next page.
+
+Each session has its `id`, `name`, `preview` (the start of its first prompt),
+`createdAt` and `updatedAt` in Unix seconds, `cwd`, the `model` and `provider`
+it last ran with, `mode`, and where it came from: `source`, `originator` (the
+name its client gave in `initialize`), `forkedFromId` and `parentSessionId`.
+
+Every client hears `session/started`, `session/name/updated` and
+`session/deleted` for every session, as Codex sends them to every connection,
+so a list a client shows stays right when another client makes, renames or
+deletes a session. A session's turns and requests go only to the clients that
+have it open.
+
 ## A session's earlier turns
 
 `session/start` with a stored session's id reopens it and returns all its turns,

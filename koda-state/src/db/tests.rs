@@ -2305,6 +2305,100 @@ async fn a_session_records_its_origin_and_its_preview() {
     assert!(info.ephemeral);
 }
 
+/// A page of sessions is filtered and ordered in the query, and the next
+/// page goes on from the last session, so one made meanwhile doesn't shift
+/// it. Ephemeral sessions are never listed.
+#[tokio::test]
+async fn sessions_are_listed_by_folder_source_and_page() {
+    use crate::session_store::{SessionListQuery, SessionOrigin, source};
+    let (db, _tmp) = setup().await;
+    let from = |source: &str, ephemeral: bool| SessionOrigin {
+        source: Some(source.to_string()),
+        ephemeral,
+        ..Default::default()
+    };
+    // Created a second apart, so their order is their creation.
+    let mut made = Vec::new();
+    for (i, (root, origin)) in [
+        ("/a", from(source::CLI, false)),
+        ("/a", from(source::EXEC, false)),
+        ("/b", from(source::APP_SERVER, false)),
+        ("/a", from(source::SUB_AGENT, false)),
+        ("/a", from(source::CLI, true)),
+        ("/a", SessionOrigin::default()),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let id = db
+            .create_session_from("default", std::path::Path::new(root), &origin)
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE sessions SET created_at = datetime('2026-01-01', ? || ' seconds') WHERE id = ?",
+        )
+        .bind(i as i64)
+        .bind(&id)
+        .execute(db.pool())
+        .await
+        .unwrap();
+        made.push(id);
+    }
+    let ids = |sessions: Vec<crate::session_store::SessionInfo>| {
+        sessions.into_iter().map(|s| s.id).collect::<Vec<_>>()
+    };
+    let everything = SessionListQuery {
+        limit: 50,
+        ..Default::default()
+    };
+
+    // Every folder, every source, newest first; not the ephemeral one.
+    let all = ids(db.list_sessions_page(&everything).await.unwrap());
+    assert_eq!(
+        all,
+        [&made[5], &made[3], &made[2], &made[1], &made[0]].map(String::clone)
+    );
+
+    // One folder, the interactive sources and those never recorded.
+    let interactive = SessionListQuery {
+        project_roots: Some(vec!["/a".into()]),
+        sources: Some(vec![source::CLI.into(), source::APP_SERVER.into()]),
+        unknown_source: true,
+        ..everything.clone()
+    };
+    let listed = ids(db.list_sessions_page(&interactive).await.unwrap());
+    assert_eq!(listed, [&made[5], &made[0]].map(String::clone));
+
+    // Two per page; a session made between pages doesn't repeat or skip one.
+    let page = |after| SessionListQuery {
+        limit: 2,
+        after,
+        ..everything.clone()
+    };
+    let first = db.list_sessions_page(&page(None)).await.unwrap();
+    assert_eq!(first.len(), 2);
+    db.create_session("default", std::path::Path::new("/a"))
+        .await
+        .unwrap();
+    let last = first.last().unwrap();
+    let second = ids(db
+        .list_sessions_page(&page(Some((last.created_unix, last.sequence))))
+        .await
+        .unwrap());
+    assert_eq!(second, [&made[2], &made[1]].map(String::clone));
+
+    // Oldest first.
+    let oldest = SessionListQuery {
+        ascending: true,
+        limit: 1,
+        ..everything
+    };
+    assert_eq!(
+        ids(db.list_sessions_page(&oldest).await.unwrap()),
+        [made[0].clone()]
+    );
+}
+
 /// Deleting a session deletes the sessions of the sub-agents it ran, and
 /// theirs; another session's are left.
 #[tokio::test]

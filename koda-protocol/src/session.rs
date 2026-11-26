@@ -49,6 +49,26 @@ pub struct Session {
     /// down. Codex's `instructionSources`, as of the session's opening.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instruction_sources: Option<Vec<String>>,
+    /// How it came to be, as Codex's `Thread.source`: started in the
+    /// terminal UI, by `koda exec`, by another client of the server, or by a
+    /// session for a sub-agent. Absent for a session from before this was
+    /// recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SessionSourceKind>,
+    /// The client that started it, by the name it gave in `initialize`, as
+    /// Codex's `originator`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub originator: Option<String>,
+    /// The session it was forked from, as Codex's `forkedFromId`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forked_from_id: Option<String>,
+    /// The session whose sub-agent it is, as Codex's `parentThreadId`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
+    /// A side conversation or a review, started with `ephemeral`: its
+    /// client deletes it, and `session/list` leaves it out.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ephemeral: bool,
     /// Its turns, oldest first, each with its items. Filled only by
     /// `session/start` resuming a session and by `session/read` with
     /// `includeTurns`, as Codex's `Thread.turns` is.
@@ -242,23 +262,91 @@ pub enum SessionUnsubscribeStatus {
 }
 
 /// `session/list`: stored sessions, newest first. Codex's `thread/list`.
+/// A session started with `ephemeral` is never listed.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionListParams {
-    /// The project whose sessions to list; without one, the host's. `~` is
-    /// the home folder, a relative path is taken from the host's folder, and
-    /// `.` and `..` are
-    /// resolved by the path's text, as Codex's `thread/list` does; symlinks
-    /// are not followed, so list a folder by the `cwd` its sessions report.
+    /// Only the sessions of this folder, or of these; without one, every
+    /// folder's, as Codex's `thread/list` takes `cwd`. `~` is the home
+    /// folder, a relative path is taken from the host's folder, and `.` and
+    /// `..` are resolved by the path's text, as Codex's does; symlinks are
+    /// not followed, so list a folder by the `cwd` its sessions report.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cwd: Option<String>,
+    pub cwd: Option<SessionListCwd>,
     /// How many at most; without one, 50.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
     /// Where to go on from: an earlier answer's `nextCursor`, as Codex's
-    /// `thread/list` pages. Without one, the most recent.
+    /// `thread/list` pages. It names the last session of that page, so a
+    /// session made meanwhile doesn't shift the next; send the same
+    /// filters and order with it. Without one, the first page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
+    /// What to order by; without one, when each was created, as Codex's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sort_key: Option<SessionSortKey>,
+    /// Which way; without one, newest first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sort_direction: Option<SortDirection>,
+    /// Only sessions that came to be one of these ways. Without any, as in
+    /// Codex's `thread/list`, the ones a person started: `cli`, `appServer`
+    /// and `unknown`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_kinds: Option<Vec<SessionSourceKind>>,
+    /// Only sessions of these providers, by id; without any, every
+    /// provider's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_providers: Option<Vec<String>>,
+}
+
+/// `session/list`'s `cwd`: one folder or several. Codex's
+/// `ThreadListCwdFilter`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum SessionListCwd {
+    /// One folder.
+    One(String),
+    /// Several.
+    Many(Vec<String>),
+}
+
+impl From<String> for SessionListCwd {
+    fn from(folder: String) -> Self {
+        Self::One(folder)
+    }
+}
+
+impl From<&str> for SessionListCwd {
+    fn from(folder: &str) -> Self {
+        Self::One(folder.to_string())
+    }
+}
+
+/// What `session/list` orders by. Codex's `ThreadSortKey`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionSortKey {
+    /// When the session was created.
+    CreatedAt,
+    /// When it was last written.
+    UpdatedAt,
+}
+
+/// How a session came to be. Codex's `ThreadSourceKind`, without its
+/// editor and its kinds of sub-agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum SessionSourceKind {
+    /// Started in the terminal UI.
+    Cli,
+    /// Started by `koda exec`.
+    Exec,
+    /// Started by another client of the server, such as a desktop app.
+    AppServer,
+    /// Started by a session, for one of its sub-agents.
+    SubAgent,
+    /// From before a session's source was recorded.
+    Unknown,
 }
 
 /// The answer to `session/list`.

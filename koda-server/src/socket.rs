@@ -516,6 +516,18 @@ impl Router {
             }
             _ => {}
         }
+        // What changes the list of sessions goes to every client, as Codex
+        // sends a thread's start, rename and delete to every connection: a
+        // client that lists sessions hears of ones another client makes.
+        if matches!(
+            method,
+            "session/started" | "session/name/updated" | "session/deleted"
+        ) {
+            for outbox in state.connections.values() {
+                outbox.push(line.clone());
+            }
+            return;
+        }
         let subscribers: Vec<Arc<Outbox>> = state
             .subscribers
             .get(&session)

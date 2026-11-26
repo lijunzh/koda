@@ -3058,6 +3058,17 @@
             "null"
           ]
         },
+        "ephemeral": {
+          "description": "A side conversation or a review, started with `ephemeral`: its\nclient deletes it, and `session/list` leaves it out.",
+          "type": "boolean"
+        },
+        "forkedFromId": {
+          "description": "The session it was forked from, as Codex's `forkedFromId`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "id": {
           "description": "The session's id, for resuming it.",
           "type": "string"
@@ -3097,6 +3108,20 @@
             "null"
           ]
         },
+        "originator": {
+          "description": "The client that started it, by the name it gave in `initialize`, as\nCodex's `originator`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parentSessionId": {
+          "description": "The session whose sub-agent it is, as Codex's `parentThreadId`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "preview": {
           "default": "",
           "description": "The first user message; empty before there is one.",
@@ -3108,6 +3133,17 @@
             "string",
             "null"
           ]
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionSourceKind"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How it came to be, as Codex's `Thread.source`: started in the\nterminal UI, by `koda exec`, by another client of the server, or by a\nsession for a sub-agent. Absent for a session from before this was\nrecorded."
         },
         "tools": {
           "description": "The tools the model is offered.",
@@ -3470,23 +3506,43 @@
       ],
       "type": "object"
     },
+    "SessionListCwd": {
+      "anyOf": [
+        {
+          "description": "One folder.",
+          "type": "string"
+        },
+        {
+          "description": "Several.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      ],
+      "description": "`session/list`'s `cwd`: one folder or several. Codex's\n`ThreadListCwdFilter`."
+    },
     "SessionListParams": {
       "additionalProperties": false,
-      "description": "`session/list`: stored sessions, newest first. Codex's `thread/list`.",
+      "description": "`session/list`: stored sessions, newest first. Codex's `thread/list`.\nA session started with `ephemeral` is never listed.",
       "properties": {
         "cursor": {
-          "description": "Where to go on from: an earlier answer's `nextCursor`, as Codex's\n`thread/list` pages. Without one, the most recent.",
+          "description": "Where to go on from: an earlier answer's `nextCursor`, as Codex's\n`thread/list` pages. It names the last session of that page, so a\nsession made meanwhile doesn't shift the next; send the same\nfilters and order with it. Without one, the first page.",
           "type": [
             "string",
             "null"
           ]
         },
         "cwd": {
-          "description": "The project whose sessions to list; without one, the host's. `~` is\nthe home folder, a relative path is taken from the host's folder, and\n`.` and `..` are\nresolved by the path's text, as Codex's `thread/list` does; symlinks\nare not followed, so list a folder by the `cwd` its sessions report.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionListCwd"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Only the sessions of this folder, or of these; without one, every\nfolder's, as Codex's `thread/list` takes `cwd`. `~` is the home\nfolder, a relative path is taken from the host's folder, and `.` and\n`..` are resolved by the path's text, as Codex's does; symlinks are\nnot followed, so list a folder by the `cwd` its sessions report."
         },
         "limit": {
           "description": "How many at most; without one, 50.",
@@ -3494,6 +3550,48 @@
           "minimum": 0,
           "type": [
             "integer",
+            "null"
+          ]
+        },
+        "modelProviders": {
+          "description": "Only sessions of these providers, by id; without any, every\nprovider's.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "sortDirection": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SortDirection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Which way; without one, newest first."
+        },
+        "sortKey": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionSortKey"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What to order by; without one, when each was created, as Codex's."
+        },
+        "sourceKinds": {
+          "description": "Only sessions that came to be one of these ways. Without any, as in\nCodex's `thread/list`, the ones a person started: `cli`, `appServer`\nand `unknown`.",
+          "items": {
+            "$ref": "#/$defs/SessionSourceKind"
+          },
+          "type": [
+            "array",
             "null"
           ]
         }
@@ -3795,6 +3893,51 @@
         "settings"
       ],
       "type": "object"
+    },
+    "SessionSortKey": {
+      "description": "What `session/list` orders by. Codex's `ThreadSortKey`.",
+      "oneOf": [
+        {
+          "const": "created_at",
+          "description": "When the session was created.",
+          "type": "string"
+        },
+        {
+          "const": "updated_at",
+          "description": "When it was last written.",
+          "type": "string"
+        }
+      ]
+    },
+    "SessionSourceKind": {
+      "description": "How a session came to be. Codex's `ThreadSourceKind`, without its\neditor and its kinds of sub-agent.",
+      "oneOf": [
+        {
+          "const": "cli",
+          "description": "Started in the terminal UI.",
+          "type": "string"
+        },
+        {
+          "const": "exec",
+          "description": "Started by `koda exec`.",
+          "type": "string"
+        },
+        {
+          "const": "appServer",
+          "description": "Started by another client of the server, such as a desktop app.",
+          "type": "string"
+        },
+        {
+          "const": "subAgent",
+          "description": "Started by a session, for one of its sub-agents.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "From before a session's source was recorded.",
+          "type": "string"
+        }
+      ]
     },
     "SessionStartParams": {
       "additionalProperties": false,

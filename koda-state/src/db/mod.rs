@@ -561,6 +561,7 @@ pub(crate) struct SessionInfoRow {
     pub forked_from_id: Option<String>,
     pub parent_session_id: Option<String>,
     pub ephemeral: bool,
+    pub sequence: i64,
 }
 
 impl From<SessionInfoRow> for SessionInfo {
@@ -583,6 +584,7 @@ impl From<SessionInfoRow> for SessionInfo {
             forked_from_id: r.forked_from_id,
             parent_session_id: r.parent_session_id,
             ephemeral: r.ephemeral,
+            sequence: r.sequence,
         }
     }
 }
