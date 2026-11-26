@@ -281,7 +281,10 @@ impl Wire {
     async fn turn(&mut self, input: &str) -> String {
         let session = self.session.clone();
         let started = self
-            .call("turn/start", json!({"sessionId": session, "input": input}))
+            .call(
+                "turn/start",
+                json!({"sessionId": session, "input": [{"type": "text", "text": input}]}),
+            )
             .await
             .unwrap();
         started["turn"]["id"].as_str().unwrap().to_string()
@@ -419,7 +422,7 @@ async fn stale_ids_are_refused_and_unblock_nothing() {
     let error = wire
         .call(
             "turn/start",
-            json!({"sessionId": "no-such-session", "input": "hi"}),
+            json!({"sessionId": "no-such-session", "input": [{"type": "text", "text": "hi"}]}),
         )
         .await
         .unwrap_err();
@@ -460,7 +463,7 @@ async fn a_prompt_while_busy_is_refused_and_a_steer_is_taken() {
     let error = wire
         .call(
             "turn/start",
-            json!({"sessionId": session, "input": "Something else"}),
+            json!({"sessionId": session, "input": [{"type": "text", "text": "Something else"}]}),
         )
         .await
         .unwrap_err();
@@ -469,7 +472,7 @@ async fn a_prompt_while_busy_is_refused_and_a_steer_is_taken() {
         .call(
             "turn/steer",
             json!({"sessionId": session, "expectedTurnId": turn,
-                   "input": "STEER-MARKER", "clientUserMessageId": "s1"}),
+                   "input": [{"type": "text", "text": "STEER-MARKER"}], "clientUserMessageId": "s1"}),
         )
         .await
         .unwrap();
@@ -628,7 +631,7 @@ async fn a_slow_reader_loses_nothing() {
     // Nobody reads while the turn runs.
     wire.send_request(
         "turn/start",
-        json!({"sessionId": session, "input": "Talk a lot"}),
+        json!({"sessionId": session, "input": [{"type": "text", "text": "Talk a lot"}]}),
     )
     .await;
     model_calls(&server, 1).await;
@@ -658,7 +661,7 @@ async fn a_character_split_across_reads_arrives_whole() {
     let mut wire = Wire::open(config(&server, false)).await;
     let session = wire.session.clone();
     let line = json!({"jsonrpc": "2.0", "id": 100, "method": "turn/start",
-                      "params": {"sessionId": session, "input": "héllo 日本語"}})
+                      "params": {"sessionId": session, "input": [{"type": "text", "text": "héllo 日本語"}]}})
     .to_string();
     let bytes = line.as_bytes();
     let cut = line.find('日').unwrap() + 1; // inside the character

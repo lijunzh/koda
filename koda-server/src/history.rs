@@ -333,7 +333,7 @@ fn replay(records: &[TurnRecord], running: bool) -> Vec<Turn> {
                 }
                 Err(e) => tracing::warn!("skipped a stored turn: {e}"),
             },
-            ITEM => match serde_json::from_str::<TurnItem>(&record.payload) {
+            ITEM => match stored_item(&record.payload) {
                 Ok(item) => turns[at].items.push(item),
                 Err(e) => tracing::warn!("skipped a stored item: {e}"),
             },
@@ -348,6 +348,46 @@ fn replay(records: &[TurnRecord], running: bool) -> Vec<Turn> {
         }
     }
     turns
+}
+
+/// A stored item. A `userMessage` stored before prompts were lists of
+/// parts (0.7.13) had `text`, `mentions` and `images`: it reads as the
+/// parts they were, text first, as the model was sent them.
+fn stored_item(payload: &str) -> serde_json::Result<TurnItem> {
+    let mut value: serde_json::Value = serde_json::from_str(payload)?;
+    let item = &mut value["item"];
+    if item["type"] == "userMessage"
+        && item.get("content").is_none()
+        && let Some(old) = item.as_object_mut()
+    {
+        let mut content = vec![serde_json::to_value(koda_protocol::turn::UserInput::text(
+            old.remove("text")
+                .and_then(|text| text.as_str().map(str::to_string))
+                .unwrap_or_default(),
+        ))?];
+        if let Some(serde_json::Value::Array(mentions)) = old.remove("mentions") {
+            for mention in mentions {
+                if let Some(path) = mention["path"].as_str() {
+                    content.push(serde_json::to_value(
+                        koda_protocol::turn::UserInput::mention(path),
+                    )?);
+                }
+            }
+        }
+        if let Some(serde_json::Value::Array(images)) = old.remove("images") {
+            for image in images {
+                if let (Some(media_type), Some(data)) =
+                    (image["mediaType"].as_str(), image["data"].as_str())
+                {
+                    content.push(serde_json::to_value(
+                        koda_protocol::turn::UserInput::image(media_type, data),
+                    )?);
+                }
+            }
+        }
+        old.insert("content".into(), serde_json::Value::Array(content));
+    }
+    serde_json::from_value(value)
 }
 
 // ── Sessions from before 6h ─────────────────────────────────────────────
@@ -405,10 +445,10 @@ fn rebuild_from(messages: &[Message], progress: &mut HashMap<String, Vec<String>
                     &mut turns,
                     Item::UserMessage {
                         id: format!("user-m{}", msg.id),
-                        text: msg.content.clone().unwrap_or_default(),
+                        content: vec![koda_protocol::turn::UserInput::text(
+                            msg.content.clone().unwrap_or_default(),
+                        )],
                         client_user_message_ids: Vec::new(),
-                        mentions: Vec::new(),
-                        images: Vec::new(),
                     },
                 );
                 mid_turn = false;
@@ -777,7 +817,9 @@ mod tests {
             .items
             .iter()
             .map(|i| match &i.item {
-                Item::UserMessage { text, .. } => format!("user {text}"),
+                Item::UserMessage { content, .. } => {
+                    format!("user {}", koda_protocol::turn::text_of(content))
+                }
                 Item::AgentMessage { text, .. } => format!("message {text}"),
                 Item::ToolCall {
                     tool,
@@ -913,6 +955,44 @@ mod tests {
         let last = page(numbered(5), second.next_cursor.as_deref(), Some(2), Desc).unwrap();
         assert_eq!(ids(&last), ["t0"]);
         assert_eq!(last.next_cursor, None);
+    }
+
+    /// A `userMessage` stored before prompts were lists of parts reads as
+    /// the parts it had: the text, its mentions, its images; and the old
+    /// spelling of its client ids.
+    #[test]
+    fn a_prompt_stored_before_typed_input_reads_as_parts() {
+        let old = serde_json::json!({
+            "item": {
+                "type": "userMessage", "id": "u1", "text": "look at @a.rs",
+                "clientMessageIds": ["m1"],
+                "mentions": [{"path": "src/a.rs"}],
+                "images": [{"mediaType": "image/png", "data": "aGk="}],
+            },
+            "startedAtMs": 1,
+        });
+        let item = stored_item(&old.to_string()).unwrap();
+        let Item::UserMessage {
+            content,
+            client_user_message_ids,
+            ..
+        } = &item.item
+        else {
+            panic!("{item:?}");
+        };
+        use koda_protocol::turn::UserInput;
+        assert_eq!(
+            content,
+            &[
+                UserInput::text("look at @a.rs"),
+                UserInput::mention("src/a.rs"),
+                UserInput::image("image/png", "aGk="),
+            ]
+        );
+        assert_eq!(client_user_message_ids, &["m1".to_string()]);
+        // One stored as parts reads as it was.
+        let new = serde_json::to_string(&item).unwrap();
+        assert_eq!(stored_item(&new).unwrap(), item);
     }
 
     #[test]

@@ -335,21 +335,17 @@ impl EventProjector {
             .collect()
     }
 
-    /// A `userMessage` item, started and completed: what the user said,
-    /// with the paths it mentioned.
+    /// A `userMessage` item, started and completed: what the user sent, as
+    /// sent.
     pub fn user_message(
         &mut self,
-        text: String,
+        content: Vec<koda_protocol::turn::UserInput>,
         client_user_message_ids: Vec<String>,
-        mentions: Vec<koda_protocol::turn::Mention>,
-        images: Vec<koda_protocol::turn::ImageInput>,
     ) -> Vec<Outgoing> {
         let item = Item::UserMessage {
             id: self.new_item_id("user"),
-            text,
+            content,
             client_user_message_ids,
-            mentions,
-            images,
         };
         vec![
             self.item_started(None, item.clone()),

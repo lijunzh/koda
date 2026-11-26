@@ -103,23 +103,10 @@ pub struct Usage {
 pub struct TurnStartParams {
     /// The session.
     pub session_id: String,
-    /// What the user said.
-    pub input: String,
-    /// Images sent with it.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub images: Vec<ImageInput>,
-    /// Files and directories the user mentioned (`@path`), which the host
-    /// reads and sends the model with the text, as Claude Code includes an
-    /// `@` file. A path is relative to the session's project, or absolute,
-    /// on the host's machine.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub mentions: Vec<Mention>,
-    /// Skills the user picked, as Codex's `UserInput::Skill`: the host sends
-    /// the model each one's instructions with the text. A `$name` in `input`
-    /// that names a skill counts too, so a client that keeps `$name` in the
-    /// text needn't send these.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub skills: Vec<SkillInput>,
+    /// What the user sent, in the order they composed it: text, images,
+    /// mentioned files and picked skills, as Codex's `input`. A `$name` in
+    /// a text part that names a skill counts as picking it.
+    pub input: Vec<UserInput>,
     /// The client's id for the message, echoed on its `userMessage` item.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_user_message_id: Option<String>,
@@ -136,33 +123,130 @@ pub struct TurnStartParams {
     pub output_schema: Option<serde_json::Value>,
 }
 
-/// A file or directory mentioned in a turn's input.
+/// One part of what the user sends, Codex's `UserInput`, with its names
+/// (`text_elements` in snake case, as Codex spells it). A prompt is a list
+/// of these in the order the user composed it, as Codex's, the Agent Client
+/// Protocol's and Claude's are.
+///
+/// Koda keeps the order on the `userMessage` item. The model is sent the
+/// text parts in order, each mention's contents and each skill's
+/// instructions after them, then the images, as before the list.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct Mention {
-    /// Its path, as the user wrote it.
-    pub path: String,
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum UserInput {
+    /// Text the user typed.
+    Text {
+        /// The text.
+        text: String,
+        /// Spans of `text` the client drew as something else (a pasted
+        /// image's placeholder, say), kept on the item for the client to
+        /// draw again; not sent to the model. Codex's.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        text_elements: Vec<TextElement>,
+    },
+    /// An image, as a `data:` URL (`data:image/png;base64,...`). Codex's
+    /// `image` also takes an `https` URL or an uploaded file's id; Koda
+    /// takes data URLs only.
+    Image {
+        /// The image as a `data:` URL.
+        url: String,
+    },
+    /// An image file on the host's machine, read under the Read tool's
+    /// rules. Codex's `localImage`.
+    LocalImage {
+        /// Its path, relative to the session's folder or absolute.
+        path: String,
+    },
+    /// A skill the user picked, as `skills/list` gives it: the model is
+    /// sent its instructions. Codex's.
+    Skill {
+        /// The skill's name, which decides.
+        name: String,
+        /// Its `SKILL.md`.
+        path: String,
+    },
+    /// A file, folder or MCP resource the user mentioned with `@`: the
+    /// model is sent a file's contents, a folder's listing, or a resource
+    /// as `@server:uri` names it, as Claude Code includes an `@` file
+    /// (unless `file_mentions` is off). Codex's `mention` part, with
+    /// Koda's meaning: Codex's names an app, plugin or thread, and Codex
+    /// leaves a file as a path in the text for the model to read.
+    Mention {
+        /// What the client shows for it, such as the file's name.
+        name: String,
+        /// Its path, relative to the session's folder or absolute, or
+        /// `server:uri` for an MCP resource.
+        path: String,
+    },
 }
 
-/// A skill the user picked, by its name as `skills/list` gives it.
+/// A span of a text part that the client drew as something else. Codex's.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct SkillInput {
-    /// The skill's name.
-    pub name: String,
-    /// Its `SKILL.md`, as `skills/list` gives it; the name decides.
+pub struct TextElement {
+    /// The span, in bytes of the text.
+    pub byte_range: ByteRange,
+    /// What the client shows in its place.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
+    pub placeholder: Option<String>,
 }
 
-/// An image sent with a turn's input.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+/// A range of bytes, end exclusive. Codex's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct ImageInput {
-    /// Its MIME type, such as `image/png`.
-    pub media_type: String,
-    /// The image's bytes, base64-encoded.
-    pub data: String,
+pub struct ByteRange {
+    /// The first byte.
+    pub start: usize,
+    /// The byte after the last.
+    pub end: usize,
+}
+
+impl UserInput {
+    /// A text part.
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::Text {
+            text: text.into(),
+            text_elements: Vec::new(),
+        }
+    }
+
+    /// A mention of `path`, shown by its last part.
+    pub fn mention(path: impl Into<String>) -> Self {
+        let path = path.into();
+        let name = path
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or(&path)
+            .to_string();
+        Self::Mention { name, path }
+    }
+
+    /// An image given as `media_type` and base64 `data`.
+    pub fn image(media_type: &str, data: &str) -> Self {
+        Self::Image {
+            url: format!("data:{media_type};base64,{data}"),
+        }
+    }
+}
+
+/// The text of `input`: its text parts, in order, a blank line between.
+pub fn text_of(input: &[UserInput]) -> String {
+    input
+        .iter()
+        .filter_map(|part| match part {
+            UserInput::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// A `data:` URL's media type and base64 content, if it is one.
+pub fn data_url(url: &str) -> Option<(&str, &str)> {
+    let rest = url.strip_prefix("data:")?;
+    let (media_type, data) = rest.split_once(";base64,")?;
+    (!media_type.is_empty()).then_some((media_type, data))
 }
 
 /// The answer to `turn/start`.
@@ -195,8 +279,10 @@ pub struct TurnSteerParams {
     pub session_id: String,
     /// The turn the text is for. Refused when it isn't the one running.
     pub expected_turn_id: String,
-    /// What the user said.
-    pub input: String,
+    /// What the user said, as Codex's `input`. Only text parts for now:
+    /// steering reaches the model as text, so images, mentions and skills
+    /// go with `turn/start`.
+    pub input: Vec<UserInput>,
     /// The client's id for the text, echoed on the `userMessage` item that
     /// delivers it.
     #[serde(default, skip_serializing_if = "Option::is_none")]

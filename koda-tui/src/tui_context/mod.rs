@@ -334,12 +334,16 @@ pub(crate) fn replay_turns(
         // Its prompt when nothing came of it; nothing when something did.
         let unanswered = match last.items.as_slice() {
             [only] => match &only.item {
-                Item::UserMessage { text, .. } => Some(text.as_str()),
+                Item::UserMessage { content, .. } => {
+                    Some(koda_client::protocol::turn::text_of(content))
+                }
                 _ => None,
             },
             _ => None,
         };
-        buffer.push_lines(crate::tui_output::interrupted_turn_banner(unanswered));
+        buffer.push_lines(crate::tui_output::interrupted_turn_banner(
+            unanswered.as_deref(),
+        ));
     }
 }
 

@@ -24,7 +24,7 @@ line, so requests may follow straight behind it:
 ```json
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"my-app","version":"1.0"}}}
 {"jsonrpc":"2.0","id":2,"method":"session/start","params":{"model":"claude-haiku"}}
-{"jsonrpc":"2.0","id":3,"method":"turn/start","params":{"sessionId":"a3f8bc12-…","input":"Why does the test fail?"}}
+{"jsonrpc":"2.0","id":3,"method":"turn/start","params":{"sessionId":"a3f8bc12-…","input":[{"type":"text","text":"Why does the test fail?"}]}}
 ```
 
 Koda answers each request by its `id`, and sends notifications as the turn runs:
@@ -70,14 +70,42 @@ Koda doesn't know, or a folder that isn't one, is refused. So one shared
 server serves every project. `session/fork` takes both for the copy, which
 belongs to its `cwd`.
 
-## Mentioned files
+## What a prompt is
 
-`turn/start` takes `mentions: [{"path": "src/lib.rs"}]` beside `input`, for the
-files and directories the user mentioned with `@`. Koda reads them on its own
-machine, under the `Read` tool's rules, and sends the model their contents after
-the text (see [File & image attachments](./attachments.md#mentioning-files)). The
-`userMessage` item keeps the text as the user wrote it and lists the paths under
-`mentions`.
+`turn/start` takes `input`, the prompt as a list of parts in the order the user
+composed it, as Codex's `input` and the Agent Client Protocol's prompt are:
+
+```json
+{"jsonrpc":"2.0","id":4,"method":"turn/start","params":{"sessionId":"a3f8bc12-…","input":[
+  {"type":"text","text":"Compare @src/lib.rs with this screenshot"},
+  {"type":"mention","name":"lib.rs","path":"src/lib.rs"},
+  {"type":"localImage","path":"/tmp/shot.png"},
+  {"type":"skill","name":"review-checklist","path":"/home/me/.koda/skills/review-checklist/SKILL.md"}
+]}}
+```
+
+The parts are Codex's `UserInput`, with its names:
+
+- **`text`**, with optional `text_elements` (spans the client drew as something
+  else, each `byteRange` and `placeholder`), kept for the client and not sent
+  to the model.
+- **`image`**, a `url`: a `data:` URL with base64 content. Codex also takes an
+  `https` URL or an uploaded file; Koda doesn't.
+- **`localImage`**, a `path` on the server's machine, read under the `Read`
+  tool's rules.
+- **`skill`**, a `name` and `path` as `skills/list` gives them (see
+  [Named skills](#named-skills)).
+- **`mention`**, a `name` to show and a `path`: a file or folder the user
+  named with `@`, or `server:uri` for an MCP resource. Koda reads it on its own
+  machine, under the `Read` tool's rules, and sends the model its contents (see
+  [File & image attachments](./attachments.md#mentioning-files)), as Claude
+  Code includes an `@` file. This is Koda's meaning: Codex's `mention` names an
+  app, plugin or thread, and Codex leaves a file as a path in the text.
+
+The model is sent the text parts in order, a blank line between, then each
+mention's contents and each skill's instructions, then the images; the
+`userMessage` item keeps the parts as sent, in `content`. `turn/steer` takes
+the same list, but only `text` parts: steering reaches the model as text.
 
 ## Finding files to mention
 
@@ -104,10 +132,9 @@ keystroke. Koda's TUI fills its `@` list this way.
 
 A `$name` in `input` that names a skill loads it, as Codex reads `$` mentions:
 Koda sends the model the skill's `SKILL.md` after the text, in Codex's
-`<skill>` block (`<name>`, `<path>`, then the instructions). `turn/start` also
-takes `skills: [{"name": "review-checklist"}]`, as Codex's `UserInput::Skill`,
-for a skill picked without `$name` in the text; `path`, as `skills/list` gives
-it, is optional, since the name decides. A model-only skill isn't loaded, and a
+`<skill>` block (`<name>`, `<path>`, then the instructions). A `skill` part
+does the same for a skill picked without `$name` in the text; its `name`
+decides. A model-only skill isn't loaded, and a
 `$name` that names no skill, or a common shell variable such as `$PATH`, stays
 text.
 

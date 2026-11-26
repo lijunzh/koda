@@ -35,7 +35,7 @@ use koda_client::protocol::session::{
     ApprovalPolicy, SessionForkParams, SessionStartParams, TokenUsage,
 };
 use koda_client::protocol::turn::{
-    ImageInput, Mention, PlanStep, Turn, TurnInterruptParams, TurnStartParams, TurnStatus, Usage,
+    PlanStep, Turn, TurnInterruptParams, TurnStartParams, TurnStatus, Usage, UserInput,
 };
 use koda_client::protocol::{ServerNotification, ServerRequest, methods};
 use koda_client::{InProcessClient, StartArgs};
@@ -102,20 +102,18 @@ pub async fn run_headless(
     // are loaded here.
     let processed = input::process_input(&run.prompt);
     let user_message = processed.prompt.clone();
-    let mentions: Vec<Mention> = processed
+    // What follows the text: mentioned paths, then images.
+    let attached: Vec<UserInput> = processed
         .mentions
         .iter()
-        .map(|path| Mention { path: path.clone() })
-        .collect();
-    let images = run
-        .images
-        .iter()
-        .cloned()
-        .chain(processed.images)
-        .map(|image| ImageInput {
-            media_type: image.media_type,
-            data: image.base64,
-        })
+        .map(UserInput::mention)
+        .chain(
+            run.images
+                .iter()
+                .cloned()
+                .chain(processed.images)
+                .map(|image| UserInput::image(&image.media_type, &image.base64)),
+        )
         .collect();
 
     let mut client = InProcessClient::start(StartArgs {
@@ -218,10 +216,9 @@ pub async fn run_headless(
             client
                 .request::<methods::TurnStart>(TurnStartParams {
                     session_id: session_id.clone(),
-                    input: user_message,
-                    images,
-                    mentions,
-                    skills: Vec::new(),
+                    input: std::iter::once(UserInput::text(user_message))
+                        .chain(attached)
+                        .collect(),
                     client_user_message_id: None,
                     mode: None,
                     output_schema: run.output_schema.clone(),

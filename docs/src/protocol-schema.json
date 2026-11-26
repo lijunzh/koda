@@ -394,6 +394,28 @@
       ],
       "type": "object"
     },
+    "ByteRange": {
+      "description": "A range of bytes, end exclusive. Codex's.",
+      "properties": {
+        "end": {
+          "description": "The byte after the last.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "start": {
+          "description": "The first byte.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "type": "object"
+    },
     "ClientInfo": {
       "description": "A client's name and version, such as `koda-cli` `0.7.0`.",
       "properties": {
@@ -1180,24 +1202,6 @@
         }
       ]
     },
-    "ImageInput": {
-      "description": "An image sent with a turn's input.",
-      "properties": {
-        "data": {
-          "description": "The image's bytes, base64-encoded.",
-          "type": "string"
-        },
-        "mediaType": {
-          "description": "Its MIME type, such as `image/png`.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "mediaType",
-        "data"
-      ],
-      "type": "object"
-    },
     "InitializeCapabilities": {
       "description": "What a client takes, said in `initialize`: Codex's\n`InitializeCapabilities`, the two Koda has a use for.",
       "properties": {
@@ -1276,26 +1280,15 @@
               },
               "type": "array"
             },
+            "content": {
+              "description": "What the user sent, as `turn/start` or `turn/steer` took it, in\norder, as Codex's `userMessage` keeps its `content`. Images read\nfrom mentioned files aren't here: the mention names them.",
+              "items": {
+                "$ref": "#/$defs/UserInput"
+              },
+              "type": "array"
+            },
             "id": {
               "description": "The item's id.",
-              "type": "string"
-            },
-            "images": {
-              "description": "The images sent with it, as `turn/start` took them, so a client\nthat opens the session later shows them, as Codex's\n`userMessage` keeps its images in `content`. Images read from\nmentioned files aren't here: `mentions` names those.",
-              "items": {
-                "$ref": "#/$defs/ImageInput"
-              },
-              "type": "array"
-            },
-            "mentions": {
-              "description": "The files and directories it mentioned. The model was sent their\ncontents after the text; the item carries only the paths.",
-              "items": {
-                "$ref": "#/$defs/Mention"
-              },
-              "type": "array"
-            },
-            "text": {
-              "description": "The text, as the user wrote it.",
               "type": "string"
             },
             "type": {
@@ -1306,7 +1299,7 @@
           "required": [
             "type",
             "id",
-            "text",
+            "content",
             "clientUserMessageIds"
           ],
           "type": "object"
@@ -2399,19 +2392,6 @@
           "type": "string"
         }
       ]
-    },
-    "Mention": {
-      "description": "A file or directory mentioned in a turn's input.",
-      "properties": {
-        "path": {
-          "description": "Its path, as the user wrote it.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "path"
-      ],
-      "type": "object"
     },
     "MergeStrategy": {
       "description": "How an edit's value merges with what's there.",
@@ -4373,26 +4353,6 @@
       ],
       "type": "object"
     },
-    "SkillInput": {
-      "description": "A skill the user picked, by its name as `skills/list` gives it.",
-      "properties": {
-        "name": {
-          "description": "The skill's name.",
-          "type": "string"
-        },
-        "path": {
-          "description": "Its `SKILL.md`, as `skills/list` gives it; the name decides.",
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "name"
-      ],
-      "type": "object"
-    },
     "SkillMetadata": {
       "description": "One skill.",
       "properties": {
@@ -4597,6 +4557,26 @@
         "turnId",
         "itemId",
         "delta"
+      ],
+      "type": "object"
+    },
+    "TextElement": {
+      "description": "A span of a text part that the client drew as something else. Codex's.",
+      "properties": {
+        "byteRange": {
+          "$ref": "#/$defs/ByteRange",
+          "description": "The span, in bytes of the text."
+        },
+        "placeholder": {
+          "description": "What the client shows in its place.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "byteRange"
       ],
       "type": "object"
     },
@@ -5265,21 +5245,10 @@
             "null"
           ]
         },
-        "images": {
-          "description": "Images sent with it.",
-          "items": {
-            "$ref": "#/$defs/ImageInput"
-          },
-          "type": "array"
-        },
         "input": {
-          "description": "What the user said.",
-          "type": "string"
-        },
-        "mentions": {
-          "description": "Files and directories the user mentioned (`@path`), which the host\nreads and sends the model with the text, as Claude Code includes an\n`@` file. A path is relative to the session's project, or absolute,\non the host's machine.",
+          "description": "What the user sent, in the order they composed it: text, images,\nmentioned files and picked skills, as Codex's `input`. A `$name` in\na text part that names a skill counts as picking it.",
           "items": {
-            "$ref": "#/$defs/Mention"
+            "$ref": "#/$defs/UserInput"
           },
           "type": "array"
         },
@@ -5300,13 +5269,6 @@
         "sessionId": {
           "description": "The session.",
           "type": "string"
-        },
-        "skills": {
-          "description": "Skills the user picked, as Codex's `UserInput::Skill`: the host sends\nthe model each one's instructions with the text. A `$name` in `input`\nthat names a skill counts too, so a client that keeps `$name` in the\ntext needn't send these.",
-          "items": {
-            "$ref": "#/$defs/SkillInput"
-          },
-          "type": "array"
         }
       },
       "required": [
@@ -5387,8 +5349,11 @@
           "type": "string"
         },
         "input": {
-          "description": "What the user said.",
-          "type": "string"
+          "description": "What the user said, as Codex's `input`. Only text parts for now:\nsteering reaches the model as text, so images, mentions and skills\ngo with `turn/start`.",
+          "items": {
+            "$ref": "#/$defs/UserInput"
+          },
+          "type": "array"
         },
         "sessionId": {
           "description": "The session.",
@@ -5471,6 +5436,118 @@
         "modelCalls"
       ],
       "type": "object"
+    },
+    "UserInput": {
+      "description": "One part of what the user sends, Codex's `UserInput`, with its names\n(`text_elements` in snake case, as Codex spells it). A prompt is a list\nof these in the order the user composed it, as Codex's, the Agent Client\nProtocol's and Claude's are.\n\nKoda keeps the order on the `userMessage` item. The model is sent the\ntext parts in order, each mention's contents and each skill's\ninstructions after them, then the images, as before the list.",
+      "oneOf": [
+        {
+          "description": "Text the user typed.",
+          "properties": {
+            "text": {
+              "description": "The text.",
+              "type": "string"
+            },
+            "text_elements": {
+              "description": "Spans of `text` the client drew as something else (a pasted\nimage's placeholder, say), kept on the item for the client to\ndraw again; not sent to the model. Codex's.",
+              "items": {
+                "$ref": "#/$defs/TextElement"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "text",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "An image, as a `data:` URL (`data:image/png;base64,...`). Codex's\n`image` also takes an `https` URL or an uploaded file's id; Koda\ntakes data URLs only.",
+          "properties": {
+            "type": {
+              "const": "image",
+              "type": "string"
+            },
+            "url": {
+              "description": "The image as a `data:` URL.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "url"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "An image file on the host's machine, read under the Read tool's\nrules. Codex's `localImage`.",
+          "properties": {
+            "path": {
+              "description": "Its path, relative to the session's folder or absolute.",
+              "type": "string"
+            },
+            "type": {
+              "const": "localImage",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A skill the user picked, as `skills/list` gives it: the model is\nsent its instructions. Codex's.",
+          "properties": {
+            "name": {
+              "description": "The skill's name, which decides.",
+              "type": "string"
+            },
+            "path": {
+              "description": "Its `SKILL.md`.",
+              "type": "string"
+            },
+            "type": {
+              "const": "skill",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A file, folder or MCP resource the user mentioned with `@`: the\nmodel is sent a file's contents, a folder's listing, or a resource\nas `@server:uri` names it, as Claude Code includes an `@` file\n(unless `file_mentions` is off). Codex's `mention` part, with\nKoda's meaning: Codex's names an app, plugin or thread, and Codex\nleaves a file as a path in the text for the model to read.",
+          "properties": {
+            "name": {
+              "description": "What the client shows for it, such as the file's name.",
+              "type": "string"
+            },
+            "path": {
+              "description": "Its path, relative to the session's folder or absolute, or\n`server:uri` for an MCP resource.",
+              "type": "string"
+            },
+            "type": {
+              "const": "mention",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name",
+            "path"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "UserInputParams": {
       "description": "`item/tool/requestUserInput`: the model asked the user a question.",

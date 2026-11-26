@@ -124,10 +124,8 @@ mod tests {
                 parent_item_id: None,
                 item: Item::UserMessage {
                     id: "user-2".into(),
-                    text: "joined".into(),
+                    content: vec![koda_client::protocol::turn::UserInput::text("joined")],
                     client_user_message_ids: ids.iter().map(|id| id.to_string()).collect(),
-                    mentions: Vec::new(),
-                    images: Vec::new(),
                 },
                 completed_at_ms: 0,
             },

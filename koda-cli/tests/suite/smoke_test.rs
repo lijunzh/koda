@@ -337,7 +337,10 @@ fn exec_json_prints_the_protocol_from_session_to_summary() {
     assert_eq!(started["protocolVersion"], 2);
     assert_eq!(started["session"]["modelProvider"], "lm-studio");
     let prompt = &lines[4]["params"]["item"];
-    assert_eq!(prompt["text"], "read hello.txt");
+    assert_eq!(
+        prompt["content"],
+        serde_json::json!([{"type": "text", "text": "read hello.txt"}])
+    );
     let usage = &lines[5]["params"]["tokenUsage"];
     assert!(
         usage["last"]["totalTokens"].as_u64().unwrap() > 0,
@@ -496,8 +499,14 @@ fn mock_at_file_reference() {
             line["method"] == "item/completed" && line["params"]["item"]["type"] == "userMessage"
         })
         .expect("no userMessage item");
-    assert_eq!(user["params"]["item"]["text"], "analyze @data.txt");
-    assert_eq!(user["params"]["item"]["mentions"][0]["path"], "data.txt");
+    // The text, then the file it mentioned, as Codex's `content`.
+    assert_eq!(
+        user["params"]["item"]["content"],
+        serde_json::json!([
+            {"type": "text", "text": "analyze @data.txt"},
+            {"type": "mention", "name": "data.txt", "path": "data.txt"},
+        ])
+    );
 }
 
 #[test]
