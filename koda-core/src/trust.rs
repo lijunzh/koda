@@ -632,6 +632,12 @@ fn resolve_tool_effect_inner(
 fn is_outside_project(tool_name: &str, args: &serde_json::Value, project_root: &Path) -> bool {
     match file_tool_target(tool_name, args, project_root) {
         Some(resolved) => {
+            // Koda's own settings ask even inside the project (a session
+            // started in `~`): a change there decides what the next
+            // session runs.
+            if koda_sandbox::is_koda_config(&resolved) {
+                return true;
+            }
             let outside = !resolved.starts_with(resolve_through_links(project_root));
             // Allow temp directories (#560)
             if outside && crate::bash_path_lint::is_safe_external_path(&resolved) {
