@@ -370,8 +370,14 @@ security-boundary tests ran rather than being skipped, look for each name in
   against the crates it shipped with, whatever later 0.7.x versions exist.
   release.yml's version check reads that file and fails the tag on a mismatch.
 - A 0.7.x release stays additive for users: no config key removed or renamed,
-  the wire protocol only added to, stored sessions only added to, no command or
+  stored sessions only added to (an older shape still reads), no command or
   flag removed. A release that breaks one of those is the next minor.
+- The wire protocol isn't held to that. Koda's clients and server ship together
+  and run one version (Lijun, 2026-11-26), so a release may change the protocol;
+  an incompatible change raises `PROTOCOL_VERSION`, which `koda exec --json`
+  readers such as koda-evals check. Only what two versions need to update in
+  place stays the same: `initialize`'s `serverInfo.version`, `serve/stop` and
+  `serve/updating`.
 - A new crate inherits the workspace version (`version.workspace = true`), gets a
   pin under `[workspace.dependencies]`, and a `cargo publish --dry-run -p <crate>`
   before the tag. The release publishes every publishable crate with

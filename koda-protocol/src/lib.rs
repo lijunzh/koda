@@ -24,8 +24,10 @@
 //! follows koda-cli's version, and its Rust API makes no semver promise of
 //! its own: a 0.7.x release may change it. The Koda crates pin each other
 //! exactly, so every koda-cli builds against the crates it shipped with.
-//! The wire protocol is versioned apart, by [`PROTOCOL_VERSION`]: a 0.7.x
-//! release only adds to it.
+//! The wire protocol is versioned apart, by [`PROTOCOL_VERSION`], which an
+//! incompatible change raises. Koda's own clients and its server ship
+//! together and run one version, so a release may change the protocol;
+//! a reader of `koda exec --json` or another client checks the version.
 
 pub mod agent;
 pub mod background;
@@ -53,9 +55,13 @@ pub use server::{ServerNotification, ServerRequest};
 use schemars::generate::SchemaSettings;
 use serde_json::{Value, json};
 
-/// The protocol's version, sent in the `initialize` response. Version 1
-/// was `stream-json`, the output-only format this protocol replaces.
-pub const PROTOCOL_VERSION: u32 = 2;
+/// The protocol's version, sent in the `initialize` response and on
+/// `session/started`. Version 1 was `stream-json`, the output-only format
+/// this protocol replaces. Version 3 (0.7.13) took Codex's names and
+/// shapes: `modelProvider`, Codex's token-usage names, prompts as a list
+/// of `UserInput` parts, Codex's approval answers, `session/resume`, and
+/// more (see the changelog).
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// The protocol as one JSON Schema document: every message shape; for each
 /// client method and server request its parameters and result; for each

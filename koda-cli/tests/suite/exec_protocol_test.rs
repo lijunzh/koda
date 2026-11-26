@@ -236,7 +236,7 @@ async fn a_run_opens_with_its_session_and_closes_with_the_summary() {
     );
 
     let started = &run.lines[0]["params"];
-    assert_eq!(started["protocolVersion"], 2);
+    assert_eq!(started["protocolVersion"], 3);
     assert_eq!(started["kodaVersion"], env!("CARGO_PKG_VERSION"));
     let session = &started["session"];
     assert_eq!(session["modelProvider"], "lm-studio");
