@@ -12,9 +12,8 @@
 //!   otherwise the user chooses between waiting for those turns, as Codex's
 //!   app-server drains, and stopping them. A newer server means Koda was
 //!   updated since this koda started: it isn't used, and nothing replaces
-//!   it. Only a server from before 0.7.13, which doesn't know `forUpdate`
-//!   and refuses while clients are connected, leaves this run on its own
-//!   host, with a note.
+//!   it. Nothing here keeps working with a server from before 0.7.13: the
+//!   user is told to stop it (`koda serve --stop`).
 //! - **In its own process** with `--no-daemon`, and for runs the shared
 //!   server can't serve as asked, as Codex's TUI does: `--oss` (its model
 //!   server and key live in this process) and `-c` values (the server's
@@ -35,8 +34,6 @@ const IDLE_EXIT_SECS: u64 = 600;
 const READY_WAIT: Duration = Duration::from_secs(10);
 /// How long it waits for a server stopping its running turns to be gone.
 const STOP_WAIT: Duration = Duration::from_secs(60);
-/// How many times start-up replaces an older server before it gives up.
-const REPLACE_TRIES: usize = 3;
 
 /// Where the TUI's host is.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,53 +61,44 @@ pub(crate) async fn client(
     let Backend::Shared { socket, start } = backend else {
         return Ok((in_process(project_root, home).await?, None));
     };
+    let connected = match connect(socket, project_root).await {
+        Ok(client) => client,
+        Err(_) if *start => {
+            start_server(socket, project_root)?;
+            wait_for(socket, project_root).await?
+        }
+        Err(e) => anyhow::bail!("{e}"),
+    };
+    let theirs = connected.server().server_info.version.clone();
     let ours = env!("CARGO_PKG_VERSION");
-    // A window of a Koda before 0.7.13 that loses the server starts its own
-    // in the gap, not knowing the server made way: so the one that answers
-    // after a replacement is checked again.
-    for _ in 0..REPLACE_TRIES {
-        let connected = match connect(socket, project_root).await {
-            Ok(client) => client,
-            Err(_) if *start => {
-                start_server(socket, project_root)?;
-                wait_for(socket, project_root).await?
-            }
-            Err(e) => anyhow::bail!("{e}"),
-        };
-        let theirs = connected.server().server_info.version.clone();
-        match version::compare(&theirs, ours) {
-            ServerVersion::Same => return Ok((connected, None)),
-            ServerVersion::Newer => {
-                connected.shutdown().await;
-                anyhow::bail!("{}", newer_server(&theirs, ours));
-            }
-            ServerVersion::Older => {}
-        }
-        if !*start {
+    match version::compare(&theirs, ours) {
+        ServerVersion::Same => return Ok((connected, None)),
+        ServerVersion::Newer => {
             connected.shutdown().await;
-            anyhow::bail!(
-                "koda serve at {} is version {theirs}; this koda is {ours}. \
-                 Run the same version, or leave out --remote.",
-                socket.display()
-            );
+            anyhow::bail!("{}", newer_server(&theirs, ours));
         }
-        match make_way(connected, socket, &theirs, ours).await? {
-            MadeWay::Gone => continue,
-            MadeWay::Refused(why) => {
-                let note = format!(
-                    "Running without the shared background server: koda serve {theirs} is \
-                     running ({why}), and this koda is {ours}. It stops once idle for ten \
-                     minutes, or with koda serve --stop."
-                );
-                return Ok((in_process(project_root, home).await?, Some(note)));
-            }
-        }
+        ServerVersion::Older => {}
     }
-    let note = format!(
-        "Running without the shared background server: an older koda keeps starting its \
-         own, and this koda is {ours}. Quit the older koda windows, then run koda again."
-    );
-    Ok((in_process(project_root, home).await?, Some(note)))
+    if !*start {
+        connected.shutdown().await;
+        anyhow::bail!(
+            "koda serve at {} is version {theirs}; this koda is {ours}. \
+             Run the same version, or leave out --remote.",
+            socket.display()
+        );
+    }
+    make_way(connected, socket, &theirs, ours).await?;
+    start_server(socket, project_root)?;
+    let replaced = wait_for(socket, project_root).await?;
+    let now = replaced.server().server_info.version.clone();
+    if now != ours {
+        replaced.shutdown().await;
+        anyhow::bail!(
+            "Koda's server came back as {now}, not {ours}: another koda started it. Quit \
+             the other koda windows, then run koda again."
+        );
+    }
+    Ok((replaced, None))
 }
 
 /// Why a newer server isn't used.
@@ -119,15 +107,6 @@ fn newer_server(theirs: &str, ours: &str) -> String {
         "Koda was updated to {theirs}, and its server runs that version; this koda is \
          {ours}. Run the updated koda (check `which koda`), or use --no-daemon."
     )
-}
-
-/// What became of an older server asked to make way.
-enum MadeWay {
-    /// It has stopped and removed its socket.
-    Gone,
-    /// It refused by the rule of a server before 0.7.13, which counts
-    /// connected clients, saying why.
-    Refused(String),
 }
 
 /// What the user chose for an older server with turns running.
@@ -142,14 +121,14 @@ enum Restart {
 }
 
 /// Ask the older server on `connected` to make way for this version, and
-/// wait until it has: at once when no turn runs in it; otherwise after the
-/// user chooses, or after the turns when nobody can be asked.
+/// wait until it has gone: at once when no turn runs in it; otherwise after
+/// the user chooses, or after the turns when nobody can be asked.
 async fn make_way(
     connected: InProcessClient,
     socket: &Path,
     theirs: &str,
     ours: &str,
-) -> anyhow::Result<MadeWay> {
+) -> anyhow::Result<()> {
     let ask = |if_idle, after_turns| {
         connected.request::<koda_client::protocol::methods::ServeStop>(ServeStopParams {
             if_idle,
@@ -157,28 +136,30 @@ async fn make_way(
             after_turns,
         })
     };
-    let answer = match ask(true, false).await {
+    let answer = ask(true, false).await;
+    let answer = match answer {
         Ok(answer) => answer,
-        Err(_) => {
+        Err(e) => {
             connected.shutdown().await;
-            return Ok(MadeWay::Refused("it can't be asked to stop".into()));
+            anyhow::bail!("Koda's server {theirs} couldn't be asked to make way: {e}");
         }
     };
     if answer.stopped {
         connected.shutdown().await;
-        wait_gone(socket, READY_WAIT).await?;
-        return Ok(MadeWay::Gone);
+        return wait_gone(socket, READY_WAIT).await;
     }
     // Another client asked it already.
     if answer.draining {
         connected.shutdown().await;
-        wait_for_turns(socket, answer.working).await?;
-        return Ok(MadeWay::Gone);
+        return wait_for_turns(socket, answer.working).await;
     }
+    // A server that predates `forUpdate` refuses while any window is open.
     if answer.working == 0 {
         connected.shutdown().await;
-        let why = answer.reason.unwrap_or_else(|| "it is in use".into());
-        return Ok(MadeWay::Refused(why));
+        anyhow::bail!(
+            "Koda's server {theirs} predates updating in place and has windows open. Run \
+             `koda serve --stop` (it stops their turns), then koda again."
+        );
     }
     let choice = choose(theirs, ours, answer.working).await;
     if choice == Restart::Quit {
@@ -192,11 +173,10 @@ async fn make_way(
     connected.shutdown().await;
     let answer = answer.map_err(|e| anyhow::anyhow!("Koda's server didn't make way: {e}"))?;
     if answer.draining {
-        wait_for_turns(socket, answer.working).await?;
+        wait_for_turns(socket, answer.working).await
     } else {
-        wait_gone(socket, STOP_WAIT).await?;
+        wait_gone(socket, STOP_WAIT).await
     }
-    Ok(MadeWay::Gone)
 }
 
 /// Ask the user what to do with an older server that has `working`

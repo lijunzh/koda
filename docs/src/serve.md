@@ -394,6 +394,12 @@ a new version (60 seconds for running turns, then it stops them); its clients
 use a server of another version and warn. Koda waits for the user's choice
 and doesn't use a server of another version.
 
+**What stays the same across versions** is only what two versions need to
+speak to each other for this: `initialize` and the `serverInfo.version` in
+its answer, `serve/stop` with its fields and answer, and `serve/updating`.
+Anything else in the protocol may change in any release, with the client
+and server changing together.
+
 ## The TUI on the shared server
 
 `koda` works on the shared server, as Codex's TUI works on its daemon: it
@@ -429,9 +435,9 @@ it was waiting for is still there.
   leave it running. The older windows say Koda was updated; once their server
   has gone they ask you to quit and run `koda --resume <id>` rather than
   reconnecting. A `koda` older than the running server doesn't use or replace
-  it, and says Koda was updated. Only a server from before 0.7.13, which
-  doesn't know this, makes a newer `koda` run in its own process while other
-  windows are open, as before.
+  it, and says Koda was updated. A server from before 0.7.13 doesn't know
+  this and refuses while other windows are open: `koda` then says to run
+  `koda serve --stop` (which stops their turns) and start it again.
 - **API keys:** the server has the environment of the shell that started it.
   A key saved with `/key` works for every TUI; one only in a shell's
   environment reaches the server only if that shell started it.

@@ -10,6 +10,11 @@
 //! (`serve/updating`) before it does, so an older client doesn't start a
 //! server of its own version in its place. Codex's app-server drains in
 //! the same way when its manager restarts it onto a new version.
+//!
+//! This is the one part of the protocol that two versions of Koda speak to
+//! each other, so it is the one part kept stable across releases: the
+//! fields here, and `serverInfo.version` in the answer to `initialize`.
+//! Everything else may change in any release.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -48,8 +53,7 @@ pub struct ServeStopResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     /// Sessions with a turn running or a request waiting, when asked with
-    /// `forUpdate`: what a client asks its user about. Servers before
-    /// 0.7.13 never set it.
+    /// `forUpdate`: what a client asks its user about.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub working: u32,
     /// Whether it is waiting for those turns to finish before it stops.

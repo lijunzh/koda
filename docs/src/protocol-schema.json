@@ -3034,7 +3034,7 @@
           "type": "boolean"
         },
         "working": {
-          "description": "Sessions with a turn running or a request waiting, when asked with\n`forUpdate`: what a client asks its user about. Servers before\n0.7.13 never set it.",
+          "description": "Sessions with a turn running or a request waiting, when asked with\n`forUpdate`: what a client asks its user about.",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"

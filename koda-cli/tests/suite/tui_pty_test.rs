@@ -2955,6 +2955,17 @@ impl Drop for StopServer<'_> {
     }
 }
 
+/// Stop the shared server under `home` and wait until its socket is gone,
+/// so the next fake can take the socket.
+fn run_koda_serve_stop(home: &Path) {
+    drop(StopServer(home));
+    let socket = home.join(".config/koda/serve/koda.sock");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while socket.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// The TUI works on the shared server by default, as Codex's TUI uses its
 /// daemon: it starts `koda serve` when none answers, the server outlives the
 /// TUI, and the next TUI resumes the session there. `--no-daemon` keeps the
@@ -3003,9 +3014,28 @@ async fn the_tui_works_on_the_shared_server() {
     assert!(tui.exits());
 }
 
-/// A server of another version on Koda's socket, as an update leaves one:
-/// it answers `initialize` with an old version, and `serve/stop` as told.
-fn old_server(socket: &Path, stops: bool) -> tokio::task::JoinHandle<()> {
+/// How a fake server of another version answers `serve/stop`.
+#[derive(Clone, Copy, PartialEq)]
+enum OldServer {
+    /// Nothing is running: it stops.
+    Stops,
+    /// A server from before 0.7.13: it refuses while any window is open,
+    /// saying nothing of turns.
+    Refuses,
+    /// A turn is running in one session: asked only if idle it says so;
+    /// told to wait it drains for a moment; told to stop it stops.
+    Busy,
+}
+
+/// A server of version `version` on Koda's socket, as an update leaves one:
+/// it answers `initialize`, and `serve/stop` as `kind` says, keeping each
+/// `serve/stop` it was sent in `asked`.
+fn old_server(
+    socket: &Path,
+    version: &'static str,
+    kind: OldServer,
+    asked: Arc<Mutex<Vec<serde_json::Value>>>,
+) -> tokio::task::JoinHandle<()> {
     std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
     std::fs::set_permissions(
         socket.parent().unwrap(),
@@ -3024,21 +3054,45 @@ fn old_server(socket: &Path, stops: bool) -> tokio::task::JoinHandle<()> {
             let mut lines = tokio::io::BufReader::new(input).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                let params = &request["params"];
+                let flag = |name: &str| params[name].as_bool().unwrap_or(false);
+                // `Some(delay)`: stop after answering, after `delay`.
+                let mut stop = None;
                 let result = match request["method"].as_str() {
                     Some("initialize") => serde_json::json!({
-                        "serverInfo": {"name": "koda", "version": "0.0.1"},
+                        "serverInfo": {"name": "koda", "version": version},
                         "protocolVersion": 2,
                     }),
-                    Some("serve/stop") if stops => serde_json::json!({"stopped": true}),
                     Some("serve/stop") => {
-                        serde_json::json!({"stopped": false, "reason": "session s1 is in use"})
+                        asked.lock().unwrap().push(params.clone());
+                        match kind {
+                            OldServer::Stops => {
+                                stop = Some(Duration::ZERO);
+                                serde_json::json!({"stopped": true})
+                            }
+                            OldServer::Refuses => serde_json::json!(
+                                {"stopped": false, "reason": "session s1 is in use"}
+                            ),
+                            OldServer::Busy if flag("ifIdle") => serde_json::json!(
+                                {"stopped": false, "working": 1, "reason": "1 session(s) working"}
+                            ),
+                            OldServer::Busy if flag("afterTurns") => {
+                                stop = Some(Duration::from_millis(500));
+                                serde_json::json!({"stopped": false, "working": 1, "draining": true})
+                            }
+                            OldServer::Busy => {
+                                stop = Some(Duration::ZERO);
+                                serde_json::json!({"stopped": true, "working": 1})
+                            }
+                        }
                     }
                     _ => continue,
                 };
                 let answer =
                     serde_json::json!({"jsonrpc": "2.0", "id": request["id"], "result": result});
                 let _ = output.write_all(format!("{answer}\n").as_bytes()).await;
-                if request["method"] == "serve/stop" && stops {
+                if let Some(delay) = stop {
+                    tokio::time::sleep(delay).await;
                     let _ = std::fs::remove_file(&socket);
                     return;
                 }
@@ -3047,26 +3101,97 @@ fn old_server(socket: &Path, stops: bool) -> tokio::task::JoinHandle<()> {
     })
 }
 
-/// A server of another version is replaced when nothing is in use, as
-/// Claude Code's supervisor restarts onto a new version; a busy one is left
-/// alone and the TUI runs in its own process, saying so, as Codex falls back.
+/// Koda runs one version. A newer server isn't used or touched; an older
+/// one is replaced, at once when nothing runs in it, and after asking when
+/// a turn does: restarting now or waiting for it. A server from before
+/// 0.7.13, which refuses while windows are open, gets a message saying how
+/// to stop it.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_server_of_another_version_is_replaced_or_left_alone() {
+async fn only_a_server_of_this_version_is_used() {
     let server = scripted_model(vec![]).await;
     let home = home();
     let _stop = StopServer(home.path());
     let socket = home.path().join(".config/koda/serve/koda.sock");
+    let asked = || Arc::new(Mutex::new(Vec::new()));
 
-    let busy = old_server(&socket, false);
-    let mut tui = Tui::start_shared(home.path(), &server.url(), &[], IDLE_HINT);
-    tui.wait_for_screen("Running without the shared background server");
-    tui.submit_and_finish("beside a busy server", "All done.");
-    tui.type_text("/exit\r");
+    // Newer: left alone.
+    let newer_asked = asked();
+    let newer = old_server(
+        &socket,
+        "99.0.0",
+        OldServer::Stops,
+        Arc::clone(&newer_asked),
+    );
+    let mut tui = Tui::start_shared(
+        home.path(),
+        &server.url(),
+        &[],
+        "Koda was updated to 99.0.0",
+    );
     assert!(tui.exits());
-    busy.abort();
+    assert!(
+        newer_asked.lock().unwrap().is_empty(),
+        "a newer server was asked to stop"
+    );
+    assert!(socket.exists());
+    newer.abort();
     let _ = std::fs::remove_file(&socket);
 
-    let idle = old_server(&socket, true);
+    // From before 0.7.13 with windows open: how to stop it.
+    let refusing = old_server(&socket, "0.0.1", OldServer::Refuses, asked());
+    let mut tui = Tui::start_shared(
+        home.path(),
+        &server.url(),
+        &[],
+        "predates updating in place",
+    );
+    assert!(tui.exits());
+    refusing.abort();
+    let _ = std::fs::remove_file(&socket);
+
+    // A turn running: restart now.
+    let now_asked = asked();
+    let busy = old_server(&socket, "0.0.1", OldServer::Busy, Arc::clone(&now_asked));
+    let mut tui = Tui::start_shared(
+        home.path(),
+        &server.url(),
+        &[],
+        "Restart Koda's server? [W/r/q]",
+    );
+    tui.type_text("r\r");
+    tui.wait_for_output(IDLE_HINT);
+    tui.submit_and_finish("after restarting now", "All done.");
+    let _ = busy.await;
+    let sent = now_asked.lock().unwrap().clone();
+    assert_eq!(sent.len(), 2, "{sent:?}");
+    assert_eq!(sent[0]["ifIdle"], true, "{sent:?}");
+    assert!(sent[0]["forUpdate"].is_string(), "{sent:?}");
+    assert_eq!(sent[1]["ifIdle"], false, "{sent:?}");
+    assert_eq!(sent[1]["afterTurns"], false, "{sent:?}");
+    tui.type_text("/exit\r");
+    assert!(tui.exits());
+    run_koda_serve_stop(home.path());
+
+    // A turn running: wait for it (Enter is the default).
+    let wait_asked = asked();
+    let busy = old_server(&socket, "0.0.1", OldServer::Busy, Arc::clone(&wait_asked));
+    let mut tui = Tui::start_shared(
+        home.path(),
+        &server.url(),
+        &[],
+        "Restart Koda's server? [W/r/q]",
+    );
+    tui.type_text("\r");
+    tui.wait_for_output("Waiting for the turns running in 1 session(s)");
+    tui.wait_for_output(IDLE_HINT);
+    let _ = busy.await;
+    assert_eq!(wait_asked.lock().unwrap()[1]["afterTurns"], true);
+    tui.type_text("/exit\r");
+    assert!(tui.exits());
+    run_koda_serve_stop(home.path());
+
+    // Nothing running: replaced without asking.
+    let idle = old_server(&socket, "0.0.1", OldServer::Stops, asked());
     let mut tui = Tui::start_shared(home.path(), &server.url(), &[], IDLE_HINT);
     tui.submit_and_finish("on a fresh server", "All done.");
     let _ = idle.await;
@@ -3074,11 +3199,7 @@ async fn a_server_of_another_version_is_replaced_or_left_alone() {
         socket.exists(),
         "the TUI started its own server in its place"
     );
-    let screen = tui.screen();
-    assert!(
-        !screen.contains("Running without the shared background server"),
-        "{screen}"
-    );
+    assert!(!tui.output_text().contains("Restart Koda's server?"));
     tui.type_text("/exit\r");
     assert!(tui.exits());
 }
