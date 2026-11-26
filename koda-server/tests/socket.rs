@@ -796,6 +796,67 @@ async fn a_client_that_joins_mid_turn_gets_the_turn_as_it_stands() {
     koda.stop().await;
 }
 
+/// A client that only reads an open session mid-turn gets the running turn
+/// as a joiner would, its open tool call included, from `session/read` and
+/// `session/turns/list` alike, as Codex's `thread/read` merges a thread's
+/// active turn.
+#[tokio::test(flavor = "multi_thread")]
+async fn reading_a_session_mid_turn_has_its_open_items() {
+    let server = model(vec![write_file("w1", "a.txt"), text("Written.")]).await;
+    let koda = Server::start(safe(&server), Duration::from_secs(60)).await;
+    let mut first = Client::ready(&koda).await;
+    let session = first.start_session().await;
+    first
+        .request(
+            "turn/start",
+            json!({"sessionId": session, "input": "write it"}),
+        )
+        .await
+        .unwrap();
+    let asked = first.until_method("item/toolCall/requestApproval").await;
+    let request_id = asked.last().unwrap()["id"].clone();
+
+    let mut reader = Client::ready(&koda).await;
+    let read = reader
+        .request(
+            "session/read",
+            json!({"sessionId": session, "includeTurns": true}),
+        )
+        .await
+        .unwrap();
+    let listed = reader
+        .request("session/turns/list", json!({"sessionId": session}))
+        .await
+        .unwrap();
+    for turn in [
+        read["session"]["turns"].as_array().unwrap().last().unwrap(),
+        &listed["data"][0],
+    ] {
+        assert_eq!(turn["status"], "inProgress", "{turn}");
+        let items = turn["items"].as_array().unwrap();
+        let kinds: Vec<&str> = items
+            .iter()
+            .map(|i| i["item"]["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(kinds, ["userMessage", "toolCall"], "{turn}");
+        assert_eq!(items[1]["item"]["status"], "inProgress", "{turn}");
+        assert!(items[1]["completedAtMs"].is_null(), "{turn}");
+    }
+
+    first
+        .answer(&request_id, json!({"decision": {"type": "approve"}}))
+        .await;
+    first.until_method("turn/completed").await;
+    let listed = reader
+        .request("session/turns/list", json!({"sessionId": session}))
+        .await
+        .unwrap();
+    let turn = &listed["data"][0];
+    assert_eq!(turn["status"], "completed", "{turn}");
+    assert_eq!(turn["items"][1]["item"]["status"], "completed", "{turn}");
+    koda.stop().await;
+}
+
 /// Every client hears what a session is doing as it changes, the ones that
 /// never opened it too, and a list says it, as Codex's `thread/status/changed`
 /// and `Thread.status` do.

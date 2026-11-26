@@ -758,6 +758,22 @@ impl Host {
         })
     }
 
+    /// Whether session `id` is open here, having stored what it has sent so
+    /// far, and its latest turn as it stands when it is.
+    async fn settle(&self, id: &str) -> (bool, Option<crate::live_turn::LiveTurn>) {
+        let Some(commands) = self.sessions.lock().await.get(id).cloned() else {
+            return (false, None);
+        };
+        let (done, stored) = oneshot::channel();
+        if commands
+            .send(crate::session::SessionCommand::FlushHistory { done })
+            .is_err()
+        {
+            return (true, None);
+        }
+        (true, stored.await.ok().flatten())
+    }
+
     /// `session/read`: a stored session as `session/list` gives it, with its
     /// turns when asked, as Codex's `thread/read`.
     async fn read_session(
@@ -779,11 +795,17 @@ impl Host {
             })?;
         let mut session = self.with_status(session::describe(&stored));
         if params.include_turns {
-            // An open session's last turn may still be running.
-            let running = self.sessions.lock().await.contains_key(&session.id);
+            // An open session's last turn may still be running, with items
+            // not stored yet or still open: laid over the stored turns as
+            // a join gets them, as Codex's `thread/read` merges a thread's
+            // active turn.
+            let (running, live) = self.settle(&session.id).await;
             session.turns = crate::history::turns(&self.context.db, &session.id, running)
                 .await
                 .map_err(history_error)?;
+            if let Some(live) = live {
+                live.over(&mut session.turns);
+            }
         }
         Ok(koda_protocol::session::SessionReadResponse { session })
     }
@@ -809,23 +831,16 @@ impl Host {
                 format!("no session {:?}", params.session_id),
             ));
         }
-        // An open session's last turn may still be running, and what it has
-        // sent may not be stored yet: wait for that, so the list has
-        // everything a client has already been told.
-        let open = self.sessions.lock().await.get(&params.session_id).cloned();
-        let running = open.is_some();
-        if let Some(commands) = open {
-            let (done, stored) = oneshot::channel();
-            if commands
-                .send(crate::session::SessionCommand::FlushHistory { done })
-                .is_ok()
-            {
-                let _ = stored.await;
-            }
-        }
-        let turns = crate::history::turns(&self.context.db, &params.session_id, running)
+        // An open session's last turn may still be running, with items
+        // not stored yet or still open: the list has them as its clients
+        // were told of them.
+        let (running, live) = self.settle(&params.session_id).await;
+        let mut turns = crate::history::turns(&self.context.db, &params.session_id, running)
             .await
             .map_err(history_error)?;
+        if let Some(live) = live {
+            live.over(&mut turns);
+        }
         crate::history::page(
             turns,
             params.cursor.as_deref(),
@@ -852,16 +867,7 @@ impl Host {
             .await
             .map_err(|e| internal(format!("couldn't read the session: {e:#}")))?
             .ok_or_else(|| invalid(format!("no session {:?}", params.session_id)))?;
-        let open = self.sessions.lock().await.get(&source.id).cloned();
-        if let Some(commands) = open {
-            let (done, stored) = oneshot::channel();
-            if commands
-                .send(crate::session::SessionCommand::FlushHistory { done })
-                .is_ok()
-            {
-                let _ = stored.await;
-            }
-        }
+        self.settle(&source.id).await;
         // The copy belongs to the folder it opens in: the one asked for, or
         // the host's.
         let root = match params.cwd.as_deref() {
