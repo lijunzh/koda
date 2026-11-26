@@ -24,6 +24,8 @@ pub struct AgentApproval {
     pub tool_name: String,
     /// What the call would do, in a line.
     pub detail: String,
+    /// The command it would run, for a `Bash` or `Cargo` call.
+    pub command: Option<crate::tools::ApprovalCommand>,
     /// The file changes it would make.
     pub preview: Option<crate::preview::DiffPreview>,
     /// Why it needs a yes.
@@ -186,6 +188,7 @@ pub(crate) async fn request_approval(
     tool_call_id: &str,
     tool_name: &str,
     detail: &str,
+    command: Option<crate::tools::ApprovalCommand>,
     preview: Option<crate::preview::DiffPreview>,
     effect: crate::tools::ToolEffect,
     allow_for_session: bool,
@@ -196,6 +199,7 @@ pub(crate) async fn request_approval(
         tool_call_id: tool_call_id.to_string(),
         tool_name: tool_name.to_string(),
         detail: detail.to_string(),
+        command,
         preview,
         effect,
         allow_for_session,
@@ -514,6 +518,7 @@ mod tests {
                 "Write",
                 "overwrite main.rs",
                 None,
+                None,
                 ToolEffect::LocalMutation,
                 false,
             )
@@ -558,6 +563,7 @@ mod tests {
                 "call-1",
                 "Bash",
                 "rm -rf .",
+                None,
                 None,
                 ToolEffect::Destructive,
                 false,
@@ -604,6 +610,7 @@ mod tests {
                 "Edit",
                 "replace line 42",
                 None,
+                None,
                 ToolEffect::LocalMutation,
                 false,
             )
@@ -644,6 +651,7 @@ mod tests {
                 "call-1",
                 "Write",
                 "detail",
+                None,
                 None,
                 ToolEffect::LocalMutation,
                 false,
@@ -700,6 +708,7 @@ mod tests {
                 "Bash",
                 "detail",
                 None,
+                None,
                 ToolEffect::Destructive,
                 false,
             )
@@ -736,6 +745,7 @@ mod tests {
                 "Write",
                 "detail",
                 None,
+                None,
                 ToolEffect::LocalMutation,
                 false,
             )
@@ -770,6 +780,7 @@ mod tests {
                 "call-1",
                 "Write",
                 "detail",
+                None,
                 None,
                 ToolEffect::LocalMutation,
                 false,

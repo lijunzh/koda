@@ -600,6 +600,9 @@ pub trait SessionStore: Send + Sync {
     /// Sub-agents keep their messages in sessions of their own, linked by
     /// [`PARENT_SESSION_KEY`], and count toward the session that started them.
     async fn session_token_usage(&self, session_id: &str) -> Result<SessionUsage>;
+    /// What the session's own latest model call used, if it has made one:
+    /// how full its context was then. Its sub-agents' calls are theirs.
+    async fn last_call_usage(&self, session_id: &str) -> Result<Option<SessionUsage>>;
     /// Token usage broken down by agent name.
     async fn session_usage_by_agent(&self, session_id: &str)
     -> Result<Vec<(String, SessionUsage)>>;

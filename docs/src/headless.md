@@ -184,14 +184,14 @@ generated from the protocol's types, and CI fails if the two differ.
 
 ```json
 {"jsonrpc":"2.0","method":"session/started","params":{"session":{"id":"a3f8bc12-…","preview":"","createdAt":1794700000,"updatedAt":1794700000,"cwd":"/home/me/project","model":"claude-haiku-5-5","provider":"anthropic","contextWindow":200000,"mode":"auto","tools":["Read","Bash","…"]},"kodaVersion":"0.7.12","protocolVersion":2}}
-{"jsonrpc":"2.0","method":"turn/started","params":{"sessionId":"a3f8bc12-…","turn":{"id":"7d1e…","status":"inProgress","error":null,"usage":null,"durationMs":null}}}
+{"jsonrpc":"2.0","method":"turn/started","params":{"sessionId":"a3f8bc12-…","turn":{"id":"7d1e…","status":"inProgress","error":null,"usage":null,"durationMs":null,"startedAt":1794700001,"completedAt":null}}}
 {"jsonrpc":"2.0","method":"item/started","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"userMessage","id":"user-3f9a2c1e-1","text":"Why does the test fail?","clientMessageIds":[]}}}
 {"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"userMessage","id":"user-3f9a2c1e-1","text":"Why does the test fail?","clientMessageIds":[]}}}
 {"jsonrpc":"2.0","method":"item/started","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"toolCall","id":"call_1","tool":"Bash","arguments":{"command":"cargo test"},"status":"inProgress","output":null,"detail":null}}}
 {"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"toolCall","id":"call_1","tool":"Bash","arguments":{"command":"cargo test"},"status":"failed","output":"Exit code: 101 | …","detail":null}}}
 {"jsonrpc":"2.0","method":"item/started","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"agentMessage","id":"msg-3f9a2c1e-2","text":""}}}
 {"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":"a3f8bc12-…","turnId":"7d1e…","item":{"type":"agentMessage","id":"msg-3f9a2c1e-2","text":"The test fails because …"}}}
-{"jsonrpc":"2.0","method":"turn/completed","params":{"sessionId":"a3f8bc12-…","turn":{"id":"7d1e…","status":"completed","error":null,"usage":{"inputTokens":18234,"cachedInputTokens":15012,"cacheCreationTokens":0,"outputTokens":912,"reasoningTokens":0,"modelCalls":3},"durationMs":8421}}}
+{"jsonrpc":"2.0","method":"turn/completed","params":{"sessionId":"a3f8bc12-…","turn":{"id":"7d1e…","status":"completed","error":null,"usage":{"inputTokens":18234,"cachedInputTokens":15012,"cacheCreationTokens":0,"outputTokens":912,"reasoningTokens":0,"modelCalls":3},"durationMs":8421,"startedAt":1794700001,"completedAt":1794700009}}}
 {"jsonrpc":"2.0","method":"exec/summary","params":{"sessionId":"a3f8bc12-…","success":true,"…":"…"}}
 ```
 
@@ -215,11 +215,11 @@ below as described, and Ctrl+C sends `turn/interrupt`.
 | Method | Carries | Notes |
 |--------|---------|-------|
 | `session/started` | `session` (`id`, `name`, `preview`, `createdAt`, `updatedAt`, `cwd`, and while open `model`, `provider`, `contextWindow`, `mode`, `tools`), `kodaVersion`, `protocolVersion` | Always first. Stop on a `protocolVersion` you don't support. Times are Unix seconds; `name` is the title, `preview` the first prompt |
-| `turn/started` | `turn`, in progress | |
+| `turn/started` | `turn`, in progress, with `startedAt` | |
 | `item/started`, `item/completed` | `item`, `parentItemId` on a sub-agent's items, `startedAtMs` or `completedAtMs` | Every item that starts completes, once. The times are Unix milliseconds, as Codex's; a stored turn's items keep both |
 | `item/agentMessage/delta` | `itemId`, `delta` | Only with `--json-deltas` |
 | `item/reasoning/textDelta` | `itemId`, `delta` | Only with `--json-deltas` |
-| `item/toolCall/outputDelta` | `itemId`, `delta`, `stream` (`stdout` or `stderr`) | A line of a running command. Only with `--json-deltas` |
+| `item/toolCall/outputDelta` | `itemId`, `delta`, `stream` (`stdout` or `stderr`) | A line of a running command, as Codex caps them: at most 10,000 per call, each at most 8 KiB (a longer one is cut and ends with `…`). Only with `--json-deltas` |
 | `item/toolCall/progress` | `itemId`, `message` | A notice about a call, such as a sub-agent reaching its turn limit, or a skill restricting the tools. Codex's `item/mcpToolCall/progress` |
 | `session/tokenUsage/updated` | `tokenUsage`: `total`, `last`, `modelContextWindow`, `byAgent` | After each model call, as Codex's `thread/tokenUsage/updated`, and once when a session is resumed, with what it had stored, as Codex replays a thread's. `total` adds up every call since the session was created, sub-agents' and compactions' included; `byAgent` splits it by agent (the session's own under `main`), with each agent's `modelCalls`; `last` is the session's latest call, and its `totalTokens` is how full the context was. Each counts `totalTokens`, `inputTokens` (cached tokens included), `cachedInputTokens`, `cacheWriteInputTokens`, `outputTokens` and `reasoningOutputTokens` |
 | `turn/plan/updated` | `plan`: `{step, status}` | The model's todo list, whole. `status` is `pending`, `inProgress` or `completed` |
@@ -228,14 +228,14 @@ below as described, and Ctrl+C sends `turn/interrupt`.
 | `error` | `error.message`, `willRetry`, `retry` | With `willRetry`, Koda tries the model call again and the turn goes on. `retry` has `reason` (`rateLimit`, `network`, `serverError`, `streamFailed`, `contextOverflow`, `emptyResponse`), `attempt` (the one that failed, from 1), `maxAttempts` and `delayMs` |
 | `warning` | `message` | For people |
 | `serverRequest/resolved` | `requestId` | The request was answered. In `koda exec`, right after each request |
-| `turn/completed` | `turn`: `status`, `error`, `usage`, `durationMs` | Exactly one per turn, after any retries. `status` is `completed`, `interrupted` or `failed`. A failed turn's `error` may carry a `code`: `tokenBudgetSpent` when it spent its [`turn_token_budget`](./configuration.md#limiting-what-a-turn-spends) |
+| `turn/completed` | `turn`: `status`, `error`, `usage`, `durationMs`, `startedAt`, `completedAt` | Exactly one per turn, after any retries. The times are Unix seconds, as Codex's. `status` is `completed`, `interrupted` or `failed`. A failed turn's `error` may carry a `code`: `tokenBudgetSpent` when it spent its [`turn_token_budget`](./configuration.md#limiting-what-a-turn-spends) |
 | `exec/summary` | the run as a whole | `koda exec` only, always last |
 
 ### Items
 
 | `type` | Fields | Notes |
 |--------|--------|-------|
-| `userMessage` | `id`, `text`, `clientMessageIds`, `mentions` | What the user said, as the model received it; `mentions` are the files and folders it named with `@`, as paths: a turn's prompt, or steering text sent during it (texts that arrived together are one item) |
+| `userMessage` | `id`, `text`, `clientMessageIds`, `mentions`, `images` | What the user said, as the model received it; `mentions` are the files and folders it named with `@`, as paths, and `images` the images sent with it (`mediaType`, base64 `data`): a turn's prompt, or steering text sent during it (texts that arrived together are one item) |
 | `agentMessage` | `id`, `text` | Text is empty when it starts and complete when it completes |
 | `reasoning` | `id`, `text` | Where the provider shows reasoning |
 | `toolCall` | `id`, `tool`, `kind`, `arguments`, `status`, `output`, `exitCode`, `durationMs`, `detail`, `changes`, `progress` | One item for every tool, named by `tool`. `kind` is what sort of tool it is, from the Agent Client Protocol's list (`read`, `edit`, `delete`, `move`, `search`, `execute`, `think`, `fetch`, `switch_mode`, `other`), so a client can draw a call without knowing every tool's name; an MCP tool is `other`. `status` ends as `completed`, `failed` (it ran and failed, or a command exited non-zero), `declined` (refused at an approval, by `--mode plan` or by a sub-agent's limits) or `cancelled`. `output` is what the model read. On completion, `exitCode` is the exit code of the command a `Bash` or `Cargo` call ran (absent for other tools, or when the command timed out, was stopped or went to the background), and `durationMs` how long the tool ran, not counting a wait for approval (absent when it never ran), as Codex's items have them. `detail` is the one-line description Koda showed when it asked about or blocked the call. `changes` is what an `Edit` or `Write` changes, from the call's start whether or not anyone was asked, each `{path, kind, diff}` as Codex's `fileChange` item has them (`kind` is `{"type": "add"}` with the new file as `diff`, or `{"type": "update"}` with a unified diff). `progress` lists the call's notices, on completion. The last three are left out when empty |
@@ -251,7 +251,7 @@ Koda asks with JSON-RPC requests, which have an `id`:
 
 | Method | Carries | Answer |
 |--------|---------|--------|
-| `item/toolCall/requestApproval` | `itemId`, `tool`, `detail`, `changes`, `effect`, `allowForSession`, `agent` | `decision`: `approve`, `approveForSession`, `reject` or `rejectWithFeedback`. `changes` is the edit's diff, as on the item. `agent` names the sub-agent asking, when it isn't the main agent; a background agent may ask with no turn running, and `turnId` is then empty |
+| `item/toolCall/requestApproval` | `itemId`, `tool`, `detail`, `changes`, `command`, `cwd`, `reason`, `outsideSandbox`, `background`, `effect`, `allowForSession`, `agent` | `decision`: `approve`, `approveForSession`, `reject` or `rejectWithFeedback`. `changes` is the edit's diff, as on the item. For a `Bash` or `Cargo` call, `command` and `cwd` say what would run and where, `reason` why the model wants it, and `outsideSandbox` that it asks to leave the sandbox, as fields a client can lay out; `detail` says the same in a line. `agent` names the sub-agent asking, when it isn't the main agent; a background agent may ask with no turn running, and `turnId` is then empty |
 | `item/tool/requestUserInput` | `itemId`, `question`, `options` | `answer` |
 | `turn/loopCap/requestDecision` | `cap`, `recentTools` | `decision`: `continue50`, `continue200` or `stop` |
 

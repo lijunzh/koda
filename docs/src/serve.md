@@ -166,7 +166,10 @@ with `session/turns/list`, as Codex's `thread/turns/list` does:
 
 The answer's `data` has up to `limit` turns (25 without one, at most 100),
 newest first, each with its items; a turn still running is `inProgress`, with
-the items it has so far. Pass `nextCursor` as `cursor` for the next older page;
+the items it has so far as its clients were told of them: those that
+completed, and those still open, a message with its text so far and a tool
+call still running, as a client joining the session gets it and as Codex's
+`thread/read` merges a thread's active turn. `session/read` gives the same. Pass `nextCursor` as `cursor` for the next older page;
 it is absent on the last. `"sortDirection": "asc"` pages from the oldest
 instead. `backwardsCursor`, with the other direction, reads back from a page's
 first turn, that turn included, to catch what changed in a turn that was
@@ -316,10 +319,14 @@ and `nc -U ~/.config/koda/serve/koda.sock` is enough to try it.)
   starts again. A turn that is running comes as it stands, `inProgress`, with
   its completed items and then the ones still open: a message with its text
   so far, a tool call `inProgress` with the notices sent about it (an open
-  item has no `completedAtMs`). The client hears nothing of the session
-  before the answer, and after it everything that follows, once: the
-  session answers at one point in its own stream of messages, and the
-  client is subscribed there.
+  item has no `completedAtMs`). The answer's `settings` say what the
+  session's turns run with (model and alias, provider and endpoint, effort,
+  mode), as `session/settings/updated` does. After it come what the client
+  wasn't there to hear: the token counts, the plan and the turn's diff as
+  last sent, then the requests still waiting. The client hears nothing of
+  the session before the answer, and after it everything that follows,
+  once: the session answers at one point in its own stream of messages,
+  and the client is subscribed there.
 - **One writer per session.** One process writes a session at a time, as
   Codex keeps one writer per thread. While a session is open in one Koda
   process (this server, a `koda exec` run, or a TUI started with

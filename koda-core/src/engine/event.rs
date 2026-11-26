@@ -280,6 +280,9 @@ pub enum EngineEvent {
         tool_name: String,
         /// Human-readable description of the action.
         detail: String,
+        /// The command it would run, for a `Bash` or `Cargo` call.
+        #[serde(default)]
+        command: Option<crate::tools::ApprovalCommand>,
         /// Structured diff preview (rendered by the client).
         preview: Option<crate::preview::DiffPreview>,
         /// The classified effect that triggered confirmation.
@@ -1023,6 +1026,7 @@ mod tests {
             tool_call_id: "call-1".into(),
             tool_name: "Bash".into(),
             detail: "rm -rf node_modules".into(),
+            command: None,
             preview: None,
             effect: crate::tools::ToolEffect::Destructive,
             allow_for_session: false,

@@ -31,9 +31,9 @@ use koda_protocol::session::{
     SessionSettingsUpdateResponse, SessionSettingsUpdatedNotification, SessionStartedNotification,
 };
 use koda_protocol::turn::{
-    LoopCapDecision, LoopCapResponse, Mention, SkillInput, Turn, TurnError, TurnInterruptParams,
-    TurnInterruptResponse, TurnStartParams, TurnStartResponse, TurnStatus, TurnSteerParams,
-    TurnSteerResponse,
+    ImageInput, LoopCapDecision, LoopCapResponse, Mention, SkillInput, Turn, TurnError,
+    TurnInterruptParams, TurnInterruptResponse, TurnStartParams, TurnStartResponse, TurnStatus,
+    TurnSteerParams, TurnSteerResponse,
 };
 use koda_protocol::{PROTOCOL_VERSION, ServerNotification, ServerRequest};
 use koda_state::db::{Database, Role};
@@ -95,9 +95,12 @@ pub(crate) enum SessionCommand {
     /// Stop the turn, if one runs, and end the task. `done`, if given, is
     /// dropped once the task has ended.
     Shutdown { done: Option<oneshot::Sender<()>> },
-    /// Store the session's turns sent so far: `done` is dropped once they
-    /// are, so a read of the store that follows sees all of them.
-    FlushHistory { done: oneshot::Sender<()> },
+    /// Store the session's turns sent so far, then answer on `done` with its
+    /// latest turn as it stands, so a read of the store that follows sees
+    /// all of them, and the items still open can be laid over them.
+    FlushHistory {
+        done: oneshot::Sender<Option<crate::live_turn::LiveTurn>>,
+    },
     /// Fail as a bug in the session would, for testing how that ends.
     #[cfg(test)]
     Panic,
@@ -352,8 +355,10 @@ pub(crate) async fn open(
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .insert(id.clone(), koda_protocol::session::SessionStatus::Idle);
+    let settings = crate::settings::report(&config, alias, mode);
     let described = Session {
         status: Some(koda_protocol::session::SessionStatus::Idle),
+        settings: Some(Box::new(settings.clone())),
         model: Some(config.model.clone()),
         provider: Some(config.provider_type.meta().name.to_string()),
         context_window: Some(config.max_context_tokens as u64),
@@ -405,6 +410,26 @@ pub(crate) async fn open(
             .session_usage_by_agent(&id)
             .await
             .map_err(|e| internal(format!("couldn't read the session's usage: {e:#}")))?;
+        // Its own latest call: how full its context was when it stopped.
+        let last = session
+            .db
+            .last_call_usage(&id)
+            .await
+            .map_err(|e| internal(format!("couldn't read the session's usage: {e:#}")))?
+            .map(|usage| {
+                let call = koda_core::providers::TokenUsage {
+                    prompt_tokens: usage.prompt_tokens,
+                    completion_tokens: usage.completion_tokens,
+                    cache_read_tokens: usage.cache_read_tokens,
+                    cache_creation_tokens: usage.cache_creation_tokens,
+                    thinking_tokens: usage.thinking_tokens,
+                    stop_reason: String::new(),
+                };
+                crate::events::breakdown_of(&koda_core::engine::UsageTotals::of_call(
+                    probe.as_ref(),
+                    &call,
+                ))
+            });
         (!stored.is_empty()).then(|| {
             let by_agent = stored
                 .iter()
@@ -424,7 +449,7 @@ pub(crate) async fn open(
                     (agent.clone(), crate::events::usage_of(&totals))
                 })
                 .collect();
-            projector.restore_usage(by_agent, Some(config.max_context_tokens as u64))
+            projector.restore_usage(by_agent, Some(config.max_context_tokens as u64), last)
         })
     } else {
         None
@@ -453,6 +478,9 @@ pub(crate) async fn open(
             elicitations: HashMap::new(),
             agent_approvals: HashMap::new(),
             live_turn: None,
+            settings: None,
+            last_plan: None,
+            last_diff: None,
             turn_running: false,
             status: koda_protocol::session::SessionStatus::Idle,
         }),
@@ -476,6 +504,7 @@ pub(crate) async fn open(
     // Sub-agents' status goes out as it changes, not only between the
     // turn's model calls.
     session.attach_event_sink(Arc::clone(&sink) as Arc<dyn EngineSink>);
+    sink.set_settings(settings);
     Ok(OpenSession {
         session: described,
         commands: commands_tx,
@@ -633,7 +662,7 @@ impl SessionTask {
                 }
                 SessionCommand::FlushHistory { done } => {
                     self.sink.flush_history().await;
-                    drop(done);
+                    let _ = done.send(self.sink.live_turn());
                     Next::Idle
                 }
                 #[cfg(test)]
@@ -992,7 +1021,11 @@ impl SessionTask {
             .db
             .rewind(id, before_turn_id, boundary)
             .await
-            .map_err(|e| invalid(format!("{e:#}")))
+            .map_err(|e| invalid(format!("{e:#}")))?;
+        // The latest turn went with the rewind: a later read or join
+        // mustn't bring it back.
+        self.sink.forget_latest_turn();
+        Ok(())
     }
 
     /// Store where the session's messages stand as turn `turn_id` starts, so
@@ -1057,6 +1090,8 @@ impl SessionTask {
             )));
             return Next::Idle;
         }
+        // As sent, for the prompt's item.
+        let sent_images = images.clone();
         let mut images: Vec<ImageData> = images
             .into_iter()
             .map(|image| ImageData {
@@ -1079,7 +1114,14 @@ impl SessionTask {
         self.session.output_schema = output_schema;
         let images = (!images.is_empty()).then_some(images);
         if let Some(mode) = mode {
-            self.session.mode = core_mode(mode);
+            let mode = core_mode(mode);
+            // Said like any other change of settings: another client of
+            // the session shows its mode too.
+            let changed = mode != self.session.mode;
+            self.session.mode = mode;
+            if changed {
+                self.report_settings();
+            }
         }
 
         // The turn reads the conversation back from the database, so a
@@ -1116,11 +1158,17 @@ impl SessionTask {
                 error: None,
                 usage: None,
                 duration_ms: None,
+                started_at: None,
+                completed_at: None,
                 items: Vec::new(),
             },
         }));
-        self.sink
-            .begin_turn(input, client_message_id.into_iter().collect(), mentions);
+        self.sink.begin_turn(
+            input,
+            client_message_id.into_iter().collect(),
+            mentions,
+            sent_images,
+        );
         self.mark_turn_start(&turn_id, boundary).await;
         self.run_turn(turn_id, Work::Prompt(images)).await
     }
@@ -1493,7 +1541,7 @@ impl SessionTask {
                         // only pauses while its queued records are stored.
                         Some(SessionCommand::FlushHistory { done }) => {
                             sink.flush_history().await;
-                            drop(done);
+                            let _ = done.send(sink.live_turn());
                         }
                         #[cfg(test)]
                         Some(SessionCommand::Panic) => panic!("a test's panic"),
@@ -1648,6 +1696,7 @@ pub(crate) fn describe(stored: &koda_state::session_store::SessionInfo) -> Sessi
         tools: None,
         instruction_sources: None,
         status: None,
+        settings: None,
         source: Some(source_kind(stored.source.as_deref())),
         originator: stored.originator.clone(),
         forked_from_id: stored.forked_from_id.clone(),
@@ -1707,9 +1756,9 @@ enum RequestKind {
 
 struct SinkState {
     projector: EventProjector,
-    /// The prompt of the turn about to start, with its client id and the
-    /// paths it mentioned.
-    prompt: Option<(String, Vec<String>, Vec<Mention>)>,
+    /// The prompt of the turn about to start, with its client id, the
+    /// paths it mentioned and the images sent with it.
+    prompt: Option<Prompt>,
     /// Client ids of steering texts sent and not yet delivered, oldest
     /// first; `None` where the client gave none.
     steers: VecDeque<Option<String>>,
@@ -1733,11 +1782,20 @@ struct SinkState {
     /// The latest turn as the clients have been told of it, for one that
     /// joins.
     live_turn: Option<crate::live_turn::LiveTurn>,
+    /// What the session's turns run with, as last reported.
+    settings: Option<koda_protocol::session::SessionSettings>,
+    /// The plan and the turn's diff as last sent, for a client that joins.
+    last_plan: Option<Outgoing>,
+    last_diff: Option<Outgoing>,
     /// Whether a turn is running, by the clients' account of it.
     turn_running: bool,
     /// What the session was last said to be doing.
     status: koda_protocol::session::SessionStatus,
 }
+
+/// A turn's prompt, waiting for the turn to start: its text, the client's
+/// ids for it, the paths it mentioned and the images sent with it.
+type Prompt = (String, Vec<String>, Vec<Mention>, Vec<ImageInput>);
 
 /// The session's [`EngineSink`]: engine events become protocol messages on
 /// the client's queue.
@@ -1761,9 +1819,15 @@ impl HostSink {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn begin_turn(&self, prompt: String, client_message_ids: Vec<String>, mentions: Vec<Mention>) {
+    fn begin_turn(
+        &self,
+        prompt: String,
+        client_message_ids: Vec<String>,
+        mentions: Vec<Mention>,
+        images: Vec<ImageInput>,
+    ) {
         let mut state = self.lock();
-        state.prompt = Some((prompt, client_message_ids, mentions));
+        state.prompt = Some((prompt, client_message_ids, mentions, images));
         state.steers.clear();
     }
 
@@ -1824,6 +1888,18 @@ impl HostSink {
         }
     }
 
+    /// The session's latest turn as its clients have been told of it.
+    fn live_turn(&self) -> Option<crate::live_turn::LiveTurn> {
+        self.lock().live_turn.clone()
+    }
+
+    /// Drop the latest turn and its diff, which a rewind has taken out.
+    fn forget_latest_turn(&self) {
+        let mut state = self.lock();
+        state.live_turn = None;
+        state.last_diff = None;
+    }
+
     /// The window the server stated during the turn, if it did.
     fn take_learned_window(&self) -> Option<usize> {
         self.lock().learned_window.take()
@@ -1880,7 +1956,7 @@ impl HostSink {
             history.flush().await;
         }
         let mut state = self.lock();
-        self.deliver(&mut state, out);
+        self.publish(&mut state, out);
     }
 
     /// The engine command the client's answer to `id` stands for, once
@@ -1933,12 +2009,12 @@ impl HostSink {
                     .collect();
                 state
                     .projector
-                    .user_message(texts.join("\n\n"), ids, Vec::new())
+                    .user_message(texts.join("\n\n"), ids, Vec::new(), Vec::new())
             }
             (None, event @ EngineEvent::TurnStart { .. }) => {
                 let mut out = state.projector.project(None, event);
-                if let Some((text, ids, mentions)) = state.prompt.take() {
-                    out.extend(state.projector.user_message(text, ids, mentions));
+                if let Some((text, ids, mentions, images)) = state.prompt.take() {
+                    out.extend(state.projector.user_message(text, ids, mentions, images));
                 }
                 out
             }
@@ -1973,10 +2049,38 @@ impl HostSink {
         if let Some(history) = &self.history {
             history.record(&out);
         }
+        self.publish(state, out);
+    }
+
+    /// Take note of what `out` says the session's turn, settings, plan and
+    /// diff now are, for a client that joins later, and put it on the
+    /// client's queue. For messages already stored.
+    fn publish(&self, state: &mut SinkState, out: Vec<Outgoing>) {
         for message in &out {
             crate::live_turn::LiveTurn::observe(&mut state.live_turn, message);
+            match message {
+                Outgoing::Notification(ServerNotification::SessionSettingsUpdated(updated)) => {
+                    state.settings = Some(updated.settings.clone());
+                }
+                Outgoing::Notification(ServerNotification::TurnPlanUpdated(_)) => {
+                    state.last_plan = Some(message.clone());
+                }
+                Outgoing::Notification(ServerNotification::TurnDiffUpdated(_)) => {
+                    state.last_diff = Some(message.clone());
+                }
+                // A new turn has changed nothing yet.
+                Outgoing::Notification(ServerNotification::TurnStarted(_)) => {
+                    state.last_diff = None;
+                }
+                _ => {}
+            }
         }
         self.deliver(state, out);
+    }
+
+    /// What the session's turns run with from the start.
+    fn set_settings(&self, settings: koda_protocol::session::SessionSettings) {
+        self.lock().settings = Some(settings);
     }
 
     /// Answer a join: put `session`, with its latest turn as it stands, on
@@ -1988,9 +2092,27 @@ impl HostSink {
             live.over(&mut session.turns);
         }
         session.status = Some(state.status.clone());
+        session.settings = state.settings.clone().map(Box::new);
+        // What the joiner wasn't there to hear: the token counts on the
+        // latest turn, then the plan and that turn's diff as last sent.
+        let mut replay = Vec::new();
+        if let Some(turn) = session.turns.last() {
+            replay.push(Outgoing::Notification(
+                ServerNotification::SessionTokenUsageUpdated(
+                    koda_protocol::session::SessionTokenUsageUpdatedNotification {
+                        session_id: self.session_id.clone(),
+                        turn_id: turn.id.clone(),
+                        token_usage: state.projector.token_usage().clone(),
+                    },
+                ),
+            ));
+        }
+        replay.extend(state.last_plan.clone());
+        replay.extend(state.last_diff.clone());
         let _ = self.events.send(Outgoing::Joined {
             token,
             session: Box::new(session),
+            replay,
         });
     }
 
@@ -2134,6 +2256,7 @@ impl HostSink {
                 tool_call_id: request.tool_call_id,
                 tool_name: request.tool_name,
                 detail: request.detail,
+                command: None,
                 preview: None,
                 effect: request.effect,
                 allow_for_session: false,
@@ -2347,12 +2470,10 @@ fn policy_answer(event: &EngineEvent) -> Option<(String, EngineCommand)> {
             id,
             effect,
             tool_name,
-            detail,
+            command,
             ..
         } => {
-            let decision = if *effect == koda_core::tools::ToolEffect::Destructive
-                && detail.starts_with(koda_core::tools::OUTSIDE_SANDBOX_TAG)
-            {
+            let decision = if command.as_ref().is_some_and(|c| c.outside_sandbox) {
                 ApprovalDecision::RejectAuto {
                     reason: format!(
                         "running '{tool_name}' outside the sandbox auto-rejected (headless \
@@ -2531,6 +2652,9 @@ mod tests {
                 elicitations: HashMap::new(),
                 agent_approvals: HashMap::new(),
                 live_turn: None,
+                settings: None,
+                last_plan: None,
+                last_diff: None,
                 turn_running: false,
                 status: koda_protocol::session::SessionStatus::Idle,
             }),
@@ -2544,6 +2668,7 @@ mod tests {
             tool_call_id: format!("call-{id}"),
             tool_name: "Bash".into(),
             detail: detail.into(),
+            command: None,
             preview: None,
             effect,
             allow_for_session: false,
@@ -2573,6 +2698,7 @@ mod tests {
             tool_call_id: "sub-call".into(),
             tool_name: "Write".into(),
             detail: "write a.txt".into(),
+            command: None,
             preview: None,
             effect,
             allow_for_session: true,
@@ -2697,8 +2823,16 @@ mod tests {
 
         sink.emit(approval("a1", ToolEffect::LocalMutation, "write a.txt"));
         sink.emit(approval("a2", ToolEffect::Destructive, "rm -rf build"));
-        let outside = format!("{OUTSIDE_SANDBOX_TAG} cargo test");
-        sink.emit(approval("a3", ToolEffect::Destructive, &outside));
+        let outside = format!("{OUTSIDE_SANDBOX_TAG} git push");
+        let mut asks_out = approval("a3", ToolEffect::Destructive, &outside);
+        if let EngineEvent::ApprovalRequest { command, .. } = &mut asks_out {
+            *command = koda_core::tools::approval_command(
+                "Bash",
+                &serde_json::json!({"command": "git push", "outside_sandbox": true}),
+                std::path::Path::new("/work"),
+            );
+        }
+        sink.emit(asks_out);
         sink.emit(EngineEvent::AskUserRequest {
             id: "q1".into(),
             tool_call_id: "call-q1".into(),

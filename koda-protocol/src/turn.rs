@@ -19,6 +19,15 @@ pub struct Turn {
     pub usage: Option<Usage>,
     /// Wall-clock time, set when the turn is over.
     pub duration_ms: Option<u64>,
+    /// When it started, in Unix seconds, as Codex's `Turn.startedAt`. Not
+    /// on the `turn/start` response, whose `turn/started` carries it, nor
+    /// on turns of sessions stored before 0.8.0.
+    #[serde(default)]
+    pub started_at: Option<i64>,
+    /// When it ended, in Unix seconds, as Codex's `Turn.completedAt`. Not
+    /// on a turn that ended with the process running it.
+    #[serde(default)]
+    pub completed_at: Option<i64>,
     /// Its items, in order. Filled only when a stored session's turns are
     /// returned, by `session/start` resuming it, `session/read` or
     /// `session/turns/list`, as Codex's `Turn.items` is; empty on `turn/started` and

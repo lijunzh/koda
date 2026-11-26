@@ -318,6 +318,8 @@ fn replay(records: &[TurnRecord], running: bool) -> Vec<Turn> {
                     error: None,
                     usage: None,
                     duration_ms: None,
+                    started_at: None,
+                    completed_at: None,
                     items: Vec::new(),
                 });
                 turns.len() - 1
@@ -394,6 +396,8 @@ fn rebuild_from(messages: &[Message], progress: &mut HashMap<String, Vec<String>
                         error: None,
                         usage: None,
                         duration_ms: None,
+                        started_at: None,
+                        completed_at: None,
                         items: Vec::new(),
                     });
                 }
@@ -404,6 +408,7 @@ fn rebuild_from(messages: &[Message], progress: &mut HashMap<String, Vec<String>
                         text: msg.content.clone().unwrap_or_default(),
                         client_message_ids: Vec::new(),
                         mentions: Vec::new(),
+                        images: Vec::new(),
                     },
                 );
                 mid_turn = false;
@@ -552,6 +557,8 @@ mod tests {
                 error: None,
                 usage: None,
                 duration_ms: Some(5),
+                started_at: None,
+                completed_at: None,
                 items: Vec::new(),
             })
             .unwrap(),
@@ -819,6 +826,8 @@ mod tests {
             error: None,
             usage: None,
             duration_ms: None,
+            started_at: None,
+            completed_at: None,
             items: Vec::new(),
         };
         let item = Item::AgentMessage {
@@ -884,6 +893,8 @@ mod tests {
                 error: None,
                 usage: None,
                 duration_ms: None,
+                started_at: None,
+                completed_at: None,
                 items: Vec::new(),
             })
             .collect()

@@ -1280,6 +1280,13 @@
               "description": "The item's id.",
               "type": "string"
             },
+            "images": {
+              "description": "The images sent with it, as `turn/start` took them, so a client\nthat opens the session later shows them, as Codex's\n`userMessage` keeps its images in `content`. Images read from\nmentioned files aren't here: `mentions` names those.",
+              "items": {
+                "$ref": "#/$defs/ImageInput"
+              },
+              "type": "array"
+            },
             "mentions": {
               "description": "The files and directories it mentioned. The model was sent their\ncontents after the text; the item carries only the paths.",
               "items": {
@@ -2452,9 +2459,27 @@
             "null"
           ]
         },
+        "defaultReasoningEffort": {
+          "description": "The effort sent when none is chosen, as Codex's\n`defaultReasoningEffort`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "id": {
           "description": "The id to send, or `auto-detect` for `local`, whose model the server\nnames.",
           "type": "string"
+        },
+        "isDefault": {
+          "description": "The model a new session of this provider gets without one, as\nCodex's `isDefault`.",
+          "type": "boolean"
+        },
+        "supportedReasoningEfforts": {
+          "description": "The reasoning efforts it takes (`low` … `max`), as Codex's\n`supportedReasoningEfforts`; empty where Koda doesn't set one.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -3133,6 +3158,17 @@
             "string",
             "null"
           ]
+        },
+        "settings": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionSettings"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What an open session's turns run with: the model and the alias it\nwas chosen by, the provider and its endpoint, the reasoning effort\nand the mode, as Codex's `thread/start` answers with them.\n`session/settings/updated` follows each change."
         },
         "source": {
           "anyOf": [
@@ -4625,12 +4661,30 @@
           "description": "Whether `approveForSession` may be answered: only for local changes\ninside the project.",
           "type": "boolean"
         },
+        "background": {
+          "description": "Whether the command runs in the background.",
+          "type": "boolean"
+        },
         "changes": {
           "description": "The file changes it would make, as on its item.",
           "items": {
             "$ref": "#/$defs/FileUpdateChange"
           },
           "type": "array"
+        },
+        "command": {
+          "description": "The command a `Bash` or `Cargo` call would run, as Codex's command\napproval's `command`. `detail` says the same in a line; this is for\na client that lays the dialog out itself.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cwd": {
+          "description": "The folder the command runs in, as Codex's `cwd`.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "detail": {
           "description": "What the call would do, in a line.",
@@ -4643,6 +4697,17 @@
         "itemId": {
           "description": "The tool call.",
           "type": "string"
+        },
+        "outsideSandbox": {
+          "description": "Whether the command asks to run outside the sandbox, with the\nuser's yes for this one call. Koda's own: Codex asks for more than\nthe sandbox gives with `additionalPermissions`. `detail` then starts\nwith [`OUTSIDE_SANDBOX_TAG`].",
+          "type": "boolean"
+        },
+        "reason": {
+          "description": "Why the model wants the command run, when it said, as Codex's\n`reason`.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "sessionId": {
           "description": "The session.",
@@ -4888,6 +4953,15 @@
     "Turn": {
       "description": "A turn. `turn/started` sends it in progress, `turn/completed` finished.",
       "properties": {
+        "completedAt": {
+          "default": null,
+          "description": "When it ended, in Unix seconds, as Codex's `Turn.completedAt`. Not\non a turn that ended with the process running it.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "durationMs": {
           "description": "Wall-clock time, set when the turn is over.",
           "format": "uint64",
@@ -4918,6 +4992,15 @@
             "$ref": "#/$defs/TurnItem"
           },
           "type": "array"
+        },
+        "startedAt": {
+          "default": null,
+          "description": "When it started, in Unix seconds, as Codex's `Turn.startedAt`. Not\non the `turn/start` response, whose `turn/started` carries it, nor\non turns of sessions stored before 0.8.0.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "status": {
           "$ref": "#/$defs/TurnStatus",

@@ -36,6 +36,31 @@ pub struct Model {
     /// line. A pick by alias should be made by it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
+    /// The reasoning efforts it takes (`low` … `max`), as Codex's
+    /// `supportedReasoningEfforts`; empty where Koda doesn't set one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supported_reasoning_efforts: Vec<String>,
+    /// The effort sent when none is chosen, as Codex's
+    /// `defaultReasoningEffort`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_reasoning_effort: Option<String>,
+    /// The model a new session of this provider gets without one, as
+    /// Codex's `isDefault`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_default: bool,
+}
+
+impl Model {
+    /// A model known only by its id.
+    pub fn named(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            alias: None,
+            supported_reasoning_efforts: Vec::new(),
+            default_reasoning_effort: None,
+            is_default: false,
+        }
+    }
 }
 
 /// `modelProvider/list`: the providers Koda offers.

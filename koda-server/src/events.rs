@@ -65,6 +65,11 @@ pub enum Outgoing {
         token: u64,
         /// The session as it stands, its running turn included.
         session: Box<koda_protocol::session::Session>,
+        /// What the joiner is sent after the answer, since it wasn't there
+        /// to hear it: the session's token counts, its plan and its turn's
+        /// diff as last sent, as Codex replays a thread's usage to a client
+        /// that rejoins.
+        replay: Vec<Outgoing>,
     },
 }
 
@@ -110,7 +115,16 @@ struct OpenCall {
     /// The file change it makes, for the turn's diff: set for the session's
     /// own `Edit` and `Write` calls when Koda could preview them.
     applied: Option<AppliedEdit>,
+    /// How many output lines it has sent.
+    deltas: usize,
 }
+
+/// The most output lines one call sends, as Codex's
+/// `MAX_EXEC_OUTPUT_DELTAS_PER_CALL`.
+const MAX_OUTPUT_DELTAS: usize = 10_000;
+/// The most bytes one output line sends, as Codex's
+/// `UNIFIED_EXEC_OUTPUT_DELTA_MAX_BYTES`; a longer one is cut with `…`.
+const MAX_DELTA_BYTES: usize = 8192;
 
 /// An edit's file before and after, from its preview.
 #[derive(Debug)]
@@ -146,6 +160,8 @@ struct OpenCompaction {
 pub struct EventProjector {
     session_id: String,
     turn_id: Option<String>,
+    /// When the running turn started, in Unix seconds.
+    turn_started_at: Option<i64>,
     usage: Option<(Usage, u64)>,
     message: HashMap<Option<String>, OpenText>,
     reasoning: HashMap<Option<String>, OpenText>,
@@ -191,6 +207,7 @@ impl EventProjector {
         Self {
             session_id: session_id.to_string(),
             turn_id: None,
+            turn_started_at: None,
             usage: None,
             message: HashMap::new(),
             reasoning: HashMap::new(),
@@ -227,6 +244,7 @@ impl EventProjector {
         &mut self,
         by_agent: std::collections::BTreeMap<String, Usage>,
         context_window: Option<u64>,
+        last: Option<TokenUsageBreakdown>,
     ) -> TokenUsage {
         let mut total = TokenUsageBreakdown::default();
         for usage in by_agent.values() {
@@ -244,11 +262,19 @@ impl EventProjector {
         }
         self.tokens = TokenUsage {
             total,
-            last: TokenUsageBreakdown::default(),
+            // The session's latest call, as stored: how full its context
+            // was, so a meter is right before the next call, as Codex
+            // restores a thread's last token count.
+            last: last.unwrap_or_default(),
             model_context_window: context_window,
             by_agent,
         };
         self.tokens.clone()
+    }
+
+    /// The session's token counts so far.
+    pub fn token_usage(&self) -> &TokenUsage {
+        &self.tokens
     }
 
     /// Whose model call this is: `main` for the session's own, else the
@@ -316,12 +342,14 @@ impl EventProjector {
         text: String,
         client_message_ids: Vec<String>,
         mentions: Vec<koda_protocol::turn::Mention>,
+        images: Vec<koda_protocol::turn::ImageInput>,
     ) -> Vec<Outgoing> {
         let item = Item::UserMessage {
             id: self.new_item_id("user"),
             text,
             client_message_ids,
             mentions,
+            images,
         };
         vec![
             self.item_started(None, item.clone()),
@@ -359,6 +387,8 @@ impl EventProjector {
                 if parent.is_some() => {}
             EngineEvent::TurnStart { turn_id } => {
                 self.turn_id = Some(turn_id.clone());
+                let started_at = now_ms() / 1000;
+                self.turn_started_at = Some(started_at);
                 self.usage = None;
                 self.turn_diff = TurnDiff::new();
                 out.push(notification(ServerNotification::TurnStarted(
@@ -370,6 +400,8 @@ impl EventProjector {
                             error: None,
                             usage: None,
                             duration_ms: None,
+                            started_at: Some(started_at),
+                            completed_at: None,
                             items: Vec::new(),
                         },
                     },
@@ -419,6 +451,8 @@ impl EventProjector {
                             error,
                             usage,
                             duration_ms,
+                            started_at: self.turn_started_at.take(),
+                            completed_at: Some(now_ms() / 1000),
                             items: Vec::new(),
                         },
                     },
@@ -497,6 +531,7 @@ impl EventProjector {
                         changes,
                         progress: Vec::new(),
                         applied,
+                        deltas: 0,
                     },
                 );
                 out.push(self.item_started(parent, item));
@@ -505,19 +540,39 @@ impl EventProjector {
                 id,
                 line,
                 is_stderr,
-            } => out.push(notification(ServerNotification::ToolCallOutputDelta(
-                ToolCallOutputDeltaNotification {
-                    session_id: self.session_id.clone(),
-                    turn_id: self.turn(),
-                    item_id: id,
-                    delta: format!("{line}\n"),
-                    stream: if is_stderr {
-                        OutputStream::Stderr
-                    } else {
-                        OutputStream::Stdout
+            } => {
+                // As much as Codex sends of a call's output: the model reads
+                // its own copy, and a client drawing a flood of lines falls
+                // behind and is dropped.
+                if let Some(call) = self.calls.get_mut(&id) {
+                    call.deltas += 1;
+                    if call.deltas > MAX_OUTPUT_DELTAS {
+                        return out;
+                    }
+                }
+                let mut line = line;
+                if line.len() > MAX_DELTA_BYTES {
+                    let mut end = MAX_DELTA_BYTES;
+                    while !line.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    line.truncate(end);
+                    line.push('\u{2026}');
+                }
+                out.push(notification(ServerNotification::ToolCallOutputDelta(
+                    ToolCallOutputDeltaNotification {
+                        session_id: self.session_id.clone(),
+                        turn_id: self.turn(),
+                        item_id: id,
+                        delta: format!("{line}\n"),
+                        stream: if is_stderr {
+                            OutputStream::Stderr
+                        } else {
+                            OutputStream::Stdout
+                        },
                     },
-                },
-            ))),
+                )));
+            }
             EngineEvent::ToolCallResult {
                 id,
                 name,
@@ -588,6 +643,7 @@ impl EventProjector {
                 tool_call_id,
                 tool_name,
                 detail,
+                command,
                 preview,
                 effect,
                 allow_for_session,
@@ -600,17 +656,25 @@ impl EventProjector {
                 let request_id = self.request_id(id);
                 out.push(Outgoing::Request(ServerRequest::ToolCallApproval {
                     id: request_id,
-                    params: ToolCallApprovalParams {
-                        session_id: self.session_id.clone(),
-                        turn_id: self.turn(),
-                        item_id: tool_call_id,
-                        tool: tool_name,
-                        detail,
-                        changes,
-                        effect: effect_of(effect),
-                        allow_for_session,
-                        agent: None,
-                    },
+                    params: with_command(
+                        ToolCallApprovalParams {
+                            session_id: self.session_id.clone(),
+                            turn_id: self.turn(),
+                            item_id: tool_call_id,
+                            tool: tool_name,
+                            detail,
+                            changes,
+                            effect: effect_of(effect),
+                            allow_for_session,
+                            agent: None,
+                            command: None,
+                            cwd: None,
+                            reason: None,
+                            outside_sandbox: false,
+                            background: false,
+                        },
+                        command,
+                    ),
                 }));
             }
             EngineEvent::AskUserRequest {
@@ -923,6 +987,11 @@ impl EventProjector {
     ) -> (RequestId, ToolCallApprovalParams) {
         let id = self.new_request_id();
         let params = ToolCallApprovalParams {
+            command: None,
+            cwd: None,
+            reason: None,
+            outside_sandbox: false,
+            background: false,
             session_id: self.session_id.clone(),
             turn_id: self.turn(),
             item_id: request.tool_call_id,
@@ -936,7 +1005,7 @@ impl EventProjector {
                 id: request.agent_id,
             }),
         };
-        (id, params)
+        (id, with_command(params, request.command))
     }
 
     /// A request id for a request of the host's own, not the engine's: an
@@ -1252,6 +1321,21 @@ fn changes_of(preview: Option<&DiffPreview>) -> Vec<FileUpdateChange> {
 }
 
 /// One model call's tokens, in Codex's breakdown.
+/// `params` with the command it is about, when it is about one.
+fn with_command(
+    mut params: ToolCallApprovalParams,
+    command: Option<koda_core::tools::ApprovalCommand>,
+) -> ToolCallApprovalParams {
+    if let Some(command) = command {
+        params.command = Some(command.command);
+        params.cwd = Some(command.cwd.to_string_lossy().into_owned());
+        params.reason = command.reason;
+        params.outside_sandbox = command.outside_sandbox;
+        params.background = command.background;
+    }
+    params
+}
+
 /// Now, in Unix milliseconds.
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
@@ -1260,7 +1344,7 @@ pub fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-fn breakdown_of(usage: &UsageTotals) -> TokenUsageBreakdown {
+pub(crate) fn breakdown_of(usage: &UsageTotals) -> TokenUsageBreakdown {
     let count = |n: i64| n.max(0) as u64;
     let input = count(usage.input_tokens());
     let output = count(usage.completion_tokens);
@@ -1453,6 +1537,12 @@ mod tests {
         assert_eq!(turn["usage"]["inputTokens"], 100);
         assert_eq!(turn["usage"]["modelCalls"], 2);
         assert_eq!(turn["durationMs"], 1500);
+        // Both ends in Unix seconds, as Codex's; the start as it started.
+        let started = lines[0]["params"]["turn"]["startedAt"].as_i64().unwrap();
+        assert!(started > 1_700_000_000);
+        assert!(lines[0]["params"]["turn"]["completedAt"].is_null());
+        assert_eq!(turn["startedAt"], started);
+        assert!(turn["completedAt"].as_i64().unwrap() >= started);
         assert!(lines.iter().all(|l| l["params"]["sessionId"] == "s1"));
     }
 
@@ -1533,6 +1623,11 @@ mod tests {
                         tool_call_id: "c1".into(),
                         tool_name: "Bash".into(),
                         detail: "rm -rf build".into(),
+                        command: koda_core::tools::approval_command(
+                            "Bash",
+                            &json!({"command": "rm -rf build", "reason": "stale"}),
+                            std::path::Path::new("/work/app"),
+                        ),
                         preview: None,
                         effect: koda_core::tools::ToolEffect::Destructive,
                         allow_for_session: false,
@@ -1553,6 +1648,14 @@ mod tests {
         assert_eq!(request["id"], 1);
         assert_eq!(request["params"]["itemId"], "c1");
         assert_eq!(request["params"]["effect"], "destructive");
+        // The command as fields, as Codex's command approval has them.
+        assert_eq!(request["params"]["command"], "rm -rf build");
+        assert_eq!(request["params"]["cwd"], "/work/app");
+        assert_eq!(request["params"]["reason"], "stale");
+        assert!(
+            request["params"].get("outsideSandbox").is_none(),
+            "false is left out"
+        );
         assert_eq!(lines[3]["method"], "serverRequest/resolved");
         assert_eq!(lines[3]["params"]["requestId"], 1);
         let call = &lines[4]["params"]["item"];
@@ -1875,6 +1978,37 @@ mod tests {
             }
         }
         assert_eq!(seen.len(), 2);
+    }
+
+    /// A call sends at most Codex's share of its output: ten thousand lines,
+    /// each at most 8 KiB, cut at a character.
+    #[test]
+    fn a_calls_output_is_capped_as_codexs_is() {
+        let mut p = EventProjector::new("s1");
+        let line = |text: String| EngineEvent::ToolOutputLine {
+            id: "c1".into(),
+            line: text,
+            is_stderr: false,
+        };
+        let mut events = vec![(None, start("c1", "Bash"))];
+        events.push((None, line("é".repeat(MAX_DELTA_BYTES))));
+        for i in 0..MAX_OUTPUT_DELTAS + 5 {
+            events.push((None, line(format!("line {i}"))));
+        }
+        let lines = run(&mut p, events);
+        let deltas: Vec<&str> = lines
+            .iter()
+            .filter(|l| l["method"] == "item/toolCall/outputDelta")
+            .map(|l| l["params"]["delta"].as_str().unwrap())
+            .collect();
+        assert_eq!(deltas.len(), MAX_OUTPUT_DELTAS);
+        let long = deltas[0];
+        assert!(long.len() <= MAX_DELTA_BYTES + 5, "{}", long.len());
+        assert!(long.ends_with("\u{2026}\n"), "cut, and says so");
+        assert_eq!(
+            deltas.last().unwrap(),
+            &format!("line {}\n", MAX_OUTPUT_DELTAS - 2)
+        );
     }
 
     fn edit_start(id: &str, path: &str, before: Option<&str>, after: &str) -> EngineEvent {
