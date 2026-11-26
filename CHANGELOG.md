@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- **A stored turn's items are flat, as Codex's `ThreadItem`:** `session/read`, `session/turns/list` and `session/resume` give each item's own fields (`type`, `id`, …) with `startedAtMs`, `completedAtMs` and, on a sub-agent's, `parentItemId` beside them, where the item was nested under `item`. Notifications are unchanged. The protocol is version 4; sessions stored before still read. Found by the new check of Koda's protocol against Codex's (`scripts/check_codex_parity.sh`), which compares every method and field and records each deliberate difference with its reason in `koda-protocol/codex-deviations.toml`.
+
 ### Fixed
 
 - **`koda exec resume --model` keeps the session's provider,** as Codex's `thread/resume` does. Naming a model on resume used to drop the stored provider, so a session on Anthropic with a local `--base-url` resumed on LM Studio and failed. Found by koda-evals' new request comparison against Claude Code.

@@ -226,6 +226,21 @@ impl Walk {
         }
         let koda_variants = koda.variants(k);
         if !koda_variants.is_empty() {
+            // The fields a union has beside its variants (a stored item's
+            // times), then each variant by its tag.
+            let ours = koda.resolve(k).get("properties").and_then(Value::as_object);
+            let theirs = codex
+                .resolve(c)
+                .get("properties")
+                .and_then(Value::as_object);
+            for field in ours.into_iter().flatten().map(|(field, _)| field) {
+                let matched = theirs
+                    .is_some_and(|t| t.contains_key(&codex_name(field)) || t.contains_key(field));
+                if !matched {
+                    self.differences
+                        .insert(("fields".into(), format!("{name}.{field}")));
+                }
+            }
             let codex_variants = codex.variants(c);
             for (tag, variant) in koda_variants {
                 match codex_variants.get(&tag) {

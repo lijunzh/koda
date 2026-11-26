@@ -5197,7 +5197,250 @@
       "type": "object"
     },
     "TurnItem": {
-      "description": "An item of a stored turn, as `session/resume` and\n`session/read` return it: what `item/completed` sent, with its parent\nand its times, as Codex's `ThreadItem` keeps them.",
+      "description": "An item of a stored turn, as `session/resume` and `session/read`\nreturn it: what `item/completed` sent, flat, with its times beside its\nown fields, as Codex's `ThreadItem` keeps it (\"the payload stays flat\non the wire\"), and its parent.",
+      "oneOf": [
+        {
+          "description": "What the user said: a turn's prompt, or steering text added while it\nran. Steering texts that reached the model together are one item.",
+          "properties": {
+            "clientUserMessageIds": {
+              "description": "The client's ids for the messages it carries, where it gave them\n(`clientUserMessageId` on `turn/start` and `turn/steer`). Codex's\nitem carries one, `clientId`; Koda's can carry several, since\nsteering texts that reach the model together are one item.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "content": {
+              "description": "What the user sent, as `turn/start` or `turn/steer` took it, in\norder, as Codex's `userMessage` keeps its `content`. Images read\nfrom mentioned files aren't here: the mention names them.",
+              "items": {
+                "$ref": "#/$defs/UserInput"
+              },
+              "type": "array"
+            },
+            "id": {
+              "description": "The item's id.",
+              "type": "string"
+            },
+            "type": {
+              "const": "userMessage",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "content",
+            "clientUserMessageIds"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Text from the model. Complete text on `item/completed`.",
+          "properties": {
+            "id": {
+              "description": "The item's id.",
+              "type": "string"
+            },
+            "text": {
+              "description": "The text so far: empty when it starts.",
+              "type": "string"
+            },
+            "type": {
+              "const": "agentMessage",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The model's reasoning, where the provider shows it.",
+          "properties": {
+            "id": {
+              "description": "The item's id.",
+              "type": "string"
+            },
+            "text": {
+              "description": "The text so far: empty when it starts.",
+              "type": "string"
+            },
+            "type": {
+              "const": "reasoning",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A tool call.",
+          "properties": {
+            "arguments": {
+              "description": "The arguments the model gave."
+            },
+            "changes": {
+              "description": "The file changes an `Edit` or `Write` makes, from its start,\nwhether or not anyone was asked about it: Codex's `fileChange`\nitem's `changes`, carried on Koda's one tool-call item.",
+              "items": {
+                "$ref": "#/$defs/FileUpdateChange"
+              },
+              "type": "array"
+            },
+            "detail": {
+              "description": "What the call would do, in a line, when Koda asked about it or\nblocked it.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "durationMs": {
+              "description": "How long the tool ran, in milliseconds, on completion, not\ncounting a wait for approval, as Codex's items have\n`durationMs`. Absent for a call that never ran.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "effect": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ToolEffect"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What it does, as Koda classifies the call, the effect an approval\nnames, so a client can colour or group it. Absent in turns stored\nbefore Koda sent it."
+            },
+            "exitCode": {
+              "description": "The exit code of the command a `Bash` or `Cargo` call ran, on\ncompletion, as Codex's `commandExecution` item has its\n`exitCode`. Absent for other tools and for a command that never\nexited (it timed out, was stopped or went to the background).",
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "id": {
+              "description": "The call's id, from the model.",
+              "type": "string"
+            },
+            "kind": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ToolKind"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What sort of tool it is, from ACP's list, so a client can pick\na card or an icon without knowing every tool's name. Absent in\nturns stored before Koda sent it."
+            },
+            "output": {
+              "description": "What the model reads: the tool's output, or why it didn't run.\nSet on completion.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "progress": {
+              "description": "The notices sent about it as `item/toolCall/progress` while it\nran, in order: a sub-agent's, for an `InvokeAgent` call. Set on\ncompletion. A skill's change of tool scope is sent once its call\nhas completed, so it isn't here.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "status": {
+              "$ref": "#/$defs/ToolCallStatus",
+              "description": "Where it stands."
+            },
+            "tool": {
+              "description": "The tool, such as `Bash` or `Edit`.",
+              "type": "string"
+            },
+            "type": {
+              "const": "toolCall",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "tool",
+            "arguments",
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Context compaction: old history summarized or dropped to make room.",
+          "properties": {
+            "contextPercent": {
+              "description": "Context used when it began, in percent, where it was measured.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "id": {
+              "description": "The item's id.",
+              "type": "string"
+            },
+            "messagesRemoved": {
+              "description": "Rows taken out of the context, when completed.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "reason": {
+              "description": "Why it was skipped or failed.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "$ref": "#/$defs/CompactionStatus",
+              "description": "Where it stands."
+            },
+            "summaryTokens": {
+              "description": "Estimated size of the summary, when there is one.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "trigger": {
+              "$ref": "#/$defs/CompactionTrigger",
+              "description": "What set it off."
+            },
+            "type": {
+              "const": "contextCompaction",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "trigger",
+            "status"
+          ],
+          "type": "object"
+        }
+      ],
       "properties": {
         "completedAtMs": {
           "description": "When it completed, in Unix milliseconds; absent when not recorded.",
@@ -5207,12 +5450,8 @@
             "null"
           ]
         },
-        "item": {
-          "$ref": "#/$defs/Item",
-          "description": "The item."
-        },
         "parentItemId": {
-          "description": "On a sub-agent's items: the tool call that started the sub-agent.",
+          "description": "On a sub-agent's items: the tool call that started the sub-agent.\nKoda's own: Codex's sub-agents are threads of their own.",
           "type": [
             "string",
             "null"
@@ -5227,9 +5466,6 @@
           ]
         }
       },
-      "required": [
-        "item"
-      ],
       "type": "object"
     },
     "TurnLoopGuardNotification": {
@@ -6239,7 +6475,7 @@
       }
     }
   },
-  "protocolVersion": 3,
+  "protocolVersion": 4,
   "serverRequests": {
     "item/tool/requestUserInput": {
       "params": {
