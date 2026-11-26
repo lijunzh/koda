@@ -169,6 +169,10 @@ server_notifications! {
     /// Something in the config file needs a look, such as a key Koda
     /// doesn't know. Sent after `initialize`, as Codex's is.
     ConfigWarning => "configWarning" (crate::config::ConfigWarningNotification),
+    /// The server is stopping to make way for a newer Koda, now or once
+    /// the turns running in it finish. Sent to every client; one of the
+    /// server's version asks its user to start it again.
+    ServeUpdating => "serve/updating" (crate::serve::ServeUpdatingNotification),
     /// `koda exec`'s last line: the run as a whole.
     ExecSummary => "exec/summary" (ExecSummary),
 }

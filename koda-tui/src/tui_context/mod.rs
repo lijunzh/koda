@@ -190,6 +190,10 @@ pub(crate) struct TuiContext {
     /// A turn was running when the connection was lost: said once the TUI
     /// is back, if the server didn't keep it.
     pub(crate) turn_cut: bool,
+    /// The newer Koda the server said it is making way for
+    /// (`serve/updating`): this window can't go on with it, so once the
+    /// server goes it says to start koda again rather than reconnecting.
+    pub(crate) updated_to: Option<String>,
 }
 
 /// The TUI's view of its session. The host owns the session and runs its
@@ -612,6 +616,7 @@ impl TuiContext {
             backend,
             offline: false,
             turn_cut: false,
+            updated_to: None,
         };
         ctx.refresh_model_names().await;
         Ok(ctx)
@@ -920,6 +925,9 @@ impl TuiContext {
                     }
                     // A background agent may ask while no turn runs.
                     if self.take_request(&message) {
+                        continue;
+                    }
+                    if self.note_update(&message) {
                         continue;
                     }
                     // A warning about no session, such as a Claude model
