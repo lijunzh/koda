@@ -98,6 +98,9 @@ pub(crate) enum SessionCommand {
     /// Store the session's turns sent so far: `done` is dropped once they
     /// are, so a read of the store that follows sees all of them.
     FlushHistory { done: oneshot::Sender<()> },
+    /// Fail as a bug in the session would, for testing how that ends.
+    #[cfg(test)]
+    Panic,
     /// A client asked to join the open session: put the session as it
     /// stands on its message queue, marked with `token`
     /// ([`Outgoing::Joined`]), and say on `reply` whether that worked.
@@ -135,6 +138,8 @@ impl SessionCommand {
             | Self::Shutdown { .. }
             | Self::FlushHistory { .. }
             | Self::Named { .. } => {}
+            #[cfg(test)]
+            Self::Panic => {}
         }
     }
 }
@@ -550,6 +555,11 @@ pub(crate) struct SessionTask {
 impl SessionTask {
     /// Read commands until told to stop or the host is gone, then stop the
     /// session's MCP servers.
+    /// The session's sink, for ending its turn if its task fails.
+    pub(crate) fn sink(&self) -> Arc<HostSink> {
+        Arc::clone(&self.sink)
+    }
+
     pub(crate) async fn run(mut self) {
         // Every line logged for this session, by the host or the engine,
         // carries its id: the log database files it under the session.
@@ -626,6 +636,8 @@ impl SessionTask {
                     drop(done);
                     Next::Idle
                 }
+                #[cfg(test)]
+                SessionCommand::Panic => panic!("a test's panic"),
                 SessionCommand::Join { token, reply } => {
                     let joined = join(&self.sink, &self.session.db, &self.session.id, token).await;
                     let _ = reply.send(joined);
@@ -1483,6 +1495,8 @@ impl SessionTask {
                             sink.flush_history().await;
                             drop(done);
                         }
+                        #[cfg(test)]
+                        Some(SessionCommand::Panic) => panic!("a test's panic"),
                         // The turn pauses only while its stored turns are
                         // read; the joiner then follows it from here.
                         Some(SessionCommand::Join { token, reply }) => {
@@ -1776,6 +1790,31 @@ impl HostSink {
                 goal: crate::goal::to_wire(goal),
             },
         ));
+    }
+
+    /// The session's task failed (`message` says how): end its running
+    /// turn as failed and withdraw what it asked, so its clients aren't
+    /// left waiting on a session that is gone.
+    pub(crate) fn crashed(&self, message: &str) {
+        let mut state = self.lock();
+        let mut out = state.projector.resolve_all();
+        let running = state
+            .live_turn
+            .as_ref()
+            .map(|live| live.turn())
+            .filter(|turn| turn.status == TurnStatus::InProgress);
+        if let Some(turn) = running {
+            out.extend(state.projector.project(
+                None,
+                EngineEvent::TurnEnd {
+                    turn_id: turn.id,
+                    reason: koda_core::engine::TurnEndReason::Error {
+                        message: format!("Koda's session stopped on an internal error: {message}"),
+                    },
+                },
+            ));
+        }
+        self.send(&mut state, out);
     }
 
     /// Wait until the turns sent so far are stored.

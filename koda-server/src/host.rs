@@ -76,6 +76,9 @@ pub(crate) enum HostCommand {
     },
     /// The client's answer to the server request `id`.
     Response { id: RequestId, result: Answer },
+    /// Make session `session_id`'s task panic, for testing how that ends.
+    #[cfg(test)]
+    PanicSession { session_id: String },
     /// A client asked to join the open session `session_id`: have the
     /// session put itself, as it stands, on the message queue under
     /// `token`. An error on `reply` if it isn't open here.
@@ -109,6 +112,7 @@ pub(crate) struct HostArgs {
 /// Start a host on its own task.
 pub(crate) fn spawn(args: HostArgs) -> (mpsc::Sender<HostCommand>, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel(64);
+    let (ended, ended_rx) = mpsc::unbounded_channel();
     let host = Arc::new(Host {
         context: SessionContext {
             config: args.config,
@@ -127,9 +131,10 @@ pub(crate) fn spawn(args: HostArgs) -> (mpsc::Sender<HostCommand>, JoinHandle<()
         config_warnings: std::sync::Mutex::new(args.config_warnings),
         sessions: Mutex::new(HashMap::new()),
         tasks: Mutex::new(JoinSet::new()),
+        ended,
         searches: crate::fuzzy_file_search::PendingSearches::default(),
     });
-    (tx, tokio::spawn(run(host, rx)))
+    (tx, tokio::spawn(run(host, rx, ended_rx)))
 }
 
 struct Host {
@@ -145,11 +150,18 @@ struct Host {
     handles: HandleMap,
     /// Their tasks. Dropping the host stops them.
     tasks: Mutex<JoinSet<()>>,
+    /// Told when a session's task ends, with the panic's message if it
+    /// failed.
+    ended: mpsc::UnboundedSender<(String, Option<String>)>,
     /// `fuzzyFileSearch` requests in flight, by cancellation token.
     searches: crate::fuzzy_file_search::PendingSearches,
 }
 
-async fn run(host: Arc<Host>, mut commands: mpsc::Receiver<HostCommand>) {
+async fn run(
+    host: Arc<Host>,
+    mut commands: mpsc::Receiver<HostCommand>,
+    mut ended: mpsc::UnboundedReceiver<(String, Option<String>)>,
+) {
     let mut running = JoinSet::new();
     loop {
         tokio::select! {
@@ -159,6 +171,12 @@ async fn run(host: Arc<Host>, mut commands: mpsc::Receiver<HostCommand>) {
                     running.spawn(async move { host.handle(request, reply, client).await });
                 }
                 Some(HostCommand::Response { id, result }) => host.route(id, result).await,
+                #[cfg(test)]
+                Some(HostCommand::PanicSession { session_id }) => {
+                    if let Some(session) = host.sessions.lock().await.get(&session_id) {
+                        let _ = session.send(SessionCommand::Panic);
+                    }
+                }
                 Some(HostCommand::Join { session_id, token, reply }) => {
                     let open = host.sessions.lock().await.get(&session_id).cloned();
                     match open {
@@ -189,6 +207,14 @@ async fn run(host: Arc<Host>, mut commands: mpsc::Receiver<HostCommand>) {
                     return;
                 }
             },
+            // A session's task ended: reap it, and forget one that failed,
+            // so it can be opened again.
+            Some((session, failed)) = ended.recv() => {
+                host.reap().await;
+                if let Some(message) = failed {
+                    host.forget_failed(&session, &message).await;
+                }
+            }
             Some(finished) = running.join_next(), if !running.is_empty() => {
                 if let Err(error) = finished
                     && error.is_panic()
@@ -198,6 +224,15 @@ async fn run(host: Arc<Host>, mut commands: mpsc::Receiver<HostCommand>) {
             }
         }
     }
+}
+
+/// What a panic said, as the text it was given.
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+    panic
+        .downcast_ref::<&str>()
+        .map(|text| text.to_string())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "a panic".to_string())
 }
 
 impl Host {
@@ -950,6 +985,38 @@ impl Host {
         Ok(SessionDeleteResponse {})
     }
 
+    /// Drop the results of session tasks that have ended.
+    async fn reap(&self) {
+        let mut tasks = self.tasks.lock().await;
+        while tasks.try_join_next().is_some() {}
+    }
+
+    /// Session `id`'s task failed: it is no longer open, and every client
+    /// is told why.
+    async fn forget_failed(&self, id: &str, message: &str) {
+        self.sessions.lock().await.remove(id);
+        self.handles
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(id);
+        let _ = self
+            .context
+            .events
+            .send(Outgoing::Notification(ServerNotification::Error(
+                koda_protocol::server::ErrorNotification {
+                    session_id: id.to_string(),
+                    turn_id: None,
+                    error: koda_protocol::turn::TurnError {
+                        message: format!("Koda's session stopped on an internal error: {message}"),
+                        code: None,
+                    },
+                    will_retry: false,
+                    retry: None,
+                },
+            )));
+        self.closed(id);
+    }
+
     /// `session` with what it is doing now: an open session's own account,
     /// or not loaded.
     fn with_status(
@@ -1129,8 +1196,25 @@ impl Host {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(id.clone(), opened.handles);
-        sessions.insert(id, opened.commands);
-        self.tasks.lock().await.spawn(opened.task.run());
+        sessions.insert(id.clone(), opened.commands);
+        // A panic in the session (a tool, a provider) ends this session
+        // alone: its turn fails, its clients are told, and the host forgets
+        // it, as Codex's unwinding build keeps the server up.
+        let sink = opened.task.sink();
+        let ended = self.ended.clone();
+        let session_id = id.clone();
+        self.tasks.lock().await.spawn(async move {
+            use futures_util::FutureExt;
+            let ran = std::panic::AssertUnwindSafe(opened.task.run())
+                .catch_unwind()
+                .await;
+            let failed = ran.err().map(|panic| panic_message(panic.as_ref()));
+            if let Some(message) = &failed {
+                tracing::error!("koda serve: session {session_id} failed: {message}");
+                sink.crashed(message);
+            }
+            let _ = ended.send((session_id, failed));
+        });
         Ok(SessionStartResponse {
             session: opened.session,
         })
@@ -1295,9 +1379,20 @@ mod tests {
 
     /// A host on a scratch database. Keep the directory while it runs.
     async fn host() -> (mpsc::Sender<HostCommand>, JoinHandle<()>, tempfile::TempDir) {
+        let (tx, handle, dir, _) = host_with_events().await;
+        (tx, handle, dir)
+    }
+
+    /// [`host`], with what it sends its client.
+    async fn host_with_events() -> (
+        mpsc::Sender<HostCommand>,
+        JoinHandle<()>,
+        tempfile::TempDir,
+        mpsc::UnboundedReceiver<Outgoing>,
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let db = Database::init(dir.path()).await.unwrap();
-        let (events, _) = mpsc::unbounded_channel();
+        let (events, received) = mpsc::unbounded_channel();
         let (tx, handle) = spawn(HostArgs {
             config: KodaConfig::default_for_testing(ProviderType::LMStudio),
             config_file: koda_config::ConfigFile::in_dir(dir.path()),
@@ -1312,9 +1407,71 @@ mod tests {
             },
             events,
         });
-        (tx, handle, dir)
+        (tx, handle, dir, received)
     }
     use serde_json::json;
+
+    /// A session whose task panics ends alone: every client is told, the
+    /// host forgets it, and it opens again from the store. The host and
+    /// its other sessions go on, as in Codex's unwinding build.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_session_that_panics_ends_alone_and_opens_again() {
+        let (tx, host, _dir, mut events) = host_with_events().await;
+        ask(&tx, "initialize", initialize()).await.unwrap();
+        let start = |_: ()| ask(&tx, "session/start", json!({}));
+        let failing = start(()).await.unwrap()["session"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let other = start(()).await.unwrap()["session"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        tx.send(HostCommand::PanicSession {
+            session_id: failing.clone(),
+        })
+        .await
+        .unwrap();
+        // Told why, then that it isn't open.
+        let mut told = false;
+        loop {
+            let message = tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
+                .await
+                .expect("the failure is said")
+                .unwrap();
+            match message {
+                Outgoing::Notification(ServerNotification::Error(error)) => {
+                    assert_eq!(error.session_id, failing);
+                    assert!(error.error.message.contains("a test's panic"), "{error:?}");
+                    told = true;
+                }
+                Outgoing::Notification(ServerNotification::SessionStatusChanged(changed))
+                    if changed.session_id == failing =>
+                {
+                    assert_eq!(
+                        changed.status,
+                        koda_protocol::session::SessionStatus::NotLoaded
+                    );
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(told, "the error comes first");
+
+        // The host goes on: the other session still answers, and the failed
+        // one opens again from the store.
+        let read = ask(&tx, "session/read", json!({"sessionId": other}))
+            .await
+            .unwrap();
+        assert_eq!(read["session"]["status"]["type"], "idle", "{read}");
+        let reopened = ask(&tx, "session/start", json!({"sessionId": failing}))
+            .await
+            .unwrap();
+        assert_eq!(reopened["session"]["id"], failing.as_str());
+        assert!(!host.is_finished());
+    }
 
     async fn ask(tx: &mpsc::Sender<HostCommand>, method: &str, params: Value) -> Answer {
         let (reply, answer) = oneshot::channel();
