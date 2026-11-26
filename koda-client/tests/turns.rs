@@ -2400,6 +2400,47 @@ async fn a_resumed_session_reopens_on_its_own_model() {
     koda.client.shutdown().await;
 }
 
+/// A resume that names only a model keeps the session's provider and
+/// endpoint, as `koda exec resume --model` does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_resume_naming_a_model_keeps_the_session_s_provider() {
+    let first = model(vec![text("Here.")]).await;
+    let second = model(vec![text("There."), text("Back.")]).await;
+    let mut koda = Koda::start(config(&first)).await;
+    let started = koda
+        .client
+        .request::<methods::SessionStart>(SessionStartParams {
+            model_provider: Some("llama-cpp".into()),
+            base_url: Some(second.url()),
+            model: Some("second-model".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let other = started.session.id;
+    koda.session = other.clone();
+    koda.turn("hello").await;
+    koda.until("turn/completed").await;
+    koda.unsubscribe().await;
+
+    let resumed = koda
+        .client
+        .request::<methods::SessionResume>(SessionResumeParams {
+            session_id: other,
+            model: Some("third-model".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(resumed.session.model_provider.as_deref(), Some("llama-cpp"));
+    assert_eq!(resumed.session.model.as_deref(), Some("third-model"));
+    koda.turn("again").await;
+    koda.until("turn/completed").await;
+    assert_eq!(models_asked(&second).await, ["second-model", "third-model"]);
+    assert!(chat_requests(&first).await.is_empty());
+    koda.client.shutdown().await;
+}
+
 /// `model/list` gives a provider's models; `modelProvider/list` the
 /// providers, with whether a key is set, never the key.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
