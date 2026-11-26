@@ -509,6 +509,26 @@ async fn previews_of<'a>(
     previews
 }
 
+/// Say that each of a batch's calls starts, before any runs, as Codex sends
+/// each call's begin event as it starts: a client shows them running, and
+/// what they do meanwhile (a sub-agent's progress) follows its own call's
+/// start.
+fn announce<'a>(
+    tool_calls: impl Iterator<Item = &'a ToolCall>,
+    previews: Vec<Option<preview::DiffPreview>>,
+    ctx: &TurnContext<'_>,
+) {
+    for (tc, preview) in tool_calls.zip(previews) {
+        ctx.sink.emit(EngineEvent::ToolCallStart {
+            id: tc.id.clone(),
+            name: tc.function_name.clone(),
+            args: serde_json::from_str(&tc.arguments).unwrap_or_default(),
+            is_sub_agent: false,
+            preview,
+        });
+    }
+}
+
 /// Run multiple tool calls concurrently and store results.
 pub(crate) async fn execute_tools_parallel(
     tool_calls: &[ToolCall],
@@ -521,6 +541,7 @@ pub(crate) async fn execute_tools_parallel(
     });
 
     let previews = previews_of(tool_calls.iter(), ctx.project_root).await;
+    announce(tool_calls.iter(), previews, ctx);
 
     // Launch all tool calls concurrently
     let futures: Vec<_> = tool_calls
@@ -538,15 +559,8 @@ pub(crate) async fn execute_tools_parallel(
         return record_stopped_calls(tool_calls, ctx).await;
     };
 
-    // Emit banner + result together so each tool's output is visually grouped
-    for (i, (tc_id, result, success, full_output, images, ran)) in results.into_iter().enumerate() {
-        ctx.sink.emit(EngineEvent::ToolCallStart {
-            id: tc_id.clone(),
-            name: tool_calls[i].function_name.clone(),
-            args: serde_json::from_str(&tool_calls[i].arguments).unwrap_or_default(),
-            is_sub_agent: false,
-            preview: previews[i].clone(),
-        });
+    // Each ends in the order the model gave them.
+    for (i, (_, result, success, full_output, images, ran)) in results.into_iter().enumerate() {
         record_tool_result(
             &tool_calls[i],
             &result,
@@ -589,6 +603,7 @@ pub(crate) async fn execute_tools_split_batch(
         });
 
         let previews = previews_of(parallel.iter().copied(), ctx.project_root).await;
+        announce(parallel.iter().copied(), previews, ctx);
         let futures: Vec<_> = parallel
             .iter()
             .map(|tc| {
@@ -603,16 +618,7 @@ pub(crate) async fn execute_tools_split_batch(
             return record_stopped_calls(tool_calls, ctx).await;
         };
 
-        for (j, (tc_id, result, success, full_output, images, ran)) in
-            results.into_iter().enumerate()
-        {
-            ctx.sink.emit(EngineEvent::ToolCallStart {
-                id: tc_id.clone(),
-                name: parallel[j].function_name.clone(),
-                args: serde_json::from_str(&parallel[j].arguments).unwrap_or_default(),
-                is_sub_agent: false,
-                preview: previews[j].clone(),
-            });
+        for (j, (_, result, success, full_output, images, ran)) in results.into_iter().enumerate() {
             record_tool_result(
                 parallel[j],
                 &result,

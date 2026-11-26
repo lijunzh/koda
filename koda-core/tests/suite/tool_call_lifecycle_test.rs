@@ -252,6 +252,18 @@ async fn edits_run_together_start_with_their_changes() {
     )
     .await;
 
+    // Both start before either ends, as Codex sends each call's begin as it
+    // starts: what they do meanwhile follows their own start.
+    let order: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            EngineEvent::ToolCallStart { .. } => Some("start"),
+            EngineEvent::ToolCallResult { .. } => Some("end"),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(order, ["start", "start", "end", "end"]);
+
     for path in ["a.txt", "b.txt"] {
         let preview = events.iter().find_map(|e| match e {
             EngineEvent::ToolCallStart {

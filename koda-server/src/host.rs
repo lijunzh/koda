@@ -151,12 +151,43 @@ struct Host {
 
 async fn run(host: Arc<Host>, mut commands: mpsc::Receiver<HostCommand>) {
     let mut running = JoinSet::new();
+    // Each session's last ordered request, as it will be when done: the next
+    // one for the session waits for it.
+    let mut last_of: HashMap<String, oneshot::Receiver<()>> = HashMap::new();
     loop {
         tokio::select! {
             command = commands.recv() => match command {
                 Some(HostCommand::Request { request, reply, client }) => {
                     let host = Arc::clone(&host);
-                    running.spawn(async move { host.handle(request, reply, client).await });
+                    // A session's requests run in the order they came, as
+                    // Codex queues a thread's: a settings update then a
+                    // turn, or a turn then its interrupt, can't swap. The
+                    // rest run at once.
+                    let after = match ordered_session(&request) {
+                        Some(session) => {
+                            let (done, finished) = oneshot::channel::<()>();
+                            let before = last_of.insert(session, finished);
+                            Some((before, done))
+                        }
+                        None => None,
+                    };
+                    running.spawn(async move {
+                        let done = match after {
+                            Some((before, done)) => {
+                                if let Some(before) = before {
+                                    let _ = before.await;
+                                }
+                                Some(done)
+                            }
+                            None => None,
+                        };
+                        host.handle(request, reply, client).await;
+                        drop(done);
+                    });
+                    // Sessions whose requests have all finished need no entry.
+                    last_of.retain(|_, finished| {
+                        !matches!(finished.try_recv(), Err(oneshot::error::TryRecvError::Closed))
+                    });
                 }
                 Some(HostCommand::Response { id, result }) => host.route(id, result).await,
                 Some(HostCommand::Join { session_id, token, reply }) => {
@@ -198,6 +229,33 @@ async fn run(host: Arc<Host>, mut commands: mpsc::Receiver<HostCommand>) {
             }
         }
     }
+}
+
+/// The session a request must wait its turn in, if it is one that changes
+/// a session or its turns, as Codex serializes `turn/*` and a thread's
+/// updates by thread. Reads run at once.
+fn ordered_session(request: &rpc::Request) -> Option<String> {
+    const ORDERED: &[&str] = &[
+        "session/start",
+        "session/fork",
+        "session/delete",
+        "session/name/set",
+        "session/settings/update",
+        "session/compact/start",
+        "session/rewind",
+        "session/unsubscribe",
+        "session/goal/set",
+        "session/goal/clear",
+        "turn/start",
+        "turn/steer",
+        "turn/interrupt",
+    ];
+    if !ORDERED.contains(&request.method.as_str()) {
+        return None;
+    }
+    request.params.as_ref()?["sessionId"]
+        .as_str()
+        .map(str::to_string)
 }
 
 impl Host {
