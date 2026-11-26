@@ -187,6 +187,9 @@ pub(crate) struct TuiContext {
     /// The connection to the shared server is lost and reconnecting gave
     /// up: the next prompt tries again first.
     pub(crate) offline: bool,
+    /// A turn was running when the connection was lost: said once the TUI
+    /// is back, if the server didn't keep it.
+    pub(crate) turn_cut: bool,
 }
 
 /// The TUI's view of its session. The host owns the session and runs its
@@ -250,8 +253,10 @@ fn opening_refused(e: koda_client::RequestError) -> String {
             if koda_state::writer_lock::is_active_writer(&error.message) =>
         {
             format!(
-                "This session is open in another Koda process (a `koda exec` run, or a TUI \
-                 started with --no-daemon or --oss). Close it there, then try again. ({})",
+                "This session is open in another Koda process: the background server, which \
+                 keeps a session for a minute after its TUI closes, a `koda exec` run, or a \
+                 TUI started with --no-daemon or --oss. Wait a minute or close it there, then \
+                 try again. ({})",
                 error.message
             )
         }
@@ -606,6 +611,7 @@ impl TuiContext {
             goal: None,
             backend,
             offline: false,
+            turn_cut: false,
         };
         ctx.refresh_model_names().await;
         Ok(ctx)
@@ -1219,7 +1225,8 @@ mod opening_tests {
             said.starts_with("This session is open in another Koda process"),
             "{said}"
         );
-        assert!(said.contains("Close it there"), "{said}");
+        assert!(said.contains("the background server"), "{said}");
+        assert!(said.contains("close it there"), "{said}");
     }
 
     #[test]

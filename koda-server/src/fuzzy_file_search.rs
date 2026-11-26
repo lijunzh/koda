@@ -34,7 +34,10 @@
 //! found, the exclude globs and the switch to ignore `.gitignore` are left
 //! out (nothing in Koda sets them), and the roots must be absolute: one
 //! shared server serves clients in different folders, so a relative root
-//! would mean the server's.
+//! would mean the server's. Koda also skips `.git` folders, which Codex
+//! walks: nobody mentions a file in one, and a file named for the query
+//! ranks first, so `main` found `.git/refs/heads/main` before
+//! `src/main.rs`.
 //!
 //! Original work: Copyright (c) OpenAI / codex contributors,
 //! licensed under the Apache License, Version 2.0.
@@ -237,7 +240,9 @@ fn search(
         .follow_links(true)
         // Git's own rule: a `.gitignore` above the repository, or outside
         // any repository, doesn't count.
-        .require_git(true);
+        .require_git(true)
+        // Git's own folder is never what an `@` mention means.
+        .filter_entry(|entry| entry.depth() == 0 || entry.file_name() != ".git");
 
     let walk = Walk {
         pattern: &pattern,
@@ -559,6 +564,20 @@ mod tests {
         fs::write(dir.path().join(".config/settings.toml"), "").unwrap();
         let found = run("settings", vec![dir.path().to_path_buf()], 20);
         assert_eq!(paths(&found), vec![".config/settings.toml"]);
+    }
+
+    #[test]
+    fn gits_own_folder_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".git/refs/heads")).unwrap();
+        fs::write(dir.path().join(".git/refs/heads/main"), "").unwrap();
+        fs::create_dir(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/main.rs"), "").unwrap();
+        fs::write(dir.path().join(".gitignore"), "").unwrap();
+        let found = run("main", vec![dir.path().to_path_buf()], 20);
+        assert_eq!(paths(&found), vec!["src/main.rs"]);
+        let found = run("gitignore", vec![dir.path().to_path_buf()], 20);
+        assert_eq!(paths(&found), vec![".gitignore"]);
     }
 
     // Codex's `run_classifies_followed_directory_symlink_as_directory`.

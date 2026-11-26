@@ -514,8 +514,13 @@ impl TuiContext {
             &mut self.child_activity,
         )
         .await;
-        let failed = if host_stopped {
+        // The shared server can be reached again: the idle loop reconnects,
+        // and says so. A host in this process is gone for good.
+        let host_gone = host_stopped && self.backend == crate::backend::Backend::InProcess;
+        let failed = if host_gone {
             Some("Koda's host stopped".to_string())
+        } else if host_stopped {
+            None
         } else {
             tracker
                 .completed()
@@ -582,9 +587,10 @@ impl TuiContext {
         if offer_plan {
             self.offer_to_implement_plan();
         }
-        if quit_requested || host_stopped {
+        if quit_requested || host_gone {
             self.should_quit = true;
         }
+        self.turn_cut = host_stopped && !host_gone;
         Ok(())
     }
 
