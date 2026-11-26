@@ -353,6 +353,27 @@ pub struct ToolCallApprovalParams {
     /// The file changes it would make, as on its item.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub changes: Vec<FileUpdateChange>,
+    /// The command a `Bash` or `Cargo` call would run, as Codex's command
+    /// approval's `command`. `detail` says the same in a line; this is for
+    /// a client that lays the dialog out itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// The folder the command runs in, as Codex's `cwd`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Why the model wants the command run, when it said, as Codex's
+    /// `reason`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Whether the command asks to run outside the sandbox, with the
+    /// user's yes for this one call. Koda's own: Codex asks for more than
+    /// the sandbox gives with `additionalPermissions`. `detail` then starts
+    /// with [`OUTSIDE_SANDBOX_TAG`].
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub outside_sandbox: bool,
+    /// Whether the command runs in the background.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
     /// Why it needs a yes.
     pub effect: ToolEffect,
     /// Whether `approveForSession` may be answered: only for local changes

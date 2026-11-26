@@ -351,6 +351,7 @@ async fn sub_agent_approval_request_persists_as_auto_reject_marker() {
         tool_call_id: "call-1".into(),
         tool_name: "Bash".into(),
         detail: "rm -f important.txt".into(),
+        command: None,
         preview: None,
         effect: ToolEffect::Destructive,
         allow_for_session: false,
