@@ -7,9 +7,15 @@
 # seconds; stable cargo can't wait longer (`publish.timeout` is unstable).
 # On 0.7.6 crates.io's index was slower than that: 9 of 16 crates went up and
 # the rest were never sent. A plain rerun then fails at once, because cargo
-# refuses a version that already exists. This script asks the index which
+# refuses a version that already exists. This script asks crates.io which
 # versions are there, publishes only the rest, and after a timeout waits and
 # goes again, so a run (or a rerun) finishes what an earlier one started.
+#
+# It asks the crates.io API, not the sparse index: on 0.7.13 the runner read
+# a cached index file without koda-cli for four minutes after the upload, and
+# every retry was refused as "already uploaded". The API answers for the
+# upload itself, the same thing `cargo publish` checks; cargo still waits for
+# the index before publishing the crates that depend on one.
 #
 # Usage: scripts/publish-crates.sh            publish what's missing
 #        scripts/publish-crates.sh --list     print what's missing, publish nothing
@@ -23,27 +29,20 @@ cd "$(git rev-parse --show-toplevel)"
 ATTEMPTS="${PUBLISH_ATTEMPTS:-5}"
 WAIT_SECS="${PUBLISH_WAIT_SECS:-60}"
 
-# The sparse index's path for a crate name (crates.io's layout).
-index_path() {
-    local name
-    name=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
-    case ${#name} in
-        1) echo "1/$name" ;;
-        2) echo "2/$name" ;;
-        3) echo "3/${name:0:1}/$name" ;;
-        *) echo "${name:0:2}/${name:2:2}/$name" ;;
-    esac
-}
-
-# Publishable workspace crates whose current version isn't on the index.
+# Publishable workspace crates whose current version crates.io doesn't have.
+# One request a second, as crates.io's crawler policy asks; anything but a
+# 200 counts as missing, so a failed lookup costs a refused publish and a
+# retry, never a skipped crate.
 missing() {
     cargo metadata --no-deps --format-version 1 \
         | jq -r '.packages[] | select(.publish == null) | "\(.name) \(.version)"' \
         | while read -r name version; do
-            if ! curl -fsS -A "koda-release" "https://index.crates.io/$(index_path "$name")" 2>/dev/null \
-                | jq -e --arg v "$version" 'select(.vers == $v)' >/dev/null; then
+            status=$(curl -sS -o /dev/null -w '%{http_code}' -A "koda-release (github.com/lijunzh/koda)" \
+                "https://crates.io/api/v1/crates/$name/$version" 2>/dev/null || true)
+            if [ "$status" != "200" ]; then
                 echo "$name"
             fi
+            sleep 1
         done
 }
 
