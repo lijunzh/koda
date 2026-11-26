@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 
 use koda_client::InProcessClient;
 use koda_client::protocol::initialize::ClientInfo;
+use koda_client::reconnect::{Failure, worth_retrying};
 
 /// How long a server the TUI starts stays up with no client and no work.
 const IDLE_EXIT_SECS: u64 = 600;
@@ -98,6 +99,40 @@ pub(crate) async fn client(
             Ok((in_process(project_root, home).await?, Some(note)))
         }
     }
+}
+
+/// One try at getting back to the shared server after losing it: connect,
+/// and start Koda's own server when nothing answers, as at start-up (Codex's
+/// TUI only connects, as its daemon is brought back by its own manager;
+/// Koda's TUI is what starts Koda's). A server of another version is used,
+/// with a note, as Codex's TUI notes one.
+pub(crate) async fn reconnect_once(
+    backend: &Backend,
+    project_root: &Path,
+) -> Result<(InProcessClient, Option<String>), Failure<String>> {
+    let Backend::Shared { socket, start } = backend else {
+        return Err(Failure::Stop(
+            "Koda's host ran in this process and has stopped".into(),
+        ));
+    };
+    let connected =
+        InProcessClient::connect(socket, project_root.to_path_buf(), client_info()).await;
+    let client = match connected {
+        Ok(client) => client,
+        Err(e) if !worth_retrying(&e) => return Err(Failure::Stop(e.to_string())),
+        Err(_) if *start => {
+            start_server(socket, project_root).map_err(|e| Failure::Retry(e.to_string()))?;
+            wait_for(socket, project_root)
+                .await
+                .map_err(|e| Failure::Retry(e.to_string()))?
+        }
+        Err(e) => return Err(Failure::Retry(e.to_string())),
+    };
+    let theirs = &client.server().server_info.version;
+    let ours = env!("CARGO_PKG_VERSION");
+    let note = (theirs != ours)
+        .then(|| format!("Koda's server is now version {theirs}; this koda is {ours}."));
+    Ok((client, note))
 }
 
 fn client_info() -> ClientInfo {

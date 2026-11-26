@@ -25,7 +25,8 @@ const CANCELLATION_TOKEN: &str = "koda-tui-mention";
 /// The project's file search, through the server. Cheap to clone.
 #[derive(Clone)]
 pub(crate) struct FileSearch {
-    requests: RequestHandle,
+    /// Shared by every copy, so a reconnect reaches the completer's too.
+    requests: Arc<Mutex<RequestHandle>>,
     /// The project, absolute, as `fuzzyFileSearch` takes its roots.
     root: String,
     state: Arc<Mutex<State>>,
@@ -50,11 +51,17 @@ impl FileSearch {
     pub(crate) fn new(requests: RequestHandle, project_root: &Path) -> Self {
         let root = std::path::absolute(project_root).unwrap_or_else(|_| project_root.into());
         Self {
-            requests,
+            requests: Arc::new(Mutex::new(requests)),
             root: root.display().to_string(),
             state: Arc::default(),
             wake: None,
         }
+    }
+
+    /// Search through `requests` from now on: the connection after a
+    /// reconnect.
+    pub(crate) fn reconnected(&self, requests: RequestHandle) {
+        *self.requests.lock().unwrap_or_else(PoisonError::into_inner) = requests;
     }
 
     /// Wake the TUI through `frames` when an answer comes.
@@ -131,11 +138,12 @@ impl FileSearch {
             roots: vec![self.root.clone()],
             cancellation_token: cancellable.then(|| CANCELLATION_TOKEN.to_string()),
         };
-        match self
+        let requests = self
             .requests
-            .request::<methods::FuzzyFileSearch>(params)
-            .await
-        {
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        match requests.request::<methods::FuzzyFileSearch>(params).await {
             Ok(found) => found
                 .files
                 .into_iter()

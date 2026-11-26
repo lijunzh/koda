@@ -47,6 +47,9 @@ pub use koda_server::in_process::{RequestError, RequestHandle};
 pub use koda_server::socket;
 pub use koda_server::{builtin_skills, earlier_input_history, events, feedback, stdio};
 
+/// Getting back to the shared server after losing it, as Codex's TUI does.
+pub mod reconnect;
+
 use events::Outgoing;
 use koda_server::in_process::{HostStart, launch};
 
@@ -171,7 +174,6 @@ impl InProcessClient {
         Ok(client)
     }
 
-    /// What the server said in `initialize`.
     /// Connect to the shared server (`koda serve`) at `socket` and
     /// initialize, for sessions in `project_root`, instead of starting a host
     /// in this process: the same
@@ -208,6 +210,7 @@ impl InProcessClient {
         &self.project_root
     }
 
+    /// What the server said in `initialize`.
     pub fn server(&self) -> &InitializeResponse {
         &self.server
     }
