@@ -87,6 +87,9 @@ pub(crate) struct TuiContext {
     /// [`QUIT_ARM_WINDOW`] confirms exit. Reset on any other action.
     pub quit_armed_at: Option<std::time::Instant>,
     pub inference_start: Option<std::time::Instant>,
+    /// Whether the working area shows the turn's plan under its status
+    /// line; Ctrl+T hides and shows it, as Claude Code's task list.
+    pub plan_shown: bool,
     /// How much of the context window is left, in percent, from the last
     /// `session/tokenUsage/updated` (Codex's reading).
     pub context_left: u32,
@@ -597,6 +600,7 @@ impl TuiContext {
             should_quit: false,
             quit_armed_at: None,
             inference_start: None,
+            plan_shown: true,
             context_left: 100,
             learned_context_window: None,
             history: history.iter().map(|(text, _)| text.clone()).collect(),
@@ -718,6 +722,7 @@ impl TuiContext {
                 child_activity_total,
                 child_activity_hint,
                 side,
+                &[],
             ));
         }) {
             tracing::debug!("draw skipped: {e}");

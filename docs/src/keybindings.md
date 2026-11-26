@@ -11,7 +11,8 @@
 | `Shift+Tab` | Cycle the mode: Safe, Auto, Plan (Auto only with the sandbox) |
 | `↑ / ↓` | Cycle through input history |
 | `Ctrl+R` | Reverse history search |
-| `Ctrl+O` | Tool output in full, or folded again (works mid-turn) |
+| `Ctrl+O` | Every step in full (each call, its output, the thinking), or folded again (works mid-turn); see [What a turn shows](./tui.md#what-a-turn-shows) |
+| `Ctrl+T` | During a turn: hide or show the plan under the status line |
 | `Ctrl+V` / `Alt+V` | Paste the image on the clipboard as an `[Image #N]` marker (`Cmd+V` too in iTerm2); see [Images](./attachments.md#images) |
 
 ## Navigation

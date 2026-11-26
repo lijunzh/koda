@@ -41,8 +41,8 @@ Codex sorts by update time; a session where nothing was sent doesn't count.
 ## What a resumed session shows
 
 Its earlier turns, drawn as they were live, as Codex's TUI replays a
-resumed thread: your prompts, the replies, tool calls folded as they were
-(`Ctrl+O` unfolds them), a sub-agent's `Done (N tool uses · Ns)`, what
+resumed thread: your prompts, the replies, thinking and tool calls folded
+as they were (`Ctrl+O` unfolds them), a sub-agent's `Done (N tool uses · Ns)`, what
 happened to a refused or blocked call, and how long each turn worked. A
 `session resumed` line follows them, and a banner when the last turn was
 interrupted; type `continue` to pick it up. `koda resume`, `koda -s`,
