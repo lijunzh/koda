@@ -1,6 +1,5 @@
-//! Engine behaviours a review on 2026-11-26 found no test for at any layer:
-//! a rejection's feedback reaching the model, a monitor's notice reaching
-//! the model, and a foreground sub-agent stopped by its parent's cancel.
+//! What reaches a turn while it runs: a rejection's feedback, a monitor's
+//! notice, and its parent's cancel reaching a foreground sub-agent.
 
 use async_trait::async_trait;
 use koda_core::config::ModelSettings;

@@ -20,7 +20,7 @@ mod e2e_sub_agent_trust_test;
 mod e2e_sub_agent_workspace_test;
 mod e2e_test;
 mod e2e_tools_test;
-mod engine_gaps_test;
+mod mid_turn_test;
 mod file_tools_test;
 mod golden_test;
 mod guarantee_matrix_test;
