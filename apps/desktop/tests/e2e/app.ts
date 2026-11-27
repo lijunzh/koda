@@ -39,3 +39,12 @@ export function stopServer(home: string) {
 
 /** The socket of the server under `home`. */
 export const socketOf = (home: string) => path.join(home, 'koda', 'serve', 'koda.sock');
+
+/** Quit the app; if it hasn't gone within 10 seconds, kill it, so a hang costs one test, not the run. */
+export async function closeApp({ app }: OpenApp): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<'late'>((resolve) => (timer = setTimeout(() => resolve('late'), 10_000)));
+  const closed = await Promise.race([app.close().then(() => 'closed' as const), late]);
+  clearTimeout(timer);
+  if (closed === 'late') app.process().kill('SIGKILL');
+}
