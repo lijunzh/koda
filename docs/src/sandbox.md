@@ -209,11 +209,14 @@ run in the host's sandbox.
 ## When a command needs to leave the sandbox
 
 Bash commands reach the network only through Koda's proxy, which lets
-through GitHub and the main package registries over HTTP(S). Everything
-else is unreachable from inside the sandbox: `ssh`, `git` over SSH, other
-hosts, servers on your local network, and servers on `localhost`. The
-sandbox also can't read `~/.ssh`, so ssh couldn't use your keys even with a
-route.
+through GitHub and the main package registries. Every other host is
+unreachable from inside the sandbox, and so are servers on your local
+network and on `localhost`. The proxy matches hosts, not ports, as
+Anthropic's sandbox-runtime does for an entry without one: an allowed host
+is reachable on any port, so a command that tunnels SSH through the proxy
+can reach `github.com:22`. `~/.ssh` is readable (see "Credential
+protection"), though `SSH_AUTH_SOCK` is removed, so an agent's keys aren't
+offered. Plain `ssh` and `git` over SSH, which don't use the proxy, fail.
 
 One exception: a command can connect to a `localhost` port that a server
 Koda started with `background: true` is listening on, so "start the dev
