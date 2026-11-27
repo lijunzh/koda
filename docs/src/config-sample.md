@@ -216,6 +216,10 @@ unknown key in `-c` stops the run instead.
 # notification_method = "bel"
 # When: only while the terminal isn't focused. Unset: "unfocused". Or "always".
 # notification_condition = "always"
+# The view a session starts in: "default" (unset), "verbose" (every step in
+# full, as Ctrl+O) or "focus" (a finished turn as prompt, one line, answer).
+# /focus saves it.
+# view_mode = "focus"
 
 # ── Sandbox ────────────────────────────────────────────────────────────
 

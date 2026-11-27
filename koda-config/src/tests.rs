@@ -365,6 +365,7 @@ syntax_highlight = false
 notifications = ["approval-requested"]
 notification_method = "bel"
 notification_condition = "always"
+view_mode = "focus"
 
 [sandbox]
 allow_local_binding = true
@@ -394,6 +395,7 @@ allow_local_binding = true
         config.tui.notification_condition,
         Some(crate::NotificationCondition::Always)
     );
+    assert_eq!(config.tui.view_mode, Some(crate::ViewMode::Focus));
     assert_eq!(config.sandbox.allow_local_binding, Some(true));
 
     let (_dir2, bad) = file_with("mode = \"yolo\"\n");

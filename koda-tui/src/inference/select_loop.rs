@@ -562,6 +562,14 @@ impl TuiContext {
             self.scroll_buffer
                 .push(crate::tui_render::worked_for_line(ms));
         }
+        // In focus view, a completed turn's steps fold behind one row.
+        if let Some(turn) = tracker
+            .completed()
+            .filter(|turn| turn.status == koda_client::protocol::turn::TurnStatus::Completed)
+        {
+            self.renderer
+                .fold_turn(turn.duration_ms, &mut self.scroll_buffer);
+        }
 
         // Tell a user who looked away that Koda is waiting again, as Codex
         // does: the reply's start, or why the turn failed. Not for a turn

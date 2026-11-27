@@ -316,6 +316,25 @@ pub struct TuiToml {
     /// When to notify: `unfocused` (unset) or `always`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notification_condition: Option<NotificationCondition>,
+    /// The view a session starts in, as Claude Code's `viewMode`: `default`
+    /// (unset), `verbose` (every step in full, as Ctrl+O) or `focus` (a
+    /// finished turn as its prompt, one line and its answer). `/focus`
+    /// saves it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view_mode: Option<ViewMode>,
+}
+
+/// `[tui] view_mode`, as Claude Code's `viewMode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ViewMode {
+    /// A turn's steps folded into rows, its answer in full.
+    #[default]
+    Default,
+    /// Every step in full.
+    Verbose,
+    /// A finished turn folded to one line between its prompt and answer.
+    Focus,
 }
 
 /// `[tui] notifications`: all on or off, or the events to notify for, as

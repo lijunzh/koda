@@ -64,7 +64,8 @@ use crate::tui_output::{self, CYAN, DIM, RED, TOOL_PREFIX, YELLOW};
 use crate::widgets::working_area::{Step, WorkingArea};
 use koda_client::protocol::ServerNotification;
 use koda_client::protocol::item::{
-    CommandAction, FileUpdateChange, Item, OutputStream, ToolCallStatus, ToolEffect, TurnItem,
+    CommandAction, FileUpdateChange, Item, MessagePhase, OutputStream, PatchChangeKind,
+    ToolCallStatus, ToolEffect, TurnItem,
 };
 use koda_client::protocol::turn::{Turn, TurnStatus};
 use ratatui::{
@@ -301,6 +302,72 @@ pub struct TuiRenderer {
     groups: Vec<Group>,
     /// The row lookups join now; `None` once something else was shown.
     open_group: Option<usize>,
+    /// Where the turn's steps start in the buffer, after its prompt.
+    turn_start: Option<u64>,
+    /// Where the reply being drawn starts in the buffer.
+    message_start: Option<u64>,
+    /// Where the turn's answer is in the buffer: its last reply that isn't
+    /// commentary.
+    answer: Option<(u64, u64)>,
+    /// What the turn did, for its row in focus view.
+    stats: TurnStats,
+}
+
+/// What a turn did, for the row its steps fold behind in focus view: its
+/// own tool calls, and its edits' diffstat, as Claude Code's focus view.
+#[derive(Default)]
+struct TurnStats {
+    calls: usize,
+    files: HashSet<String>,
+    added: usize,
+    removed: usize,
+}
+
+impl TurnStats {
+    fn count_changes(&mut self, changes: &[FileUpdateChange]) {
+        for change in changes {
+            self.files.insert(change.path.clone());
+            match change.kind {
+                PatchChangeKind::Add => self.added += change.diff.lines().count(),
+                PatchChangeKind::Delete => {}
+                PatchChangeKind::Update { .. } => {
+                    for line in change.diff.lines() {
+                        if line.starts_with('+') && !line.starts_with("+++") {
+                            self.added += 1;
+                        } else if line.starts_with('-') && !line.starts_with("---") {
+                            self.removed += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// `▸ Worked for 2m 5s · 17 tool calls · 2 files +40 −12`.
+    fn row(&self, ms: Option<u64>) -> Line<'static> {
+        let mut parts = Vec::new();
+        if let Some(ms) = ms {
+            parts.push(format!("Worked for {}", worked_for(ms)));
+        }
+        match self.calls {
+            0 => {}
+            1 => parts.push("1 tool call".to_string()),
+            n => parts.push(format!("{n} tool calls")),
+        }
+        match self.files.len() {
+            0 => {}
+            n => parts.push(format!(
+                "{n} file{} +{} \u{2212}{}",
+                if n == 1 { "" } else { "s" },
+                self.added,
+                self.removed
+            )),
+        }
+        if parts.is_empty() {
+            parts.push("Worked".to_string());
+        }
+        Line::styled(format!("  \u{25b8} {}", parts.join(" \u{00b7} ")), DIM)
+    }
 }
 
 impl Default for TuiRenderer {
@@ -333,6 +400,10 @@ impl TuiRenderer {
             thought: None,
             groups: Vec::new(),
             open_group: None,
+            turn_start: None,
+            message_start: None,
+            answer: None,
+            stats: TurnStats::default(),
         }
     }
 
@@ -384,6 +455,16 @@ impl TuiRenderer {
         for group in self.groups.iter_mut().filter(|g| g.running > 0) {
             group.running = 0;
             buffer.set_row(group.row, group.line());
+        }
+    }
+
+    /// The turn completed, its last line drawn: in focus view its steps go
+    /// behind one row, `▸ Worked for 2m 5s · 17 tool calls`, between its
+    /// prompt and its answer. `ms` is how long it worked. A turn that
+    /// stopped or failed isn't folded: it has no answer to keep in view.
+    pub fn fold_turn(&mut self, ms: Option<u64>, buffer: &mut ScrollBuffer) {
+        if let (Some(start), Some(answer)) = (self.turn_start, self.answer) {
+            buffer.fold_turn(start, answer, self.stats.row(ms));
         }
     }
 
@@ -489,6 +570,9 @@ impl TuiRenderer {
         if let Some(ms) = turn.duration_ms {
             tui_output::emit_line(buffer, worked_for_line(ms));
         }
+        if turn.status == TurnStatus::Completed {
+            self.fold_turn(turn.duration_ms, buffer);
+        }
     }
 
     /// Start stored item `id` as it started live. Items are stored as they
@@ -525,6 +609,7 @@ impl TuiRenderer {
 
     /// Draw one of the session's notifications.
     pub fn render(&mut self, notification: &ServerNotification, buffer: &mut ScrollBuffer) {
+        self.turn_start.get_or_insert(buffer.next_seq());
         match notification {
             ServerNotification::ItemStarted(started) => {
                 self.item_started(
@@ -608,9 +693,11 @@ impl TuiRenderer {
         started_ms: Option<i64>,
         buffer: &mut ScrollBuffer,
     ) {
+        self.turn_start.get_or_insert(buffer.next_seq());
         match item {
             Item::AgentMessage { id, .. } if parent.is_none() => {
                 self.messages.insert(id.clone());
+                self.message_start = None;
                 self.has_emitted_text = false;
                 self.ruled = false;
                 self.working.set(Step::Writing);
@@ -655,6 +742,7 @@ impl TuiRenderer {
                     .and_then(|parent| self.agents.get(parent))
                     .map(|run| run.item);
                 if parent.is_none() {
+                    self.stats.calls += 1;
                     self.working
                         .call_started(id, tool, arguments, command_actions);
                     if let Some(lookups) = lookup(tool, *effect, command_actions) {
@@ -738,7 +826,9 @@ impl TuiRenderer {
         buffer: &mut ScrollBuffer,
     ) {
         match item {
-            Item::AgentMessage { id, text, .. } if self.messages.remove(id) => {
+            Item::AgentMessage {
+                id, text, phase, ..
+            } if self.messages.remove(id) => {
                 if !text.trim().is_empty() {
                     self.replies.push(text.clone());
                 }
@@ -747,6 +837,14 @@ impl TuiRenderer {
                     self.break_run(buffer);
                     self.rule(&rest, buffer);
                     tui_output::emit_line(buffer, self.md.render_line(&rest));
+                }
+                // The answer is the last reply that isn't commentary; with
+                // no phase, as in a session stored before it was sent, the
+                // last reply.
+                if *phase != Some(MessagePhase::Commentary)
+                    && let Some(start) = self.message_start.take()
+                {
+                    self.answer = Some((start, buffer.next_seq()));
                 }
                 self.has_emitted_text = false;
                 self.md = crate::md_render::MarkdownRenderer::new();
@@ -801,6 +899,9 @@ impl TuiRenderer {
                 let failed = *status == ToolCallStatus::Failed;
                 if parent.is_none() {
                     self.working.call_ended(id);
+                    if *status == ToolCallStatus::Completed {
+                        self.stats.count_changes(changes);
+                    }
                 }
                 if let Some(index) = call.as_ref().and_then(|call| call.group) {
                     self.leave_group(index, failed, buffer);
@@ -1001,6 +1102,7 @@ impl TuiRenderer {
 
     /// The `───` line before a reply's first words.
     fn rule(&mut self, text: &str, buffer: &mut ScrollBuffer) {
+        self.message_start.get_or_insert(buffer.next_seq());
         if !self.ruled && !text.trim().is_empty() {
             self.ruled = true;
             tui_output::emit_line(buffer, Line::styled("  \u{2500}\u{2500}\u{2500}", DIM));
@@ -2148,6 +2250,136 @@ mod tests {
         );
     }
 
+    /// In focus view a completed turn is its prompt, one row and its
+    /// answer, as Claude Code's `/focus`; the row opens to the rest. The
+    /// default and full views are as they were.
+    #[test]
+    fn a_finished_turn_folds_to_one_row_in_focus_view() {
+        let mut renderer = TuiRenderer::new();
+        let mut buffer = ScrollBuffer::new(256);
+        buffer.push_lines(prompt_lines("fix it"));
+        renderer.start_turn();
+        let message = |id: &str, phase| Item::AgentMessage {
+            id: id.into(),
+            text: String::new(),
+            phase,
+        };
+        let note = message("m1", Some(MessagePhase::Commentary));
+        renderer.render(&started(None, message("m1", None)), &mut buffer);
+        renderer.render(&reply("m1", "Reading it first.\n"), &mut buffer);
+        renderer.render(&completed(None, note), &mut buffer);
+        let read = json!({"file_path": "a.rs"});
+        let done = ToolCallStatus::Completed;
+        look(
+            &mut renderer,
+            &mut buffer,
+            "c1",
+            "Read",
+            read,
+            done,
+            "     1\tb",
+        );
+        let edit = call("c2", "Edit", json!({"file_path": "a.rs"}));
+        renderer.render(&started(None, edit.clone()), &mut buffer);
+        let mut edited = finished(edit, done, "ok");
+        if let Item::ToolCall { changes, .. } = &mut edited {
+            changes.push(FileUpdateChange {
+                path: "a.rs".into(),
+                kind: PatchChangeKind::Update { move_path: None },
+                diff: "--- a.rs\n+++ a.rs\n@@ -1 +1,2 @@\n-b\n+a\n+c".into(),
+            });
+        }
+        renderer.render(&completed(None, edited), &mut buffer);
+        let answer = message("m2", Some(MessagePhase::FinalAnswer));
+        renderer.render(&started(None, message("m2", None)), &mut buffer);
+        renderer.render(&reply("m2", "It works.\n"), &mut buffer);
+        renderer.render(&completed(None, answer), &mut buffer);
+        renderer.end_turn(&mut buffer);
+        buffer.push(worked_for_line(125_000));
+        renderer.fold_turn(Some(125_000), &mut buffer);
+
+        let default = text(&buffer);
+        assert!(
+            default.iter().any(|l| l.contains("Reading it first.")),
+            "{default:?}"
+        );
+        assert!(
+            !default.iter().any(|l| l.contains("\u{25b8}")),
+            "{default:?}"
+        );
+
+        buffer.set_turns_folded(true);
+        assert_eq!(
+            text(&buffer),
+            vec![
+                "",
+                "  \u{276f} fix it",
+                "  \u{25b8} Worked for 2m 5s \u{00b7} 2 tool calls \u{00b7} 1 file +2 \u{2212}1",
+                "  \u{2500}\u{2500}\u{2500}",
+                "  It works.",
+            ]
+        );
+        // The row opens to everything else, the end line included.
+        let row = buffer.item_at(2, 80, 40).expect("the row opens");
+        buffer.toggle(row, 80, 40);
+        let opened = text(&buffer);
+        for needle in [
+            "Reading it first.",
+            "Read 1 file",
+            "Worked for 2m 5s \u{2500}",
+        ] {
+            assert!(
+                opened.iter().any(|l| l.contains(needle)),
+                "{needle}: {opened:?}"
+            );
+        }
+        assert!(
+            opened.iter().any(|l| l.contains("\u{25be} Worked")),
+            "{opened:?}"
+        );
+        buffer.toggle(row, 80, 40);
+        assert!(
+            text(&buffer)[2].contains("\u{25b8} Worked"),
+            "{:?}",
+            text(&buffer)
+        );
+
+        buffer.set_full(true);
+        let full = text(&buffer);
+        assert!(!full.iter().any(|l| l.contains("\u{25b8}")), "{full:?}");
+        assert!(
+            full.iter().any(|l| l.contains("Reading it first.")),
+            "{full:?}"
+        );
+    }
+
+    /// A turn with nothing before its answer isn't folded.
+    #[test]
+    fn a_turn_that_only_answers_has_no_row() {
+        let mut renderer = TuiRenderer::new();
+        let mut buffer = ScrollBuffer::new(256);
+        buffer.push_lines(prompt_lines("hi"));
+        renderer.start_turn();
+        let answer = Item::AgentMessage {
+            id: "m1".into(),
+            text: String::new(),
+            phase: Some(MessagePhase::FinalAnswer),
+        };
+        renderer.render(&started(None, answer.clone()), &mut buffer);
+        renderer.render(&reply("m1", "Hello.\n"), &mut buffer);
+        renderer.render(&completed(None, answer), &mut buffer);
+        renderer.end_turn(&mut buffer);
+        buffer.push(worked_for_line(1_000));
+        renderer.fold_turn(Some(1_000), &mut buffer);
+        buffer.set_turns_folded(true);
+        let shown = text(&buffer);
+        assert!(!shown.iter().any(|l| l.contains("\u{25b8}")), "{shown:?}");
+        assert!(
+            shown.iter().any(|l| l.contains("Worked for 1s")),
+            "{shown:?}"
+        );
+    }
+
     /// A command counts as what the host says it does: a read and a search
     /// here, named on the status line; one it can't read is a command.
     #[test]
@@ -2583,6 +2815,20 @@ mod tests {
         assert!(
             header < child,
             "the call starts before its sub-agent's: {full:?}"
+        );
+        // In focus view it folds as a live turn does; a sub-agent's calls
+        // aren't the turn's own.
+        buffer.set_full(false);
+        buffer.set_turns_folded(true);
+        assert_eq!(
+            text(&buffer),
+            vec![
+                "",
+                "  \u{276f} look around",
+                "  \u{25b8} Worked for 13s \u{00b7} 1 tool call",
+                "  \u{2500}\u{2500}\u{2500}",
+                "  All done.",
+            ]
         );
     }
 

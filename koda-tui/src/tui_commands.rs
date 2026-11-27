@@ -111,6 +111,26 @@ pub async fn handle_slash_command(
             SlashAction::Continue
         }
 
+        "/focus" => {
+            // Claude Code's focus view: a finished turn as its prompt, one
+            // line and its answer. Kept for the next session too.
+            let on = match arg {
+                Some("on") => true,
+                Some("off") => false,
+                _ => !buffer.turns_folded(),
+            };
+            buffer.set_turns_folded(on);
+            let mode = on.then_some(koda_config::ViewMode::Focus);
+            crate::tui_context::settings::save_view_mode(client, mode).await;
+            let text = if on {
+                "Focus view on: a finished turn shows as one line between its prompt and answer. /focus again to turn it off."
+            } else {
+                "Focus view off."
+            };
+            tui_output::dim_msg(buffer, text.into());
+            SlashAction::Continue
+        }
+
         "/agents" | "/agent" => {
             if cmd == "/agent" {
                 tui_output::dim_msg(buffer, "/agent is now /agents.".into());
