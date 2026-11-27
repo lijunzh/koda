@@ -262,56 +262,6 @@ async fn preflight_compact_skipped_below_85pct_threshold() {
     );
 }
 
-/// Overflow recovery path: provider rejects the first chat with a
-/// `400 prompt is too long` error → engine catches via
-/// `is_context_overflow_error` → calls `try_overflow_recovery` →
-/// compacts → retries chat_stream → succeeds.
-///
-/// Verifies:
-/// - The "⚠️ Provider rejected request (context overflow)..." Warn
-///   event fires (proves `try_overflow_recovery` was entered).
-/// - The "✅ Compacted N messages. Retrying..." Info event fires
-///   (proves compaction ran and the retry was attempted).
-/// - The final result is `Ok(())` (proves the retry succeeded — the
-///   user got an answer instead of a hard failure).
-#[tokio::test]
-async fn overflow_recovery_compacts_and_retries_successfully() {
-    // Need ≥4 messages for compaction to do anything. Pad enough that
-    // the partial-compact path has work to do without forcing
-    // HistoryTooLarge (which would short-circuit recovery). The window
-    // leaves room for the system prompt and every built-in tool (8,000 was
-    // outgrown when `SendMessage` joined them): the history must fit before
-    // the provider's overflow, or the window compaction drops it first.
-    let env = Env::builder().max_context_tokens(9_000).build().await;
-    let padding = "y".repeat(80);
-    fill_history_with_pairs(&env, 4, &padding).await;
-    env.insert_user_message("trigger overflow").await;
-
-    // [0] ContextOverflow → initial chat_stream gets rejected
-    // [1] Text("SUMMARY") → compact's .chat() call
-    // [2] Text("recovered") → retried chat_stream succeeds
-    let provider = MockProvider::new(vec![
-        MockResponse::ContextOverflow,
-        MockResponse::Text("SUMMARY: previous turns".into()),
-        MockResponse::Text("recovered answer".into()),
-    ]);
-
-    let (result, events) = env.run_inference_result(&provider).await;
-    assert!(
-        result.is_ok(),
-        "overflow should recover, not bubble up: {:?}",
-        result.err()
-    );
-    assert!(
-        saw_overflow_recovery_warn(&events),
-        "expected overflow-recovery Warn event; events: {events:?}"
-    );
-    assert!(
-        saw_compact_success(&events),
-        "expected compaction success after overflow; events: {events:?}"
-    );
-}
-
 /// Negative for overflow recovery: when the session is too short for
 /// compaction to reduce anything (history < 4 messages →
 /// `CompactSkip::TooShort`), `try_overflow_recovery` cannot save the

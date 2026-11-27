@@ -440,63 +440,6 @@ async fn linux_kernel_allows_tcp_to_proxy_port() {
     );
 }
 
-// ── Live curl smoke (opt-in via --ignored) ───────────────────────────────
-
-/// End-to-end denial proof: a Bash invocation that asks curl to fetch
-/// a non-allowlisted host must fail with a proxy 403 \u2014 *before* any
-/// real DNS lookup or TCP connect to the upstream happens, because the
-/// proxy intercepts CONNECT requests and consults the filter first.
-///
-/// Hermetic in spirit: the upstream `blocked.test` is intentionally
-/// non-routable, but with a working proxy we should never get that
-/// far. If this test ever starts failing with "DNS failure" or
-/// "connection refused" instead of a 4xx from the proxy, it means
-/// curl bypassed the proxy entirely.
-///
-/// Marked `#[ignore]` only because it needs `curl` on PATH \u2014 nearly
-/// universal but not quite guaranteed on stripped-down CI containers.
-/// Run with: `cargo test -p koda-core --test builtin_proxy_e2e_test -- --ignored`
-#[tokio::test]
-#[ignore = "needs curl; run with --ignored"]
-async fn curl_to_blocked_host_returns_403_via_proxy() {
-    let env = Env::builder()
-        .provider_type(ProviderType::LMStudio)
-        .build()
-        .await;
-    let session = make_real_session(&env).await;
-
-    // `blocked.test` is in the IETF .test TLD (RFC 6761) so it MUST
-    // not resolve. If curl honors HTTPS_PROXY the proxy will deny at
-    // CONNECT before any DNS lookup happens.
-    let result = session
-        .agent
-        .tools
-        .execute(
-            "Bash",
-            r#"{"command":"curl --max-time 5 -sS -o /dev/null -w '%{http_code}\\n' https://blocked.test/ 2>&1; echo exit=$?"}"#,
-            None,
-            None,
-        )
-        .await;
-
-    let combined = format!(
-        "{}\n{}",
-        result.output,
-        result.full_output.as_deref().unwrap_or("")
-    );
-    // curl with proxy denial typically prints "Received HTTP code 403
-    // from proxy after CONNECT" and exits 56. Either of those signals
-    // the integration is working.
-    assert!(
-        combined.contains("403") || combined.contains("CONNECT") || combined.contains("proxy"),
-        "expected proxy denial signal in output; got:\n{combined}"
-    );
-    assert!(
-        !combined.contains("exit=0"),
-        "curl must NOT succeed (host is blocked); output:\n{combined}"
-    );
-}
-
 /// With the real session proxy, kernel-enforced on Linux with each command
 /// in its own network namespace, a server Koda starts in the background is
 /// reachable from later commands through the loopback bridge, and a

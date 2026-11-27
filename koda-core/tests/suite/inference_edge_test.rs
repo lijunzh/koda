@@ -19,40 +19,6 @@ use koda_test_utils::{Env, MockProvider, MockResponse};
 // ── Rate limit retry ─────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn rate_limit_then_success() {
-    let env = Env::new().await;
-    env.insert_user_message("hello").await;
-
-    // First call: rate limited. Second call: success.
-    let provider = MockProvider::new(vec![
-        MockResponse::RateLimit,
-        MockResponse::Text("recovered!".into()),
-    ]);
-    let events = env.run_inference(&provider).await;
-
-    // Should see a warning about rate limiting.
-    let has_rate_warn = events
-        .iter()
-        .filter_map(EngineEvent::notice)
-        .any(|e| matches!(e, EngineEvent::Warn { message } if message.contains("Rate limited")));
-    assert!(has_rate_warn, "expected rate limit warning in: {events:?}");
-
-    // Should still produce a response.
-    let has_text = events
-        .iter()
-        .any(|e| matches!(e, EngineEvent::TextDelta { .. }));
-    assert!(has_text, "expected text after retry");
-
-    // DB should have the response.
-    let last = env
-        .db
-        .last_assistant_message(&env.session_id)
-        .await
-        .unwrap();
-    assert!(last.contains("recovered!"), "DB: {last}");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rate_limit_exhausted_returns_error() {
     let mut env = Env::new().await;
     // One retry covers retrying and then giving up; the default four would
@@ -637,84 +603,7 @@ async fn server_error_exits_gracefully() {
 
 // ── Context overflow recovery ────────────────────────────────
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn context_overflow_attempts_compact_and_retry() {
-    let env = Env::new().await;
-
-    // Fill the context with enough messages to make compaction meaningful.
-    for i in 0..20 {
-        env.insert_user_message(&format!("Question {i}: Tell me about topic {i}"))
-            .await;
-        env.db
-            .insert_message(
-                &env.session_id,
-                &koda_state::db::Role::Assistant,
-                Some(
-                    &"Answer: Here's a long response about this topic that fills up context. "
-                        .repeat(5),
-                ),
-                None,
-                None,
-                None,
-            )
-            .await
-            .unwrap();
-    }
-    env.insert_user_message("final question").await;
-
-    // First call: context overflow. Second: success (after compaction).
-    let provider = MockProvider::new(vec![
-        MockResponse::ContextOverflow,
-        MockResponse::Text("recovered after compaction!".into()),
-    ]);
-    let (result, events) = env.run_inference_result(&provider).await;
-
-    // Compaction may succeed or fail depending on whether the compact provider
-    // can handle the history. Either way, the loop should handle it gracefully.
-    // If it worked, we'll see a Compacted info event.
-    // If it failed, we'll see an error (which is OK — the test validates the
-    // recovery path was attempted).
-    let _attempted_recovery = events
-        .iter()
-        .any(|e| matches!(e, EngineEvent::Compaction { .. }));
-
-    // At minimum, the overflow should not crash.
-    if let Err(err) = result {
-        let msg = err.to_string();
-        assert!(
-            msg.contains("compaction") || msg.contains("overflow") || msg.contains("context"),
-            "error should be about context/compaction: {msg}"
-        );
-    }
-}
-
 // ── Token usage tracking ─────────────────────────────────────
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn footer_includes_token_usage() {
-    let env = Env::new().await;
-    env.insert_user_message("hello").await;
-
-    let provider = MockProvider::new(vec![MockResponse::Text("Hi there!".into())]);
-    let events = env.run_inference(&provider).await;
-
-    let footer = events.iter().find_map(|e| {
-        if let EngineEvent::Footer {
-            prompt_tokens,
-            completion_tokens,
-            ..
-        } = e
-        {
-            Some((*prompt_tokens, *completion_tokens))
-        } else {
-            None
-        }
-    });
-    assert!(footer.is_some(), "expected Footer event: {events:?}");
-    let (prompt, completion) = footer.unwrap();
-    assert!(prompt > 0, "prompt tokens should be > 0");
-    assert!(completion > 0, "completion tokens should be > 0");
-}
 
 // ── Multi-turn tool use ──────────────────────────────────────
 

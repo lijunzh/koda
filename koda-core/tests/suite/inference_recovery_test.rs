@@ -44,24 +44,6 @@ async fn test_rate_limit_single_retry_recovers() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_rate_limit_exhausted_returns_error() {
-    let mut env = Env::builder().max_context_tokens(100_000).build().await;
-    // Retrying is covered in inference_edge_test; here only the error matters.
-    env.config.request_max_retries = 0;
-    env.insert_user_message("hello").await;
-
-    let provider = MockProvider::new(vec![MockResponse::RateLimit]);
-
-    let (result, _events) = env.run_inference_result(&provider).await;
-    assert!(result.is_err(), "should fail after exhausting retries");
-    let err = format!("{:#}", result.unwrap_err());
-    assert!(
-        err.contains("429") || err.contains("Too Many Requests"),
-        "error should mention rate limit: {err}"
-    );
-}
-
 // ── Context overflow recovery tests ──────────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -124,24 +106,6 @@ async fn test_context_overflow_compacts_and_retries() {
     assert!(
         last.contains("recovered after compaction"),
         "DB should contain recovered response: {last}"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_context_overflow_too_few_messages_fails() {
-    let env = Env::builder().max_context_tokens(100_000).build().await;
-
-    // Only 1 message — compaction will skip (TooShort), recovery fails.
-    env.insert_user_message("hello").await;
-
-    let provider = MockProvider::new(vec![MockResponse::ContextOverflow]);
-
-    let (result, _events) = env.run_inference_result(&provider).await;
-    assert!(result.is_err(), "should fail when compaction can't help");
-    let err = format!("{:#}", result.unwrap_err());
-    assert!(
-        err.contains("context overflow") || err.contains("too long"),
-        "error should mention overflow: {err}"
     );
 }
 

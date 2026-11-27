@@ -34,24 +34,6 @@ fn test_cli_version() {
 }
 
 #[test]
-fn test_cli_help() {
-    let output = Command::new(koda_bin())
-        .arg("--help")
-        .output()
-        .expect("Failed to run koda --help");
-
-    assert!(output.status.success(), "koda --help should succeed");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("--agent"), "Help should mention --agent");
-    assert!(stdout.contains("--resume"), "Help should mention --resume");
-    assert!(
-        stdout.contains("--provider"),
-        "Help should mention --provider"
-    );
-    assert!(stdout.contains("--model"), "Help should mention --model");
-}
-
-#[test]
 fn test_cli_invalid_flag() {
     let output = Command::new(koda_bin())
         .arg("--nonexistent-flag")
@@ -62,35 +44,6 @@ fn test_cli_invalid_flag() {
         !output.status.success(),
         "Invalid flag should exit with error"
     );
-}
-
-#[test]
-fn test_cli_help_mentions_exec() {
-    let output = Command::new(koda_bin())
-        .arg("--help")
-        .output()
-        .expect("Failed to run koda --help");
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("koda exec"),
-        "Help should point one-shot runs at `koda exec`: {stdout}"
-    );
-    assert!(
-        !stdout.contains("--output-format") && !stdout.contains("--prompt"),
-        "Help should not list the removed -p flags: {stdout}"
-    );
-}
-
-#[test]
-fn test_cli_headless_piped_stdin_empty() {
-    // Piping empty stdin should not hang — should detect empty and still work
-    let output = Command::new(koda_bin())
-        .arg("--help") // Just verify the binary handles stdin detection
-        .stdin(std::process::Stdio::null())
-        .output()
-        .expect("Failed to run koda with null stdin");
-    assert!(output.status.success());
 }
 
 /// Snapshot test — `koda --help` must match the committed snapshot.

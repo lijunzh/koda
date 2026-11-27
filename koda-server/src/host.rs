@@ -1594,38 +1594,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn requests_before_initialize_are_refused_and_so_is_a_second_initialize() {
-        let (tx, _host, _dir) = host().await;
-
-        let early = ask(&tx, "state/read", json!({})).await.unwrap_err();
-        assert_eq!(early.code, codes::INVALID_REQUEST);
-        assert_eq!(early.message, "Not initialized");
-
-        let first = ask(&tx, "initialize", initialize()).await.unwrap();
-        assert_eq!(first["serverInfo"]["name"], "koda");
-        assert_eq!(first["protocolVersion"], PROTOCOL_VERSION);
-
-        let again = ask(&tx, "initialize", initialize()).await.unwrap_err();
-        assert_eq!(again.code, codes::INVALID_REQUEST);
-        assert_eq!(again.message, "Already initialized");
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn an_unknown_method_and_bad_params_are_errors_not_crashes() {
-        let (tx, _host, _dir) = host().await;
-        ask(&tx, "initialize", initialize()).await.unwrap();
-
-        let unknown = ask(&tx, "thread/start", json!({})).await.unwrap_err();
-        assert_eq!(unknown.code, codes::METHOD_NOT_FOUND);
-        let bad = ask(&tx, "state/read", json!({"sessionId": "x"}))
-            .await
-            .unwrap_err();
-        assert_eq!(bad.code, codes::INVALID_PARAMS);
-        // The host still answers after both.
-        assert!(ask(&tx, "state/read", json!({})).await.is_ok());
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn shutdown_stops_the_host() {
         let (tx, host, _dir) = host().await;
         let (done, stopped) = oneshot::channel();

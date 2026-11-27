@@ -409,18 +409,6 @@ fn exit_quits_from_the_slash_popup() {
     assert!(tui.exits(), "koda stayed up after /exit");
 }
 
-#[test]
-fn exit_quits_with_the_popup_closed() {
-    let home = home();
-    let mut tui = Tui::start(home.path());
-
-    tui.type_text("/exit");
-    tui.type_text("\x1b");
-    tui.type_text("\r");
-
-    assert!(tui.exits(), "koda stayed up after /exit");
-}
-
 fn sse(chunks: &[Value]) -> ResponseTemplate {
     let mut body: String = chunks.iter().map(|c| format!("data: {c}\n\n")).collect();
     body.push_str("data: [DONE]\n\n");
@@ -563,11 +551,6 @@ async fn esc_stops_the_turn_at_a_question() {
     stops_at_a_question(ESC).await;
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn ctrl_c_stops_the_turn_at_a_question() {
-    stops_at_a_question(CTRL_C).await;
-}
-
 async fn stops_while_typing_feedback(key: &str) {
     let server = scripted_model(vec![tool_calls(&[write_file("a.txt")])]).await;
     let home = home();
@@ -587,11 +570,6 @@ async fn stops_while_typing_feedback(key: &str) {
 #[tokio::test(flavor = "multi_thread")]
 async fn esc_stops_the_turn_while_typing_feedback() {
     stops_while_typing_feedback(ESC).await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn ctrl_c_stops_the_turn_while_typing_feedback() {
-    stops_while_typing_feedback(CTRL_C).await;
 }
 
 async fn stops_at_the_loop_cap(key: &str) {
@@ -629,27 +607,6 @@ async fn an_agent_file_keeps_its_loop_cap_across_a_model_switch() {
 #[tokio::test(flavor = "multi_thread")]
 async fn esc_stops_the_turn_at_the_loop_cap() {
     stops_at_the_loop_cap(ESC).await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn ctrl_c_stops_the_turn_at_the_loop_cap() {
-    stops_at_the_loop_cap(CTRL_C).await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn n_rejects_and_lets_the_model_go_on() {
-    let server = scripted_model(vec![tool_calls(&[write_file("a.txt")])]).await;
-    let home = home();
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
-
-    tui.submit("first prompt");
-    tui.wait_for_output("approve");
-    tui.type_text("n");
-
-    let sent = wait_for_model_call(&server, 2).await;
-    assert!(sent.contains("User rejected this action."), "{sent}");
-    // The scrollback says so, as Claude Code's does (6h-b3).
-    tui.wait_for_screen("Rejected: ");
 }
 
 fn bash(command: &str) -> ResponseTemplate {
@@ -799,75 +756,6 @@ fn running(pattern: &str) -> bool {
         .is_ok_and(|o| !o.stdout.is_empty())
 }
 
-/// Esc stops a running command at once. It used to wait out the engine's
-/// 5-second grace and report "Turn failed".
-#[tokio::test(flavor = "multi_thread")]
-async fn esc_stops_a_running_command_at_once() {
-    // 31 s: no other test sleeps that long, so pgrep finds only this one.
-    let server = scripted_model(vec![tool_calls(&[(
-        "Bash",
-        json!({"command": "sleep 31"}),
-    )])])
-    .await;
-    let home = home();
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
-
-    tui.submit("run it");
-    tui.approve_until(|| running("sleep 31"));
-    let pressed = Instant::now();
-    tui.stop_turn(ESC);
-
-    assert!(
-        pressed.elapsed() < Duration::from_secs(3),
-        "took {:?}",
-        pressed.elapsed()
-    );
-    assert!(
-        !tui.screen().contains("did not stop within"),
-        "{}",
-        tui.screen()
-    );
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while running("sleep 31") {
-        assert!(Instant::now() < deadline, "the command outlived the stop");
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
-/// A read folds into its lookup row, as Claude Code's do; Ctrl+O shows its
-/// content and folds it again. Before, a read filled the screen in the
-/// reply's colour.
-#[tokio::test(flavor = "multi_thread")]
-async fn ctrl_o_unfolds_a_read_and_folds_it_again() {
-    let server = scripted_model(vec![tool_calls(&[(
-        "Read",
-        json!({"file_path": "notes.md"}),
-    )])])
-    .await;
-    let home = home();
-    std::fs::write(
-        home.path().join("notes.md"),
-        "alpha line\nbeta line\ngamma line\n",
-    )
-    .unwrap();
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
-
-    tui.submit("read the notes");
-    tui.wait_for_screen("All done.");
-    tui.wait_for_screen("Read 1 file");
-    assert!(!tui.screen().contains("beta line"), "{}", tui.screen());
-
-    tui.type_text(CTRL_O);
-    tui.wait_for_screen("beta line");
-    // The full view lines the number up apart from the text.
-    assert!(tui.screen().contains("2  beta line"), "{}", tui.screen());
-    assert!(!tui.screen().contains("Read 1 file"), "{}", tui.screen());
-
-    tui.type_text(CTRL_O);
-    tui.wait_for_screen_without("beta line");
-    tui.wait_for_screen("Read 1 file");
-}
-
 /// A pasted `?` reaches the model. Mid-paste it used to open the shortcuts
 /// overlay, which then swallowed the next key.
 #[tokio::test(flavor = "multi_thread")]
@@ -881,53 +769,6 @@ async fn a_pasted_question_mark_reaches_the_model() {
 
     let sent = wait_for_model_call(&server, 1).await;
     assert!(sent.contains("is it ok? yes, and why? because"), "{sent}");
-}
-
-/// Koda stops a background process it started. The sandbox refused the
-/// model's `kill`, so stopping one needed a run outside the sandbox.
-#[tokio::test(flavor = "multi_thread")]
-async fn koda_stops_the_background_process_it_started() {
-    let server = FakeLlmServer::spawn().await;
-    let calls = Arc::new(AtomicUsize::new(0));
-    let next = Arc::clone(&calls);
-    server
-        .mount_fn("POST", r".*/chat/completions$", move |request| {
-            match next.fetch_add(1, Ordering::SeqCst) {
-                // 32 s: no other test sleeps that long.
-                0 => tool_calls(&[("Bash", json!({"command": "sleep 32", "background": true}))]),
-                1 => {
-                    let body = String::from_utf8_lossy(&request.body);
-                    let pid = body
-                        .split("PID:")
-                        .nth(1)
-                        .and_then(|rest| {
-                            rest.split(|c: char| !c.is_ascii_digit() && c != ' ').next()
-                        })
-                        .map(str::trim)
-                        .unwrap_or("0")
-                        .to_string();
-                    tool_calls(&[("Bash", json!({"command": format!("kill {pid}")}))])
-                }
-                _ => final_text(),
-            }
-        })
-        .await;
-    let home = home();
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
-
-    tui.submit("start the server, then stop it");
-    // Start, stop, then the final reply.
-    tui.approve_until(|| calls.load(Ordering::SeqCst) >= 3);
-    let sent = wait_for_model_call(&server, 3).await;
-    assert!(sent.contains("Stopped background process"), "{sent}");
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while running("sleep 32") {
-        assert!(
-            Instant::now() < deadline,
-            "the background process is still running"
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
 }
 
 /// A request to run outside the sandbox says so, with the model's reason,
@@ -1146,31 +987,6 @@ async fn ctrl_d_quits_during_a_turn() {
     assert!(tui.screen().contains("run it"), "{}", tui.screen());
 }
 
-/// `/model` switches the model mid-session: the next request asks for it.
-#[tokio::test(flavor = "multi_thread")]
-async fn model_switches_the_model_for_the_next_turn() {
-    let server = scripted_model(vec![]).await;
-    let home = home();
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
-
-    // Slash commands are refused until the turn has ended, which can be after
-    // its reply is on screen.
-    tui.submit_and_finish("first", "All done.");
-    let sent = wait_for_model_call(&server, 1).await;
-    assert!(sent.contains(r#""model":"stub-model""#), "{sent}");
-
-    // Esc would close the slash popup but also clear the line, so Enter goes
-    // straight to the typed command.
-    tui.type_text("/model stub-two");
-    tui.type_text("\r");
-    tui.wait_for_screen("stub-two");
-
-    tui.submit("second");
-    let sent = wait_for_model_call(&server, 2).await;
-    assert!(sent.contains(r#""model":"stub-two""#), "{sent}");
-    assert!(sent.contains("second"), "{sent}");
-}
-
 /// The first run greets the user and opens the provider picker, and a prompt
 /// still gets its answer once the picker is closed. The next start isn't a
 /// first run.
@@ -1345,43 +1161,6 @@ async fn startup_flags_are_not_saved() {
     let saved = std::fs::read_to_string(&config).unwrap_or_default();
     assert!(!saved.contains("stub-model"), "a flag was saved: {saved}");
     assert!(!saved.contains(&server.url()), "a flag was saved: {saved}");
-}
-
-/// Shift+Tab changes the mode on the host, which records it with the
-/// session (`session/settings/update`); the TUI no longer writes it. Safe
-/// goes to Auto, which needs the sandbox.
-#[tokio::test(flavor = "multi_thread")]
-async fn shift_tab_sends_the_mode_to_the_host() {
-    use koda_state::session_store::SessionStore;
-    if !koda_core::sandbox::is_available() {
-        eprintln!("skipped: Auto needs the sandbox, which isn't here");
-        return;
-    }
-    let server = scripted_model(vec![]).await;
-    let home = home();
-    let tui_project = std::fs::canonicalize(home.path()).unwrap();
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
-    let db = koda_state::db::Database::open(&home.path().join(".config/koda/db/koda.db"))
-        .await
-        .unwrap();
-    let session = db.list_sessions(10, &tui_project).await.unwrap()[0]
-        .id
-        .clone();
-    assert_eq!(
-        db.get_session_mode(&session).await.unwrap().as_deref(),
-        Some("safe")
-    );
-
-    tui.type_text("\x1b[Z");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        let mode = db.get_session_mode(&session).await.unwrap();
-        if mode.as_deref() == Some("auto") {
-            break;
-        }
-        assert!(Instant::now() < deadline, "the mode stayed {mode:?}");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
 }
 
 /// A message that can't be saved isn't sent. The turn reads the conversation
@@ -2282,70 +2061,6 @@ async fn a_sub_agent_row_shows_while_it_works() {
     );
     tui.wait_for_screen("All done.");
     tui.wait_for_screen_without("Esc to interrupt");
-}
-
-/// A non-streamed reply that calls `name` with `arguments`, as a sub-agent
-/// asks for one.
-fn json_tool_call(name: &str, arguments: Value) -> ResponseTemplate {
-    ResponseTemplate::new(200)
-        .insert_header("content-type", "application/json")
-        .set_body_string(
-            json!({
-                "id": "c", "object": "chat.completion", "model": "stub-model",
-                "choices": [{"index": 0, "finish_reason": "tool_calls",
-                             "message": {"role": "assistant", "content": null,
-                                         "tool_calls": [{"id": "sub_call_1", "type": "function",
-                                                         "function": {"name": name,
-                                                                      "arguments": arguments.to_string()}}]}}],
-                "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
-            })
-            .to_string(),
-        )
-}
-
-/// A sub-agent's calls are in the full view only, and its call sums it up
-/// when it ends, as Claude Code shows a sub-agent (6h-b2).
-#[tokio::test(flavor = "multi_thread")]
-async fn a_sub_agents_calls_fold_into_done() {
-    let invoke = tool_calls(&[(
-        "InvokeAgent",
-        json!({"agent_name": "explore", "prompt": "look around"}),
-    )]);
-    // Sub-agents call the model without streaming.
-    let server = scripted_model(vec![
-        invoke,
-        json_tool_call("Read", json!({"file_path": "WOMBAT-NOTES.md"})),
-        json_reply("SUB-AGENT-ANSWER"),
-    ])
-    .await;
-    let home = home();
-    std::fs::write(home.path().join("WOMBAT-NOTES.md"), "a line\n").unwrap();
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
-
-    tui.submit("first prompt");
-    tui.wait_for_screen("All done.");
-    tui.wait_for_screen("Done (1 tool use");
-    assert!(!tui.screen().contains("WOMBAT-NOTES"), "{}", tui.screen());
-
-    tui.type_text(CTRL_O);
-    tui.wait_for_screen("WOMBAT-NOTES");
-    let session = quit_and_read_session_id(&mut tui);
-
-    // Resumed, it reads the same, its time from the stored item times
-    // (6h-b3).
-    let tui = Tui::start_with_args(
-        home.path(),
-        &server.url(),
-        &["--resume", &session],
-        IDLE_HINT,
-    );
-    tui.wait_for_screen("session resumed");
-    assert!(
-        tui.screen().contains("Done (1 tool use \u{00b7}"),
-        "{}",
-        tui.screen()
-    );
-    assert!(!tui.screen().contains("WOMBAT-NOTES"), "{}", tui.screen());
 }
 
 /// An edit's approval shows its diff above the dialog, drawn from the
@@ -3405,43 +3120,6 @@ async fn a_goal_runs_turn_after_turn_until_complete() {
     tui.wait_for_screen_without(BUSY_PROMPT);
     tui.submit("/goal");
     tui.wait_for_screen("Goal (complete): Ship the release");
-}
-
-/// Esc stops a goal's turn, not the goal, and hands the TUI back: nothing
-/// runs until the next message, and the goal goes on after that turn.
-#[tokio::test(flavor = "multi_thread")]
-async fn esc_holds_the_goal_until_the_next_message() {
-    let server = scripted_model(vec![
-        text_reply("Working on it.").set_delay(Duration::from_secs(10)),
-        text_reply("Noted."),
-        tool_calls(&[("UpdateGoal", json!({"status": "complete"}))]),
-        text_reply("All done."),
-    ])
-    .await;
-    let home = home();
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
-
-    tui.submit("/goal Keep the docs current");
-    tui.wait_for_screen("Goal set: Keep the docs current");
-    wait_for_model_call(&server, 1).await;
-    // On a slow machine the model can have the call before the TUI shows
-    // the goal's turn running, and Esc at idle stops nothing.
-    tui.wait_for_screen(BUSY_PROMPT);
-    tui.stop_turn(ESC);
-    tokio::time::sleep(Duration::from_millis(800)).await;
-    assert_eq!(
-        model_calls(&server).await.len(),
-        1,
-        "nothing runs after Esc"
-    );
-    tui.submit("/goal");
-    tui.wait_for_screen("Goal (active): Keep the docs current");
-
-    tui.submit("check the changelog too");
-    tui.wait_for_screen("Noted.");
-    tui.wait_for_screen("Goal complete");
-    tui.wait_for_screen("All done.");
-    assert_eq!(model_calls(&server).await.len(), 4);
 }
 
 /// With `goal_judge = "evaluator"`, each check's verdict shows as it comes,

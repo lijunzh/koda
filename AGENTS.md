@@ -56,7 +56,6 @@ cargo fmt --all --check                                                    # Che
 cargo clippy --workspace --all-targets -- -D warnings  # Lint (CI enforced)
 cargo check --workspace --all-targets                                       # Compile-check all targets, no features (CI enforced)
 cargo doc --workspace --no-deps                                             # Build docs
-KODA_TEST_LMSTUDIO=1 cargo test -p koda-cli --test all suite::smoke_test -- --ignored  # Live test, opt-in, never in CI
 ```
 
 The toolchain is pinned in `rust-toolchain.toml`; a bump also edits the
@@ -251,8 +250,7 @@ can't select a mock provider.
 - **koda-cli integration** (modules of `tests/all.rs`, in `tests/suite/`):
   `cli_test.rs`, `regression_test.rs`,
   `skill_agent_e2e_test.rs`.
-- **koda-cli smoke:** `tests/suite/smoke_test.rs`, headless against a `ScriptedServer`; live
-  variants need `KODA_TEST_LMSTUDIO=1`.
+- **koda-cli smoke:** `tests/suite/smoke_test.rs`, headless against a `ScriptedServer`.
 - **koda-cli stub server:** real headless runs against `FakeLlmServer`, in
   `no_summary_compaction_test.rs`, `gemini_stub_test.rs`,
   `history_edit_log_test.rs`, `context_count_test.rs`,
