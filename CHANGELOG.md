@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **The desktop app's first steps** (`apps/desktop`, not released yet): a thin Electron app with a React page that connects to the background server and says whether it runs the app's version. Its main process checks every request the page makes, and refuses what could reach past a session (keys, config, the server's lifetime). CI builds it and tests it against `koda serve`.
 - **`koda serve --start`,** for clients other than the TUI, such as the coming desktop app: it makes sure the background server runs this `koda`'s version (starting one, or replacing an older one when no turn runs in it), then prints one JSON object (`alreadyRunning`, `started`, `restarted`, or why it isn't ready) and exits, as Codex's apps run `codex app-server daemon start`. `--running-turns wait` or `stop` says what to do with turns running in an older server. `koda` follows the same code at start-up.
 - **A guide to the background server** ([The background server](https://lijunzh.github.io/koda/background-server.html)): how sessions run on `koda serve` rather than in a window, what happens with the same session in two windows, and the commands that manage it.
 

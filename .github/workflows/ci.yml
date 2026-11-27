@@ -34,6 +34,8 @@ env:
 #   test    → behaviour, on ubuntu; also macos on PRs and nightly
 #   doc     → doc compile + intra-doc links + -Dwarnings
 #   audit   → dependency advisories (on PRs, only when deps change)
+#   desktop → the desktop app: type check, unit tests, build, and a test
+#             against koda serve
 #
 #   required → "CI required": succeeds only if every job above did
 #
@@ -429,6 +431,80 @@ jobs:
         if: steps.scope.outputs.run == 'true'
         run: cargo audit --deny unsound --deny yanked
 
+  # The desktop app (apps/desktop): its type check, unit tests and build
+  # always, which take seconds and need no Rust. Its test against a real
+  # `koda serve` needs a koda build, so on a PR it runs only when the PR
+  # changes what that test exercises: the app, the protocol, the client and
+  # server crates or this file. Step-level, as in `audit`, so the job always
+  # reports. Electron's own binary isn't downloaded: nothing here runs it.
+  desktop:
+    name: Desktop app
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2  # the test-merge commit's two parents, as in `audit`
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: apps/desktop/.node-version
+      - name: Install
+        run: npm ci --no-audit --no-fund
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      - name: Type check
+        run: npm run typecheck
+      - name: Unit tests
+        run: npm test
+      - name: Build
+        run: npm run build
+      - name: Decide whether to test against koda serve
+        id: scope
+        working-directory: .
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! git rev-parse --verify --quiet 'HEAD^2' > /dev/null; then
+            echo "::error::Expected the pull_request test-merge commit at HEAD (two parents)."
+            exit 1
+          fi
+          changed=$(git diff --name-only 'HEAD^1' HEAD)
+          if printf '%s\n' "$changed" | grep -qE '^(apps/desktop/|docs/src/protocol-schema\.json$|koda-protocol/|koda-client/|koda-server/|koda-cli/src/app\.rs$|Cargo\.(toml|lock)$|\.github/workflows/ci\.yml$)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice title=Desktop app::No change the koda serve test exercises; it runs on main and nightly."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        if: steps.scope.outputs.run == 'true'
+        with:
+          toolchain: 1.100.0 # = rust-toolchain.toml (pin guarded in ci.yml)
+      - uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2.8.1
+        if: steps.scope.outputs.run == 'true'
+        with:
+          # The Linux test job's cache, which holds this debug build; that
+          # job saves it on main, so this one never does.
+          shared-key: ci-Linux
+          save-if: false
+      - name: Build koda
+        if: steps.scope.outputs.run == 'true'
+        working-directory: .
+        run: cargo build -p koda-cli
+      - name: Test against koda serve
+        if: steps.scope.outputs.run == 'true'
+        run: npx vitest run tests/koda-serve.test.ts
+        env:
+          KODA_BIN: ${{ github.workspace }}/target/debug/koda
+
   # The one check main's ruleset needs, as Codex's `CI required`: the list of
   # what must pass lives here, in review, instead of in the repo's settings,
   # so a job added above is required once it's listed in `needs`.
@@ -437,7 +513,7 @@ jobs:
     # Without always(), a failed job would skip this one, and a skipped
     # required check counts as passing.
     if: always()
-    needs: [fmt, clippy, check, test, doc, audit]
+    needs: [fmt, clippy, check, test, doc, audit, desktop]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

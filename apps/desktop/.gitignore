@@ -1,0 +1,5 @@
+node_modules/
+out/
+release/
+# Generated from docs/src/protocol-schema.json by scripts/gen-types.mjs.
+src/protocol/types.gen.ts
