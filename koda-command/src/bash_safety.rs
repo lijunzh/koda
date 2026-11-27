@@ -64,6 +64,9 @@ enum DangerCheck {
     /// Command + subcommand + an argument starting so: `git push origin
     /// +main` (a forced refspec), `git push origin :old` (a deletion).
     CmdSubArgStarts(&'static str, &'static str, &'static str),
+    /// A `gh api` call that can change something on GitHub: see
+    /// [`gh_api_writes`].
+    GhApiWrite,
 }
 
 /// Returns `true` if token `t` matches `flag` — exact, long-flag, or
@@ -128,7 +131,87 @@ impl DangerCheck {
                         .iter()
                         .any(|t| !t.starts_with('-') && t.starts_with(start))
             }
+            GhApiWrite => {
+                cmd == "gh"
+                    && tokens.get(1).map(|s| s.as_str()) == Some("api")
+                    && gh_api_writes(tokens.get(2..).unwrap_or_default())
+            }
         }
+    }
+}
+
+/// `gh api`'s options that take a value, short and long. Skipping their
+/// values keeps a `--jq` filter or a header from reading as an option.
+const GH_API_VALUE_SHORTS: &[char] = &['F', 'f', 'H', 'p', 'q', 't', 'X'];
+const GH_API_VALUE_LONGS: &[&str] = &[
+    "--cache",
+    "--field",
+    "--header",
+    "--hostname",
+    "--input",
+    "--jq",
+    "--method",
+    "--preview",
+    "--raw-field",
+    "--template",
+];
+
+/// Whether `gh api` with these arguments sends anything but a GET, as `gh`
+/// decides it: the method `-X`/`--method` names, else POST when a field
+/// (`-f`, `-F`, `--field`, `--raw-field`) or `--input` is given, else GET.
+/// A GET only reads, so it runs in the sandbox without asking; a GraphQL
+/// call passes its query as a field and so asks, query or mutation.
+fn gh_api_writes(args: &[String]) -> bool {
+    let mut method: Option<String> = None;
+    let mut body = false;
+    let mut words = args.iter();
+    while let Some(t) = words.next() {
+        if t == "--" {
+            break;
+        }
+        if let Some(long) = t.strip_prefix("--") {
+            let (name, inline) = match long.split_once('=') {
+                Some((name, value)) => (name, Some(value.to_string())),
+                None => (long, None),
+            };
+            let name = format!("--{name}");
+            let value = if GH_API_VALUE_LONGS.contains(&name.as_str()) && inline.is_none() {
+                words.next().cloned()
+            } else {
+                inline
+            };
+            match name.as_str() {
+                "--method" => method = value,
+                "--field" | "--raw-field" | "--input" => body = true,
+                _ => {}
+            }
+        } else if let Some(shorts) = t.strip_prefix('-').filter(|s| !s.is_empty()) {
+            // Short options combine as pflag reads them: booleans (`-i`)
+            // first, then at most one that takes the rest, or the next
+            // word, as its value (`-XPOST`, `-X POST`, `-if a=1`).
+            for (i, c) in shorts.char_indices() {
+                if !GH_API_VALUE_SHORTS.contains(&c) {
+                    continue;
+                }
+                let rest = &shorts[i + c.len_utf8()..];
+                let rest = rest.strip_prefix('=').unwrap_or(rest);
+                let value = if rest.is_empty() {
+                    words.next().cloned()
+                } else {
+                    Some(rest.to_string())
+                };
+                match c {
+                    'X' => method = value,
+                    'f' | 'F' => body = true,
+                    _ => {}
+                }
+                break;
+            }
+        }
+    }
+    match method {
+        Some(m) => !m.eq_ignore_ascii_case("GET"),
+        None => body,
     }
 }
 
@@ -224,7 +307,8 @@ const DANGER_CHECKS: &[DangerCheck] = &[
     DangerCheck::CmdSubSub("gh", "issue", "delete"),
     DangerCheck::CmdSubSub("gh", "repo", "delete"),
     DangerCheck::CmdSubSub("gh", "release", "delete"),
-    DangerCheck::CmdSub("gh", "api"),
+    // A `gh api` call that isn't a GET; reading the API runs in the sandbox.
+    DangerCheck::GhApiWrite,
     // The `gh auth` subcommands that change credentials (#1266); `gh auth
     // status` and `gh auth list` only read.
     DangerCheck::CmdSubSub("gh", "auth", "login"),
@@ -2031,7 +2115,7 @@ mod tests {
             "cargo publish",
             "npm publish",
             "gh pr merge 12",
-            "gh api repos/x/y",
+            "gh api -X POST repos/x/y/issues",
             "gh auth login",
             "sudo make install",
             "dd if=/dev/zero of=x",
@@ -2106,6 +2190,50 @@ mod tests {
                 classify_bash_command(cmd),
                 ToolEffect::Destructive,
                 "`{cmd}` should remain Destructive",
+            );
+        }
+    }
+
+    /// `gh api` asks only when it can change something: a GET reads, so
+    /// it runs in the sandbox, as in Codex, which asks before no `gh` call.
+    /// It used to ask for every call, reads included.
+    #[test]
+    fn a_gh_api_read_runs_and_a_write_asks() {
+        for cmd in [
+            "gh api repos/lijunzh/koda/milestones?state=open",
+            "gh api 'search/issues?q=repo:x/y+0.8.1' --jq '.total_count'",
+            "gh api repos/x/y --jq '.[] | select(.f == \"-f\")'",
+            "gh api -X GET search/issues -f q=bug",
+            "gh api --method get search/issues -F per_page=5",
+            "gh api -XGET -f q=bug search/issues",
+            "gh api -i -H 'Accept: application/json' repos/x/y",
+            "gh api --paginate -q '.[].name' repos/x/y/branches",
+            "gh -R x/y api repos/x/y/pulls",
+        ] {
+            assert_eq!(
+                classify_bash_command(cmd),
+                ToolEffect::LocalMutation,
+                "`{cmd}` only reads"
+            );
+        }
+        for cmd in [
+            "gh api -X DELETE /repos/foo/bar",
+            "gh api -XPATCH repos/x/y -f name=z",
+            "gh api --method=PUT repos/x/y/topics",
+            "gh api --method POST repos/x/y/issues",
+            "gh api repos/x/y/issues -f title=bug",
+            "gh api repos/x/y/issues -F number=3",
+            "gh api repos/x/y/issues --raw-field title=bug",
+            "gh api repos/x/y/issues --field=title=bug",
+            "gh api repos/x/y/issues --input body.json",
+            "gh api -if title=bug repos/x/y/issues",
+            "gh api graphql -f query='query { viewer { login } }'",
+            "cd repo && gh api -X DELETE repos/x/y/git/refs/heads/old",
+        ] {
+            assert_eq!(
+                classify_bash_command(cmd),
+                ToolEffect::Destructive,
+                "`{cmd}` can write, so it asks"
             );
         }
     }

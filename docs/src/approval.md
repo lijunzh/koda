@@ -72,7 +72,9 @@ behind `env`, `sudo`, `xargs` or `trap`, inside `sh -c`, `eval` or
 or what loses work for good: `git reset --hard`, `git clean -f`, force pushes
 (`--force`, `--force-with-lease`, `+refspec`), deleting a remote branch
 (`--delete`, `:branch`, `--mirror`), `npm publish` and `cargo publish`, `gh`
-merges, deletes, `auth` and `api`, `sudo`, disk tools and reboots. Git's own
+merges, deletes and `auth`, a `gh api` call that isn't a GET (a method other
+than GET, or a field or `--input`, which make `gh` POST; GraphQL included),
+`sudo`, disk tools and reboots. Git's own
 options (`git -C dir`, `git -c key=value`) don't hide a command. Anything
 else, a plain `rm`, `sed -i` or `chmod` included, changes only what the
 sandbox lets it, so it runs without asking.
