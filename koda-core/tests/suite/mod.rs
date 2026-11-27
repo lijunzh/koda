@@ -31,6 +31,7 @@ mod inference_retry_test;
 mod interactive_process_test;
 mod loop_cap_test;
 mod mcp_instructions_bootstrap_test;
+mod mid_turn_test;
 mod perf_test;
 mod persisting_sink_test;
 mod session_allow_test;
