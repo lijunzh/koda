@@ -490,6 +490,148 @@ impl SessionAllows {
             keys.insert(key);
         }
     }
+
+    /// Whether a "yes for the session" covers this call: the same key, or,
+    /// for a command asking to leave the sandbox, a prefix allowed for the
+    /// session that it starts with, as a Codex exec-policy prefix rule
+    /// does. A command dangerous in itself (`git push --force` under an
+    /// allowed `git push`) is never covered.
+    pub fn covers(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        effect: ToolEffect,
+        project_root: &Path,
+    ) -> bool {
+        if session_allow_key(tool_name, args, effect, project_root)
+            .is_some_and(|key| self.contains(&key))
+        {
+            return true;
+        }
+        if tool_name != "Bash" || !crate::tools::shell::wants_outside_sandbox(args) {
+            return false;
+        }
+        let Some(argv) = args
+            .get("command")
+            .and_then(|v| v.as_str())
+            .and_then(plain_argv)
+        else {
+            return false;
+        };
+        let inside = {
+            let mut inside = args.clone();
+            inside["outside_sandbox"] = serde_json::Value::Bool(false);
+            inside
+        };
+        if resolve_tool_effect(tool_name, &inside) == ToolEffect::Destructive {
+            return false;
+        }
+        let Ok(keys) = self.0.lock() else {
+            return false;
+        };
+        keys.iter()
+            .filter_map(|key| key.strip_prefix(PREFIX_KEY))
+            .any(|prefix| {
+                let words: Vec<&str> = prefix.split('\0').collect();
+                argv.len() >= words.len() && argv.iter().zip(&words).all(|(a, w)| a == w)
+            })
+    }
+}
+
+/// The start of a session key that allows a command prefix.
+const PREFIX_KEY: &str = "Bash-prefix\0";
+
+/// Prefixes too broad to allow, as Codex refuses to suggest them
+/// (`BANNED_PREFIX_SUGGESTIONS`, `codex-rs/core/src/exec_policy.rs`): each
+/// would run any program or script.
+const BANNED_PREFIXES: &[&[&str]] = &[
+    &["bash"],
+    &["bash", "-c"],
+    &["bash", "-lc"],
+    &["sh"],
+    &["sh", "-c"],
+    &["sh", "-lc"],
+    &["zsh"],
+    &["zsh", "-c"],
+    &["zsh", "-lc"],
+    &["dash"],
+    &["dash", "-c"],
+    &["fish"],
+    &["fish", "-c"],
+    &["ksh"],
+    &["ksh", "-c"],
+    &["/bin/bash"],
+    &["/bin/bash", "-c"],
+    &["/bin/bash", "-lc"],
+    &["/bin/sh"],
+    &["/bin/sh", "-c"],
+    &["/bin/sh", "-lc"],
+    &["/bin/zsh"],
+    &["/bin/zsh", "-c"],
+    &["/bin/zsh", "-lc"],
+    &["env"],
+    &["git"],
+    &["sudo"],
+    &["xargs"],
+    &["node"],
+    &["node", "-e"],
+    &["nodejs"],
+    &["nodejs", "-e"],
+    &["deno"],
+    &["deno", "eval"],
+    &["bun"],
+    &["bun", "-e"],
+    &["bun", "run"],
+    &["npm", "run"],
+    &["pnpm", "run"],
+    &["python"],
+    &["python", "-"],
+    &["python", "-c"],
+    &["python3"],
+    &["python3", "-"],
+    &["python3", "-c"],
+    &["py"],
+    &["pypy"],
+    &["pypy3"],
+    &["perl"],
+    &["perl", "-e"],
+    &["php"],
+    &["php", "-r"],
+    &["ruby"],
+    &["ruby", "-e"],
+    &["lua"],
+    &["lua", "-e"],
+    &["julia"],
+    &["julia", "-e"],
+    &["Rscript"],
+    &["osascript"],
+];
+
+/// A command's words, when it is one plain command: no `&&`, `|`, `;`,
+/// redirection or substitution, which a prefix can't describe.
+fn plain_argv(command: &str) -> Option<Vec<String>> {
+    if command.chars().any(|c| "&|;<>`$(){}\n".contains(c)) {
+        return None;
+    }
+    shlex::split(command).filter(|words| !words.is_empty())
+}
+
+/// The session key a command asking to leave the sandbox may be allowed
+/// under: its `prefix_rule`, when that is a valid prefix of the command.
+fn prefix_rule_key(args: &serde_json::Value) -> Option<String> {
+    let argv = plain_argv(args.get("command")?.as_str()?)?;
+    let rule: Vec<&str> = args
+        .get("prefix_rule")?
+        .as_array()?
+        .iter()
+        .map(|word| word.as_str())
+        .collect::<Option<_>>()?;
+    let banned = BANNED_PREFIXES
+        .iter()
+        .any(|banned| *banned == rule.as_slice());
+    let starts = argv.len() >= rule.len() && argv.iter().zip(&rule).all(|(a, w)| a == w);
+    (!rule.is_empty() && !banned && starts && rule.iter().all(|w| !w.contains('\0')))
+        .then(|| format!("{PREFIX_KEY}{}", rule.join("\0")))
 }
 
 /// The key a call can be allowed for the session under, or `None` when it
@@ -515,6 +657,11 @@ pub fn session_allow_key(
         let url = args.get("url").and_then(|v| v.as_str())?;
         let host = crate::tools::web_fetch::host_of(url)?;
         return Some(format!("WebFetch\0{host}"));
+    }
+    // A command asking to leave the sandbox: its prefix, as Codex's
+    // `prefix_rule` (see [`SessionAllows::covers`]).
+    if tool_name == "Bash" && crate::tools::shell::wants_outside_sandbox(args) {
+        return prefix_rule_key(args);
     }
     if effect != ToolEffect::LocalMutation || reaches_outside_project(tool_name, args, project_root)
     {
@@ -1033,6 +1180,84 @@ mod tests {
     }
 
     // ── Allow for this session ──
+
+    /// A command asking to leave the sandbox may be allowed for the session
+    /// by its `prefix_rule`, as Codex's model proposes one: only a plain
+    /// command that starts with the prefix, and never one too broad to mean
+    /// anything.
+    #[test]
+    fn an_escalations_prefix_is_offered_only_when_it_fits() {
+        let root = Path::new("/home/user/project");
+        let key = |command: &str, rule: serde_json::Value| {
+            let args = serde_json::json!({
+                "command": command, "outside_sandbox": true, "reason": "r", "prefix_rule": rule,
+            });
+            session_allow_key("Bash", &args, resolve_tool_effect("Bash", &args), root)
+        };
+        let commit = serde_json::json!(["git", "commit"]);
+        assert!(key("git commit -m 'one'", commit.clone()).is_some());
+        for (command, rule) in [
+            ("git commit -m one", serde_json::json!(["git"])),
+            ("git commit -m one", serde_json::json!(["bash"])),
+            ("git commit -m one", serde_json::json!([])),
+            ("git push origin main", commit.clone()),
+            ("git commit -m one && rm -rf /", commit.clone()),
+            ("git commit -m \"$(cat msg)\"", commit.clone()),
+            ("git commit -m one", serde_json::json!("git commit")),
+        ] {
+            assert_eq!(key(command, rule.clone()), None, "{command} {rule}");
+        }
+        // No prefix, no session answer: it asks every time.
+        let bare = serde_json::json!({"command": "git commit -m x", "outside_sandbox": true});
+        assert_eq!(
+            session_allow_key("Bash", &bare, resolve_tool_effect("Bash", &bare), root),
+            None
+        );
+    }
+
+    /// An allowed prefix covers later commands that start with it and ask
+    /// to leave the sandbox, but not a compound command, another prefix, or
+    /// one dangerous in itself.
+    #[test]
+    fn an_allowed_prefix_covers_what_starts_with_it_and_nothing_dangerous() {
+        let root = Path::new("/home/user/project");
+        let allows = SessionAllows::default();
+        let call = |command: &str| serde_json::json!({"command": command, "outside_sandbox": true});
+        let covers = |command: &str| {
+            let args = call(command);
+            allows.covers("Bash", &args, resolve_tool_effect("Bash", &args), root)
+        };
+        assert!(!covers("git commit -m one"), "nothing allowed yet");
+        for rule in [
+            serde_json::json!(["git", "commit"]),
+            serde_json::json!(["git", "push"]),
+        ] {
+            let mut args = call("git commit -m one");
+            args["prefix_rule"] = rule.clone();
+            if rule[1] == "push" {
+                args["command"] = serde_json::json!("git push origin main");
+            }
+            let key = session_allow_key("Bash", &args, resolve_tool_effect("Bash", &args), root);
+            allows.insert(key.expect("a valid prefix"));
+        }
+        assert!(covers("git commit -m two"));
+        assert!(covers("git commit --amend --no-edit"));
+        assert!(covers("git push origin feature"));
+        assert!(
+            !covers("git push --force origin main"),
+            "dangerous in itself"
+        );
+        assert!(!covers("git checkout main"), "another prefix");
+        assert!(
+            !covers("git commit -m one && git push"),
+            "not a plain command"
+        );
+        let inside = serde_json::json!({"command": "git commit -m two"});
+        assert!(
+            !allows.covers("Bash", &inside, resolve_tool_effect("Bash", &inside), root),
+            "a prefix is for commands that leave the sandbox"
+        );
+    }
 
     fn key(tool: &str, args: serde_json::Value, root: &Path) -> Option<String> {
         let effect = resolve_tool_effect(tool, &args);

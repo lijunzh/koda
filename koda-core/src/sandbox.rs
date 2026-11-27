@@ -366,12 +366,18 @@ pub fn policy_for_agent(trust: crate::trust::TrustMode, project_root: &Path) -> 
     // In a worktree `.git` is a file pointing at the real one, so those paths
     // can't exist and bwrap can't start on a read-only bind of them.
     // [`git_file_denies`] protects what's really there.
+    // `.git` is read-only, as Codex's workspace-write sandbox keeps it
+    // (`protocol/src/permissions.rs`): a command can read the history
+    // (`git status`, `log`, `diff`), and one that changes the repository
+    // (`git add`, `commit`, `checkout`) asks to leave the sandbox. That also
+    // keeps out hooks, `config` and its programs, which git runs outside the
+    // sandbox at the next commit.
     if !policy.fs.allow_git_config {
         let git = canonical_root.join(".git");
         policy.fs.deny_write_within_allow = if git.is_file() {
             git_file_denies(&git).into_iter().map(Into::into).collect()
         } else {
-            vec![git.join("hooks").into(), git.join("config").into()]
+            vec![git.into()]
         };
     }
 
@@ -462,6 +468,8 @@ fn git_file_denies(git_file: &Path) -> Vec<std::path::PathBuf> {
         }
     }
 
+    // The whole of both, as a repository's own `.git` is read-only.
+    denied.extend([git_dir.clone(), common.clone()]);
     denied.extend(
         [common.join("config"), hooks]
             .into_iter()

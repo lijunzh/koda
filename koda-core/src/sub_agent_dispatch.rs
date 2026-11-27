@@ -1399,10 +1399,14 @@ fn run_sub_agent<'a>(
                                 effective_root_ref,
                             )
                         });
-                        if session_key
-                            .as_deref()
-                            .is_some_and(|key| session_allows.contains(key))
-                        {
+                        if effect.is_some_and(|effect| {
+                            session_allows.covers(
+                                &tc.function_name,
+                                &parsed_args,
+                                effect,
+                                effective_root_ref,
+                            )
+                        }) {
                             approval = ToolApproval::AutoApprove;
                         }
 

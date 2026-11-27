@@ -119,8 +119,10 @@ pub fn definitions() -> Vec<ToolDefinition> {
             Set tty=true for a program that waits for typed input (a REPL, a debugger, \
             a confirmation prompt): it runs in the background with a terminal, and \
             WriteStdin types into it. \
-            Commands run in a sandbox: they write only inside the project, /tmp and \
-            cache folders, can't read ~/.ssh or other credential folders, and reach \
+            Commands run in a sandbox: they write only inside the project (but not its \
+            .git, which is read-only, so a git command that changes the repository, such \
+            as add, commit or checkout, has to leave the sandbox), /tmp and cache folders, \
+            can't change ~/.ssh or other credential folders, and reach \
             the network only through a proxy that allows GitHub and the main package \
             registries over HTTP(S){own_ports}. ssh, git over SSH, other hosts, the local \
             network and {other_localhost} are unreachable.{find_processes} When a command the user \
@@ -170,6 +172,15 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "description": "With outside_sandbox: what the command does and why it needs \
                         to leave the sandbox, shown to the user when they approve it, e.g. \
                         \"Push the commit to origin over SSH, which the sandbox blocks\"."
+                },
+                "prefix_rule": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "With outside_sandbox: the words a command starts with that \
+                        the user may allow for the rest of the session, e.g. [\"git\", \
+                        \"commit\"]. Only for a plain command (no &&, |, ; or $(...)) that \
+                        starts with them; too broad a prefix, such as [\"git\"] or \
+                        [\"bash\"], isn't offered."
                 }
             },
             "required": ["command"]
@@ -1627,8 +1638,31 @@ pub(crate) fn annotate_violations(
             }
             .to_string(),
         );
+        if approvable && wrote_to_git(&joined) {
+            stderr_lines.push(GIT_READ_ONLY_HINT.to_string());
+        }
     }
 }
+
+/// Whether a denial was a write into a repository's `.git`, which the
+/// sandbox keeps read-only.
+fn wrote_to_git(stderr: &str) -> bool {
+    stderr.lines().any(|line| {
+        (line.contains("/.git/") || line.contains("'.git/"))
+            && (line.contains("Unable to create")
+                || line.contains("cannot lock ref")
+                || line.contains("Operation not permitted")
+                || line.contains("Read-only file system"))
+    })
+}
+
+/// Follows a denial of a write into `.git`: how to run a git command that
+/// changes the repository, as Codex's model asks to leave its sandbox with a
+/// reusable prefix.
+pub(crate) const GIT_READ_ONLY_HINT: &str = "The sandbox keeps .git read-only. Run git \
+     commands that change the repository (add, commit, checkout, stash, merge, rebase) \
+     with outside_sandbox=true, a reason, and a prefix_rule such as [\"git\", \"commit\"], \
+     so the user can allow them for the rest of the session.";
 
 /// Follows a sandbox denial, so the model knows the way out and that the
 /// user decides, rather than guessing at the cause (it once took a blocked

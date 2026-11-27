@@ -830,10 +830,9 @@ pub(crate) async fn execute_tools_sequential(
         let session_key = effect.and_then(|effect| {
             trust::session_allow_key(&tc.function_name, &parsed_args, effect, project_root)
         });
-        if session_key
-            .as_deref()
-            .is_some_and(|key| session_allows.contains(key))
-        {
+        if effect.is_some_and(|effect| {
+            session_allows.covers(&tc.function_name, &parsed_args, effect, project_root)
+        }) {
             approval = ToolApproval::AutoApprove;
         }
 
