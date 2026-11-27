@@ -2776,6 +2776,39 @@
       ],
       "type": "object"
     },
+    "NetworkApprovalContext": {
+      "description": "The host a command asks to reach, as Codex's `NetworkApprovalContext`.",
+      "properties": {
+        "host": {
+          "description": "The host, without its port.",
+          "type": "string"
+        },
+        "protocol": {
+          "$ref": "#/$defs/NetworkApprovalProtocol",
+          "description": "How the connection came in."
+        }
+      },
+      "required": [
+        "host",
+        "protocol"
+      ],
+      "type": "object"
+    },
+    "NetworkApprovalProtocol": {
+      "description": "How a connection to a host came in, as Codex names it.",
+      "oneOf": [
+        {
+          "const": "https",
+          "description": "An HTTPS tunnel (HTTP `CONNECT`).",
+          "type": "string"
+        },
+        {
+          "const": "socks5Tcp",
+          "description": "A SOCKS5 TCP connection (git over ssh, raw TCP).",
+          "type": "string"
+        }
+      ]
+    },
     "Notification": {
       "additionalProperties": false,
       "description": "A one-way message: nothing answers it.",
@@ -4878,7 +4911,7 @@
           "description": "The sub-agent asking, when it isn't the main agent. Koda's own: Codex\nheads a sub-agent's request with its thread, and Claude Code names the\nsub-agent. A background agent may ask while no turn runs; `turnId` is\nthen empty."
         },
         "allowForSession": {
-          "description": "Whether `approveForSession` may be answered: only for local changes\ninside the project.",
+          "description": "Whether `acceptForSession` may be answered.",
           "type": "boolean"
         },
         "background": {
@@ -4918,6 +4951,17 @@
           "description": "The tool call.",
           "type": "string"
         },
+        "networkApprovalContext": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NetworkApprovalContext"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Set when the command asks to reach a host that isn't on the egress\nproxy's allow-list, as Codex's `networkApprovalContext`: the\nrequest is about the host, not the command. `acceptForSession` then\nallows the host for the session."
+        },
         "outsideSandbox": {
           "description": "Whether the command asks to run outside the sandbox, with the\nuser's yes for this one call. Koda's own: Codex asks for more than\nthe sandbox gives with `additionalPermissions`. `detail` then starts\nwith [`OUTSIDE_SANDBOX_TAG`].",
           "type": "boolean"
@@ -4932,6 +4976,16 @@
         "sessionId": {
           "description": "The session.",
           "type": "string"
+        },
+        "sessionPrefix": {
+          "description": "What `acceptForSession` covers for a command leaving the sandbox: the\ncommand prefix later commands are allowed under (`[\"git\", \"commit\"]`).\nKoda's own: Codex proposes an exec-policy amendment it writes to a\nfile, while Koda's yes lasts the session.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "tool": {
           "description": "The tool.",

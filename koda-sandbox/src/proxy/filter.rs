@@ -90,15 +90,46 @@ enum Pattern {
     Wildcard(String),
 }
 
+/// How a connection to an unlisted host reached the proxy, as Codex's
+/// `NetworkApprovalProtocol` names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NetworkProtocol {
+    /// An HTTP `CONNECT` tunnel, which HTTPS clients use.
+    Https,
+    /// A SOCKS5 `CONNECT`, which raw-TCP clients (git over ssh) use.
+    Socks5Tcp,
+}
+
+/// Asks whether a host off the allow-list may be reached, as Codex's
+/// managed proxy asks the user about an unlisted host. Without one the
+/// proxy refuses such a host.
+#[async_trait::async_trait]
+pub trait HostAsker: Send + Sync {
+    /// Whether to let this connection through. `host` is lowercased and has
+    /// no port.
+    async fn allow(&self, host: &str, port: u16, protocol: NetworkProtocol) -> bool;
+}
+
 /// Allowlist filter for the egress proxy.
 ///
 /// Cheap to clone (just a `Vec<Pattern>`); cheap to query (linear
 /// scan over a typically-tiny pattern list, with early exit). For
 /// the expected size (5–50 patterns) the constant factor of a
 /// hash-based or trie-based structure isn't worth it.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct Filter {
     patterns: Vec<Pattern>,
+    /// Who decides about a host off the list; `None` refuses it.
+    asker: Option<std::sync::Arc<dyn HostAsker>>,
+}
+
+impl std::fmt::Debug for Filter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Filter")
+            .field("patterns", &self.patterns)
+            .field("asks", &self.asker.is_some())
+            .finish()
+    }
 }
 
 impl Filter {
@@ -115,7 +146,32 @@ impl Filter {
         for raw in patterns {
             out.push(parse_pattern(raw.as_ref())?);
         }
-        Ok(Self { patterns: out })
+        Ok(Self {
+            patterns: out,
+            asker: None,
+        })
+    }
+
+    /// The same list, asking `asker` about a host that isn't on it.
+    pub fn with_asker(mut self, asker: std::sync::Arc<dyn HostAsker>) -> Self {
+        self.asker = Some(asker);
+        self
+    }
+
+    /// Whether a connection to `host` (which may end in `:port`) on `port`
+    /// goes through: on the list, or allowed by the asker. May wait for a
+    /// person's answer, so call it outside any handshake timeout.
+    pub async fn decide(&self, host: &str, port: u16, protocol: NetworkProtocol) -> bool {
+        if self.allows(host) {
+            return true;
+        }
+        match &self.asker {
+            Some(asker) => {
+                let host = strip_port(host).to_ascii_lowercase();
+                asker.allow(&host, port, protocol).await
+            }
+            None => false,
+        }
     }
 
     /// `true` iff `host` matches at least one pattern.

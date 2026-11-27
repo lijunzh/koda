@@ -313,7 +313,12 @@ impl KodaSession {
         // **#1022 B22**: parse-once via `OnceLock` instead of
         // re-parsing the static allowlist on every session creation.
         // See `dev_allowlist_filter()` above for the rationale.
-        let filter = dev_allowlist_filter().clone();
+        // An unlisted host asks the session's client, for the command that
+        // reached for it (`crate::network_approval`), as Codex's managed
+        // proxy asks.
+        let filter = dev_allowlist_filter()
+            .clone()
+            .with_asker(agent.tools.network_approvals());
         let proxy = match BuiltInProxy::new(filter.clone()).spawn().await {
             Ok(handle) => {
                 agent.tools.set_proxy_port(Some(handle.port));

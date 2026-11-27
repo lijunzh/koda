@@ -443,15 +443,46 @@ pub struct ToolCallApprovalParams {
     pub background: bool,
     /// Why it needs a yes.
     pub effect: ToolEffect,
-    /// Whether `approveForSession` may be answered: only for local changes
-    /// inside the project.
+    /// Whether `acceptForSession` may be answered.
     pub allow_for_session: bool,
+    /// What `acceptForSession` covers for a command leaving the sandbox: the
+    /// command prefix later commands are allowed under (`["git", "commit"]`).
+    /// Koda's own: Codex proposes an exec-policy amendment it writes to a
+    /// file, while Koda's yes lasts the session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_prefix: Option<Vec<String>>,
+    /// Set when the command asks to reach a host that isn't on the egress
+    /// proxy's allow-list, as Codex's `networkApprovalContext`: the
+    /// request is about the host, not the command. `acceptForSession` then
+    /// allows the host for the session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_approval_context: Option<NetworkApprovalContext>,
     /// The sub-agent asking, when it isn't the main agent. Koda's own: Codex
     /// heads a sub-agent's request with its thread, and Claude Code names the
     /// sub-agent. A background agent may ask while no turn runs; `turnId` is
     /// then empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<ApprovalAgent>,
+}
+
+/// The host a command asks to reach, as Codex's `NetworkApprovalContext`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkApprovalContext {
+    /// The host, without its port.
+    pub host: String,
+    /// How the connection came in.
+    pub protocol: NetworkApprovalProtocol,
+}
+
+/// How a connection to a host came in, as Codex names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum NetworkApprovalProtocol {
+    /// An HTTPS tunnel (HTTP `CONNECT`).
+    Https,
+    /// A SOCKS5 TCP connection (git over ssh, raw TCP).
+    Socks5Tcp,
 }
 
 /// The sub-agent behind an approval request.

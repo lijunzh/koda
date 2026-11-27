@@ -2303,6 +2303,30 @@ impl HostSink {
         Err((id, answer))
     }
 
+    /// Ask the client whether a command may reach a host off the proxy's
+    /// allow-list: refused at once when Koda answers its own requests, as
+    /// a headless run can't ask anyone.
+    fn ask_for_network(
+        &self,
+        request: koda_core::network_approval::NetworkApproval,
+    ) -> Result<ApprovalDecision, (RequestId, oneshot::Receiver<Answer>)> {
+        if self.answers.is_some() {
+            return Ok(ApprovalDecision::Reject);
+        }
+        let (reply, answer) = oneshot::channel();
+        let mut state = self.lock();
+        let (id, params) = state.projector.network_approval(request);
+        state.agent_approvals.insert(id.clone(), reply);
+        self.send(
+            &mut state,
+            vec![Outgoing::Request(ServerRequest::ToolCallApproval {
+                id: id.clone(),
+                params,
+            })],
+        );
+        Err((id, answer))
+    }
+
     /// Withdraw a sub-agent's request that is no longer waited on: the agent
     /// was stopped.
     fn withdraw(&self, id: &RequestId) {
@@ -2342,21 +2366,40 @@ impl koda_core::approval_flow::Approver for HostApprover {
         request: koda_core::approval_flow::AgentApproval,
     ) -> Option<ApprovalDecision> {
         let sink = self.sink.upgrade()?;
-        let (id, answer) = match sink.ask_for_agent(request) {
-            Ok(decision) => return Some(decision),
-            Err(asked) => asked,
-        };
-        let mut asked = Asked {
-            sink,
-            id: Some(id.clone()),
-        };
-        let result = answer.await.ok()?;
-        // Answered: nothing to withdraw.
-        asked.id = None;
-        match engine_command(RequestKind::Approval, String::new(), result) {
-            EngineCommand::ApprovalResponse { decision, .. } => Some(decision),
-            _ => None,
-        }
+        let asked = sink.ask_for_agent(request);
+        wait_for(sink, asked).await
+    }
+
+    async fn approve_network(
+        &self,
+        request: koda_core::network_approval::NetworkApproval,
+    ) -> Option<ApprovalDecision> {
+        let sink = self.sink.upgrade()?;
+        let asked = sink.ask_for_network(request);
+        wait_for(sink, asked).await
+    }
+}
+
+/// The answer to a request [`HostSink`] sent, or Koda's own answer; the
+/// request is withdrawn if the waiter goes away first.
+async fn wait_for(
+    sink: Arc<HostSink>,
+    asked: Result<ApprovalDecision, (RequestId, oneshot::Receiver<Answer>)>,
+) -> Option<ApprovalDecision> {
+    let (id, answer) = match asked {
+        Ok(decision) => return Some(decision),
+        Err(asked) => asked,
+    };
+    let mut asked = Asked {
+        sink,
+        id: Some(id.clone()),
+    };
+    let result = answer.await.ok()?;
+    // Answered: nothing to withdraw.
+    asked.id = None;
+    match engine_command(RequestKind::Approval, String::new(), result) {
+        EngineCommand::ApprovalResponse { decision, .. } => Some(decision),
+        _ => None,
     }
 }
 

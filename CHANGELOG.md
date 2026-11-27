@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **A host that isn't on the proxy's allow-list asks, as Codex's managed proxy does,** instead of failing. The question is the command's own approval request, with the host in `networkApprovalContext` (Codex's field): `y` lets the command reach it while it runs, `s` allows the host for the session, `n` refuses it. Koda asks only when it can tell which command opened the connection (exactly one running) and someone can answer; otherwise the host is refused, as before.
+- **`[s]` says what it covers:** `` [s] `git commit …` this session `` for a command leaving the sandbox (the request's new `sessionPrefix`), `[s] docs.rs this session` for a host.
+
+### Fixed
+
+- **A SOCKS5 connection (git over SSH through the proxy) was cut after 10 seconds:** the handshake deadline covered the whole tunnel.
+
 ### Removed
 
 - **Safe mode.** Koda now decides what runs without asking the way Codex does, from the kernel sandbox rather than a list of commands. There are two modes, Auto (the default) and Plan; `Shift+Tab` switches between them. `--mode`, `mode` in `config.toml` and an agent's `trust` take `auto` or `plan`; `mode = "safe"` gets a message saying so, an agent declaring `"safe"` runs in Plan with a warning, and a session stored in Safe reopens in Auto. `/safe`, the Plan dialog's "Implement it in Safe" and the `a` approval key (approve and switch to Auto) are gone.

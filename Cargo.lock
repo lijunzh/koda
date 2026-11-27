@@ -2133,6 +2133,7 @@ dependencies = [
  "koda-config",
  "koda-core",
  "koda-protocol",
+ "koda-sandbox",
  "koda-server",
  "koda-state",
  "koda-test-utils",

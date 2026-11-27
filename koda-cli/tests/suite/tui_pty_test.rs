@@ -572,7 +572,8 @@ async fn s_allows_a_prefix_for_the_session_but_not_a_destructive_command() {
     let mut tui = Tui::start_with_model(home.path(), &server.url());
 
     tui.submit("first prompt");
-    tui.wait_for_screen("[s] this session");
+    // `s` says what it covers: the prefix.
+    tui.wait_for_screen("[s] `touch …` this session");
     tui.type_text("s");
 
     // `touch b.txt` runs unasked, so the next prompt is another prefix's.
@@ -584,11 +585,7 @@ async fn s_allows_a_prefix_for_the_session_but_not_a_destructive_command() {
 
     tui.wait_for_screen("rm -rf build");
     tui.wait_for_screen("[y] approve");
-    assert!(
-        !tui.screen().contains("[s] this session"),
-        "{}",
-        tui.screen()
-    );
+    assert!(!tui.screen().contains("[s]"), "{}", tui.screen());
     tui.type_text("s");
     assert!(tui.screen().contains("[y] approve"), "{}", tui.screen());
     assert_eq!(model_calls(&server).await.len(), 4);

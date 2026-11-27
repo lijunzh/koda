@@ -80,8 +80,8 @@ pub use policy::{
 pub use policy_check::{is_fully_denied, is_koda_config};
 pub use proxy::{
     BuiltInProxy, BuiltInSocks5Proxy, DEFAULT_DEV_ALLOWLIST, DEFAULT_NO_PROXY, ExternalProxy,
-    Filter, PROXY_PORT_ENV_KEY, ProxyHandle, Socks5Server, ca_bundle_for_policy, proxy_env_vars,
-    socks5_env_vars,
+    Filter, HostAsker, NetworkProtocol, PROXY_PORT_ENV_KEY, ProxyHandle, Socks5Server,
+    ca_bundle_for_policy, proxy_env_vars, socks5_env_vars,
 };
 pub use server_socket::protect_socket;
 pub use violations::{

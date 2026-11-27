@@ -607,20 +607,28 @@ fn plain_argv(command: &str) -> Option<Vec<String>> {
     shlex::split(command).filter(|words| !words.is_empty())
 }
 
-/// The session key a command asking to leave the sandbox may be allowed
-/// under: its `prefix_rule`, when that is a valid prefix of the command.
-fn prefix_rule_key(args: &serde_json::Value) -> Option<String> {
+/// The prefix a yes for the session would allow a command leaving the
+/// sandbox under: its `prefix_rule`, when that is a plain, allowed prefix of
+/// the command (not one of Codex's banned ones).
+pub fn session_prefix(args: &serde_json::Value) -> Option<Vec<String>> {
     let argv = plain_argv(args.get("command")?.as_str()?)?;
-    let rule: Vec<&str> = args
+    let rule: Vec<String> = args
         .get("prefix_rule")?
         .as_array()?
         .iter()
-        .map(|word| word.as_str())
+        .map(|word| word.as_str().map(str::to_string))
         .collect::<Option<_>>()?;
-    let banned = BANNED_PREFIXES.contains(&rule.as_slice());
+    let words: Vec<&str> = rule.iter().map(String::as_str).collect();
+    let banned = BANNED_PREFIXES.contains(&words.as_slice());
     let starts = argv.len() >= rule.len() && argv.iter().zip(&rule).all(|(a, w)| a == w);
     (!rule.is_empty() && !banned && starts && rule.iter().all(|w| !w.contains('\0')))
-        .then(|| format!("{PREFIX_KEY}{}", rule.join("\0")))
+        .then_some(rule)
+}
+
+/// The session key a command asking to leave the sandbox may be allowed
+/// under: its [`session_prefix`].
+fn prefix_rule_key(args: &serde_json::Value) -> Option<String> {
+    session_prefix(args).map(|rule| format!("{PREFIX_KEY}{}", rule.join("\0")))
 }
 
 /// The key a call can be allowed for the session under, or `None` when it
