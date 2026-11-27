@@ -66,6 +66,23 @@ default. To run your own `llama-server` and keep it running between
 sessions, start Koda without `--oss` and point it at the server (see
 [Connect Koda](#connect-koda) below).
 
+With LM Studio, set up the model there, since Koda only connects:
+
+- **Save the model's load settings as its default** in LM Studio, before
+  anything loads it: the context length (262,144 for Qwen3.8-Flash-Next) and
+  GPU offload at max. A load from the app, or one a request starts, then gets
+  them. Without saved settings, LM Studio loaded Qwen3.8-Flash-Next at 8,192
+  tokens, and Koda's first request (about 9,500 tokens) failed with
+  `exceeds the available context size`. To load it with the right window
+  from a terminal: `lms load qwen3.8-flash-next -c 262144 --gpu max`.
+- **Load the model before starting Koda, or name it.** Koda takes the first
+  model the server lists, and LM Studio lists every downloaded model, loaded
+  or not, when it loads models on request. `--model qwen3.8-flash-next`
+  (the id `lms ls` shows) picks one; LM Studio loads it, with its saved
+  settings, if it isn't loaded.
+- **Set the effort yourself.** `--oss` sets `xhigh` for Qwen3.8-Flash-Next
+  only when it starts `llama-server`; with LM Studio, pass `--effort xhigh`.
+
 ## What you need
 
 A machine that can hold the model in memory and run it at a usable speed: an
@@ -76,17 +93,27 @@ GPU. The models below take roughly 20 GB (a 4-bit 27–35B model) and up.
 
 | Server | Use it when | Koda's provider |
 |---|---|---|
-| **llama.cpp's `llama-server`** | You want the fastest agent runs from a GGUF model | `llama-cpp` (`http://localhost:8080/v1`) |
-| **LM Studio** | You want a desktop app to download and switch models | `lm-studio` (`http://localhost:1234/v1`) |
+| **llama.cpp's `llama-server`** | You want what Koda's evals use, or `koda --oss` to start and stop it for you | `llama-cpp` (`http://localhost:8080/v1`) |
+| **LM Studio** | You want a desktop app that keeps the model running and lets you download, load and switch models | `lm-studio` (`http://localhost:1234/v1`) |
 | **Ollama** | You already use it | `ollama` |
 | **vLLM** | You serve models on a Linux GPU box | `vllm` |
 
-**`llama-server` is the one Koda's own evals use.** An agent sends the same
-long prompt again on every call, with a little more at the end, and
-llama-server reuses what it already processed. On the same Qwen3.8-Flash-Next
-file and the same 26 tasks, it finished in about 2 hours against LM Studio's
-3 hours 37 minutes, and waited 2.2 seconds per 1,000 new prompt tokens for
-the first token against 10.6.
+**`llama-server` and LM Studio are now about as fast.** An agent sends the
+same long prompt again on every call, with a little more at the end, and both
+reuse what they already processed. On the same Qwen3.8-Flash-Next file and
+five of Koda's eval tasks (November 26, 2026; LM Studio 0.4.29 with its
+llama.cpp runtime 2.83.0), the first token came after 2.2 seconds per 1,000
+new prompt tokens on `llama-server` against 2.7 on LM Studio, and both wrote
+about 39 tokens a second. A short call waits about half a second longer on LM
+Studio. Earlier in November, LM Studio waited 10.6 seconds per 1,000 tokens;
+its newer runtime closed most of that gap. `llama-server` is still the one
+Koda's own evals use.
+
+LM Studio doesn't say how much of the prompt it reused, so Koda's usage
+shows no cached tokens there. That doesn't slow anything down, but
+[`turn_token_budget`](./configuration.md#limiting-what-a-turn-spends), which
+counts only input not read from the cache, counts every call's whole prompt
+on LM Studio and runs out sooner.
 
 ## Choose a model
 
