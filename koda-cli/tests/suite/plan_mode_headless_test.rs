@@ -129,9 +129,12 @@ async fn plan_runs_reads_and_refuses_the_rest() {
         "read-only MCP tool didn't run: {after}"
     );
     assert!(!after.contains("send-ran"), "unmarked MCP tool ran");
-    // Bash ran, and the read-only sandbox stopped its write.
+    // Bash ran, and the read-only sandbox stopped its write: seatbelt says
+    // "Operation not permitted", bwrap "Read-only file system".
     assert!(
-        after.contains("touch: touched.txt: Operation not permitted"),
+        after.contains("touched.txt")
+            && (after.contains("Operation not permitted")
+                || after.contains("Read-only file system")),
         "Bash wasn't stopped at the kernel: {after}"
     );
     // Write and mail__send each come back refused.
