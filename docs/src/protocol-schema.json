@@ -4033,7 +4033,7 @@
           ]
         },
         "cwd": {
-          "description": "The folder to open it in. Without one, the host's.",
+          "description": "The folder to open it in. Without one, the folder it was started in,\nas Codex's `thread/resume` keeps the thread's (the host's for a session\ntoo old to have recorded one); a recorded folder that no longer exists\nis refused.",
           "type": [
             "string",
             "null"

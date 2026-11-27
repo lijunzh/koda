@@ -398,6 +398,17 @@ npm start                 # build into out/ and open the app
   the login shell's `PATH`, which the app reads once (`src/main/shell-path.ts`,
   as Goose's and Hermes's apps do) because an app opened from the Finder has
   launchd's minimal `PATH`. Only `PATH`: keys come from `/key`.
+- **Sessions:** the sidebar lists every folder's sessions from
+  `session/list` and keeps them current from what the server sends every
+  client (`session/started`, `session/name/updated`, `session/deleted`,
+  `session/status/changed`). Opening one is `session/resume` with its id
+  alone (the relay refuses a `cwd`, `config` or `baseUrl`), so it opens in
+  its own folder; the one left is unsubscribed, and a turn running in it goes
+  on. Starting a session (a folder from the system's picker) and deleting one
+  (after the system's confirmation) are main-process actions
+  (`src/main/sessions.ts`), so the page never chooses where commands may
+  write. App tests answer those dialogs from the main process with
+  `electronApp.evaluate`.
 - **Tests that start a server** use `koda serve --start` on a scratch
   `XDG_CONFIG_HOME`, never the user's own server. `test:e2e` opens the
   built app with Playwright (`playwright-core`'s Electron driver, unseen,

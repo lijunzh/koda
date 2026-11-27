@@ -1,6 +1,6 @@
 // Typed access to the preload bridge: method names and shapes come from the
 // types generated from Koda's protocol schema.
-import type { Methods, ServerRequests } from '../protocol/types.gen';
+import type { Methods, ServerRequests, Session } from '../protocol/types.gen';
 import type { ServerStatus } from '../main/server';
 
 export type { ServerStatus };
@@ -18,6 +18,8 @@ interface KodaBridge {
   request(method: string, params: unknown): Promise<unknown>;
   respond(id: number | string, result: unknown): Promise<void>;
   onMessages(listener: (batch: RpcMessage[]) => void): () => void;
+  newSession(): Promise<Session | null>;
+  deleteSession(id: string): Promise<boolean>;
   replaceServer(turns: 'wait' | 'stop'): Promise<void>;
   retry(): Promise<void>;
   relaunch(): Promise<void>;

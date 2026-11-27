@@ -34,7 +34,7 @@ describe('relay', () => {
 
   it('refuses what later steps add with their checks', () => {
     // Each needs a check of its parameters first (a folder, a mode, a config).
-    for (const method of ['turn/start', 'session/start', 'session/resume', 'session/fork', 'session/settings/update']) {
+    for (const method of ['turn/start', 'session/start', 'session/fork', 'session/settings/update']) {
       expect(refusal(method, {}), method).not.toBeNull();
     }
   });
@@ -43,6 +43,14 @@ describe('relay', () => {
     expect(refusal('model/list', {})).toBeNull();
     expect(refusal('model/list', { modelProvider: 'anthropic' })).toBeNull();
     expect(refusal('model/list', { baseUrl: 'https://example.com/v1' })).toMatch(/baseUrl/);
+  });
+
+  it("opens a session by its id alone: its folder and what it runs with are not the page's to choose", () => {
+    expect(refusal('session/resume', { sessionId: 's1' })).toBeNull();
+    expect(refusal('session/resume', {})).toMatch(/sessionId/);
+    expect(refusal('session/resume', { sessionId: 's1', cwd: '/' })).toMatch(/cwd/);
+    expect(refusal('session/resume', { sessionId: 's1', config: { mode: 'auto' } })).toMatch(/config/);
+    expect(refusal('session/resume', { sessionId: 's1', baseUrl: 'https://x' })).toMatch(/baseUrl/);
   });
 
   it('refuses what is not a method and params that are not an object', () => {

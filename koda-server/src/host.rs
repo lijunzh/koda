@@ -377,6 +377,20 @@ impl Host {
                     cwd,
                     config,
                 } = params;
+                // Without a folder, the session's own, as Codex's
+                // `thread/resume` falls back to the thread's stored cwd: a
+                // client that resumes by id (the desktop app) gets the
+                // session where it was, not the server's folder.
+                let cwd = match cwd {
+                    Some(cwd) => Some(cwd),
+                    None => match self.stored_folder(&session_id).await {
+                        Ok(folder) => folder,
+                        Err(e) => {
+                            let _ = reply.send(Err(e));
+                            return;
+                        }
+                    },
+                };
                 let start = SessionStartParams {
                     approval_policy,
                     model_provider,
@@ -1242,6 +1256,27 @@ impl Host {
             context.config_file = context.config_file.with_more_overrides(overrides);
         }
         Ok(context)
+    }
+
+    /// The folder stored session `id` was started in, to resume it there;
+    /// `None` for a session too old to record one, or one not stored (the
+    /// open itself says so). A recorded folder that no longer exists is
+    /// refused rather than swapped for the server's.
+    async fn stored_folder(&self, id: &str) -> Result<Option<String>, ErrorObject> {
+        use koda_state::session_store::SessionStore;
+        let stored =
+            self.context.db.get_session(id).await.map_err(|e| {
+                ErrorObject::new(codes::INTERNAL_ERROR, format!("session {id}: {e:#}"))
+            })?;
+        let Some(folder) = stored.and_then(|stored| stored.project_root) else {
+            return Ok(None);
+        };
+        if !Path::new(&folder).is_dir() {
+            return Err(invalid(format!(
+                "session {id}'s folder {folder} no longer exists; give a cwd to open it elsewhere"
+            )));
+        }
+        Ok(Some(folder))
     }
 
     /// Open a session: a new one, or the stored session `resume` names

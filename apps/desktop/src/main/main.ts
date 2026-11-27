@@ -6,6 +6,7 @@
 import {
   app,
   BrowserWindow,
+  dialog,
   ipcMain,
   protocol,
   session,
@@ -18,6 +19,7 @@ import path from 'node:path';
 import { Connection } from './connection';
 import type { RpcId } from './koda-client';
 import { refusal } from './relay';
+import { deleteSession, newSession, type SessionActionDeps } from './sessions';
 import { findKoda, type RunningTurns } from './server';
 import { loginShellPath } from './shell-path';
 
@@ -143,6 +145,34 @@ async function main() {
       void conn.open(turns as RunningTurns);
     }),
   );
+  // Sessions the main process starts and deletes, with the system's dialogs.
+  const sessionDeps: SessionActionDeps = {
+    request: (method, params) => conn.request(method, params),
+    pickFolder: async () => {
+      const picked = win
+        ? await dialog.showOpenDialog(win, {
+            title: 'Folder for the new session',
+            buttonLabel: 'Start session here',
+            properties: ['openDirectory', 'createDirectory'],
+          })
+        : { canceled: true, filePaths: [] };
+      return picked.canceled ? null : (picked.filePaths[0] ?? null);
+    },
+    confirmDelete: async (label) => {
+      if (!win) return false;
+      const answer = await dialog.showMessageBox(win, {
+        type: 'warning',
+        message: `Delete "${label}"?`,
+        detail: 'The conversation is removed from Koda for good. Files it changed stay as they are.',
+        buttons: ['Delete', 'Cancel'],
+        defaultId: 1,
+        cancelId: 1,
+      });
+      return answer.response === 0;
+    },
+  };
+  ipcMain.handle('koda:newSession', guarded(() => newSession(sessionDeps)));
+  ipcMain.handle('koda:deleteSession', guarded((id: unknown) => deleteSession(sessionDeps, id)));
   ipcMain.handle(
     'koda:retry',
     guarded(() => {

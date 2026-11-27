@@ -1,97 +1,110 @@
-import { useEffect, useState } from 'react';
-import type { ServerStatus } from './bridge';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { Session } from '../protocol/types.gen';
+import { call, type ServerStatus } from './bridge';
+import { ServerLine } from './ServerLine';
+import { SessionView } from './SessionView';
+import { EMPTY, type SessionsState, withMessages, withPage } from './sessions';
+import { Sidebar } from './Sidebar';
 
-/** The app's window. For now: which server it reached, and what to do when it can't use one. */
+/** The open session: its id at once, the session once the server has opened it. */
+export interface Selected {
+  id: string;
+  session?: Session;
+  error?: string;
+}
+
+const PAGE = 50;
+
 export function App() {
   const [status, setStatus] = useState<ServerStatus | null>(null);
+  const [sessions, setSessions] = useState<SessionsState>(EMPTY);
+  const [selected, setSelected] = useState<Selected | null>(null);
+  const selectedId = useRef<string | null>(null);
+
   useEffect(() => {
     const stop = window.koda.onStatus(setStatus);
     void window.koda.status().then(setStatus);
     return stop;
   }, []);
-  return (
-    <main className="status">
-      <h1>Koda</h1>
-      <ServerLine status={status} />
-    </main>
+
+  useEffect(
+    () =>
+      window.koda.onMessages((batch) => {
+        setSessions((state) => withMessages(state, batch));
+        for (const message of batch) {
+          const params = message.params as { sessionId?: string } | undefined;
+          if (message.method === 'session/deleted' && params?.sessionId === selectedId.current) {
+            selectedId.current = null;
+            setSelected(null);
+          }
+        }
+      }),
+    [],
   );
-}
 
-function sessions(n: number) {
-  return n === 1 ? '1 session' : `${n} sessions`;
-}
+  const connected = status?.state === 'connected';
+  // The list, afresh each time the app (re)connects.
+  useEffect(() => {
+    if (!connected) return;
+    void call('session/list', { limit: PAGE, sortKey: 'updated_at' }).then((page) =>
+      setSessions((state) => withPage(state, page, true)),
+    );
+  }, [connected]);
 
-/** What the server's state means, and the user's choices, as the TUI asks them. */
-function ServerLine({ status }: { status: ServerStatus | null }) {
-  if (!status || status.state === 'starting') return <p>Starting Koda's server…</p>;
-  switch (status.state) {
-    case 'connected':
-      return (
-        <p data-testid="connected">
-          Connected to Koda {status.serverVersion} at <code>{status.socket}</code>.
-        </p>
-      );
-    case 'reconnecting':
-      return (
-        <p className="problem" data-testid="reconnecting">
-          Lost Koda's server; reconnecting… <span className="detail">{status.error}</span>
-        </p>
-      );
-    case 'busy':
-      return (
-        <div className="banner" data-testid="busy">
-          <p>
-            Koda was updated to {status.appVersion}. Its server still runs {status.serverVersion}, with a turn
-            running in {sessions(status.working)}.
-          </p>
-          <div className="actions">
-            <button onClick={() => void window.koda.replaceServer('wait')}>Wait for them, then restart it</button>
-            {!status.draining && (
-              <button onClick={() => void window.koda.replaceServer('stop')}>
-                Restart it now (those turns stop)
-              </button>
-            )}
-          </div>
-        </div>
-      );
-    case 'waiting':
-      return (
-        <p data-testid="waiting">
-          Waiting for the turns running in {sessions(status.working)} to finish before Koda's server restarts…
-        </p>
-      );
-    case 'updated':
-      return (
-        <div className="banner" data-testid="updated">
-          <p>
-            Koda was updated to {status.version}; this window is {status.appVersion}.
-          </p>
-          <div className="actions">
-            <button onClick={() => void window.koda.relaunch()}>Restart now</button>
-          </div>
-        </div>
-      );
-    case 'noKoda':
-      return (
-        <div className="banner problem" data-testid="no-koda">
-          <p>
-            No <code>koda</code> was found on your shell's PATH. Install it (<code>brew tap lijunzh/koda</code>, then <code>brew install koda</code>),
-            then try again.
-          </p>
-          <div className="actions">
-            <button onClick={() => void window.koda.retry()}>Try again</button>
-          </div>
-        </div>
-      );
-    case 'unreachable':
-      return (
-        <div className="banner problem" data-testid="unreachable">
-          <p>Koda's server couldn't be started or reached.</p>
-          <p className="detail">{status.error}</p>
-          <div className="actions">
-            <button onClick={() => void window.koda.retry()}>Try again</button>
-          </div>
-        </div>
-      );
+  const more = useCallback(() => {
+    if (!sessions.nextCursor) return;
+    void call('session/list', { limit: PAGE, sortKey: 'updated_at', cursor: sessions.nextCursor }).then((page) =>
+      setSessions((state) => withPage(state, page, false)),
+    );
+  }, [sessions.nextCursor]);
+
+  // Opening a session joins it on the server; the one left stops being
+  // followed (a turn running in it goes on, as when a window closes).
+  const open = useCallback((id: string, session?: Session) => {
+    const before = selectedId.current;
+    if (before === id) return;
+    if (before) void call('session/unsubscribe', { sessionId: before }).catch(() => {});
+    selectedId.current = id;
+    if (session) {
+      setSelected({ id, session });
+      return;
+    }
+    setSelected({ id });
+    call('session/resume', { sessionId: id }).then(
+      (answer) => selectedId.current === id && setSelected({ id, session: answer.session }),
+      (error: Error) => selectedId.current === id && setSelected({ id, error: error.message }),
+    );
+  }, []);
+
+  const start = useCallback(async () => {
+    const session = await window.koda.newSession();
+    if (session) open(session.id, session);
+  }, [open]);
+
+  // Once there's a list, it stays while the app gets back to the server.
+  const reconnecting = status?.state === 'reconnecting' && sessions.loaded;
+  if (!connected && !reconnecting) {
+    return (
+      <main className="status">
+        <h1>Koda</h1>
+        <ServerLine status={status} />
+      </main>
+    );
   }
+  return (
+    <div className="layout">
+      <Sidebar
+        sessions={sessions}
+        selectedId={selected?.id ?? null}
+        onOpen={(id) => open(id)}
+        onNew={() => void start()}
+        onMore={more}
+        connectedTo={connected ? status.serverVersion : null}
+      />
+      <div className="main-column">
+        {reconnecting && <ServerLine status={status} />}
+        <SessionView selected={selected} listed={selected ? sessions.byId.get(selected.id) : undefined} />
+      </div>
+    </div>
+  );
 }

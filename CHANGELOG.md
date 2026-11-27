@@ -8,13 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
-- **The desktop app's first steps** (`apps/desktop`, not released yet): a thin Electron app with a React page that connects to the background server and says whether it runs the app's version. Its main process checks every request the page makes, and refuses what could reach past a session (keys, config, the server's lifetime). It starts the server itself with `koda serve --start`, using the login shell's `PATH`, follows the one-version rule (asking before stopping an older server's turns, and offering "Restart now" after an update), and reconnects when the server goes away. CI builds it, tests it against `koda serve`, and drives the app with Playwright.
+- **The desktop app's first steps** (`apps/desktop`, not released yet): a thin Electron app with a React page that connects to the background server and says whether it runs the app's version. Its main process checks every request the page makes, and refuses what could reach past a session (keys, config, the server's lifetime). It starts the server itself with `koda serve --start`, using the login shell's `PATH`, follows the one-version rule (asking before stopping an older server's turns, and offering "Restart now" after an update), and reconnects when the server goes away. Its sidebar lists every folder's sessions with what each is doing, kept current as other windows start, rename, run and delete them; a session opens in its own folder, a new one starts in a folder picked in the system's dialog, and deleting one asks first. CI builds it, tests it against `koda serve`, and drives the app with Playwright.
 - **`koda serve --start`,** for clients other than the TUI, such as the coming desktop app: it makes sure the background server runs this `koda`'s version (starting one, or replacing an older one when no turn runs in it), then prints one JSON object (`alreadyRunning`, `started`, `restarted`, or why it isn't ready) and exits, as Codex's apps run `codex app-server daemon start`. `--running-turns wait` or `stop` says what to do with turns running in an older server. `koda` follows the same code at start-up.
 - **A guide to the background server** ([The background server](https://lijunzh.github.io/koda/background-server.html)): how sessions run on `koda serve` rather than in a window, what happens with the same session in two windows, and the commands that manage it.
 
 ### Changed
 
 - **A `gh api` read no longer asks.** In Auto, `gh api` asked before every call, a GET included. Now it asks only when the call can change something: a method other than GET (`-X`, `--method`), or a field or `--input`, which make `gh` send a POST. A GraphQL call passes its query as a field, so it still asks. Reads run in the sandbox like any other command, as in Codex, which asks before no `gh` call.
+
+### Fixed
+
+- **`session/resume` without a `cwd` opened the session in the server's folder,** not the one it was started in, unlike Codex's `thread/resume`. A client that resumes by id alone (the desktop app does) now gets the session where it was; one whose folder no longer exists is refused instead of being moved. The TUI always passes its folder, so it is unaffected.
 
 ## [0.8.0] - 2026-11-27
 

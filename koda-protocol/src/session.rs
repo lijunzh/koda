@@ -252,7 +252,10 @@ pub struct SessionResumeParams {
     /// choice, an alias resolved again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// The folder to open it in. Without one, the host's.
+    /// The folder to open it in. Without one, the folder it was started in,
+    /// as Codex's `thread/resume` keeps the thread's (the host's for a session
+    /// too old to have recorded one); a recorded folder that no longer exists
+    /// is refused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
     /// Config values for this session only, as on `session/start`.

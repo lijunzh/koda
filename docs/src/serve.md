@@ -62,7 +62,8 @@ optional name to show people.
 `--provider`, `--base-url` or `--resume`. `-c` and the other config flags set
 what new sessions start from, as for `koda`. An earlier session is opened
 with `session/resume` and its `sessionId`, as Codex's `thread/resume`; it
-takes the same fields, and keeps its own provider.
+takes the same fields, and keeps its own provider. Without a `cwd` it opens in
+the folder it was started in, as Codex's does.
 
 `session/start` also takes the session's folder and its own config, as
 Codex's `thread/start` does: `cwd`, an absolute path to an existing folder
