@@ -107,6 +107,9 @@ harness = false
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# The scripted model and stub server, for the in-process TUI tests
+# (`test_tui`); without `core`, so koda-core stays out of the TUI.
+koda-test-utils = { path = "../koda-test-utils", default-features = false }
 serde_json = { workspace = true }
 tracing-subscriber = { workspace = true }
 # tokio's `test-util` feature enables `#[tokio::test(start_paused = true)]` so

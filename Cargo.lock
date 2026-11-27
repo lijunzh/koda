@@ -2420,6 +2420,7 @@ dependencies = [
  "koda-config",
  "koda-git",
  "koda-state",
+ "koda-test-utils",
  "libc",
  "pretty_assertions",
  "ratatui",

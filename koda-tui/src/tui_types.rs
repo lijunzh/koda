@@ -15,8 +15,130 @@
 
 use ratatui::{Terminal, backend::CrosstermBackend};
 
-/// Ratatui terminal backed by stdout.
-pub(crate) type Term = Terminal<CrosstermBackend<std::io::Stdout>>;
+/// The TUI's ratatui terminal: stdout, or in tests a buffer the test reads.
+pub(crate) type Term = Terminal<Screen>;
+
+/// Where the TUI draws. A test draws into a [`ratatui::backend::TestBackend`]
+/// it keeps a handle to, so it can read the screen while the TUI runs, as
+/// Codex's TUI tests render into one.
+pub(crate) enum Screen {
+    /// The real terminal.
+    Stdout(CrosstermBackend<std::io::Stdout>),
+    /// A test's screen.
+    #[cfg(test)]
+    Test(std::sync::Arc<std::sync::Mutex<ratatui::backend::TestBackend>>),
+}
+
+impl Screen {
+    /// Whether this is the real terminal, which needs its modes restored.
+    pub(crate) fn is_stdout(&self) -> bool {
+        matches!(self, Screen::Stdout(_))
+    }
+}
+
+/// What the TUI draws on and reads from.
+pub(crate) enum TuiIo {
+    /// The terminal Koda runs in.
+    Terminal,
+    /// A test's screen, and the events it sends.
+    #[cfg(test)]
+    Test {
+        screen: std::sync::Arc<std::sync::Mutex<ratatui::backend::TestBackend>>,
+        events: Events,
+    },
+}
+
+/// The TUI's input events: the terminal's, or a test's.
+pub(crate) type Events = std::pin::Pin<
+    Box<dyn futures_util::Stream<Item = std::io::Result<crossterm::event::Event>> + Send>,
+>;
+
+/// Run `$call` on whichever backend `$screen` is.
+macro_rules! on_backend {
+    ($screen:expr, $b:ident => $call:expr) => {
+        match $screen {
+            Screen::Stdout($b) => $call,
+            #[cfg(test)]
+            Screen::Test(test) => {
+                let mut guard = test.lock().unwrap_or_else(|p| p.into_inner());
+                let $b = &mut *guard;
+                match $call {
+                    Ok(value) => Ok(value),
+                    Err(never) => match never {},
+                }
+            }
+        }
+    };
+}
+
+impl ratatui::backend::Backend for Screen {
+    type Error = std::io::Error;
+
+    fn draw<'a, I>(&mut self, content: I) -> std::io::Result<()>
+    where
+        I: Iterator<Item = (u16, u16, &'a ratatui::buffer::Cell)>,
+    {
+        on_backend!(self, b => b.draw(content))
+    }
+    fn append_lines(&mut self, n: u16) -> std::io::Result<()> {
+        on_backend!(self, b => b.append_lines(n))
+    }
+    fn hide_cursor(&mut self) -> std::io::Result<()> {
+        on_backend!(self, b => b.hide_cursor())
+    }
+    fn show_cursor(&mut self) -> std::io::Result<()> {
+        on_backend!(self, b => b.show_cursor())
+    }
+    fn get_cursor_position(&mut self) -> std::io::Result<ratatui::layout::Position> {
+        on_backend!(self, b => b.get_cursor_position())
+    }
+    fn set_cursor_position<P: Into<ratatui::layout::Position>>(
+        &mut self,
+        position: P,
+    ) -> std::io::Result<()> {
+        let position = position.into();
+        on_backend!(self, b => b.set_cursor_position(position))
+    }
+    fn clear(&mut self) -> std::io::Result<()> {
+        on_backend!(self, b => b.clear())
+    }
+    fn clear_region(&mut self, clear_type: ratatui::backend::ClearType) -> std::io::Result<()> {
+        on_backend!(self, b => b.clear_region(clear_type))
+    }
+    fn size(&self) -> std::io::Result<ratatui::layout::Size> {
+        match self {
+            Screen::Stdout(b) => b.size(),
+            #[cfg(test)]
+            Screen::Test(test) => {
+                let guard = test.lock().unwrap_or_else(|p| p.into_inner());
+                match guard.size() {
+                    Ok(size) => Ok(size),
+                    Err(never) => match never {},
+                }
+            }
+        }
+    }
+    fn window_size(&mut self) -> std::io::Result<ratatui::backend::WindowSize> {
+        on_backend!(self, b => b.window_size())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        on_backend!(self, b => b.flush())
+    }
+    fn scroll_region_up(
+        &mut self,
+        region: std::ops::Range<u16>,
+        amount: u16,
+    ) -> std::io::Result<()> {
+        on_backend!(self, b => b.scroll_region_up(region, amount))
+    }
+    fn scroll_region_down(
+        &mut self,
+        region: std::ops::Range<u16>,
+        amount: u16,
+    ) -> std::io::Result<()> {
+        on_backend!(self, b => b.scroll_region_down(region, amount))
+    }
+}
 
 // Viewport height constants removed — fullscreen mode (#472)
 

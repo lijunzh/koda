@@ -1,7 +1,10 @@
 //! The real TUI on a real pseudo-terminal, for what only shows up end to end.
 //!
-//! `TuiContext` can't be built without a terminal, so these tests run the
-//! `koda` binary on a pty and type at it the way a user does.
+//! These run the `koda` binary on a pty and type at it the way a user does.
+//! What needs no terminal (keys and slash commands reaching the host, what is
+//! drawn) is tested in process instead, in `koda-tui/src/tui_tests.rs`: about
+//! fifteen times faster. Tests are moving there; a new one goes there unless
+//! it needs the real terminal, the process or the shared server.
 #![cfg(unix)]
 
 use koda_test_utils::network::{FakeLlmServer, Request, ResponseTemplate};
@@ -438,10 +441,6 @@ fn write_file(name: &str) -> (&'static str, Value) {
     ("Write", json!({"file_path": name, "content": "x\n"}))
 }
 
-fn ask_user() -> ResponseTemplate {
-    tool_calls(&[("AskUser", json!({"question": "Which one?"}))])
-}
-
 fn final_text() -> ResponseTemplate {
     sse(&[
         json!({"choices": [{"delta": {"content": "All done."}}]}),
@@ -524,59 +523,6 @@ async fn ctrl_c_stops_the_turn_at_an_approval() {
     stops_at_an_approval(CTRL_C).await;
 }
 
-async fn stops_at_a_question(key: &str) {
-    let server = scripted_model(vec![ask_user()]).await;
-    let home = home();
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
-
-    tui.submit("first prompt");
-    tui.wait_for_output("Which one?");
-    tui.type_text("half an answer");
-    tui.stop_turn(key);
-
-    let sent = assert_stopped(&mut tui, &server, 1).await;
-    assert!(sent.contains(STOPPED), "no word of the stop: {sent}");
-    assert!(!sent.contains("half an answer"), "{sent}");
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn esc_stops_the_turn_at_a_question() {
-    stops_at_a_question(ESC).await;
-}
-
-async fn stops_while_typing_feedback(key: &str) {
-    let server = scripted_model(vec![tool_calls(&[write_file("a.txt")])]).await;
-    let home = home();
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
-
-    tui.submit("first prompt");
-    tui.wait_for_output("approve");
-    tui.type_text("f");
-    tui.type_text("half a reason");
-    tui.stop_turn(key);
-
-    let sent = assert_stopped(&mut tui, &server, 1).await;
-    assert!(sent.contains(STOPPED), "no word of the stop: {sent}");
-    assert!(!sent.contains("half a reason"), "{sent}");
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn esc_stops_the_turn_while_typing_feedback() {
-    stops_while_typing_feedback(ESC).await;
-}
-
-async fn stops_at_the_loop_cap(key: &str) {
-    let server = scripted_model(vec![tool_calls(&[("List", json!({}))])]).await;
-    let home = home_with_a_loop_cap_of_one();
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
-
-    tui.submit("first prompt");
-    tui.wait_for_output("Hard cap reached. Continue?");
-    tui.stop_turn(key);
-
-    assert_stopped(&mut tui, &server, 1).await;
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_file_keeps_its_loop_cap_across_a_model_switch() {
     let server = scripted_model(vec![tool_calls(&[("List", json!({}))])]).await;
@@ -595,11 +541,6 @@ async fn an_agent_file_keeps_its_loop_cap_across_a_model_switch() {
         sent.contains("other-model"),
         "the switch didn't land: {sent}"
     );
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn esc_stops_the_turn_at_the_loop_cap() {
-    stops_at_the_loop_cap(ESC).await;
 }
 
 fn bash(command: &str) -> ResponseTemplate {
@@ -691,30 +632,6 @@ async fn a_stop_hands_steering_text_back() {
     tui.type_text("\r");
     let sent = wait_for_model_call(&server, 2).await;
     assert!(sent.contains("steering text"), "{sent}");
-}
-
-/// Text queued with Tab during a turn waits for the turn to end, then goes
-/// out as the next prompt, in a turn of its own, as Codex's Tab queues it.
-#[tokio::test(flavor = "multi_thread")]
-async fn tab_queues_text_for_after_the_turn() {
-    let slow = final_text().set_delay(Duration::from_secs(3));
-    let server = scripted_model(vec![slow]).await;
-    let home = home();
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
-
-    tui.submit("first prompt");
-    wait_for_model_call(&server, 1).await;
-    tui.type_text("queued text");
-    tui.type_text("\t");
-    tui.wait_for_screen("Queued:");
-
-    let sent = wait_for_model_call(&server, 2).await;
-    assert!(sent.contains("queued text"), "{sent}");
-    let first = String::from_utf8_lossy(&model_calls(&server).await[0].body).into_owned();
-    assert!(
-        !first.contains("queued text"),
-        "the queued text reached the running turn: {first}"
-    );
 }
 
 /// A stop sends nothing queued: the queued text comes back to the input box.
@@ -1459,42 +1376,6 @@ async fn image_flag_sends_the_image_with_the_first_prompt() {
     assert!(sent.contains("data:image/png;base64,"), "no image: {sent}");
     assert!(sent.contains("[Image #1] what colour"), "{sent}");
     drop(tui);
-}
-
-/// `/new` starts a new session on the same model, as Codex's `/new` and
-/// Claude Code's `/clear`: the next prompt goes without the earlier history.
-#[tokio::test(flavor = "multi_thread")]
-async fn new_starts_a_fresh_session() {
-    let server = scripted_model(vec![]).await;
-    let home = home();
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
-    tui.submit_and_finish("echo topic please", "All done.");
-    run_command(&mut tui, "/new");
-    tui.wait_for_screen("new session");
-    tui.submit_and_finish("a fresh start", "All done.");
-    let sent = wait_for_model_call(&server, 2).await;
-    assert!(sent.contains("a fresh start"), "{sent}");
-    assert!(
-        !sent.contains("echo topic please"),
-        "history carried over: {sent}"
-    );
-}
-
-/// `/rename` names the session and `/status` shows it, with the model and
-/// mode, as Codex's `/status` does.
-#[tokio::test(flavor = "multi_thread")]
-async fn rename_and_status() {
-    let server = scripted_model(vec![]).await;
-    let home = home();
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
-    run_command(&mut tui, "/rename Parser work");
-    tui.wait_for_screen("Renamed to \"Parser work\"");
-    run_command(&mut tui, "/status");
-    tui.wait_for_screen("Instructions");
-    let screen = tui.screen();
-    assert!(screen.contains("Parser work"), "{screen}");
-    assert!(screen.contains("stub-model"), "{screen}");
-    assert!(screen.contains("safe"), "{screen}");
 }
 
 /// `/init` asks the model to write AGENTS.md, as Codex's `/init` does, and

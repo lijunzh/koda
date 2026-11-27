@@ -54,7 +54,7 @@ pub(crate) struct TuiContext {
     pub textarea: TextArea,
     pub renderer: TuiRenderer,
     pub scroll_buffer: ScrollBuffer,
-    pub crossterm_events: EventStream,
+    pub crossterm_events: crate::tui_types::Events,
 
     // ── Interaction state ─────────────────────────────────────
     pub tui_state: TuiState,
@@ -438,6 +438,8 @@ impl TuiContext {
     ///
     /// This handles provider setup, auto-detection, terminal init,
     /// onboarding, and everything that `run()` used to do before `loop {`.
+    // One more than clippy's seven: `io` is the terminal or a test's screen.
+    #[allow(clippy::too_many_arguments)]
     pub async fn new(
         project_root: PathBuf,
         named: settings::Named,
@@ -446,6 +448,7 @@ impl TuiContext {
         version_check: tokio::task::JoinHandle<Option<String>>,
         first_run: bool,
         backend: crate::backend::Backend,
+        io: crate::tui_types::TuiIo,
     ) -> Result<Self> {
         // Input history is the TUI's own file. The first time, what Koda kept
         // in its database before comes over.
@@ -526,7 +529,19 @@ impl TuiContext {
         }
 
         // Terminal + textarea
-        let terminal = init_terminal()?;
+        let (terminal, crossterm_events): (Term, crate::tui_types::Events) = match io {
+            crate::tui_types::TuiIo::Terminal => (init_terminal()?, Box::pin(EventStream::new())),
+            #[cfg(test)]
+            crate::tui_types::TuiIo::Test { screen, events } => (
+                ratatui::Terminal::with_options(
+                    crate::tui_types::Screen::Test(screen),
+                    ratatui::TerminalOptions {
+                        viewport: ratatui::Viewport::Fullscreen,
+                    },
+                )?,
+                events,
+            ),
+        };
 
         // Composer textarea (codex `bottom_pane::textarea` port; #1178 PR 2).
         // No cursor/style/placeholder configuration here — codex's textarea
@@ -591,7 +606,7 @@ impl TuiContext {
             textarea,
             renderer,
             scroll_buffer,
-            crossterm_events: EventStream::new(),
+            crossterm_events,
             tui_state: TuiState::Idle,
             menu,
             prompt_mode: PromptMode::Chat,

@@ -46,6 +46,8 @@ pub mod retired_env;
 pub(crate) mod scroll_buffer;
 pub mod session_id;
 pub(crate) mod startup;
+#[cfg(test)]
+mod test_tui;
 pub(crate) mod theme;
 pub(crate) mod tool_header;
 pub(crate) mod tool_history;
@@ -57,6 +59,8 @@ pub(crate) mod tui_commands;
 pub(crate) mod tui_context;
 pub(crate) mod tui_output;
 pub(crate) mod tui_render;
+#[cfg(test)]
+mod tui_tests;
 pub(crate) mod tui_types;
 pub(crate) mod tui_viewport;
 pub(crate) mod tui_wizards;
