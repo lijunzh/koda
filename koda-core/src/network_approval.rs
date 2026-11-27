@@ -401,8 +401,11 @@ mod tests {
         assert!(answers.asked.lock().unwrap().is_empty());
     }
 
-    /// Never answers, as a person who hasn't yet.
-    struct Silent;
+    /// Never answers, as a person who hasn't yet; says when it is asked.
+    #[derive(Default)]
+    struct Silent {
+        asked: tokio::sync::Notify,
+    }
 
     #[async_trait::async_trait]
     impl Approver for Silent {
@@ -410,6 +413,7 @@ mod tests {
             None
         }
         async fn approve_network(&self, _: NetworkApproval) -> Option<ApprovalDecision> {
+            self.asked.notify_one();
             std::future::pending().await
         }
     }
@@ -417,13 +421,16 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_question_ends_with_its_command() {
         let approvals = Arc::new(NetworkApprovals::default());
-        approvals.set_approver(Arc::new(Silent));
+        let silent = Arc::new(Silent::default());
+        approvals.set_approver(silent.clone());
         let call = approvals.register("call_1", "curl https://example.com");
         let asking = {
             let approvals = Arc::clone(&approvals);
             tokio::spawn(async move { approvals.allow("example.com", 443, HTTPS).await })
         };
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        // The command ends once it has been asked about, not after a guess
+        // at how long asking takes.
+        silent.asked.notified().await;
         drop(call);
         let allowed = tokio::time::timeout(std::time::Duration::from_secs(5), asking)
             .await
@@ -441,9 +448,9 @@ mod tests {
         });
         let call = approvals.register("call_1", "curl https://example.com");
         assert!(!approvals.allow("example.com", 443, HTTPS).await);
-        let stopped =
-            tokio::time::timeout(std::time::Duration::from_millis(100), call.refused()).await;
-        assert!(stopped.is_err(), "the command was stopped: {stopped:?}");
+        // A refusal stops the command before `allow` returns, so it would
+        // show now; no wait that a slow runner could outlast.
+        assert!(!call.call.stop.is_cancelled(), "the command was stopped");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

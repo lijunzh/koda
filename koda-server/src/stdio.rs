@@ -351,14 +351,17 @@ pub(crate) async fn read_message<R: AsyncBufRead + Unpin>(
     read_capped(input, line, MAX_MESSAGE_BYTES).await
 }
 
-/// [`read_message`] with a limit of `max` bytes before the newline.
+/// [`read_message`] with a limit of `max` bytes before the newline. What
+/// is already in `line`, from a read another `select!` branch cut short,
+/// counts toward the limit.
 async fn read_capped<R: AsyncBufRead + Unpin>(
     input: &mut R,
     line: &mut Vec<u8>,
     max: usize,
 ) -> std::io::Result<Read> {
     let cap = max as u64 + 1;
-    let read = (&mut *input).take(cap).read_until(b'\n', line).await?;
+    let room = cap.saturating_sub(line.len() as u64);
+    let read = (&mut *input).take(room).read_until(b'\n', line).await?;
     Ok(if read == 0 {
         Read::End
     } else if line.len() as u64 == cap && line.last() != Some(&b'\n') {
@@ -621,6 +624,25 @@ mod tests {
             Read::End
         );
         assert!(too_long_line().contains("64 MiB"));
+    }
+
+    /// What a cut-short read left in the line counts toward the limit, and
+    /// the next read finishes the line.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_line_read_in_two_parts_keeps_its_limit() {
+        let mut line = b"12345".to_vec();
+        let mut rest: &[u8] = b"678\n";
+        assert_eq!(
+            read_capped(&mut rest, &mut line, 8).await.unwrap(),
+            Read::Line
+        );
+        assert_eq!(line, b"12345678\n");
+        let mut line = b"12345".to_vec();
+        let mut rest: &[u8] = b"6789\n";
+        assert_eq!(
+            read_capped(&mut rest, &mut line, 8).await.unwrap(),
+            Read::TooLong
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

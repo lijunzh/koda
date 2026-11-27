@@ -1311,9 +1311,11 @@ pub async fn connect(socket: &Path) -> Result<crate::in_process::Launched, Reque
         use tokio::io::AsyncWriteExt;
         let mut waiting: HashMap<RequestId, oneshot::Sender<crate::host::Answer>> = HashMap::new();
         let mut lines = BufReader::new(input);
+        // A line from the server as it arrives. Kept while a request is
+        // sent: `read_message` leaves what it has read of a line here when
+        // the other branch goes first, and the next pass reads the rest.
         let mut line = Vec::new();
         loop {
-            line.clear();
             tokio::select! {
                 command = incoming.recv() => {
                     let out = match command {
@@ -1354,6 +1356,7 @@ pub async fn connect(socket: &Path) -> Result<crate::in_process::Launched, Reque
                         Ok(Read::End | Read::TooLong) | Err(_) => break,
                         Ok(Read::Line) => {}
                     }
+                    let line = std::mem::take(&mut line);
                     let text = line.strip_suffix(b"\n").unwrap_or(&line);
                     let Ok(message) = parse(text) else {
                         tracing::warn!("koda serve sent a line that isn't JSON-RPC");
@@ -1419,6 +1422,80 @@ mod tests {
         assert_eq!(open_file_target(256, 1024), 1024);
         // Never lower than what the process already has.
         assert_eq!(open_file_target(65_536, libc::RLIM_INFINITY), 65_536);
+    }
+
+    /// A client that sends while a line from the server is still arriving
+    /// keeps what has arrived of it: the line is whole when the rest comes.
+    /// Clearing it on every pass of the loop dropped such a line, so a large
+    /// answer or notification could be lost while the TUI sent a request.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_line_arriving_while_the_client_sends_is_kept() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        const ROUNDS: usize = 20;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let (halfway_tx, mut halfway) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read, mut write) = stream.into_split();
+            let mut read = BufReader::new(read);
+            for round in 0..ROUNDS {
+                let line = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "warning",
+                    "params": {"message": format!("round {round} {}", "x".repeat(4096))},
+                })
+                .to_string();
+                let (first, rest) = line.split_at(line.len() / 2);
+                write.write_all(first.as_bytes()).await.unwrap();
+                write.flush().await.unwrap();
+                halfway_tx.send(()).unwrap();
+                // The client's request, sent while half the line is in.
+                let mut request = String::new();
+                read.read_line(&mut request).await.unwrap();
+                write
+                    .write_all(format!("{rest}\n").as_bytes())
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let mut launched = connect(&path).await.unwrap();
+        for round in 0..ROUNDS {
+            halfway.recv().await.unwrap();
+            let (reply, _answer) = oneshot::channel();
+            launched
+                .requests
+                .commands
+                .send(HostCommand::Request {
+                    request: rpc::Request::new(
+                        RequestId::Integer(round as i64),
+                        "state/read",
+                        None,
+                    ),
+                    reply,
+                    client: None,
+                })
+                .await
+                .unwrap();
+            let heard = tokio::time::timeout(Duration::from_secs(10), launched.events.recv())
+                .await
+                .expect("the line arrived")
+                .expect("the connection is open");
+            let crate::events::Outgoing::Notification(koda_protocol::ServerNotification::Warning(
+                warning,
+            )) = heard
+            else {
+                panic!("not the warning: {heard:?}");
+            };
+            assert!(
+                warning.message.starts_with(&format!("round {round} ")),
+                "{}",
+                &warning.message[..20]
+            );
+        }
+        server.await.unwrap();
     }
 
     #[test]

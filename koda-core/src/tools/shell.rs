@@ -1768,6 +1768,17 @@ impl Tool for BashTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Wait until `done` holds, checking every 20 ms for up to 10 s: a
+    /// process exiting or a file appearing, which takes as long as the
+    /// runner is slow, not a fixed sleep.
+    async fn until(what: &str, done: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !done() {
+            assert!(std::time::Instant::now() < deadline, "never {what}");
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
     use crate::tools::bg_process::{BgProcessStatus, BgRegistry};
 
     fn bg() -> BgRegistry {
@@ -2129,13 +2140,15 @@ mod tests {
         assert_eq!(snap.len(), 1, "{snap:?}");
         assert_eq!(snap[0].status, BgProcessStatus::Running);
 
-        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-        assert!(tmp.path().join("survived").exists());
+        until("survived", || tmp.path().join("survived").exists()).await;
         // Once nothing in the group is left, the entry has exited.
-        assert!(matches!(
-            registry.snapshot()[0].status,
-            BgProcessStatus::Exited { .. }
-        ));
+        until("exited", || {
+            matches!(
+                registry.snapshot()[0].status,
+                BgProcessStatus::Exited { .. }
+            )
+        })
+        .await;
     }
 
     /// Koda's background processes stop with the session, taken-over ones too.
@@ -2199,8 +2212,10 @@ mod tests {
             "{}",
             stop.summary
         );
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        assert!(!koda_sandbox::process_group::process_alive(pid));
+        until("stopped", || {
+            !koda_sandbox::process_group::process_alive(pid)
+        })
+        .await;
     }
 
     /// `server & echo $!` run with background=true: the shell Koda started
@@ -2218,12 +2233,13 @@ mod tests {
             serde_json::json!({ "command": command, "background": true }),
         )
         .await;
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        let pid: u32 = std::fs::read_to_string(&log)
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
+        let pid = || {
+            std::fs::read_to_string(&log)
+                .ok()
+                .and_then(|text| text.trim().parse::<u32>().ok())
+        };
+        until("wrote its PID", || pid().is_some()).await;
+        let pid = pid().unwrap();
         let snap = registry.snapshot();
         assert_eq!(snap[0].status, BgProcessStatus::Running, "{snap:?}");
 
@@ -2249,8 +2265,10 @@ mod tests {
             "{}",
             stop.summary
         );
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        assert!(!koda_sandbox::process_group::process_alive(pid));
+        until("stopped", || {
+            !koda_sandbox::process_group::process_alive(pid)
+        })
+        .await;
     }
 
     /// A `kill` of Koda's own process inside a longer command gets the hint;
@@ -2319,8 +2337,10 @@ mod tests {
             "{}",
             stop.summary
         );
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        assert!(!koda_sandbox::process_group::process_alive(pid));
+        until("stopped", || {
+            !koda_sandbox::process_group::process_alive(pid)
+        })
+        .await;
         assert!(
             hint(format!(
                 "kill -0 {pid} && echo up || echo down; curl -s localhost:1"

@@ -217,25 +217,11 @@ impl Env {
         F: Fn(&EngineEvent) -> bool + Send + Sync + 'static,
     {
         let cancel = CancellationToken::new();
-        let cancel_clone = cancel.clone();
-        // Build the sink up-front so we can subscribe before inference
-        // starts — otherwise the predicate could miss the event we're
-        // waiting for.
+        // Cancelled inside the sink's `emit`, as the event happens: a task
+        // watching the events would cancel later, and a short wait after
+        // the event (a stream retry's 1 s) could run out first.
         let sink = Arc::new(TestSink::new());
-        let mut rx = sink.subscribe();
-        tokio::spawn(async move {
-            loop {
-                match rx.recv().await {
-                    Ok(ev) if pred(&ev) => {
-                        cancel_clone.cancel();
-                        break;
-                    }
-                    Ok(_) => continue,
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
-            }
-        });
+        sink.cancel_when(cancel.clone(), pred);
         self.run_inference_with_sink(provider, cancel, sink).await
     }
 

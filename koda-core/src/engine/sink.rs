@@ -562,10 +562,13 @@ fn looks_like_tool_error(output: &str) -> bool {
 ///
 /// ## Failure handling
 ///
-/// Inserts run on a fire-and-forget tokio task and **never** propagate
-/// errors back to the inference loop. A DB hiccup must not crash a
-/// session in progress — the worst case is a missing event in the
-/// transcript, not a lost turn.
+/// Inserts run on one writer task per sink, in the order the events
+/// were emitted, as Codex's rollout recorder writes a thread's items on
+/// one ordered writer; a resumed session reads them back in that order.
+/// The writer stores what is queued before it ends, once the sink is
+/// dropped. Inserts **never** propagate errors back to the inference
+/// loop. A DB hiccup must not crash a session in progress — the worst
+/// case is a missing event in the transcript, not a lost turn.
 pub struct PersistingSink<'a> {
     inner: &'a dyn EngineSink,
     db: std::sync::Arc<dyn koda_state::session_store::SessionStore>,
@@ -573,6 +576,15 @@ pub struct PersistingSink<'a> {
     /// Set on sub-agent sinks so their events can be folded under the
     /// parent's `InvokeAgent` tool result. `None` for top-level.
     parent_tool_call_id: Option<String>,
+    /// The writer's queue, started with the first event to store.
+    writer: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<SessionEventRow>>,
+}
+
+/// One `session_events` row on its way to the writer.
+struct SessionEventRow {
+    kind: &'static str,
+    payload: String,
+    parent: Option<String>,
 }
 
 impl<'a> PersistingSink<'a> {
@@ -590,29 +602,46 @@ impl<'a> PersistingSink<'a> {
             db,
             session_id,
             parent_tool_call_id,
+            writer: std::sync::OnceLock::new(),
         }
     }
 
-    /// Spawn a fire-and-forget DB insert. Any error is logged via
+    /// Queue a DB insert for the writer. Any error is logged via
     /// `tracing::warn!` and otherwise swallowed (see struct doc).
     fn persist(&self, kind: &'static str, payload: String) {
         self.persist_under(kind, payload, self.parent_tool_call_id.as_deref());
     }
 
     fn persist_under(&self, kind: &'static str, payload: String, parent: Option<&str>) {
-        let db = self.db.clone();
-        let session_id = self.session_id.clone();
-        let parent = parent.map(str::to_string);
-        tokio::spawn(async move {
-            if let Err(e) = db
-                .insert_session_event(&session_id, kind, &payload, parent.as_deref())
-                .await
-            {
-                tracing::warn!(
-                    error = %e, kind, session_id,
-                    "failed to persist session event"
-                );
-            }
+        let writer = self.writer.get_or_init(|| {
+            let (queue, mut rows) = tokio::sync::mpsc::unbounded_channel::<SessionEventRow>();
+            let db = self.db.clone();
+            let session_id = self.session_id.clone();
+            // Ends once the sink is dropped and every queued row is stored.
+            tokio::spawn(async move {
+                while let Some(row) = rows.recv().await {
+                    if let Err(e) = db
+                        .insert_session_event(
+                            &session_id,
+                            row.kind,
+                            &row.payload,
+                            row.parent.as_deref(),
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            error = %e, kind = row.kind, session_id,
+                            "failed to persist session event"
+                        );
+                    }
+                }
+            });
+            queue
+        });
+        let _ = writer.send(SessionEventRow {
+            kind,
+            payload,
+            parent: parent.map(str::to_string),
         });
     }
 }
@@ -620,7 +649,7 @@ impl<'a> PersistingSink<'a> {
 /// Pure classification of an [`EngineEvent`] into a persistence
 /// decision. `None` means "skip — do not write a row"; `Some((kind,
 /// payload))` is exactly the row [`PersistingSink::persist`] would
-/// spawn.
+/// store.
 ///
 /// Pulled out of [`PersistingSink::emit`] so the routing contract
 /// ("which events persist on which path?") is testable as a pure
@@ -692,7 +721,7 @@ impl EngineSink for PersistingSink<'_> {
     fn emit(&self, event: EngineEvent) {
         // The routing decision is a pure function (see
         // [`classify_for_persist`]); `emit` only wires it to the
-        // fire-and-forget spawner and forwards unconditionally.
+        // fire-and-forget writer and forwards unconditionally.
         if let Some((kind, payload)) =
             classify_for_persist(&event, self.parent_tool_call_id.as_deref())
         {
