@@ -47,6 +47,11 @@ jobs:
                   continue
               if package.get("version") != {"workspace": True}:
                   errors.append(f"{path} sets its own version")
+          # The desktop app runs Koda's version too (apps/desktop).
+          import json
+          app = json.load(open("apps/desktop/package.json"))["version"]
+          if app != tag:
+              errors.append(f"apps/desktop/package.json version {app}")
           for error in errors:
               print(f"::error::Tag v{tag} does not match: {error}")
           sys.exit(1 if errors else 0)
@@ -163,6 +168,22 @@ jobs:
         run: |
           cargo build --release --target ${{ matrix.target }} -p koda-cli
 
+      # The desktop app, Koda.app, with this build's koda inside it; the Mac
+      # tarball carries it beside koda, and the formula installs both.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: matrix.target == 'aarch64-apple-darwin'
+        with:
+          node-version-file: apps/desktop/.node-version
+      - name: Build the desktop app
+        if: matrix.target == 'aarch64-apple-darwin'
+        working-directory: apps/desktop
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+          KODA_BIN: ${{ github.workspace }}/target/${{ matrix.target }}/release/koda
+        run: |
+          npm ci --no-audit --no-fund
+          npm run package
+
       - name: Package
         run: |
           mkdir koda-${{ matrix.target }}
@@ -175,6 +196,13 @@ jobs:
               [ -f "$f" ] && cp "$f" "koda-${{ matrix.target }}/licenses/$(basename "$d")-$(basename "$f")"
             done
           done
+          if [ -f apps/desktop/release/Koda.app.zip ]; then
+            # Zipped: Homebrew rewrites the libraries in a formula's Mach-O
+            # files, which breaks the app's signature; `koda app` unzips it.
+            cp apps/desktop/release/Koda.app.zip koda-${{ matrix.target }}/
+            # Electron's and Chromium's licenses, for the app.
+            cp apps/desktop/release/licenses/* koda-${{ matrix.target }}/licenses/
+          fi
           tar czf koda-${{ matrix.target }}.tar.gz koda-${{ matrix.target }}
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -297,6 +325,18 @@ jobs:
 
             def install
               bin.install "koda", "koda-logs"
+              # The desktop app (Apple Silicon), zipped so Homebrew leaves
+              # its signature alone; `koda app` unzips it into ~/Applications.
+              (share/"koda").install "Koda.app.zip" if OS.mac? && File.exist?("Koda.app.zip")
+            end
+
+            def caveats
+              return unless OS.mac?
+
+              <<~EOS
+                Open the desktop app with `koda app`: it puts Koda.app in
+                ~/Applications, and updates it after each upgrade.
+              EOS
             end
 
             test do

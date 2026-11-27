@@ -332,6 +332,12 @@ enum Command {
     /// --base-url and --resume aren't accepted here; -c and the other config
     /// flags are.
     Serve(ServeArgs),
+    /// Open Koda's desktop app (macOS).
+    ///
+    /// The one installed beside this koda (Homebrew puts it in koda's
+    /// prefix), else /Applications/Koda.app or ~/Applications/Koda.app. It
+    /// works on the same background server as koda, so a session is in both.
+    App,
     // Without this, `server` would be read as a prompt and sent to the model.
     /// Removed: Koda no longer has a server mode
     #[command(hide = true)]
@@ -568,6 +574,15 @@ See https://lijunzh.github.io/koda/upgrading-0.7.html#acp-is-gone";
 pub(crate) async fn run() -> Result<()> {
     let mut cli = Cli::parse();
 
+    if matches!(cli.command, Some(Command::App)) {
+        match open_desktop_app() {
+            Ok(()) => std::process::exit(0),
+            Err(e) => {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
     if matches!(cli.command, Some(Command::Server { .. })) {
         eprintln!("{SERVER_REMOVED}");
         std::process::exit(1);
@@ -1255,6 +1270,110 @@ async fn stop_server(socket: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The desktop app `koda app` keeps up to date: `~/Applications/Koda.app`.
+fn managed_desktop_app(home: &Path) -> PathBuf {
+    home.join("Applications").join("Koda.app")
+}
+
+/// The zipped app Homebrew installs beside this koda
+/// (`<prefix>/share/koda/Koda.app.zip`). It ships zipped because Homebrew
+/// rewrites the library IDs of the Mach-O files a formula installs, which
+/// breaks the app's signature, and leaves an archive alone.
+fn desktop_app_archive(exe: &Path) -> Option<PathBuf> {
+    let prefix = exe.parent()?.parent()?;
+    Some(prefix.join("share").join("koda").join("Koda.app.zip"))
+}
+
+/// The version in an app's `Info.plist`, if it has one.
+fn desktop_app_version(app: &Path) -> Option<String> {
+    let out = std::process::Command::new("/usr/bin/plutil")
+        .args(["-extract", "CFBundleShortVersionString", "raw", "-o", "-"])
+        .arg(app.join("Contents").join("Info.plist"))
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Put the app from `archive` at `app` unless one of `version` is there:
+/// unzipped beside it first, then swapped in, so a failed unzip leaves the
+/// old app. Whether it installed one. Files koda writes aren't marked as
+/// downloaded, so macOS opens the app, which is signed ad hoc.
+fn install_desktop_app(archive: &Path, app: &Path, version: &str) -> Result<bool, String> {
+    if desktop_app_version(app).as_deref() == Some(version) {
+        return Ok(false);
+    }
+    let folder = app
+        .parent()
+        .ok_or_else(|| format!("{} has no folder", app.display()))?;
+    std::fs::create_dir_all(folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+    let staging = folder.join(format!(".Koda.app.new-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&staging);
+    let unzipped = std::process::Command::new("/usr/bin/ditto")
+        .args(["-x", "-k"])
+        .arg(archive)
+        .arg(&staging)
+        .status()
+        .map_err(|e| format!("couldn't run ditto: {e}"))?;
+    let fresh = staging.join("Koda.app");
+    if !unzipped.success() || !fresh.is_dir() {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(format!("couldn't unzip {}", archive.display()));
+    }
+    if app.exists() {
+        std::fs::remove_dir_all(app).map_err(|e| format!("{}: {e}", app.display()))?;
+    }
+    let moved = std::fs::rename(&fresh, app).map_err(|e| format!("{}: {e}", app.display()));
+    let _ = std::fs::remove_dir_all(&staging);
+    moved.map(|()| true)
+}
+
+/// `koda app`: open the desktop app. With the app Homebrew installs beside
+/// koda, it first puts that version in `~/Applications`; otherwise it opens
+/// one already in /Applications or ~/Applications (a local build, say).
+/// Codex opens its app with `codex app` too.
+fn open_desktop_app() -> Result<(), String> {
+    if !cfg!(target_os = "macos") {
+        return Err("Koda's desktop app is for macOS".into());
+    }
+    let exe = std::env::current_exe()
+        .and_then(|exe| exe.canonicalize())
+        .map_err(|e| format!("couldn't find koda: {e}"))?;
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or("HOME isn't set")?;
+    let managed = managed_desktop_app(&home);
+    let app = match desktop_app_archive(&exe).filter(|archive| archive.is_file()) {
+        Some(archive) => {
+            if install_desktop_app(&archive, &managed, env!("CARGO_PKG_VERSION"))? {
+                eprintln!(
+                    "Put Koda {} in {}",
+                    env!("CARGO_PKG_VERSION"),
+                    managed.display()
+                );
+            }
+            managed
+        }
+        None => [PathBuf::from("/Applications/Koda.app"), managed]
+            .into_iter()
+            .find(|app| app.is_dir())
+            .ok_or(
+                "Koda's desktop app isn't installed: Homebrew installs it with koda on an Apple \
+                 Silicon Mac, and `koda app` then puts it in ~/Applications",
+            )?,
+    };
+    let opened = std::process::Command::new("/usr/bin/open")
+        .arg(&app)
+        .status()
+        .map_err(|e| format!("couldn't run open: {e}"))?;
+    if opened.success() {
+        Ok(())
+    } else {
+        Err(format!("open {} failed", app.display()))
+    }
+}
+
 /// `koda serve --start`: make sure the server at `socket` runs this koda's
 /// version, as Codex's `codex app-server daemon start` does, and print one
 /// JSON object saying how it stands. Whether it is ready.
@@ -1484,6 +1603,63 @@ fn atty_is_terminal() -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    /// The zipped app is where Homebrew puts it beside koda
+    /// (`Cellar/koda/<v>/bin/koda`, `Cellar/koda/<v>/share/koda/`), and
+    /// `koda app` keeps its copy in ~/Applications.
+    #[test]
+    fn the_desktop_app_comes_from_beside_koda() {
+        assert_eq!(
+            desktop_app_archive(Path::new("/opt/homebrew/Cellar/koda/0.9.0/bin/koda")),
+            Some(PathBuf::from(
+                "/opt/homebrew/Cellar/koda/0.9.0/share/koda/Koda.app.zip"
+            ))
+        );
+        assert_eq!(
+            managed_desktop_app(Path::new("/Users/me")),
+            PathBuf::from("/Users/me/Applications/Koda.app")
+        );
+    }
+
+    /// `koda app` puts the zipped app in place, leaves it when it is
+    /// already this version, and replaces an older one.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_desktop_app_is_installed_and_updated_from_its_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive_of = |version: &str| {
+            let built = dir.path().join(format!("build-{version}"));
+            let contents = built.join("Koda.app").join("Contents");
+            std::fs::create_dir_all(&contents).unwrap();
+            std::fs::write(
+                contents.join("Info.plist"),
+                format!(
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict><key>CFBundleShortVersionString</key><string>{version}</string></dict></plist>\n"
+                ),
+            )
+            .unwrap();
+            let zip = dir.path().join(format!("Koda-{version}.app.zip"));
+            let status = std::process::Command::new("/usr/bin/ditto")
+                .args(["-c", "-k", "--keepParent"])
+                .arg(built.join("Koda.app"))
+                .arg(&zip)
+                .status()
+                .unwrap();
+            assert!(status.success());
+            zip
+        };
+        let app = dir.path().join("Applications").join("Koda.app");
+        assert!(install_desktop_app(&archive_of("0.9.0"), &app, "0.9.0").unwrap());
+        assert_eq!(desktop_app_version(&app).as_deref(), Some("0.9.0"));
+        assert!(!install_desktop_app(&archive_of("0.9.0"), &app, "0.9.0").unwrap());
+        assert!(install_desktop_app(&archive_of("0.9.1"), &app, "0.9.1").unwrap());
+        assert_eq!(desktop_app_version(&app).as_deref(), Some("0.9.1"));
+        let left: Vec<_> = std::fs::read_dir(app.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(left, vec![std::ffi::OsString::from("Koda.app")]);
+    }
     use super::*;
 
     /// A flag given before `exec` carries over to it; one given after wins.

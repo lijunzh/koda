@@ -433,6 +433,23 @@ npm start                 # build into out/ and open the app
   (`src/main/answers.ts`: no "for the session" unless the request offered
   it), and tells the user through a system notification when the window
   isn't in front and Koda needs them or has finished.
+- **Packaging** (`npm run package`, Apple Silicon only): `Koda.app` with
+  the matching `koda` in `Contents/Resources/bin` (the app uses it first,
+  so the app and the server it starts are one version), Electron's fuses
+  set (no `ELECTRON_RUN_AS_NODE`, `NODE_OPTIONS` or `--inspect`; the app
+  loads only from its asar, whose integrity is checked), and an ad-hoc
+  signature (no Developer ID). The release's Mac tarball carries it zipped,
+  `Koda.app.zip`, which the formula installs to `share/koda/`: Homebrew
+  rewrites the library IDs of the Mach-O files a formula installs
+  (`fix_dynamic_linkage`), which breaks the app's signature and fails on
+  Electron's `libffmpeg.dylib`, but leaves an archive alone. `koda app`
+  unzips it into `~/Applications/Koda.app`, again whenever the version
+  there isn't koda's, and opens it; files koda writes aren't quarantined,
+  so macOS opens the ad-hoc signed app. Electron's and Chromium's licences
+  go in the tarball's `licenses/`. Playwright can't drive the packaged app
+  (the fuses turn off the inspector it attaches through): check it by
+  starting `Contents/MacOS/Koda` with a scratch `XDG_CONFIG_HOME` and
+  reading the page through `--remote-debugging-port`.
 - **Tests that start a server** use `koda serve --start` on a scratch
   `XDG_CONFIG_HOME`, never the user's own server. `test:e2e` opens the
   built app with Playwright (`playwright-core`'s Electron driver, unseen,

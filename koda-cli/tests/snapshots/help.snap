@@ -11,6 +11,7 @@ Commands:
   fork    Copy a saved session and continue in the copy (pick from a list, or --last)
   mcp     Manage the MCP servers every session starts
   serve   Run the background server that interactive sessions use
+  app     Open Koda's desktop app (macOS)
   help    Print this message or the help of the given subcommand(s)
 
 Arguments:
