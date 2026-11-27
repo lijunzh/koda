@@ -410,6 +410,7 @@ fn openai_reply(response: MockResponse, stream: bool) -> ResponseTemplate {
                 return ResponseTemplate::new(status).set_body_string(body);
             }
             MockResponse::RateLimit => return error(429, "Too Many Requests"),
+            MockResponse::RateLimitAfter(_) => return error(429, "Too Many Requests"),
             MockResponse::ContextOverflow => {
                 return error(400, "prompt is too long, maximum context length exceeded");
             }
@@ -447,6 +448,7 @@ fn openai_reply(response: MockResponse, stream: bool) -> ResponseTemplate {
             return ResponseTemplate::new(status).set_body_string(body);
         }
         MockResponse::RateLimit => return error(429, "Too Many Requests"),
+        MockResponse::RateLimitAfter(_) => return error(429, "Too Many Requests"),
         MockResponse::ContextOverflow => {
             return error(400, "prompt is too long, maximum context length exceeded");
         }

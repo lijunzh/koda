@@ -47,8 +47,11 @@ pub enum MockResponse {
         /// The response body.
         body: String,
     },
-    /// Simulate a rate limit (429) error.
+    /// Simulate a rate limit (429) error that says to retry at once.
     RateLimit,
+    /// A rate limit (429) that says to retry after this many seconds: a
+    /// real wait, for a test that stops the turn during it.
+    RateLimitAfter(u64),
     /// Simulate a context overflow error.
     ContextOverflow,
     /// Simulate a network drop mid-stream (partial text then disconnect).
@@ -211,6 +214,9 @@ impl LlmProvider for MockProvider {
             MockResponse::Error(msg) => Err(anyhow::anyhow!(msg)),
             MockResponse::Http { status, body } => Err(http_error(status, &body)),
             MockResponse::RateLimit => Err(http_error(429, "Too Many Requests")),
+            MockResponse::RateLimitAfter(secs) => {
+                Err(http_error_after(429, "Too Many Requests", secs))
+            }
             MockResponse::ContextOverflow => Err(http_error(
                 400,
                 "prompt is too long, maximum context length exceeded",
@@ -233,6 +239,9 @@ impl LlmProvider for MockProvider {
             MockResponse::Error(msg) => return Err(anyhow::anyhow!("{msg}")),
             MockResponse::Http { status, body } => return Err(http_error(*status, body)),
             MockResponse::RateLimit => return Err(http_error(429, "Too Many Requests")),
+            MockResponse::RateLimitAfter(secs) => {
+                return Err(http_error_after(429, "Too Many Requests", *secs));
+            }
             MockResponse::ContextOverflow => {
                 return Err(http_error(
                     400,
@@ -312,6 +321,7 @@ impl LlmProvider for MockProvider {
                 MockResponse::Error(_)
                 | MockResponse::Http { .. }
                 | MockResponse::RateLimit
+                | MockResponse::RateLimitAfter(_)
                 | MockResponse::ContextOverflow => unreachable!(),
             }
         });
@@ -335,11 +345,13 @@ impl LlmProvider for MockProvider {
 fn http_error(status: u16, body: &str) -> anyhow::Error {
     // The server says to retry at once, so a retry test doesn't wait out
     // real backoff; the backoff itself is tested in koda-core's unit tests.
+    http_error_after(status, body, 0)
+}
+
+/// [`http_error`] whose server says to retry after `secs` seconds.
+fn http_error_after(status: u16, body: &str, secs: u64) -> anyhow::Error {
     let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert(
-        "retry-after",
-        reqwest::header::HeaderValue::from_static("0"),
-    );
+    headers.insert("retry-after", reqwest::header::HeaderValue::from(secs));
     koda_providers::error::ProviderError::from_response(
         "LLM",
         status,
