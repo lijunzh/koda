@@ -8,6 +8,7 @@
 use koda_core::inference::CANCEL_GRACE;
 use koda_test_utils::log::read_log;
 use koda_test_utils::network::{FakeLlmServer, ResponseTemplate};
+use koda_test_utils::openai::sse;
 use serde_json::{Value, json};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -72,14 +73,6 @@ async fn sigint_during_a_model_call_still_reports_the_turn() {
 
     let log = read_log(tmp.path());
     assert!(log.contains(r#"outcome="cancelled""#), "{log}");
-}
-
-fn sse(chunks: &[Value]) -> ResponseTemplate {
-    let mut body: String = chunks.iter().map(|c| format!("data: {c}\n\n")).collect();
-    body.push_str("data: [DONE]\n\n");
-    ResponseTemplate::new(200)
-        .insert_header("content-type", "text/event-stream")
-        .set_body_string(body)
 }
 
 /// A streamed reply from the top-level agent that calls one tool.

@@ -5,6 +5,7 @@
 #![cfg(unix)]
 
 use koda_test_utils::network::{FakeLlmServer, Request, ResponseTemplate};
+use koda_test_utils::openai::sse;
 use serde_json::{Value, json};
 use std::fs::File;
 use std::io::{Read, Write};
@@ -407,14 +408,6 @@ fn exit_quits_from_the_slash_popup() {
     tui.type_text("\r");
 
     assert!(tui.exits(), "koda stayed up after /exit");
-}
-
-fn sse(chunks: &[Value]) -> ResponseTemplate {
-    let mut body: String = chunks.iter().map(|c| format!("data: {c}\n\n")).collect();
-    body.push_str("data: [DONE]\n\n");
-    ResponseTemplate::new(200)
-        .insert_header("content-type", "text/event-stream")
-        .set_body_string(body)
 }
 
 /// A reply that makes these tool calls, each a `(name, arguments)` pair.

@@ -32,6 +32,7 @@ pub mod golden;
 pub mod log;
 pub mod mock;
 pub mod network;
+pub mod openai;
 #[cfg(feature = "core")]
 mod sink;
 

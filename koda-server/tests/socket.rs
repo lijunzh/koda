@@ -7,13 +7,13 @@
 use std::collections::VecDeque;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use koda_core::config::{KodaConfig, ProviderType};
 use koda_server::socket::{Options, ServeError, serve_with_config};
 use koda_server::stdio::ServeArgs;
 use koda_test_utils::network::{FakeLlmServer, ResponseTemplate};
+use koda_test_utils::openai::{model, text};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -22,19 +22,6 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 const WAIT: Duration = Duration::from_secs(30);
-
-fn text(reply: &str) -> ResponseTemplate {
-    let chunks = [
-        json!({"choices": [{"delta": {"content": reply}}]}),
-        json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
-        json!({"choices": [], "usage": {"prompt_tokens": 200, "completion_tokens": 20}}),
-    ];
-    let mut body: String = chunks.iter().map(|c| format!("data: {c}\n\n")).collect();
-    body.push_str("data: [DONE]\n\n");
-    ResponseTemplate::new(200)
-        .insert_header("content-type", "text/event-stream")
-        .set_body_string(body)
-}
 
 fn write_file(id: &str, path: &str) -> ResponseTemplate {
     let args = json!({"file_path": path, "content": "hi"});
@@ -53,21 +40,6 @@ fn write_file(id: &str, path: &str) -> ResponseTemplate {
     ResponseTemplate::new(200)
         .insert_header("content-type", "text/event-stream")
         .set_body_string(body)
-}
-
-async fn model(replies: Vec<ResponseTemplate>) -> FakeLlmServer {
-    let server = FakeLlmServer::spawn().await;
-    let queue = Mutex::new(VecDeque::from(replies));
-    server
-        .mount_fn("POST", r".*/chat/completions$", move |_| {
-            queue
-                .lock()
-                .unwrap()
-                .pop_front()
-                .unwrap_or_else(|| text("(no more replies)"))
-        })
-        .await;
-    server
 }
 
 /// [`config`] in Safe mode, where a write waits for an approval.

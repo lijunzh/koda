@@ -5,13 +5,12 @@
 //! the wire, and the transport's own: bad lines, EOF, a broken or slow
 //! reader, and characters split across reads.
 
-use std::collections::VecDeque;
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use koda_core::config::{KodaConfig, ProviderType};
 use koda_server::stdio::{ServeArgs, serve_with_config};
-use koda_test_utils::network::{FakeLlmServer, Request, ResponseTemplate};
+use koda_test_utils::network::{FakeLlmServer, ResponseTemplate};
+use koda_test_utils::openai::{chat_requests, model, text, text_in, tool_call};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
 use tokio::task::JoinHandle;
@@ -20,69 +19,8 @@ const WAIT: Duration = Duration::from_secs(30);
 
 // ── The model ───────────────────────────────────────────────────────────
 
-fn sse(chunks: &[Value]) -> ResponseTemplate {
-    let mut body: String = chunks.iter().map(|c| format!("data: {c}\n\n")).collect();
-    body.push_str("data: [DONE]\n\n");
-    ResponseTemplate::new(200)
-        .insert_header("content-type", "text/event-stream")
-        .set_body_string(body)
-}
-
-fn text(reply: &str) -> ResponseTemplate {
-    text_in(&[reply])
-}
-
-/// A reply streamed in `pieces`, one delta each.
-fn text_in(pieces: &[&str]) -> ResponseTemplate {
-    let mut chunks: Vec<Value> = pieces
-        .iter()
-        .map(|p| json!({"choices": [{"delta": {"content": p}}]}))
-        .collect();
-    chunks.push(json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}));
-    chunks.push(json!({"choices": [], "usage": {"prompt_tokens": 200, "completion_tokens": 20}}));
-    sse(&chunks)
-}
-
-fn tool_call(id: &str, name: &str, args: Value) -> ResponseTemplate {
-    sse(&[
-        json!({"choices": [{"delta": {"tool_calls": [{
-            "index": 0,
-            "id": id,
-            "type": "function",
-            "function": {"name": name, "arguments": args.to_string()},
-        }]}}]}),
-        json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
-        json!({"choices": [], "usage": {"prompt_tokens": 100, "completion_tokens": 10}}),
-    ])
-}
-
 fn write_file(id: &str, path: &str) -> ResponseTemplate {
     tool_call(id, "Write", json!({"file_path": path, "content": "hi"}))
-}
-
-async fn model(replies: Vec<ResponseTemplate>) -> FakeLlmServer {
-    let server = FakeLlmServer::spawn().await;
-    let queue = Mutex::new(VecDeque::from(replies));
-    server
-        .mount_fn("POST", r".*/chat/completions$", move |_| {
-            queue
-                .lock()
-                .unwrap()
-                .pop_front()
-                .unwrap_or_else(|| text("(no more replies)"))
-        })
-        .await;
-    server
-}
-
-async fn chat_requests(server: &FakeLlmServer) -> Vec<Value> {
-    server
-        .received_requests()
-        .await
-        .iter()
-        .filter(|r: &&Request| r.url.path().ends_with("/chat/completions"))
-        .map(|r| serde_json::from_slice(&r.body).unwrap())
-        .collect()
 }
 
 /// Wait until the model has had `n` calls.

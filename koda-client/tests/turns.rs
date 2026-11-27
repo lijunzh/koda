@@ -2,9 +2,7 @@
 //! real session against a scripted model server, and the test drives it
 //! with requests and reads what comes back on the event queue.
 
-use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use koda_client::events::Outgoing;
@@ -37,62 +35,6 @@ use serde_json::{Value, json};
 const WAIT: Duration = Duration::from_secs(30);
 
 // ── The model ───────────────────────────────────────────────────────────
-
-fn sse(chunks: &[Value]) -> ResponseTemplate {
-    let mut body: String = chunks.iter().map(|c| format!("data: {c}\n\n")).collect();
-    body.push_str("data: [DONE]\n\n");
-    ResponseTemplate::new(200)
-        .insert_header("content-type", "text/event-stream")
-        .set_body_string(body)
-}
-
-fn text(reply: &str) -> ResponseTemplate {
-    sse(&[
-        json!({"choices": [{"delta": {"content": reply}}]}),
-        json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
-        json!({"choices": [], "usage": {"prompt_tokens": 200, "completion_tokens": 20}}),
-    ])
-}
-
-fn tool_call(id: &str, name: &str, args: Value) -> ResponseTemplate {
-    sse(&[
-        json!({"choices": [{"delta": {"tool_calls": [{
-            "index": 0,
-            "id": id,
-            "type": "function",
-            "function": {"name": name, "arguments": args.to_string()},
-        }]}}]}),
-        json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
-        json!({"choices": [], "usage": {"prompt_tokens": 100, "completion_tokens": 10}}),
-    ])
-}
-
-/// A model server that answers each chat request with the next reply.
-async fn model(replies: Vec<ResponseTemplate>) -> FakeLlmServer {
-    let server = FakeLlmServer::spawn().await;
-    let queue = Mutex::new(VecDeque::from(replies));
-    server
-        .mount_fn("POST", r".*/chat/completions$", move |_| {
-            queue
-                .lock()
-                .unwrap()
-                .pop_front()
-                .unwrap_or_else(|| text("(no more replies)"))
-        })
-        .await;
-    server
-}
-
-/// The chat requests the model received, as JSON.
-async fn chat_requests(server: &FakeLlmServer) -> Vec<Value> {
-    server
-        .received_requests()
-        .await
-        .iter()
-        .filter(|r: &&Request| r.url.path().ends_with("/chat/completions"))
-        .map(|r| serde_json::from_slice(&r.body).unwrap())
-        .collect()
-}
 
 // ── The client ──────────────────────────────────────────────────────────
 
@@ -2805,6 +2747,7 @@ use koda_client::protocol::mcp::{
     ListMcpServerStatusParams, McpServerConnectionStatus, McpServerStartupState, McpServerStatus,
     McpServerStatusUpdatedNotification,
 };
+use koda_test_utils::openai::{chat_requests, model, sse, text, tool_call};
 
 /// A stdio MCP server with one tool, `lookup`, written to `dir`. It waits
 /// `delay` seconds before it answers, and with a `gate` it exits at once
