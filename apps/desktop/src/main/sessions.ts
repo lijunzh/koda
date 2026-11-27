@@ -11,6 +11,8 @@ export interface SessionActionDeps {
   pickFolder(): Promise<string | null>;
   /** Whether the user confirmed deleting the session called `label`. */
   confirmDelete(label: string): Promise<boolean>;
+  /** Whether the user confirmed letting session `label` work in Auto. */
+  confirmAuto(label: string): Promise<boolean>;
 }
 
 interface SessionShape {
@@ -34,5 +36,22 @@ export async function deleteSession(deps: SessionActionDeps, id: unknown): Promi
   const label = read.session.name || read.session.preview || 'this session';
   if (!(await deps.confirmDelete(label))) return false;
   await deps.request('session/delete', { sessionId: id });
+  return true;
+}
+
+/**
+ * Put session `id` in `mode`. Plan only lowers what Koda may do; Auto lets it
+ * edit and run commands without asking (inside the sandbox), so the user
+ * confirms it first in a system dialog. Whether the mode changed.
+ */
+export async function setMode(deps: SessionActionDeps, id: unknown, mode: unknown): Promise<boolean> {
+  if (typeof id !== 'string' || !id) throw new Error('refused: a session id');
+  if (mode !== 'auto' && mode !== 'plan') throw new Error('refused: auto or plan');
+  if (mode === 'auto') {
+    const read = (await deps.request('session/read', { sessionId: id })) as { session: SessionShape };
+    const label = read.session.name || read.session.preview || 'this session';
+    if (!(await deps.confirmAuto(label))) return false;
+  }
+  await deps.request('session/settings/update', { sessionId: id, mode });
   return true;
 }

@@ -433,6 +433,17 @@ npm start                 # build into out/ and open the app
   (`src/main/answers.ts`: no "for the session" unless the request offered
   it), and tells the user through a system notification when the window
   isn't in front and Koda needs them or has finished.
+- **Session controls** (`src/renderer/controls.ts`, `SessionBar.tsx`):
+  under the title, the model (`model/list` of the session's provider) and
+  effort, the mode, the context meter (the TUI's reading: the last call's
+  tokens against the window, the 12,000-token baseline left out), Compact,
+  and a click on the title to rename. The model's plan
+  (`turn/plan/updated`) is a checklist above the prompt box while its turn
+  runs; Ctrl+T hides or shows it, as in Claude Code. The relay lets the
+  page change the model and effort and lower the mode to Plan; Auto is a
+  main-process action (`setMode` in `src/main/sessions.ts`) after a system
+  confirmation. A model picked here is the session's; it isn't saved to
+  `config.toml`.
 - **Packaging** (`npm run package`, Apple Silicon only): `Koda.app` with
   the matching `koda` in `Contents/Resources/bin` (the app uses it first,
   so the app and the server it starts are one version), Electron's fuses

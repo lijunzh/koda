@@ -63,6 +63,20 @@ function promptRefusal(method: string, params: Record<string, unknown>, keys: re
   return null;
 }
 
+// A session's model and effort may change from the page, and its mode may
+// go down to Plan; raising it to Auto lets Koda edit and run commands
+// without asking, so that goes through the main process, which asks first
+// (`setMode` in sessions.ts).
+CHECKED['session/settings/update'] = (params) => {
+  const extra = Object.keys(params).filter((key) => !['sessionId', 'model', 'effort', 'mode'].includes(key));
+  if (extra.length) return `session/settings/update takes sessionId, model, effort and mode, not ${extra.join(', ')}`;
+  if (typeof params.sessionId !== 'string') return 'session/settings/update needs a sessionId';
+  if (params.mode !== undefined && params.mode !== null && params.mode !== 'plan') {
+    return 'the page may only change the mode to plan; Auto is confirmed by the app';
+  }
+  return null;
+};
+
 CHECKED['turn/start'] = (params) =>
   // No `mode`: a turn can't raise its own trust; nor an `outputSchema`.
   promptRefusal('turn/start', params, ['sessionId', 'input', 'clientUserMessageId']);

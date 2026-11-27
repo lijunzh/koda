@@ -443,3 +443,43 @@ button.primary {
   gap: 8px;
   align-items: center;
 }
+/* The open session's controls */
+.session-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 24px;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+  font-size: 13px;
+}
+.session-bar label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.session-bar select,
+.session-bar button {
+  font: inherit;
+}
+.plan {
+  margin: 0 0 8px;
+  padding-left: 22px;
+  font-size: 13px;
+}
+.plan-step.completed {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+.plan-step.inProgress {
+  font-weight: 600;
+}
+.heading h1 {
+  cursor: text;
+}
+.rename {
+  font: inherit;
+  font-size: 20px;
+  font-weight: 600;
+  width: 100%;
+}

@@ -1,5 +1,9 @@
 import type { Selected } from './App';
+import { useState } from 'react';
+import { call } from './bridge';
 import { Composer } from './Composer';
+import type { ControlsState } from './controls';
+import { PlanPanel, SessionBar } from './SessionBar';
 import type { Pending } from './requests';
 import { Requests } from './RequestCards';
 import { type ListedSession, statusLabel, title } from './sessions';
@@ -18,10 +22,13 @@ interface Props {
   /** What the server waits on the user for in this session. */
   requests: Pending[];
   onAnswer(id: number | string, result: unknown): Promise<void>;
+  controls: ControlsState | null;
+  planShown: boolean;
 }
 
 /** The open session: its conversation, and the prompt box. */
-export function SessionView({ selected, listed, transcript, view, onView, requests, onAnswer }: Props) {
+export function SessionView({ selected, listed, transcript, view, onView, requests, onAnswer, controls, planShown }: Props) {
+  const [renaming, setRenaming] = useState<string | null>(null);
   if (!selected) {
     return (
       <main className="session-view empty-view">
@@ -46,7 +53,27 @@ export function SessionView({ selected, listed, transcript, view, onView, reques
     <main className="session-view" data-testid="session-view">
       <header>
         <div className="heading">
-          <h1>{name}</h1>
+          {renaming === null ? (
+            <h1 title="Click to rename" onClick={() => setRenaming(listed?.name ?? session?.name ?? '')}>
+              {name}
+            </h1>
+          ) : (
+            <input
+              className="rename"
+              aria-label="Session name"
+              autoFocus
+              maxLength={100}
+              value={renaming}
+              onChange={(e) => setRenaming(e.target.value)}
+              onBlur={() => setRenaming(null)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') setRenaming(null);
+                if (e.key === 'Enter' && renaming.trim() && !e.nativeEvent.isComposing) {
+                  void call('session/name/set', { sessionId: selected.id, name: renaming.trim() }).finally(() => setRenaming(null));
+                }
+              }}
+            />
+          )}
           <p className="subtitle">
             {folder && <code data-testid="session-folder">{folder}</code>}
             {session?.model && <span> · {session.model}</span>}
@@ -64,10 +91,12 @@ export function SessionView({ selected, listed, transcript, view, onView, reques
           Delete
         </button>
       </header>
+      {controls && <SessionBar sessionId={selected.id} controls={controls} />}
       {selected.error && <p className="problem">{selected.error}</p>}
       {!session && !selected.error && <p className="detail">Opening…</p>}
       {transcript && <Conversation transcript={transcript} view={view} />}
       <div className="bottom">
+        {controls && <PlanPanel controls={controls} shown={planShown} />}
         <Requests requests={requests} onAnswer={onAnswer} />
         <Composer sessionId={selected.id} running={running} ready={Boolean(session)} waiting={requests[0]?.method ?? null} />
       </div>
