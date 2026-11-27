@@ -338,3 +338,100 @@ async fn a_background_agents_usage_reaches_the_session() {
     assert_eq!(seen.len(), 2, "nothing else of its steps: {seen:?}");
     drop(session);
 }
+
+/// Whether `pid` is a live process (a zombie waiting to be reaped is not).
+fn alive(pid: u32) -> bool {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .unwrap();
+    let stat = String::from_utf8_lossy(&out.stdout);
+    !stat.trim().is_empty() && !stat.trim_start().starts_with('Z')
+}
+
+/// A process a sub-agent left running in the background stops when the
+/// sub-agent ends, whether the parent waited for it or not. Each sub-agent
+/// has its own process registry (`sub_agent_dispatch.rs`), which stops what
+/// is still running when it is dropped; nothing is left that nobody watches.
+async fn a_sub_agents_background_process_stops_when_it_ends(in_background: bool) {
+    let _lock = ENV_MUTEX.lock().await;
+    let env = Env::new().await;
+    let server = FakeLlmServer::spawn().await;
+    std::fs::create_dir_all(env.root.join(".koda/agents")).unwrap();
+    std::fs::write(
+        env.root.join(".koda/agents/server-agent.json"),
+        serde_json::json!({
+            "name": "server-agent",
+            "system_prompt": "You are a lean test agent.",
+            "skip_memory": true,
+            "allowed_tools": ["Bash"],
+            "provider": "lmstudio",
+            "model": "stub",
+            "base_url": server.url()
+        })
+        .to_string(),
+    )
+    .unwrap();
+    server
+        .mount_script_json(
+            &serde_json::json!([
+                {"tool": "Bash", "args": {"command": "sleep 300", "background": true}},
+                {"text": "Started the server."}
+            ])
+            .to_string(),
+        )
+        .await;
+
+    env.insert_user_message("start the server in a sub-agent")
+        .await;
+    let provider = MockProvider::new(vec![
+        MockResponse::tool_call(
+            "InvokeAgent",
+            serde_json::json!({
+                "agent_name": "server-agent",
+                "prompt": "start the server",
+                "run_in_background": in_background,
+            }),
+        ),
+        MockResponse::Text("Done.".into()),
+    ]);
+    env.run_inference(&provider).await;
+    if in_background {
+        wait_idle(&env).await;
+    }
+
+    // The process id, from the Bash result the sub-agent's model was sent.
+    let sent = serde_json::Value::from(server.chat_messages().await.concat()).to_string();
+    let pid: u32 = sent
+        .split("PID:")
+        .nth(1)
+        .and_then(|rest| {
+            let digits: String = rest
+                .trim_start_matches(|c: char| !c.is_ascii_digit())
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect();
+            digits.parse().ok()
+        })
+        .unwrap_or_else(|| panic!("the process never started: {sent}"));
+    for _ in 0..100 {
+        if !alive(pid) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let _ = std::process::Command::new("kill")
+        .arg(pid.to_string())
+        .status();
+    panic!("PID {pid} still runs after its sub-agent ended");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sub_agents_background_process_stops_when_it_returns() {
+    a_sub_agents_background_process_stops_when_it_ends(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_background_sub_agents_process_stops_when_it_finishes() {
+    a_sub_agents_background_process_stops_when_it_ends(true).await;
+}
