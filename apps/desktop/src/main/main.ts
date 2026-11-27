@@ -8,6 +8,7 @@ import {
   BrowserWindow,
   dialog,
   ipcMain,
+  Notification,
   protocol,
   session,
   shell,
@@ -16,6 +17,7 @@ import {
 } from 'electron';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { answerRefusal } from './answers';
 import { Connection } from './connection';
 import type { RpcId } from './koda-client';
 import { refusal } from './relay';
@@ -54,6 +56,25 @@ protocol.registerSchemesAsPrivileged([
 
 let win: BrowserWindow | null = null;
 let connection: Connection | null = null;
+
+/** What to tell the user about `message` when the window isn't in front, if anything. */
+function notice(message: { method?: string; id?: unknown; params?: Record<string, unknown> }): string | null {
+  const p = message.params ?? {};
+  switch (message.method) {
+    case 'item/toolCall/requestApproval':
+      return `Koda needs your approval: ${String(p.detail ?? p.tool ?? '')}`.trim();
+    case 'item/tool/requestUserInput':
+      return `Koda asks: ${String(p.question ?? '')}`;
+    case 'turn/loopCap/requestDecision':
+      return 'Koda reached its step limit and waits for you.';
+    case 'mcpServer/elicitation/request':
+      return `${String(p.serverName ?? 'An MCP server')} needs your input.`;
+    case 'turn/completed':
+      return 'Koda finished.';
+    default:
+      return null;
+  }
+}
 
 /** Only the app's own page, in the app's own window, may use the bridge. */
 function fromOurPage(event: IpcMainInvokeEvent | IpcMainEvent): boolean {
@@ -132,10 +153,20 @@ async function main() {
   ipcMain.handle(
     'koda:respond',
     guarded((id: RpcId, result: unknown) => {
-      if (!conn.isOpenRequest(id)) throw new Error(`refused: no open request ${id}`);
+      const why = answerRefusal(conn.openRequest(id), result);
+      if (why) throw new Error(`refused: ${why}`);
       conn.respond(id, result);
     }),
   );
+  // While the window isn't in front, say when Koda needs you or has finished,
+  // as the TUI's notifications do.
+  conn.on('messages', (batch: Array<{ method?: string; id?: unknown; params?: Record<string, unknown> }>) => {
+    if (!win || win.isFocused() || !Notification.isSupported()) return;
+    for (const message of batch) {
+      const said = notice(message);
+      if (said) new Notification({ title: 'Koda', body: said }).show();
+    }
+  });
   // The user's answers about the server, from the window's banners.
   ipcMain.handle(
     'koda:replaceServer',

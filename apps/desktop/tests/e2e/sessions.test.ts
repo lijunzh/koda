@@ -7,7 +7,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { KodaClient } from '../../src/main/koda-client';
 import { scratch } from '../helpers';
-import { closeApp, koda, type OpenApp, openApp, socketOf, stopServer } from './app';
+import { koda, type OpenApp, openApp, socketOf, shutDown } from './app';
 
 let open: OpenApp | undefined;
 let client: KodaClient | undefined;
@@ -16,8 +16,7 @@ const homes: string[] = [];
 afterEach(async () => {
   client?.close();
   client = undefined;
-  for (const home of homes.splice(0)) stopServer(home);
-  if (open) await closeApp(open);
+  await shutDown(open, homes.splice(0));
   open = undefined;
 });
 

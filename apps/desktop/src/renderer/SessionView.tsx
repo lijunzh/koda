@@ -1,5 +1,7 @@
 import type { Selected } from './App';
 import { Composer } from './Composer';
+import type { Pending } from './requests';
+import { Requests } from './RequestCards';
 import { type ListedSession, statusLabel, title } from './sessions';
 import { Conversation } from './Conversation';
 import { runningTurn, type TranscriptState, type View, VIEWS } from './transcript';
@@ -13,10 +15,13 @@ interface Props {
   transcript: TranscriptState | null;
   view: View;
   onView(view: View): void;
+  /** What the server waits on the user for in this session. */
+  requests: Pending[];
+  onAnswer(id: number | string, result: unknown): Promise<void>;
 }
 
 /** The open session: its conversation, and the prompt box. */
-export function SessionView({ selected, listed, transcript, view, onView }: Props) {
+export function SessionView({ selected, listed, transcript, view, onView, requests, onAnswer }: Props) {
   if (!selected) {
     return (
       <main className="session-view empty-view">
@@ -62,7 +67,10 @@ export function SessionView({ selected, listed, transcript, view, onView }: Prop
       {selected.error && <p className="problem">{selected.error}</p>}
       {!session && !selected.error && <p className="detail">Opening…</p>}
       {transcript && <Conversation transcript={transcript} view={view} />}
-      <Composer sessionId={selected.id} running={running} ready={Boolean(session)} />
+      <div className="bottom">
+        <Requests requests={requests} onAnswer={onAnswer} />
+        <Composer sessionId={selected.id} running={running} ready={Boolean(session)} waiting={requests[0]?.method ?? null} />
+      </div>
     </main>
   );
 }

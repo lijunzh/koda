@@ -39,8 +39,8 @@ export class KodaClient extends EventEmitter {
     RpcId,
     { resolve: (value: unknown) => void; reject: (error: Error) => void }
   >();
-  /** Requests the server sent that no client has answered yet. Only these may be answered. */
-  readonly openServerRequests = new Set<RpcId>();
+  /** Requests the server sent that no client has answered yet, by id. Only these may be answered. */
+  readonly openServerRequests = new Map<RpcId, { method: string; params: Record<string, unknown> }>();
 
   /** Connect to the socket at `path`. Rejects if nothing listens there. */
   connect(path: string): Promise<void> {
@@ -95,7 +95,10 @@ export class KodaClient extends EventEmitter {
         continue;
       }
       if (message.method !== undefined && message.id !== undefined) {
-        this.openServerRequests.add(message.id);
+        this.openServerRequests.set(message.id, {
+          method: message.method,
+          params: (message.params ?? {}) as Record<string, unknown>,
+        });
       }
       if (message.method === 'serverRequest/resolved') {
         const answered = (message.params as { requestId?: RpcId } | undefined)?.requestId;

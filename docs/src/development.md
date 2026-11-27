@@ -424,6 +424,15 @@ npm start                 # build into out/ and open the app
   sends text only (the relay refuses `mode`, `outputSchema` and non-text
   input for now); Enter while a turn runs steers it, and Stop or Esc
   interrupts.
+- **Requests** (`src/renderer/requests.ts`, `RequestCards.tsx`): approvals,
+  the model's questions, the loop cap and MCP elicitation show as a card
+  above the prompt box with the TUI's choices (yes, yes for the session, no,
+  no with what to do instead, Esc to stop or, for a sub-agent, refuse). A
+  request answered anywhere is withdrawn with `serverRequest/resolved`.
+  The main process sends an answer only when it fits the request
+  (`src/main/answers.ts`: no "for the session" unless the request offered
+  it), and tells the user through a system notification when the window
+  isn't in front and Koda needs them or has finished.
 - **Tests that start a server** use `koda serve --start` on a scratch
   `XDG_CONFIG_HOME`, never the user's own server. `test:e2e` opens the
   built app with Playwright (`playwright-core`'s Electron driver, unseen,

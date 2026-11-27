@@ -6,7 +6,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { KodaClient } from '../../src/main/koda-client';
 import { scratch } from '../helpers';
-import { type OpenApp, closeApp, koda, openApp, socketOf, stopServer } from './app';
+import { type OpenApp, koda, openApp, socketOf, stopServer, shutDown } from './app';
 
 const appVersion = (JSON.parse(readFileSync(path.join(__dirname, '../../package.json'), 'utf8')) as { version: string })
   .version;
@@ -18,8 +18,7 @@ afterEach(async () => {
   // The server first: on Linux, a server the app started holds one of the
   // app's output pipes, and Playwright counts the app closed only once they
   // all are (the app itself has quit by then).
-  for (const home of homes.splice(0)) stopServer(home);
-  if (open) await closeApp(open);
+  await shutDown(open, homes.splice(0));
   open = undefined;
 });
 

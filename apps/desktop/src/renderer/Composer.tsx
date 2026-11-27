@@ -9,9 +9,25 @@ interface Props {
   running: TurnView | undefined;
   /** Whether the session is open on the server and can take a prompt. */
   ready: boolean;
+  /** What the server waits on the user for, if anything: the status line says so. */
+  waiting: string | null;
 }
 
-export function Composer({ sessionId, running, ready }: Props) {
+/** The status line while Koda waits on you, in the TUI's words. */
+function waitingLabel(method: string): string {
+  switch (method) {
+    case 'item/toolCall/requestApproval':
+      return 'Waiting for your approval';
+    case 'item/tool/requestUserInput':
+      return 'Waiting for your answer';
+    case 'turn/loopCap/requestDecision':
+      return 'Waiting for you to go on or stop';
+    default:
+      return 'Waiting for you';
+  }
+}
+
+export function Composer({ sessionId, running, ready, waiting }: Props) {
   const [text, setText] = useState('');
   const [error, setError] = useState<string | null>(null);
   const box = useRef<HTMLTextAreaElement>(null);
@@ -52,7 +68,7 @@ export function Composer({ sessionId, running, ready }: Props) {
           <span className="spinner" aria-hidden>
             ✻
           </span>{' '}
-          {statusLine(running)}
+          {waiting ? waitingLabel(waiting) : statusLine(running)}
           {running.startedAt ? <span className="meta"> {workedFor(now - running.startedAt * 1000)}</span> : null}
         </div>
       )}
