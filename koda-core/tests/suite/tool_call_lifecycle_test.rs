@@ -136,7 +136,7 @@ fn write(path: &str) -> MockResponse {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_refused_call_ends_declined_and_its_approval_names_it() {
     let events = run(
-        TrustMode::Safe,
+        TrustMode::Auto,
         vec![
             write("a.txt"),
             MockResponse::tool_call("Bash", json!({"command": "touch b.txt"})),
@@ -169,7 +169,7 @@ async fn a_refused_call_ends_declined_and_its_approval_names_it() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_command_reports_its_exit_code_and_duration() {
     let events = run(
-        TrustMode::Safe,
+        TrustMode::Auto,
         vec![
             write("a.txt"),
             MockResponse::tool_call("Bash", json!({"command": "exit 3"})),

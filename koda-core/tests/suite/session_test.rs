@@ -589,7 +589,7 @@ async fn each_turn_stores_the_context_it_ran_with() {
     switched.model_settings.reasoning_effort = Some("high".into());
     let provider = Box::new(MockProvider::new(vec![MockResponse::Text("two".into())]));
     let (mut session, _cancel) = make_session(&env, provider).await;
-    session.mode = TrustMode::Safe;
+    session.mode = TrustMode::Auto;
     session
         .run_turn_as(
             "t2".into(),

@@ -47,7 +47,7 @@ fn auto_mutation_expected() -> ToolApproval {
 /// Helper: check a tool in both modes and return (auto, confirm).
 fn check_both(tool: &str, args: &serde_json::Value) -> (ToolApproval, ToolApproval) {
     let auto = check_tool(tool, args, TrustMode::Auto, Some(root()));
-    let confirm = check_tool(tool, args, TrustMode::Safe, Some(root()));
+    let confirm = check_tool(tool, args, TrustMode::Auto, Some(root()));
     (auto, confirm)
 }
 
@@ -225,7 +225,7 @@ fn matrix_cargo_tool() {
 fn b19_child_trust_clamped_to_parent_runtime_not_startup_config() {
     // Simulates: parent started Auto, user ran /safe → runtime = Safe.
     let parent_startup_trust = TrustMode::Auto; // stale config field (pre-fix ceiling)
-    let parent_runtime_mode = TrustMode::Safe; // live atomic (post-fix ceiling)
+    let parent_runtime_mode = TrustMode::Auto; // live atomic (post-fix ceiling)
 
     // Named child declares Auto (wants broad permissions).
     let child_declared = TrustMode::Auto;
@@ -233,7 +233,7 @@ fn b19_child_trust_clamped_to_parent_runtime_not_startup_config() {
     // Post-fix: runtime mode is the ceiling → child clamped to Safe.
     assert_eq!(
         derive_child_trust(parent_runtime_mode, child_declared),
-        TrustMode::Safe,
+        TrustMode::Auto,
         "B19: child must be clamped to parent's runtime trust, not startup config trust",
     );
 

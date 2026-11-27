@@ -387,27 +387,24 @@ impl KodaConfig {
         // `derive_child_trust(parent_runtime, declared)` which clamps
         // to `min(parent, declared)` so trust can only ever narrow.
         //
-        // Backward compat: every pre-#1246 agent JSON omits this field
-        // — they all default to `Safe` (the historical hardcoded value
-        // this branch replaces). New built-in agents `explore` and
-        // `plan` declare `"trust": "plan"` to opt into kernel-enforced
-        // read-only via the sandbox.
+        // An agent that names no mode takes its parent's: Auto here, and
+        // `TrustMode::clamp` keeps it at the parent's when that is less,
+        // as a Codex sub-agent inherits its thread's sandbox. The built-in
+        // `explore` and `plan` declare `"trust": "plan"`.
         //
-        // An *unrecognized* trust string falls back to `Safe` rather
-        // than erroring — same forgiveness policy as the rest of the
-        // agent loader (a typo in `model` doesn't fail the load, it
-        // falls back to provider default). A `tracing::warn!` makes
-        // the typo discoverable without bricking the agent.
+        // An *unrecognized* mode falls back to Plan, the side that can't
+        // change anything, rather than failing the load; a
+        // `tracing::warn!` makes the typo discoverable.
         let trust_explicit = agent.trust.is_some();
         let declared_trust = match agent.trust.as_deref() {
-            None => crate::trust::TrustMode::Safe,
+            None => crate::trust::TrustMode::Auto,
             Some(s) => crate::trust::TrustMode::parse(s).unwrap_or_else(|| {
                 tracing::warn!(
                     agent = %agent.name,
                     value = %s,
-                    "unknown trust mode in agent JSON; falling back to Safe"
+                    "unknown trust mode in agent JSON; falling back to Plan"
                 );
-                crate::trust::TrustMode::Safe
+                crate::trust::TrustMode::Plan
             }),
         };
 
@@ -1058,7 +1055,7 @@ mod tests {
             !config.disallowed_tools.contains(&"Edit".to_string()),
             "explicit trust must skip legacy default-deny (Edit should be available)"
         );
-        assert_eq!(config.trust, crate::trust::TrustMode::Safe);
+        assert_eq!(config.trust, crate::trust::TrustMode::Auto);
     }
 
     #[test]
@@ -1136,7 +1133,7 @@ mod tests {
             !config.disallowed_tools.contains(&"Edit".to_string()),
             "task agent must allow Edit at runtime (post-#1250 bug fix)"
         );
-        assert_eq!(config.trust, crate::trust::TrustMode::Safe);
+        assert_eq!(config.trust, crate::trust::TrustMode::Auto);
     }
 
     #[test]
@@ -1805,12 +1802,12 @@ mod tests {
 
     // ── #1246: agent JSON `trust` field ─────────────────────────────────────────
     //
-    // Pre-#1246 every agent silently got `TrustMode::Safe` regardless
+    // Pre-#1246 every agent silently got `TrustMode::Auto` regardless
     // of what the JSON intended; `cfg.trust` was a hardcoded constant
     // in `KodaConfig::load`. Tests below pin the new contract:
     //   * `"trust": "plan"` parses to `TrustMode::Plan`
-    //   * Absent field defaults to `TrustMode::Safe` (back-compat)
-    //   * Unknown string falls back to `TrustMode::Safe` (forgiveness)
+    //   * Absent field defaults to `TrustMode::Auto` (back-compat)
+    //   * Unknown string falls back to `TrustMode::Auto` (forgiveness)
     //   * Built-in `explore` declares `"plan"` (the whole
     //     reason this field exists)
 
@@ -1862,7 +1859,7 @@ mod tests {
         // diff that flips the default away from Safe needs to be able
         // to express "this agent specifically wants Safe."
         let cfg = load_with_trust_field(r#""trust": "safe""#);
-        assert_eq!(cfg.trust, crate::trust::TrustMode::Safe);
+        assert_eq!(cfg.trust, crate::trust::TrustMode::Auto);
     }
 
     #[test]
@@ -1880,13 +1877,13 @@ mod tests {
     #[test]
     fn agent_json_trust_field_absent_defaults_to_safe() {
         // **Back-compat**: every pre-#1246 agent JSON omits `trust`.
-        // Those agents must continue to load with `TrustMode::Safe`
+        // Those agents must continue to load with `TrustMode::Auto`
         // (the historical hardcoded value) so this PR is a strict
         // additive change — no existing custom agent's behavior shifts.
         let cfg = load_with_trust_field("");
         assert_eq!(
             cfg.trust,
-            crate::trust::TrustMode::Safe,
+            crate::trust::TrustMode::Auto,
             "agent JSON without `trust` field must default to Safe (back-compat)"
         );
     }
@@ -1901,7 +1898,7 @@ mod tests {
         let cfg = load_with_trust_field(r#""trust": "super-secret-mode""#);
         assert_eq!(
             cfg.trust,
-            crate::trust::TrustMode::Safe,
+            crate::trust::TrustMode::Auto,
             "unknown trust string must fall back to Safe, not panic or error"
         );
     }
@@ -1917,7 +1914,6 @@ mod tests {
             ("readonly", crate::trust::TrustMode::Plan),
             ("read-only", crate::trust::TrustMode::Plan),
             ("yolo", crate::trust::TrustMode::Auto),
-            ("strict", crate::trust::TrustMode::Safe),
         ] {
             let cfg = load_with_trust_field(&format!(r#""trust": "{alias}""#));
             assert_eq!(

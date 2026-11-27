@@ -640,7 +640,7 @@ mod tests {
         let root = std::path::PathBuf::from("/tmp");
         let caps = crate::output_caps::OutputCaps::for_context(100_000);
         let bg = crate::tools::bg_process::BgRegistry::new();
-        let trust = crate::trust::TrustMode::Safe;
+        let trust = crate::trust::TrustMode::Auto;
         let policy = koda_sandbox::SandboxPolicy::default();
         let skills = crate::skills::SkillRegistry::default();
         let ctx = make_ctx(&root, &cache, &fs, &caps, &bg, &trust, &policy, &skills);
@@ -730,7 +730,7 @@ mod tests {
         let root = std::path::PathBuf::from("/tmp");
         let caps = crate::output_caps::OutputCaps::for_context(100_000);
         let bg = crate::tools::bg_process::BgRegistry::new();
-        let trust = crate::trust::TrustMode::Safe;
+        let trust = crate::trust::TrustMode::Auto;
         let policy = koda_sandbox::SandboxPolicy::default();
         let skills = crate::skills::SkillRegistry::default();
         let ctx = make_ctx(&root, &cache, &fs, &caps, &bg, &trust, &policy, &skills);
@@ -753,7 +753,7 @@ mod tests {
         let root = std::path::PathBuf::from("/tmp/whatever");
         let caps = crate::output_caps::OutputCaps::for_context(100_000);
         let bg = crate::tools::bg_process::BgRegistry::new();
-        let trust = crate::trust::TrustMode::Safe;
+        let trust = crate::trust::TrustMode::Auto;
         let policy = koda_sandbox::SandboxPolicy::default();
         let skills = crate::skills::SkillRegistry::default();
         let ctx = make_ctx(&root, &cache, &fs, &caps, &bg, &trust, &policy, &skills);

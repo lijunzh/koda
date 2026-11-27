@@ -192,7 +192,7 @@ async fn in_auto_outside_git_the_edit_still_lands_in_the_project() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn in_safe_the_sub_agent_asks_and_an_approved_edit_lands_in_the_project() {
     let _lock = ENV_MUTEX.lock().await;
-    let env = Env::builder().trust(TrustMode::Safe).build().await;
+    let env = Env::builder().trust(TrustMode::Auto).build().await;
     let server = FakeLlmServer::spawn().await;
     init_repo(&env.root);
     write_agent(&env, &server, None);
@@ -219,7 +219,7 @@ async fn in_safe_the_sub_agent_asks_and_an_approved_edit_lands_in_the_project() 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn in_safe_a_refused_edit_leaves_the_project_as_it_was() {
     let _lock = ENV_MUTEX.lock().await;
-    let env = Env::builder().trust(TrustMode::Safe).build().await;
+    let env = Env::builder().trust(TrustMode::Auto).build().await;
     let server = FakeLlmServer::spawn().await;
     init_repo(&env.root);
     write_agent(&env, &server, None);
@@ -237,7 +237,7 @@ async fn in_safe_a_refused_edit_leaves_the_project_as_it_was() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn in_safe_with_nobody_to_ask_the_edit_is_refused() {
     let _lock = ENV_MUTEX.lock().await;
-    let env = Env::builder().trust(TrustMode::Safe).build().await;
+    let env = Env::builder().trust(TrustMode::Auto).build().await;
     let server = FakeLlmServer::spawn().await;
     init_repo(&env.root);
     write_agent(&env, &server, None);
@@ -255,7 +255,7 @@ async fn in_safe_with_nobody_to_ask_the_edit_is_refused() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_sub_agents_allow_for_session_is_the_sessions() {
     let _lock = ENV_MUTEX.lock().await;
-    let env = Env::builder().trust(TrustMode::Safe).build().await;
+    let env = Env::builder().trust(TrustMode::Auto).build().await;
     let server = FakeLlmServer::spawn().await;
     init_repo(&env.root);
     write_agent(&env, &server, None);

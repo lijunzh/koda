@@ -1908,7 +1908,7 @@ mod tests {
                 let out = run_cargo_with_env(
                     &root,
                     &json!({"subcommand": "test"}),
-                    &crate::trust::TrustMode::Safe,
+                    &crate::trust::TrustMode::Auto,
                     &koda_sandbox::SandboxPolicy::strict_default(),
                     None,
                     None,
@@ -1972,7 +1972,7 @@ mod tests {
         let out = run_cargo_with_env(
             tmp.path(),
             &json!({"subcommand": "test"}),
-            &crate::trust::TrustMode::Safe,
+            &crate::trust::TrustMode::Auto,
             &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,

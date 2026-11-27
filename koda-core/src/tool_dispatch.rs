@@ -991,7 +991,7 @@ mod tests {
         let calls = vec![make_tool_call("Read"), make_tool_call("Grep")];
         assert!(can_parallelize(
             &calls,
-            TrustMode::Safe,
+            TrustMode::Auto,
             Path::new("/test/project"),
         ));
     }
@@ -1001,7 +1001,7 @@ mod tests {
         let calls = vec![make_tool_call("Read"), make_tool_call("Write")];
         assert!(!can_parallelize(
             &calls,
-            TrustMode::Safe,
+            TrustMode::Auto,
             Path::new("/test/project"),
         ));
     }
@@ -1020,7 +1020,7 @@ mod tests {
         ];
         assert!(!can_parallelize(
             &calls,
-            TrustMode::Safe,
+            TrustMode::Auto,
             Path::new("/test/project"),
         ));
     }
@@ -1044,12 +1044,11 @@ mod tests {
             bash("ls -la src"),
             make_tool_call("Read"),
         ];
-        for mode in [TrustMode::Safe, TrustMode::Auto] {
-            assert!(
-                can_parallelize(&calls, mode, Path::new("/test/project")),
-                "{mode:?}"
-            );
-        }
+        assert!(can_parallelize(
+            &calls,
+            TrustMode::Auto,
+            Path::new("/test/project")
+        ));
     }
 
     /// In Auto a command that changes files runs in the sandbox without a
@@ -1065,7 +1064,7 @@ mod tests {
         ));
         assert!(!can_parallelize(
             &calls,
-            TrustMode::Safe,
+            TrustMode::Auto,
             Path::new("/test/project")
         ));
     }
@@ -1075,7 +1074,7 @@ mod tests {
         let calls = vec![make_tool_call("InvokeAgent"), make_tool_call("InvokeAgent")];
         assert!(can_parallelize(
             &calls,
-            TrustMode::Safe,
+            TrustMode::Auto,
             Path::new("/test/project"),
         ));
     }
@@ -1157,7 +1156,7 @@ mod tests {
         let calls = vec![make_tool_call("InvokeAgent"), make_tool_call("Write")];
         assert!(!can_parallelize(
             &calls,
-            TrustMode::Safe,
+            TrustMode::Auto,
             Path::new("/test/project"),
         ));
     }

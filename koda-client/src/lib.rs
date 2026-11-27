@@ -368,7 +368,7 @@ mod tests {
         // Never contacted: reading state makes no model call.
         config.base_url = "http://127.0.0.1:9/v1".to_string();
         config.max_context_tokens = 32_768;
-        config.trust = TrustMode::Safe;
+        config.trust = TrustMode::Plan;
         let (args, _dir) = args().await;
         let client = InProcessClient::start_with_config(args, config)
             .await
@@ -382,7 +382,7 @@ mod tests {
         assert_eq!(state.model_provider, "lm-studio");
         assert_eq!(state.base_url, "http://127.0.0.1:9/v1");
         assert_eq!(state.context_window, 32_768);
-        assert_eq!(state.mode, state::TrustMode::Safe);
+        assert_eq!(state.mode, state::TrustMode::Plan);
         let report = koda_core::sandbox::dependency_report();
         assert_eq!(state.sandbox.backend, report.backend);
         assert_eq!(state.sandbox.available, report.available);

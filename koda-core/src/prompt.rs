@@ -562,7 +562,7 @@ mod tests {
         let registry = SkillRegistry::default();
         let result = build_system_prompt("Base.", &env, true, &registry);
         use crate::trust::TrustMode;
-        for mode in [TrustMode::Plan, TrustMode::Safe, TrustMode::Auto] {
+        for mode in [TrustMode::Plan, TrustMode::Auto] {
             assert!(
                 result.contains(mode.as_str()),
                 "quick reference must name {mode:?}"

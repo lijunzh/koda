@@ -124,7 +124,7 @@ async fn safe_trust_sub_agent_destructive_bash_is_still_blocked() {
     // refused, and the file survives. Filesystem state is the proof: the
     // sub-agent's last reply says nothing about each call.
     let _lock = ENV_MUTEX.lock().await;
-    let env = Env::builder().trust(TrustMode::Safe).build().await;
+    let env = Env::builder().trust(TrustMode::Auto).build().await;
     let server = FakeLlmServer::spawn().await;
     write_safe_trust_sub_agent(&env, &server, "destroyer");
 

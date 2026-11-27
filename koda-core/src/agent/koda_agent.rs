@@ -336,7 +336,7 @@ mod tests {
         use crate::trust::TrustMode;
         let mut agent = agent("# Base\n", "m");
         assert_eq!(
-            agent.system_prompt_for_turn("m", TrustMode::Safe),
+            agent.system_prompt_for_turn("m", TrustMode::Auto),
             "# Base\n"
         );
         assert_eq!(
@@ -353,7 +353,7 @@ mod tests {
         assert!(answered.contains("\n<proposed_plan>\n"), "{answered}");
         // Back in Safe, the next turn has no note.
         assert_eq!(
-            agent.system_prompt_for_turn("m", TrustMode::Safe),
+            agent.system_prompt_for_turn("m", TrustMode::Auto),
             "# Base\n"
         );
     }

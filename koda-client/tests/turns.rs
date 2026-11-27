@@ -346,7 +346,7 @@ async fn a_host_starts_from_the_config_and_this_runs_values() {
     assert_eq!(started.session.model_provider.as_deref(), Some("lm-studio"));
     assert_eq!(started.session.model.as_deref(), Some("stub"));
     assert_eq!(started.session.context_window, Some(100_000));
-    assert_eq!(started.session.mode, Some(TrustMode::Safe));
+    assert_eq!(started.session.mode, Some(TrustMode::Auto));
     let mut koda = Koda {
         client,
         session: started.session.id.clone(),
@@ -479,7 +479,7 @@ async fn approvals_are_answered_through_the_client() {
     ])
     .await;
     let mut config = config(&server);
-    config.trust = koda_core::trust::TrustMode::Safe;
+    config.trust = koda_core::trust::TrustMode::Auto;
     let mut koda = Koda::start(config).await;
     koda.turn("Write two files").await;
 
@@ -527,7 +527,7 @@ async fn a_malformed_approval_is_refused_as_a_failed_request() {
     ])
     .await;
     let mut config = config(&server);
-    config.trust = koda_core::trust::TrustMode::Safe;
+    config.trust = koda_core::trust::TrustMode::Auto;
     let mut koda = Koda::start(config).await;
     koda.turn("Write a file").await;
 
@@ -563,7 +563,7 @@ async fn cancelling_an_approval_stops_the_turn() {
     ])
     .await;
     let mut config = config(&server);
-    config.trust = koda_core::trust::TrustMode::Safe;
+    config.trust = koda_core::trust::TrustMode::Auto;
     let mut koda = Koda::start(config).await;
     koda.turn("Write a file").await;
 
@@ -709,7 +709,7 @@ async fn an_interrupt_at_an_approval_closes_what_the_turn_left_open() {
     ])
     .await;
     let mut config = config(&server);
-    config.trust = koda_core::trust::TrustMode::Safe;
+    config.trust = koda_core::trust::TrustMode::Auto;
     let mut koda = Koda::start(config).await;
     let turn_id = koda.turn("Write a file").await;
 
@@ -778,7 +778,7 @@ async fn requests_without_a_running_turn_or_session_are_refused() {
                 session_id: "no-such-session".to_string(),
                 input: vec![UserInput::text("hi".to_string())],
                 client_user_message_id: None,
-                mode: Some(TrustMode::Safe),
+                mode: Some(TrustMode::Auto),
                 output_schema: None,
             })
             .await,
@@ -796,7 +796,7 @@ async fn shutdown_stops_a_turn_that_waits_on_the_client() {
     )])
     .await;
     let mut config = config(&server);
-    config.trust = koda_core::trust::TrustMode::Safe;
+    config.trust = koda_core::trust::TrustMode::Auto;
     let mut koda = Koda::start(config).await;
     koda.turn("Write a file").await;
     koda.request().await;
@@ -1101,7 +1101,7 @@ async fn turns_are_listed_a_page_at_a_time() {
     ])
     .await;
     let mut config = config(&server);
-    config.trust = koda_core::trust::TrustMode::Safe;
+    config.trust = koda_core::trust::TrustMode::Auto;
     let mut koda = Koda::start(config).await;
     let mut done = Vec::new();
     for prompt in ["first", "second", "third"] {
@@ -1665,13 +1665,13 @@ async fn the_host_enforces_the_mode_rules() {
     client.shutdown().await;
 
     // In Safe it opens, and can't be switched to Auto.
-    let mut client = start(koda_core::trust::TrustMode::Safe).await.unwrap();
+    let mut client = start(koda_core::trust::TrustMode::Auto).await.unwrap();
     let opened = client
         .request::<methods::SessionStart>(SessionStartParams::default())
         .await
         .unwrap()
         .session;
-    assert_eq!(opened.mode, Some(TrustMode::Safe));
+    assert_eq!(opened.mode, Some(TrustMode::Auto));
     let update = |mode| SessionSettingsUpdateParams {
         session_id: opened.id.clone(),
         mode: Some(mode),
@@ -2193,13 +2193,13 @@ async fn a_settings_update_reaches_the_next_turn() {
     koda.turn("first").await;
     koda.until("turn/completed").await;
 
-    koda.update(Some("other-model"), Some(TrustMode::Safe))
+    koda.update(Some("other-model"), Some(TrustMode::Auto))
         .await
         .unwrap();
     let settings = koda.settings_updated().await;
     assert_eq!(settings.model, "other-model");
     assert_eq!(settings.model_provider, "lm-studio");
-    assert_eq!(settings.mode, TrustMode::Safe);
+    assert_eq!(settings.mode, TrustMode::Auto);
 
     koda.turn("second").await;
     koda.until("turn/completed").await;
@@ -3007,7 +3007,7 @@ async fn a_reload_during_a_turn_waits_for_it_to_end() {
     ])
     .await;
     let mut config = config(&server);
-    config.trust = koda_core::trust::TrustMode::Safe;
+    config.trust = koda_core::trust::TrustMode::Auto;
     let mut koda = Koda::start(config).await;
     koda.turn("write a file").await;
     let ServerRequest::ToolCallApproval { id, .. } = koda.request().await else {
@@ -3224,7 +3224,7 @@ async fn background_processes_are_listed_and_stopped_through_the_client() {
     ])
     .await;
     let mut config = config(&server);
-    config.trust = koda_core::trust::TrustMode::Safe;
+    config.trust = koda_core::trust::TrustMode::Auto;
     let mut koda = Koda::start(config).await;
     koda.turn("Start two sleeps in the background").await;
     for _ in 0..2 {
@@ -3457,7 +3457,7 @@ async fn an_edits_approval_carries_its_diff() {
     std::fs::create_dir_all(dir.path().join("project")).unwrap();
     std::fs::write(dir.path().join("project/a.txt"), "one\ntwo\n").unwrap();
     let mut config = config(&server);
-    config.trust = koda_core::trust::TrustMode::Safe;
+    config.trust = koda_core::trust::TrustMode::Auto;
     let mut koda = Koda::start_in(config, dir).await;
     koda.turn("Edit a.txt and write new.txt").await;
     let edit = koda.request().await;
@@ -3620,7 +3620,7 @@ async fn usage_is_split_by_agent_and_restored_on_resume() {
         .request::<methods::SessionSettingsUpdate>(
             koda_client::protocol::session::SessionSettingsUpdateParams {
                 session_id: koda.session.clone(),
-                mode: Some(koda_client::protocol::state::TrustMode::Safe),
+                mode: Some(koda_client::protocol::state::TrustMode::Auto),
                 ..Default::default()
             },
         )
@@ -3639,7 +3639,7 @@ async fn usage_is_split_by_agent_and_restored_on_resume() {
     let mine = listed.iter().find(|s| s.id == koda.session).unwrap();
     assert_eq!(
         mine.mode,
-        Some(koda_client::protocol::state::TrustMode::Safe),
+        Some(koda_client::protocol::state::TrustMode::Auto),
         "the mode it last ran in"
     );
 

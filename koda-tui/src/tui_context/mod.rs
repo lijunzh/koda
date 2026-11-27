@@ -491,7 +491,7 @@ impl TuiContext {
         // The mode the host opened it in: a resumed session's own, or the
         // flags' or the config's, after the host's rule: Auto needs the
         // sandbox.
-        let initial_mode = opened_mode.unwrap_or(TrustMode::Safe);
+        let initial_mode = opened_mode.unwrap_or(TrustMode::Auto);
         let sandbox = client
             .request::<koda_client::protocol::methods::StateRead>(
                 koda_client::protocol::state::StateReadParams {},

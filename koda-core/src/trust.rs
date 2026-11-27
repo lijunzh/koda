@@ -1,57 +1,44 @@
 //! Unified trust mode — the single permission knob for Koda.
 //!
-//! Replaces the old `ApprovalMode × SandboxMode` two-layer system with one
-//! enum that controls both sandbox configuration and approval behavior.
+//! One enum, Plan or Auto, controls both the sandbox and what asks first.
 //! Users see one concept, one CLI flag (`--mode`), one status bar word.
+//! Approvals follow Codex: the sandbox is the boundary, and a command that
+//! needs more asks to leave it (`outside_sandbox`, Codex's escalation).
 //!
 //! See [`docs/src/approval.md`](https://lijunzh.github.io/koda/approval.html)
-//! for the canonical user-facing mental-model doc, and `DESIGN.md §Security
-//! Model` for the architectural framing (TrustMode as the canonical instance
-//! of P1 — "customization over configuration").
+//! for the user-facing model, and `DESIGN.md §Security Model` for the
+//! architectural framing.
 //!
 //! ## Trust modes
 //!
-//! | Mode | Sandbox | Approval | Use case |
-//! |------|---------|----------|----------|
-//! | **Plan** | project, read-only | deny all non-read | Planning with the user before any change (`/plan`, Shift+Tab), sub-agents, and headless runs that should only look (`koda exec --mode plan`) |
-//! | **Safe** | project, read+write | confirm side effects | Opt-in via `--mode safe` (CI, locked-down workstations) |
-//! | **Auto** | project, read+write | auto-approve mutations; destructive still confirms | Autonomous coding |
+//! | Mode | Sandbox | Asks first | Use case |
+//! |------|---------|------------|----------|
+//! | **Plan** | project read-only | nothing runs that could change it; edits refused | Planning with the user (`/plan`, Shift+Tab), read-only sub-agents, `koda exec --mode plan` |
+//! | **Auto** | project read+write | leaving the sandbox, dangerous commands, files outside the project | Coding (the default) |
 //!
-//! A session a person answers enters Plan with `/plan` or Shift+Tab, as in
-//! Codex and Claude Code, and its model is told each Plan turn to plan with
-//! the user and to propose a plan, which the TUI offers to implement in
-//! Safe or Auto. From #1244 until 0.7.1 such a session couldn't enter Plan:
-//! told nothing, models kept retrying the refused writes. The turn's note and
-//! [`PLAN_BLOCKED_MESSAGE`](crate::trust::PLAN_BLOCKED_MESSAGE) now say not to. Sub-agents reach Plan via their
-//! JSON `"trust": "plan"` declaration plus parent clamping.
-//!
-//! A headless run (`koda exec --mode plan "..."`) keeps Plan too. Nobody is there to approve anything, so a run that should only
-//! look (a morning digest over mail, a review) wants every write refused,
-//! the way `codex exec` defaults to a read-only sandbox and Claude Code,
-//! Gemini CLI and Qwen Code take a plan mode with `-p`. Plan also makes the
-//! project read-only in the kernel sandbox
-//! ([`policy_for_agent`](crate::sandbox::policy_for_agent)), so a command
-//! wrongly judged read-only still can't write there.
+//! Plan runs every shell command in its read-only kernel sandbox
+//! ([`policy_for_agent`](crate::sandbox::policy_for_agent)), as Codex's
+//! read-only mode does, so a command needs no verdict to run there. Its
+//! model is told each Plan turn to propose a plan, which the TUI offers to
+//! implement in Auto. Sub-agents reach Plan through their JSON
+//! `"trust": "plan"` and parent clamping.
 //!
 //! ## Top-level (interactive) decision matrix
 //!
 //! Used by [`check_tool()`](crate::trust::check_tool) when a human is at
 //! the keyboard.
 //!
-//! | Behavior | Plan | Safe | Auto |
-//! |---|---|---|---|
-//! | ReadOnly tools | ✅ auto | ✅ auto | ✅ auto |
-//! | RemoteAction | ❌ deny | ⚠️ confirm | ✅ auto |
-//! | LocalMutation | ❌ deny | ⚠️ confirm | ✅ auto |
-//! | Destructive | ❌ deny | ⚠️ confirm | ⚠️ confirm |
-//! | Outside project | ❌ deny | ⚠️ confirm | ⚠️ confirm |
+//! | Behavior | Plan | Auto |
+//! |---|---|---|
+//! | ReadOnly tools | ✅ auto | ✅ auto |
+//! | A shell command | ✅ auto, read-only sandbox | ✅ auto |
+//! | Other changes (edits, remote actions) | ❌ deny | ✅ auto |
+//! | Destructive | ❌ deny | ⚠️ confirm |
+//! | Leaving the sandbox | ❌ deny | ⚠️ confirm |
+//! | Outside project | ❌ deny | ⚠️ confirm |
 //!
-//! **`Auto × Destructive` confirms, not auto-approves** (#1251). The
-//! user said YOLO for normal work, not for `rm -rf` / `git reset --hard`
-//! / `git push --force`. Destructive ops by definition
-//! can't be undone by the sandbox alone (deleting a tracked file is
-//! "legal" inside the project root), so Auto keeps the prompt as a
-//! deliberate speed-bump.
+//! **Destructive confirms in Auto** (#1251): the sandbox can't undo an
+//! `rm -rf` inside the project or a `git push --force`.
 //!
 //! ## Sub-agents
 //!
@@ -62,42 +49,30 @@
 //!
 //! ## Always-on safety floors
 //!
-//! These apply regardless of trust mode:
-//!
-//! - **Outside-project floor** (#218) — writes to paths outside
-//!   `project_root` always confirm (Safe + Auto) or deny (Plan), even
-//!   if the matrix would otherwise auto-approve. Temp dirs (`/tmp`,
+//! - **Outside-project floor** (#218): writes outside `project_root`
+//!   confirm in Auto and are refused in Plan. Temp dirs (`/tmp`,
 //!   `$TMPDIR`, `/var/folders/*/T`) and `~/.cache/koda` are exempt
-//!   per the scratch-zone allowlist (#560, #1236).
-//! - **Bash path-escape lint** — commands containing `cd`/path
-//!   redirection out of the project tree get downgraded to
-//!   NeedsConfirmation.
-//! - **Sandbox-unavailable downgrade** (#860) — if the platform
-//!   sandbox backend isn't installed, Auto downgrades mutating and
-//!   destructive ops to NeedsConfirmation so you never lose both
-//!   the sandbox and the prompt.
+//!   (#560, #1236).
+//! - **No sandbox on this machine** (#860): every command and change
+//!   asks first in Auto, as Claude Code asks with its sandbox off, and Plan
+//!   refuses commands it can't contain.
 //!
 //! ## Child trust derivation
 //!
 //! Sub-agents never widen their parent's trust.
 //! [`derive_child_trust()`](crate::trust::derive_child_trust) is the single,
-//! authoritative way to compute child trust across all
-//! sub-agent dispatch paths (sequential, parallel, background, fork).
-//! See its rustdoc for the #1022 B19 cautionary tale on why
-//! `parent_runtime` (the live atomic) and not `parent_config.trust`
-//! (the startup value) is the correct first argument.
+//! authoritative way to compute child trust across all sub-agent dispatch
+//! paths. See its rustdoc for why `parent_runtime` (the live atomic) and not
+//! `parent_config.trust` (the startup value) is the first argument.
 //!
 //! ## Design principle
 //!
-//! The sandbox is the safety boundary, not the approval prompt.
-//! Auto trusts the agent for non-destructive work within the project
-//! sandbox — the kernel enforces the perimeter. Safe adds approval
-//! as a second layer (belt and suspenders). Auto keeps the prompt
-//! for destructive ops because the sandbox can't undo them. Plan
-//! denies all writes outright and is enforced at the syscall level
-//! (kernel-level read-only sandbox), strictly stronger than soft
-//! denylisting `Write`/`Edit` in `disallowed_tools`.
-//! Credential dirs are always blocked regardless of mode.
+//! The sandbox is the safety boundary, not the approval prompt. Auto trusts
+//! the agent for work the sandbox contains and asks for what it can't:
+//! leaving it, destructive commands, files outside the project. Plan is
+//! enforced at the syscall level (a kernel read-only sandbox), strictly
+//! stronger than denylisting `Write`/`Edit`. Credential dirs are always
+//! blocked regardless of mode.
 
 // `classify_bash_command` no longer imported here — `BashTool::classify`
 // owns Bash's per-call effect resolution (#1265 PR-9 cleanup).
@@ -116,161 +91,6 @@ pub use koda_protocol::state::TrustMode;
 /// What the model reads in place of a tool's result when Plan refuses the
 /// call: the protocol's [`koda_protocol::item::PLAN_BLOCKED_MESSAGE`].
 pub use koda_protocol::item::PLAN_BLOCKED_MESSAGE;
-
-// ── Sandbox-availability requirement for Auto (#860 → hard refuse) ─────────────
-
-/// Validate that [`TrustMode::Auto`] has a kernel sandbox available
-/// to enforce the perimeter. Returns `Err` with a user-actionable
-/// message when Auto is requested without sandbox support; `Ok`
-/// with the (unchanged) mode otherwise.
-///
-/// # The invariant
-///
-/// Auto's whole value proposition is "trust the kernel sandbox to
-/// contain auto-approved mutations". Without the sandbox, Auto
-/// would auto-approve `Bash` mutations that touch arbitrary paths
-/// on the user's filesystem — the destructive ops we *do* still
-/// confirm in Auto (#1251) are only one class of risk; the more
-/// common class is "`pip install --user` modifies `~/.local/`,
-/// destructive ops are bounded by the sandbox alone". Removing
-/// the sandbox removes that bound.
-///
-/// Plan and Safe don't need this validation:
-/// - **Plan** denies all mutating tools at
-///   the trust layer; Bash never runs, so kernel sandbox state is
-///   irrelevant. The Plan branch in this helper exists for symmetry
-///   and to defend against any future code path that calls it on a
-///   sub-agent's declared mode.
-/// - **Safe** keeps the human in the approval loop for every
-///   mutation; the sandbox is defense-in-depth there, not the
-///   primary boundary.
-///
-/// # Why a hard refusal, not a silent coerce
-///
-/// Pre-#860 the plan was "silently downgrade Auto → Safe when the
-/// sandbox is unavailable". That violates the Zen of Python
-/// (errors should never pass silently) and — critically — it's
-/// **catastrophic in headless mode**: `koda exec --mode auto "..."`
-/// would silently become Safe, and every mutation would hit
-/// `RejectAuto` (no human channel to approve), causing the task
-/// to abort halfway with a confusing partial-state failure.
-/// Hard refusal at startup gives a clear error and exit-code-1
-/// instead.
-///
-/// # When this is called
-///
-/// - **CLI startup** (via `parse_top_level_trust_mode` in `app.rs`):
-///   `--mode auto` + no sandbox → print error + exit 1.
-/// - **TUI mode toggle** (`Shift+Tab`, `/auto`): catch the error
-///   and surface a warning toast instead of cycling — the user
-///   stays in the previous mode.
-/// - **Persistence resume**: a session persisted in Auto on a
-///   sandboxed machine, resumed on an unsandboxed machine, gets
-///   the same hard refusal as `--mode auto`.
-///
-/// The per-tool bail in `sandbox::build()` (sandbox.rs:111)
-/// remains as belt-and-suspenders for any future call path that
-/// bypasses startup validation.
-///
-/// # Examples
-///
-/// ```
-/// use koda_core::trust::{require_sandbox_for_auto, TrustMode};
-///
-/// // Auto + sandbox available: passes through unchanged.
-/// assert_eq!(require_sandbox_for_auto(TrustMode::Auto, true).unwrap(), TrustMode::Auto);
-///
-/// // Auto + no sandbox: errors with an actionable message.
-/// let err = require_sandbox_for_auto(TrustMode::Auto, false).unwrap_err();
-/// assert!(err.contains("sandbox"));
-/// assert!(err.contains("--mode safe"));
-///
-/// // Safe and Plan don't depend on sandbox availability.
-/// assert!(require_sandbox_for_auto(TrustMode::Safe, false).is_ok());
-/// assert!(require_sandbox_for_auto(TrustMode::Plan, false).is_ok());
-/// ```
-pub fn require_sandbox_for_auto(
-    candidate: TrustMode,
-    sandbox_available: bool,
-) -> Result<TrustMode, String> {
-    match candidate {
-        TrustMode::Auto if !sandbox_available => Err(
-            "Auto mode requires the kernel sandbox, which is unavailable on this system. \
-             Auto auto-approves mutating tool calls and relies on the sandbox to contain \
-             them; without the sandbox, the agent could touch arbitrary files outside the \
-             project. Use `--mode safe` to keep the human in the approval loop, or install \
-             the platform sandbox backend (see setup hint below if printed by the CLI)."
-                .to_string(),
-        ),
-        other => Ok(other),
-    }
-}
-
-/// Compute the **default** trust mode for a session given sandbox
-/// availability. Auto when the sandbox is present, Safe when not.
-///
-/// The CLI's top-level default is now the louder `Auto` everywhere
-/// choice (#1241): it hardcodes `default_value = "auto"` and then
-/// fails fast on unsandboxed platforms via [`require_sandbox_for_auto`]
-/// with inline install hints from [`crate::sandbox::setup_hint`]. This
-/// helper remains exported for downstream embedders who prefer
-/// sandbox-aware defaulting without the hard-refusal UX.
-///
-/// # Examples
-///
-/// ```
-/// use koda_core::trust::{derive_default_trust, TrustMode};
-///
-/// assert_eq!(derive_default_trust(true), TrustMode::Auto);
-/// assert_eq!(derive_default_trust(false), TrustMode::Safe);
-/// ```
-pub fn derive_default_trust(sandbox_available: bool) -> TrustMode {
-    if sandbox_available {
-        TrustMode::Auto
-    } else {
-        TrustMode::Safe
-    }
-}
-
-// ── TUI-side sandbox-aware setters ──────────────────────────
-
-/// Sandbox-aware variant of [`cycle_trust`]. Computes the next mode,
-/// validates it with [`require_sandbox_for_auto`], and either commits
-/// it via [`set_trust`] (returning `Ok(new_mode)`) or returns Err
-/// with the actionable message; the shared mode is **left unchanged**
-/// in the Err case.
-///
-/// Used by the TUI `BackTab` cycle handler so a user pressing the
-/// trust toggle on an unsandboxed system stays in their previous
-/// mode and gets a visible warning instead of silently flipping to
-/// Auto (which would fail at the next mutation anyway).
-pub fn cycle_trust_checked(
-    shared: &SharedTrustMode,
-    sandbox_available: bool,
-) -> Result<TrustMode, String> {
-    let next = read_trust(shared).next();
-    let validated = require_sandbox_for_auto(next, sandbox_available)?;
-    set_trust(shared, validated);
-    Ok(validated)
-}
-
-/// Sandbox-aware variant of [`set_trust`]. Validates `mode` with
-/// [`require_sandbox_for_auto`] before committing; on Err, the
-/// shared mode is **left unchanged** and the caller surfaces the
-/// message.
-///
-/// Used by the TUI approval-prompt `a` (always-allow) hotkey so a
-/// user pressing it on an unsandboxed system gets a clear refusal
-/// instead of an Auto state that would bail at the next tool call.
-pub fn set_trust_checked(
-    shared: &SharedTrustMode,
-    mode: TrustMode,
-    sandbox_available: bool,
-) -> Result<TrustMode, String> {
-    let validated = require_sandbox_for_auto(mode, sandbox_available)?;
-    set_trust(shared, validated);
-    Ok(validated)
-}
 
 // ── Child trust derivation (#1022 B19) ──────────────────────
 
@@ -313,11 +133,11 @@ pub fn set_trust_checked(
 /// ```
 /// use koda_core::trust::{derive_child_trust, TrustMode};
 ///
-/// // Named child declares Auto, parent runtime is Safe → child
-/// // clamps down to Safe (declared narrows toward parent).
+/// // Named child declares Auto, parent runtime is Plan → child
+/// // clamps down to Plan (declared narrows toward parent).
 /// assert_eq!(
-///     derive_child_trust(TrustMode::Safe, TrustMode::Auto),
-///     TrustMode::Safe,
+///     derive_child_trust(TrustMode::Plan, TrustMode::Auto),
+///     TrustMode::Plan,
 /// );
 ///
 /// // Named child declares Plan, parent runtime is Auto → child
@@ -329,8 +149,8 @@ pub fn set_trust_checked(
 ///
 /// // Fork case: declared = parent_runtime → identity.
 /// assert_eq!(
-///     derive_child_trust(TrustMode::Safe, TrustMode::Safe),
-///     TrustMode::Safe,
+///     derive_child_trust(TrustMode::Auto, TrustMode::Auto),
+///     TrustMode::Auto,
 /// );
 /// ```
 pub fn derive_child_trust(parent_runtime: TrustMode, declared: TrustMode) -> TrustMode {
@@ -362,11 +182,7 @@ pub fn set_trust(shared: &SharedTrustMode, mode: TrustMode) {
     shared.store(mode as u8, Ordering::Relaxed);
 }
 
-/// Cycle to the next trust mode (Safe ↔ Auto) and return it.
-///
-/// Plan is not part of this cycle; the TUI's Shift+Tab cycles Safe,
-/// Auto and Plan itself. The underlying [`TrustMode::next`] keeps Plan
-/// where it is.
+/// Switch to the other trust mode (Auto ↔ Plan) and return it.
 pub fn cycle_trust(shared: &SharedTrustMode) -> TrustMode {
     let current = read_trust(shared);
     let next = current.next();
@@ -402,14 +218,20 @@ pub enum ToolApproval {
 
 /// Decide whether a tool call should be auto-approved, confirmed, or blocked.
 ///
-/// **Top-level (interactive) decision matrix:**
+/// **Top-level (interactive) decision matrix**, as Codex decides from its
+/// sandbox:
 ///
-/// | ToolEffect     | Plan    | Safe          | Auto          |
-/// |----------------|---------|---------------|---------------|
-/// | ReadOnly       | ✅ auto  | ✅ auto        | ✅ auto        |
-/// | RemoteAction   | ❌ block | ⚠️ confirm     | ✅ auto        |
-/// | LocalMutation  | ❌ block | ⚠️ confirm     | ✅ auto        |
-/// | Destructive    | ❌ block | ⚠️ confirm     | ⚠️ confirm     |
+/// | ToolEffect     | Plan                       | Auto          |
+/// |----------------|----------------------------|---------------|
+/// | ReadOnly       | ✅ auto                     | ✅ auto        |
+/// | A shell command| ✅ auto, read-only sandbox  | ✅ auto        |
+/// | RemoteAction   | ❌ block                    | ✅ auto        |
+/// | LocalMutation  | ❌ block                    | ✅ auto        |
+/// | Destructive    | ❌ block                    | ⚠️ confirm     |
+///
+/// A shell command in Plan (`Bash`, `Monitor`) runs in Plan's read-only
+/// kernel sandbox ([`crate::sandbox`]), so it needs no verdict of its own,
+/// as in Codex's read-only mode; with no sandbox to hold it, it is refused.
 ///
 /// `Auto × Destructive` confirms (changed in #1251 — was auto pre-#1251).
 /// The sandbox can't undo an `rm -rf` or `git reset --hard` on a tracked
@@ -432,7 +254,7 @@ pub fn check_tool(
 
 /// [`check_tool`], classifying with `registry`'s catalog, which knows the
 /// connected MCP servers: a tool its server marks `readOnlyHint` counts as
-/// read-only, so Plan runs it and Safe doesn't ask. [`check_tool`] uses a
+/// read-only, so Plan runs it. [`check_tool`] uses a
 /// catalog without MCP servers, where every MCP tool counts as a remote
 /// action.
 pub fn check_tool_with_registry(
@@ -453,30 +275,29 @@ fn check_tool_inner(
     project_root: Option<&Path>,
     registry: Option<&crate::tools::ToolRegistry>,
 ) -> ToolApproval {
-    let mut effect = resolve_tool_effect_inner(tool_name, args, registry);
-
-    // `cd` is read-only, but one that may leave the project makes the
-    // command a change again, so `cd /etc && ls` asks as it always has
-    // and Plan still blocks it.
-    if effect == ToolEffect::ReadOnly
-        && matches!(tool_name, "Bash" | "Monitor")
-        && args
-            .get("command")
-            .and_then(|v| v.as_str())
-            .is_some_and(|cmd| crate::bash_path_lint::cd_leaves_project(cmd, project_root))
-    {
-        effect = ToolEffect::LocalMutation;
-    }
+    let effect = resolve_tool_effect_inner(tool_name, args, registry);
 
     // Read-only tools always auto-approve in every mode and context
     if effect == ToolEffect::ReadOnly {
         return ToolApproval::AutoApprove;
     }
 
-    // Plan mode: deny everything except read-only, but ask before fetching
-    // a page from a site that isn't a preapproved documentation site, as
-    // Claude Code does: reading the web is part of planning.
+    // Plan mode: a shell command runs in the read-only sandbox, which
+    // refuses its writes, as Codex's read-only mode runs commands; a
+    // dangerous one, or one asking to leave the sandbox (Destructive), is
+    // refused, and so is any command with no sandbox to hold it. Edits are
+    // refused. A page from a site that isn't a preapproved documentation
+    // site asks first, as in Claude Code: reading the web is part of
+    // planning.
     if mode == TrustMode::Plan {
+        if matches!(tool_name, "Bash" | "Monitor") {
+            let contained = effect != ToolEffect::Destructive && crate::sandbox::is_available();
+            return if contained {
+                ToolApproval::AutoApprove
+            } else {
+                ToolApproval::Blocked
+            };
+        }
         if tool_name == "WebFetch" {
             return ToolApproval::NeedsConfirmation;
         }
@@ -493,12 +314,6 @@ fn check_tool_inner(
     // Apply the ToolEffect × TrustMode × Context matrix
     match mode {
         TrustMode::Plan => unreachable!(), // handled above
-        TrustMode::Safe => match effect {
-            ToolEffect::ReadOnly => ToolApproval::AutoApprove,
-            ToolEffect::RemoteAction | ToolEffect::LocalMutation | ToolEffect::Destructive => {
-                ToolApproval::NeedsConfirmation
-            }
-        },
         TrustMode::Auto => match effect {
             ToolEffect::ReadOnly => ToolApproval::AutoApprove,
             ToolEffect::Destructive => {
@@ -733,36 +548,21 @@ mod tests {
     // ── Mode tests ──
 
     #[test]
-    fn test_mode_cycle() {
-        assert_eq!(TrustMode::Safe.next(), TrustMode::Auto);
-        assert_eq!(TrustMode::Auto.next(), TrustMode::Safe);
-        assert_eq!(TrustMode::Plan.next(), TrustMode::Plan); // agent-only, no toggle
-    }
-
-    #[test]
-    fn test_mode_ordering() {
-        assert!(TrustMode::Plan < TrustMode::Safe);
-        assert!(TrustMode::Safe < TrustMode::Auto);
-    }
-
-    #[test]
-    fn test_clamp() {
-        assert_eq!(
-            TrustMode::clamp(TrustMode::Plan, TrustMode::Auto),
-            TrustMode::Plan
-        );
-        assert_eq!(
-            TrustMode::clamp(TrustMode::Safe, TrustMode::Auto),
-            TrustMode::Safe
-        );
-        assert_eq!(
-            TrustMode::clamp(TrustMode::Auto, TrustMode::Safe),
-            TrustMode::Safe
-        );
-        assert_eq!(
-            TrustMode::clamp(TrustMode::Auto, TrustMode::Auto),
-            TrustMode::Auto
-        );
+    fn modes_cycle_order_and_clamp() {
+        assert_eq!(TrustMode::Auto.next(), TrustMode::Plan);
+        assert_eq!(TrustMode::Plan.next(), TrustMode::Auto);
+        assert!(TrustMode::Plan < TrustMode::Auto);
+        for (parent, child, want) in [
+            (TrustMode::Plan, TrustMode::Auto, TrustMode::Plan),
+            (TrustMode::Auto, TrustMode::Plan, TrustMode::Plan),
+            (TrustMode::Auto, TrustMode::Auto, TrustMode::Auto),
+        ] {
+            assert_eq!(
+                TrustMode::clamp(parent, child),
+                want,
+                "{parent:?} {child:?}"
+            );
+        }
     }
 
     // ── #1022 B19: derive_child_trust contract ──
@@ -785,7 +585,7 @@ mod tests {
     fn derive_child_trust_fork_identity() {
         // Fork passes (mode, mode) — helper collapses to identity.
         // Documents that the symmetry is preserved.
-        for parent in [TrustMode::Plan, TrustMode::Safe, TrustMode::Auto] {
+        for parent in [TrustMode::Plan, TrustMode::Auto] {
             assert_eq!(
                 derive_child_trust(parent, parent),
                 parent,
@@ -796,38 +596,15 @@ mod tests {
 
     #[test]
     fn derive_child_trust_named_clamps_down() {
-        // Named child declares Auto; parent runtime is Safe →
-        // child must clamp down to Safe. This is the load-bearing
-        // case — a child that wanted broader privileges than its
-        // parent's runtime mode is forcibly narrowed.
-        assert_eq!(
-            derive_child_trust(TrustMode::Safe, TrustMode::Auto),
-            TrustMode::Safe
-        );
+        // A named child declaring Auto under a Plan parent is narrowed to
+        // Plan; one declaring Plan under Auto stays Plan. Clamp never
+        // widens.
         assert_eq!(
             derive_child_trust(TrustMode::Plan, TrustMode::Auto),
             TrustMode::Plan
         );
         assert_eq!(
-            derive_child_trust(TrustMode::Plan, TrustMode::Safe),
-            TrustMode::Plan
-        );
-    }
-
-    #[test]
-    fn derive_child_trust_child_already_stricter_passes_through() {
-        // Named child declares Plan with parent Auto → child stays
-        // Plan. Clamp never *widens*, only narrows.
-        assert_eq!(
             derive_child_trust(TrustMode::Auto, TrustMode::Plan),
-            TrustMode::Plan
-        );
-        assert_eq!(
-            derive_child_trust(TrustMode::Auto, TrustMode::Safe),
-            TrustMode::Safe
-        );
-        assert_eq!(
-            derive_child_trust(TrustMode::Safe, TrustMode::Plan),
             TrustMode::Plan
         );
     }
@@ -843,56 +620,30 @@ mod tests {
         // *non-commutative* behavior (e.g. "if declared is Plan
         // unconditionally allow it") which would silently change
         // dispatch semantics.
-        for a in [TrustMode::Plan, TrustMode::Safe, TrustMode::Auto] {
-            for b in [TrustMode::Plan, TrustMode::Safe, TrustMode::Auto] {
+        for a in [TrustMode::Plan, TrustMode::Auto] {
+            for b in [TrustMode::Plan, TrustMode::Auto] {
                 assert_eq!(derive_child_trust(a, b), derive_child_trust(b, a));
             }
         }
     }
 
     #[test]
-    fn test_mode_from_str() {
+    fn modes_parse_show_and_default_to_auto() {
         assert_eq!(TrustMode::parse("auto"), Some(TrustMode::Auto));
-        assert_eq!(TrustMode::parse("safe"), Some(TrustMode::Safe));
-        assert_eq!(TrustMode::parse("plan"), Some(TrustMode::Plan));
-        // Legacy aliases
-        assert_eq!(TrustMode::parse("yolo"), Some(TrustMode::Auto));
-        assert_eq!(TrustMode::parse("confirm"), Some(TrustMode::Safe));
-        assert_eq!(TrustMode::parse("strict"), Some(TrustMode::Safe));
-        assert_eq!(TrustMode::parse("normal"), Some(TrustMode::Safe));
-        assert_eq!(TrustMode::parse("readonly"), Some(TrustMode::Plan));
-        assert_eq!(TrustMode::parse("read-only"), Some(TrustMode::Plan));
-        assert_eq!(TrustMode::parse("accept"), Some(TrustMode::Auto));
-        assert_eq!(TrustMode::parse("nope"), None);
-    }
-
-    #[test]
-    fn test_mode_from_u8() {
+        assert_eq!(TrustMode::parse("Plan"), Some(TrustMode::Plan));
+        // Safe is gone, and so are the old aliases.
+        for gone in ["safe", "yolo", "confirm", "readonly", "nope"] {
+            assert_eq!(TrustMode::parse(gone), None, "{gone}");
+        }
         assert_eq!(TrustMode::from(0), TrustMode::Plan);
-        assert_eq!(TrustMode::from(1), TrustMode::Safe);
-        assert_eq!(TrustMode::from(2), TrustMode::Auto);
-        assert_eq!(TrustMode::from(99), TrustMode::Safe); // fail-safe to Safe (#860)
-    }
-
-    #[test]
-    fn test_shared_trust_cycle() {
-        let shared = new_shared_trust(TrustMode::Safe);
-        assert_eq!(read_trust(&shared), TrustMode::Safe);
-        let next = cycle_trust(&shared);
-        assert_eq!(next, TrustMode::Auto);
-        assert_eq!(read_trust(&shared), TrustMode::Auto);
-    }
-
-    #[test]
-    fn test_display() {
+        assert_eq!(TrustMode::from(1), TrustMode::Auto);
+        assert_eq!(TrustMode::from(99), TrustMode::Plan, "fail-safe to Plan");
         assert_eq!(TrustMode::Plan.to_string(), "plan");
-        assert_eq!(TrustMode::Safe.to_string(), "safe");
         assert_eq!(TrustMode::Auto.to_string(), "auto");
-    }
-
-    #[test]
-    fn test_default() {
-        assert_eq!(TrustMode::default(), TrustMode::Safe);
+        assert_eq!(TrustMode::default(), TrustMode::Auto);
+        let shared = new_shared_trust(TrustMode::Auto);
+        assert_eq!(cycle_trust(&shared), TrustMode::Plan);
+        assert_eq!(read_trust(&shared), TrustMode::Plan);
     }
 
     // ── Tool approval tests ──
@@ -916,7 +667,7 @@ mod tests {
     #[test]
     fn test_read_tools_always_approved() {
         for tool in READ_ONLY_TOOLS {
-            for mode in [TrustMode::Plan, TrustMode::Safe, TrustMode::Auto] {
+            for mode in [TrustMode::Plan, TrustMode::Auto] {
                 assert_eq!(
                     check_tool(tool, &serde_json::json!({}), mode, None),
                     ToolApproval::AutoApprove,
@@ -933,17 +684,6 @@ mod tests {
                 check_tool(tool, &serde_json::json!({}), TrustMode::Plan, None),
                 ToolApproval::Blocked,
                 "{tool} should be blocked in Plan mode"
-            );
-        }
-    }
-
-    #[test]
-    fn test_safe_confirms_writes() {
-        for tool in ["Write", "Edit", "MemoryWrite"] {
-            assert_eq!(
-                check_tool(tool, &serde_json::json!({}), TrustMode::Safe, None),
-                ToolApproval::NeedsConfirmation,
-                "{tool} should need confirmation in Safe mode"
             );
         }
     }
@@ -972,26 +712,23 @@ mod tests {
     }
 
     /// `WebFetch` asks, as Claude Code's does, except for a preapproved
-    /// documentation site: Safe and Plan ask, Auto doesn't, and "allow for
+    /// documentation site: Plan asks, Auto doesn't, and "allow for
     /// session" covers the site.
     #[test]
     fn web_fetch_asks_except_for_documentation_sites() {
         let site = serde_json::json!({"url": "https://example.com/a", "prompt": "q"});
         let docs = serde_json::json!({"url": "https://doc.rust-lang.org/std/", "prompt": "q"});
-        for mode in [TrustMode::Safe, TrustMode::Plan] {
-            assert_eq!(
-                check_tool("WebFetch", &site, mode, None),
-                ToolApproval::NeedsConfirmation,
-                "{mode:?}"
-            );
-        }
+        assert_eq!(
+            check_tool("WebFetch", &site, TrustMode::Plan, None),
+            ToolApproval::NeedsConfirmation
+        );
         if crate::sandbox::is_available() {
             assert_eq!(
                 check_tool("WebFetch", &site, TrustMode::Auto, None),
                 ToolApproval::AutoApprove
             );
         }
-        for mode in [TrustMode::Safe, TrustMode::Plan, TrustMode::Auto] {
+        for mode in [TrustMode::Plan, TrustMode::Auto] {
             assert_eq!(
                 check_tool("WebFetch", &docs, mode, None),
                 ToolApproval::AutoApprove,
@@ -1058,7 +795,7 @@ mod tests {
     }
 
     /// Leaving the sandbox needs the user's yes whatever the command does:
-    /// asked in Safe and Auto, refused in Plan and in sub-agents, where no
+    /// asked in Auto, refused in Plan and in sub-agents, where no
     /// one can answer.
     #[test]
     fn test_bash_outside_sandbox_always_needs_the_user() {
@@ -1067,13 +804,10 @@ mod tests {
             "outside_sandbox": true,
             "reason": "List the remote's branches over SSH",
         });
-        for mode in [TrustMode::Safe, TrustMode::Auto] {
-            assert_eq!(
-                check_tool("Bash", &args, mode, None),
-                ToolApproval::NeedsConfirmation,
-                "{mode:?}"
-            );
-        }
+        assert_eq!(
+            check_tool("Bash", &args, TrustMode::Auto, None),
+            ToolApproval::NeedsConfirmation
+        );
         assert_eq!(
             check_tool("Bash", &args, TrustMode::Plan, None),
             ToolApproval::Blocked
@@ -1086,36 +820,9 @@ mod tests {
         );
     }
 
+    /// gh destructive commands need confirmation in Auto (#518).
     #[test]
-    fn test_safe_bash_read_only_auto_approved() {
-        let args = serde_json::json!({"command": "git status"});
-        assert_eq!(
-            check_tool("Bash", &args, TrustMode::Safe, None),
-            ToolApproval::AutoApprove,
-        );
-    }
-
-    /// gh read-only commands should auto-approve even in Safe mode (#518).
-    #[test]
-    fn test_gh_read_only_auto_approved() {
-        for cmd in [
-            "gh issue view 42",
-            "gh pr view 99",
-            "gh pr list",
-            "gh issue list",
-        ] {
-            let args = serde_json::json!({"command": cmd});
-            assert_eq!(
-                check_tool("Bash", &args, TrustMode::Safe, None),
-                ToolApproval::AutoApprove,
-                "{cmd} should auto-approve even in Safe mode"
-            );
-        }
-    }
-
-    /// gh destructive commands need confirmation in both Safe and Auto modes (#518).
-    #[test]
-    fn test_gh_destructive_needs_confirmation_in_safe() {
+    fn test_gh_destructive_needs_confirmation_in_auto() {
         for cmd in [
             "gh pr merge 42 --squash",
             "gh issue delete 42",
@@ -1123,14 +830,14 @@ mod tests {
         ] {
             let args = serde_json::json!({"command": cmd});
             assert_eq!(
-                check_tool("Bash", &args, TrustMode::Safe, None),
+                check_tool("Bash", &args, TrustMode::Auto, None),
                 ToolApproval::NeedsConfirmation,
-                "{cmd} should need confirmation in Safe mode"
+                "{cmd} should need confirmation in Auto mode"
             );
         }
     }
 
-    /// gh mutation commands confirm in Safe, auto-approve in Auto (#518).
+    /// gh mutation commands auto-approve in Auto (#518).
     #[test]
     fn test_gh_mutation_auto_approved_in_auto() {
         for cmd in [
@@ -1144,28 +851,14 @@ mod tests {
                 ToolApproval::AutoApprove,
                 "{cmd} should auto-approve in Auto mode"
             );
-            assert_eq!(
-                check_tool("Bash", &args, TrustMode::Safe, None),
-                ToolApproval::NeedsConfirmation,
-                "{cmd} should need confirmation in Safe mode"
-            );
         }
     }
 
     #[test]
-    fn test_dev_workflow_bash_needs_confirmation_in_safe() {
-        let args = serde_json::json!({"command": "cargo test --release"});
-        assert_eq!(
-            check_tool("Bash", &args, TrustMode::Safe, None),
-            ToolApproval::NeedsConfirmation,
-        );
-    }
-
-    #[test]
-    fn test_dangerous_bash_needs_confirmation_in_safe() {
+    fn test_dangerous_bash_needs_confirmation_in_auto() {
         let args = serde_json::json!({"command": "rm -rf target/"});
         assert_eq!(
-            check_tool("Bash", &args, TrustMode::Safe, None),
+            check_tool("Bash", &args, TrustMode::Auto, None),
             ToolApproval::NeedsConfirmation,
         );
     }
@@ -1182,7 +875,7 @@ mod tests {
     #[test]
     fn test_invoke_agent_auto_approved() {
         let args = serde_json::json!({"agent_name": "reviewer", "prompt": "review this"});
-        for mode in [TrustMode::Plan, TrustMode::Safe, TrustMode::Auto] {
+        for mode in [TrustMode::Plan, TrustMode::Auto] {
             assert_eq!(
                 check_tool("InvokeAgent", &args, mode, None),
                 ToolApproval::AutoApprove,
@@ -1228,54 +921,6 @@ mod tests {
         let args = serde_json::json!({"command": "cd /etc && ls"});
         assert_eq!(
             check_tool("Bash", &args, TrustMode::Auto, Some(root)),
-            ToolApproval::NeedsConfirmation,
-        );
-    }
-
-    /// The shell-search A/B's searches, which asked in Safe only for the
-    /// `cd` in front: a `cd` inside the project leaves them read-only.
-    #[test]
-    fn test_bash_cd_inside_then_read_only_runs_in_safe() {
-        let root = Path::new("/home/user/project");
-        for cmd in [
-            "cd /home/user/project && grep -rn fmt_money --include='*.rs' . | head -50",
-            "cd /home/user/project && ls && cat Cargo.toml",
-            "cd src && find . -name '*.rs'",
-        ] {
-            let args = serde_json::json!({ "command": cmd });
-            assert_eq!(
-                check_tool("Bash", &args, TrustMode::Safe, Some(root)),
-                ToolApproval::AutoApprove,
-                "{cmd}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_bash_cd_that_may_leave_still_asks_in_safe_and_blocks_in_plan() {
-        let root = Path::new("/home/user/project");
-        for cmd in [
-            "cd /etc && ls",
-            "cd ~ && ls",
-            "cd $DIR && ls",
-            "cd .. && ls",
-        ] {
-            let args = serde_json::json!({ "command": cmd });
-            assert_eq!(
-                check_tool("Bash", &args, TrustMode::Safe, Some(root)),
-                ToolApproval::NeedsConfirmation,
-                "{cmd}"
-            );
-            assert_eq!(
-                check_tool("Bash", &args, TrustMode::Plan, Some(root)),
-                ToolApproval::Blocked,
-                "{cmd}"
-            );
-        }
-        // `cd` with `git` asks in Safe, as in Claude Code.
-        let args = serde_json::json!({ "command": "cd src && git status" });
-        assert_eq!(
-            check_tool("Bash", &args, TrustMode::Safe, Some(root)),
             ToolApproval::NeedsConfirmation,
         );
     }
@@ -1384,93 +1029,6 @@ mod tests {
             child_inherits,
             TrustMode::Plan,
             "sub-agent must keep Plan; coercion is top-level-only"
-        );
-    }
-
-    // ────────────────────────────────────────────
-    // require_sandbox_for_auto + derive_default_trust (#860 → hard refuse)
-    //
-    // Auto's value proposition is "trust the kernel sandbox to contain
-    // auto-approved mutations". Without the sandbox we MUST refuse Auto
-    // — not silently coerce to Safe (catastrophic in headless: every
-    // mutation hits RejectAuto with no human channel and the task
-    // aborts halfway). The pin tests below enforce that contract.
-    // ────────────────────────────────────────────
-
-    #[test]
-    fn require_sandbox_auto_with_sandbox_passes_through() {
-        let result = require_sandbox_for_auto(TrustMode::Auto, true);
-        assert_eq!(result.unwrap(), TrustMode::Auto);
-    }
-
-    #[test]
-    fn require_sandbox_auto_without_sandbox_errors_with_actionable_message() {
-        let err = require_sandbox_for_auto(TrustMode::Auto, false).unwrap_err();
-        // Pin the actionable parts of the error so future edits don't
-        // strip the user's recovery path.
-        assert!(
-            err.contains("sandbox"),
-            "error must mention sandbox; got: {err}"
-        );
-        assert!(
-            err.contains("--mode safe"),
-            "error must point at --mode safe as the escape hatch; got: {err}"
-        );
-        // Setup hints (e.g. `apt install bubblewrap`) are appended
-        // by the CLI caller via `sandbox::setup_hint()`, not built
-        // into this pure helper. The error itself must stay
-        // backend-agnostic so it's testable without runtime probes.
-    }
-
-    #[test]
-    fn require_sandbox_safe_passes_regardless_of_sandbox() {
-        // Safe doesn't need the sandbox — the human is the boundary.
-        // Pin both branches so a future "defense-in-depth, force
-        // sandbox for Safe too" refactor has to actively touch this.
-        assert_eq!(
-            require_sandbox_for_auto(TrustMode::Safe, true).unwrap(),
-            TrustMode::Safe
-        );
-        assert_eq!(
-            require_sandbox_for_auto(TrustMode::Safe, false).unwrap(),
-            TrustMode::Safe
-        );
-    }
-
-    #[test]
-    fn require_sandbox_plan_passes_regardless_of_sandbox() {
-        // Plan denies all mutating tools at the trust layer; Bash never
-        // runs so kernel sandbox state is irrelevant. Same dual-branch
-        // pin as Safe.
-        assert_eq!(
-            require_sandbox_for_auto(TrustMode::Plan, true).unwrap(),
-            TrustMode::Plan
-        );
-        assert_eq!(
-            require_sandbox_for_auto(TrustMode::Plan, false).unwrap(),
-            TrustMode::Plan
-        );
-    }
-
-    #[test]
-    fn derive_default_trust_picks_strongest_supported_mode() {
-        // The sandbox-aware default consumed by #1241's flip: Auto when
-        // the platform can support it, Safe otherwise. No coercion of
-        // explicit user intent; this only fires when nothing was set.
-        assert_eq!(derive_default_trust(true), TrustMode::Auto);
-        assert_eq!(derive_default_trust(false), TrustMode::Safe);
-    }
-
-    #[test]
-    fn require_sandbox_does_not_silently_coerce_to_safe() {
-        // Negative assertion: the function MUST return Err for the
-        // Auto+unsandboxed case, not Ok(Safe). Headless tasks rely on
-        // this — a silent coerce would turn `koda exec --mode auto "..."`
-        // into Safe, and then RejectAuto would abort every mutation.
-        let result = require_sandbox_for_auto(TrustMode::Auto, false);
-        assert!(
-            result.is_err(),
-            "Auto + unavailable must Err; silent coerce-to-Safe is the bug we're preventing. Got: {result:?}"
         );
     }
 

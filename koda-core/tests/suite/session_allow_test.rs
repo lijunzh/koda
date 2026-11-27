@@ -73,7 +73,7 @@ async fn session(env: &Env, responses: Vec<MockResponse>) -> KodaSession {
         agent,
         env.db.clone(),
         &env.config,
-        TrustMode::Safe,
+        TrustMode::Auto,
     )
     .await;
     session.provider = Box::new(MockProvider::new(responses)) as Box<dyn LlmProvider>;

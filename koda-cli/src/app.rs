@@ -246,20 +246,18 @@ struct ConfigFlags {
     )]
     reasoning_effort: Option<String>,
 
-    /// What Koda may do without asking: auto (the default), safe or plan.
+    /// What Koda may do without asking: auto (the default) or plan.
     ///
-    /// auto: changes run without asking, inside the sandbox. Destructive
-    /// commands (such as rm -rf or git push --force) and writes outside the
-    /// project still ask. Auto needs the sandbox; where there is none, use
-    /// safe.
+    /// auto: commands run without asking, inside the sandbox. A command that
+    /// needs to leave the sandbox, a dangerous one (such as rm -rf or git push
+    /// --force) and a file outside the project ask first. With no sandbox on
+    /// this machine, every command asks.
     ///
-    /// safe: every change asks first.
-    ///
-    /// plan: read only. Koda looks around, proposes a plan, and asks before
-    /// carrying it out.
+    /// plan: read only. Commands run in a read-only sandbox; Koda looks
+    /// around, proposes a plan, and asks before carrying it out.
     ///
     /// config.toml's `mode` sets the default.
-    #[arg(long, value_parser = ["auto", "safe", "plan"], display_order = 7)]
+    #[arg(long, value_parser = ["auto", "plan"], display_order = 7)]
     mode: Option<String>,
 
     /// Add MCP servers for this run only, from a JSON file or inline JSON.
@@ -1444,7 +1442,7 @@ mod tests {
             "--model",
             "root-model",
             "--mode",
-            "safe",
+            "plan",
             "--mcp-config",
             "a.json",
             "exec",
@@ -1461,7 +1459,7 @@ mod tests {
         args.session.inherit(&cli.session);
         args.flags.inherit(&cli.flags);
         assert_eq!(args.session.model.as_deref(), Some("own-model"));
-        assert_eq!(args.flags.mode.as_deref(), Some("safe"));
+        assert_eq!(args.flags.mode.as_deref(), Some("plan"));
         assert_eq!(args.flags.mcp_config, ["a.json", "b.json"]);
     }
 
@@ -1485,11 +1483,11 @@ mod tests {
     #[test]
     fn serve_takes_config_flags_but_not_the_session_s() {
         assert!(Cli::try_parse_from(["koda", "serve", "--stdio", "--model", "x"]).is_err());
-        let cli = Cli::try_parse_from(["koda", "serve", "--stdio", "--mode", "safe"]).unwrap();
+        let cli = Cli::try_parse_from(["koda", "serve", "--stdio", "--mode", "plan"]).unwrap();
         let Some(Command::Serve(args)) = &cli.command else {
             panic!("not serve");
         };
-        assert_eq!(args.flags.mode.as_deref(), Some("safe"));
+        assert_eq!(args.flags.mode.as_deref(), Some("plan"));
         assert_eq!(serve_refusal(args, &cli.session, false), None);
         let cli = Cli::try_parse_from(["koda", "--resume", "abc", "serve", "--stdio"]).unwrap();
         let Some(Command::Serve(args)) = &cli.command else {
@@ -1622,7 +1620,7 @@ mod tests {
             "--effort",
             "high",
             "--mode",
-            "safe",
+            "plan",
         ]);
         assert_eq!(config.agent.as_deref(), Some("reviewer"));
         assert_eq!(config.model_max_output_tokens, Some(512));
@@ -1630,7 +1628,7 @@ mod tests {
         assert_eq!(config.model_temperature, Some(0.5));
         assert_eq!(config.model_thinking_budget, Some(2048));
         assert_eq!(config.model_reasoning_effort.as_deref(), Some("high"));
-        assert_eq!(config.mode, Some(koda_config::TrustMode::Safe));
+        assert_eq!(config.mode, Some(koda_config::TrustMode::Plan));
         // Unset flags set nothing.
         assert_eq!(config_of(&["koda"]), koda_config::ConfigToml::default());
     }

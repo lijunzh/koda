@@ -36,14 +36,16 @@ pub struct StateReadResponse {
 /// engine, `config.toml`'s `mode` and the protocol alike, as Codex keeps
 /// its approval policy in `codex-protocol`.
 ///
-/// Ordered `Plan < Safe < Auto`, so [`TrustMode::clamp`] keeps a sub-agent
-/// from exceeding the session that started it.
+/// As Codex's sandbox modes: Plan runs every command in a read-only
+/// sandbox, Auto in one that can write the project. What needs more asks to
+/// leave the sandbox. Ordered `Plan < Auto`, so [`TrustMode::clamp`] keeps
+/// a sub-agent from exceeding the session that started it.
 ///
 /// ```
 /// use koda_protocol::state::TrustMode;
 ///
-/// assert_eq!(TrustMode::Safe.as_str(), "safe");
-/// assert_eq!(TrustMode::Safe.next(), TrustMode::Auto);
+/// assert_eq!(TrustMode::Auto.as_str(), "auto");
+/// assert_eq!(TrustMode::Auto.next(), TrustMode::Plan);
 /// assert_eq!(TrustMode::clamp(TrustMode::Plan, TrustMode::Auto), TrustMode::Plan);
 /// ```
 #[derive(
@@ -63,26 +65,23 @@ pub struct StateReadResponse {
 #[serde(rename_all = "lowercase")]
 #[repr(u8)]
 pub enum TrustMode {
-    /// Read only: reads, searches and read-only commands run; anything else
-    /// is refused. For sub-agents and `koda exec` runs that should only
-    /// look.
+    /// Read only: every command runs in a read-only sandbox, and edits are
+    /// refused. For planning, read-only sub-agents and `koda exec` runs that
+    /// should only look.
     Plan = 0,
-    /// Every action with a side effect asks first.
+    /// Commands run without asking in a sandbox that can write the project;
+    /// a command that would leave it, a dangerous one, or a file outside the
+    /// project asks first.
     #[default]
-    Safe = 1,
-    /// Mutating actions run without asking, contained by the sandbox;
-    /// destructive actions and writes outside the project still ask.
-    Auto = 2,
+    Auto = 1,
 }
 
 impl TrustMode {
-    /// What the keyboard toggle switches to: Safe and Auto in turn. Plan
-    /// stays Plan; an interactive session never runs in it.
+    /// What the keyboard toggle switches to: Auto and Plan in turn.
     pub fn next(self) -> Self {
         match self {
-            Self::Plan => Self::Plan,
-            Self::Safe => Self::Auto,
-            Self::Auto => Self::Safe,
+            Self::Plan => Self::Auto,
+            Self::Auto => Self::Plan,
         }
     }
 
@@ -90,7 +89,6 @@ impl TrustMode {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Plan => "plan",
-            Self::Safe => "safe",
             Self::Auto => "auto",
         }
     }
@@ -103,20 +101,18 @@ impl TrustMode {
     /// One line on what the mode does.
     pub fn description(self) -> &'static str {
         match self {
-            Self::Plan => "read-only, every write refused",
-            Self::Safe => "confirm every side effect",
+            Self::Plan => "read-only sandbox, every edit refused",
             Self::Auto => {
-                "auto-approve in the sandbox; destructive and outside-project still confirm"
+                "runs in the sandbox; leaving it, dangerous commands and outside-project files ask"
             }
         }
     }
 
-    /// A mode from what a person typed, with the older names Koda took.
+    /// A mode from what a person typed.
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
-            "auto" | "yolo" | "accept" => Some(Self::Auto),
-            "safe" | "confirm" | "strict" | "normal" => Some(Self::Safe),
-            "plan" | "readonly" | "read-only" => Some(Self::Plan),
+            "auto" => Some(Self::Auto),
+            "plan" => Some(Self::Plan),
             _ => None,
         }
     }
@@ -130,11 +126,9 @@ impl TrustMode {
 impl From<u8> for TrustMode {
     fn from(v: u8) -> Self {
         match v {
-            0 => Self::Plan,
-            1 => Self::Safe,
-            2 => Self::Auto,
-            // Fail-safe: an unknown value is Safe, never Auto (#860).
-            _ => Self::Safe,
+            1 => Self::Auto,
+            // Fail-safe: an unknown value is Plan, never more than asked.
+            _ => Self::Plan,
         }
     }
 }

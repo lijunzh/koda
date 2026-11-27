@@ -2145,10 +2145,8 @@ mod release_workspace_tests {
 
     #[test]
     fn only_an_agent_that_asks_gets_a_worktree() {
-        use TrustMode::{Auto, Plan, Safe};
-        assert!(!needs_worktree(Safe, AgentIsolation::None));
+        use TrustMode::{Auto, Plan};
         assert!(!needs_worktree(Auto, AgentIsolation::None));
-        assert!(needs_worktree(Safe, AgentIsolation::Worktree));
         assert!(needs_worktree(Auto, AgentIsolation::Worktree));
         assert!(!needs_worktree(Plan, AgentIsolation::Worktree));
     }

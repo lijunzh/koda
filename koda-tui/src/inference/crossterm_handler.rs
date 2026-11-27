@@ -209,28 +209,6 @@ async fn handle_inference_key_inline(
                 Some(ApprovalDecision::AcceptForSession)
             }
             KeyCode::Char('n') | KeyCode::Char('N') => Some(ApprovalDecision::Decline),
-            KeyCode::Char('a') | KeyCode::Char('A') if !background => {
-                // Sandbox-aware Auto switch (#860 hard refusal). If the
-                // kernel sandbox is unavailable we skip the trust flip
-                // but still honor the approval as a one-shot — graceful
-                // degradation rather than blocking the user mid-prompt.
-                // The status-bar sandbox indicator (🛡/⚠) plus the
-                // sandbox state in `koda --version` make the underlying
-                // state visible; the warn-level log line here aids
-                // debugging when users wonder why pressing 'a' didn't
-                // persist.
-                match crate::mode::allow(TrustMode::Auto, mode.1) {
-                    // The host applies it once this turn ends.
-                    Ok(auto) => {
-                        *mode.0 = auto;
-                        stop.set_mode(auto);
-                    }
-                    Err(msg) => tracing::warn!(
-                        "Approve+Always pressed but Auto refused: {msg} \u{2014} approving one-shot only"
-                    ),
-                }
-                Some(ApprovalDecision::Accept)
-            }
             KeyCode::Char('f') | KeyCode::Char('F') if !background => {
                 *prompt_mode = PromptMode::WizardInput {
                     label: "Feedback".into(),
@@ -501,13 +479,9 @@ async fn handle_inference_key_inline(
             *plan_shown = !*plan_shown;
         }
         (KeyCode::BackTab, _) => {
-            // Safe, Auto and Plan in turn; Auto only with the kernel
-            // sandbox (#860). The host applies it once this turn ends, as
-            // Codex's settings update does.
-            let (next, note) = crate::mode::next(*mode.0, mode.1);
-            if let Some(note) = note {
-                crate::tui_output::dim_msg(scroll_buffer, note);
-            }
+            // Auto and Plan in turn. The host applies it once this turn
+            // ends, as Codex's settings update does.
+            let next = crate::mode::next(*mode.0);
             *mode.0 = next;
             stop.set_mode(next);
         }

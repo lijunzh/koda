@@ -47,7 +47,7 @@ fn write_file(id: &str, path: &str) -> ResponseTemplate {
 /// [`config`] in Safe mode, where a write waits for an approval.
 fn safe(server: &FakeLlmServer) -> KodaConfig {
     let mut config = config(server);
-    config.trust = koda_core::trust::TrustMode::Safe;
+    config.trust = koda_core::trust::TrustMode::Auto;
     config
 }
 

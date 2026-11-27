@@ -181,7 +181,6 @@ pub(crate) fn draw_viewport(
             let (icon, c) = match (state, mode) {
                 (TuiState::Inferring, _) => ("\u{23f3}", Color::DarkGray),
                 (_, TrustMode::Plan) => ("\u{1f4cb}", Color::Cyan),
-                (_, TrustMode::Safe) => ("\u{1f512}", Color::Yellow),
                 (_, TrustMode::Auto) => ("\u{26a1}", Color::Green),
             };
             (format!("{icon}> "), c)
@@ -511,8 +510,6 @@ fn render_menu(frame: &mut ratatui::Frame, menu: &MenuContent, menu_area: ratatu
                 keys.extend([
                     Span::styled("[f]", Style::default().fg(Color::Yellow)),
                     Span::styled(" feedback  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("[a]", Style::default().fg(Color::Rgb(124, 111, 100))),
-                    Span::styled(" auto  ", Style::default().fg(Color::DarkGray)),
                 ]);
             }
             keys.extend([

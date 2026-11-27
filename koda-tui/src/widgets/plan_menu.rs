@@ -32,27 +32,20 @@ impl DropdownItem for PlanChoice {
     }
 }
 
-/// The choices: Safe, Auto when the sandbox makes it available, then
-/// staying in Plan.
-pub fn choices(auto_available: bool) -> Vec<PlanChoice> {
-    let mut choices = vec![PlanChoice {
-        label: "Yes, implement it in Safe",
-        description: "Asks before each change",
-        mode: Some(TrustMode::Safe),
-    }];
-    if auto_available {
-        choices.push(PlanChoice {
-            label: "Yes, implement it in Auto",
-            description: "Changes the project without asking, in the sandbox",
+/// The choices: implement it in Auto, or stay in Plan.
+pub fn choices() -> Vec<PlanChoice> {
+    vec![
+        PlanChoice {
+            label: "Yes, implement it",
+            description: "Auto: changes the project in the sandbox",
             mode: Some(TrustMode::Auto),
-        });
-    }
-    choices.push(PlanChoice {
-        label: "No, keep planning",
-        description: "Stay in Plan mode and reply to the model",
-        mode: None,
-    });
-    choices
+        },
+        PlanChoice {
+            label: "No, keep planning",
+            description: "Stay in Plan mode and reply to the model",
+            mode: None,
+        },
+    ]
 }
 
 /// Whether a reply proposes a plan: a `<proposed_plan>` tag on a line of
@@ -66,13 +59,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn auto_is_offered_only_with_the_sandbox() {
-        let modes = |auto| choices(auto).iter().map(|c| c.mode).collect::<Vec<_>>();
-        assert_eq!(
-            modes(true),
-            [Some(TrustMode::Safe), Some(TrustMode::Auto), None]
-        );
-        assert_eq!(modes(false), [Some(TrustMode::Safe), None]);
+    fn a_plan_is_implemented_in_auto_or_kept() {
+        let modes: Vec<_> = choices().iter().map(|c| c.mode).collect();
+        assert_eq!(modes, [Some(TrustMode::Auto), None]);
     }
 
     #[test]

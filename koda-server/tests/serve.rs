@@ -59,7 +59,7 @@ fn config(server: &FakeLlmServer, safe: bool) -> KodaConfig {
     config.max_context_tokens = 100_000;
     config.model_settings.max_context_tokens = 100_000;
     if safe {
-        config.trust = koda_core::trust::TrustMode::Safe;
+        config.trust = koda_core::trust::TrustMode::Auto;
     }
     config
 }

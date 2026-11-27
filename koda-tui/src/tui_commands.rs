@@ -363,18 +363,6 @@ async fn handle_resume_session(
                     0 => tui_output::err_msg(buffer, format!("No session found matching '{id}'.")),
                     1 => {
                         let target = &matches[0];
-                        // Auto needs the host's sandbox: refused here,
-                        // before switching, as the host would refuse it.
-                        if target.mode == Some(TrustMode::Auto) && !mode.1.available {
-                            tui_output::err_msg(
-                                buffer,
-                                format!(
-                                    "Cannot resume session in Auto mode: {}",
-                                    crate::mode::auto_refused(mode.1)
-                                ),
-                            );
-                            return;
-                        }
                         // The TUI opens it on the host before the next turn.
                         session.id = target.id.clone();
                         let short_id = target.id[..8].to_string();

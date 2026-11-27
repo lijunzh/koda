@@ -42,8 +42,7 @@ impl TuiContext {
     /// After a Plan turn that proposed a plan: "Implement this plan?", as
     /// Codex's TUI asks.
     pub(crate) fn offer_to_implement_plan(&mut self) {
-        let mut dd =
-            DropdownState::new(plan_menu::choices(self.sandbox.available), plan_menu::TITLE);
+        let mut dd = DropdownState::new(plan_menu::choices(), plan_menu::TITLE);
         dd.selected = 0;
         self.menu = MenuContent::PlanImplement(dd);
     }

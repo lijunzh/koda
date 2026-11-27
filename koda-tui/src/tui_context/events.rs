@@ -267,14 +267,9 @@ impl TuiContext {
                 self.scroll_buffer.scroll_to_bottom();
             }
             (KeyCode::BackTab, _) => {
-                // Safe, Auto and Plan in turn; Auto only with the kernel
-                // sandbox (#860). The host applies the mode, records it
-                // with the session and reports it back.
-                let (mode, note) = crate::mode::next(self.mode, &self.sandbox);
-                if let Some(note) = note {
-                    crate::tui_output::dim_msg(&mut self.scroll_buffer, note);
-                }
-                self.mode = mode;
+                // Auto and Plan in turn. The host applies the mode, records
+                // it with the session and reports it back.
+                self.mode = crate::mode::next(self.mode);
                 self.send_mode().await;
             }
             (KeyCode::Tab, KeyModifiers::NONE) => {

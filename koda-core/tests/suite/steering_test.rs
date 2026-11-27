@@ -79,7 +79,7 @@ impl Harness {
             agent,
             env.db.clone(),
             &env.config,
-            TrustMode::Safe,
+            TrustMode::Auto,
         )
         .await;
         let provider = MockProvider::new(responses);
