@@ -230,25 +230,25 @@ pub fn build_with_loopback(
         loopback,
     };
 
-    let mut cmd = match runtime.transform(req) {
-        Ok(exec) => exec.command,
-        Err(e) => {
-            tracing::warn!("Sandbox transform failed, running unsandboxed: {e}");
-            let mut cmd = Command::new("sh");
-            cmd.arg("-c").arg(command).current_dir(project_root);
-            cmd
-        }
-    };
+    // A sandbox that is there but can't be set up for this command (a
+    // path the profile can't name, Linux's stage 2 missing) refuses the
+    // command: running it unsandboxed would drop the file and network
+    // limits and the environment scrub in every mode, Auto included.
+    let mut cmd = runtime
+        .transform(req)
+        .map_err(|e| {
+            anyhow::anyhow!("Couldn't set up the sandbox for this command, so it didn't run: {e}")
+        })?
+        .command;
 
     // Phase 5 PR-6b of #934: apply trust-derived resource limits via
     // setrlimit(2) in the child between fork and exec. Backstops the
     // wall-time ceiling for cases that wall-time can't catch (CPU
     // busy-loops that block signal delivery, malloc bombs that exhaust
     // memory before wall expires, fork bombs that exhaust FDs before
-    // any wall-time tick fires). Applied on *both* the sandboxed and
-    // unsandboxed-fallback paths above so a missing kernel sandbox
-    // doesn't silently drop this layer too — defense in depth between
-    // layers, not just inside one. No-op when no limits are set
+    // any wall-time tick fires). Applied whichever runtime built the
+    // command, so a machine with no kernel sandbox doesn't silently drop
+    // this layer too — defense in depth between layers, not just inside one. No-op when no limits are set
     // (the common case today; only Auto trust mode populates them).
     koda_sandbox::rlimits::apply_to_command(&mut cmd, &policy.limits);
 
@@ -1036,6 +1036,38 @@ print(\"connected\")'";
             status.success(),
             "strict: reads to /etc/hosts must still be allowed"
         );
+    }
+
+    /// A sandbox that can't be set up for a command refuses it in every
+    /// mode: it used to run with no sandbox, no network limit and no
+    /// environment scrub. Seatbelt can't name a path with a `"` in it.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_command_whose_sandbox_cant_be_set_up_does_not_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("a\"b");
+        std::fs::create_dir_all(&project).unwrap();
+        for mode in [
+            crate::trust::TrustMode::Plan,
+            crate::trust::TrustMode::Safe,
+            crate::trust::TrustMode::Auto,
+        ] {
+            let error = build(
+                "touch ran",
+                &project,
+                &mode,
+                &koda_sandbox::SandboxPolicy::strict_default(),
+                None,
+                None,
+            )
+            .map(|_| ())
+            .expect_err("a command with no sandbox was built");
+            assert!(
+                error.to_string().contains("so it didn't run"),
+                "{mode:?}: {error}"
+            );
+        }
+        assert!(!project.join("ran").exists());
     }
 
     /// Strict mode: reading `~/.config/koda/db/` must be blocked (#847).

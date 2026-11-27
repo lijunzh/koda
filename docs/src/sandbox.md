@@ -195,6 +195,11 @@ Linux), behavior depends on your trust mode:
   — Plan denies all mutating tools at the trust layer; Bash never
   runs.
 
+When the sandbox is there but can't be set up for one command (a project
+path the macOS profile can't name, such as one with a `"` in it, or Linux's
+`koda-sandbox-stage2` helper missing), that command is refused in every
+mode with the reason, rather than run without the sandbox.
+
 The TUI status bar shows the sandbox state next to the trust badge
 (🛡 sandboxed / ⚠ unsandboxed), and `/feedback`'s diagnostics record
 it for a bug report. Clients read it from Koda's host (`state/read`'s
