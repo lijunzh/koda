@@ -75,6 +75,7 @@ async fn run(root: &Path, script: &str) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_protected_folder_cannot_be_moved_and_replaced() {
     if !available() {
+        koda_sandbox::skip_test("no working sandbox here");
         return;
     }
     let (_dir, root) = project();
@@ -126,6 +127,7 @@ async fn a_protected_folder_cannot_be_moved_and_replaced() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_command_still_writes_the_project_and_commits() {
     if !available() {
+        koda_sandbox::skip_test("no working sandbox here");
         return;
     }
     let (_dir, root) = project();
