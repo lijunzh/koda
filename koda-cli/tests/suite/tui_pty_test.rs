@@ -33,7 +33,7 @@ const RED_PNG: &[u8] = &[
 const BUSY_PROMPT: &str = "\u{23f3}>";
 
 /// How long the composer waits before it stops treating fast typing as a paste.
-const PASTE_SETTLE: Duration = Duration::from_millis(400);
+const PASTE_SETTLE: Duration = Duration::from_millis(150);
 
 const ESC: &str = "\x1b";
 const CTRL_C: &str = "\x03";

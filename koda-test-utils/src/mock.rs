@@ -333,7 +333,13 @@ impl LlmProvider for MockProvider {
 
 /// The error the real HTTP path builds for this status and body.
 fn http_error(status: u16, body: &str) -> anyhow::Error {
-    let headers = reqwest::header::HeaderMap::new();
+    // The server says to retry at once, so a retry test doesn't wait out
+    // real backoff; the backoff itself is tested in koda-core's unit tests.
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        "retry-after",
+        reqwest::header::HeaderValue::from_static("0"),
+    );
     koda_providers::error::ProviderError::from_response(
         "LLM",
         status,

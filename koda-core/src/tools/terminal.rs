@@ -165,7 +165,7 @@ mod tests {
     #[tokio::test]
     async fn typing_is_answered_and_the_log_has_it_all() {
         let (terminal, mut child, log) = start("printf 'Name? '; read name; echo \"Hello, $name\"");
-        let first = terminal.read(Duration::from_secs(5)).await;
+        let first = terminal.read(Duration::from_millis(500)).await;
         // Read waits the whole time unless the command closes the terminal.
         assert!(plain_text(&first.bytes).contains("Name? "));
         assert!(!first.closed);
