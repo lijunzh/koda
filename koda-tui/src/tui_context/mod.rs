@@ -9,6 +9,7 @@
 pub(crate) mod background;
 mod events;
 pub(crate) mod goal;
+mod host_messages;
 mod mcp;
 mod memory;
 mod menus;
@@ -20,6 +21,8 @@ mod session_cmds;
 pub(crate) mod settings;
 mod side;
 pub(crate) mod skills;
+
+pub(crate) use host_messages::{next_host_event, turn_started};
 
 use crate::input;
 use crate::scroll_buffer::ScrollBuffer;
@@ -137,6 +140,16 @@ pub(crate) struct TuiContext {
     pub session: TuiSession,
     /// Koda's host, in process: it runs the session's turns.
     pub client: koda_client::InProcessClient,
+    /// The host's messages a wait set aside, oldest first: every reader
+    /// takes these before the client's next ([`host_messages`]).
+    pub(crate) held: std::collections::VecDeque<koda_client::events::Outgoing>,
+    /// Sessions with a `session/settings/updated` still to come for a
+    /// change nothing waited on: one sent during a turn, which the host
+    /// applies once it ends. The next report is that one, not the answer
+    /// to a later change.
+    pub(crate) settings_due: std::collections::HashSet<String>,
+    /// The completer's model names are for settings since replaced.
+    pub(crate) model_names_stale: bool,
     /// The session open on the host. When a command has switched
     /// `session.id`, the TUI opens that one before the next turn.
     pub(crate) host_session: String,
@@ -502,8 +515,10 @@ impl TuiContext {
 
         // What the session runs with, which the host decided: the saved
         // choice, a resumed session's own, or the flags. The TUI mirrors it.
+        // What the host sends meanwhile is kept for the idle loop.
+        let mut held = std::collections::VecDeque::new();
         let (session_settings, host_warnings) =
-            settings::fetch_settings(&mut client, &session.id, initial_mode).await?;
+            settings::fetch_settings(&mut client, &mut held, &session.id, initial_mode).await?;
         // Flags are for this run only, as Codex's are: only `/model` and
         // `/provider` save a choice into config.toml.
 
@@ -646,6 +661,9 @@ impl TuiContext {
             last_turn: None,
             session,
             client,
+            held,
+            settings_due: Default::default(),
+            model_names_stale: false,
             mode: initial_mode,
             sandbox,
             project_root,
@@ -803,6 +821,9 @@ impl TuiContext {
             if self.mcp_stale {
                 self.refresh_mcp().await;
             }
+            if std::mem::take(&mut self.model_names_stale) {
+                self.refresh_model_names().await;
+            }
             self.refresh_background(false).await;
 
             // ── The side conversation: back from it, or into it ──
@@ -887,8 +908,16 @@ impl TuiContext {
                     CommandOutcome::StartInference(input) => {
                         self.run_inference_turn(TurnRequest::Prompt(input), cmd_tx, cmd_rx)
                             .await?;
-                        // A review's turn: back to the main session.
-                        self.finish_review().await;
+                        // A review's turn: back to the main session, and
+                        // the turn Koda started there meanwhile, if any.
+                        if let Some((turn_id, waiting)) = self.finish_review().await {
+                            self.run_inference_turn(
+                                TurnRequest::Watch { turn_id, waiting },
+                                cmd_tx,
+                                cmd_rx,
+                            )
+                            .await?;
+                        }
                         continue;
                     }
                     CommandOutcome::Compact => {
@@ -920,10 +949,10 @@ impl TuiContext {
                 Some(Ok(ev)) = self.crossterm_events.next() => {
                     self.handle_idle_event(ev).await?;
                 }
-                // The host's notifications while idle: MCP startups move
-                // the status bar; the rest are no turn's business, as a
-                // turn drops them when it starts.
-                message = self.client.next_event(), if !self.offline => {
+                // The host's messages while idle, a set-aside one first.
+                message = host_messages::next_host_event(&mut self.client, &mut self.held),
+                    if !self.offline =>
+                {
                     // The host is gone: the shared server stopped or the
                     // connection broke. Reconnect, as Codex's TUI does, and
                     // follow a turn the server kept running.
@@ -941,18 +970,10 @@ impl TuiContext {
                         }
                         continue;
                     };
-                    if self.note_main_session(&message) {
-                        continue;
-                    }
-                    self.note_session(&message);
                     // A turn the host started by itself, on the session's
                     // goal: follow it as one of ours.
-                    if let koda_client::events::Outgoing::Notification(
-                        koda_client::protocol::ServerNotification::TurnStarted(started),
-                    ) = &message
-                        && started.session_id == self.session.id
-                    {
-                        let turn_id = started.turn.id.clone();
+                    if let Some(turn_id) = host_messages::turn_started(&message, &self.session.id) {
+                        let turn_id = turn_id.to_string();
                         self.run_inference_turn(
                             TurnRequest::Watch {
                                 turn_id,
@@ -964,26 +985,7 @@ impl TuiContext {
                         .await?;
                         continue;
                     }
-                    if self.mcp.observe(&self.session.id, &message) {
-                        self.mcp_stale = true;
-                    }
-                    // A background agent may ask while no turn runs.
-                    if self.take_request(&message) {
-                        continue;
-                    }
-                    if self.note_update(&message) {
-                        continue;
-                    }
-                    // A warning about no session, such as a Claude model
-                    // this Koda doesn't support yet, which the host says
-                    // once the Models API has answered.
-                    if let koda_client::events::Outgoing::Notification(
-                        koda_client::protocol::ServerNotification::Warning(w),
-                    ) = message
-                        && w.session_id.is_none()
-                    {
-                        crate::tui_output::warn_msg(&mut self.scroll_buffer, w.message);
-                    }
+                    self.absorb_idle_message(message);
                 }
                 // #1354: bg-activity overlay self-perpetuating tick.
                 // `TuiContext::draw()` calls `schedule_frame_in(1 s)`

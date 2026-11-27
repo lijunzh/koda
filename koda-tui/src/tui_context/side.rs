@@ -7,13 +7,15 @@
 //! a request it makes (an approval, a question) waits. `Ctrl+C` on an empty
 //! input box returns: the side session is deleted, the main session is
 //! drawn again, and a turn still running there is followed, with whatever
-//! it asked meanwhile.
+//! it asked meanwhile. Its settings come back as they were left, and the
+//! mode goes to the host, which applies it once that turn ends.
 //!
 //! `/side` works at the prompt and while a turn runs; mid-turn, the TUI
 //! leaves the turn running and opens the side conversation.
 
 use koda_client::events::Outgoing;
 use koda_client::protocol::methods;
+use koda_client::protocol::session::SessionSettings;
 use koda_client::protocol::{ServerNotification, ServerRequest};
 use ratatui::text::Line;
 
@@ -71,26 +73,28 @@ pub(crate) struct SideState {
     pub(crate) waiting: Vec<ServerRequest>,
     /// Whether the boundary has gone out, ahead of the first question.
     pub(crate) boundary_sent: bool,
-    /// On the way back: the main session's messages are kept for the turn
-    /// the TUI follows next, not dropped.
-    returning: bool,
-    /// What the main session sent on the way back, oldest first.
-    held: Vec<Outgoing>,
+    /// What the main session runs with, as last reported.
+    pub(crate) main_settings: SessionSettings,
     /// A review (`/review`) rather than a side conversation: what it
     /// reviews, as the banner and results name it.
     pub(crate) review: Option<String>,
 }
 
 impl SideState {
-    /// Away from `main`, which has `main_turn` running if any.
-    pub(crate) fn new(main: TuiSession, main_turn: Option<String>, review: Option<String>) -> Self {
+    /// Away from `main`, which runs with `main_settings` and has
+    /// `main_turn` running if any.
+    pub(crate) fn new(
+        main: TuiSession,
+        main_settings: SessionSettings,
+        main_turn: Option<String>,
+        review: Option<String>,
+    ) -> Self {
         Self {
             main,
             main_turn,
             waiting: Vec::new(),
             boundary_sent: false,
-            returning: false,
-            held: Vec::new(),
+            main_settings,
             review,
         }
     }
@@ -171,7 +175,7 @@ impl TuiContext {
             },
         );
         self.host_session = forked.id.clone();
-        self.side = Some(SideState::new(main, main_turn, None));
+        self.side = Some(SideState::new(main, self.settings.clone(), main_turn, None));
         if let Some(mode) = forked.mode {
             self.mode = mode;
         }
@@ -217,13 +221,6 @@ impl TuiContext {
         if session_of(message).as_deref() != Some(side.main.id.as_str()) {
             return false;
         }
-        if side.returning {
-            if let Outgoing::Notification(ServerNotification::TurnCompleted(_)) = message {
-                side.main_turn = None;
-            }
-            side.held.push(message.clone());
-            return true;
-        }
         match message {
             Outgoing::Request(request) => {
                 let first = side.waiting.is_empty();
@@ -252,18 +249,24 @@ impl TuiContext {
                 side.waiting
                     .retain(|request| request.id() != &resolved.request_id);
             }
+            // A change made during its turn, applied once it ended.
+            Outgoing::Notification(ServerNotification::SessionSettingsUpdated(updated)) => {
+                side.main_settings = updated.session_settings.clone();
+                self.settings_due.remove(&updated.session_id);
+            }
             _ => {}
         }
         true
     }
 
     /// Leave the side conversation: delete it, draw the main session again,
-    /// and say which turn to follow there, with what it asked and sent
-    /// meanwhile.
+    /// and say which turn to follow there, with what it asked meanwhile.
+    /// Nothing waits on a turn still running there: its settings come back
+    /// as they were left, and the host applies the mode once it ends.
     pub(crate) async fn leave_side(&mut self) -> Option<(String, Vec<Outgoing>)> {
         use koda_client::protocol::session::SessionDeleteParams;
-        let main = self.side.as_ref()?.main.clone();
-        let left = std::mem::replace(&mut self.session, main);
+        let side = self.side.take()?;
+        let left = std::mem::replace(&mut self.session, side.main);
         self.host_session = self.session.id.clone();
         if let Err(e) = self
             .client
@@ -275,26 +278,20 @@ impl TuiContext {
             tracing::warn!("couldn't delete the side conversation: {e}");
         }
         self.redraw_main().await;
-        // From here on the main session's messages are the followed turn's.
-        if let Some(side) = self.side.as_mut() {
-            side.returning = true;
-        }
-        if let Err(e) = self.sync_settings(true).await {
-            tui_output::warn_msg(&mut self.scroll_buffer, format!("{e:#}"));
-        }
-        let side = self.side.take()?;
+        let waiting: Vec<Outgoing> = side.waiting.into_iter().map(Outgoing::Request).collect();
         match side.main_turn {
             Some(turn) => {
-                let mut messages: Vec<Outgoing> =
-                    side.waiting.into_iter().map(Outgoing::Request).collect();
-                messages.extend(side.held);
+                self.return_to_running(side.main_settings).await;
                 tui_output::dim_msg(&mut self.scroll_buffer, back_message(&side.review));
-                Some((turn, messages))
+                Some((turn, waiting))
             }
             None => {
-                // It ended on the way back: draw it as it ended.
-                if !side.held.is_empty() {
-                    self.redraw_main().await;
+                // What a background agent asked meanwhile comes ahead of
+                // what the host sends from here, and a turn Koda starts
+                // on the goal is followed from the prompt.
+                self.hold_first(waiting);
+                if let Err(e) = self.sync_settings(true).await {
+                    tui_output::warn_msg(&mut self.scroll_buffer, format!("{e:#}"));
                 }
                 tui_output::dim_msg(&mut self.scroll_buffer, back_message(&side.review));
                 None

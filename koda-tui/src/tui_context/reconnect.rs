@@ -54,8 +54,11 @@ impl TuiContext {
         let _ = self.draw();
 
         // The requests on screen and queued came over the lost connection:
-        // the host sends again what it still waits on.
+        // the host sends again what it still waits on. So did the messages
+        // set aside, and the settings reports still to come.
         self.drop_requests();
+        self.held.clear();
+        self.settings_due.clear();
         // A side conversation or review goes with the connection: the
         // session to get back is the main one, where its turn and its
         // approvals are.

@@ -7,6 +7,7 @@ mod plan;
 mod sessions;
 mod stops;
 mod sub_agents;
+mod waits;
 
 use std::time::Duration;
 
@@ -99,4 +100,62 @@ fn picker_lines(screen: &str, title: &str) -> String {
         .skip_while(|line| !line.contains(title))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// A Bash call that waits until the project has a file `go`, which the
+/// test creates: a turn that runs until the test lets it end.
+fn wait_for_go() -> Value {
+    json!({"command": "while [ ! -e go ]; do sleep 0.05; done"})
+}
+
+/// Let a [`wait_for_go`] call end.
+fn go(driver: &Driver) {
+    std::fs::write(driver.project.path().join("go"), "").unwrap();
+}
+
+/// Start a turn with `prompt` on the TUI's session from outside the TUI,
+/// as Koda starts one on a goal: the TUI reads its messages as they come.
+async fn start_turn(ctx: &crate::tui_context::TuiContext, prompt: &str) {
+    use koda_client::protocol::methods::TurnStart;
+    use koda_client::protocol::turn::{TurnStartParams, UserInput};
+    ctx.client
+        .request::<TurnStart>(TurnStartParams {
+            session_id: ctx.session.id.clone(),
+            input: vec![UserInput::text(prompt.to_string())],
+            client_user_message_id: None,
+            mode: None,
+            output_schema: None,
+        })
+        .await
+        .unwrap();
+}
+
+/// The host's messages, read past the TUI, up to and including the first
+/// `last` matches: what the test then hands the TUI as not read yet.
+async fn read_until(
+    ctx: &mut crate::tui_context::TuiContext,
+    last: impl Fn(&koda_client::events::Outgoing) -> bool,
+) -> Vec<koda_client::events::Outgoing> {
+    let mut read = Vec::new();
+    loop {
+        let message = tokio::time::timeout(Duration::from_secs(20), ctx.client.next_event())
+            .await
+            .expect("the host didn't send it")
+            .expect("the host stopped");
+        let done = last(&message);
+        read.push(message);
+        if done {
+            return read;
+        }
+    }
+}
+
+/// The session's `turn/started`.
+fn is_turn_started(message: &koda_client::events::Outgoing) -> bool {
+    matches!(
+        message,
+        koda_client::events::Outgoing::Notification(
+            koda_client::protocol::ServerNotification::TurnStarted(_)
+        )
+    )
 }

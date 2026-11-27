@@ -2,12 +2,15 @@
 //! a session of their own (`/side`, `/review`) or report on one
 //! (`/feedback`, `/init`).
 
+use std::collections::VecDeque;
+use std::sync::Mutex;
+
 use crossterm::event::KeyCode;
 use koda_test_utils::network::FakeLlmServer;
-use koda_test_utils::openai::text;
+use koda_test_utils::openai::{text, tool_calls};
 use serde_json::json;
 
-use super::{ctrl, esc, picker_lines};
+use super::{asked_write, ctrl, esc, go, picker_lines, wait_for_go};
 use crate::test_tui::{BUSY_PROMPT, Driver, TestTui};
 
 /// `/new` starts a session with none of the last one's history.
@@ -301,4 +304,112 @@ async fn review_lists_findings_and_the_next_prompt_carries_them() {
             .await
             .contains("fix the P1")
     );
+}
+
+/// Ctrl+C back from a side conversation while the main session's turn runs:
+/// the TUI follows that turn at once. It waited out the settings report,
+/// which the host sends only once the turn has ended, then warned.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn ctrl_c_back_to_a_running_turn_follows_it_at_once() {
+    let server = FakeLlmServer::spawn().await;
+    let main = Mutex::new(VecDeque::from([
+        tool_calls(&[("call_1", "Bash", wait_for_go())]),
+        text("Main done."),
+    ]));
+    server
+        .mount_fn("POST", r".*/chat/completions$", move |request| {
+            if String::from_utf8_lossy(&request.body).contains("You are in a side conversation") {
+                return text("Side answer.");
+            }
+            main.lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| text("(no more replies)"))
+        })
+        .await;
+    let tui = TestTui::start_on(server).await;
+    tui.run(async |driver: Driver| {
+        driver.submit("first prompt").await;
+        driver.model_call(1).await;
+        driver.wait_for_screen(BUSY_PROMPT).await;
+        driver.submit("/side what now").await;
+        driver.wait_for_screen("Side answer.").await;
+        driver.wait_for_screen("Ask a side question").await;
+
+        driver.key(ctrl('c'));
+        driver.wait_for_screen("Back in the main session").await;
+        let screen = driver.screen();
+        assert!(
+            !screen.contains("didn't report the session's settings"),
+            "{screen}"
+        );
+        driver.wait_for_screen(BUSY_PROMPT).await;
+        go(&driver);
+        driver.wait_for_screen("Main done.").await;
+        driver.wait_for_screen_without(BUSY_PROMPT).await;
+        driver
+    })
+    .await;
+}
+
+/// A turn Koda starts on the main session during a review, here woken by a
+/// background command's exit, is followed once the review ends, with its
+/// approval. The return ignored it: it ran on unseen and its approval was
+/// lost, so it hung.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn a_turn_started_during_a_review_is_followed_after_it() {
+    let mut background = wait_for_go();
+    background["background"] = json!(true);
+    let main = Mutex::new(VecDeque::from([
+        tool_calls(&[("call_1", "Bash", background)]),
+        text("Started."),
+        tool_calls(&[("call_2", "Bash", asked_write("a.txt"))]),
+        text("Woke up."),
+    ]));
+    let review = Mutex::new(VecDeque::from([
+        tool_calls(&[("call_r", "Bash", asked_write("r.txt"))]),
+        text("No findings."),
+    ]));
+    let server = FakeLlmServer::spawn().await;
+    server
+        .mount_fn("POST", r".*/chat/completions$", move |request| {
+            let queue = if String::from_utf8_lossy(&request.body).contains("Review guidelines") {
+                &review
+            } else {
+                &main
+            };
+            queue
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| text("(no more replies)"))
+        })
+        .await;
+    let tui = TestTui::start_on(server).await;
+    let driver = tui
+        .run(async |driver: Driver| {
+            driver.submit_and_finish("first prompt", "Started.").await;
+
+            driver.submit("/review").await;
+            driver.wait_for_screen("[y] approve").await;
+            // The background command exits: Koda starts a turn on the main
+            // session, which asks while the review is on screen.
+            go(&driver);
+            driver
+                .wait_for_screen("The main session is waiting for you")
+                .await;
+            driver.press(KeyCode::Char('n'));
+            driver.wait_for_screen("Back in the main session").await;
+
+            driver.wait_for_screen("[y] approve").await;
+            driver.press(KeyCode::Char('y'));
+            driver.wait_for_screen("Woke up.").await;
+            driver.wait_for_screen_without(BUSY_PROMPT).await;
+            driver
+        })
+        .await;
+    assert!(driver.project.path().join("a.txt").exists());
+    assert!(!driver.project.path().join("r.txt").exists());
 }

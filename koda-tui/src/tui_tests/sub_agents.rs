@@ -4,11 +4,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use crossterm::event::KeyCode;
+use koda_client::events::Outgoing;
 use koda_test_utils::network::{FakeLlmServer, ResponseTemplate};
 use koda_test_utils::openai::{text, tool_calls};
 use serde_json::{Value, json};
 
-use super::{asked_write, assert_no_more_calls, assert_stopped, esc, json_reply};
+use super::{
+    asked_write, assert_no_more_calls, assert_stopped, esc, is_turn_started, json_reply,
+    read_until, start_turn,
+};
 use crate::test_tui::{BUSY_PROMPT, Driver, TestTui};
 
 /// A sub-agent's reply, which doesn't stream, that calls one tool.
@@ -184,4 +188,77 @@ async fn esc_during_a_sub_agent_starts_no_other_turn() {
         driver
     })
     .await;
+}
+
+/// Whether `message` is a request of the host's, an approval say.
+fn is_request(message: &Outgoing) -> bool {
+    matches!(message, Outgoing::Request(_))
+}
+
+/// A background agent's request that the TUI hasn't read when a prompt
+/// goes out is shown during that prompt's turn. It was dropped with the
+/// messages from before the turn, and the agent waited for good.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn a_background_agents_request_as_a_prompt_goes_out_is_shown() {
+    let mut tui = TestTui::start_on(a_sub_agent_writes_a_file(true).await).await;
+    start_turn(&tui.ctx, "first prompt").await;
+    // The agent asks once that turn has ended; none of it has been read
+    // when the next prompt goes out.
+    let unread = read_until(&mut tui.ctx, is_request).await;
+    tui.ctx.held.extend(unread);
+    tui.ctx.pending_command = Some("second prompt".to_string());
+
+    tui.run(async |driver: Driver| {
+        driver.wait_for_screen("asks").await;
+        driver.press(KeyCode::Char('y'));
+        let written = driver.project.path().join("a.txt");
+        driver
+            .wait_until(|| written.exists(), "the approved write runs")
+            .await;
+        driver.wait_for_screen_without(BUSY_PROMPT).await;
+        driver
+    })
+    .await;
+}
+
+/// A background agent's request that comes while a prompt waits to join a
+/// turn Koda has just started is shown. It was dropped while the TUI looked
+/// for that turn's start.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn a_background_agents_request_while_joining_a_turn_is_shown() {
+    let mut tui = TestTui::start_on(a_sub_agent_writes_a_file(true).await).await;
+    start_turn(&tui.ctx, "first prompt").await;
+    let first = read_until(&mut tui.ctx, is_request).await;
+    let request = first.last().cloned().unwrap();
+    if !first.iter().any(is_turn_completed) {
+        read_until(&mut tui.ctx, is_turn_completed).await;
+    }
+    // Koda starts a turn; the prompt that went out meanwhile joins it once
+    // its start comes, after the agent's request.
+    start_turn(&tui.ctx, "second prompt").await;
+    let started = read_until(&mut tui.ctx, is_turn_started).await;
+    tui.ctx.held.push_back(request);
+    tui.ctx.held.push_back(started.last().cloned().unwrap());
+    tui.ctx.next_turn_started().await.unwrap();
+
+    tui.run(async |driver: Driver| {
+        driver.wait_for_screen("asks").await;
+        driver.press(KeyCode::Char('y'));
+        let written = driver.project.path().join("a.txt");
+        driver
+            .wait_until(|| written.exists(), "the approved write runs")
+            .await;
+        driver
+    })
+    .await;
+}
+
+/// Whether `message` is a `turn/completed`.
+fn is_turn_completed(message: &Outgoing) -> bool {
+    matches!(
+        message,
+        Outgoing::Notification(koda_client::protocol::ServerNotification::TurnCompleted(_))
+    )
 }

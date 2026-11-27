@@ -27,6 +27,7 @@
 
 use std::path::Path;
 
+use koda_client::events::Outgoing;
 use koda_client::protocol::methods;
 use koda_client::protocol::turn::TurnStatus;
 use ratatui::style::{Color, Style};
@@ -332,7 +333,12 @@ impl TuiContext {
             },
         );
         self.host_session = started.id.clone();
-        self.side = Some(SideState::new(main, None, Some(label.clone())));
+        self.side = Some(SideState::new(
+            main,
+            self.settings.clone(),
+            None,
+            Some(label.clone()),
+        ));
         self.scroll_buffer.push_lines([
             Line::default(),
             Line::styled(
@@ -348,25 +354,25 @@ impl TuiContext {
     }
 
     /// After a turn: if it was a review's, go back to the main session and
-    /// list the findings, which the next prompt there carries.
-    pub(crate) async fn finish_review(&mut self) {
-        let Some(label) = self.side.as_ref().and_then(|side| side.review.clone()) else {
-            return;
-        };
+    /// list the findings, which the next prompt there carries. Returns the
+    /// turn Koda started there meanwhile, on its goal say, for the caller to
+    /// follow, with what it asked.
+    pub(crate) async fn finish_review(&mut self) -> Option<(String, Vec<Outgoing>)> {
+        let label = self.side.as_ref().and_then(|side| side.review.clone())?;
         let (status, reply) = self
             .last_turn
             .take()
             .unwrap_or((TurnStatus::Interrupted, None));
-        // A review started at the prompt: the main session has no turn
-        // running to follow.
-        let _ = self.leave_side().await;
+        // Started at the prompt, but Koda may have started a turn on the
+        // main session's goal since.
+        let running = self.leave_side().await;
         let reply = reply.filter(|_| status == TurnStatus::Completed);
         let Some(reply) = reply else {
             tui_output::warn_msg(
                 &mut self.scroll_buffer,
                 "The review didn't finish. Run /review again and let it complete.".to_string(),
             );
-            return;
+            return running;
         };
         self.scroll_buffer.push_lines([
             Line::default(),
@@ -390,6 +396,7 @@ impl TuiContext {
                 .to_string(),
         );
         self.pending_review = Some(results_for_the_model(&reply));
+        running
     }
 
     /// The main session's next prompt, with the review's results ahead of it.
