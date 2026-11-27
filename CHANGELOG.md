@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - **Lookups made one after another** (reads, searches, listings and commands the host found read-only) are one row with no output, in Claude Code's words: `Read 3 files, searched 2 patterns, ran 4 commands`, or `Reading …` while one runs. A failed one is counted on the row in red. A thought between two lookups goes into their row; text from Koda or any other step starts a new one.
   - **A plan update** (`TodoWrite`) is no longer a row: the plan has a panel (below).
   - Other commands, edits and their diffs, approvals and errors show as before. `Ctrl+O` and `/verbose` switch to the full view, which shows every call, its output and the thinking text, as before. A resumed session's turns fold the same way.
+- **A command shows what it printed, as in Claude Code:** a `Bash` result no longer opens with the three lines Koda writes for the model (`Exit code: 0 | stdout: 9 lines | stderr: 0 lines`, a blank line, `--- stdout (9 lines) ---`), which took most of the five lines a folded result keeps. The exit code shows only when the command failed (`Exit code 1`), stderr is red, and a streamed command no longer ends with an `Exit code: 0` line. The model still reads the header. Headings in Koda's replies are bold with no `▸` or `•` before them, as Claude Code draws them; `▸` is the focus row's.
 
 ### Added
 
