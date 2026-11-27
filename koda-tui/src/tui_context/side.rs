@@ -191,9 +191,7 @@ impl TuiContext {
             ),
             Line::default(),
         ]);
-        if let Err(e) = self.sync_settings(true).await {
-            tui_output::warn_msg(&mut self.scroll_buffer, format!("{e:#}"));
-        }
+        self.opened(forked.settings.clone()).await;
         if question.trim().is_empty() {
             return CommandOutcome::Handled;
         }
@@ -252,7 +250,6 @@ impl TuiContext {
             // A change made during its turn, applied once it ended.
             Outgoing::Notification(ServerNotification::SessionSettingsUpdated(updated)) => {
                 side.main_settings = updated.session_settings.clone();
-                self.settings_due.remove(&updated.session_id);
             }
             _ => {}
         }
@@ -279,21 +276,17 @@ impl TuiContext {
         }
         self.redraw_main().await;
         let waiting: Vec<Outgoing> = side.waiting.into_iter().map(Outgoing::Request).collect();
+        // Its settings as last reported, and the TUI's mode, which the host
+        // applies once a turn running there ends.
+        self.opened(Some(Box::new(side.main_settings))).await;
+        tui_output::dim_msg(&mut self.scroll_buffer, back_message(&side.review));
         match side.main_turn {
-            Some(turn) => {
-                self.return_to_running(side.main_settings).await;
-                tui_output::dim_msg(&mut self.scroll_buffer, back_message(&side.review));
-                Some((turn, waiting))
-            }
+            Some(turn) => Some((turn, waiting)),
             None => {
                 // What a background agent asked meanwhile comes ahead of
                 // what the host sends from here, and a turn Koda starts
                 // on the goal is followed from the prompt.
                 self.hold_first(waiting);
-                if let Err(e) = self.sync_settings(true).await {
-                    tui_output::warn_msg(&mut self.scroll_buffer, format!("{e:#}"));
-                }
-                tui_output::dim_msg(&mut self.scroll_buffer, back_message(&side.review));
                 None
             }
         }

@@ -4,12 +4,12 @@
 //! `session/settings/update` or, for another provider, a new session with
 //! `session/start`, as Codex's TUI does with `thread/settings/update` and
 //! `thread/start`, and mirrors what `session/settings/updated` reports into
-//! its own `config` for the status bar, the banner and the completer. A
-//! session's provider never changes; switching provider opens a new one,
-//! and the one left stays in `/resume`.
-
-use std::collections::VecDeque;
-use std::time::Duration;
+//! its own `config` for the status bar, the banner and the completer,
+//! wherever it arrives. Nothing waits for that report, as Codex's TUI
+//! doesn't: a session's start, resume or fork answer says what it runs
+//! with, and a change made during a turn is applied, and reported, once the
+//! turn ends. A session's provider never changes; switching provider opens
+//! a new one, and the one left stays in `/resume`.
 
 use koda_client::events::Outgoing;
 use koda_client::protocol::model::ModelProviderSummary;
@@ -31,9 +31,6 @@ pub(crate) enum ModelScope {
     Session,
 }
 
-/// How long the host gets to report settings after a change.
-const SETTINGS_WAIT: Duration = Duration::from_secs(15);
-
 /// The host's own words, for an error the user reads.
 fn host_error(error: koda_client::RequestError) -> anyhow::Error {
     match error {
@@ -42,100 +39,16 @@ fn host_error(error: koda_client::RequestError) -> anyhow::Error {
     }
 }
 
-/// How the host took a settings change.
-pub(crate) enum Applied {
-    /// Applied and reported: the alias the model is chosen by, if any.
-    Now { alias: Option<String> },
-    /// A turn runs on the session, Koda's own on its goal say: the host
-    /// applies the change once it ends, and the report is mirrored then.
-    AfterTurn,
-}
-
-/// What [`reported`] found.
-enum Reported {
-    /// The session's settings, after the change.
-    Now(SessionSettings),
-    /// A turn started first: the change waits for its end.
-    AfterTurn,
-}
-
-/// Whether `message` is the session `session_id`'s settings report.
-fn is_report(message: &Outgoing, session_id: &str) -> bool {
-    matches!(
-        message,
-        Outgoing::Notification(ServerNotification::SessionSettingsUpdated(n))
-            if n.session_id == session_id
-    )
-}
-
-/// Wait for the host's report of `session_id`'s settings after a change
-/// it has accepted. Every other message is set aside in `held`, in order,
-/// for the TUI's readers; warnings the host sends meanwhile, such as an
-/// assumed context window, go in `warnings`.
-///
-/// With `due`, a report for an earlier change not waited on comes first,
-/// unless `held` has it already: that one is set aside too. With
-/// `at_turn`, a `turn/started` for the session ends the wait: the host
-/// applies the change once that turn ends, and the report comes then.
-async fn reported(
-    client: &mut koda_client::InProcessClient,
-    held: &mut VecDeque<Outgoing>,
-    session_id: &str,
-    mut due: bool,
-    at_turn: bool,
-    warnings: &mut Vec<String>,
-) -> anyhow::Result<Reported> {
-    due &= !held.iter().any(|m| is_report(m, session_id));
-    let deadline = tokio::time::Instant::now() + SETTINGS_WAIT;
-    loop {
-        let message = match tokio::time::timeout_at(deadline, client.next_event()).await {
-            Ok(Some(message)) => message,
-            Ok(None) => anyhow::bail!("Koda's host stopped"),
-            Err(_) => anyhow::bail!("Koda's host didn't report the session's settings"),
-        };
-        match message {
-            Outgoing::Notification(ServerNotification::SessionSettingsUpdated(n))
-                if n.session_id == session_id && !due =>
-            {
-                // Newer than any report set aside, which it replaces.
-                held.retain(|m| !is_report(m, session_id));
-                return Ok(Reported::Now(n.session_settings));
-            }
-            Outgoing::Notification(ServerNotification::Warning(w))
-                if w.session_id.as_deref().is_none_or(|s| s == session_id) =>
-            {
-                warnings.push(w.message);
-            }
-            // Sent after `initialize`, so still queued at start-up.
-            Outgoing::Notification(ServerNotification::ConfigWarning(w)) => {
-                warnings.push(w.summary);
-            }
-            message => {
-                if is_report(&message, session_id) {
-                    due = false;
-                }
-                let started = super::host_messages::turn_started(&message, session_id).is_some();
-                held.push_back(message);
-                if started && at_turn {
-                    return Ok(Reported::AfterTurn);
-                }
-            }
-        }
-    }
-}
-
 impl TuiContext {
-    /// Ask the host to change the session's model and/or take the TUI's
-    /// mode, then mirror what it reports. While a turn runs on the session
-    /// the host applies the change after it, and nothing here waits for
-    /// that: the report is mirrored when it comes.
-    async fn update_settings(
-        &mut self,
+    /// Ask the host to change the session's model and/or mode. Its answer
+    /// says whether it took the change; the settings it then runs with
+    /// come in `session/settings/updated`, mirrored when they arrive, after
+    /// the running turn if there is one.
+    async fn request_settings(
+        &self,
         model: Option<String>,
-        send_mode: bool,
-        show_warnings: bool,
-    ) -> anyhow::Result<Applied> {
-        let mode = send_mode.then_some(self.mode);
+        mode: Option<koda_client::protocol::state::TrustMode>,
+    ) -> anyhow::Result<()> {
         self.client
             .request::<methods::SessionSettingsUpdate>(SessionSettingsUpdateParams {
                 session_id: self.session.id.clone(),
@@ -144,35 +57,8 @@ impl TuiContext {
                 mode,
             })
             .await
-            .map_err(host_error)?;
-        let mut warnings = Vec::new();
-        let due = self.settings_due.contains(&self.session.id);
-        let reported = reported(
-            &mut self.client,
-            &mut self.held,
-            &self.session.id,
-            due,
-            true,
-            &mut warnings,
-        )
-        .await;
-        if show_warnings {
-            for warning in warnings {
-                crate::tui_output::warn_msg(&mut self.scroll_buffer, warning);
-            }
-        }
-        match reported? {
-            Reported::Now(settings) => {
-                self.settings_due.remove(&self.session.id);
-                let alias = settings.alias.clone();
-                self.adopt(settings);
-                Ok(Applied::Now { alias })
-            }
-            Reported::AfterTurn => {
-                self.settings_due.insert(self.session.id.clone());
-                Ok(Applied::AfterTurn)
-            }
-        }
+            .map(|_| ())
+            .map_err(host_error)
     }
 
     /// Mirror the host's settings into the TUI's own config.
@@ -184,9 +70,8 @@ impl TuiContext {
         self.model_names_stale = true;
     }
 
-    /// The session's `session/settings/updated`, wherever it arrives: a
-    /// change made during a turn is reported once the turn has ended, and
-    /// nothing waits for it. True when it was one, for the caller to drop.
+    /// The session's `session/settings/updated`, wherever it arrives. True
+    /// when it was one, for the caller to drop.
     pub(crate) fn mirror_settings(&mut self, message: &Outgoing) -> bool {
         let Outgoing::Notification(ServerNotification::SessionSettingsUpdated(n)) = message else {
             return false;
@@ -194,52 +79,32 @@ impl TuiContext {
         if n.session_id != self.session.id {
             return false;
         }
-        self.settings_due.remove(&n.session_id);
         self.adopt(n.session_settings.clone());
         true
     }
 
-    /// The main session's settings, as they were on leaving it for a side
-    /// conversation, and the TUI's mode sent to it while its turn runs:
-    /// the host applies the mode once the turn ends, and the report is
-    /// mirrored then.
-    pub(crate) async fn return_to_running(&mut self, settings: SessionSettings) {
+    /// A session the TUI has just switched to: mirror what its start,
+    /// resume or fork answer says it runs with, and give it the TUI's mode
+    /// if it runs in another, which the host checks against its rules.
+    pub(crate) async fn opened(&mut self, settings: Option<Box<SessionSettings>>) {
         let mode = self.mode;
-        self.adopt(settings);
-        self.mode = mode;
-        let sent = self
-            .client
-            .request::<methods::SessionSettingsUpdate>(SessionSettingsUpdateParams {
-                session_id: self.session.id.clone(),
-                mode: Some(mode),
-                ..Default::default()
-            })
-            .await;
-        match sent {
-            Ok(_) => {
-                self.settings_due.insert(self.session.id.clone());
-            }
-            Err(e) => crate::tui_output::warn_msg(
+        match settings {
+            Some(settings) => self.adopt(*settings),
+            None => crate::tui_output::warn_msg(
                 &mut self.scroll_buffer,
-                format!("The mode didn't reach Koda's host: {:#}", host_error(e)),
+                "Koda's host didn't say what the session runs with".to_string(),
             ),
+        }
+        if self.mode != mode {
+            self.mode = mode;
+            self.send_mode().await;
         }
     }
 
-    /// After opening a session: give the host the TUI's mode, which the
-    /// host checks against its rules, and mirror the session's settings,
-    /// which a resumed session brings back from its last run. The host's
-    /// warnings are shown when `show_warnings`; at startup the banner has
-    /// said the same.
-    pub(crate) async fn sync_settings(&mut self, show_warnings: bool) -> anyhow::Result<()> {
-        self.update_settings(None, true, show_warnings)
-            .await
-            .map(|_| ())
-    }
-
-    /// The new mode, from Shift+Tab while no turn runs.
+    /// The TUI's mode, from Shift+Tab or a command; the host applies it,
+    /// after the running turn if there is one, and reports it.
     pub(crate) async fn send_mode(&mut self) {
-        if let Err(e) = self.update_settings(None, true, true).await {
+        if let Err(e) = self.request_settings(None, Some(self.mode)).await {
             crate::tui_output::warn_msg(
                 &mut self.scroll_buffer,
                 format!("The mode didn't reach Koda's host: {e:#}"),
@@ -247,42 +112,38 @@ impl TuiContext {
         }
     }
 
+    /// Switch to `mode`, which the host checks; back to the mode before if
+    /// it refuses.
+    pub(crate) async fn set_mode(
+        &mut self,
+        mode: koda_client::protocol::state::TrustMode,
+    ) -> anyhow::Result<()> {
+        let was = std::mem::replace(&mut self.mode, mode);
+        self.request_settings(None, Some(mode))
+            .await
+            .inspect_err(|_| self.mode = was)
+    }
+
     /// `/model`: the session's model, within its provider, and with
     /// [`ModelScope::Default`] the next start's choice too.
     pub(crate) async fn change_model(&mut self, model: &str, scope: ModelScope) {
-        match self
-            .update_settings(Some(model.to_string()), false, true)
-            .await
-        {
-            Ok(Applied::AfterTurn) => {
-                // Checked and accepted: saved as asked, as the host
-                // resolves it again at the next start.
+        match self.request_settings(Some(model.to_string()), None).await {
+            Ok(()) => {
+                // Saved as chosen: the host resolves an alias again at the
+                // next start.
                 if scope == ModelScope::Default {
                     let mut chosen = self.settings.clone();
                     chosen.model = model.to_string();
                     chosen.alias = None;
                     save_choice(&self.client, &chosen, &self.providers).await;
                 }
-                crate::tui_output::ok_msg(
-                    &mut self.scroll_buffer,
-                    format!("Model: {model}, once Koda's running turn ends"),
-                );
-            }
-            Ok(Applied::Now { alias }) => {
-                if scope == ModelScope::Default {
-                    save_choice(&self.client, &self.settings, &self.providers).await;
-                }
-                let shown = match &alias {
-                    Some(alias) => format!("{alias} ({})", self.settings.model),
-                    None => self.settings.model.clone(),
-                };
                 let scope = match scope {
                     ModelScope::Default => "default",
                     ModelScope::Session => "this session",
                 };
                 crate::tui_output::ok_msg(
                     &mut self.scroll_buffer,
-                    format!("Model: {shown} \u{00b7} {scope}"),
+                    format!("Model: {model} \u{00b7} {scope}"),
                 );
             }
             Err(e) => {
@@ -374,9 +235,7 @@ impl TuiContext {
         };
         // A new session has no replies to `/copy` yet.
         self.renderer.forget_replies();
-        if let Err(e) = self.sync_settings(true).await {
-            crate::tui_output::warn_msg(&mut self.scroll_buffer, format!("{e:#}"));
-        }
+        self.opened(started.session.settings).await;
         // Saved by the alias the host says it follows, if any.
         save_choice(&self.client, &self.settings, &self.providers).await;
         crate::tui_output::ok_msg(
@@ -400,35 +259,6 @@ pub struct Named {
     pub provider: Option<String>,
     pub base_url: Option<String>,
     pub model: Option<String>,
-}
-
-/// Give a just-opened session the TUI's `mode`, which the host checks
-/// against its rules, and return what the session runs with, with any
-/// warnings the host sent meanwhile (an assumed context window, say).
-/// Everything else the host sends meanwhile goes in `held`, in order, for
-/// the TUI's readers.
-pub(crate) async fn fetch_settings(
-    client: &mut koda_client::InProcessClient,
-    held: &mut VecDeque<Outgoing>,
-    session_id: &str,
-    mode: koda_client::protocol::state::TrustMode,
-) -> anyhow::Result<(SessionSettings, Vec<String>)> {
-    client
-        .request::<methods::SessionSettingsUpdate>(SessionSettingsUpdateParams {
-            session_id: session_id.to_string(),
-            model: None,
-            effort: None,
-            mode: Some(mode),
-        })
-        .await
-        .map_err(host_error)?;
-    let mut warnings = Vec::new();
-    // The TUI can't start without them: a turn starting meanwhile is set
-    // aside with the rest, and followed once the TUI has started.
-    match reported(client, held, session_id, false, false, &mut warnings).await? {
-        Reported::Now(settings) => Ok((settings, warnings)),
-        Reported::AfterTurn => anyhow::bail!("Koda's host didn't report the session's settings"),
-    }
 }
 
 /// Save the session's provider and model as the choice a new session

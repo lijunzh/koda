@@ -1,10 +1,11 @@
-//! Waits for one of the host's messages keep the others, in order: a turn
-//! Koda starts meanwhile is followed, with its approvals, and a settings
-//! report nothing waited for is mirrored when it comes.
+//! The host's messages in order, none lost to a wait: a turn Koda starts
+//! as the TUI changes a setting or compacts is followed, with its
+//! approvals, and the session's settings are mirrored whenever the host
+//! reports them.
 
 use std::time::Duration;
 
-use koda_client::protocol::goal::{GoalStatus, SessionGoalSetParams};
+use koda_client::protocol::goal::SessionGoalSetParams;
 use koda_client::protocol::methods::SessionGoalSet;
 use koda_test_utils::openai::{model, text, tool_calls};
 use serde_json::json;
@@ -15,10 +16,7 @@ use super::{
 };
 use crate::test_tui::{BUSY_PROMPT, Driver, TestTui};
 use crate::tui_context::TurnRequest;
-use crate::tui_context::settings::{ModelScope, fetch_settings};
-
-/// What the TUI says when it gave up waiting for a settings report.
-const NO_REPORT: &str = "didn't report the session's settings";
+use crate::tui_context::settings::ModelScope;
 
 /// The status bar: the screen's last line.
 fn status_bar(screen: &str) -> &str {
@@ -27,8 +25,8 @@ fn status_bar(screen: &str) -> &str {
 
 /// Shift+Tab just as Koda starts a turn on the session's goal: the host
 /// applies the mode once that turn ends, and the TUI follows the turn, with
-/// its approval. It waited out the settings report and dropped what came
-/// meanwhile, the turn's start and its approval with it, so the turn hung.
+/// its approval. It once waited out the settings report and dropped what
+/// came meanwhile, the turn's start and its approval with it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
 async fn shift_tab_as_a_goal_turn_starts_follows_that_turn() {
@@ -58,8 +56,6 @@ async fn shift_tab_as_a_goal_turn_starts_follows_that_turn() {
         driver.approve_until(|| written.exists()).await;
         driver.wait_for_screen("Goal reached.").await;
         driver.wait_for_screen_without(BUSY_PROMPT).await;
-        let screen = driver.screen();
-        assert!(!screen.contains(NO_REPORT), "{screen}");
         driver
     })
     .await;
@@ -67,7 +63,7 @@ async fn shift_tab_as_a_goal_turn_starts_follows_that_turn() {
 
 /// `/model` just as a turn starts that the TUI didn't start: the host
 /// changes the model once the turn ends, and the status bar shows it then,
-/// from the report nothing waits for.
+/// from the host's report.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
 async fn a_model_change_as_a_turn_starts_shows_once_it_ends() {
@@ -89,7 +85,7 @@ async fn a_model_change_as_a_turn_starts_shows_once_it_ends() {
     tui.run(async |driver: Driver| {
         driver.wait_for_screen(BUSY_PROMPT).await;
         let screen = driver.screen();
-        assert!(screen.contains("once Koda's running turn ends"), "{screen}");
+        assert!(screen.contains("Model: stub-picked"), "{screen}");
         assert!(!status_bar(&screen).contains("stub-picked"), "{screen}");
         go(&driver);
         driver.wait_for_screen("Main done.").await;
@@ -136,40 +132,6 @@ async fn compact_as_a_turn_starts_follows_that_turn() {
         driver.approve_until(|| written.exists()).await;
         driver.wait_for_screen("Main done.").await;
         driver.wait_for_screen_without(BUSY_PROMPT).await;
-        driver
-    })
-    .await;
-}
-
-/// What the host sends while the TUI waits for a session's settings, as it
-/// does at start-up, is handled afterwards: here the goal's report.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[serial_test::serial]
-async fn what_comes_while_settings_are_fetched_is_kept() {
-    let mut tui = TestTui::start(vec![]).await;
-    let session = tui.ctx.session.id.clone();
-    tui.ctx
-        .client
-        .request::<SessionGoalSet>(SessionGoalSetParams {
-            session_id: session.clone(),
-            objective: Some("Ship it".to_string()),
-            status: Some(GoalStatus::Paused),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
-    let (settings, _) = fetch_settings(
-        &mut tui.ctx.client,
-        &mut tui.ctx.held,
-        &session,
-        tui.ctx.mode,
-    )
-    .await
-    .unwrap();
-    assert_eq!(settings.model, "stub-model");
-
-    tui.run(async |driver: Driver| {
-        driver.wait_for_screen("Goal (paused): Ship it").await;
         driver
     })
     .await;

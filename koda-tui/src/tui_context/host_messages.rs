@@ -60,8 +60,8 @@ impl TuiContext {
     /// session: a main session's, while in a side conversation, is kept
     /// for the return; settings are mirrored; the goal, MCP servers, a
     /// background agent's request, an update of the server and a warning
-    /// about no session are shown. A turn starting is the caller's to
-    /// follow, before this.
+    /// (the session's, one about no session, the config's) are shown. A
+    /// turn starting is the caller's to follow, before this.
     pub(crate) fn absorb_idle_message(&mut self, message: Outgoing) {
         if self.note_main_session(&message) {
             return;
@@ -80,13 +80,19 @@ impl TuiContext {
         if self.note_update(&message) {
             return;
         }
-        // A warning about no session, such as a Claude model this Koda
-        // doesn't support yet, which the host says once the Models API has
-        // answered.
-        if let Outgoing::Notification(ServerNotification::Warning(w)) = message
-            && w.session_id.is_none()
-        {
-            crate::tui_output::warn_msg(&mut self.scroll_buffer, w.message);
+        // The session's, such as an assumed context window after `/model`,
+        // or one about no session, such as a Claude model this Koda doesn't
+        // support yet, which the host says once the Models API has answered.
+        match message {
+            Outgoing::Notification(ServerNotification::Warning(w))
+                if w.session_id.as_deref().is_none_or(|s| s == self.session.id) =>
+            {
+                crate::tui_output::warn_msg(&mut self.scroll_buffer, w.message);
+            }
+            Outgoing::Notification(ServerNotification::ConfigWarning(w)) => {
+                crate::tui_output::warn_msg(&mut self.scroll_buffer, w.summary);
+            }
+            _ => {}
         }
     }
 }

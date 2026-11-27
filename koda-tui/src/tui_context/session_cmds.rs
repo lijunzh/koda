@@ -35,7 +35,7 @@ impl TuiContext {
             ),
         };
         let opened = super::open_host_session(&self.client, None, &named).await;
-        let (opened, _, _) = match opened {
+        let (opened, _, settings) = match opened {
             Ok(opened) => opened,
             Err(e) => {
                 tui_output::err_msg(
@@ -65,9 +65,7 @@ impl TuiContext {
             Line::default(),
         ]);
         // The TUI's mode carries over; the host checks it.
-        if let Err(e) = self.sync_settings(true).await {
-            tui_output::warn_msg(&mut self.scroll_buffer, format!("{e:#}"));
-        }
+        self.opened(settings).await;
     }
 
     /// `/fork`: a copy of this session, which the TUI switches to, as
@@ -126,9 +124,7 @@ impl TuiContext {
             &mut self.scroll_buffer,
             format!("Forked into \"{name}\" ({short}). /resume goes back to the original."),
         );
-        if let Err(e) = self.sync_settings(true).await {
-            tui_output::warn_msg(&mut self.scroll_buffer, format!("{e:#}"));
-        }
+        self.opened(forked.settings).await;
     }
 
     /// `/status`: what the session runs with, as Codex's `/status` and

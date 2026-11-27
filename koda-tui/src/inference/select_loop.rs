@@ -133,7 +133,7 @@ impl TuiContext {
             )
             .await;
         // Its earlier turns were drawn when `/resume` chose it.
-        let (opened, _, _) = crate::tui_context::open_host_session(
+        let (opened, _, settings) = crate::tui_context::open_host_session(
             &self.client,
             Some(self.session.id.clone()),
             &crate::tui_context::settings::Named::default(),
@@ -143,7 +143,8 @@ impl TuiContext {
         self.session = opened;
         self.mcp_stale = true;
         // The resumed session's own model, and the TUI's mode for it.
-        self.sync_settings(true).await
+        self.opened(settings).await;
+        Ok(())
     }
 
     /// Start a turn on the host and follow it until `turn/completed`:
@@ -490,7 +491,6 @@ impl TuiContext {
                             .schedule_frame_in(std::time::Duration::from_secs(1));
                     }
                     SelectArm::Crossterm(ev) => {
-                        let mode = self.mode;
                         quit_requested |= super::crossterm_handler::handle_crossterm_event_inline(
                             ev,
                             &stop,
@@ -514,12 +514,6 @@ impl TuiContext {
                             &mut self.plan_shown,
                         )
                         .await;
-                        // Shift+Tab sent the mode, which the host applies
-                        // once the turn ends and reports then: that report
-                        // answers no later change.
-                        if self.mode != mode {
-                            self.settings_due.insert(self.session.id.clone());
-                        }
                         self.frame_requester.schedule_frame();
                     }
                     SelectArm::Command(TurnCommand::Side { question }) => {
