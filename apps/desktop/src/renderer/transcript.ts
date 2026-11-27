@@ -288,7 +288,8 @@ export function turnRows(turn: TurnView, view: View): Row[] {
         const looked = lookups(item);
         if (looked) {
           if (!group) {
-            group = { kind: 'lookups', key: item.id, label: '', failed: 0, calls: [] };
+            // Its own key: its first call can be opened apart from it.
+            group = { kind: 'lookups', key: `lookups-${item.id}`, label: '', failed: 0, calls: [] };
             counts = { read: 0, search: 0, list: 0, command: 0 };
             groupRunning = false;
             rows.push(group);
@@ -402,8 +403,8 @@ export function shownOutput(call: ToolCall, full: boolean): { lines: OutputLine[
         .filter((_, i, all) => !(i === all.length - 1 && all[i] === ''))
         .map((text) => ({ text, stderr: false }));
   const exitCode = parsed ? parsed.code : (call.exitCode ?? null);
-  // A read's content is in the full view only.
-  if (call.tool === 'Read' && !full) return { lines: [], hidden: 0, exitCode };
+  // A read's content is hidden until asked for: its line count, as the TUI's `└ 123 lines`.
+  if (call.tool === 'Read' && !full) return { lines: [], hidden: lines.length, exitCode };
   if (full) return { lines, hidden: 0, exitCode };
   const failed = call.status === 'failed';
   const keep = FOLD_HEAD + (failed ? FOLD_TAIL : 0);

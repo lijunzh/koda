@@ -85,14 +85,19 @@ const RowView = memo(function RowView({ row, open, toggle, full }: RowProps) {
             <span className="dot read">●</span> <strong>{row.label}</strong>
             {row.failed > 0 && <span className="failed"> · {row.failed} failed</span>}
           </button>
+          {/* Opened, as in the TUI: each call, with its output folded as a row of its own. */}
           {opened && (
-            <ul className="calls">
+            <div className="calls" data-testid="lookup-calls">
               {row.calls.map((call) => (
-                <li key={call.id}>
-                  <code>{callTitle(call)}</code>
-                </li>
+                <ToolRow
+                  key={call.id}
+                  row={{ kind: 'tool', key: call.id, call, children: [] }}
+                  opened={full || open.has(call.id)}
+                  toggle={toggle}
+                  full={full}
+                />
               ))}
-            </ul>
+            </div>
           )}
         </div>
       );

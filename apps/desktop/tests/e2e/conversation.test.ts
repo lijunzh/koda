@@ -62,6 +62,16 @@ describe.skipIf(!koda)('the conversation', () => {
     // Done: the steps stay, as in Claude Code; the lookups are one row.
     await expect.poll(() => page.getByTestId('lookups').textContent(), { timeout: 30_000 }).toContain('Read 1 file, listed 1 directory');
     expect(await page.getByTestId('worked').count()).toBe(0);
+    // Clicking the row opens it to its calls and what they printed.
+    await page.getByTestId('lookups').getByRole('button').first().click();
+    const opened = page.getByTestId('lookup-calls');
+    await expect.poll(() => opened.getByTestId('tool-call').count()).toBe(2);
+    expect(await opened.textContent()).toContain('README.md');
+    expect(await opened.textContent()).toContain('# Demo');
+    // Opening the row opens none of its calls' longer output.
+    expect(await opened.getByRole('button', { name: 'Show less' }).count()).toBe(0);
+    await page.getByTestId('lookups').getByRole('button').first().click();
+    expect(await page.getByTestId('lookup-calls').count()).toBe(0);
 
     // Verbose shows each call; Ctrl+O cycles Normal, Thinking, Verbose.
     await page.getByRole('button', { name: 'Verbose' }).click();

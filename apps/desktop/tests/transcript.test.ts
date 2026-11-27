@@ -209,7 +209,8 @@ describe('tool output', () => {
     const failed = shownOutput(call('Grep', { output: lines, status: 'failed' }) as never, false);
     expect(failed.lines.map((l) => l.text)).toEqual(['l0', 'l1', 'l2', 'l3', 'l4', 'l15', 'l16', 'l17', 'l18', 'l19']);
     expect(shownOutput(call('Grep', { output: lines }) as never, true).lines).toHaveLength(20);
-    expect(shownOutput(call('Read', { output: lines }) as never, false).lines).toEqual([]);
+    // A read's content waits to be opened; its length is on the marker.
+    expect(shownOutput(call('Read', { output: lines }) as never, false)).toMatchObject({ lines: [], hidden: 20 });
   });
 
   it('shows text, not terminal escapes', () => {
