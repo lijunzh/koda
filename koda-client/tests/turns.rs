@@ -4248,22 +4248,13 @@ async fn two_sessions_run_turns_at_once_and_each_hears_only_its_own() {
     // Replies go in arrival order, and the test orders the calls: A's
     // first, B's first, B's second, A's second.
     let server = model(vec![
-        tool_call(
-            "call_a",
-            "Write",
-            json!({"file_path": "a.txt", "content": "a"}),
-        ),
-        tool_call(
-            "call_b",
-            "Write",
-            json!({"file_path": "b.txt", "content": "b"}),
-        ),
+        asked_write("call_a", "a.txt"),
+        asked_write("call_b", "b.txt"),
         text("B done."),
         text("A done."),
     ])
     .await;
-    let mut config = config(&server);
-    config.trust = koda_core::trust::TrustMode::Safe;
+    let config = config(&server);
     let mut koda = Koda::start(config).await;
     let a = koda.session.clone();
     let b = koda
@@ -4379,21 +4370,12 @@ async fn two_sessions_run_turns_at_once_and_each_hears_only_its_own() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_approval_answered_twice_counts_once() {
     let server = model(vec![
-        tool_call(
-            "call_1",
-            "Write",
-            json!({"file_path": "first.txt", "content": "one"}),
-        ),
-        tool_call(
-            "call_2",
-            "Write",
-            json!({"file_path": "second.txt", "content": "two"}),
-        ),
+        asked_write("call_1", "first.txt"),
+        asked_write("call_2", "second.txt"),
         text("Done."),
     ])
     .await;
-    let mut config = config(&server);
-    config.trust = koda_core::trust::TrustMode::Safe;
+    let config = config(&server);
     let mut koda = Koda::start(config).await;
     let turn_id = koda.turn("Write two files").await;
 
@@ -4422,11 +4404,11 @@ async fn an_approval_answered_twice_counts_once() {
     assert_eq!(turn_completed(&seen).status, TurnStatus::Completed);
     assert_eq!(
         std::fs::read_to_string(koda.project.join("first.txt")).unwrap(),
-        "one"
+        "hi"
     );
     assert_eq!(
         std::fs::read_to_string(koda.project.join("second.txt")).unwrap(),
-        "two"
+        "hi"
     );
     // Each request was resolved once.
     assert_eq!(resolved_ids(&seen), [first.id(), second.id()]);
