@@ -353,11 +353,9 @@ impl ToolRegistry {
         // lives inside `ToolCatalog::new()`.
         let catalog = ToolCatalog::new();
         let skill_registry = crate::skills::SkillRegistry::discover(&project_root);
-        let sandbox_policy = if trust == crate::trust::TrustMode::Plan {
-            crate::sandbox::policy_for_agent(trust, &project_root)
-        } else {
-            koda_sandbox::SandboxPolicy::strict_default()
-        };
+        // The mode's own policy, which keeps `.git` read-only and Plan's
+        // project read-only in the kernel.
+        let sandbox_policy = crate::sandbox::policy_for_agent(trust, &project_root);
 
         Self {
             project_root,
@@ -773,10 +771,13 @@ impl ToolRegistry {
             // still see them. The other fields come straight off
             // `self` — same shape every legacy match arm pre-#1265
             // would have read.
-            let plan_policy = (mode == crate::trust::TrustMode::Plan
-                && self.trust != crate::trust::TrustMode::Plan)
+            // A session a person answers may have changed mode since its
+            // tools were built: a command runs under the policy of the mode
+            // it runs in, so one started in Plan can write after a switch to
+            // Auto, and the reverse can't.
+            let mode_policy = (mode != self.trust)
                 .then(|| crate::sandbox::policy_for_agent(mode, &self.project_root));
-            let policy = plan_policy.as_ref().unwrap_or(self.sandbox_policy());
+            let policy = mode_policy.as_ref().unwrap_or(self.sandbox_policy());
             let proxy_port = self.proxy_port();
             let socks5_port = self.socks5_port();
             // Snapshot the session pair under one lock-acquisition
@@ -1918,9 +1919,9 @@ mod tests {
         assert!(read.success && read.output.contains("ONE"), "{read:?}");
     }
 
-    /// A Plan turn in a session built for Safe, as after `/plan` in the
+    /// A Plan turn in a session built for Auto, as after `/plan` in the
     /// TUI, runs a command with the project read-only in the kernel
-    /// sandbox, as a headless Plan session does; a Safe turn can write.
+    /// sandbox, as a headless Plan session does; an Auto turn can write.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_plan_turn_s_command_cant_write_to_the_project() {
         if !crate::sandbox::is_available() {
@@ -1956,6 +1957,49 @@ mod tests {
         assert!(
             root.join("made").exists(),
             "a Safe turn couldn't write: {safe:?}"
+        );
+    }
+
+    /// The main session's commands run with `.git` read-only, as a
+    /// sub-agent's do, and a session started in Plan can write once it's in
+    /// Auto.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_command_runs_under_its_turn_s_mode() {
+        if !crate::sandbox::is_available() {
+            koda_sandbox::skip_test(format_args!("needs the kernel sandbox"));
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join(".git/refs")).unwrap();
+        let run = |trust, command: &str| {
+            let registry = ToolRegistry::with_trust(root.clone(), 128_000, trust);
+            let args = serde_json::json!({ "command": command }).to_string();
+            async move {
+                registry
+                    .execute_in(
+                        "Bash",
+                        &args,
+                        None,
+                        None,
+                        true,
+                        crate::trust::TrustMode::Auto,
+                    )
+                    .await
+            }
+        };
+        let git = run(crate::trust::TrustMode::Auto, "touch .git/refs/x").await;
+        assert!(!git.success, "{git:?}");
+        assert!(
+            !root.join(".git/refs/x").exists(),
+            "an Auto command wrote to .git"
+        );
+
+        let made = run(crate::trust::TrustMode::Plan, "touch made").await;
+        assert!(made.success, "{made:?}");
+        assert!(
+            root.join("made").exists(),
+            "a Plan-built session couldn't write in Auto"
         );
     }
 
@@ -2352,14 +2396,27 @@ mod describe_action_tests {
     //   3. The accessor returns the most recent setter's value (no
     //      caching/aliasing surprises).
 
+    /// A registry starts with its mode's policy, so the main session's
+    /// Auto commands get the same `.git` deny as a sub-agent's.
     #[test]
-    fn registry_sandbox_policy_defaults_to_strict() {
-        let registry = ToolRegistry::new(PathBuf::from("/tmp"), 128_000);
+    fn a_registry_starts_with_its_modes_policy() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        let registry = ToolRegistry::new(dir.path().to_path_buf(), 128_000);
         assert_eq!(
             *registry.sandbox_policy(),
-            koda_sandbox::SandboxPolicy::strict_default(),
-            "PR-2 contract: ToolRegistry::new must seed strict_default() so \
-             pre-PR callers see unchanged behavior"
+            crate::sandbox::policy_for_agent(crate::trust::TrustMode::Auto, dir.path()),
+        );
+        let git = dir.path().canonicalize().unwrap().join(".git");
+        assert!(
+            registry
+                .sandbox_policy()
+                .fs
+                .deny_write_within_allow
+                .iter()
+                .any(|p| p.0 == git),
+            "{:?}",
+            registry.sandbox_policy().fs.deny_write_within_allow
         );
     }
 

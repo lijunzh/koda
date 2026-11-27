@@ -241,7 +241,8 @@ pub enum ToolApproval {
 ///
 /// Additional hardcoded floors:
 /// - Writes outside project root → NeedsConfirmation (even in Auto) (#218)
-/// - Bash path escapes → NeedsConfirmation
+/// - Writes to Koda's settings, `.git`, `.koda/agents` or `.koda/skills`
+///   → NeedsConfirmation
 /// - Sandbox backend unavailable → Auto downgrades mutating/destructive
 ///   ops to NeedsConfirmation (#860)
 pub fn check_tool(
@@ -401,7 +402,22 @@ fn is_outside_project(tool_name: &str, args: &serde_json::Value, project_root: &
             if koda_sandbox::is_koda_config(&resolved) {
                 return true;
             }
-            let outside = !resolved.starts_with(resolve_through_links(project_root));
+            let root = resolve_through_links(project_root);
+            // What the kernel sandbox keeps read-only inside the project
+            // asks too, as Codex's patches do for `.git` and `.codex`: git
+            // runs hooks and `config` programs outside the sandbox, and
+            // agents and skills decide what the next session runs.
+            let protected = std::iter::once(".git")
+                .chain(
+                    koda_sandbox::defaults::PROTECTED_PROJECT_SUBDIRS
+                        .iter()
+                        .copied(),
+                )
+                .any(|rel| resolved.starts_with(root.join(rel)));
+            if protected {
+                return true;
+            }
+            let outside = !resolved.starts_with(&root);
             // Allow temp directories (#560)
             if outside && crate::scratch_path::is_safe_external_path(&resolved) {
                 return false;
@@ -1057,6 +1073,41 @@ mod tests {
     fn test_write_inside_project_auto_approved() {
         let root = Path::new("/home/user/project");
         let args = serde_json::json!({"path": "src/main.rs"});
+        assert_eq!(
+            check_tool("Write", &args, TrustMode::Auto, Some(root)),
+            ToolApproval::AutoApprove,
+        );
+    }
+
+    /// What the kernel keeps read-only in the project asks for a file tool
+    /// too: a hook or `core.fsmonitor` written by Edit would run outside the
+    /// sandbox at the next `git commit`.
+    #[test]
+    fn an_edit_of_git_or_agent_files_asks() {
+        let root = Path::new("/home/user/project");
+        for path in [
+            ".git/hooks/pre-commit",
+            ".git/config",
+            ".git",
+            ".koda/agents/reviewer.json",
+            ".koda/skills/x/SKILL.md",
+        ] {
+            for tool in ["Write", "Edit"] {
+                let args = serde_json::json!({ "path": path });
+                assert_eq!(
+                    check_tool(tool, &args, TrustMode::Auto, Some(root)),
+                    ToolApproval::NeedsConfirmation,
+                    "{tool} {path}"
+                );
+                assert_eq!(
+                    check_tool(tool, &args, TrustMode::Plan, Some(root)),
+                    ToolApproval::Blocked,
+                    "{tool} {path}"
+                );
+            }
+        }
+        // A name that only starts the same way is ordinary.
+        let args = serde_json::json!({ "path": ".github/workflows/ci.yml" });
         assert_eq!(
             check_tool("Write", &args, TrustMode::Auto, Some(root)),
             ToolApproval::AutoApprove,
