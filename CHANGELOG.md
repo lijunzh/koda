@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- **A `gh api` read no longer asks.** In Auto, `gh api` asked before every call, a GET included. Now it asks only when the call can change something: a method other than GET (`-X`, `--method`), or a field or `--input`, which make `gh` send a POST. A GraphQL call passes its query as a field, so it still asks. Reads run in the sandbox like any other command, as in Codex, which asks before no `gh` call.
+
 ## [0.8.0] - 2026-11-27
 
 Safe mode is gone: Koda decides what asks from the kernel sandbox, as Codex does. Configs, flags and protocol clients that used `safe`, the removed flags or `protocolVersion` need a change; see [Upgrading to 0.8](https://lijunzh.github.io/koda/upgrading-0.8.html).
