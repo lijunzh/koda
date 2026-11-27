@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { scratch } from '../helpers';
-import { closeApp, koda, type OpenApp, openApp, stopServer } from './app';
+import { koda, type OpenApp, openApp, shutDown } from './app';
 import { type Model, type Reply, scriptedModel, useModel } from './model';
 
 let open: OpenApp | undefined;
@@ -13,8 +13,7 @@ let model: Model | undefined;
 const homes: string[] = [];
 
 afterEach(async () => {
-  for (const home of homes.splice(0)) stopServer(home);
-  if (open) await closeApp(open);
+  await shutDown(open, homes.splice(0));
   open = undefined;
   model?.close();
   model = undefined;

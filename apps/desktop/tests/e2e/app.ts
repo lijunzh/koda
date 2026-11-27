@@ -1,5 +1,6 @@
 // Opening the real app against a scratch Koda home, for the end-to-end tests.
 import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { _electron, type ElectronApplication, type Page } from 'playwright-core';
@@ -47,4 +48,28 @@ export async function closeApp({ app }: OpenApp): Promise<void> {
   const closed = await Promise.race([app.close().then(() => 'closed' as const), late]);
   clearTimeout(timer);
   if (closed === 'late') app.process().kill('SIGKILL');
+}
+
+/**
+ * End a test: stop each home's server, close the app, then stop the server
+ * the app may have started again meanwhile. The app reconnects when its
+ * server goes away, as the TUI does, so stopping the server alone left one
+ * behind; and on Linux the app closes only once no server it started holds
+ * its output (see `closeApp`).
+ */
+export async function shutDown(open: OpenApp | undefined, homes: string[]): Promise<void> {
+  for (const home of homes) stopServer(home);
+  if (open) await closeApp(open);
+  for (const home of homes) {
+    // One started by a reconnect may still be coming up: stop it once it's there.
+    for (let quiet = 0; quiet < 3; ) {
+      if (existsSync(socketOf(home))) {
+        stopServer(home);
+        quiet = 0;
+      } else {
+        quiet++;
+      }
+      await new Promise((r) => setTimeout(r, 300));
+    }
+  }
 }
