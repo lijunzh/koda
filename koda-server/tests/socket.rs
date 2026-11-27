@@ -333,10 +333,16 @@ impl Client {
         id
     }
 
+    /// The next line, those set aside first; `None` once the socket closes.
     async fn read(&mut self) -> Option<Value> {
         if let Some(line) = self.pending.pop_front() {
             return Some(line);
         }
+        self.socket_line().await
+    }
+
+    /// The next line from the socket itself.
+    async fn socket_line(&mut self) -> Option<Value> {
         let mut line = String::new();
         let read = tokio::time::timeout(WAIT, self.output.read_line(&mut line))
             .await
@@ -345,18 +351,21 @@ impl Client {
         (read > 0).then(|| serde_json::from_str(&line).unwrap())
     }
 
-    /// The answer to request `id`; every line before it is kept, for
-    /// [`Client::seen`].
+    /// The answer to request `id`; every other line is kept, in the order it
+    /// came, for [`Client::seen`]. An answer already set aside is taken from
+    /// where it lies, as Codex's test client takes a pending message.
     async fn response(&mut self, id: i64) -> Result<Value, Value> {
-        let mut before = Vec::new();
-        let answer = loop {
-            let line = self.read().await.expect("the socket closed");
-            if line["id"] == id && line.get("method").is_none() {
-                break line;
-            }
-            before.push(line);
+        let is_answer = |l: &Value| l["id"] == id && l.get("method").is_none();
+        let answer = match self.pending.iter().position(is_answer) {
+            Some(at) => self.pending.remove(at).unwrap(),
+            None => loop {
+                let line = self.socket_line().await.expect("the socket closed");
+                if is_answer(&line) {
+                    break line;
+                }
+                self.pending.push_back(line);
+            },
         };
-        self.pending.extend(before);
         match answer.get("error") {
             Some(error) => Err(error.clone()),
             None => Ok(answer["result"].clone()),
@@ -1059,9 +1068,20 @@ async fn a_sessions_requests_take_effect_in_the_order_sent() {
     for id in sent {
         client.response(id).await.unwrap();
     }
-    client.request("state/read", json!({})).await.unwrap();
-    let said: Vec<String> = client
-        .seen()
+    // An answer and a notification travel apart, as in Codex: wait for the
+    // notifications themselves, as Codex's tests read each
+    // `thread/settings/updated`, not for a later answer.
+    let mut heard = client.seen();
+    let updates = |heard: &[Value]| {
+        heard
+            .iter()
+            .filter(|l| l["method"] == "session/settings/updated")
+            .count()
+    };
+    while updates(&heard) < modes.len() {
+        heard.extend(client.until_method("session/settings/updated").await);
+    }
+    let said: Vec<String> = heard
         .iter()
         .filter(|l| l["method"] == "session/settings/updated")
         .map(|l| {
