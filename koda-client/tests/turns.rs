@@ -4158,3 +4158,541 @@ async fn a_rewind_takes_turns_out_of_the_history() {
     assert!(!sent.contains("Two."), "{sent}");
     koda.client.shutdown().await;
 }
+
+// ── Protocol gaps ───────────────────────────────────────────────────────
+
+use koda_client::protocol::feedback::{FeedbackSaveParams, FeedbackSaveResponse};
+use koda_client::protocol::goal::{
+    GoalStatus, SessionGoalClearParams, SessionGoalClearResponse, SessionGoalClearedNotification,
+    SessionGoalGetParams, SessionGoalSetParams,
+};
+use koda_client::protocol::turn::{PlanStep, PlanStepStatus, TurnPlanUpdatedNotification};
+
+impl Koda {
+    /// Every message up to and including the first that `done` holds for.
+    async fn until_matching(
+        &mut self,
+        what: &str,
+        done: impl Fn(&Outgoing) -> bool,
+    ) -> Vec<Outgoing> {
+        let mut seen = Vec::new();
+        loop {
+            let message = tokio::time::timeout(WAIT, self.client.next_event())
+                .await
+                .unwrap_or_else(|_| panic!("no {what} within {WAIT:?}; saw {}", names(&seen)))
+                .expect("the host stopped");
+            let stop = done(&message);
+            seen.push(message);
+            if stop {
+                return seen;
+            }
+        }
+    }
+
+    /// Every message up to and including the next server request.
+    async fn until_request(&mut self) -> Vec<Outgoing> {
+        self.until_matching("server request", |m| matches!(m, Outgoing::Request(_)))
+            .await
+    }
+
+    /// Every message up to and including turn `turn_id`'s `turn/completed`.
+    async fn until_turn_completed(&mut self, turn_id: &str) -> Vec<Outgoing> {
+        self.until_matching("turn/completed", |m| {
+            matches!(m, Outgoing::Notification(ServerNotification::TurnCompleted(n))
+                if n.turn.id == turn_id)
+        })
+        .await
+    }
+
+    /// Start a turn on `session`, which may be any session open on the host.
+    async fn turn_in(&self, session: &str, input: &str) -> String {
+        self.client
+            .request::<methods::TurnStart>(TurnStartParams {
+                session_id: session.to_string(),
+                input: vec![UserInput::text(input.to_string())],
+                client_user_message_id: None,
+                mode: None,
+                output_schema: None,
+            })
+            .await
+            .unwrap()
+            .turn
+            .id
+    }
+
+    async fn clear_goal(&self) -> SessionGoalClearResponse {
+        self.client
+            .request::<methods::SessionGoalClear>(SessionGoalClearParams {
+                session_id: self.session.clone(),
+            })
+            .await
+            .unwrap()
+    }
+}
+
+/// `message` as it goes on the wire: `method` and `params`.
+fn wire(message: &Outgoing) -> Value {
+    match message {
+        Outgoing::Notification(n) => serde_json::to_value(n).unwrap(),
+        Outgoing::Request(r) => serde_json::to_value(r).unwrap(),
+        _ => Value::Null,
+    }
+}
+
+/// The server request last in `messages`.
+fn last_request(messages: &[Outgoing]) -> &ServerRequest {
+    match messages.last() {
+        Some(Outgoing::Request(request)) => request,
+        other => panic!("expected a server request last, got {other:?}"),
+    }
+}
+
+/// The ids of the requests `messages` say were resolved, in order.
+fn resolved_ids(messages: &[Outgoing]) -> Vec<&RequestId> {
+    messages
+        .iter()
+        .filter_map(|m| match m {
+            Outgoing::Notification(ServerNotification::ServerRequestResolved(n)) => {
+                Some(&n.request_id)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// `session/goal/clear` removes the goal: the answer says there was one,
+/// `session/goal/cleared` tells the session's clients, and
+/// `session/goal/get` finds none. Clearing again answers `cleared: false`
+/// and tells no one, so a client can't mistake a no-op for a removal. It
+/// guards the clear request end to end, from the host's routing to the
+/// stored goal: a handler that answered without deleting, always said
+/// `cleared: true`, or didn't notify would each fail here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cleared_goal_is_said_to_the_session() {
+    let server = model(vec![]).await;
+    let mut koda = Koda::start(config(&server)).await;
+    // Paused, so no turn starts on it.
+    let session = koda.session.clone();
+    let set = |objective: &str| SessionGoalSetParams {
+        session_id: session.clone(),
+        objective: Some(objective.to_string()),
+        status: Some(GoalStatus::Paused),
+        token_budget: None,
+    };
+    let goal = koda
+        .client
+        .request::<methods::SessionGoalSet>(set("Ship it"))
+        .await
+        .unwrap()
+        .goal;
+    assert_eq!(
+        (goal.objective.as_str(), goal.status),
+        ("Ship it", GoalStatus::Paused)
+    );
+    koda.until("session/goal/updated").await;
+
+    assert_eq!(
+        koda.clear_goal().await,
+        SessionGoalClearResponse { cleared: true }
+    );
+    let messages = koda.until("session/goal/cleared").await;
+    assert_eq!(
+        messages.last(),
+        Some(&Outgoing::Notification(
+            ServerNotification::SessionGoalCleared(SessionGoalClearedNotification {
+                session_id: koda.session.clone(),
+            })
+        ))
+    );
+    let get = koda
+        .client
+        .request::<methods::SessionGoalGet>(SessionGoalGetParams {
+            session_id: koda.session.clone(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(get.goal, None);
+
+    // Nothing left to clear: no, and no notification. The next goal's
+    // `session/goal/updated` is the next message about goals.
+    assert_eq!(
+        koda.clear_goal().await,
+        SessionGoalClearResponse { cleared: false }
+    );
+    let next = koda
+        .client
+        .request::<methods::SessionGoalSet>(set("Ship it again"))
+        .await
+        .unwrap()
+        .goal;
+    assert_eq!(next.objective, "Ship it again");
+    let messages = koda.until("session/goal/updated").await;
+    assert!(
+        !messages.iter().any(|m| name(m) == "session/goal/cleared"),
+        "{}",
+        names(&messages)
+    );
+    assert_eq!(chat_requests(&server).await.len(), 0, "no turn ran");
+    koda.client.shutdown().await;
+}
+
+/// Two sessions on one host each have a turn waiting at an approval at
+/// once; the second goes on and ends while the first still waits, then the
+/// first ends. Every message about a turn names the session that started
+/// it. It guards the host's routing by session: a host that ran one
+/// session's turn at a time would leave the second waiting behind the
+/// first's open approval, and one that crossed their sinks or answers
+/// would send a turn's messages under the other session's id or write the
+/// wrong file.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_sessions_run_turns_at_once_and_each_hears_only_its_own() {
+    // Replies go in arrival order, and the test orders the calls: A's
+    // first, B's first, B's second, A's second.
+    let server = model(vec![
+        tool_call(
+            "call_a",
+            "Write",
+            json!({"file_path": "a.txt", "content": "a"}),
+        ),
+        tool_call(
+            "call_b",
+            "Write",
+            json!({"file_path": "b.txt", "content": "b"}),
+        ),
+        text("B done."),
+        text("A done."),
+    ])
+    .await;
+    let mut config = config(&server);
+    config.trust = koda_core::trust::TrustMode::Safe;
+    let mut koda = Koda::start(config).await;
+    let a = koda.session.clone();
+    let b = koda
+        .client
+        .request::<methods::SessionStart>(SessionStartParams::default())
+        .await
+        .unwrap()
+        .session
+        .id;
+    assert_ne!(a, b);
+    let mut seen = koda
+        .until_matching("B's session/started", |m| {
+            matches!(m, Outgoing::Notification(ServerNotification::SessionStarted(n))
+                if n.session.id == b)
+        })
+        .await;
+
+    let a_turn = koda.turn_in(&a, "Write a").await;
+    seen.extend(koda.until_request().await);
+    let a_request = last_request(&seen).clone();
+    let b_turn = koda.turn_in(&b, "Write b").await;
+    seen.extend(koda.until_request().await);
+    let b_request = last_request(&seen).clone();
+    // Both turns wait at once, each at its own approval.
+    let (
+        ServerRequest::ToolCallApproval { params: pa, .. },
+        ServerRequest::ToolCallApproval { params: pb, .. },
+    ) = (&a_request, &b_request)
+    else {
+        panic!("expected two approvals, got {a_request:?} and {b_request:?}");
+    };
+    assert_eq!(
+        (pa.session_id.as_str(), pa.turn_id.as_str()),
+        (a.as_str(), a_turn.as_str())
+    );
+    assert_eq!(
+        (pb.session_id.as_str(), pb.turn_id.as_str()),
+        (b.as_str(), b_turn.as_str())
+    );
+
+    // B goes on and ends while A still waits.
+    koda.answer(b_request.id(), json!({"decision": "accept"}))
+        .await;
+    seen.extend(koda.until_turn_completed(&b_turn).await);
+    assert_eq!(turn_completed(&seen).status, TurnStatus::Completed);
+    assert!(koda.project.join("b.txt").exists());
+    assert!(!koda.project.join("a.txt").exists(), "A's call waits");
+    assert!(
+        !seen.iter().any(
+            |m| matches!(m, Outgoing::Notification(ServerNotification::TurnCompleted(n))
+                if n.turn.id == a_turn)
+        ),
+        "{}",
+        names(&seen)
+    );
+
+    koda.answer(a_request.id(), json!({"decision": "accept"}))
+        .await;
+    seen.extend(koda.until_turn_completed(&a_turn).await);
+    assert_eq!(turn_completed(&seen).status, TurnStatus::Completed);
+    assert!(koda.project.join("a.txt").exists());
+
+    // Every message about a turn carries its own session's id.
+    let owner = |turn: &str| {
+        if turn == a_turn {
+            &a
+        } else if turn == b_turn {
+            &b
+        } else {
+            panic!("a turn neither session started: {turn}")
+        }
+    };
+    let mut per_session = std::collections::HashMap::<&str, usize>::new();
+    for message in &seen {
+        let sent = wire(message);
+        let params = &sent["params"];
+        let turn = params["turnId"]
+            .as_str()
+            .or_else(|| params["turn"]["id"].as_str());
+        if let Some(turn) = turn {
+            assert_eq!(params["sessionId"], owner(turn).as_str(), "{sent}");
+            *per_session.entry(owner(turn)).or_default() += 1;
+        }
+        // Each reply went out under the session whose turn it answered.
+        let text = sent.to_string();
+        if text.contains("A done.") {
+            assert_eq!(params["sessionId"], a.as_str(), "{sent}");
+        }
+        if text.contains("B done.") {
+            assert_eq!(params["sessionId"], b.as_str(), "{sent}");
+        }
+    }
+    // Both turns sent their started, items, approval and completed.
+    assert!(per_session[a.as_str()] >= 5, "{per_session:?}");
+    assert!(per_session[b.as_str()] >= 5, "{per_session:?}");
+    let replies: Vec<_> = completed(&seen)
+        .into_iter()
+        .filter_map(|item| match item {
+            Item::AgentMessage { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(replies, ["B done.", "A done."]);
+    koda.client.shutdown().await;
+}
+
+/// The same approval answered twice: the first answer counts, the second
+/// is dropped, and the turn goes on to its next approval and ends. It
+/// guards the open-request table: an answer closes its request, so a
+/// repeated one (a client retrying, two clients answering) neither runs
+/// the tool again, nor overrides the first decision (here a decline after
+/// an accept), nor is taken as the answer to the turn's next request.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_approval_answered_twice_counts_once() {
+    let server = model(vec![
+        tool_call(
+            "call_1",
+            "Write",
+            json!({"file_path": "first.txt", "content": "one"}),
+        ),
+        tool_call(
+            "call_2",
+            "Write",
+            json!({"file_path": "second.txt", "content": "two"}),
+        ),
+        text("Done."),
+    ])
+    .await;
+    let mut config = config(&server);
+    config.trust = koda_core::trust::TrustMode::Safe;
+    let mut koda = Koda::start(config).await;
+    let turn_id = koda.turn("Write two files").await;
+
+    let mut seen = koda.until_request().await;
+    let first = last_request(&seen).clone();
+    koda.answer(first.id(), json!({"decision": "accept"})).await;
+    koda.answer(first.id(), json!({"decision": "decline"}))
+        .await;
+
+    // The turn goes on to its next call, which waits for its own answer.
+    seen.extend(koda.until_request().await);
+    let second = last_request(&seen).clone();
+    let ServerRequest::ToolCallApproval { params, .. } = &second else {
+        panic!("expected an approval, got {second:?}");
+    };
+    assert_ne!(second.id(), first.id());
+    assert!(params.detail.contains("second.txt"), "{params:?}");
+    assert!(
+        !koda.project.join("second.txt").exists(),
+        "not yet answered"
+    );
+    koda.answer(second.id(), json!({"decision": "accept"}))
+        .await;
+
+    seen.extend(koda.until_turn_completed(&turn_id).await);
+    assert_eq!(turn_completed(&seen).status, TurnStatus::Completed);
+    assert_eq!(
+        std::fs::read_to_string(koda.project.join("first.txt")).unwrap(),
+        "one"
+    );
+    assert_eq!(
+        std::fs::read_to_string(koda.project.join("second.txt")).unwrap(),
+        "two"
+    );
+    // Each request was resolved once.
+    assert_eq!(resolved_ids(&seen), [first.id(), second.id()]);
+    // The model was told the first call ran, once, and wasn't declined.
+    let requests = chat_requests(&server).await;
+    assert_eq!(requests.len(), 3);
+    let results: Vec<_> = requests[1]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["role"] == "tool")
+        .collect();
+    assert_eq!(results.len(), 1, "{results:?}");
+    assert_eq!(results[0]["tool_call_id"], "call_1");
+    assert!(
+        !results[0].to_string().contains("rejected"),
+        "{}",
+        results[0]
+    );
+    koda.client.shutdown().await;
+}
+
+/// A model that calls `TodoWrite` makes the server send
+/// `turn/plan/updated` with the whole plan, in order, for its session and
+/// turn; a rewrite that changes nothing sends none. It guards the
+/// projection of the engine's todo event onto the protocol (Codex's
+/// `turn/plan/updated`), which only TUI unit tests built by hand before:
+/// a dropped event, a lost step, a wrong status mapping or a missing turn
+/// id each fail here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_todo_write_is_sent_as_the_turns_plan() {
+    let todos = |read: &str, write: &str| {
+        json!({"todos": [
+            {"content": "Read the code", "status": read, "priority": "high"},
+            {"content": "Write the test", "status": write, "priority": "medium"},
+        ]})
+    };
+    let server = model(vec![
+        tool_call("call_1", "TodoWrite", todos("in_progress", "pending")),
+        tool_call("call_2", "TodoWrite", todos("completed", "in_progress")),
+        tool_call("call_3", "TodoWrite", todos("completed", "in_progress")),
+        text("Planned."),
+    ])
+    .await;
+    let mut koda = Koda::start(config(&server)).await;
+    let turn_id = koda.turn("Plan it").await;
+    let messages = koda.until_turn_completed(&turn_id).await;
+    assert_eq!(turn_completed(&messages).status, TurnStatus::Completed);
+
+    let plans: Vec<_> = messages
+        .iter()
+        .filter_map(|m| match m {
+            Outgoing::Notification(ServerNotification::TurnPlanUpdated(n)) => Some(n.clone()),
+            _ => None,
+        })
+        .collect();
+    let plan = |read, write| TurnPlanUpdatedNotification {
+        session_id: koda.session.clone(),
+        turn_id: turn_id.clone(),
+        plan: vec![
+            PlanStep {
+                step: "Read the code".to_string(),
+                status: read,
+            },
+            PlanStep {
+                step: "Write the test".to_string(),
+                status: write,
+            },
+        ],
+    };
+    assert_eq!(
+        plans,
+        [
+            plan(PlanStepStatus::InProgress, PlanStepStatus::Pending),
+            plan(PlanStepStatus::Completed, PlanStepStatus::InProgress),
+        ]
+    );
+    assert_eq!(chat_requests(&server).await.len(), 4);
+    koda.client.shutdown().await;
+}
+
+/// The names of the entries in the ZIP at `path`, read from its central
+/// directory.
+fn zip_entries(path: &std::path::Path) -> Vec<String> {
+    let bytes = std::fs::read(path).unwrap();
+    let u16_at = |i: usize| usize::from(u16::from_le_bytes([bytes[i], bytes[i + 1]]));
+    let u32_at = |i: usize| u32::from_le_bytes(bytes[i..i + 4].try_into().unwrap()) as usize;
+    // The end-of-central-directory record: the entry count at +10, the
+    // directory's offset at +16.
+    let end = bytes
+        .windows(4)
+        .rposition(|w| w == b"PK\x05\x06")
+        .expect("not a ZIP");
+    let count = u16_at(end + 10);
+    let mut at = u32_at(end + 16);
+    assert_ne!(
+        at, 0xFFFF_FFFF,
+        "a ZIP64 directory, which this doesn't read"
+    );
+    let mut names = Vec::new();
+    for _ in 0..count {
+        assert_eq!(
+            &bytes[at..at + 4],
+            b"PK\x01\x02",
+            "a central directory entry"
+        );
+        let (name, extra, comment) = (u16_at(at + 28), u16_at(at + 30), u16_at(at + 32));
+        names.push(String::from_utf8(bytes[at + 46..at + 46 + name].to_vec()).unwrap());
+        at += 46 + name + extra + comment;
+    }
+    names
+}
+
+/// `feedback/save` over the wire writes the ZIP where it was asked, about
+/// the session named, from the host's own database: the answer names the
+/// path and the session, and with consent the ZIP holds the session's
+/// stored rows under its id. A path that exists is refused as an invalid
+/// request and the file is kept. It guards the request's decoding and
+/// routing to the host's database (reached before only through a PTY
+/// test): a host that saved without the session, ignored `includeLogs`, or
+/// replaced an existing file would fail here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn feedback_is_saved_as_a_zip_about_the_session() {
+    let server = model(vec![text("Hello.")]).await;
+    let mut koda = Koda::start(config(&server)).await;
+    let turn_id = koda.turn("Say hi").await;
+    koda.until_turn_completed(&turn_id).await;
+
+    let out = tempfile::tempdir().unwrap();
+    let path = out.path().join("feedback.zip");
+    let params = FeedbackSaveParams {
+        classification: "bug".to_string(),
+        reason: Some("it said hi".to_string()),
+        session_id: Some(koda.session.clone()),
+        include_logs: true,
+        save_path: path.display().to_string(),
+    };
+    let saved = koda
+        .client
+        .request::<methods::FeedbackSave>(params.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        saved,
+        FeedbackSaveResponse {
+            saved_path: path.display().to_string(),
+            session_id: Some(koda.session.clone()),
+        }
+    );
+    assert_eq!(
+        zip_entries(&path),
+        [
+            "report.json".to_string(),
+            "attachments/0000/koda-logs.log".to_string(),
+            format!("attachments/0001/session-{}.json", koda.session),
+            "attachments/0002/diagnostics.txt".to_string(),
+            "manifest.json".to_string(),
+        ]
+    );
+
+    // Never over a file that exists.
+    let before = std::fs::read(&path).unwrap();
+    let error = server_error(koda.client.request::<methods::FeedbackSave>(params).await);
+    assert_eq!(error.code, codes::INVALID_REQUEST);
+    assert!(error.message.contains("already exists"), "{error:?}");
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    koda.client.shutdown().await;
+}
